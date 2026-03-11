@@ -10,3 +10,6 @@
 - **Push periodically** — after every 2-3 commits, or when finishing a task
 - Stage specific files rather than `git add -A` to avoid accidentally committing secrets or junk
 - Do not commit `.env`, `*.db`, `node_modules/`, or other sensitive/generated files
+
+## Agent Pack
+See `~/.claude/AgentPackJCK.md` for the multi-agent review framework. When analyzing, reviewing, or improving a project, use the agent perspectives defined there and label which agent is speaking.
