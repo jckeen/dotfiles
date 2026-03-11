@@ -1,0 +1,51 @@
+{
+  "autoUpdatesChannel": "latest",
+  "extraKnownMarketplaces": {
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      }
+    }
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read",
+      "Edit",
+      "Bash(npm run *)",
+      "Bash(npm install*)",
+      "Bash(npm test*)",
+      "Bash(npm list*)",
+      "Bash(npx *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git status*)",
+      "Bash(git checkout*)",
+      "Bash(git branch*)",
+      "Bash(git stash*)",
+      "Bash(git remote*)",
+      "Bash(git push*)",
+      "Bash(git rm*)",
+      "Bash(gh *)",
+      "Bash(pm2 *)",
+      "Bash(taskkill*)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(rm *)",
+      "Bash(sleep *)",
+      "Bash(which *)",
+      "Bash(node *)",
+      "Bash(cat *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(git push --force*)"
+    ]
+  }
+}
