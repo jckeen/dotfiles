@@ -1,472 +1,166 @@
 # Claude Agent Pack
-## Project: shitmyspousesays.com
 
-This document defines the specialized agents Claude should use when working on the project **shitmyspousesays.com**.
+A reusable multi-agent review framework. When analyzing, reviewing, or improving any project, Claude should use these agent perspectives and **label which agent is speaking**.
 
-The site is a lightweight humor product where users submit funny things their spouse said and others vote on them.
-
-Primary product goals:
-
-- users should laugh immediately when landing
-- the quote feed should dominate the page
-- voting should feel rewarding
-- sharing should be easy
-- the site should feel simple and internet-native
-- launch quickly without overengineering
-
-Claude should use these agents collaboratively when analyzing the system, proposing improvements, or implementing features.
-
-When producing recommendations, Claude should **label which agent perspective is being used**.
+Use these agents collaboratively — not every agent applies to every task. Pick the relevant ones based on what's being discussed.
 
 ---
 
-# Agent System Overview
-
-Agents represent specialized roles that evaluate the product from different angles.
-
-Agents:
+# Agents
 
 1. Product strategist
 2. UX/UI designer
 3. Frontend architect
 4. Backend/data model architect
-5. Growth and viral mechanics strategist
+5. Growth strategist
 6. Content and tone designer
 7. Trust and safety advisor
 8. QA lead
 9. Performance and accessibility reviewer
 10. Launch operator
 
-Claude should prioritize **product clarity and launch readiness** over complex architecture.
-
 ---
 
 # Agent 1: Product Strategist
 
-## Role
+Responsible for **overall product logic, user flow, and feature prioritization**.
 
-Responsible for the **overall product logic and user experience flow**.
+- Is the core user journey clear and satisfying?
+- Are we building the right thing, not just building things right?
+- What should ship now vs. later?
+- What makes this product sticky?
 
-This agent ensures the site is actually engaging and worth using.
-
-## Responsibilities
-
-- core user flow
-- feed vs submission hierarchy
-- feature prioritization
-- product stickiness
-- viral mechanics
-- retention loops
-- launch vs post-launch decisions
-
-## Product priorities
-
-1. Users should laugh immediately
-2. Feed content should appear above the submission form
-3. Voting should feel rewarding
-4. Sharing should be effortless
-5. Avoid unnecessary features that delay launch
-
-## Evaluation framework
-
-Every feature should be judged by:
-
-1. Does it improve immediate humor payoff?
-2. Does it improve engagement?
-3. Does it increase shareability?
-4. Does it delay launch unnecessarily?
-
-## Output
-
-- product recommendations
-- feature prioritization
-- launch readiness analysis
-- user flow improvements
+**Output:** product recommendations, feature priority, user flow improvements
 
 ---
 
 # Agent 2: UX/UI Designer
 
-## Role
+Responsible for **visual structure, interaction design, and usability**.
 
-Design the **visual structure and interaction design** of the site.
+- Is the layout clear and scannable?
+- Does the hierarchy guide the user's eye to what matters?
+- Is it mobile-first?
+- Do interactions feel responsive and rewarding?
 
-Focus on readability, hierarchy, and humor-first presentation.
-
-## Responsibilities
-
-- page layout
-- typography
-- spacing
-- visual hierarchy
-- quote card design
-- mobile behavior
-- interaction feedback
-
-## Design principles
-
-- quotes are the hero
-- large readable text
-- generous spacing
-- minimal clutter
-- playful but clean
-- mobile-first layout
-
-## Focus areas
-
-- quote card hierarchy
-- filter tabs
-- vote button interaction
-- share buttons
-- submission form usability
-- responsive design
-
-## Output
-
-- layout recommendations
-- component design improvements
-- mobile design guidance
-- UI interaction notes
+**Output:** layout improvements, component design notes, mobile guidance
 
 ---
 
 # Agent 3: Frontend Architect
 
-## Role
+Responsible for **frontend code structure and maintainability**.
 
-Responsible for the **structure and maintainability of the frontend codebase**.
+- Is the component hierarchy clean?
+- Is state management simple and predictable?
+- Are there performance bottlenecks in rendering?
+- Is the code easy to extend?
 
-## Responsibilities
-
-- component architecture
-- routing
-- state management
-- vote interactions
-- feed rendering
-- filter updates
-- modal or dedicated quote pages
-- performance considerations
-
-## Implementation goals
-
-- clean component hierarchy
-- minimal complexity
-- fast rendering
-- mobile responsiveness
-- maintainable structure
-
-## Areas to improve
-
-- feed performance
-- optimistic voting
-- filter switching
-- quote permalinks
-- random quote feature
-
-## Output
-
-- component structure
-- route structure
-- refactor plan
-- performance recommendations
+**Output:** component structure, refactor suggestions, performance fixes
 
 ---
 
 # Agent 4: Backend / Data Model Architect
 
-## Role
+Responsible for **the simplest backend that supports the product**.
 
-Design the **simplest backend architecture that supports launch**.
+- Is the schema normalized appropriately?
+- Are queries efficient for the access patterns?
+- Is the API surface minimal and consistent?
+- Are there anti-abuse safeguards?
 
-Avoid unnecessary complexity.
-
-## Responsibilities
-
-- database schema
-- vote tracking
-- ranking algorithms
-- quote storage
-- filtering queries
-- random quote queries
-- moderation fields
-
-## Required capabilities
-
-- quote submissions
-- vote counting
-- one vote per user/session
-- filters: hot, new, top today, top week, top all time
-- quote permalinks
-- random quote selection
-- reporting system
-
-## Output
-
-- database schema
-- API endpoints
-- ranking logic
-- moderation fields
-- anti-abuse safeguards
+**Output:** schema design, API structure, query optimization, data integrity
 
 ---
 
-# Agent 5: Growth and Viral Mechanics Strategist
+# Agent 5: Growth Strategist
 
-## Role
+Responsible for **sharing, distribution, and organic growth**.
 
-Optimize the site for **sharing, repeat visits, and organic growth**.
+- Is sharing effortless?
+- Does each piece of content have a shareable URL?
+- Are Open Graph previews set up?
+- What creates a viral loop?
 
-## Responsibilities
-
-- social sharing features
-- quote permalinks
-- viral loops
-- random quote behavior
-- SEO basics
-- shareable previews
-
-## Growth principles
-
-- sharing must be effortless
-- quotes should be easy to copy
-- random browsing increases engagement
-- each quote should have a shareable page
-
-## High-impact features
-
-- Open Graph previews
-- copy link button
-- copy quote button
-- random quote button
-- related quote suggestions
-
-## Output
-
-- viral feature suggestions
-- engagement loops
-- share UX improvements
-- SEO opportunities
+**Output:** growth features, share UX, SEO opportunities, engagement loops
 
 ---
 
 # Agent 6: Content and Tone Designer
 
-## Role
+Responsible for **all written text in the product**.
 
-Owns **all written text on the site**.
+- Is the voice consistent?
+- Are microcopy and empty states helpful, not generic?
+- Does the tone match the product's personality?
 
-Humor products rely heavily on tone.
-
-## Responsibilities
-
-- headlines
-- form labels
-- empty states
-- success messages
-- share messages
-- report flow text
-- metadata descriptions
-
-## Tone guidelines
-
-The voice should be:
-
-- playful
-- dry
-- concise
-- confident
-- internet-native
-
-Avoid:
-
-- corporate language
-- overly clever jokes
-- long explanations
-
-## Output
-
-- copy suggestions
-- UI microcopy
-- multiple headline variants
-- button text options
+**Output:** copy suggestions, headline variants, button text, error messages
 
 ---
 
 # Agent 7: Trust and Safety Advisor
 
-## Role
+Responsible for **preventing abuse, harassment, and legal risk**.
 
-Prevent abuse, harassment, or legal risk.
+- Can users harm each other through the product?
+- Is user-generated content moderated?
+- Are there rate limits and spam prevention?
+- Are there legal minimums (terms, privacy)?
 
-User-submitted content can create moderation challenges.
-
-## Responsibilities
-
-- anti-harassment safeguards
-- anti-doxxing protections
-- anti-defamation controls
-- spam prevention
-- reporting system
-- moderation workflow
-
-## Risk areas
-
-- naming real people
-- harassment
-- fake accusations
-- abusive submissions
-- spam
-
-## Output
-
-- moderation policy
-- abuse prevention system
-- reporting flow
-- moderation queue recommendations
+**Output:** moderation policy, abuse prevention, reporting flow
 
 ---
 
 # Agent 8: QA Lead
 
-## Role
+Responsible for **breaking the product before users do**.
 
-Break the product before users do.
+- What are the edge cases?
+- What happens with bad input?
+- Do all flows work on mobile?
+- Are error states handled?
 
-## Responsibilities
-
-- identify bugs
-- test edge cases
-- check interaction failures
-- test filters
-- test voting logic
-- validate submission flow
-
-## Key test areas
-
-- submission form
-- vote duplication
-- filter behavior
-- quote permalinks
-- random quote
-- share links
-- mobile behavior
-
-## Output
-
-- QA checklist
-- bug risk list
-- test scenarios
-- severity-ranked issues
+**Output:** test scenarios, bug risk list, severity-ranked issues
 
 ---
 
 # Agent 9: Performance and Accessibility Reviewer
 
-## Role
+Responsible for **speed and inclusivity**.
 
-Ensure the site is **fast and accessible**.
+- Are there render-blocking resources?
+- Is the largest contentful paint fast?
+- Does it work with keyboard navigation?
+- Does it meet WCAG contrast ratios?
 
-## Responsibilities
-
-- performance bottlenecks
-- image loading
-- font loading
-- responsive layout
-- accessibility standards
-- keyboard navigation
-- color contrast
-
-## Output
-
-- performance improvements
-- accessibility fixes
-- launch-critical issues
+**Output:** performance fixes, accessibility issues, lighthouse-style findings
 
 ---
 
 # Agent 10: Launch Operator
 
-## Role
+Responsible for **turning a build into a shipped product**.
 
-Turn the build into a **launch-ready product**.
+- Is the deploy pipeline working?
+- Are environment variables set?
+- Is there monitoring/error tracking?
+- Is there seed content?
+- Is there a smoke test plan?
 
-## Responsibilities
-
-- launch checklist
-- deployment readiness
-- analytics setup
-- monitoring setup
-- legal page minimums
-- content seeding
-- soft launch plan
-
-## Output
-
-- go-live checklist
-- launch timeline
-- first-week monitoring plan
+**Output:** launch checklist, deploy verification, first-week monitoring plan
 
 ---
 
-# Recommended Agent Workflow
-
-Claude should use agents in the following order.
+# Recommended Workflow
 
 ## Phase 1 — Product refinement
-
-Use:
-
-- Product strategist
-- UX/UI designer
-- Growth strategist
-- Trust and safety
-
-Goal:
-
-Define the final product shape.
-
----
+Agents: Product strategist, UX/UI designer, Growth strategist, Trust and safety
+Goal: Define the right product shape before building.
 
 ## Phase 2 — Architecture and implementation
-
-Use:
-
-- Frontend architect
-- Backend/data model
-- Content/tone
-
-Goal:
-
-Implement the improved design.
-
----
+Agents: Frontend architect, Backend/data model, Content/tone
+Goal: Build it clean and simple.
 
 ## Phase 3 — Launch hardening
-
-Use:
-
-- QA lead
-- Performance/accessibility
-- Launch operator
-
-Goal:
-
-Ensure the site is stable and launch-ready.
-
----
-
-# Core Product Principles
-
-Claude should always maintain these priorities:
-
-1. humor first
-2. feed before form
-3. fast browsing
-4. satisfying voting
-5. easy sharing
-6. minimal complexity
-7. launch quickly
-
-The goal is not a perfect system.
-
-The goal is a **fun, shareable site people want to send to friends.**
+Agents: QA lead, Performance/accessibility, Launch operator
+Goal: Make sure it works and ship it.
