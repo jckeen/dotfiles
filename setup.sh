@@ -74,6 +74,8 @@ mkdir -p "$HOME_DIR/.claude/skills"
 link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
 link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
 link_file "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
+link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
+chmod +x "$HOME_DIR/.claude/statusline.sh"
 echo "  -> Claude config linked"
 
 # Skills (slash commands)
