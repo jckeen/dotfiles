@@ -54,11 +54,17 @@ echo "  -> .gitconfig installed"
 # ─── 5. Claude Code config ───────────────────────────────────────────
 echo ""
 echo "--- Setting up Claude Code config ---"
-mkdir -p "$HOME_DIR/.claude"
+mkdir -p "$HOME_DIR/.claude/skills"
 cp "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
 cp "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
 cp "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
 echo "  -> Claude config installed"
+
+# Skills (slash commands)
+for skill in "$DOTFILES_DIR/claude/skills/"*.md; do
+  [ -f "$skill" ] && cp "$skill" "$HOME_DIR/.claude/skills/"
+done
+echo "  -> Claude skills installed"
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
