@@ -1,11 +1,26 @@
 #!/bin/bash
 # Bootstrap a fresh WSL Ubuntu environment with dev tools and config.
 # Run from the dotfiles repo root: ./setup.sh
+#
+# Uses symlinks so edits to ~/.claude/* or ~/.tmux.conf automatically
+# stay in sync with this repo.
 
 set -e
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="$HOME"
+
+# Helper: create a symlink, backing up any existing file
+link_file() {
+  local src="$1" dst="$2"
+  if [ -L "$dst" ]; then
+    rm "$dst"
+  elif [ -f "$dst" ]; then
+    mv "$dst" "$dst.backup"
+    echo "  -> backed up existing $dst to $dst.backup"
+  fi
+  ln -s "$src" "$dst"
+}
 
 echo "=== Dotfiles setup from $DOTFILES_DIR ==="
 
@@ -41,7 +56,7 @@ fi
 # ─── 4. Git config ───────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Git config ---"
-cp "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
+link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 
 # WSL credential helper (uses Windows Git Credential Manager)
 git config --global credential.helper "/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe"
@@ -49,22 +64,23 @@ git config --global credential.helper "/mnt/c/Program\ Files/Git/mingw64/bin/git
 # Mark common dev directories as safe (WSL ownership issue)
 git config --global --add safe.directory /mnt/c/Users/jckee/dev/dotfiles
 
-echo "  -> .gitconfig installed"
+echo "  -> .gitconfig linked"
 
 # ─── 5. Claude Code config ───────────────────────────────────────────
 echo ""
 echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
-cp "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
-cp "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
-cp "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
-echo "  -> Claude config installed"
+
+link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
+link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
+link_file "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
+echo "  -> Claude config linked"
 
 # Skills (slash commands)
 for skill in "$DOTFILES_DIR/claude/skills/"*.md; do
-  [ -f "$skill" ] && cp "$skill" "$HOME_DIR/.claude/skills/"
+  [ -f "$skill" ] && link_file "$skill" "$HOME_DIR/.claude/skills/$(basename "$skill")"
 done
-echo "  -> Claude skills installed"
+echo "  -> Claude skills linked"
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
@@ -80,14 +96,17 @@ fi
 if [ -f "$DOTFILES_DIR/.tmux.conf" ]; then
   echo ""
   echo "--- Setting up tmux config ---"
-  cp "$DOTFILES_DIR/.tmux.conf" "$HOME_DIR/.tmux.conf"
-  echo "  -> .tmux.conf installed"
+  link_file "$DOTFILES_DIR/.tmux.conf" "$HOME_DIR/.tmux.conf"
+  echo "  -> .tmux.conf linked"
 else
   echo "No .tmux.conf in dotfiles (tmux will use defaults)"
 fi
 
 echo ""
 echo "=== Setup complete ==="
+echo ""
+echo "All config files are symlinked — edits in ~/.claude/ or ~/.tmux.conf"
+echo "will automatically be reflected in your dotfiles repo."
 echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
