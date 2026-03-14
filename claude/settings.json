@@ -1,4 +1,5 @@
 {
+  "enableRemoteControl": true,
   "autoUpdatesChannel": "latest",
   "extraKnownMarketplaces": {
     "anthropic-agent-skills": {

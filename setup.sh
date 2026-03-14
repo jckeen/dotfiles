@@ -94,7 +94,22 @@ else
   echo "GitHub CLI already authenticated"
 fi
 
-# ─── 7. tmux ──────────────────────────────────────────────────────────
+# ─── 7. Shell aliases ─────────────────────────────────────────────────
+if [ -f "$DOTFILES_DIR/.bash_aliases" ]; then
+  echo ""
+  echo "--- Setting up shell aliases ---"
+  link_file "$DOTFILES_DIR/.bash_aliases" "$HOME_DIR/.bash_aliases"
+  echo "  -> .bash_aliases linked"
+  # Ensure .bashrc sources .bash_aliases (Ubuntu default usually does)
+  if [ -f "$HOME_DIR/.bashrc" ] && ! grep -q '\.bash_aliases' "$HOME_DIR/.bashrc"; then
+    echo '' >> "$HOME_DIR/.bashrc"
+    echo '# Load custom aliases' >> "$HOME_DIR/.bashrc"
+    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
+    echo "  -> Added .bash_aliases sourcing to .bashrc"
+  fi
+fi
+
+# ─── 8. tmux ──────────────────────────────────────────────────────────
 if [ -f "$DOTFILES_DIR/.tmux.conf" ]; then
   echo ""
   echo "--- Setting up tmux config ---"
