@@ -22,7 +22,6 @@ chmod +x setup.sh
 
 | Tool | Purpose |
 |------|---------|
-| `tmux` | Terminal multiplexer (persistent sessions) |
 | `gh` | GitHub CLI (auth, PRs, issues) |
 | `git` | Version control |
 | `node` | Node.js LTS |
@@ -31,8 +30,7 @@ chmod +x setup.sh
 ## What gets configured
 
 - **Git** — user identity, VS Code as editor, Windows credential manager for auth in WSL
-- **Claude Code** — global settings, permissions, CLAUDE.md instructions, Agent Pack
-- **tmux** — config file (if `.tmux.conf` exists in repo)
+- **Claude Code** — global settings, permissions, CLAUDE.md instructions, Agent Pack, remote control
 
 ## WSL-specific notes
 

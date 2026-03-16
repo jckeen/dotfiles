@@ -2,8 +2,8 @@
 # Bootstrap a fresh WSL Ubuntu environment with dev tools and config.
 # Run from the dotfiles repo root: ./setup.sh
 #
-# Uses symlinks so edits to ~/.claude/* or ~/.tmux.conf automatically
-# stay in sync with this repo.
+# Uses symlinks so edits to ~/.claude/* automatically stay in sync
+# with this repo.
 
 set -e
 
@@ -28,7 +28,6 @@ echo "=== Dotfiles setup from $DOTFILES_DIR ==="
 echo ""
 echo "--- Installing system packages ---"
 sudo apt update && sudo apt install -y \
-  tmux \
   gh \
   git \
   curl \
@@ -110,20 +109,10 @@ if [ -f "$DOTFILES_DIR/.bash_aliases" ]; then
   fi
 fi
 
-# ─── 8. tmux ──────────────────────────────────────────────────────────
-if [ -f "$DOTFILES_DIR/.tmux.conf" ]; then
-  echo ""
-  echo "--- Setting up tmux config ---"
-  link_file "$DOTFILES_DIR/.tmux.conf" "$HOME_DIR/.tmux.conf"
-  echo "  -> .tmux.conf linked"
-else
-  echo "No .tmux.conf in dotfiles (tmux will use defaults)"
-fi
-
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "All config files are symlinked — edits in ~/.claude/ or ~/.tmux.conf"
+echo "All config files are symlinked — edits in ~/.claude/"
 echo "will automatically be reflected in your dotfiles repo."
 echo ""
 echo "Manual steps remaining:"

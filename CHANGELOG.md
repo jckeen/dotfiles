@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-03-15
+
+### What changed
+- Added `pulseaudio-utils` to setup.sh for Claude Code voice mode in WSL
+
+## 2026-03-14
+
+### What changed
+- Enabled always-on remote control (`enableRemoteControl: true` in settings.json)
+- Added shell aliases: `claude-server` (spawn worktree + remote) and `claude-rc` (remote control current session)
+- Sessions are now accessible from `claude.ai/code` and Claude mobile app — no more TMUX dependency
+
+### Decisions made
+- Remote control replaces tmux as the primary way to persist and access Claude sessions
+- Shell aliases in `.bash_aliases` deployed via symlink in setup.sh
+
 ## 2026-03-12
 
 ### What changed

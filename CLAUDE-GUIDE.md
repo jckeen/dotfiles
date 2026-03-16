@@ -27,13 +27,17 @@ Just open your terminal and run `claude` from your project directory. Claude wil
 - Read the project's `CLAUDE.md` and `CHANGELOG.md`
 - Ask what you want to work on
 
-**Using tmux** (recommended — keeps sessions alive if your terminal disconnects):
+**Remote access** (connect from anywhere — phone, browser, another machine):
+
+Remote control is enabled by default in your settings. Every session is automatically available at `claude.ai/code` and via the Claude mobile app.
+
 ```bash
-tmux new -s work        # start a named session
-claude                  # run claude inside it
-# Ctrl+B, D            # detach (claude keeps running)
-tmux attach -t work     # reattach later
+claude                  # start normally — remote control is always on
+claude-rc               # same thing, explicit remote control flag
+claude-server           # spawn an isolated worktree + remote control
 ```
+
+To work remotely: start `claude` on your home machine, then open `claude.ai/code` from anywhere to connect to that session.
 
 ---
 
