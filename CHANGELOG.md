@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-03-16
+
+### What changed
+- Fixed Claude Code `/voice` in WSL2: added `libasound2-plugins` to setup.sh, created `.asoundrc` that routes ALSA through PulseAudio/WSLg, and setup.sh now deploys it to both `~/.asoundrc` (symlink) and `/etc/asound.conf` (copy)
+- Root cause: WSL has no direct hardware audio — ALSA needs to be told to route through WSLg's PulseAudio server
+
+### Manual steps after setup.sh
+- Ensure Windows microphone permissions are enabled (Settings > Privacy & Security > Microphone)
+- Verify with: `arecord -D default -f cd -d 3 /tmp/test.wav && aplay /tmp/test.wav`
+- Relaunch Claude Code, then `/voice` should work
+
 ## 2026-03-15
 
 ### What changed

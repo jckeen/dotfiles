@@ -32,7 +32,15 @@ sudo apt update && sudo apt install -y \
   git \
   curl \
   unzip \
-  pulseaudio-utils
+  pulseaudio-utils \
+  libasound2-plugins
+
+# ─── 1b. Audio (ALSA → PulseAudio for WSLg) ─────────────────────────
+echo ""
+echo "--- Setting up ALSA → PulseAudio routing ---"
+link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
+sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
+echo "  -> .asoundrc linked, /etc/asound.conf written"
 
 # ─── 2. Node.js (via NodeSource if not present) ───────────────────────
 if ! command -v node &>/dev/null; then
