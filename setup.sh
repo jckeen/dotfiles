@@ -32,7 +32,8 @@ sudo apt update && sudo apt install -y \
   gh \
   git \
   curl \
-  unzip
+  unzip \
+  pulseaudio-utils
 
 # ─── 2. Node.js (via NodeSource if not present) ───────────────────────
 if ! command -v node &>/dev/null; then
