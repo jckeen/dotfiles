@@ -33,7 +33,8 @@ sudo apt update && sudo apt install -y \
   curl \
   unzip \
   pulseaudio-utils \
-  libasound2-plugins
+  libasound2-plugins \
+  alsa-utils
 
 # ─── 1b. Audio (ALSA → PulseAudio for WSLg) ─────────────────────────
 echo ""
