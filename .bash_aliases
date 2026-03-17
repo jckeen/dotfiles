@@ -2,13 +2,18 @@
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
-# Detect dev directory (WSL uses /mnt/c/Users/jckee/dev, others use ~/dev)
+# Detect dev directory (WSL uses /mnt/c/Users/<user>/dev, others use ~/dev)
 _dev_dir() {
-  if [ -d "/mnt/c/Users/jckee/dev" ]; then
-    echo "/mnt/c/Users/jckee/dev"
-  else
-    echo "$HOME/dev"
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    local win_user
+    win_user=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+    local wsl_dev="/mnt/c/Users/${win_user}/dev"
+    if [ -d "$wsl_dev" ]; then
+      echo "$wsl_dev"
+      return
+    fi
   fi
+  echo "$HOME/dev"
 }
 
 # Pull latest for all git repos under dev directory

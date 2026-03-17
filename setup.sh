@@ -95,23 +95,45 @@ fi
 echo ""
 echo "--- Setting up Git config ---"
 
-# Generate a platform-appropriate .gitconfig.local
+# Prompt for git identity (written to .gitconfig.local, not committed)
+GIT_NAME="${GIT_NAME:-}"
+GIT_EMAIL="${GIT_EMAIL:-}"
+if git config user.name &>/dev/null; then
+  GIT_NAME="$(git config user.name)"
+  GIT_EMAIL="$(git config user.email)"
+  echo "  Using existing git identity: $GIT_NAME <$GIT_EMAIL>"
+else
+  read -rp "Git user name: " GIT_NAME
+  read -rp "Git email: " GIT_EMAIL
+fi
+
+# Generate a platform-appropriate .gitconfig.local (identity + platform config)
 if [[ "$PLATFORM" == "macos" ]]; then
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+[user]
+	name = ${GIT_NAME}
+	email = ${GIT_EMAIL}
 [core]
 	editor = code --wait
 [credential]
 	helper = osxkeychain
 GITCONF
 elif [[ "$PLATFORM" == "wsl" ]]; then
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
+  WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+[user]
+	name = ${GIT_NAME}
+	email = ${GIT_EMAIL}
 [core]
-	editor = "C:\\Users\\jckee\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code" --wait
+	editor = "C:\\\\Users\\\\${WIN_USER}\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code" --wait
 [credential]
-	helper = /mnt/c/Program\\ Files/Git/mingw64/bin/git-credential-manager.exe
+	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
 GITCONF
 else
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+[user]
+	name = ${GIT_NAME}
+	email = ${GIT_EMAIL}
 [core]
 	editor = code --wait
 [credential]
@@ -122,9 +144,10 @@ fi
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
-# WSL-specific: mark /mnt/c/ repos as safe
+# WSL-specific: mark dev repos as safe
 if [[ "$PLATFORM" == "wsl" ]]; then
-  git config --global --add safe.directory /mnt/c/Users/jckee/dev/dotfiles
+  WIN_USER=${WIN_USER:-$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')}
+  git config --global --add safe.directory "/mnt/c/Users/${WIN_USER}/dev/dotfiles"
 fi
 
 echo "  -> .gitconfig linked"
@@ -224,5 +247,5 @@ echo "  1. Run 'gh auth login' if not already authenticated"
 echo "  2. Run 'claude' and follow the login prompt"
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo "  3. Add project repos to git safe.directory as needed:"
-  echo "     git config --global --add safe.directory /mnt/c/Users/jckee/dev/<repo>"
+  echo "     git config --global --add safe.directory /mnt/c/Users/\$USERNAME/dev/<repo>"
 fi
