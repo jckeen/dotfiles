@@ -6,15 +6,16 @@ A reference for how to use Claude Code effectively. Read this when setting up a 
 
 ## First-time setup
 
-1. **Install WSL** (PowerShell as admin): `wsl --install`
-2. **Open Ubuntu**, clone this repo, and run the setup script:
+1. **Clone and run setup** (works on macOS, WSL, or Linux):
    ```bash
-   cd /mnt/c/Users/jckee/dev
+   cd ~/dev
    git clone https://github.com/jckeen/dotfiles.git
    cd dotfiles && chmod +x setup.sh && ./setup.sh
    ```
-3. **Authenticate GitHub**: `gh auth login` (choose HTTPS + browser)
-4. **Authenticate Claude**: run `claude` and follow the login prompt
+   The script auto-detects your platform and installs everything accordingly.
+
+2. **Authenticate GitHub**: `gh auth login` (choose HTTPS + browser)
+3. **Authenticate Claude**: run `claude` and follow the login prompt
 
 That's it. Your git config, Claude settings, skills, and agent pack are all deployed.
 

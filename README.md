@@ -1,22 +1,21 @@
 # Dotfiles
 
-Personal dev environment config for WSL Ubuntu. Clone and run `./setup.sh` on a fresh machine.
+Dev environment config with Claude Code workflows, skills, and safety guards. Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
 
 ## Quick start
 
 ```bash
-# 1. Install WSL (from PowerShell as admin)
-wsl --install
-
-# 2. Open Ubuntu and clone this repo
+# Clone this repo
 cd ~/dev  # or wherever you keep code
 git clone https://github.com/jckeen/dotfiles.git
 cd dotfiles
 
-# 3. Run setup
+# Run setup
 chmod +x setup.sh
 ./setup.sh
 ```
+
+The setup script auto-detects your platform and installs the right packages and config.
 
 ## What gets installed
 
@@ -29,17 +28,22 @@ chmod +x setup.sh
 
 ## What gets configured
 
-- **Git** — user identity, VS Code as editor, Windows credential manager for auth in WSL
-- **Claude Code** — global settings, permissions, CLAUDE.md instructions, Agent Pack, remote control
+- **Git** — user identity, editor (VS Code), credential helper (platform-appropriate)
+- **Claude Code** — global settings, permissions, CLAUDE.md instructions, Agent Pack, skills, safety hooks, remote control
+- **Shell aliases** — `pull-all`, `cc` (Claude launcher), `claude-server`, `claude-rc`
 
-## WSL-specific notes
+## Platform-specific behavior
 
-- Git credentials are shared with Windows via Git Credential Manager
-- Repos on `/mnt/c/` need `safe.directory` config (setup.sh handles the dotfiles repo; add others manually)
-- Your Windows `dev` folder is at `/mnt/c/Users/jckee/dev`
+| Feature | macOS | WSL | Linux |
+|---------|-------|-----|-------|
+| Package manager | Homebrew | apt | apt |
+| Shell config | `.zshrc` | `.bashrc` | `.bashrc` |
+| Credential helper | osxkeychain | Git Credential Manager (Windows) | git-credential-store |
+| Audio (for /voice) | Built-in | ALSA → PulseAudio | N/A |
+| Git safe.directory | Not needed | Auto-configured for `/mnt/c/` | Not needed |
 
 ## Adding new config
 
 1. Add the config file to this repo
-2. Add a copy/symlink step in `setup.sh`
+2. Add a symlink step in `setup.sh`
 3. Commit and push

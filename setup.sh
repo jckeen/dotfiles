@@ -1,5 +1,6 @@
 #!/bin/bash
-# Bootstrap a fresh WSL Ubuntu environment with dev tools and config.
+# Bootstrap a dev environment with Claude Code config and tools.
+# Works on macOS, WSL (Ubuntu), and native Linux.
 # Run from the dotfiles repo root: ./setup.sh
 #
 # Uses symlinks so edits to ~/.claude/* automatically stay in sync
@@ -9,6 +10,18 @@ set -e
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="$HOME"
+
+# ─── Platform detection ──────────────────────────────────────────────
+detect_platform() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    PLATFORM="macos"
+  elif grep -qi microsoft /proc/version 2>/dev/null; then
+    PLATFORM="wsl"
+  else
+    PLATFORM="linux"
+  fi
+  echo "Detected platform: $PLATFORM"
+}
 
 # Helper: create a symlink, backing up any existing file
 link_file() {
@@ -22,33 +35,48 @@ link_file() {
   ln -s "$src" "$dst"
 }
 
+detect_platform
+
 echo "=== Dotfiles setup from $DOTFILES_DIR ==="
 
 # ─── 1. System packages ───────────────────────────────────────────────
 echo ""
 echo "--- Installing system packages ---"
-sudo apt update && sudo apt install -y \
-  gh \
-  git \
-  curl \
-  unzip \
-  pulseaudio-utils \
-  libasound2-plugins \
-  alsa-utils
+if [[ "$PLATFORM" == "macos" ]]; then
+  if ! command -v brew &>/dev/null; then
+    echo "Homebrew not found. Install it first:"
+    echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    exit 1
+  fi
+  brew install gh git curl || true
+else
+  sudo apt update && sudo apt install -y \
+    gh \
+    git \
+    curl \
+    unzip
+fi
 
-# ─── 1b. Audio (ALSA → PulseAudio for WSLg) ─────────────────────────
-echo ""
-echo "--- Setting up ALSA → PulseAudio routing ---"
-link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
-sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
-echo "  -> .asoundrc linked, /etc/asound.conf written"
+# ─── 1b. Audio (WSL only — ALSA → PulseAudio for WSLg) ──────────────
+if [[ "$PLATFORM" == "wsl" ]]; then
+  echo ""
+  echo "--- Setting up ALSA → PulseAudio routing (WSL) ---"
+  sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
+  link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
+  sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
+  echo "  -> .asoundrc linked, /etc/asound.conf written"
+fi
 
-# ─── 2. Node.js (via NodeSource if not present) ───────────────────────
+# ─── 2. Node.js (if not present) ─────────────────────────────────────
 if ! command -v node &>/dev/null; then
   echo ""
   echo "--- Installing Node.js ---"
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-  sudo apt install -y nodejs
+  if [[ "$PLATFORM" == "macos" ]]; then
+    brew install node
+  else
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+    sudo apt install -y nodejs
+  fi
 else
   echo "Node.js already installed: $(node -v)"
 fi
@@ -65,13 +93,38 @@ fi
 # ─── 4. Git config ───────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Git config ---"
+
+# Generate a platform-appropriate .gitconfig
+if [[ "$PLATFORM" == "macos" ]]; then
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
+[core]
+	editor = code --wait
+[credential]
+	helper = osxkeychain
+GITCONF
+elif [[ "$PLATFORM" == "wsl" ]]; then
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
+[core]
+	editor = "C:\\Users\\jckee\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code" --wait
+[credential]
+	helper = /mnt/c/Program\\ Files/Git/mingw64/bin/git-credential-manager.exe
+GITCONF
+else
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
+[core]
+	editor = code --wait
+[credential]
+	helper = store
+GITCONF
+fi
+
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
+link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
-# WSL credential helper (uses Windows Git Credential Manager)
-git config --global credential.helper "/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe"
-
-# Mark common dev directories as safe (WSL ownership issue)
-git config --global --add safe.directory /mnt/c/Users/jckee/dev/dotfiles
+# WSL-specific: mark /mnt/c/ repos as safe
+if [[ "$PLATFORM" == "wsl" ]]; then
+  git config --global --add safe.directory /mnt/c/Users/jckee/dev/dotfiles
+fi
 
 echo "  -> .gitconfig linked"
 
@@ -87,11 +140,25 @@ link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
 chmod +x "$HOME_DIR/.claude/statusline.sh"
 echo "  -> Claude config linked"
 
-# Skills (slash commands)
-for skill in "$DOTFILES_DIR/claude/skills/"*.md; do
-  [ -f "$skill" ] && link_file "$skill" "$HOME_DIR/.claude/skills/$(basename "$skill")"
+# Skills (slash commands) — each is a directory with SKILL.md
+for skill_dir in "$DOTFILES_DIR/claude/skills"/*/; do
+  [ -d "$skill_dir" ] || continue
+  skill_name="$(basename "$skill_dir")"
+  mkdir -p "$HOME_DIR/.claude/skills/$skill_name"
+  link_file "$skill_dir/SKILL.md" "$HOME_DIR/.claude/skills/$skill_name/SKILL.md"
 done
 echo "  -> Claude skills linked"
+
+# Hooks
+if [ -d "$DOTFILES_DIR/claude/hooks" ]; then
+  mkdir -p "$HOME_DIR/.claude/hooks"
+  for hook in "$DOTFILES_DIR/claude/hooks/"*; do
+    [ -f "$hook" ] || continue
+    link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
+    chmod +x "$HOME_DIR/.claude/hooks/$(basename "$hook")"
+  done
+  echo "  -> Claude hooks linked"
+fi
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
@@ -103,28 +170,46 @@ else
   echo "GitHub CLI already authenticated"
 fi
 
-# ─── 7. Shell aliases ─────────────────────────────────────────────────
-if [ -f "$DOTFILES_DIR/.bash_aliases" ]; then
-  echo ""
-  echo "--- Setting up shell aliases ---"
+# ─── 7. Shell config ─────────────────────────────────────────────────
+echo ""
+echo "--- Setting up shell config ---"
+
+if [[ "$PLATFORM" == "macos" ]]; then
+  # macOS uses zsh by default
+  SHELL_RC="$HOME_DIR/.zshrc"
   link_file "$DOTFILES_DIR/.bash_aliases" "$HOME_DIR/.bash_aliases"
-  echo "  -> .bash_aliases linked"
-  # Ensure .bashrc sources .bash_aliases (Ubuntu default usually does)
+  if [ -f "$SHELL_RC" ] && ! grep -q '\.bash_aliases' "$SHELL_RC"; then
+    echo '' >> "$SHELL_RC"
+    echo '# Load aliases (shared with bash)' >> "$SHELL_RC"
+    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$SHELL_RC"
+    echo "  -> Added .bash_aliases sourcing to .zshrc"
+  elif [ ! -f "$SHELL_RC" ]; then
+    echo '# Load aliases (shared with bash)' > "$SHELL_RC"
+    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$SHELL_RC"
+    echo "  -> Created .zshrc with .bash_aliases sourcing"
+  fi
+  echo "  -> .bash_aliases linked (sourced from .zshrc)"
+else
+  link_file "$DOTFILES_DIR/.bash_aliases" "$HOME_DIR/.bash_aliases"
   if [ -f "$HOME_DIR/.bashrc" ] && ! grep -q '\.bash_aliases' "$HOME_DIR/.bashrc"; then
     echo '' >> "$HOME_DIR/.bashrc"
     echo '# Load custom aliases' >> "$HOME_DIR/.bashrc"
     echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
     echo "  -> Added .bash_aliases sourcing to .bashrc"
   fi
+  echo "  -> .bash_aliases linked"
 fi
 
 echo ""
-echo "=== Setup complete ==="
+echo "=== Setup complete ($PLATFORM) ==="
 echo ""
 echo "All config files are symlinked — edits in ~/.claude/"
 echo "will automatically be reflected in your dotfiles repo."
 echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
-echo "  2. Add any project repos to git safe.directory as needed:"
-echo "     git config --global --add safe.directory /mnt/c/Users/jckee/dev/<repo>"
+echo "  2. Run 'claude' and follow the login prompt"
+if [[ "$PLATFORM" == "wsl" ]]; then
+  echo "  3. Add project repos to git safe.directory as needed:"
+  echo "     git config --global --add safe.directory /mnt/c/Users/jckee/dev/<repo>"
+fi

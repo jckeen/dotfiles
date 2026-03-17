@@ -2,9 +2,23 @@
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
-# Pull latest for all git repos under /dev
+# Detect dev directory (WSL uses /mnt/c/Users/jckee/dev, others use ~/dev)
+_dev_dir() {
+  if [ -d "/mnt/c/Users/jckee/dev" ]; then
+    echo "/mnt/c/Users/jckee/dev"
+  else
+    echo "$HOME/dev"
+  fi
+}
+
+# Pull latest for all git repos under dev directory
 pull-all() {
-  local dev_dir="/mnt/c/Users/jckee/dev"
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  if [ ! -d "$dev_dir" ]; then
+    echo "Dev directory not found: $dev_dir"
+    return 1
+  fi
   for repo in "$dev_dir"/*/; do
     if [ -d "$repo/.git" ]; then
       local name=$(basename "$repo")

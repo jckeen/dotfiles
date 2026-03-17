@@ -151,16 +151,63 @@ Responsible for **turning a build into a shipped product**.
 
 ---
 
+# Agent Coordination Rules
+
+When spawning multiple agents for reviews, research, or implementation work, follow these rules to prevent conflicts and wasted effort.
+
+## When to parallelize
+
+**Safe to run in parallel:**
+- Read-only research and review (all review agents can run simultaneously)
+- Creating new, independent files (new test files, new pages touching different routes)
+- Tasks that touch completely separate file sets with no overlap
+
+**Must run sequentially:**
+- Edits to shared files (services, schemas, shared components)
+- Changes where one agent's output affects another's input (e.g., changing a service API signature → updating the action that calls it → updating the form that calls the action)
+- Fixes to interdependent systems (e.g., budget math fix + budget wiring into assignments)
+
+## Coordination pattern
+
+For multi-agent implementation work, use a **research-then-apply** or **staged rounds** approach:
+
+### Option A: Research agents, apply in main thread
+1. Launch agents in parallel to **investigate and propose** changes (read-only)
+2. Collect all proposals in the main thread
+3. Apply edits sequentially in the main thread where you can see the full picture
+4. Verify (lint, test, build) after each batch
+
+### Option B: Staged rounds with dependency ordering
+1. **Round 1** (parallel): Independent changes with no shared files
+2. **Verify** (lint, test, build)
+3. **Round 2** (parallel): Changes that depend on Round 1, again with no overlap
+4. **Verify** again
+
+### Option C: Worktree isolation
+For risky parallel edits, use `isolation: "worktree"` so each agent works on its own branch. Review and merge sequentially.
+
+## Anti-patterns to avoid
+
+- Do NOT launch 4 agents that all edit the same service files simultaneously
+- Do NOT let agents commit independently when their changes are interdependent
+- Do NOT skip verification between rounds of changes
+- Do NOT have agents guess at schema column names — make them read the actual schema first
+
+---
+
 # Recommended Workflow
 
 ## Phase 1 — Product refinement
 Agents: Product strategist, UX/UI designer, Growth strategist, Trust and safety
 Goal: Define the right product shape before building.
+Mode: **Parallel research** — all agents can review simultaneously.
 
 ## Phase 2 — Architecture and implementation
 Agents: Frontend architect, Backend/data model, Content/tone
 Goal: Build it clean and simple.
+Mode: **Sequential or staged rounds** — backend changes land first, then frontend adapts.
 
 ## Phase 3 — Launch hardening
 Agents: QA lead, Performance/accessibility, Launch operator
 Goal: Make sure it works and ship it.
+Mode: **Parallel research, sequential fixes** — all agents review in parallel, then fixes are applied in dependency order.

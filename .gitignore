@@ -1,0 +1,5 @@
+# Generated per-machine by setup.sh
+.gitconfig.local
+
+# Symlink artifacts (setup.sh creates these as symlinks in ~/.claude/)
+.claude/
