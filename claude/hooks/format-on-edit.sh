@@ -3,21 +3,18 @@
 # Handles the last 10% of formatting that Claude misses.
 # Runs prettier/eslint for JS/TS, black for Python, etc.
 # Exit 0 = success (always allow, formatting is best-effort).
-
 set -euo pipefail
 
 INPUT=$(cat)
 
-# Extract tool name
-TOOL_NAME=$(echo "$INPUT" | grep -o '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')
-
 # Only run after file edits
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 if [ "$TOOL_NAME" != "Edit" ] && [ "$TOOL_NAME" != "Write" ]; then
   exit 0
 fi
 
-# Extract the file path from tool input
-FILE_PATH=$(echo "$INPUT" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')
+# Extract the file path from tool_input (correct nesting)
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 if [ -z "$FILE_PATH" ] || [ ! -f "$FILE_PATH" ]; then
   exit 0
@@ -30,7 +27,7 @@ EXT="${FILE_PATH##*.}"
 case "$EXT" in
   js|jsx|ts|tsx|json|css|scss|md|html|yaml|yml)
     # Use prettier if available in the project
-    if command -v npx &>/dev/null && [ -f "$(dirname "$FILE_PATH")/node_modules/.bin/prettier" ] 2>/dev/null || [ -f "./node_modules/.bin/prettier" ] 2>/dev/null; then
+    if command -v npx &>/dev/null && [ -f "./node_modules/.bin/prettier" ] 2>/dev/null; then
       npx prettier --write "$FILE_PATH" 2>/dev/null || true
     elif command -v prettier &>/dev/null; then
       prettier --write "$FILE_PATH" 2>/dev/null || true
