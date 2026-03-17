@@ -128,37 +128,35 @@ Type these directly in Claude Code.
 
 ---
 
-## Subagents
+## Agent Pack (12-Agent Review Orchestra)
 
-Custom agents that run in their own context window, protecting your main session from bloat.
-
-| Agent | Purpose |
-|-------|---------|
-| `security-reviewer` | Reviews code for injection, auth flaws, secrets, insecure data handling |
-| `code-simplifier` | Finds premature abstractions, dead code, unnecessary complexity |
-
-Invoke them: "use the security-reviewer subagent to review this PR" or just run `/simplify`.
-
----
-
-## Agent Pack (10-Agent Review Framework)
-
-For comprehensive product and code analysis, the Agent Pack provides 10 specialized perspectives. Invoke by asking Claude to "review this using the agent pack" or "what would the QA lead think?"
+A team of 12 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
 
 | Agent | Focus |
 |-------|-------|
-| Product strategist | User flow, feature prioritization, MVP scope |
-| UX/UI designer | Layout, hierarchy, interaction patterns |
-| Frontend architect | Components, state management, performance |
-| Backend/data architect | Schema, queries, API design |
-| Growth strategist | Sharing, distribution, viral loops |
-| Content/tone designer | Microcopy, voice consistency |
-| Trust/safety advisor | Moderation, abuse prevention, legal |
-| QA lead | Edge cases, error states, mobile testing |
-| Performance/accessibility | Speed, WCAG compliance, keyboard nav |
-| Launch operator | Deploy, monitoring, smoke tests |
+| `product-strategist` | User flow, feature scope, stickiness |
+| `ux-reviewer` | Layout, hierarchy, mobile, interactions |
+| `frontend-architect` | Components, state management, rendering |
+| `backend-architect` | Schema, APIs, queries, data integrity |
+| `growth-strategist` | Sharing, SEO, viral loops, engagement |
+| `content-reviewer` | Microcopy, tone, empty states, error messages |
+| `trust-safety` | Abuse prevention, moderation, legal compliance |
+| `qa-lead` | Edge cases, bad input, error states, mobile |
+| `perf-accessibility` | Performance, WCAG, keyboard nav |
+| `launch-operator` | Deploy readiness, monitoring, smoke tests |
+| `security-reviewer` | Injection, auth, secrets, insecure data |
+| `code-simplifier` | Over-engineering, dead code, premature abstractions |
 
-Includes coordination rules for running agents in parallel vs. sequentially.
+**How to invoke:**
+- Single: "Use the qa-lead agent to review this feature"
+- Multiple: "Run product-strategist, ux-reviewer, and growth-strategist on this project"
+- Full review: "Run a full agent pack review" or "Run Phase 1 review"
+- Via skill: `/simplify` and `/review` use agents automatically
+
+**Orchestration** (see `AgentPackJCK.md` for full details):
+- **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety (parallel)
+- **Phase 2 — Architecture:** frontend-architect + backend-architect + content-reviewer + security-reviewer (parallel)
+- **Phase 3 — Launch:** qa-lead + perf-accessibility + launch-operator + code-simplifier (parallel)
 
 ---
 
@@ -365,6 +363,16 @@ dotfiles/
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
     │   └── claude-server/      # /claude-server — remote worktree
     └── agents/
+        ├── product-strategist.md
+        ├── ux-reviewer.md
+        ├── frontend-architect.md
+        ├── backend-architect.md
+        ├── growth-strategist.md
+        ├── content-reviewer.md
+        ├── trust-safety.md
+        ├── qa-lead.md
+        ├── perf-accessibility.md
+        ├── launch-operator.md
         ├── security-reviewer.md
         └── code-simplifier.md
 ```

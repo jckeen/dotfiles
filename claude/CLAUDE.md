@@ -75,7 +75,7 @@ When the user gives a vague prompt for a non-trivial task, use the interview pat
 - Convert frequently-violated rules into hooks instead — hooks are enforced, CLAUDE.md is advisory
 
 ## Agent Pack
-See `~/.claude/AgentPackJCK.md` for the multi-agent review framework. When analyzing, reviewing, or improving a project, use the agent perspectives defined there and label which agent is speaking.
+See `~/.claude/AgentPackJCK.md` for the multi-agent orchestration framework. Agents are real subagents — each runs in its own isolated context. Spawn them in parallel for reviews, collect findings in the main thread, apply fixes sequentially.
 
 ## Available Skills
 - `/kickoff` — Bootstrap a new project with proper structure and config
@@ -88,6 +88,16 @@ See `~/.claude/AgentPackJCK.md` for the multi-agent review framework. When analy
 - `/simplify` — Review code for unnecessary complexity and simplify it
 - `/commit-push-pr` — Commit, push, and create a PR in one shot (Boris's most-used daily command)
 
-## Available Subagents
-- `security-reviewer` — Reviews code for security vulnerabilities (injection, auth flaws, secrets, insecure data handling)
-- `code-simplifier` — Simplifies code after implementation — removes unnecessary complexity
+## Available Subagents (12 agents — see AgentPackJCK.md for orchestration)
+- `product-strategist` — User flow, feature scope, stickiness
+- `ux-reviewer` — Layout, hierarchy, mobile, interaction design
+- `frontend-architect` — Components, state management, rendering performance
+- `backend-architect` — Schema, APIs, queries, data integrity
+- `growth-strategist` — Sharing, SEO, viral loops, engagement
+- `content-reviewer` — Microcopy, tone, empty states, error messages
+- `trust-safety` — Abuse prevention, moderation, legal compliance
+- `qa-lead` — Edge cases, bad input, error states, mobile testing
+- `perf-accessibility` — Performance, WCAG compliance, keyboard navigation
+- `launch-operator` — Deploy readiness, monitoring, environment config
+- `security-reviewer` — Injection, auth flaws, secrets, insecure data
+- `code-simplifier` — Over-engineering, dead code, premature abstractions

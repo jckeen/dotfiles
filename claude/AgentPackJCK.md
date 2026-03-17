@@ -1,213 +1,86 @@
-# Claude Agent Pack
+# Agent Pack — Multi-Agent Review Orchestra
 
-A reusable multi-agent review framework. When analyzing, reviewing, or improving any project, Claude should use these agent perspectives and **label which agent is speaking**.
+A team of 12 specialized subagents, each running in its own isolated context. When reviewing or building a project, spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
-Use these agents collaboratively — not every agent applies to every task. Pick the relevant ones based on what's being discussed.
+## The Team
 
----
+| Agent | Focus | When to use |
+|-------|-------|-------------|
+| `product-strategist` | User flow, feature scope, stickiness | Starting a project, pivoting, or reviewing a feature |
+| `ux-reviewer` | Layout, hierarchy, mobile, interactions | After UI work, before shipping frontend changes |
+| `frontend-architect` | Components, state, rendering, maintainability | After frontend implementation |
+| `backend-architect` | Schema, APIs, queries, data integrity | After backend implementation |
+| `growth-strategist` | Sharing, SEO, viral loops, analytics | Pre-launch, or when engagement is low |
+| `content-reviewer` | Microcopy, tone, empty states, error messages | After building user-facing features |
+| `trust-safety` | Abuse prevention, moderation, legal compliance | Before launch, or when adding user-generated content |
+| `qa-lead` | Edge cases, bad input, error states, mobile | Before any release |
+| `perf-accessibility` | Load times, WCAG, keyboard nav, screen readers | Before launch, after major UI changes |
+| `launch-operator` | Deploy pipeline, monitoring, environment config | Pre-launch readiness check |
+| `security-reviewer` | Injection, auth, secrets, insecure data | After implementation, before merge |
+| `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
 
-# Agents
+## How to invoke
 
-1. Product strategist
-2. UX/UI designer
-3. Frontend architect
-4. Backend/data model architect
-5. Growth strategist
-6. Content and tone designer
-7. Trust and safety advisor
-8. QA lead
-9. Performance and accessibility reviewer
-10. Launch operator
+Ask Claude to spawn agents by name:
 
----
+- **Single agent:** "Use the qa-lead agent to review this feature"
+- **Multiple in parallel:** "Run product-strategist, ux-reviewer, and growth-strategist on this project"
+- **Full review:** "Run the full agent pack review on this project" (spawns all relevant agents)
+- **Phase-based:** "Run a Phase 1 review" (see workflow below)
 
-# Agent 1: Product Strategist
+Each agent runs in its own context window, reads the codebase fresh, and reports back findings. The main thread synthesizes results.
 
-Responsible for **overall product logic, user flow, and feature prioritization**.
+## Coordination Rules
 
-- Is the core user journey clear and satisfying?
-- Are we building the right thing, not just building things right?
-- What should ship now vs. later?
-- What makes this product sticky?
+### When to parallelize
 
-**Output:** product recommendations, feature priority, user flow improvements
+**Safe to run in parallel (read-only review):**
+- All review agents can run simultaneously — they don't edit, just report
+- Investigation and research tasks
+- Reviews of independent subsystems
 
----
+**Must run sequentially (when agents edit code):**
+- Edits to shared files
+- Changes where one agent's output affects another's input
+- Fixes to interdependent systems
 
-# Agent 2: UX/UI Designer
+### Orchestration patterns
 
-Responsible for **visual structure, interaction design, and usability**.
-
-- Is the layout clear and scannable?
-- Does the hierarchy guide the user's eye to what matters?
-- Is it mobile-first?
-- Do interactions feel responsive and rewarding?
-
-**Output:** layout improvements, component design notes, mobile guidance
-
----
-
-# Agent 3: Frontend Architect
-
-Responsible for **frontend code structure and maintainability**.
-
-- Is the component hierarchy clean?
-- Is state management simple and predictable?
-- Are there performance bottlenecks in rendering?
-- Is the code easy to extend?
-
-**Output:** component structure, refactor suggestions, performance fixes
-
----
-
-# Agent 4: Backend / Data Model Architect
-
-Responsible for **the simplest backend that supports the product**.
-
-- Is the schema normalized appropriately?
-- Are queries efficient for the access patterns?
-- Is the API surface minimal and consistent?
-- Are there anti-abuse safeguards?
-
-**Output:** schema design, API structure, query optimization, data integrity
-
----
-
-# Agent 5: Growth Strategist
-
-Responsible for **sharing, distribution, and organic growth**.
-
-- Is sharing effortless?
-- Does each piece of content have a shareable URL?
-- Are Open Graph previews set up?
-- What creates a viral loop?
-
-**Output:** growth features, share UX, SEO opportunities, engagement loops
-
----
-
-# Agent 6: Content and Tone Designer
-
-Responsible for **all written text in the product**.
-
-- Is the voice consistent?
-- Are microcopy and empty states helpful, not generic?
-- Does the tone match the product's personality?
-
-**Output:** copy suggestions, headline variants, button text, error messages
-
----
-
-# Agent 7: Trust and Safety Advisor
-
-Responsible for **preventing abuse, harassment, and legal risk**.
-
-- Can users harm each other through the product?
-- Is user-generated content moderated?
-- Are there rate limits and spam prevention?
-- Are there legal minimums (terms, privacy)?
-
-**Output:** moderation policy, abuse prevention, reporting flow
-
----
-
-# Agent 8: QA Lead
-
-Responsible for **breaking the product before users do**.
-
-- What are the edge cases?
-- What happens with bad input?
-- Do all flows work on mobile?
-- Are error states handled?
-
-**Output:** test scenarios, bug risk list, severity-ranked issues
-
----
-
-# Agent 9: Performance and Accessibility Reviewer
-
-Responsible for **speed and inclusivity**.
-
-- Are there render-blocking resources?
-- Is the largest contentful paint fast?
-- Does it work with keyboard navigation?
-- Does it meet WCAG contrast ratios?
-
-**Output:** performance fixes, accessibility issues, lighthouse-style findings
-
----
-
-# Agent 10: Launch Operator
-
-Responsible for **turning a build into a shipped product**.
-
-- Is the deploy pipeline working?
-- Are environment variables set?
-- Is there monitoring/error tracking?
-- Is there seed content?
-- Is there a smoke test plan?
-
-**Output:** launch checklist, deploy verification, first-week monitoring plan
-
----
-
-# Agent Coordination Rules
-
-When spawning multiple agents for reviews, research, or implementation work, follow these rules to prevent conflicts and wasted effort.
-
-## When to parallelize
-
-**Safe to run in parallel:**
-- Read-only research and review (all review agents can run simultaneously)
-- Creating new, independent files (new test files, new pages touching different routes)
-- Tasks that touch completely separate file sets with no overlap
-
-**Must run sequentially:**
-- Edits to shared files (services, schemas, shared components)
-- Changes where one agent's output affects another's input (e.g., changing a service API signature → updating the action that calls it → updating the form that calls the action)
-- Fixes to interdependent systems (e.g., budget math fix + budget wiring into assignments)
-
-## Coordination pattern
-
-For multi-agent implementation work, use a **research-then-apply** or **staged rounds** approach:
-
-### Option A: Research agents, apply in main thread
-1. Launch agents in parallel to **investigate and propose** changes (read-only)
-2. Collect all proposals in the main thread
-3. Apply edits sequentially in the main thread where you can see the full picture
+**Pattern A: Parallel review, apply in main thread**
+1. Spawn relevant agents in parallel (read-only investigation)
+2. Collect all findings in the main thread
+3. Prioritize and apply fixes sequentially
 4. Verify (lint, test, build) after each batch
 
-### Option B: Staged rounds with dependency ordering
-1. **Round 1** (parallel): Independent changes with no shared files
-2. **Verify** (lint, test, build)
-3. **Round 2** (parallel): Changes that depend on Round 1, again with no overlap
-4. **Verify** again
+**Pattern B: Staged rounds**
+1. Round 1 (parallel): Independent changes with no shared files
+2. Verify
+3. Round 2 (parallel): Changes that depend on Round 1
+4. Verify
 
-### Option C: Worktree isolation
-For risky parallel edits, use `isolation: "worktree"` so each agent works on its own branch. Review and merge sequentially.
+**Pattern C: Worktree isolation**
+For risky parallel edits, spawn agents with `isolation: "worktree"` — each gets its own branch. Review and merge sequentially.
 
-## Anti-patterns to avoid
+### Anti-patterns
 
-- Do NOT launch 4 agents that all edit the same service files simultaneously
-- Do NOT let agents commit independently when their changes are interdependent
-- Do NOT skip verification between rounds of changes
-- Do NOT have agents guess at schema column names — make them read the actual schema first
+- Do NOT spawn agents that all edit the same files simultaneously
+- Do NOT let agents commit independently when changes are interdependent
+- Do NOT skip verification between rounds
+- Do NOT have agents guess at schema or API shapes — they must read the actual code
 
----
+## Recommended Workflow
 
-# Recommended Workflow
+### Phase 1 — Product refinement
+**Agents:** product-strategist, ux-reviewer, growth-strategist, trust-safety
+**Goal:** Define the right product shape before building.
+**Mode:** All parallel (read-only review).
 
-## Phase 1 — Product refinement
-Agents: Product strategist, UX/UI designer, Growth strategist, Trust and safety
-Goal: Define the right product shape before building.
-Mode: **Parallel research** — all agents can review simultaneously.
+### Phase 2 — Architecture and implementation review
+**Agents:** frontend-architect, backend-architect, content-reviewer, security-reviewer
+**Goal:** Is it built clean, secure, and simple?
+**Mode:** All parallel (read-only review). Apply fixes sequentially.
 
-## Phase 2 — Architecture and implementation
-Agents: Frontend architect, Backend/data model, Content/tone
-Goal: Build it clean and simple.
-Mode: **Sequential or staged rounds** — backend changes land first, then frontend adapts.
-
-## Phase 3 — Launch hardening
-Agents: QA lead, Performance/accessibility, Launch operator
-Goal: Make sure it works and ship it.
-Mode: **Parallel research, sequential fixes** — all agents review in parallel, then fixes are applied in dependency order.
+### Phase 3 — Launch hardening
+**Agents:** qa-lead, perf-accessibility, launch-operator, code-simplifier
+**Goal:** Make sure it works, performs, and is ready to ship.
+**Mode:** All parallel (review), then apply fixes in dependency order.
