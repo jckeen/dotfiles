@@ -248,7 +248,7 @@ echo "will automatically be reflected in your dotfiles repo."
 echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
-echo "  2. Run 'claude' and follow the login prompt"
+echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo "  3. Add project repos to git safe.directory as needed:"
   echo "     git config --global --add safe.directory /mnt/c/Users/\$USERNAME/dev/<repo>"
