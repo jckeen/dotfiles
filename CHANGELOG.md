@@ -20,10 +20,18 @@
 - README is the single source of truth for best practices — CLAUDE-GUIDE.md is just a quick reference card
 - Verification is non-negotiable — baked into CLAUDE.md as a top-level rule
 
+### Follow-up additions
+- Added `/commit-push-pr` skill — Boris's most-used daily command. Commits, pushes, and creates a PR in one shot
+- Added self-improvement loop rule to CLAUDE.md — "Every time you make a mistake, suggest adding a rule to prevent it"
+- Added voice dictation and "let Claude handle git" tips to README
+- Updated CLAUDE-GUIDE.md quick reference with new commands
+
 ### Sources
 - Boris Cherny (creator of Claude Code): https://howborisusesclaudecode.com
 - Official best practices: https://code.claude.com/docs/en/best-practices
 - Boris's Threads posts on parallelization, Plan Mode, hooks, and subagents
+- Boris on Lenny's Podcast: https://www.lennysnewsletter.com/p/head-of-claude-code-what-happens
+- Boris on The Pragmatic Engineer: https://newsletter.pragmaticengineer.com/p/building-claude-code-with-boris-cherny
 - Trail of Bits claude-code-config for security patterns
 
 ## 2026-03-16

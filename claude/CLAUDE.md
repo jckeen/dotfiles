@@ -57,6 +57,11 @@ When the user gives a vague prompt for a non-trivial task, use the interview pat
 - Don't ask obvious questions — dig into the hard parts they might not have considered
 - Once aligned, write a spec or plan before implementing
 
+## Self-Improvement Loop
+- Every time you make a mistake that the user corrects, suggest adding a rule to the project's CLAUDE.md to prevent it from happening again
+- Claude is "eerily good at writing rules for itself" — lean into this
+- After every correction, consider: "What rule would have prevented this?"
+
 ## Lean Tooling
 - Every MCP tool and integration costs context tokens. Only add tools that earn their keep
 - Prefer Claude's native capabilities (Read, Grep, Bash) before reaching for MCPs
@@ -81,6 +86,7 @@ See `~/.claude/AgentPackJCK.md` for the multi-agent review framework. When analy
 - `/claude-server` — Start a remote control server in an isolated worktree
 - `/fix-issue` — Pick up a GitHub issue, implement the fix, test, and PR
 - `/simplify` — Review code for unnecessary complexity and simplify it
+- `/commit-push-pr` — Commit, push, and create a PR in one shot (Boris's most-used daily command)
 
 ## Available Subagents
 - `security-reviewer` — Reviews code for security vulnerabilities (injection, auth flaws, secrets, insecure data handling)

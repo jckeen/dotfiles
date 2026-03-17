@@ -44,6 +44,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/handoff` | Session transition |
 | `/fix-issue 123` | Fix a GitHub issue end-to-end |
 | `/simplify` | Remove over-engineering |
+| `/commit-push-pr` | Commit + push + PR in one shot |
 | `/claude-server` | Spawn worktree + remote |
 
 ---
