@@ -8,32 +8,36 @@ set -euo pipefail
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)/claude"
 CLAUDE_DIR="$HOME/.claude"
 
-# Sync skills — copy files (symlinks don't work with Claude Code's skill scanner)
+# Sync skills — each skill is a directory with a SKILL.md file
 SKILLS_SRC="$DOTFILES_DIR/skills"
 SKILLS_DST="$CLAUDE_DIR/skills"
 mkdir -p "$SKILLS_DST"
 
 if [ -d "$SKILLS_SRC" ]; then
-    for f in "$SKILLS_SRC"/*.md; do
-        [ -f "$f" ] || continue
-        name="$(basename "$f")"
-        # Only copy if source is newer or destination doesn't exist
-        if [ ! -f "$SKILLS_DST/$name" ] || [ "$f" -nt "$SKILLS_DST/$name" ]; then
-            # Remove symlink if present, then copy
-            rm -f "$SKILLS_DST/$name"
-            cp "$f" "$SKILLS_DST/$name"
+    # Sync skill directories from dotfiles
+    for d in "$SKILLS_SRC"/*/; do
+        [ -d "$d" ] || continue
+        name="$(basename "$d")"
+        mkdir -p "$SKILLS_DST/$name"
+        if [ ! -f "$SKILLS_DST/$name/SKILL.md" ] || ! diff -q "$d/SKILL.md" "$SKILLS_DST/$name/SKILL.md" > /dev/null 2>&1; then
+            cp "$d/SKILL.md" "$SKILLS_DST/$name/SKILL.md"
             echo "  updated skill: $name"
         fi
     done
     # Remove skills that no longer exist in dotfiles
-    for f in "$SKILLS_DST"/*.md; do
-        [ -f "$f" ] || continue
-        name="$(basename "$f")"
-        [[ "$name" == *.backup ]] && continue
-        if [ ! -f "$SKILLS_SRC/$name" ]; then
-            rm "$f"
+    for d in "$SKILLS_DST"/*/; do
+        [ -d "$d" ] || continue
+        name="$(basename "$d")"
+        if [ ! -d "$SKILLS_SRC/$name" ]; then
+            rm -rf "$d"
             echo "  removed skill: $name"
         fi
+    done
+    # Clean up any old flat .md skill files
+    for f in "$SKILLS_DST"/*.md; do
+        [ -f "$f" ] || continue
+        rm "$f"
+        echo "  removed legacy flat skill: $(basename "$f")"
     done
 fi
 
