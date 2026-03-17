@@ -215,6 +215,23 @@ Subagents run in their own context window. Use them when you want results withou
 
 Boris uses Opus for everything. It's bigger and slower than Sonnet, but you steer it less and it's better at tool use — so it's almost always faster in practice. Your config is set to prefer Opus.
 
+### 11. Self-Improvement Loop — Make Claude Fix Itself
+
+Every time Claude makes a mistake:
+1. Correct it
+2. Say: "Update the project's CLAUDE.md so you don't make that mistake again"
+3. Claude writes a rule for itself — and it's eerily good at this
+
+This is how your CLAUDE.md compounds over time. Boris's team does this religiously.
+
+### 12. Use Voice Dictation for Prompts
+
+You speak 3x faster than you type. Use voice dictation (fn key twice on Mac, or Claude's `/voice` command in WSL) to describe what you want. Your WSL audio is already configured for this.
+
+### 13. Let Claude Handle Git
+
+Many Anthropic engineers use Claude for 90%+ of their git interactions. Don't manually commit, push, or create PRs — use `/commit-push-pr` and let Claude do it. It reads the diff and writes better commit messages than most humans.
+
 ---
 
 ## The Core Workflow
