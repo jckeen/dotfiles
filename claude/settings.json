@@ -23,6 +23,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/format-on-edit.sh"
+          }
+        ]
+      }
     ]
   },
   "statusLine": {
@@ -39,5 +50,6 @@
   },
   "autoUpdatesChannel": "latest",
   "enableRemoteControl": true,
-  "voiceEnabled": true
+  "voiceEnabled": true,
+  "preferredModel": "opus"
 }

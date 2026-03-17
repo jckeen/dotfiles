@@ -79,6 +79,7 @@ echo "  -> .gitconfig linked"
 echo ""
 echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
+mkdir -p "$HOME_DIR/.claude/agents"
 
 link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
 link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
@@ -87,11 +88,34 @@ link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
 chmod +x "$HOME_DIR/.claude/statusline.sh"
 echo "  -> Claude config linked"
 
-# Skills (slash commands)
+# Hooks
+mkdir -p "$HOME_DIR/.claude/hooks"
+for hook in "$DOTFILES_DIR/claude/hooks/"*.sh; do
+  [ -f "$hook" ] && link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
+done
+chmod +x "$HOME_DIR/.claude/hooks/"*.sh 2>/dev/null || true
+echo "  -> Claude hooks linked"
+
+# Skills (slash commands) — directory-based format
+for skill_dir in "$DOTFILES_DIR/claude/skills/"*/; do
+  [ -d "$skill_dir" ] || continue
+  skill_name=$(basename "$skill_dir")
+  mkdir -p "$HOME_DIR/.claude/skills/$skill_name"
+  for skill_file in "$skill_dir"*; do
+    [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.claude/skills/$skill_name/$(basename "$skill_file")"
+  done
+done
+# Legacy flat skill files (if any remain)
 for skill in "$DOTFILES_DIR/claude/skills/"*.md; do
   [ -f "$skill" ] && link_file "$skill" "$HOME_DIR/.claude/skills/$(basename "$skill")"
 done
 echo "  -> Claude skills linked"
+
+# Agents (custom subagents)
+for agent in "$DOTFILES_DIR/claude/agents/"*.md; do
+  [ -f "$agent" ] && link_file "$agent" "$HOME_DIR/.claude/agents/$(basename "$agent")"
+done
+echo "  -> Claude agents linked"
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
