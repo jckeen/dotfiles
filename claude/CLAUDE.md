@@ -28,16 +28,28 @@ At the end of a session or major task:
 - Do not commit `.env`, `*.db`, `node_modules/`, or other sensitive/generated files
 
 ## Context Hygiene
-- Context degrades after ~50k tokens. For long sessions, suggest the user start fresh if quality drops.
+- Context degrades after ~50k tokens. For long sessions, suggest the user start fresh or use `/handoff` to preserve context cleanly.
 - Keep responses concise. Don't repeat what the user said. Don't summarize what you just did unless asked.
-- When spawning subagents, give them focused tasks — don't dump the whole conversation.
+- Treat context as a finite resource — irrelevant tokens actively impair performance.
+
+## Subagent Control
+- Use **Opus subagents** for complex reasoning, architecture, and knowledge-intensive tasks. Don't let important work fall to lighter models.
+- One clear objective per subagent with well-defined inputs/outputs.
+- Prefer more focused subagents over fewer overloaded ones — parallel isolation beats shared context pollution.
+- Verify subagent outputs deterministically when chaining — don't pass hallucinations downstream.
+
+## Lean Tooling
+- Every MCP tool and integration costs context tokens. Only add tools that earn their keep.
+- Prefer Claude's native capabilities (Read, Grep, Bash) before reaching for MCPs.
+- If a tool hasn't been used in a session, it's wasting context.
 
 ## Agent Pack
 See `~/.claude/AgentPackJCK.md` for the multi-agent review framework. When analyzing, reviewing, or improving a project, use the agent perspectives defined there and label which agent is speaking.
 
 ## Available Skills
-The user has these slash commands available (installed in `~/.claude/skills/`):
-- `/kickoff` — Start a new project with proper structure and config
+- `/kickoff` — Bootstrap a new project with proper structure and config
 - `/changelog` — Update the project changelog with what happened this session
-- `/log-error` — Document a persistent error and what was tried, for future reference
+- `/log-error` — Document errors with failure classification (hallucination, instruction-ignored, context-lost, wrong-tool, incomplete, external)
 - `/review` — Review recent changes for quality, security, and correctness
+- `/handoff` — Generate a handoff note for clean session transitions
+- `/claude-server` — Start a remote control server in an isolated worktree
