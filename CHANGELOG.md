@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-03-17
+
+### What changed
+- **CLAUDE.md overhaul** — Rewrote global instructions based on Boris Cherny's tips and official Claude Code best practices. Added: context hygiene as top priority, verification rules (always test before shipping), interview pattern for vague prompts, CLAUDE.md maintenance rules (under 200 lines, prune ruthlessly), subagent-for-review pattern
+- **New PostToolUse hook: `format-on-edit.sh`** — Auto-formats files after Claude edits them using the project's formatter (prettier, black, rustfmt, gofmt). This is what the Claude Code team uses internally — handles the last 10% of formatting
+- **New subagents** — Added `security-reviewer` (reviews code for injection, auth flaws, secrets, insecure data handling) and `code-simplifier` (finds and removes unnecessary complexity, premature abstractions, dead code)
+- **New skills** — Added `/fix-issue` (pick up a GitHub issue end-to-end: investigate → plan → test → implement → PR) and `/simplify` (delegates to code-simplifier subagent, applies safe changes automatically)
+- **README rewritten as best practices guide** — Comprehensive Claude Code mastery guide sourced from Boris Cherny (creator), official docs, and experience. Covers: context management, Plan Mode, verification, prompting patterns, parallelization, CLAUDE.md as compounding engineering, hooks vs CLAUDE.md, anti-patterns to avoid
+- **CLAUDE-GUIDE.md condensed to quick reference** — Cheat sheet format instead of duplicating the README
+- **settings.json updated** — Added PostToolUse hook for formatting, set `preferredModel: "opus"` (Boris's recommendation: Opus requires less steering and is faster in practice)
+- **setup.sh updated** — Now deploys agents directory and hooks with proper permissions, handles directory-based skill format correctly
+- **sync-claude.sh updated** — Now syncs agents directory with add/remove tracking
+
+### Decisions made
+- Hooks for enforcement, CLAUDE.md for guidance — anything that MUST happen every time goes in a hook, not CLAUDE.md
+- Opus as default model — per Boris Cherny: "you steer it less and it's better at tool use, so it's almost always faster"
+- Subagents for investigation and review — protects main context from file-read bloat
+- README is the single source of truth for best practices — CLAUDE-GUIDE.md is just a quick reference card
+- Verification is non-negotiable — baked into CLAUDE.md as a top-level rule
+
+### Follow-up additions
+- Added `/commit-push-pr` skill — Boris's most-used daily command. Commits, pushes, and creates a PR in one shot
+- Added self-improvement loop rule to CLAUDE.md — "Every time you make a mistake, suggest adding a rule to prevent it"
+- Added voice dictation and "let Claude handle git" tips to README
+- Updated CLAUDE-GUIDE.md quick reference with new commands
+
+### Sources
+- Boris Cherny (creator of Claude Code): https://howborisusesclaudecode.com
+- Official best practices: https://code.claude.com/docs/en/best-practices
+- Boris's Threads posts on parallelization, Plan Mode, hooks, and subagents
+- Boris on Lenny's Podcast: https://www.lennysnewsletter.com/p/head-of-claude-code-what-happens
+- Boris on The Pragmatic Engineer: https://newsletter.pragmaticengineer.com/p/building-claude-code-with-boris-cherny
+- Trail of Bits claude-code-config for security patterns
+
 ## 2026-03-16
 
 ### What changed
