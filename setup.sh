@@ -32,6 +32,7 @@ sudo apt update && sudo apt install -y \
   git \
   curl \
   unzip \
+  jq \
   pulseaudio-utils \
   libasound2-plugins \
   alsa-utils
@@ -85,7 +86,7 @@ link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
 link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
 link_file "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
 link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
-chmod +x "$HOME_DIR/.claude/statusline.sh"
+chmod +x "$DOTFILES_DIR/claude/statusline.sh"
 echo "  -> Claude config linked"
 
 # Hooks
@@ -93,7 +94,8 @@ mkdir -p "$HOME_DIR/.claude/hooks"
 for hook in "$DOTFILES_DIR/claude/hooks/"*.sh; do
   [ -f "$hook" ] && link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
 done
-chmod +x "$HOME_DIR/.claude/hooks/"*.sh 2>/dev/null || true
+# chmod the source files (symlinks inherit target permissions)
+chmod +x "$DOTFILES_DIR/claude/hooks/"*.sh 2>/dev/null || true
 echo "  -> Claude hooks linked"
 
 # Skills (slash commands) — directory-based format
