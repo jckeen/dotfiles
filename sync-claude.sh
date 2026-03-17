@@ -42,7 +42,7 @@ if [ -d "$SKILLS_SRC" ]; then
 fi
 
 # Sync top-level config files
-for f in CLAUDE.md AgentPackJCK.md settings.json; do
+for f in CLAUDE.md AgentPack.md settings.json; do
     if [ -f "$DOTFILES_DIR/$f" ]; then
         if [ ! -f "$CLAUDE_DIR/$f" ] || ! diff -q "$DOTFILES_DIR/$f" "$CLAUDE_DIR/$f" > /dev/null 2>&1; then
             cp "$DOTFILES_DIR/$f" "$CLAUDE_DIR/$f"

@@ -75,7 +75,7 @@ When the user gives a vague prompt for a non-trivial task, use the interview pat
 - Convert frequently-violated rules into hooks instead — hooks are enforced, CLAUDE.md is advisory
 
 ## Agent Pack
-See `~/.claude/AgentPackJCK.md` for the multi-agent orchestration framework. Agents are real subagents — each runs in its own isolated context. Spawn them in parallel for reviews, collect findings in the main thread, apply fixes sequentially.
+See `~/.claude/AgentPack.md` for the multi-agent orchestration framework. Agents are real subagents — each runs in its own isolated context. Spawn them in parallel for reviews, collect findings in the main thread, apply fixes sequentially.
 
 ## Available Skills
 - `/kickoff` — Bootstrap a new project with proper structure and config
@@ -88,7 +88,7 @@ See `~/.claude/AgentPackJCK.md` for the multi-agent orchestration framework. Age
 - `/simplify` — Review code for unnecessary complexity and simplify it
 - `/commit-push-pr` — Commit, push, and create a PR in one shot (Boris's most-used daily command)
 
-## Available Subagents (12 agents — see AgentPackJCK.md for orchestration)
+## Available Subagents (12 agents — see AgentPack.md for orchestration)
 - `product-strategist` — User flow, feature scope, stickiness
 - `ux-reviewer` — Layout, hierarchy, mobile, interaction design
 - `frontend-architect` — Components, state management, rendering performance

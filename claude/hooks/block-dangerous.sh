@@ -21,25 +21,23 @@ fi
 # Helper: output a deny decision in the format Claude Code expects
 deny() {
   local reason="$1"
-  cat <<ENDJSON
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "deny",
-    "permissionDecisionReason": "$reason"
-  }
-}
-ENDJSON
+  jq -n --arg r "$reason" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $r
+    }
+  }'
   exit 0
 }
 
-# Block recursive deletion of broad paths
-if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+(/|~|\$HOME|\.\.)'; then
+# Block recursive deletion of broad paths (/, ~, $HOME, .., ., *)
+if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+(/|~|\$HOME|\.\.|\./?$|\.\s|\*)'; then
   deny "Recursive deletion of broad path. Be more specific about what to delete."
 fi
 
-# Block force push to main/master
-if echo "$COMMAND" | grep -qE 'git\s+push\s+.*--force.*\s+(main|master)'; then
+# Block force push to main/master (handles any argument order)
+if echo "$COMMAND" | grep -qE 'git\s+push\s+.*--force' && echo "$COMMAND" | grep -qE '(main|master)'; then
   deny "Force push to main/master. Use a feature branch."
 fi
 

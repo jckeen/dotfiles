@@ -26,9 +26,15 @@ EXT="${FILE_PATH##*.}"
 # Format based on file type
 case "$EXT" in
   js|jsx|ts|tsx|json|css|scss|md|html|yaml|yml)
+    # Find project root by walking up from the file
+    PROJECT_DIR="$(dirname "$FILE_PATH")"
+    while [ "$PROJECT_DIR" != "/" ]; do
+      [ -f "$PROJECT_DIR/node_modules/.bin/prettier" ] && break
+      PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+    done
     # Use prettier if available in the project
-    if command -v npx &>/dev/null && [ -f "./node_modules/.bin/prettier" ] 2>/dev/null; then
-      npx prettier --write "$FILE_PATH" 2>/dev/null || true
+    if [ -f "$PROJECT_DIR/node_modules/.bin/prettier" ]; then
+      "$PROJECT_DIR/node_modules/.bin/prettier" --write "$FILE_PATH" 2>/dev/null || true
     elif command -v prettier &>/dev/null; then
       prettier --write "$FILE_PATH" 2>/dev/null || true
     fi

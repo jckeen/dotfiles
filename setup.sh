@@ -160,7 +160,7 @@ mkdir -p "$HOME_DIR/.claude/agents"
 
 link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
 link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
-link_file "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
+link_file "$DOTFILES_DIR/claude/AgentPack.md" "$HOME_DIR/.claude/AgentPack.md"
 link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
 chmod +x "$DOTFILES_DIR/claude/statusline.sh"
 echo "  -> Claude config linked"
@@ -232,6 +232,10 @@ else
     echo '# Load custom aliases' >> "$HOME_DIR/.bashrc"
     echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
     echo "  -> Added .bash_aliases sourcing to .bashrc"
+  elif [ ! -f "$HOME_DIR/.bashrc" ]; then
+    echo '# Load custom aliases' > "$HOME_DIR/.bashrc"
+    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
+    echo "  -> Created .bashrc with .bash_aliases sourcing"
   fi
   echo "  -> .bash_aliases linked"
 fi

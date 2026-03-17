@@ -1,0 +1,10 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Force LF for shell scripts (CRLF breaks bash)
+*.sh text eol=lf
+
+# Force LF for config files used by Unix tools
+.bash_aliases text eol=lf
+.asoundrc text eol=lf
+.gitconfig text eol=lf

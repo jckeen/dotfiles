@@ -1,6 +1,8 @@
 # Dotfiles — Claude Code Power User Setup
 
-Dev environment config with Claude Code workflows, skills, and safety guards. Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
+Production-ready Claude Code setup with safety hooks, 9 slash commands, a 12-agent review orchestra, and a custom status line. Clone it, run `setup.sh`, and skip the config trial-and-error.
+
+Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
 
 Best practices sourced from [Boris Cherny](https://howborisusesclaudecode.com) (creator of Claude Code), the [official Claude Code docs](https://code.claude.com/docs/en/best-practices), and hard-won experience.
 
@@ -25,6 +27,19 @@ claude                 # Follow the login prompt
 
 The setup script auto-detects your platform, installs tools, prompts for git identity, and symlinks all Claude config into `~/.claude/`.
 
+### Try it now
+
+After setup, try these to see what you've got:
+
+```bash
+cc                    # pulls all your repos, then launches Claude
+```
+
+Once inside Claude:
+- Type `/review` to run a code quality check on your last few commits
+- Ask "Run the qa-lead agent on this project" to spawn an isolated review
+- Watch the status line — it shows context %, git branch, cost, and lines changed
+
 ---
 
 ## What Gets Installed
@@ -47,12 +62,12 @@ Everything is **symlinked** from this repo to `~/.claude/`, so edits in either l
 |------|-------|---------|
 | **Claude instructions** | `CLAUDE.md` | Global rules Claude follows in every session |
 | **Settings** | `settings.json` | Permissions, hooks, preferred model (Opus), remote control |
-| **Agent Pack** | `AgentPackJCK.md` | 10-agent review framework for product/code analysis |
+| **Agent Pack** | `AgentPack.md` | 12-agent review orchestra for product/code analysis |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Safety hooks** | `hooks/block-dangerous.sh` | Blocks `rm -rf /`, force push to main, `DROP TABLE`, etc. |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Skills** | `skills/*/SKILL.md` | 9 slash commands (see below) |
-| **Subagents** | `agents/*.md` | Security reviewer + code simplifier |
+| **Subagents** | `agents/*.md` | 12 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing for voice mode |
@@ -101,13 +116,6 @@ Run multiple Claude sessions in parallel on the same project using worktrees.
 | `gwr` | `git worktree remove` |
 | `wt-claude <name> [branch]` | Create a worktree and launch Claude in it |
 
-**Example:** Run a feature and a review in parallel:
-```bash
-gwa ../myproject-review main    # create a review worktree
-za                               # jump to worktree -a
-wt-claude auth feature/auth     # or create + launch in one step
-```
-
 ---
 
 ## Skills (Slash Commands)
@@ -153,7 +161,7 @@ A team of 12 specialized subagents, each running in **its own isolated context**
 - Full review: "Run a full agent pack review" or "Run Phase 1 review"
 - Via skill: `/simplify` and `/review` use agents automatically
 
-**Orchestration** (see `AgentPackJCK.md` for full details):
+**Orchestration** (see `AgentPack.md` for full details):
 - **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety (parallel)
 - **Phase 2 — Architecture:** frontend-architect + backend-architect + content-reviewer + security-reviewer (parallel)
 - **Phase 3 — Launch:** qa-lead + perf-accessibility + launch-operator + code-simplifier (parallel)
@@ -165,15 +173,15 @@ A team of 12 specialized subagents, each running in **its own isolated context**
 Hooks run automatically — they can't be forgotten like CLAUDE.md rules.
 
 **`block-dangerous.sh`** (PreToolUse) blocks:
-- `rm -rf` on `/`, `~`, `$HOME`, or `..`
-- `git push --force` to main/master
+- `rm -rf` on `/`, `~`, `$HOME`, `..`, `.`, or `*`
+- `git push --force` to main/master (any argument order)
 - `DROP DATABASE` / `DROP TABLE`
 - Edits to `.env.prod` / `.env.production`
 - `git reset --hard` and `git clean -f`
 - Deletion of Windows system paths (WSL)
 
 **`format-on-edit.sh`** (PostToolUse) auto-formats after file edits:
-- JS/TS/JSON/CSS → prettier
+- JS/TS/JSON/CSS → prettier (finds project root automatically)
 - Python → black or ruff
 - Rust → rustfmt
 - Go → gofmt
@@ -190,7 +198,7 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 
 - **Model name** (dimmed)
 - **Context bar** — green (<50%), yellow (50-80%), red (>80%) with warning banner at 80%+
-- **Git branch** (cached 5s)
+- **Git branch** (cached 5s, works on both macOS and Linux)
 - **Worktree name** (when in a parallel session)
 - **Lines added/removed** this session
 - **Session cost** in USD
@@ -200,25 +208,14 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 ## The Core Workflow
 
 ```
-1. DEFINE   → Tell Claude what you want. Be specific. Include the goal,
-               the tech, and what "done" looks like.
-
-2. PLAN     → Shift+Tab twice for Plan Mode. Go back and forth until
-               the plan is solid. Press Ctrl+G to edit the plan directly.
-
-3. BUILD    → Switch to Normal Mode. Claude writes code and auto-commits
-               after each meaningful change.
-
-4. VERIFY   → Claude runs tests before committing. If something breaks,
-               it fixes before moving on.
-
-5. SIMPLIFY → Run /simplify to remove unnecessary complexity.
-
-6. REVIEW   → Run /review for quality/security check.
-
-7. LOG      → Run /changelog to capture what happened.
-
-8. HANDOFF  → Run /handoff if ending the session.
+1. DEFINE   → Tell Claude what you want. Be specific.
+2. PLAN     → Shift+Tab twice for Plan Mode. Iterate until solid.
+3. BUILD    → Normal Mode. Claude writes code and auto-commits.
+4. VERIFY   → Tests run before committing. Failures get fixed.
+5. SIMPLIFY → /simplify to remove unnecessary complexity.
+6. REVIEW   → /review for quality/security check.
+7. LOG      → /changelog to capture what happened.
+8. HANDOFF  → /handoff if ending the session.
 ```
 
 ---
@@ -228,15 +225,13 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 | Shortcut | What it does |
 |----------|-------------|
 | `Shift+Tab` (x2) | Toggle Plan Mode |
-| `Ctrl+G` | Open plan in text editor for direct editing |
+| `Ctrl+G` | Open plan in text editor |
 | `Ctrl+B` | Send current task to background |
-| `Esc` | Stop Claude mid-response (context preserved) |
-| `Esc+Esc` | Open rewind menu — restore conversation, code, or both |
-| `/compact` | Compress conversation to free up context |
-| `/clear` | Reset context completely |
-| `/btw` | Side question — answer appears in overlay, never enters context |
-| `/rewind` | Checkpoint menu — restore to any previous state |
-| `/rename` | Name your session for easy resuming later |
+| `Esc` | Stop Claude mid-response |
+| `Esc+Esc` | Rewind menu |
+| `/compact` | Compress conversation |
+| `/clear` | Reset context |
+| `/btw` | Side question (no context cost) |
 
 ---
 
@@ -253,9 +248,24 @@ claude-server            # Spawn isolated worktree + remote control
 
 **Remote access** is always on. Connect from `claude.ai/code` or the Claude mobile app.
 
-**Name your sessions:** Run `/rename oauth-migration` so you can find them later with `--resume`.
+---
 
-**Treat sessions like branches:** Different workstreams get separate, persistent contexts.
+## Customizing
+
+This repo is designed to be forked and adapted. Here's what to edit vs. leave alone:
+
+**Edit these (your personal config):**
+- `claude/CLAUDE.md` — your workflow rules and preferences
+- `claude/settings.json` — your permissions and tool allowlists
+- `claude/AgentPack.md` — add, remove, or modify review agents
+- `.bash_aliases` — your shell shortcuts
+
+**Leave these (the framework):**
+- `claude/hooks/*.sh` — safety guards (add new ones, but keep the defaults)
+- `claude/skills/*/SKILL.md` — slash commands (add new ones as needed)
+- `claude/agents/*.md` — subagent definitions
+- `setup.sh` — cross-platform installer
+- `claude/statusline.sh` — status line display
 
 ---
 
@@ -264,70 +274,37 @@ claude-server            # Spawn isolated worktree + remote control
 <details>
 <summary><strong>Click to expand the full best practices guide</strong></summary>
 
-### Context Is Everything — Manage It Aggressively
+### Context Is Everything
 
-Claude's context window is finite, and **performance degrades as it fills**. Every file read, every command output, every message consumes tokens.
+Claude's context window is finite, and **performance degrades as it fills**.
 
 - Run `/clear` between unrelated tasks
 - Use subagents for investigation — they report back summaries, not raw files
-- Keep sessions focused on one task
 - Watch the context % in your status line — `/handoff` → fresh session when it's high
-- Use `/compact` to compress if you need to stay in the same session
 
 ### Plan First, Then Execute
 
-Most sessions should start in **Plan Mode** (Shift+Tab twice). Go back and forth until solid, then switch to Normal Mode and let Claude execute. Often 1-shots the whole thing.
-
-**Skip planning for:** single-file fixes, typos, one-sentence diffs.
-**Always plan for:** multi-file changes, unfamiliar code, architecture decisions.
+Most sessions should start in **Plan Mode** (Shift+Tab twice). Iterate until solid, then execute. Often 1-shots the whole thing.
 
 ### Always Give Claude a Way to Verify
 
-The single highest-leverage habit. Provide tests, screenshots, or expected outputs.
-
-**The pattern:** failing test first → implement fix → verify test passes.
+Provide tests, screenshots, or expected outputs. **The pattern:** failing test first → implement fix → verify test passes.
 
 ### Prompt Like a Senior Engineer
 
 - Be specific: "add email/password login using NextAuth with Postgres" not "add auth"
 - Point to patterns: "Follow the same pattern as HotDogWidget.php"
-- Paste full error messages, not summaries
 - Power prompts: "Grill me on these changes", "Scrap this and implement the elegant solution"
-
-### Parallelize with Worktrees
-
-Run 3-5 sessions in parallel using git worktrees. Use `wt-claude`, `claude-server`, or the `za`-`ze` aliases.
-
-**Writer/Reviewer pattern:** Session A writes code, Session B reviews it (fresh context = better review).
 
 ### CLAUDE.md Compounds Over Time
 
-- Keep it under 200 lines — if it's too long, Claude ignores half
-- Only include things Claude can't figure out by reading code
-- When Claude makes a mistake, have it update CLAUDE.md to prevent recurrence
+Keep it under 200 lines. When Claude makes a mistake, have it update CLAUDE.md to prevent recurrence.
 
 ### Hooks > CLAUDE.md for Enforcement
 
 CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules into hooks.
 
-### Let Claude Handle Git
-
-Use `/commit-push-pr` instead of manual git. Claude reads the diff and writes better commit messages than most humans.
-
 </details>
-
----
-
-## Common Anti-Patterns
-
-| Anti-Pattern | Fix |
-|-------------|-----|
-| Kitchen sink session (mixing unrelated tasks) | `/clear` between tasks |
-| Correction spiral (same fix 3+ times) | `/clear` and write a better prompt |
-| Bloated CLAUDE.md (too many rules) | Prune ruthlessly, convert to hooks |
-| No verification (trusting plausible-looking code) | Always provide tests |
-| Infinite exploration (reading hundreds of files) | Use subagents |
-| Skipping Plan Mode on multi-file changes | Plan Mode first |
 
 ---
 
@@ -336,17 +313,19 @@ Use `/commit-push-pr` instead of manual git. Claude reads the diff and writes be
 ```
 dotfiles/
 ├── setup.sh                    # Cross-platform bootstrap script
-├── sync-claude.sh              # One-way sync (dotfiles → ~/.claude/)
+├── sync-claude.sh              # Copy-based sync (for environments without symlinks)
 ├── .bash_aliases               # Shell aliases, functions, worktree shortcuts
 ├── .gitconfig                  # Base git config (includes .gitconfig.local)
 ├── .gitignore                  # Ignores generated files
+├── .gitattributes              # Line ending normalization (LF for scripts)
 ├── .asoundrc                   # WSL audio routing
+├── LICENSE                     # MIT
 ├── README.md                   # This file
 ├── CLAUDE-GUIDE.md             # Quick reference cheat sheet
-├── CHANGELOG.md                # Session-by-session change log
+├── CHANGELOG.md                # Change log
 └── claude/
     ├── CLAUDE.md               # Global Claude instructions
-    ├── AgentPackJCK.md         # 10-agent review framework
+    ├── AgentPack.md            # 12-agent review orchestra
     ├── settings.json           # Permissions, hooks, model preferences
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
@@ -362,7 +341,7 @@ dotfiles/
     │   ├── simplify/           # /simplify — complexity removal
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
     │   └── claude-server/      # /claude-server — remote worktree
-    └── agents/
+    └── agents/                 # 12 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md
@@ -379,18 +358,11 @@ dotfiles/
 
 ---
 
-## Adding New Config
-
-1. Add the file to this repo under `claude/`
-2. Add a symlink step in `setup.sh`
-3. Run `./setup.sh` to deploy (or `./sync-claude.sh` for Claude-only changes)
-4. Commit and push
-
----
-
 ## Sources
 
 - [How Boris Uses Claude Code](https://howborisusesclaudecode.com) — Tips from the creator
 - [Official Best Practices](https://code.claude.com/docs/en/best-practices) — Anthropic's documentation
 - [Claude Code Hooks Guide](https://code.claude.com/docs/en/hooks-guide) — Hook documentation
 - [Trail of Bits Config](https://github.com/trailofbits/claude-code-config) — Security-focused config reference
+
+Want to understand the reasoning behind these choices? Read the [CHANGELOG](CHANGELOG.md).
