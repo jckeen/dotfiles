@@ -48,13 +48,14 @@ if [[ "$PLATFORM" == "macos" ]]; then
     echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
     exit 1
   fi
-  brew install gh git curl || true
+  brew install gh git curl jq || true
 else
   sudo apt update && sudo apt install -y \
     gh \
     git \
     curl \
-    unzip
+    unzip \
+    jq
 fi
 
 # ─── 1b. Audio (WSL only — ALSA → PulseAudio for WSLg) ──────────────
@@ -94,7 +95,7 @@ fi
 echo ""
 echo "--- Setting up Git config ---"
 
-# Generate a platform-appropriate .gitconfig
+# Generate a platform-appropriate .gitconfig.local
 if [[ "$PLATFORM" == "macos" ]]; then
   cat > "$DOTFILES_DIR/.gitconfig.local" <<'GITCONF'
 [core]
@@ -132,32 +133,44 @@ echo "  -> .gitconfig linked"
 echo ""
 echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
+mkdir -p "$HOME_DIR/.claude/agents"
 
 link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
 link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
 link_file "$DOTFILES_DIR/claude/AgentPackJCK.md" "$HOME_DIR/.claude/AgentPackJCK.md"
 link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
-chmod +x "$HOME_DIR/.claude/statusline.sh"
+chmod +x "$DOTFILES_DIR/claude/statusline.sh"
 echo "  -> Claude config linked"
-
-# Skills (slash commands) — each is a directory with SKILL.md
-for skill_dir in "$DOTFILES_DIR/claude/skills"/*/; do
-  [ -d "$skill_dir" ] || continue
-  skill_name="$(basename "$skill_dir")"
-  mkdir -p "$HOME_DIR/.claude/skills/$skill_name"
-  link_file "$skill_dir/SKILL.md" "$HOME_DIR/.claude/skills/$skill_name/SKILL.md"
-done
-echo "  -> Claude skills linked"
 
 # Hooks
 if [ -d "$DOTFILES_DIR/claude/hooks" ]; then
   mkdir -p "$HOME_DIR/.claude/hooks"
-  for hook in "$DOTFILES_DIR/claude/hooks/"*; do
+  for hook in "$DOTFILES_DIR/claude/hooks/"*.sh; do
     [ -f "$hook" ] || continue
     link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
-    chmod +x "$HOME_DIR/.claude/hooks/$(basename "$hook")"
   done
+  # chmod source files (symlinks inherit target permissions)
+  chmod +x "$DOTFILES_DIR/claude/hooks/"*.sh 2>/dev/null || true
   echo "  -> Claude hooks linked"
+fi
+
+# Skills (slash commands) — directory-based format
+for skill_dir in "$DOTFILES_DIR/claude/skills/"*/; do
+  [ -d "$skill_dir" ] || continue
+  skill_name="$(basename "$skill_dir")"
+  mkdir -p "$HOME_DIR/.claude/skills/$skill_name"
+  for skill_file in "$skill_dir"*; do
+    [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.claude/skills/$skill_name/$(basename "$skill_file")"
+  done
+done
+echo "  -> Claude skills linked"
+
+# Agents (custom subagents)
+if [ -d "$DOTFILES_DIR/claude/agents" ]; then
+  for agent in "$DOTFILES_DIR/claude/agents/"*.md; do
+    [ -f "$agent" ] && link_file "$agent" "$HOME_DIR/.claude/agents/$(basename "$agent")"
+  done
+  echo "  -> Claude agents linked"
 fi
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────

@@ -55,6 +55,31 @@ done
 if [ -d "$DOTFILES_DIR/hooks" ]; then
     mkdir -p "$CLAUDE_DIR/hooks"
     rsync -a --delete "$DOTFILES_DIR/hooks/" "$CLAUDE_DIR/hooks/"
+    chmod +x "$CLAUDE_DIR/hooks/"*.sh 2>/dev/null || true
+    echo "  updated: hooks"
+fi
+
+# Sync agents directory
+if [ -d "$DOTFILES_DIR/agents" ]; then
+    AGENTS_DST="$CLAUDE_DIR/agents"
+    mkdir -p "$AGENTS_DST"
+    for f in "$DOTFILES_DIR/agents/"*.md; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f")"
+        if [ ! -f "$AGENTS_DST/$name" ] || ! diff -q "$f" "$AGENTS_DST/$name" > /dev/null 2>&1; then
+            cp "$f" "$AGENTS_DST/$name"
+            echo "  updated agent: $name"
+        fi
+    done
+    # Remove agents that no longer exist in dotfiles
+    for f in "$AGENTS_DST/"*.md; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f")"
+        if [ ! -f "$DOTFILES_DIR/agents/$name" ]; then
+            rm "$f"
+            echo "  removed agent: $name"
+        fi
+    done
 fi
 
 echo "Claude config sync complete."
