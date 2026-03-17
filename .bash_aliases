@@ -35,16 +35,12 @@ pull-all() {
   done
 }
 
-# Launch Claude in a persistent tmux session, pulling repos first
+# Launch Claude, pulling repos first
 cc() {
   echo "Syncing repos..."
   pull-all
   echo ""
-  if tmux has-session -t claude 2>/dev/null; then
-    tmux attach-session -t claude
-  else
-    tmux new-session -s claude "claude $*; bash"
-  fi
+  claude "$@"
 }
 
 # ─── Git worktree shortcuts (Boris's #1 productivity tip) ────────────

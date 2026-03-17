@@ -77,8 +77,8 @@ These are available after setup (sourced from `.bash_aliases`).
 
 | Command | What it does |
 |---------|-------------|
-| `cc` | **Recommended way to start.** Pulls all repos, then launches Claude in a persistent tmux session |
-| `claude` | Start Claude directly (no repo sync, no tmux) |
+| `cc` | **Recommended way to start.** Pulls all repos, then launches Claude |
+| `claude` | Start Claude directly (no repo sync) |
 | `claude-rc` | Start with explicit remote control flag |
 | `claude-server` | Spawn an isolated worktree + remote control session |
 
@@ -245,7 +245,7 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 ## Session Management
 
 ```bash
-cc                       # Pull all repos + start Claude in tmux (recommended)
+cc                       # Pull all repos + start Claude (recommended)
 claude                   # Start new session directly
 claude --continue        # Resume most recent session
 claude --resume          # Pick from recent sessions
