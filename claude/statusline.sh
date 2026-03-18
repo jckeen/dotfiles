@@ -52,8 +52,8 @@ CACHE_FILE="/tmp/.claude-statusline-git-$(echo "$PWD" | md5sum 2>/dev/null | cut
 BRANCH=""
 NOW=$(date +%s)
 if [ -f "$CACHE_FILE" ]; then
-  # BSD stat (macOS) uses -f %m, GNU stat (Linux) uses -c %Y
-  CACHE_AGE=$(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0)
+  # GNU stat (Linux) uses -c %Y, BSD stat (macOS) uses -f %m
+  CACHE_AGE=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null || echo 0)
   if [ $((NOW - CACHE_AGE)) -lt 5 ]; then
     BRANCH=$(cat "$CACHE_FILE")
   fi
