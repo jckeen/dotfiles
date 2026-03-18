@@ -49,7 +49,7 @@
     }
   },
   "autoUpdatesChannel": "latest",
-  "enableRemoteControl": true,
   "voiceEnabled": true,
+  "enableRemoteControl": true,
   "preferredModel": "opus"
 }

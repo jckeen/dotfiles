@@ -99,7 +99,7 @@ See `~/.claude/AgentPack.md` for the multi-agent orchestration framework. Agents
 - `/simplify` — Review code for unnecessary complexity and simplify it
 - `/commit-push-pr` — Commit, push, and create a PR in one shot (Boris's most-used daily command)
 
-## Available Subagents (12 agents — see AgentPack.md for orchestration)
+## Available Subagents (15 agents — see AgentPack.md for orchestration)
 - `product-strategist` — User flow, feature scope, stickiness
 - `ux-reviewer` — Layout, hierarchy, mobile, interaction design
 - `frontend-architect` — Components, state management, rendering performance
@@ -112,3 +112,6 @@ See `~/.claude/AgentPack.md` for the multi-agent orchestration framework. Agents
 - `launch-operator` — Deploy readiness, monitoring, environment config
 - `security-reviewer` — Injection, auth flaws, secrets, insecure data
 - `code-simplifier` — Over-engineering, dead code, premature abstractions
+- `repo-scout` — Fast codebase orientation and status briefing
+- `dependency-doctor` — Dep audits, CVEs, outdated packages, upgrade paths
+- `test-writer` — Bug reproduction, feature coverage, edge case tests

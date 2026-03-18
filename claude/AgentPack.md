@@ -1,8 +1,10 @@
-# Agent Pack — Multi-Agent Review Orchestra
+# Agent Pack — Multi-Agent Orchestra
 
-A team of 12 specialized subagents, each running in its own isolated context. When reviewing or building a project, spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
+A team of 15 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
 ## The Team
+
+### Review agents (read-only)
 
 | Agent | Focus | When to use |
 |-------|-------|-------------|
@@ -18,6 +20,14 @@ A team of 12 specialized subagents, each running in its own isolated context. Wh
 | `launch-operator` | Deploy pipeline, monitoring, environment config | Pre-launch readiness check |
 | `security-reviewer` | Injection, auth, secrets, insecure data | After implementation, before merge |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
+
+### Utility agents (read + write)
+
+| Agent | Focus | When to use |
+|-------|-------|-------------|
+| `repo-scout` | Fast codebase orientation and status briefing | Jumping into a repo, starting a session, context refresh |
+| `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths | Periodic health checks, before upgrades, pre-launch |
+| `test-writer` | Bug reproduction, feature coverage, edge case tests | Before fixing bugs (failing test first), after new features |
 
 ## How to invoke
 
