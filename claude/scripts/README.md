@@ -24,6 +24,34 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `test-coverage.sh` | Writes tests for uncovered code | Fix (edit + test) | Yes — review with `git diff` |
 | `fix-issues.sh` | Picks up GitHub issues, creates fix branches | Commit (edit + commit) | Yes — review branches |
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
+| `review-and-push.sh` | AI-reviews overnight changes, pushes if safe | Read-only review + push | Only pushes after validation |
+
+## The Morning Workflow
+
+After an overnight run, you don't read every diff. You run:
+
+```bash
+# Review and push one repo (prompts before pushing)
+./review-and-push.sh ~/dev/atlas
+
+# Review and push all repos
+for repo in ~/dev/atlas ~/dev/stringer ~/dev/smss; do
+  ./review-and-push.sh "$repo"
+done
+
+# Auto-push if tests pass and review is clean (no prompt)
+./review-and-push.sh ~/dev/atlas --auto-push
+```
+
+What `review-and-push.sh` does:
+1. Checks for unpushed commits and uncommitted changes
+2. Runs the test suite — **stops if tests fail**
+3. Sends the full diff to a fresh Claude review (read-only, separate context)
+4. Extracts a verdict: **SAFE TO PUSH** / **NEEDS REVIEW** / **DO NOT PUSH**
+5. Shows you a 20-line summary instead of a 500-line diff
+6. Prompts for confirmation (or auto-pushes with `--auto-push` if verdict is SAFE)
+
+The `--auto-push` flag will NOT push if the review flags issues — it only pushes on a clean SAFE verdict.
 
 ## Safety Tiers
 
@@ -35,8 +63,9 @@ Each script uses scoped `--allowedTools` to limit what Claude can do:
 | **TIER_LINT** | Above + edit files + run test/lint/build | Commit, push, run other commands |
 | **TIER_FIX** | Above + write new files | Commit, push |
 | **TIER_COMMIT** | Above + git add/commit/branch/checkout | Push, run arbitrary commands |
+| **TIER_PUSH** | Above + git push + gh pr | Run arbitrary commands |
 
-No tier allows `git push`. You always review before pushing.
+Only `review-and-push.sh` uses TIER_PUSH, and only after tests pass and a review clears it.
 
 ## Full Auto Mode
 

@@ -31,6 +31,15 @@ TIER_COMMIT=(Read Grep Glob Edit Write \
   "Bash(git status)" "Bash(git log *)" "Bash(git diff *)" "Bash(git stash *)" \
   "Bash(git add *)" "Bash(git commit *)" "Bash(git branch *)" "Bash(git checkout *)")
 
+# TIER 5: Push — full git workflow (only used by review-and-push after validation)
+TIER_PUSH=(Read Grep Glob Edit Write \
+  "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
+  "Bash(npx *)" "Bash(pip *)" "Bash(pytest *)" "Bash(cargo test *)" \
+  "Bash(git status)" "Bash(git log *)" "Bash(git diff *)" \
+  "Bash(git add *)" "Bash(git commit *)" "Bash(git push *)" \
+  "Bash(git branch *)" "Bash(git checkout *)" \
+  "Bash(gh pr *)")
+
 # ─── Defaults ──────────────────────────────────────────────────
 
 MAX_TURNS="${MAX_TURNS:-15}"
