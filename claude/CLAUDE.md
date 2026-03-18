@@ -5,7 +5,8 @@ At the start of every session:
 1. Read the project's `CLAUDE.md` and `CHANGELOG.md` if they exist
 2. Run `git status` and `git log --oneline -5` to understand current state
 3. Check if LSP plugins are installed for the repo's languages (look for `package.json`, `tsconfig.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `*.csproj`, etc.). If a language is detected but the corresponding plugin isn't installed, suggest it (e.g. `/plugin install typescript-lsp@claude-plugins-official`)
-4. If the user's goal is unclear, ask before coding — don't guess
+4. If the project has no `CLAUDE.md`, suggest running `/init` to bootstrap one
+5. If the user's goal is unclear, ask before coding — don't guess
 
 During a session:
 - **Plan before building** — for anything non-trivial, use Plan Mode (Shift+Tab twice). Go back and forth until the plan is solid, then switch to auto-accept and execute. A good plan is the difference between 1-shotting a PR and burning context on corrections.
@@ -63,6 +64,14 @@ When the user gives a vague prompt for a non-trivial task, use the interview pat
 - Claude is "eerily good at writing rules for itself" — lean into this
 - After every correction, consider: "What rule would have prevented this?"
 - **Proactively capture patterns** — when you discover project-specific conventions, architectural decisions, or reusable patterns during implementation, add them to the project's CLAUDE.md so future sessions don't have to rediscover them
+
+## Scoped Rules (Auto-Generate)
+- When you discover conventions specific to a directory or file pattern (e.g., API routes follow a pattern, components use a specific state pattern, tests have a particular structure), create a scoped rule in `.claude/rules/`
+- File format: `.claude/rules/<name>.md` with frontmatter `globs: "pattern"` to scope it
+- Example: `.claude/rules/api-routes.md` with `globs: "src/api/**"` for API-specific conventions
+- Keep each rule file focused and under 30 lines — one concern per file
+- Don't create rules for things that are obvious from the code itself — only for non-obvious conventions that Claude would otherwise get wrong
+- Suggest the rule to the user before creating it
 
 ## Lean Tooling
 - Every MCP tool and integration costs context tokens. Only add tools that earn their keep
