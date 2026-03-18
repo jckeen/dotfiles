@@ -71,7 +71,7 @@ When the user gives a vague prompt for a non-trivial task, use the interview pat
 - Use CLI tools (gh, aws, gcloud) over MCP when possible — they're more context-efficient
 
 ## CLAUDE.md Maintenance
-- Keep CLAUDE.md files under 200 lines. If it's too long, Claude ignores half of it
+- Keep CLAUDE.md files under 400 lines. Beyond that, signal-to-noise drops and rules get lost
 - For each line, ask: "Would removing this cause Claude to make mistakes?" If not, cut it
 - If Claude keeps doing something wrong despite a rule, the file is too long and the rule is getting lost
 - Convert frequently-violated rules into hooks instead — hooks are enforced, CLAUDE.md is advisory
