@@ -26,3 +26,5 @@ For each finding:
 - Suggested fix
 
 Prioritize issues users would actually hit, not theoretical edge cases.
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

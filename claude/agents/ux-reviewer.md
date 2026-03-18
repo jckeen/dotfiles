@@ -25,3 +25,5 @@ For each finding:
 - Suggested fix with specifics (not just "make it better")
 
 Focus on what would have the biggest impact if fixed first.
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

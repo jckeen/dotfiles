@@ -25,3 +25,5 @@ For each finding:
 - Suggested implementation
 
 Prioritize quick wins that have outsized distribution impact.
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

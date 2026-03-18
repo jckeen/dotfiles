@@ -26,3 +26,5 @@ For each finding:
 - Suggested fix
 
 Read the actual schema and queries — don't guess at column names or table structures.
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

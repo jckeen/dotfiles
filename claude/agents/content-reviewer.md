@@ -25,3 +25,5 @@ For each finding:
 - Suggested replacement text
 
 Be specific — provide the actual copy, not just "make it clearer."
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

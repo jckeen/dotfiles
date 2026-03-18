@@ -93,6 +93,11 @@ run_claude() {
     tool_args=()  # not needed with full bypass
   fi
 
+  # Append honesty guardrail to every prompt
+  local guarded_prompt="$prompt
+
+IMPORTANT: Only report real issues that you can point to in the code with file paths and line numbers. If you find no issues, say so explicitly — a clean report is a valid and useful outcome. Do not invent, speculate about, or exaggerate problems to fill the report. Accuracy matters more than thoroughness."
+
   echo "→ Running: $tier_name"
   echo "→ Repo: $REPO_DIR"
   echo "→ Max turns: $MAX_TURNS"
@@ -101,7 +106,7 @@ run_claude() {
 
   cd "$REPO_DIR"
 
-  claude -p "$prompt" \
+  claude -p "$guarded_prompt" \
     "${tool_args[@]}" \
     "${perm_args[@]}" \
     --max-turns "$MAX_TURNS" \

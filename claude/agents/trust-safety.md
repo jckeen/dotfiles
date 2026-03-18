@@ -25,3 +25,5 @@ For each finding:
 - Suggested mitigation
 
 Flag anything that could cause real harm to users or legal liability for the operator.
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

@@ -26,3 +26,5 @@ For each finding:
 - Suggested fix with code when helpful
 
 Don't nitpick style — focus on structural issues that affect the next developer.
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

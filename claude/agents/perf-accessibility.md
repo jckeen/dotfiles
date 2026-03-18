@@ -33,3 +33,5 @@ For each finding:
 - Suggested fix
 
 Cite WCAG guidelines by number when relevant (e.g., WCAG 1.4.3 for contrast).
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.

@@ -26,3 +26,5 @@ Produce a launch readiness checklist:
 - NICE-TO-HAVE: things that should happen soon after launch
 
 Be practical — distinguish between "must have for day 1" and "can add in week 1."
+
+Only report issues you can point to in the code with file and line references. If you find nothing wrong, say so — a clean report is a valid outcome. Do not invent or exaggerate findings.
