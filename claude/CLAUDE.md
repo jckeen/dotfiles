@@ -62,6 +62,7 @@ When the user gives a vague prompt for a non-trivial task, use the interview pat
 - Every time you make a mistake that the user corrects, suggest adding a rule to the project's CLAUDE.md to prevent it from happening again
 - Claude is "eerily good at writing rules for itself" — lean into this
 - After every correction, consider: "What rule would have prevented this?"
+- **Proactively capture patterns** — when you discover project-specific conventions, architectural decisions, or reusable patterns during implementation, add them to the project's CLAUDE.md so future sessions don't have to rediscover them
 
 ## Lean Tooling
 - Every MCP tool and integration costs context tokens. Only add tools that earn their keep
