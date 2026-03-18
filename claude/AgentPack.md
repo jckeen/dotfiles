@@ -28,6 +28,7 @@ A team of 15 specialized subagents, each running in its own isolated context. Sp
 | `repo-scout` | Fast codebase orientation and status briefing | Jumping into a repo, starting a session, context refresh |
 | `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths | Periodic health checks, before upgrades, pre-launch |
 | `test-writer` | Bug reproduction, feature coverage, edge case tests | Before fixing bugs (failing test first), after new features |
+| `schema-reviewer` | DB schema, migrations, data integrity, query patterns | After schema changes, before running migrations |
 
 ## How to invoke
 
