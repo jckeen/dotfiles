@@ -105,14 +105,22 @@ crontab -e
 
 The scripts still work — just without doubled usage. Schedule them whenever makes sense for your workflow.
 
+## Prerequisites
+
+- [Claude Code](https://code.claude.com) installed and authenticated (`claude` on PATH)
+- `gh` CLI (for `fix-issues.sh` — GitHub issue lookup and PR creation)
+- Bash 4+ (macOS: `brew install bash`; Linux/WSL: included)
+
 ## Options
 
 All scripts accept:
 
-| Flag | Effect |
-|------|--------|
-| `--full-auto` | Bypass all permission checks (prints warning banner) |
-| `--max-turns N` | Override max Claude turns (default: 15, full-review: 25) |
+| Flag | Effect | Used by |
+|------|--------|---------|
+| `--full-auto` | Bypass all permission checks (prints warning banner) | All scripts |
+| `--max-turns N` | Override max Claude turns (default: 15, full-review: 25) | All scripts |
+| `--auto-push` | Push without prompting if verdict is SAFE TO PUSH | `review-and-push.sh` only |
+| `--deep` | Enable test coverage + issue fixing phases | `overnight.sh` only |
 
 Environment variables:
 
@@ -121,8 +129,9 @@ Environment variables:
 | `FULL_AUTO=true` | Same as `--full-auto` flag |
 | `MAX_TURNS=N` | Override max turns |
 | `LOG_DIR=/path` | Override log directory (default: `~/.claude/logs/`) |
-| `CLAUDE_REPOS="~/a ~/b"` | Override repo list for `overnight.sh` |
 | `MODEL=sonnet` | Override model (default: opus) |
+| `CLAUDE_REPOS="~/a ~/b"` | Explicit repo list for `overnight.sh` |
+| `CLAUDE_DEV_DIR=/path` | Dev directory for auto-detection (default: `~/dev`) |
 
 ## Logs
 
@@ -173,7 +182,16 @@ export CLAUDE_DEV_DIR="/mnt/c/Users/jckee/dev"
 
 ## For Dotfiles Users
 
-1. Run `chmod +x ~/dotfiles/claude/scripts/*.sh`
-2. Try `./health-check.sh /path/to/your/repo` first to verify it works
-3. Optionally configure repos via `~/.claude/repos` or `CLAUDE_DEV_DIR`
-4. Add cron entries when you're comfortable
+Getting started:
+
+1. **Install prerequisites**: Claude Code, `gh` CLI, Bash 4+
+2. **Make scripts executable**: `chmod +x ~/dotfiles/claude/scripts/*.sh`
+3. **Configure your dev directory** (pick one):
+   - Do nothing if your repos are in `~/dev` (macOS/Linux default)
+   - `echo "/mnt/c/Users/you/dev" > ~/.claude/dev-dir` (WSL)
+   - `export CLAUDE_DEV_DIR="/path/to/dev"` in your shell profile
+4. **Test with a safe read-only run**: `./health-check.sh /path/to/your/repo`
+5. **Try overnight**: `./overnight.sh` (read-only health checks across all repos)
+6. **Go deeper when comfortable**: `./overnight.sh --deep` (writes tests + fixes issues)
+7. **Morning review**: `./review-and-push.sh /path/to/repo` (AI reviews changes, prompts before push)
+8. **Schedule with cron** when you trust the workflow (see Scheduling section above)
