@@ -4,7 +4,8 @@
 At the start of every session:
 1. Read the project's `CLAUDE.md` and `CHANGELOG.md` if they exist
 2. Run `git status` and `git log --oneline -5` to understand current state
-3. If the user's goal is unclear, ask before coding — don't guess
+3. Check if LSP plugins are installed for the repo's languages (look for `package.json`, `tsconfig.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `*.csproj`, etc.). If a language is detected but the corresponding plugin isn't installed, suggest it (e.g. `/plugin install typescript-lsp@claude-plugins-official`)
+4. If the user's goal is unclear, ask before coding — don't guess
 
 During a session:
 - **Plan before building** — for anything non-trivial, use Plan Mode (Shift+Tab twice). Go back and forth until the plan is solid, then switch to auto-accept and execute. A good plan is the difference between 1-shotting a PR and burning context on corrections.
