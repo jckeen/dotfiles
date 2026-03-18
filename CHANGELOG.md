@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-03-18
+
+### What changed
+- **4 new agents** — `repo-scout` (fast codebase orientation), `dependency-doctor` (dep audits, CVEs), `test-writer` (bug reproduction, coverage), `schema-reviewer` (DB schema/migration safety). Agent Pack now at 16 agents
+- **Autonomous scripts** (`claude/scripts/`) — headless Claude Code runners with tiered permissions:
+  - `health-check.sh` — read-only repo briefing + dependency audit
+  - `test-coverage.sh` — write tests for uncovered code
+  - `full-review.sh` — full 3-phase agent pack review
+  - `fix-issues.sh` — pick up GitHub issues and fix them
+  - `overnight.sh` — orchestrate all scripts across multiple repos
+  - `review-and-push.sh` — AI reviews overnight changes, pushes only after tests pass + review clears
+- **5 safety tiers** — READONLY, LINT, FIX, COMMIT, PUSH via `--allowedTools` scoping. No script pushes by default. `--full-auto` flag available as opt-in for `--dangerously-skip-permissions`
+- **Honesty guardrails** — all review agents and the script prompt wrapper now instruct Claude not to hallucinate findings. "A clean report is a valid outcome"
+- **Auto-detect repos** — `overnight.sh` discovers repos via `CLAUDE_REPOS` env var, `~/.claude/repos` config file, or auto-scanning the dev directory. Works on macOS, Linux, and WSL without editing scripts
+- **Full documentation** in `claude/scripts/README.md` — prerequisites, all flags, env vars, cron scheduling, morning workflow, setup guide for dotfiles users
+
+### Decisions made
+- Opus 4.6 everywhere — accuracy over cost savings
+- `--allowedTools` scoping over `--dangerously-skip-permissions` as default
+- Nothing pushes automatically — review-and-push.sh is the gatekeeper
+- Deferred: cross-repo-tracker, incident-responder, api-documenter (not needed yet)
+
 ## 2026-03-17
 
 ### What changed
