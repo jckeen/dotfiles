@@ -25,19 +25,70 @@ for arg in "$@"; do
   esac
 done
 
-# Default repos — override with CLAUDE_REPOS env var
-DEFAULT_REPOS=(
-  "$HOME/dev/atlas"
-  "$HOME/dev/stringer"
-  "$HOME/dev/smss"
-  "$HOME/dev/TRNN"
-  "$HOME/dev/pp2qbo"
-)
+# ─── Repo Discovery ───────────────────────────────────────────
+# Priority: CLAUDE_REPOS env var > config file > auto-detect from dev directory
+#
+# To set your dev directory, either:
+#   export CLAUDE_DEV_DIR=~/dev           (env var)
+#   echo ~/dev > ~/.claude/dev-dir        (config file)
+#   Or it defaults to ~/dev
+#
+# To set explicit repos:
+#   export CLAUDE_REPOS="~/dev/atlas ~/dev/stringer"
+#   Or list them in ~/.claude/repos (one path per line)
 
-if [[ -n "${CLAUDE_REPOS:-}" ]]; then
-  read -ra REPOS <<< "$CLAUDE_REPOS"
-else
-  REPOS=("${DEFAULT_REPOS[@]}")
+discover_dev_dir() {
+  # 1. Env var
+  if [[ -n "${CLAUDE_DEV_DIR:-}" ]]; then
+    echo "$CLAUDE_DEV_DIR"
+    return
+  fi
+
+  # 2. Config file
+  if [[ -f "$HOME/.claude/dev-dir" ]]; then
+    cat "$HOME/.claude/dev-dir"
+    return
+  fi
+
+  # 3. Default ~/dev
+  echo "$HOME/dev"
+}
+
+discover_repos() {
+  # 1. CLAUDE_REPOS env var (space-separated)
+  if [[ -n "${CLAUDE_REPOS:-}" ]]; then
+    read -ra repos <<< "$CLAUDE_REPOS"
+    printf '%s\n' "${repos[@]}"
+    return
+  fi
+
+  # 2. Config file (one repo per line)
+  if [[ -f "$HOME/.claude/repos" ]]; then
+    grep -v '^\s*#' "$HOME/.claude/repos" | grep -v '^\s*$'
+    return
+  fi
+
+  # 3. Auto-detect: find git repos in the dev directory
+  local dev_dir
+  dev_dir=$(discover_dev_dir)
+  if [[ ! -d "$dev_dir" ]]; then
+    echo "Error: dev directory not found: $dev_dir" >&2
+    echo "Set CLAUDE_DEV_DIR or create ~/.claude/dev-dir" >&2
+    exit 1
+  fi
+
+  for dir in "$dev_dir"/*/; do
+    if [[ -d "$dir/.git" ]]; then
+      echo "${dir%/}"
+    fi
+  done
+}
+
+mapfile -t REPOS < <(discover_repos)
+
+if [[ ${#REPOS[@]} -eq 0 ]]; then
+  echo "No repos found. Set CLAUDE_REPOS, create ~/.claude/repos, or put git repos in ~/dev/"
+  exit 1
 fi
 
 echo "╔══════════════════════════════════════════════════════╗"

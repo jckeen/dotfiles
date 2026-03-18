@@ -133,11 +133,47 @@ TIER_READONLY_atlas_2026-03-18_2300.log
 TIER_FIX_stringer_2026-03-18_2300.log
 ```
 
+## Repo Configuration
+
+`overnight.sh` discovers repos automatically. Three ways to configure, in priority order:
+
+### Option 1: Environment variable (explicit repos)
+
+```bash
+export CLAUDE_REPOS="~/dev/atlas ~/dev/stringer ~/dev/smss"
+```
+
+### Option 2: Config file (explicit repos)
+
+```bash
+# ~/.claude/repos — one path per line, # comments allowed
+~/dev/atlas
+~/dev/stringer
+~/dev/smss
+# ~/dev/old-project  # commented out, skipped
+```
+
+### Option 3: Auto-detect (zero config)
+
+If neither env var nor config file exists, `overnight.sh` scans your dev directory for git repos. It finds the dev directory by checking:
+
+1. `CLAUDE_DEV_DIR` env var
+2. `~/.claude/dev-dir` file (contains one path)
+3. Falls back to `~/dev`
+
+This works on macOS (`~/dev`), Linux (`~/dev`), and WSL (`/mnt/c/Users/you/dev` — just set the env var or config file).
+
+```bash
+# WSL example
+echo "/mnt/c/Users/jckee/dev" > ~/.claude/dev-dir
+
+# Or env var in your .bashrc / .zshrc
+export CLAUDE_DEV_DIR="/mnt/c/Users/jckee/dev"
+```
+
 ## For Dotfiles Users
 
-If you're using these dotfiles, the scripts are ready to go:
-
-1. Edit `overnight.sh` and update the `DEFAULT_REPOS` array with your repo paths
-2. Run `chmod +x ~/dotfiles/claude/scripts/*.sh`
-3. Try `./health-check.sh /path/to/your/repo` first to verify it works
+1. Run `chmod +x ~/dotfiles/claude/scripts/*.sh`
+2. Try `./health-check.sh /path/to/your/repo` first to verify it works
+3. Optionally configure repos via `~/.claude/repos` or `CLAUDE_DEV_DIR`
 4. Add cron entries when you're comfortable
