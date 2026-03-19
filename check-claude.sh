@@ -1,15 +1,16 @@
 #!/bin/bash
 # Verify Claude Code config symlinks are healthy.
 # Run from anywhere: ~/dev/dotfiles/check-claude.sh
-# Checks for: broken links, unlinked files, stale backups, drift.
+# Checks for: broken links, unlinked files, orphaned links, stale backups.
 
-set -e
+set +e
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_SRC="$DOTFILES_DIR/claude"
 CLAUDE_DST="$HOME/.claude"
 ERRORS=0
 WARNINGS=0
+FIXED=0
 
 red()    { echo -e "\033[31m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; }
@@ -39,9 +40,15 @@ check_link() {
 echo "Checking Claude Code config..."
 echo ""
 
-# Top-level files
-for f in CLAUDE.md AgentPack.md settings.json statusline.sh; do
-  [ -f "$CLAUDE_SRC/$f" ] && check_link "$CLAUDE_SRC/$f" "$CLAUDE_DST/$f" "$f"
+# Files kept in dotfiles but NOT symlinked (loaded on-demand)
+NOLINK="AgentPack.md"
+
+# Top-level files (auto-discovered from dotfiles, not hardcoded)
+for f in "$CLAUDE_SRC/"*; do
+  [ -f "$f" ] || continue
+  name="$(basename "$f")"
+  case " $NOLINK " in *" $name "*) continue ;; esac
+  check_link "$f" "$CLAUDE_DST/$name" "$name"
 done
 
 # Hooks
@@ -69,11 +76,34 @@ for skill_dir in "$CLAUDE_SRC/skills/"*/; do
   done
 done
 
-# Check for broken symlinks in ~/.claude/
+# Check for orphaned symlinks — symlinks in ~/.claude/ pointing into dotfiles
+# whose source was removed (e.g., AgentPack.md after we stopped linking it)
+echo ""
+echo "Checking for orphaned symlinks..."
+while IFS= read -r link; do
+  target="$(readlink "$link")"
+  # Only check symlinks that point into our dotfiles repo
+  if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
+    label="${link#$CLAUDE_DST/}"
+    if [ "${1:-}" = "--fix" ]; then
+      rm "$link"
+      green "CLEANED  $label (removed orphaned link -> $target)"
+      FIXED=$((FIXED + 1))
+    else
+      red "ORPHAN  $label -> $target (source removed from dotfiles)"
+      ERRORS=$((ERRORS + 1))
+    fi
+  fi
+done < <(find "$CLAUDE_DST" -maxdepth 3 -type l 2>/dev/null)
+
+# Check for broken symlinks (pointing elsewhere, not into dotfiles)
 echo ""
 echo "Checking for broken symlinks..."
 while IFS= read -r broken; do
-  red "BROKEN  $broken -> $(readlink "$broken")"
+  target="$(readlink "$broken")"
+  # Skip dotfiles-managed links (already handled above)
+  [[ "$target" == "$DOTFILES_DIR"* ]] && continue
+  red "BROKEN  $broken -> $target"
   ERRORS=$((ERRORS + 1))
 done < <(find "$CLAUDE_DST" -maxdepth 3 -xtype l 2>/dev/null)
 
@@ -81,17 +111,27 @@ done < <(find "$CLAUDE_DST" -maxdepth 3 -xtype l 2>/dev/null)
 echo ""
 echo "Checking for stale backups..."
 while IFS= read -r backup; do
-  yellow "STALE   $backup"
-  WARNINGS=$((WARNINGS + 1))
+  if [ "${1:-}" = "--fix" ]; then
+    rm "$backup"
+    green "CLEANED  $backup"
+    FIXED=$((FIXED + 1))
+  else
+    yellow "STALE   $backup"
+    WARNINGS=$((WARNINGS + 1))
+  fi
 done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
 
 # Summary
 echo ""
 if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
   green "All good. Claude config is in sync."
+  [ $FIXED -gt 0 ] && green "Cleaned up $FIXED item(s)."
+  exit 0
 else
   [ $ERRORS -gt 0 ] && red "$ERRORS error(s) found."
   [ $WARNINGS -gt 0 ] && yellow "$WARNINGS warning(s) found."
   echo ""
-  echo "Run ./setup.sh to fix missing/broken links."
+  echo "Run './check-claude.sh --fix' to auto-clean orphans and backups."
+  echo "Run './setup.sh' to recreate missing links."
+  exit 1
 fi

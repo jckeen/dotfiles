@@ -158,11 +158,18 @@ echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
 mkdir -p "$HOME_DIR/.claude/agents"
 
-link_file "$DOTFILES_DIR/claude/settings.json" "$HOME_DIR/.claude/settings.json"
-link_file "$DOTFILES_DIR/claude/CLAUDE.md" "$HOME_DIR/.claude/CLAUDE.md"
-link_file "$DOTFILES_DIR/claude/AgentPack.md" "$HOME_DIR/.claude/AgentPack.md"
-link_file "$DOTFILES_DIR/claude/statusline.sh" "$HOME_DIR/.claude/statusline.sh"
-chmod +x "$DOTFILES_DIR/claude/statusline.sh"
+# Files to keep in dotfiles but NOT symlink into ~/.claude/
+# (loaded on-demand by CLAUDE.md references instead)
+NOLINK="AgentPack.md"
+
+# Link top-level files (auto-discovers, no hardcoded list)
+for f in "$DOTFILES_DIR/claude/"*; do
+  [ -f "$f" ] || continue
+  name="$(basename "$f")"
+  case " $NOLINK " in *" $name "*) continue ;; esac
+  link_file "$f" "$HOME_DIR/.claude/$name"
+done
+chmod +x "$DOTFILES_DIR/claude/statusline.sh" 2>/dev/null || true
 echo "  -> Claude config linked"
 
 # Hooks
