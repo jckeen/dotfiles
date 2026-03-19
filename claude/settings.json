@@ -58,6 +58,5 @@
   },
   "autoUpdatesChannel": "latest",
   "voiceEnabled": true,
-  "enableRemoteControl": true,
   "preferredModel": "opus"
 }
