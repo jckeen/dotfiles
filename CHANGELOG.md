@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-03-18 (session 3 — full sweep)
+
+### What changed
+- **Removed handoffs/ from repo** — `git rm`'d session-specific handoff files, added `claude/handoffs/` to `.gitignore`. Handoffs are ephemeral and potentially sensitive; they shouldn't live in a public dotfiles repo
+- **safe.directory for claude-memory** — setup.sh WSL section now auto-adds the claude-memory repo to git safe.directory alongside dotfiles
+- **Scripts deployment** — setup.sh now symlinks `claude/scripts/*.sh` into `~/.claude/scripts/`, and `.bash_aliases` adds that directory to PATH. Headless scripts (health-check.sh, overnight.sh, etc.) are now callable directly
+- **`dotfiles-update` function** — new shell function in `.bash_aliases`: pulls latest dotfiles repo, re-runs setup.sh. One command to get up to date
+- **Secret-detection hook** (`block-secrets.sh`) — PreToolUse hook that blocks staging known secret files (.env, credentials.json, private keys, etc.) and catches `git add -A` / `git add .` to prevent accidental secret sweep-ins. Also scans commit messages for inline API keys
+- **Conventional commit hook** (`conventional-commit.sh`) — PreToolUse hook that validates commit messages match `type: description` format (feat, fix, refactor, chore, docs, test, style). Handles both heredoc and inline -m styles
+- **Agent evaluation** — reviewed all 5 "thin" agents (content-reviewer, ux-reviewer, product-strategist, growth-strategist, trust-safety) against built-in subagent_type equivalents. All 5 kept — they add structured output formats, grounding rules ("only report issues with file/line references"), and domain-specific checklists that the built-ins lack
+
+### Decisions made
+- All 16 agents stay — no redundancy with built-in subagent_types
+- Handoffs belong in gitignore, not the repo — they're session-specific and may contain sensitive context
+- Scripts deployed via PATH rather than individual aliases — cleaner and auto-discovers new scripts
+- `git add -A` / `git add .` blocked by hook — enforces staging specific files, which prevents accidental secret commits
+
 ## 2026-03-18 (session 2 — continued)
 
 ### What changed (latest)
