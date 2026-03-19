@@ -15,9 +15,9 @@ During a session:
 - **When stuck, say so** — if the same error appears 3+ times, stop and explain the root cause. Don't retry the same approach. Say: "This approach isn't working because X. Here are alternatives."
 - **Course-correct early** — if you realize mid-implementation that the approach is wrong, stop immediately and say so rather than continuing down a bad path
 
-At the end of a session or major task:
-- Update `CHANGELOG.md` if the project has one
-- Commit and push
+Continuously:
+- **Update `CHANGELOG.md` as you go** — after every 1-2 commits, not at the end. If the session ends unexpectedly, the changelog should already reflect what happened
+- Push after every 2-3 commits or when finishing a task
 
 ## Git Workflow (Auto-Commit Routine)
 - Use conventional-style commit messages: `type: short description`
