@@ -63,7 +63,7 @@ cc() {
   sync-memory
   "$(_dev_dir)/dotfiles/check-claude.sh"
   echo ""
-  claude "$@"
+  claude --remote-control "$@"
 }
 
 # ─── Git worktree shortcuts (Boris's #1 productivity tip) ────────────
