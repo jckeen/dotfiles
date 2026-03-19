@@ -92,7 +92,7 @@ These are available after setup (sourced from `.bash_aliases`).
 
 | Command | What it does |
 |---------|-------------|
-| `cc` | **Recommended way to start.** Pulls all repos, then launches Claude |
+| `cc` | **Recommended way to start.** Pulls repos, syncs memory, runs health check, launches Claude |
 | `claude` | Start Claude directly (no repo sync) |
 | `claude-rc` | Start with explicit remote control flag |
 | `claude-server` | Spawn an isolated worktree + remote control session |
@@ -102,6 +102,8 @@ These are available after setup (sourced from `.bash_aliases`).
 | Command | What it does |
 |---------|-------------|
 | `pull-all` | Git pull (fast-forward only) on every repo in your dev directory that has a remote. Skips local-only repos |
+| `sync-memory` | Commit and push any pending memory changes (runs automatically as part of `cc`) |
+| `check-claude` | Verify all Claude config symlinks, memory, and hooks are healthy |
 
 ### Git worktree shortcuts
 
@@ -247,6 +249,36 @@ claude-server            # Spawn isolated worktree + remote control
 ```
 
 **Remote access** is always on. Connect from `claude.ai/code` or the Claude mobile app.
+
+---
+
+## Persistent Memory
+
+Claude Code stores memory files (user preferences, project context, feedback) in `~/.claude/projects/`. By default these only exist on your local machine — rebuild your environment and they're gone.
+
+This setup solves that with a **separate private repo**:
+
+1. Create a private repo for your memory:
+   ```bash
+   mkdir -p ~/dev/claude-memory/dev/memory
+   cd ~/dev/claude-memory
+   git init && git add -A && git commit -m "init: claude memory"
+   gh repo create claude-memory --private --source=. --push
+   ```
+
+2. Run `setup.sh` — it auto-detects the `claude-memory` repo and symlinks it into `~/.claude/projects/`
+
+3. That's it. The `cc` command auto-commits and pushes memory changes before each session, so your memory is always backed up.
+
+**Why a separate repo?** Memory files contain personal context (your role, project details, preferences). If your dotfiles repo is public, memory needs to stay private. If your dotfiles are private, you could skip this — but the separation is still cleaner.
+
+**What gets stored:**
+- User context (role, expertise, how you like to work)
+- Feedback (corrections you've given Claude, validated approaches)
+- Project state (what's being built, blockers, deadlines)
+- References (where to find things in external systems)
+
+`check-claude.sh` verifies the memory symlink is healthy alongside everything else.
 
 ---
 

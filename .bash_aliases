@@ -38,11 +38,27 @@ pull-all() {
 # Check Claude config symlinks are healthy
 alias check-claude='~/dev/dotfiles/check-claude.sh'
 
-# Launch Claude, pulling repos and verifying config first
+# Commit and push any pending memory changes from last session
+sync-memory() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  local mem_repo="$dev_dir/claude-memory"
+  if [ -d "$mem_repo/.git" ]; then
+    if [ -n "$(git -C "$mem_repo" status --porcelain 2>/dev/null)" ]; then
+      echo "  Saving memory..."
+      git -C "$mem_repo" add -A
+      git -C "$mem_repo" commit -q -m "auto: sync memory $(date +%Y-%m-%d)"
+      git -C "$mem_repo" push -q 2>/dev/null && echo "  Memory saved." || echo "  Memory committed locally (push failed)."
+    fi
+  fi
+}
+
+# Launch Claude, syncing everything first
 cc() {
   echo "Syncing repos..."
   pull-all
   echo ""
+  sync-memory
   ~/dev/dotfiles/check-claude.sh
   echo ""
   claude "$@"
