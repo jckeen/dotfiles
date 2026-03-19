@@ -41,8 +41,14 @@ if [ -d "$SKILLS_SRC" ]; then
     done
 fi
 
+# Files to keep in dotfiles but NOT deploy to ~/.claude/
+# (loaded on-demand by CLAUDE.md references instead)
+NOLINK="AgentPack.md"
+
 # Sync top-level config files
-for f in CLAUDE.md AgentPack.md settings.json; do
+for f in CLAUDE.md settings.json statusline.sh; do
+    # Skip files in the NOLINK list
+    case " $NOLINK " in *" $f "*) continue ;; esac
     if [ -f "$DOTFILES_DIR/$f" ]; then
         if [ ! -f "$CLAUDE_DIR/$f" ] || ! diff -q "$DOTFILES_DIR/$f" "$CLAUDE_DIR/$f" > /dev/null 2>&1; then
             cp "$DOTFILES_DIR/$f" "$CLAUDE_DIR/$f"

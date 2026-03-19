@@ -36,7 +36,9 @@ pull-all() {
 }
 
 # Check Claude config symlinks are healthy
-alias check-claude='~/dev/dotfiles/check-claude.sh'
+check-claude() {
+  "$(_dev_dir)/dotfiles/check-claude.sh" "$@"
+}
 
 # Commit and push any pending memory changes from last session
 sync-memory() {
@@ -59,7 +61,7 @@ cc() {
   pull-all
   echo ""
   sync-memory
-  ~/dev/dotfiles/check-claude.sh
+  "$(_dev_dir)/dotfiles/check-claude.sh"
   echo ""
   claude "$@"
 }

@@ -21,7 +21,8 @@ Then: `gh auth login` and `claude` to authenticate.
 ## Starting a Session
 
 ```bash
-claude                   # Start new session
+cc                       # Recommended: sync repos + memory, health check, launch
+claude                   # Start new session directly
 claude --continue        # Resume most recent
 claude --resume          # Pick from recent sessions
 claude-server            # Isolated worktree + remote access
