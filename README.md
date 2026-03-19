@@ -1,6 +1,6 @@
 # Dotfiles — Claude Code Power User Setup
 
-Production-ready Claude Code setup with safety hooks, 9 slash commands, a 12-agent review orchestra, and a custom status line. Clone it, run `setup.sh`, and skip the config trial-and-error.
+Production-ready Claude Code setup with safety hooks, 9 slash commands, a 16-agent review orchestra, and a custom status line. Clone it, run `setup.sh`, and skip the config trial-and-error.
 
 Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
 
@@ -62,12 +62,12 @@ Everything is **symlinked** from this repo to `~/.claude/`, so edits in either l
 |------|-------|---------|
 | **Claude instructions** | `CLAUDE.md` | Global rules Claude follows in every session |
 | **Settings** | `settings.json` | Permissions, hooks, preferred model (Opus), remote control |
-| **Agent Pack** | `AgentPack.md` | 12-agent review orchestra for product/code analysis |
+| **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Safety hooks** | `hooks/block-dangerous.sh` | Blocks `rm -rf /`, force push to main, `DROP TABLE`, etc. |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Skills** | `skills/*/SKILL.md` | 9 slash commands (see below) |
-| **Subagents** | `agents/*.md` | 12 specialized review agents |
+| **Subagents** | `agents/*.md` | 16 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing for voice mode |
@@ -138,9 +138,9 @@ Type these directly in Claude Code.
 
 ---
 
-## Agent Pack (12-Agent Review Orchestra)
+## Agent Pack (16-Agent Review Orchestra)
 
-A team of 12 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
+A team of 16 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
 
 | Agent | Focus |
 |-------|-------|
@@ -156,6 +156,10 @@ A team of 12 specialized subagents, each running in **its own isolated context**
 | `launch-operator` | Deploy readiness, monitoring, smoke tests |
 | `security-reviewer` | Injection, auth, secrets, insecure data |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions |
+| `repo-scout` | Fast codebase orientation and status briefing |
+| `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths |
+| `test-writer` | Bug reproduction, feature coverage, edge case tests |
+| `schema-reviewer` | DB schema, migrations, data integrity, query patterns |
 
 **How to invoke:**
 - Single: "Use the qa-lead agent to review this feature"
@@ -345,6 +349,7 @@ CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules int
 ```
 dotfiles/
 ├── setup.sh                    # Cross-platform bootstrap script
+├── check-claude.sh             # Health check — verifies symlinks, memory, detects orphans
 ├── sync-claude.sh              # Copy-based sync (for environments without symlinks)
 ├── .bash_aliases               # Shell aliases, functions, worktree shortcuts
 ├── .gitconfig                  # Base git config (includes .gitconfig.local)
@@ -357,7 +362,7 @@ dotfiles/
 ├── CHANGELOG.md                # Change log
 └── claude/
     ├── CLAUDE.md               # Global Claude instructions
-    ├── AgentPack.md            # 12-agent review orchestra
+    ├── AgentPack.md            # 16-agent review orchestra
     ├── settings.json           # Permissions, hooks, model preferences
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
@@ -373,7 +378,15 @@ dotfiles/
     │   ├── simplify/           # /simplify — complexity removal
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
     │   └── claude-server/      # /claude-server — remote worktree
-    └── agents/                 # 12 specialized review subagents
+    ├── scripts/                # Headless automation scripts
+    │   ├── common.sh           # Shared safety tiers + runner
+    │   ├── health-check.sh     # Read-only repo health audit
+    │   ├── full-review.sh      # 3-phase agent pack review
+    │   ├── test-coverage.sh    # Write tests for uncovered code
+    │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
+    │   ├── overnight.sh        # Orchestrate all scripts across repos
+    │   └── review-and-push.sh  # Morning review of overnight changes
+    └── agents/                 # 16 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md
@@ -385,7 +398,11 @@ dotfiles/
         ├── perf-accessibility.md
         ├── launch-operator.md
         ├── security-reviewer.md
-        └── code-simplifier.md
+        ├── code-simplifier.md
+        ├── repo-scout.md
+        ├── dependency-doctor.md
+        ├── test-writer.md
+        └── schema-reviewer.md
 ```
 
 ---
