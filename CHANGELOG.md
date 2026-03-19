@@ -7,6 +7,8 @@
 - **setup.sh wires memory automatically** — detects dev directory, creates symlink, preserves existing files if migrating
 - **check-claude.sh verifies memory** — checks symlink health, catches broken/missing links
 - **CLAUDE.md changelog rule tightened** — changed from "at end of session" to "after every 1-2 commits" to prevent drift
+- **`cc` auto-syncs memory** — commits and pushes pending memory changes from the last session before launching Claude. New `sync-memory` function in `.bash_aliases`
+- **README documents memory setup** — step-by-step instructions for creating a private `claude-memory` repo, explains why it's separate from dotfiles
 
 ### What changed (earlier)
 - **Removed AgentPackJCK.md** — old project-specific agent pack from shitmyspousesays.com, superseded by the generic agent pack
