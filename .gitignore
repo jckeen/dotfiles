@@ -1,5 +1,8 @@
 # Generated per-machine by setup.sh
 .gitconfig.local
 
+# Session handoff notes (ephemeral, potentially sensitive)
+claude/handoffs/
+
 # Symlink artifacts (setup.sh creates these as symlinks in ~/.claude/)
 .claude/

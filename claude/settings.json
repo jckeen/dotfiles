@@ -20,6 +20,14 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/block-dangerous.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/block-secrets.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/conventional-commit.sh"
           }
         ]
       }

@@ -1,3 +1,6 @@
+# Claude Code scripts on PATH
+export PATH="$HOME/.claude/scripts:$PATH"
+
 # Claude Code aliases
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
@@ -64,6 +67,20 @@ cc() {
   "$(_dev_dir)/dotfiles/check-claude.sh"
   echo ""
   claude --remote-control "$@"
+}
+
+# Update dotfiles: pull latest and re-run setup
+dotfiles-update() {
+  local dotfiles_dir
+  dotfiles_dir="$(_dev_dir)/dotfiles"
+  if [ ! -d "$dotfiles_dir/.git" ]; then
+    echo "Dotfiles repo not found at $dotfiles_dir"
+    return 1
+  fi
+  echo "Pulling latest dotfiles..."
+  git -C "$dotfiles_dir" pull --ff-only || { echo "Pull failed — resolve manually."; return 1; }
+  echo "Re-running setup..."
+  bash "$dotfiles_dir/setup.sh"
 }
 
 # ─── Git worktree shortcuts (Boris's #1 productivity tip) ────────────

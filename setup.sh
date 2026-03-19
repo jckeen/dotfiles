@@ -148,6 +148,7 @@ link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 if [[ "$PLATFORM" == "wsl" ]]; then
   WIN_USER=${WIN_USER:-$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')}
   git config --global --add safe.directory "/mnt/c/Users/${WIN_USER}/dev/dotfiles"
+  git config --global --add safe.directory "/mnt/c/Users/${WIN_USER}/dev/claude-memory"
 fi
 
 echo "  -> .gitconfig linked"
@@ -201,6 +202,17 @@ if [ -d "$DOTFILES_DIR/claude/agents" ]; then
     [ -f "$agent" ] && link_file "$agent" "$HOME_DIR/.claude/agents/$(basename "$agent")"
   done
   echo "  -> Claude agents linked"
+fi
+
+# Scripts (headless automation)
+if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
+  mkdir -p "$HOME_DIR/.claude/scripts"
+  for script in "$DOTFILES_DIR/claude/scripts/"*.sh; do
+    [ -f "$script" ] || continue
+    link_file "$script" "$HOME_DIR/.claude/scripts/$(basename "$script")"
+  done
+  chmod +x "$DOTFILES_DIR/claude/scripts/"*.sh 2>/dev/null || true
+  echo "  -> Claude scripts linked"
 fi
 
 # Memory (private repo — github.com/jckeen/claude-memory)
