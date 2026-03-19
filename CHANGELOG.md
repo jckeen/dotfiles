@@ -1,8 +1,14 @@
 # Changelog
 
-## 2026-03-18 (session 2)
+## 2026-03-18 (session 2 — continued)
 
-### What changed
+### What changed (latest)
+- **Private `claude-memory` repo** — memory files moved to `github.com/jckeen/claude-memory` (private), symlinked into `~/.claude/projects/`. Keeps dotfiles public while memory stays private and survives machine rebuilds
+- **setup.sh wires memory automatically** — detects dev directory, creates symlink, preserves existing files if migrating
+- **check-claude.sh verifies memory** — checks symlink health, catches broken/missing links
+- **CLAUDE.md changelog rule tightened** — changed from "at end of session" to "after every 1-2 commits" to prevent drift
+
+### What changed (earlier)
 - **Removed AgentPackJCK.md** — old project-specific agent pack from shitmyspousesays.com, superseded by the generic agent pack
 - **Removed stale `.claude/` directory** from dotfiles repo — contained old flat-format skills and empty handoffs, all superseded by `claude/` directory
 - **Added `check-claude.sh`** — health check script that verifies config symlinks, detects orphans (symlinks whose dotfiles source was removed), finds stale backups, and supports `--fix` for auto-cleanup. Runs as part of `cc` command before launching Claude
