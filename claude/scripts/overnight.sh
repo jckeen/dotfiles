@@ -50,7 +50,18 @@ discover_dev_dir() {
     return
   fi
 
-  # 3. Default ~/dev
+  # 3. WSL auto-detection (dev dir is on Windows filesystem)
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    local win_user
+    win_user=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+    local wsl_dev="/mnt/c/Users/${win_user}/dev"
+    if [[ -d "$wsl_dev" ]]; then
+      echo "$wsl_dev"
+      return
+    fi
+  fi
+
+  # 4. Default ~/dev
   echo "$HOME/dev"
 }
 

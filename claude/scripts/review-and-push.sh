@@ -106,8 +106,7 @@ COMMIT_LOG=$(git log @{u}..HEAD --format="%h %s" 2>/dev/null || echo "")
 
 REVIEW_LOG=$(log_file "review")
 
-# Use structured JSON output for the review
-claude -p "
+run_claude "TIER_READONLY" "
 You are reviewing changes made by an autonomous Claude Code session overnight.
 Your job is to catch anything that should NOT be pushed.
 
@@ -140,11 +139,7 @@ Then a brief summary (under 20 lines) of:
 - Specific concerns if any
 
 Be concise. The reader wants a 30-second decision, not a thesis.
-" \
-  --allowedTools "Read" "Grep" "Glob" \
-  --max-turns 5 \
-  --model "$MODEL" \
-  2>&1 | tee "$REVIEW_LOG"
+" "--max-turns 5" 2>&1 | tee "$REVIEW_LOG"
 
 echo ""
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-18 (session 4 — cleanup and fixes)
+
+### What changed
+- **Deleted `sync-claude.sh`** — 92 lines of dead code; `setup.sh` uses symlinks exclusively, making the copy-based sync obsolete
+- **`check-claude.sh` now checks scripts/** — added loop that verifies `claude/scripts/*.sh` symlinks alongside hooks, agents, and skills
+- **`review-and-push.sh` uses `run_claude()`** — replaced bare `claude -p` call with `run_claude "TIER_READONLY"`, gaining the honesty guardrail, `--full-auto` support, and consistent logging from `common.sh`
+- **`overnight.sh` WSL detection** — `discover_dev_dir()` now auto-detects WSL and resolves to `/mnt/c/Users/<user>/dev` using the same `/proc/version` + `cmd.exe` pattern as `.bash_aliases`'s `_dev_dir()`
+- **`CLAUDE-GUIDE.md` expanded** — added Shell Commands table, Safety Hooks table (4 hooks with triggers), and Autonomous Scripts table (6 scripts with examples)
+- **`README.md` cleaned** — removed `sync-claude.sh` from repo tree listing
+
 ## 2026-03-18 (session 3 — full sweep)
 
 ### What changed

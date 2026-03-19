@@ -103,6 +103,13 @@ for skill_dir in "$CLAUDE_SRC/skills/"*/; do
   done
 done
 
+# Scripts
+for f in "$CLAUDE_SRC/scripts/"*.sh; do
+  [ -f "$f" ] || continue
+  name="$(basename "$f")"
+  check_link "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name"
+done
+
 # Check for orphaned symlinks — symlinks in ~/.claude/ pointing into dotfiles
 # whose source was removed (e.g., AgentPack.md after we stopped linking it)
 echo ""

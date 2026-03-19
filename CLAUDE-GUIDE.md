@@ -79,6 +79,48 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 ---
 
+## Shell Commands
+
+| Command | What it does |
+|---------|-------------|
+| `cc` | Pull repos, sync memory, health check, launch Claude |
+| `pull-all` | Fast-forward pull on every repo in dev dir |
+| `sync-memory` | Commit and push pending memory changes |
+| `check-claude` | Verify all Claude config symlinks are healthy |
+| `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
+| `claude-server` | Spawn isolated worktree + remote control session |
+| `wt-claude <name>` | Create a worktree and launch Claude in it |
+
+---
+
+## Safety Hooks
+
+| Hook | Trigger | What it does |
+|------|---------|-------------|
+| `block-dangerous.sh` | PreToolUse | Blocks `rm -rf /`, force push to main, `DROP TABLE`, `git reset --hard`, edits to `.env.prod` |
+| `block-secrets.sh` | PreToolUse | Blocks staging secret files (`.env`, `*.pem`, `id_rsa`), catches `git add -A`, scans for inline API keys |
+| `conventional-commit.sh` | PreToolUse | Enforces `type: description` commit format (feat, fix, refactor, etc.) |
+| `format-on-edit.sh` | PostToolUse | Auto-formats edited files (prettier, black, rustfmt, gofmt) |
+
+---
+
+## Autonomous Scripts
+
+Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts/` (on PATH after setup).
+
+| Script | What it does | Example |
+|--------|-------------|---------|
+| `health-check.sh` | Read-only repo health audit | `health-check.sh ~/dev/atlas` |
+| `test-coverage.sh` | Write tests for uncovered code | `test-coverage.sh ~/dev/atlas --full-auto` |
+| `fix-issues.sh` | Auto-pick and fix GitHub issues | `fix-issues.sh ~/dev/atlas` |
+| `full-review.sh` | 3-phase agent pack review (12+ subagents) | `full-review.sh ~/dev/atlas` |
+| `overnight.sh` | Orchestrate all scripts across all repos | `overnight.sh --deep --full-auto` |
+| `review-and-push.sh` | Morning review of overnight changes | `review-and-push.sh ~/dev/atlas --auto-push` |
+
+All scripts use safety tiers from `common.sh` — each gets the minimum permissions needed.
+
+---
+
 ## Golden Rules
 
 1. **Context is finite** — `/clear` between unrelated tasks

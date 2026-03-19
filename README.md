@@ -363,7 +363,6 @@ CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules int
 dotfiles/
 ├── setup.sh                    # Cross-platform bootstrap script
 ├── check-claude.sh             # Health check — verifies symlinks, memory, detects orphans
-├── sync-claude.sh              # Copy-based sync (for environments without symlinks)
 ├── .bash_aliases               # Shell aliases, functions, worktree shortcuts
 ├── .gitconfig                  # Base git config (includes .gitconfig.local)
 ├── .gitignore                  # Ignores generated files
