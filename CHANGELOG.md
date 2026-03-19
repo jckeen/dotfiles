@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-03-18 (session 2)
+
+### What changed
+- **Removed AgentPackJCK.md** — old project-specific agent pack from shitmyspousesays.com, superseded by the generic agent pack
+- **Removed stale `.claude/` directory** from dotfiles repo — contained old flat-format skills and empty handoffs, all superseded by `claude/` directory
+- **Added `check-claude.sh`** — health check script that verifies config symlinks, detects orphans (symlinks whose dotfiles source was removed), finds stale backups, and supports `--fix` for auto-cleanup. Runs as part of `cc` command before launching Claude
+- **AgentPack.md now on-demand** — no longer symlinked into `~/.claude/` (saves context tokens every session). CLAUDE.md tells Claude where to find it when needed for multi-agent reviews
+- **CLAUDE.md trimmed from 119 to 89 lines** — removed "Available Skills" and "Available Subagents" listings (Claude already discovers these from installed files)
+- **setup.sh auto-discovers files** — no longer hardcodes which top-level files to link. Uses `NOLINK` list for intentional exceptions (like AgentPack.md)
+- **check-claude.sh safety** — orphan detection only touches symlinks pointing into the dotfiles repo. Backup cleanup only removes `.backup` files where the original is already a working symlink
+- **Cleaned up 9 stale `.backup` files** across `~/.claude/`
+
+### Decisions made
+- Dotfiles repo is the right pattern but needed pruning — keep what's custom, lean on built-in platform features for the rest
+- Custom skills (all 9) are worth keeping — they add workflow guardrails the official plugins intentionally omit
+- Custom agent MD files kept for now — the 4 without built-in equivalents (repo-scout, test-writer, schema-reviewer, dependency-doctor) are clearly needed; the others add output format templates that improve quality
+- `full-review.sh` needs real-world testing — may not reliably spawn 12 subagents in headless mode
+
 ## 2026-03-18
 
 ### What changed

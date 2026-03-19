@@ -107,17 +107,23 @@ while IFS= read -r broken; do
   ERRORS=$((ERRORS + 1))
 done < <(find "$CLAUDE_DST" -maxdepth 3 -xtype l 2>/dev/null)
 
-# Check for stale backup files
+# Check for stale backup files created by setup.sh's link_file()
+# Only flags .backup files where a working symlink exists for the original
 echo ""
 echo "Checking for stale backups..."
 while IFS= read -r backup; do
-  if [ "${1:-}" = "--fix" ]; then
-    rm "$backup"
-    green "CLEANED  $backup"
-    FIXED=$((FIXED + 1))
-  else
-    yellow "STALE   $backup"
-    WARNINGS=$((WARNINGS + 1))
+  original="${backup%.backup}"
+  # Only flag if the non-backup version exists and is a working symlink
+  # (meaning setup.sh already replaced it successfully)
+  if [ -L "$original" ] && [ -e "$original" ]; then
+    if [ "${1:-}" = "--fix" ]; then
+      rm "$backup"
+      green "CLEANED  $backup"
+      FIXED=$((FIXED + 1))
+    else
+      yellow "STALE   $backup"
+      WARNINGS=$((WARNINGS + 1))
+    fi
   fi
 done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
 
