@@ -9,6 +9,7 @@
 - **CLAUDE.md changelog rule tightened** — changed from "at end of session" to "after every 1-2 commits" to prevent drift
 - **`cc` auto-syncs memory** — commits and pushes pending memory changes from the last session before launching Claude. New `sync-memory` function in `.bash_aliases`
 - **README documents memory setup** — step-by-step instructions for creating a private `claude-memory` repo, explains why it's separate from dotfiles
+- **Full doc audit fixes** — agent counts corrected to 16 everywhere, CLAUDE-GUIDE.md now lists `cc` as recommended start command, `.bash_aliases` paths use `_dev_dir()` instead of hardcoded `~/dev/dotfiles`, `sync-claude.sh` respects NOLINK list, README line threshold aligned to 400, handoffs directory added to repo tree
 
 ### What changed (earlier)
 - **Removed AgentPackJCK.md** — old project-specific agent pack from shitmyspousesays.com, superseded by the generic agent pack
