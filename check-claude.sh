@@ -43,6 +43,33 @@ echo ""
 # Files kept in dotfiles but NOT symlinked (loaded on-demand)
 NOLINK="AgentPack.md"
 
+# Memory repo check
+echo "Checking memory repo..."
+# Detect dev dir same way setup.sh does
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+  DEV_DIR="/mnt/c/Users/${WIN_USER}/dev"
+else
+  DEV_DIR="$HOME/dev"
+fi
+MEMORY_REPO="$DEV_DIR/claude-memory"
+MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
+MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"
+
+if [ -L "$MEMORY_DST" ]; then
+  if [ ! -e "$MEMORY_DST" ]; then
+    red "BROKEN  memory -> $(readlink "$MEMORY_DST") (target missing)"
+    ERRORS=$((ERRORS + 1))
+  fi
+elif [ -d "$MEMORY_DST" ]; then
+  yellow "NOT LINKED  memory (exists as directory, not symlink — run setup.sh)"
+  WARNINGS=$((WARNINGS + 1))
+elif [ -d "$MEMORY_REPO" ]; then
+  yellow "MISSING  memory symlink (repo exists but not linked — run setup.sh)"
+  WARNINGS=$((WARNINGS + 1))
+fi
+echo ""
+
 # Top-level files (auto-discovered from dotfiles, not hardcoded)
 for f in "$CLAUDE_SRC/"*; do
   [ -f "$f" ] || continue

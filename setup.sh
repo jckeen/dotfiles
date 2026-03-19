@@ -203,6 +203,35 @@ if [ -d "$DOTFILES_DIR/claude/agents" ]; then
   echo "  -> Claude agents linked"
 fi
 
+# Memory (private repo — github.com/jckeen/claude-memory)
+# Dev dir: on WSL it's /mnt/c/Users/<user>/dev, otherwise ~/dev
+if [[ "$PLATFORM" == "wsl" ]]; then
+  WIN_USER=${WIN_USER:-$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')}
+  DEV_DIR="/mnt/c/Users/${WIN_USER}/dev"
+else
+  DEV_DIR="$HOME_DIR/dev"
+fi
+MEMORY_REPO="$DEV_DIR/claude-memory"
+MEMORY_SRC="$MEMORY_REPO/dev/memory"
+# Claude scopes memory by working directory, encoding the path with dashes
+MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
+MEMORY_DST="$HOME_DIR/.claude/projects/-${MEMORY_PROJECT_DIR}/memory"
+if [ -d "$MEMORY_SRC" ]; then
+  mkdir -p "$(dirname "$MEMORY_DST")"
+  if [ -L "$MEMORY_DST" ]; then
+    rm "$MEMORY_DST"
+  elif [ -d "$MEMORY_DST" ]; then
+    # Preserve any existing memory files before linking
+    cp -n "$MEMORY_DST"/*.md "$MEMORY_SRC/" 2>/dev/null || true
+    rm -r "$MEMORY_DST"
+  fi
+  ln -s "$MEMORY_SRC" "$MEMORY_DST"
+  echo "  -> Claude memory linked (private repo)"
+else
+  echo "  -> Claude memory repo not found at $MEMORY_REPO"
+  echo "     Clone it: gh repo clone jckeen/claude-memory $MEMORY_REPO"
+fi
+
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
   echo ""
