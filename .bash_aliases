@@ -35,10 +35,15 @@ pull-all() {
   done
 }
 
-# Launch Claude, pulling repos first
+# Check Claude config symlinks are healthy
+alias check-claude='~/dev/dotfiles/check-claude.sh'
+
+# Launch Claude, pulling repos and verifying config first
 cc() {
   echo "Syncing repos..."
   pull-all
+  echo ""
+  ~/dev/dotfiles/check-claude.sh
   echo ""
   claude "$@"
 }
