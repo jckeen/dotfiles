@@ -40,7 +40,7 @@ SECRET_FILES="$SECRET_FILES|id_rsa|id_ed25519|id_ecdsa"
 
 if echo "$COMMAND" | grep -qE 'git\s+add'; then
   # Extract file arguments after "git add" (skip flags)
-  FILES=$(echo "$COMMAND" | sed 's/.*git\s\+add\s*//' | tr ' ' '\n' | grep -v '^-')
+  FILES=$(echo "$COMMAND" | sed 's/.*git\s\+add\s*//' | tr ' ' '\n' | grep -v '^-' || true)
   for f in $FILES; do
     if echo "$f" | grep -qiE "$SECRET_FILES"; then
       deny "Refusing to stage '$f' — looks like a secret/credential file. If intentional, stage it manually."
