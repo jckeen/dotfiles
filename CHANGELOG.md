@@ -12,8 +12,18 @@
 - **block-secrets.sh regex fix** — `git add .ai/...` was falsely matching the `git add .` blocker. Fixed to only match `.` as the full argument
 - **Cleaned stale SMSS permissions** — removed old one-off `Bash(...)` permission entries from early sessions
 
+- **Security hardening for public repo** (full audit):
+  - `statusline.sh`: replaced `eval` on jq output with safe tab-delimited `read`; moved cache from `/tmp` (world-writable) to `$XDG_RUNTIME_DIR` or `~/.cache`; replaced `source` cache loading with `IFS read`
+  - `setup.sh`: removed `curl | sudo bash` for Node.js (now prompts user to install manually); added confirmation before all `sudo` operations; only installs missing packages; made WSL audio setup opt-in
+  - Removed hardcoded `jckeen` references from setup.sh and scripts/README.md
+
+### Decisions made
+- `Bash(*)` in settings.json stays — it's intentional for the power-user workflow, and the deny list + hooks provide guardrails. Users who want tighter permissions can override in their project settings
+- `--full-auto` / `FULL_AUTO=true` stays documented — it's clearly marked as opt-in with warning banners, and the tiered permission system is the default
+
 ### Source
 - Gap analysis of ccforeveryone.com (Claude Code for Everyone by Carl Vellotti) against our dotfiles setup
+- Security review of full repo for public consumption
 
 ## 2026-03-18 (session 4 — cleanup and fixes)
 
