@@ -3,9 +3,14 @@
 ## 2026-03-19 (session 5 — ccforeveryone.com gap analysis)
 
 ### What changed
-- **Stop hook template in CLAUDE-GUIDE.md** — added `PostResponse` hook pattern for auto-QA (typecheck/lint/test after each Claude response). Template goes in project-level `.claude/settings.local.json`, not global
+- **Stop hook template in CLAUDE-GUIDE.md** — added `Stop` hook pattern for auto-QA (typecheck/lint/test after each Claude response). Template goes in project-level `.claude/settings.local.json`, not global
 - **Architecture diagram preloading in `cc()`** — if `.ai/diagrams/*.md` exists in the current directory, diagrams are appended to Claude's system prompt via `--append-system-prompt`. Opt-in per project, no change to behavior when diagrams don't exist
 - **CLAUDE.local.md documented** — added brief section to CLAUDE-GUIDE.md explaining the gitignored personal preferences file
+- **Stop hooks deployed to all 5 projects** — atlas (pytest), smss (eslint), pp2qbo (typecheck+lint), stringer (next build), TRNN (jest). All via `.claude/settings.local.json` (gitignored)
+- **Architecture diagrams for pp2qbo** — 3 Mermaid diagrams: data flow pipeline, package dependency graph, service boundaries
+- **Architecture diagrams for stringer** — 3 Mermaid diagrams: service architecture, assignment lifecycle state machine, core data model ER diagram
+- **block-secrets.sh regex fix** — `git add .ai/...` was falsely matching the `git add .` blocker. Fixed to only match `.` as the full argument
+- **Cleaned stale SMSS permissions** — removed old one-off `Bash(...)` permission entries from early sessions
 
 ### Source
 - Gap analysis of ccforeveryone.com (Claude Code for Everyone by Carl Vellotti) against our dotfiles setup
