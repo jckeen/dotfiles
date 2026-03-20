@@ -123,14 +123,14 @@ All scripts use safety tiers from `common.sh` — each gets the minimum permissi
 
 ## Stop Hooks (Auto-QA Pattern)
 
-Add a `PostResponse` hook to a project's `.claude/settings.local.json` to auto-run checks after each Claude response. If checks fail, errors feed back to Claude automatically.
+Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run checks after each Claude response. If checks fail, errors feed back to Claude automatically.
 
 **Template** — adapt the commands per project:
 
 ```json
 {
   "hooks": {
-    "PostResponse": [
+    "Stop": [
       {
         "matcher": "",
         "hooks": [
