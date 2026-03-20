@@ -171,6 +171,22 @@ if [ "$IN_GIT_REPO" -eq 1 ] && [ -n "$REMOTE_URL" ]; then
   fi
 fi
 
+# --- Per-repo color (from .claude-color file) ---
+REPO_COLOR=""
+REPO_COLOR_HEX=""
+if [ -n "${CWD:-}" ] && [ -f "${CWD}/.claude-color" ]; then
+  REPO_COLOR_HEX=$(head -1 "${CWD}/.claude-color" 2>/dev/null | tr -d '[:space:]#')
+elif [ -f ".claude-color" ]; then
+  REPO_COLOR_HEX=$(head -1 ".claude-color" 2>/dev/null | tr -d '[:space:]#')
+fi
+if [[ "${REPO_COLOR_HEX:-}" =~ ^[0-9a-fA-F]{6}$ ]]; then
+  # Convert hex to 256-color approximate or use true color
+  R=$((16#${REPO_COLOR_HEX:0:2}))
+  G=$((16#${REPO_COLOR_HEX:2:2}))
+  B=$((16#${REPO_COLOR_HEX:4:2}))
+  REPO_COLOR="\033[38;2;${R};${G};${B}m"
+fi
+
 # =============================================
 # LINE 1: Model | Context | Tokens | Session
 # =============================================
@@ -201,13 +217,14 @@ L1="${L1}  ${DIM}↑${OUT_FMT} ↓${IN_FMT}${RESET}"
 # =============================================
 L2=""
 
-# Repo name (clickable link to GitHub if available)
+# Repo name (clickable link to GitHub, colored per project)
+REPO_NAME_COLOR="${REPO_COLOR:-$BLUE}"
 if [ -n "$REPO_NAME" ]; then
   if [ -n "$GITHUB_URL" ]; then
     REPO_LINK=$(link "$GITHUB_URL" "$REPO_NAME")
-    L2="${L2}${BLUE}${REPO_LINK}${RESET}"
+    L2="${L2}${REPO_NAME_COLOR}${BOLD}${REPO_LINK}${RESET}"
   else
-    L2="${L2}${BLUE}${REPO_NAME}${RESET}"
+    L2="${L2}${REPO_NAME_COLOR}${BOLD}${REPO_NAME}${RESET}"
   fi
 fi
 

@@ -77,7 +77,21 @@ cc() {
     diagram_args=(--append-system-prompt "$diagrams")
   fi
 
+  # Set terminal tab color from .claude-color if present
+  if [ -f ".claude-color" ]; then
+    local hex
+    hex=$(head -1 .claude-color | tr -d '[:space:]#')
+    if [[ "$hex" =~ ^[0-9a-fA-F]{6}$ ]]; then
+      local r=$((16#${hex:0:2})) g=$((16#${hex:2:2})) b=$((16#${hex:4:2}))
+      # Windows Terminal tab color (OSC 9;9)
+      printf '\033]9;9;rgb(%d,%d,%d)\033\\' "$r" "$g" "$b"
+    fi
+  fi
+
   claude --remote-control "${diagram_args[@]}" "$@"
+
+  # Reset tab color on exit
+  printf '\033]9;9;\033\\' 2>/dev/null
 }
 
 # Update dotfiles: pull latest and re-run setup
