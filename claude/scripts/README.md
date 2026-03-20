@@ -170,14 +170,11 @@ If neither env var nor config file exists, `overnight.sh` scans your dev directo
 2. `~/.claude/dev-dir` file (contains one path)
 3. Falls back to `~/dev`
 
-This works on macOS (`~/dev`), Linux (`~/dev`), and WSL (`/mnt/c/Users/you/dev` — just set the env var or config file).
+This works on macOS (`~/dev`), Linux (`~/dev`), and WSL (`~/dev`). Keep repos on the Linux filesystem for ~10x faster I/O — avoid `/mnt/c/`.
 
 ```bash
-# WSL example
-echo "/mnt/c/Users/$USER/dev" > ~/.claude/dev-dir
-
-# Or env var in your .bashrc / .zshrc
-export CLAUDE_DEV_DIR="/mnt/c/Users/$USER/dev"
+# WSL: repos should live under ~/dev (Linux filesystem), NOT /mnt/c/
+# setup.sh writes ~/.claude/dev-dir automatically — no manual config needed
 ```
 
 ## For Dotfiles Users
@@ -187,9 +184,8 @@ Getting started:
 1. **Install prerequisites**: Claude Code, `gh` CLI, Bash 4+
 2. **Make scripts executable**: `chmod +x ~/dotfiles/claude/scripts/*.sh`
 3. **Configure your dev directory** (pick one):
-   - Do nothing if your repos are in `~/dev` (macOS/Linux default)
-   - `echo "/mnt/c/Users/you/dev" > ~/.claude/dev-dir` (WSL)
-   - `export CLAUDE_DEV_DIR="/path/to/dev"` in your shell profile
+   - Do nothing if your repos are in `~/dev` (default on all platforms including WSL)
+   - `export CLAUDE_DEV_DIR="/path/to/dev"` in your shell profile (if non-standard)
 4. **Test with a safe read-only run**: `./health-check.sh /path/to/your/repo`
 5. **Try overnight**: `./overnight.sh` (read-only health checks across all repos)
 6. **Go deeper when comfortable**: `./overnight.sh --deep` (writes tests + fixes issues)
