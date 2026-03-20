@@ -66,7 +66,18 @@ cc() {
   sync-memory
   "$(_dev_dir)/dotfiles/check-claude.sh"
   echo ""
-  claude --remote-control "$@"
+
+  # Preload architecture diagrams if the project has them
+  local diagram_args=()
+  if [ -d ".ai/diagrams" ] && ls .ai/diagrams/*.md &>/dev/null; then
+    local diagrams=""
+    for f in .ai/diagrams/*.md; do
+      diagrams+="$(cat "$f")"$'\n'
+    done
+    diagram_args=(--append-system-prompt "$diagrams")
+  fi
+
+  claude --remote-control "${diagram_args[@]}" "$@"
 }
 
 # Update dotfiles: pull latest and re-run setup

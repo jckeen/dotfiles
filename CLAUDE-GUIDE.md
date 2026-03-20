@@ -121,6 +121,46 @@ All scripts use safety tiers from `common.sh` — each gets the minimum permissi
 
 ---
 
+## Stop Hooks (Auto-QA Pattern)
+
+Add a `PostResponse` hook to a project's `.claude/settings.local.json` to auto-run checks after each Claude response. If checks fail, errors feed back to Claude automatically.
+
+**Template** — adapt the commands per project:
+
+```json
+{
+  "hooks": {
+    "PostResponse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd $CLAUDE_PROJECT_DIR && npm run typecheck 2>&1 | tail -20; npm run lint 2>&1 | tail -20"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Tips:**
+- Put this in `.claude/settings.local.json` (project-level, gitignored), not global settings
+- Pipe through `tail` to keep output concise — Claude sees the full hook output
+- Chain multiple checks with `&&` or `;` depending on whether you want fail-fast
+- Common combos: `tsc --noEmit`, `eslint .`, `pytest`, `cargo check`, `go vet ./...`
+
+---
+
+## CLAUDE.local.md
+
+Use `CLAUDE.local.md` alongside `CLAUDE.md` for personal preferences that shouldn't be committed to the repo. Claude reads both automatically. Add it to `.gitignore`.
+
+Useful for: personal workflow preferences, local paths, machine-specific context.
+
+---
+
 ## Golden Rules
 
 1. **Context is finite** — `/clear` between unrelated tasks

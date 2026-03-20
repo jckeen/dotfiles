@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-19 (session 5 — ccforeveryone.com gap analysis)
+
+### What changed
+- **Stop hook template in CLAUDE-GUIDE.md** — added `PostResponse` hook pattern for auto-QA (typecheck/lint/test after each Claude response). Template goes in project-level `.claude/settings.local.json`, not global
+- **Architecture diagram preloading in `cc()`** — if `.ai/diagrams/*.md` exists in the current directory, diagrams are appended to Claude's system prompt via `--append-system-prompt`. Opt-in per project, no change to behavior when diagrams don't exist
+- **CLAUDE.local.md documented** — added brief section to CLAUDE-GUIDE.md explaining the gitignored personal preferences file
+
+### Source
+- Gap analysis of ccforeveryone.com (Claude Code for Everyone by Carl Vellotti) against our dotfiles setup
+
 ## 2026-03-18 (session 4 — cleanup and fixes)
 
 ### What changed
