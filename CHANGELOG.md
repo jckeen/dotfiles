@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-20 (session 6 — WSL Linux filesystem migration)
+
+### What changed
+- **Fixed hardcoded `/mnt/c/` dev dir paths** — after moving repos from Windows filesystem to Linux filesystem (`/home/jckee/dev/`), all scripts that auto-detected the dev directory were pointing to the old `/mnt/c/Users/jckee/dev` path
+  - `setup.sh`: derives `DEV_DIR` from dotfiles repo location instead of hardcoding WSL path; safe.directory entries now use actual paths
+  - `check-claude.sh`: same `DEV_DIR` derivation fix
+  - `.bash_aliases` `_dev_dir()`: now checks `~/dev` first, falls back to `/mnt/c/` only if Linux path doesn't exist
+  - `overnight.sh` `discover_dev_dir()`: same preference order — Linux filesystem first, Windows fallback
+
 ## 2026-03-19 (session 5 — ccforeveryone.com gap analysis)
 
 ### What changed

@@ -165,9 +165,8 @@ link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
 # WSL-specific: mark dev repos as safe
 if [[ "$PLATFORM" == "wsl" ]]; then
-  WIN_USER=${WIN_USER:-$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')}
-  git config --global --add safe.directory "/mnt/c/Users/${WIN_USER}/dev/dotfiles"
-  git config --global --add safe.directory "/mnt/c/Users/${WIN_USER}/dev/claude-memory"
+  git config --global --add safe.directory "$DOTFILES_DIR"
+  git config --global --add safe.directory "$DEV_DIR/claude-memory"
 fi
 
 echo "  -> .gitconfig linked"
@@ -235,13 +234,8 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
 fi
 
 # Memory (optional private repo for persistent Claude memory)
-# Dev dir: on WSL it's /mnt/c/Users/<user>/dev, otherwise ~/dev
-if [[ "$PLATFORM" == "wsl" ]]; then
-  WIN_USER=${WIN_USER:-$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')}
-  DEV_DIR="/mnt/c/Users/${WIN_USER}/dev"
-else
-  DEV_DIR="$HOME_DIR/dev"
-fi
+# Dev dir: derived from dotfiles repo location (parent of this repo)
+DEV_DIR="$(dirname "$DOTFILES_DIR")"
 MEMORY_REPO="$DEV_DIR/claude-memory"
 MEMORY_SRC="$MEMORY_REPO/dev/memory"
 # Claude scopes memory by working directory, encoding the path with dashes
@@ -319,5 +313,5 @@ echo "  1. Run 'gh auth login' if not already authenticated"
 echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo "  3. Add project repos to git safe.directory as needed:"
-  echo "     git config --global --add safe.directory /mnt/c/Users/\$USERNAME/dev/<repo>"
+  echo "     git config --global --add safe.directory $DEV_DIR/<repo>"
 fi

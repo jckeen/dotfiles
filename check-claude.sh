@@ -45,13 +45,8 @@ NOLINK="AgentPack.md"
 
 # Memory repo check
 echo "Checking memory repo..."
-# Detect dev dir same way setup.sh does
-if grep -qi microsoft /proc/version 2>/dev/null; then
-  WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
-  DEV_DIR="/mnt/c/Users/${WIN_USER}/dev"
-else
-  DEV_DIR="$HOME/dev"
-fi
+# Derive dev dir from dotfiles repo location (parent of this repo)
+DEV_DIR="$(dirname "$DOTFILES_DIR")"
 MEMORY_REPO="$DEV_DIR/claude-memory"
 MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
 MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"

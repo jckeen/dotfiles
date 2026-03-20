@@ -5,8 +5,14 @@ export PATH="$HOME/.claude/scripts:$PATH"
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
-# Detect dev directory (WSL uses /mnt/c/Users/<user>/dev, others use ~/dev)
+# Detect dev directory (prefers ~/dev on Linux filesystem, falls back to /mnt/c/ for WSL)
 _dev_dir() {
+  # Prefer Linux filesystem (faster on WSL)
+  if [ -d "$HOME/dev" ]; then
+    echo "$HOME/dev"
+    return
+  fi
+  # Fall back to Windows filesystem for WSL
   if grep -qi microsoft /proc/version 2>/dev/null; then
     local win_user
     win_user=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
