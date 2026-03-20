@@ -174,10 +174,10 @@ This works on macOS (`~/dev`), Linux (`~/dev`), and WSL (`/mnt/c/Users/you/dev` 
 
 ```bash
 # WSL example
-echo "/mnt/c/Users/jckee/dev" > ~/.claude/dev-dir
+echo "/mnt/c/Users/$USER/dev" > ~/.claude/dev-dir
 
 # Or env var in your .bashrc / .zshrc
-export CLAUDE_DEV_DIR="/mnt/c/Users/jckee/dev"
+export CLAUDE_DEV_DIR="/mnt/c/Users/$USER/dev"
 ```
 
 ## For Dotfiles Users

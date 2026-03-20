@@ -11,22 +11,22 @@ if ! command -v jq &>/dev/null; then echo "?"; exit 0; fi
 
 input=$(cat)
 
-# --- Parse JSON (single jq call for performance) ---
-eval "$(echo "$input" | jq -r '
-  @sh "MODEL=\(.model.display_name // "?")",
-  @sh "PCT=\(.context_window.used_percentage // 0 | floor)",
-  @sh "IN_TOK=\(.context_window.total_input_tokens // 0)",
-  @sh "OUT_TOK=\(.context_window.total_output_tokens // 0)",
-  @sh "WIN_SIZE=\(.context_window.context_window_size // 0)",
-  @sh "WORKTREE=\(.worktree.name // "")",
-  @sh "WT_BRANCH=\(.worktree.branch // "")",
-  @sh "VIM_MODE=\(.vim.mode // "")",
-  @sh "SESSION=\(.session_name // "")",
-  @sh "CWD=\(.cwd // "")",
-  @sh "VERSION=\(.version // "")"
-' 2>/dev/null)" 2>/dev/null || {
-  echo "?"; exit 0
-}
+# --- Parse JSON (single jq call, no eval) ---
+_parsed=$(echo "$input" | jq -r '[
+  (.model.display_name // "?"),
+  (.context_window.used_percentage // 0 | floor | tostring),
+  (.context_window.total_input_tokens // 0 | tostring),
+  (.context_window.total_output_tokens // 0 | tostring),
+  (.context_window.context_window_size // 0 | tostring),
+  (.worktree.name // ""),
+  (.worktree.branch // ""),
+  (.vim.mode // ""),
+  (.session_name // ""),
+  (.cwd // ""),
+  (.version // "")
+] | join("\t")' 2>/dev/null) || { echo "?"; exit 0; }
+
+IFS=$'\t' read -r MODEL PCT IN_TOK OUT_TOK WIN_SIZE WORKTREE WT_BRANCH VIM_MODE SESSION CWD VERSION <<< "$_parsed"
 
 # Ensure PCT is numeric
 PCT="${PCT:-0}"
@@ -84,7 +84,7 @@ fmt_tokens() {
 }
 
 # --- Git info (cached 5s) ---
-CACHE_DIR="/tmp/.claude-statusline"
+CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/claude-statusline"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 CACHE_KEY=$(echo "$PWD" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "default")
 CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
@@ -128,27 +128,19 @@ if [ "$NEED_REFRESH" -eq 1 ] && git rev-parse --is-inside-work-tree &>/dev/null;
   # Stash count
   STASH_COUNT=$(git stash list 2>/dev/null | wc -l)
 
-  # Write cache
-  cat > "$CACHE_FILE" 2>/dev/null <<CACHE_EOF
-BRANCH=${BRANCH}
-REMOTE_URL=${REMOTE_URL}
-STAGED=${STAGED}
-MODIFIED=${MODIFIED}
-UNTRACKED=${UNTRACKED}
-CONFLICTS=${CONFLICTS}
-AHEAD=${AHEAD}
-BEHIND=${BEHIND}
-STASH_COUNT=${STASH_COUNT}
-IN_GIT_REPO=1
-CACHE_EOF
+  # Write cache (tab-delimited data, no executable code)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$BRANCH" "$REMOTE_URL" "$STAGED" "$MODIFIED" "$UNTRACKED" \
+    "$CONFLICTS" "$AHEAD" "$BEHIND" "$STASH_COUNT" \
+    > "$CACHE_FILE" 2>/dev/null
 elif [ -f "$CACHE_FILE" ]; then
-  source "$CACHE_FILE" 2>/dev/null || true
+  IFS=$'\t' read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
   IN_GIT_REPO=1
 fi
 
-# If we just refreshed, vars are already set; if we sourced, they're loaded
+# Load from cache if still fresh
 if [ "$NEED_REFRESH" -ne 1 ] && [ -f "$CACHE_FILE" ]; then
-  source "$CACHE_FILE" 2>/dev/null || true
+  IFS=$'\t' read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
   IN_GIT_REPO=1
 fi
 

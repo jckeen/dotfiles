@@ -42,30 +42,44 @@ echo "=== Dotfiles setup from $DOTFILES_DIR ==="
 # ─── 1. System packages ───────────────────────────────────────────────
 echo ""
 echo "--- Installing system packages ---"
-if [[ "$PLATFORM" == "macos" ]]; then
-  if ! command -v brew &>/dev/null; then
-    echo "Homebrew not found. Install it first:"
-    echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-    exit 1
+MISSING_PKGS=""
+for cmd in gh git curl jq; do
+  command -v "$cmd" &>/dev/null || MISSING_PKGS="$MISSING_PKGS $cmd"
+done
+
+if [ -n "$MISSING_PKGS" ]; then
+  echo "Missing packages:$MISSING_PKGS"
+  if [[ "$PLATFORM" == "macos" ]]; then
+    if ! command -v brew &>/dev/null; then
+      echo "Homebrew not found. Install it first:"
+      echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+      exit 1
+    fi
+    read -rp "Install via brew? [Y/n] " yn
+    [[ "$yn" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
+    brew install $MISSING_PKGS || true
+  else
+    read -rp "Install via apt? (requires sudo) [Y/n] " yn
+    [[ "$yn" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
+    sudo apt update && sudo apt install -y $MISSING_PKGS unzip
   fi
-  brew install gh git curl jq || true
 else
-  sudo apt update && sudo apt install -y \
-    gh \
-    git \
-    curl \
-    unzip \
-    jq
+  echo "All required packages already installed."
 fi
 
 # ─── 1b. Audio (WSL only — ALSA → PulseAudio for WSLg) ──────────────
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
-  echo "--- Setting up ALSA → PulseAudio routing (WSL) ---"
-  sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
-  link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
-  sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
-  echo "  -> .asoundrc linked, /etc/asound.conf written"
+  echo "--- ALSA → PulseAudio routing (WSL, needed for /voice) ---"
+  read -rp "Set up audio routing for Claude /voice? (requires sudo) [y/N] " yn
+  if [[ "$yn" =~ ^[Yy] ]]; then
+    sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
+    link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
+    sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
+    echo "  -> .asoundrc linked, /etc/asound.conf written"
+  else
+    echo "  -> Skipped audio setup"
+  fi
 fi
 
 # ─── 2. Node.js (if not present) ─────────────────────────────────────
@@ -75,8 +89,13 @@ if ! command -v node &>/dev/null; then
   if [[ "$PLATFORM" == "macos" ]]; then
     brew install node
   else
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-    sudo apt install -y nodejs
+    echo "  Node.js not found. Install via your preferred method:"
+    echo "    Option 1: curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -"
+    echo "    Option 2: sudo apt install -y nodejs npm"
+    echo "    Option 3: Install nvm: https://github.com/nvm-sh/nvm"
+    echo ""
+    echo "  Then re-run setup.sh."
+    exit 1
   fi
 else
   echo "Node.js already installed: $(node -v)"
@@ -215,7 +234,7 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
-# Memory (private repo — github.com/jckeen/claude-memory)
+# Memory (optional private repo for persistent Claude memory)
 # Dev dir: on WSL it's /mnt/c/Users/<user>/dev, otherwise ~/dev
 if [[ "$PLATFORM" == "wsl" ]]; then
   WIN_USER=${WIN_USER:-$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')}
@@ -241,7 +260,8 @@ if [ -d "$MEMORY_SRC" ]; then
   echo "  -> Claude memory linked (private repo)"
 else
   echo "  -> Claude memory repo not found at $MEMORY_REPO"
-  echo "     Clone it: gh repo clone jckeen/claude-memory $MEMORY_REPO"
+  echo "     Create your own: gh repo create claude-memory --private --clone"
+  echo "     Then mkdir -p claude-memory/dev/memory and re-run setup.sh"
 fi
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
