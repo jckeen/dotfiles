@@ -47,7 +47,7 @@ if echo "$COMMAND" | grep -qE 'git\s+add'; then
     fi
   done
   # Block "git add -A" or "git add ." which could sweep in secrets
-  if echo "$COMMAND" | grep -qE 'git\s+add\s+(-A|--all|\.)'; then
+  if echo "$COMMAND" | grep -qE 'git\s+add\s+(-A|--all|\.\s*($|&&|\||\;))'; then
     deny "Use 'git add <specific files>' instead of 'git add -A' or 'git add .' to avoid accidentally staging secrets."
   fi
 fi
