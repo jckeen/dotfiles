@@ -27,6 +27,8 @@ claude                 # Follow the login prompt
 
 The setup script auto-detects your platform, installs tools, prompts for git identity, and symlinks all Claude config into `~/.claude/`.
 
+> **WSL users:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
+
 ### Try it now
 
 After setup, try these to see what you've got:

@@ -304,6 +304,20 @@ else
     echo "  -> Created .bashrc with .bash_aliases sourcing"
   fi
   echo "  -> .bash_aliases linked"
+
+  # WSL: auto-cd into Linux-native dev directory for better I/O performance
+  if [[ "$PLATFORM" == "wsl" ]]; then
+    if grep -q 'cd /mnt/c/' "$HOME_DIR/.bashrc" 2>/dev/null; then
+      # Replace any existing cd to Windows mount with Linux-native path
+      sed -i "s|cd /mnt/c/.*|# Start in Linux-native dev directory for better WSL performance\ncd ~/dev|" "$HOME_DIR/.bashrc"
+      echo "  -> Updated .bashrc: cd ~/dev (was pointing to /mnt/c/)"
+    elif ! grep -q 'cd ~/dev' "$HOME_DIR/.bashrc" 2>/dev/null; then
+      echo '' >> "$HOME_DIR/.bashrc"
+      echo '# Start in Linux-native dev directory for better WSL performance' >> "$HOME_DIR/.bashrc"
+      echo 'cd ~/dev' >> "$HOME_DIR/.bashrc"
+      echo "  -> Added auto-cd to ~/dev in .bashrc"
+    fi
+  fi
 fi
 
 echo ""
@@ -316,6 +330,12 @@ echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
 echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 if [[ "$PLATFORM" == "wsl" ]]; then
+  echo ""
+  echo "  WSL performance tip:"
+  echo "    Keep your repos under ~/dev (Linux filesystem), NOT /mnt/c/ (Windows mount)."
+  echo "    File I/O on the Linux filesystem is ~10x faster than the Windows mount."
+  echo "    Your shell will auto-cd to ~/dev on startup."
+  echo ""
   echo "  3. Add project repos to git safe.directory as needed:"
   echo "     git config --global --add safe.directory $DEV_DIR/<repo>"
 fi
