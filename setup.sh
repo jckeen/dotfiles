@@ -233,9 +233,13 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
-# Memory (optional private repo for persistent Claude memory)
 # Dev dir: derived from dotfiles repo location (parent of this repo)
+# Written to ~/.claude/dev-dir so all scripts have a single source of truth
 DEV_DIR="$(dirname "$DOTFILES_DIR")"
+echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
+echo "  -> dev-dir set to $DEV_DIR"
+
+# Memory (optional private repo for persistent Claude memory)
 MEMORY_REPO="$DEV_DIR/claude-memory"
 MEMORY_SRC="$MEMORY_REPO/dev/memory"
 # Claude scopes memory by working directory, encoding the path with dashes

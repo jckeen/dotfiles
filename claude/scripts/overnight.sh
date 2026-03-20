@@ -38,36 +38,19 @@ done
 #   Or list them in ~/.claude/repos (one path per line)
 
 discover_dev_dir() {
-  # 1. Env var
+  # 1. Env var override
   if [[ -n "${CLAUDE_DEV_DIR:-}" ]]; then
     echo "$CLAUDE_DEV_DIR"
     return
   fi
 
-  # 2. Config file
+  # 2. Config file (written by setup.sh — single source of truth)
   if [[ -f "$HOME/.claude/dev-dir" ]]; then
     cat "$HOME/.claude/dev-dir"
     return
   fi
 
-  # 3. Prefer Linux filesystem (faster on WSL)
-  if [[ -d "$HOME/dev" ]]; then
-    echo "$HOME/dev"
-    return
-  fi
-
-  # 4. Fall back to Windows filesystem for WSL
-  if grep -qi microsoft /proc/version 2>/dev/null; then
-    local win_user
-    win_user=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
-    local wsl_dev="/mnt/c/Users/${win_user}/dev"
-    if [[ -d "$wsl_dev" ]]; then
-      echo "$wsl_dev"
-      return
-    fi
-  fi
-
-  # 5. Default ~/dev
+  # 3. Default ~/dev
   echo "$HOME/dev"
 }
 

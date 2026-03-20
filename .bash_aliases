@@ -5,24 +5,13 @@ export PATH="$HOME/.claude/scripts:$PATH"
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
-# Detect dev directory (prefers ~/dev on Linux filesystem, falls back to /mnt/c/ for WSL)
+# Detect dev directory — reads from ~/.claude/dev-dir (written by setup.sh)
 _dev_dir() {
-  # Prefer Linux filesystem (faster on WSL)
-  if [ -d "$HOME/dev" ]; then
+  if [ -f "$HOME/.claude/dev-dir" ]; then
+    cat "$HOME/.claude/dev-dir"
+  else
     echo "$HOME/dev"
-    return
   fi
-  # Fall back to Windows filesystem for WSL
-  if grep -qi microsoft /proc/version 2>/dev/null; then
-    local win_user
-    win_user=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
-    local wsl_dev="/mnt/c/Users/${win_user}/dev"
-    if [ -d "$wsl_dev" ]; then
-      echo "$wsl_dev"
-      return
-    fi
-  fi
-  echo "$HOME/dev"
 }
 
 # Pull latest for all git repos under dev directory
