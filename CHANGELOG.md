@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-03-22 (session 7 — PAI migration kickoff)
+
+### What changed
+- **Forked PAI** — forked `danielmiessler/Personal_AI_Infrastructure` to `jckeen/Personal_AI_Infrastructure` as the next-gen dotfiles platform. Cloned to `~/dev/pai`
+- **Created USER tier files** in the PAI fork:
+  - `PAI/USER/ABOUTME.md` — role, expertise, current projects, working style
+  - `PAI/USER/DAIDENTITY.md` — personality traits (directness 90, precision 85, curiosity 70), peer-to-peer relationship model
+  - `PAI/USER/AISTEERINGRULES.md` — all behavioral rules migrated from this repo's `CLAUDE.md`
+  - `PAI/USER/AGENTPACK.md` — 16-agent review orchestra with 3-phase workflow
+- **PAI-MIGRATION-HANDOFF.md** — comprehensive handoff documenting what migrates, what gets replaced, what stays
+
+### Decisions made
+- Fork PAI (not submodule, not cherry-pick) — `~/.claude/` IS the repo
+- Port bash hooks to TypeScript for consistency with PAI's Bun runtime
+- Install all 12 PAI packs (full suite)
+- Set up ElevenLabs voice server
+- Track upstream PAI via `git remote add upstream`
+- This dotfiles repo becomes a thin bootstrap layer (setup.sh, .gitconfig, .bash_aliases)
+
+### Next sessions
+- Session 2: Port hooks to TypeScript, create security patterns.yaml
+- Session 3: Migrate skills, agents, autonomous scripts, status line
+- Session 4: Merge settings.json, install packs
+- Session 5: Voice server, rewrite setup.sh
+- Session 6: End-to-end verification
+
 ## 2026-03-20 (session 6 — WSL Linux filesystem migration)
 
 ### What changed
