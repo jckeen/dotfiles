@@ -2,3 +2,6 @@
 # (generated per-machine by setup.sh, not committed)
 [include]
 	path = ~/.gitconfig.local
+[safe]
+	directory = /home/jckee/dev/dotfiles
+	directory = /claude-memory
