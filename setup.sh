@@ -233,6 +233,16 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
+# Chrome (WSL bridge setup script)
+if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
+  mkdir -p "$HOME_DIR/.claude/chrome"
+  for f in "$DOTFILES_DIR/claude/chrome/"*; do
+    [ -f "$f" ] && link_file "$f" "$HOME_DIR/.claude/chrome/$(basename "$f")"
+  done
+  chmod +x "$DOTFILES_DIR/claude/chrome/"*.sh 2>/dev/null || true
+  echo "  -> Claude chrome scripts linked"
+fi
+
 # Dev dir: derived from dotfiles repo location (parent of this repo)
 # Written to ~/.claude/dev-dir so all scripts have a single source of truth
 DEV_DIR="$(dirname "$DOTFILES_DIR")"
@@ -330,6 +340,10 @@ echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
 echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 if [[ "$PLATFORM" == "wsl" ]]; then
+  echo ""
+  echo "  WSL Chrome bridge:"
+  echo "    Run 'bash ~/.claude/chrome/setup-wsl-chrome-bridge.sh' to enable claude --chrome"
+  echo "    (bridges Windows Chrome to WSL2 Claude Code via native messaging)"
   echo ""
   echo "  WSL performance tip:"
   echo "    Keep your repos under ~/dev (Linux filesystem), NOT /mnt/c/ (Windows mount)."
