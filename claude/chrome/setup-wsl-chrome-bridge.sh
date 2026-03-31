@@ -127,20 +127,20 @@ fi
 info "Setting up native messaging manifest..."
 
 # Convert WSL path to Windows path for the manifest
-WIN_BAT_PATH="C:\\Users\\${WIN_USER}\\.claude\\chrome\\chrome-native-host.bat"
 MANIFEST_FILE="$WIN_CLAUDE_CHROME/com.anthropic.claude_code_browser_extension.json"
 
-cat > "$MANIFEST_FILE" << JSONEOF
+# Note: JSON requires escaped backslashes (\\) in paths
+cat > "$MANIFEST_FILE" <<EOF
 {
   "name": "com.anthropic.claude_code_browser_extension",
   "description": "Claude Code Browser Extension Native Host (WSL2 bridge)",
-  "path": "${WIN_BAT_PATH}",
+  "path": "C:\\\\Users\\\\${WIN_USER}\\\\.claude\\\\chrome\\\\chrome-native-host.bat",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://${EXT_ID}/"
   ]
 }
-JSONEOF
+EOF
 info "Manifest: $MANIFEST_FILE"
 
 # ── Step 4: Windows registry key ────────────────────────────────────

@@ -131,3 +131,8 @@ wt-claude() {
   echo "Starting Claude in worktree: $wt_path"
   (cd "$wt_path" && claude)
 }
+
+# WSL: open URLs in Windows Chrome
+export BROWSER="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+# WSL: force-enable Claude in Chrome
+export CLAUDE_CODE_ENABLE_CFC=1
