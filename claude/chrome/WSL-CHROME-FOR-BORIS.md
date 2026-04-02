@@ -74,6 +74,28 @@ Fix: in the `"wsl"` case, use the Windows Chrome executable path directly, or re
 Working setup script (idempotent, auto-detects everything):
 https://github.com/jckeen/dotfiles/blob/main/claude/chrome/setup-wsl-chrome-bridge.sh
 
+## Known issue: `document_idle` detection broken over WSL bridge
+
+**Status**: Upstream bug — affects all WSL bridge configurations (`.bat` and compiled `.exe` shims).
+
+**Symptom**: Tools that depend on `chrome.scripting.executeScript()` with `document_idle` timing hang for 45 seconds then timeout. The extension's tab icon shows an hourglass during the wait.
+
+**What works**: `navigate`, `tabs_create`, `tabs_context`, `javascript_tool`
+
+**What fails**: `read_page`, `get_page_text`, `screenshot` — anything that injects a content script and waits for idle
+
+**Root cause**: The extension's `mcpPermissions-zxU6uxCu.js` races `executeScript()` against a 45-second timeout. Chrome's internal `document_idle` event never fires when the native host runs through the `wsl.exe` stdio bridge. This is **not** a cmd.exe buffering issue — a compiled Go `.exe` shim that directly pipes stdio to `wsl.exe` has the same behavior. `document.readyState` reports `"complete"` via `javascript_tool`, confirming the page is loaded — Chrome's idle detection just doesn't trigger.
+
+**Workaround**: Use `javascript_tool` to read page content directly:
+```js
+// Instead of read_page / get_page_text:
+document.body.innerText
+```
+
+**Potential upstream fix**: Use `document_end` instead of `document_idle` as the script injection timing, or add a fallback that checks `document.readyState` directly when `document_idle` times out.
+
+**Connection stability note**: Repeated timeouts can cause the bridge connection to drop entirely ("Browser extension is not connected"). When this happens, restart both Chrome (fully quit from system tray) and Claude Code — restarting Chrome alone is not sufficient.
+
 ## Gotchas
 
 1. **JSON backslash escaping**: The manifest `path` must have escaped backslashes (`C:\\Users\\...`). If generating from bash, heredocs with variable expansion will collapse `\\` to `\`, producing invalid JSON that Chrome silently ignores.
