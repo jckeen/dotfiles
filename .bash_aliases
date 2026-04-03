@@ -54,7 +54,20 @@ sync-memory() {
 }
 
 # Launch Claude, syncing everything first
+# Usage: cc          — launch from current dir (defaults to ~/dev if outside a git repo)
+#        cc <project> — cd into ~/dev/<project> first, then launch
 cc() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+
+  # If a project name was passed, cd into it
+  if [ -n "$1" ] && [ -d "$dev_dir/$1" ]; then
+    cd "$dev_dir/$1"
+  elif ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    # Not in a git repo — default to dev directory
+    cd "$dev_dir"
+  fi
+
   echo "Syncing repos..."
   pull-all
   echo ""
