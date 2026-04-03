@@ -83,7 +83,7 @@ cc() {
     fi
   fi
 
-  claude --remote-control "${diagram_args[@]}" "$@"
+  claude --remote-control --chrome "${diagram_args[@]}" "$@"
 
   # Reset tab color on exit
   printf '\033]9;9;\033\\' 2>/dev/null
