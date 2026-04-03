@@ -233,6 +233,18 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
+# PAI USER config (identity, steering rules, DA personality)
+# Stored in claude-memory (private repo), copied into PAI on setup
+_mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
+if [ -d "$_mem_repo/pai-user" ]; then
+  mkdir -p "$HOME_DIR/.claude/PAI/USER"
+  for f in "$_mem_repo/pai-user/"*.md; do
+    [ -f "$f" ] || continue
+    cp "$f" "$HOME_DIR/.claude/PAI/USER/$(basename "$f")"
+  done
+  echo "  -> PAI USER config copied (from claude-memory)"
+fi
+
 # Chrome (WSL bridge setup script)
 if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
   mkdir -p "$HOME_DIR/.claude/chrome"
