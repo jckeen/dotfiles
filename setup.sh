@@ -178,8 +178,9 @@ mkdir -p "$HOME_DIR/.claude/skills"
 mkdir -p "$HOME_DIR/.claude/agents"
 
 # Files to keep in dotfiles but NOT symlink into ~/.claude/
-# (loaded on-demand by CLAUDE.md references instead)
-NOLINK="AgentPack.md"
+# PAI config (CLAUDE.md, settings.json) lives in claude-memory (private)
+# AgentPack.md is loaded on-demand by CLAUDE.md references
+NOLINK="AgentPack.md CLAUDE.md settings.json"
 
 # Link top-level files (auto-discovers, no hardcoded list)
 for f in "$DOTFILES_DIR/claude/"*; do
@@ -233,9 +234,19 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
-# PAI USER config (identity, steering rules, DA personality)
-# Stored in claude-memory (private repo), copied into PAI on setup
+# PAI config from claude-memory (private repo)
 _mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
+
+# Core PAI config (CLAUDE.md, settings.json)
+if [ -d "$_mem_repo/pai-config" ]; then
+  for f in "$_mem_repo/pai-config/"*; do
+    [ -f "$f" ] || continue
+    cp "$f" "$HOME_DIR/.claude/$(basename "$f")"
+  done
+  echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
+fi
+
+# PAI USER config (identity, steering rules, DA personality)
 if [ -d "$_mem_repo/pai-user" ]; then
   mkdir -p "$HOME_DIR/.claude/PAI/USER"
   for f in "$_mem_repo/pai-user/"*.md; do
