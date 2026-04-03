@@ -1,6 +1,6 @@
 # Agent Pack — Multi-Agent Orchestra
 
-A team of 16 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
+A team of 17 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
 ## The Team
 
@@ -29,6 +29,7 @@ A team of 16 specialized subagents, each running in its own isolated context. Sp
 | `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths | Periodic health checks, before upgrades, pre-launch |
 | `test-writer` | Bug reproduction, feature coverage, edge case tests | Before fixing bugs (failing test first), after new features |
 | `schema-reviewer` | DB schema, migrations, data integrity, query patterns | After schema changes, before running migrations |
+| `package-scout` | Build-vs-buy research — finds existing packages before building from scratch | Before implementing non-trivial features or utilities |
 
 ## How to invoke
 
@@ -82,8 +83,8 @@ For risky parallel edits, spawn agents with `isolation: "worktree"` — each get
 ## Recommended Workflow
 
 ### Phase 1 — Product refinement
-**Agents:** product-strategist, ux-reviewer, growth-strategist, trust-safety
-**Goal:** Define the right product shape before building.
+**Agents:** product-strategist, ux-reviewer, growth-strategist, trust-safety, package-scout
+**Goal:** Define the right product shape before building. Identify existing packages before writing from scratch.
 **Mode:** All parallel (read-only review).
 
 ### Phase 2 — Architecture and implementation review
