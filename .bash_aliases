@@ -53,6 +53,20 @@ sync-memory() {
   fi
 }
 
+# Copy PAI config from claude-memory (private) into live ~/.claude/
+sync-pai-config() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  local mem_repo="$dev_dir/claude-memory"
+  if [ -d "$mem_repo/pai-config" ]; then
+    cp "$mem_repo/pai-config/"* "$HOME/.claude/" 2>/dev/null
+  fi
+  if [ -d "$mem_repo/pai-user" ]; then
+    # Recursively copy preserving directory structure (PROJECTS/, TELOS/, etc.)
+    cp -r "$mem_repo/pai-user/"* "$HOME/.claude/PAI/USER/" 2>/dev/null
+  fi
+}
+
 # Launch Claude, syncing everything first
 # Usage: cc          — launch from current dir (defaults to ~/dev if outside a git repo)
 #        cc <project> — cd into ~/dev/<project> first, then launch
@@ -72,6 +86,7 @@ cc() {
   pull-all
   echo ""
   sync-memory
+  sync-pai-config
   "$(_dev_dir)/dotfiles/check-claude.sh"
   echo ""
 
