@@ -123,6 +123,35 @@ Run multiple Claude sessions in parallel on the same project using worktrees.
 | `gwr` | `git worktree remove` |
 | `wt-claude <name> [branch]` | Create a worktree and launch Claude in it |
 
+### Multi-session (WSL + Windows Terminal)
+
+Run Claude across multiple projects simultaneously without leaving your terminal. Each session gets full `cc` treatment (repo sync, tab colors, health check).
+
+| Command | What it does |
+|---------|-------------|
+| `cc-pane <project>` | Open project in a new **split pane** (vertical by default) |
+| `cc-pane <project> -H` | Open project in a **horizontal** split pane |
+| `cc-tab <project>` | Open project in a new **tab** |
+| `cc-multi <p1> <p2> ...` | Open multiple projects, each in its own **tab** |
+| `projects` | List available projects in your dev directory |
+| `sessions` | Show active Claude sessions and their working directories |
+
+**Quick start — your old workflow vs. new:**
+
+```bash
+# OLD: open PowerShell → wsl → cd ~/dev/myproject → cc
+# ×3 for three projects
+
+# NEW: from any existing terminal (or from inside Claude with ! prefix)
+cc-multi dotfiles pai stringer     # 3 tabs, each synced and running
+
+# Or split your current view
+cc-pane pai                        # vertical split
+cc-pane stringer -H                # horizontal split
+```
+
+> **Tip:** From inside an active Claude session, use `! cc-pane <project>` to open another project alongside without leaving Claude.
+
 ---
 
 ## Skills (Slash Commands)
@@ -260,11 +289,18 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 
 ```bash
 cc                       # Pull all repos + start Claude (recommended)
+cc dotfiles              # Start Claude in a specific project
 claude                   # Start new session directly
 claude --continue        # Resume most recent session
 claude --resume          # Pick from recent sessions
 claude -p "prompt"       # Non-interactive mode (for scripts/CI)
 claude-server            # Spawn isolated worktree + remote control
+
+# Multi-session (WSL + Windows Terminal)
+cc-pane pai              # Split pane with Claude in ~/dev/pai
+cc-tab stringer          # New tab with Claude in ~/dev/stringer
+cc-multi dotfiles pai    # Multiple tabs at once
+sessions                 # See what's running
 ```
 
 **Remote access** is always on. Connect from `claude.ai/code` or the Claude mobile app.

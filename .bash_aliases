@@ -146,7 +146,7 @@ alias gwl='git worktree list'
 alias gwa='git worktree add'
 alias gwr='git worktree remove'
 
-# Quick Claude in a new worktree
+# Quick Claude in a new worktree (uses cc for full sync + tab color)
 wt-claude() {
   local name="${1:?Usage: wt-claude <name> [branch]}"
   local branch="${2:-$name}"
@@ -157,10 +157,107 @@ wt-claude() {
     git worktree add "$wt_path" -b "$branch" 2>/dev/null || git worktree add "$wt_path" "$branch"
   fi
   echo "Starting Claude in worktree: $wt_path"
-  (cd "$wt_path" && claude)
+  (cd "$wt_path" && cc)
+}
+
+# ─── Multi-session: Windows Terminal integration ───────────────────
+# These commands let you spin up Claude sessions in new panes/tabs
+# without leaving your current terminal. Requires Windows Terminal (wt.exe).
+
+# List available projects in your dev directory
+projects() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  echo "Projects in $dev_dir:"
+  for repo in "$dev_dir"/*/; do
+    [ -d "$repo/.git" ] && printf "  %s\n" "$(basename "$repo")"
+  done
+}
+
+# Open project in a new split pane
+# Usage: cc-pane <project>        (vertical split, default)
+#        cc-pane <project> -H     (horizontal split)
+cc-pane() {
+  if ! command -v wt.exe &>/dev/null; then
+    echo "wt.exe not found — requires Windows Terminal on WSL"
+    return 1
+  fi
+  local project="$1"
+  local split_flag="${2:--V}"
+  if [ -z "$project" ]; then
+    echo "Usage: cc-pane <project> [-H|-V]"
+    echo ""
+    projects
+    return 1
+  fi
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  if [ ! -d "$dev_dir/$project" ]; then
+    echo "Project not found: $dev_dir/$project"
+    echo ""
+    projects
+    return 1
+  fi
+  wt.exe -w 0 sp "$split_flag" -- wsl.exe bash -ic "cc $project"
+}
+
+# Open project in a new Windows Terminal tab
+cc-tab() {
+  if ! command -v wt.exe &>/dev/null; then
+    echo "wt.exe not found — requires Windows Terminal on WSL"
+    return 1
+  fi
+  local project="$1"
+  if [ -z "$project" ]; then
+    echo "Usage: cc-tab <project>"
+    echo ""
+    projects
+    return 1
+  fi
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  if [ ! -d "$dev_dir/$project" ]; then
+    echo "Project not found: $dev_dir/$project"
+    echo ""
+    projects
+    return 1
+  fi
+  wt.exe -w 0 nt -- wsl.exe bash -ic "cc $project"
+}
+
+# Open multiple projects, each in its own tab
+# Usage: cc-multi dotfiles pai stringer
+cc-multi() {
+  if [ $# -eq 0 ]; then
+    echo "Usage: cc-multi <project1> <project2> ..."
+    echo ""
+    projects
+    return 1
+  fi
+  for project in "$@"; do
+    cc-tab "$project"
+  done
+}
+
+# Show active Claude sessions and their working directories
+sessions() {
+  local found=0
+  while IFS= read -r pid; do
+    local cwd
+    cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null) || continue
+    if [ $found -eq 0 ]; then
+      echo "Active Claude sessions:"
+      echo "────────────────────────────────────────"
+      found=1
+    fi
+    printf "  PID %-7s  %s\n" "$pid" "$cwd"
+  done < <(pgrep -f "node.*claude" 2>/dev/null)
+  [ $found -eq 0 ] && echo "No active Claude sessions"
 }
 
 # WSL: open URLs in Windows Chrome
 export BROWSER="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 # WSL: force-enable Claude in Chrome
 export CLAUDE_CODE_ENABLE_CFC=1
+# Disable alt-screen flicker-free rendering (causes scroll-to-top bug)
+export CLAUDE_CODE_NO_FLICKER=0
