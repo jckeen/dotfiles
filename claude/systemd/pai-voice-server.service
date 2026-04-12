@@ -1,0 +1,20 @@
+[Unit]
+Description=PAI Voice Server (ElevenLabs TTS notifications on :8888)
+Documentation=https://github.com/jckeen/dotfiles
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.claude/VoiceServer
+ExecStart=%h/.bun/bin/bun run %h/.claude/VoiceServer/server.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.claude/VoiceServer/logs/voice-server.log
+StandardError=append:%h/.claude/VoiceServer/logs/voice-server.log
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
