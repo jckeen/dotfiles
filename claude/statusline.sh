@@ -209,6 +209,34 @@ L1="${L1}  ${DIM}↑${OUT_FMT} ↓${IN_FMT}${RESET}"
 # Session name
 [ -n "${SESSION:-}" ] && L1="${L1}  ${MAGENTA}${SESSION}${RESET}"
 
+# Algorithm phase from most recent PRD (cached 3s)
+ALG_CACHE="${CACHE_DIR}/algorithm-phase"
+ALG_REFRESH=1
+if [ -f "$ALG_CACHE" ]; then
+  ALG_AGE=$(stat -c %Y "$ALG_CACHE" 2>/dev/null || stat -f %m "$ALG_CACHE" 2>/dev/null || echo 0)
+  [ $((NOW - ALG_AGE)) -lt 3 ] && ALG_REFRESH=0
+fi
+if [ "$ALG_REFRESH" -eq 1 ]; then
+  ALG_PHASE="" ALG_PROGRESS=""
+  WORK_BASE="${HOME}/.claude/MEMORY/WORK"
+  if [ -d "$WORK_BASE" ]; then
+    LATEST_PRD=$(ls -1d "$WORK_BASE"/*/PRD.md 2>/dev/null | sort | tail -1)
+    if [ -n "$LATEST_PRD" ]; then
+      ALG_PHASE=$(grep -m1 '^phase:' "$LATEST_PRD" 2>/dev/null | sed 's/phase: *//')
+      ALG_PROGRESS=$(grep -m1 '^progress:' "$LATEST_PRD" 2>/dev/null | sed 's/progress: *//')
+    fi
+  fi
+  printf '%s\t%s\n' "$ALG_PHASE" "$ALG_PROGRESS" > "$ALG_CACHE" 2>/dev/null
+else
+  IFS=$'\t' read -r ALG_PHASE ALG_PROGRESS < "$ALG_CACHE" 2>/dev/null || true
+fi
+
+# Show Algorithm indicator if active
+if [ -n "${ALG_PHASE:-}" ] && [ "$ALG_PHASE" != "complete" ] && [ "$ALG_PHASE" != "learn" ]; then
+  L1="${L1}  ${BOLD}${CYAN}⚙ ${ALG_PHASE^^}${RESET}"
+  [ -n "${ALG_PROGRESS:-}" ] && L1="${L1} ${DIM}${ALG_PROGRESS}${RESET}"
+fi
+
 # Version (far right, very dim)
 [ -n "${VERSION:-}" ] && L1="${L1}  ${DIM}v${VERSION}${RESET}"
 
