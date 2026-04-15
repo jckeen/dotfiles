@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-15 — Fix statusline CWD parsing and tab colors
+
+### What changed
+- **Fixed statusline repo/branch display** — `IFS=$'\t' read` collapsed empty JSON fields, causing CWD to land in wrong variable. Switched to `readarray` with one-field-per-line jq output.
+- **Fixed printf %b escape collision** — OSC 8 link backslashes + repo names like "clarity-engine" triggered `\c` stop-output. Switched to raw ESC bytes + `printf '%s'`.
+- **Added `.claude-color` files** — clarity-engine (cyan), dotfiles (violet) for tab and statusline coloring.
+- **Cleanup** — removed duplicate cache-read dead code, replaced `date` subprocess with printf builtin, fixed misleading comment.
+
 ## 2026-03-22 (session 7 — PAI migration kickoff)
 
 ### What changed
