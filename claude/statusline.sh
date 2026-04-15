@@ -11,8 +11,8 @@ if ! command -v jq &>/dev/null; then echo "?"; exit 0; fi
 
 input=$(cat)
 
-# --- Parse JSON (single jq call, no eval) ---
-_parsed=$(echo "$input" | jq -r '[
+# --- Parse JSON (single jq call, one field per line to preserve empties) ---
+readarray -t _fields < <(echo "$input" | jq -r '
   (.model.display_name // "?"),
   (.context_window.used_percentage // 0 | floor | tostring),
   (.context_window.total_input_tokens // 0 | tostring),
@@ -24,29 +24,45 @@ _parsed=$(echo "$input" | jq -r '[
   (.session_name // ""),
   (.cwd // ""),
   (.version // "")
-] | join("\t")' 2>/dev/null) || { echo "?"; exit 0; }
+' 2>/dev/null) || { echo "?"; exit 0; }
 
-IFS=$'\t' read -r MODEL PCT IN_TOK OUT_TOK WIN_SIZE WORKTREE WT_BRANCH VIM_MODE SESSION CWD VERSION <<< "$_parsed"
+MODEL="${_fields[0]}"
+PCT="${_fields[1]}"
+IN_TOK="${_fields[2]}"
+OUT_TOK="${_fields[3]}"
+WIN_SIZE="${_fields[4]}"
+WORKTREE="${_fields[5]}"
+WT_BRANCH="${_fields[6]}"
+VIM_MODE="${_fields[7]}"
+SESSION="${_fields[8]}"
+CWD="${_fields[9]}"
+VERSION="${_fields[10]}"
+
+# Switch to the project CWD so git operations reflect the right repo
+if [ -n "${CWD:-}" ] && [ -d "$CWD" ]; then
+  cd "$CWD"
+fi
 
 # Ensure PCT is numeric
 PCT="${PCT:-0}"
 [[ "$PCT" =~ ^[0-9]+$ ]] || PCT=0
 
-# --- Colors ---
-GREEN='\033[32m'
-YELLOW='\033[33m'
-RED='\033[31m'
-CYAN='\033[36m'
-BLUE='\033[34m'
-MAGENTA='\033[35m'
-DIM='\033[2m'
-BOLD='\033[1m'
-RESET='\033[0m'
+# --- Colors (raw escape bytes so we can use printf %s safely) ---
+ESC=$'\033'
+GREEN="${ESC}[32m"
+YELLOW="${ESC}[33m"
+RED="${ESC}[31m"
+CYAN="${ESC}[36m"
+BLUE="${ESC}[34m"
+MAGENTA="${ESC}[35m"
+DIM="${ESC}[2m"
+BOLD="${ESC}[1m"
+RESET="${ESC}[0m"
 
 # --- OSC 8 clickable link helper ---
 # Usage: link URL TEXT
 link() {
-  printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$2"
+  printf '%s]8;;%s%s\\%s%s]8;;%s\\' "$ESC" "$1" "$ESC" "$2" "$ESC" "$ESC"
 }
 
 # --- Context bar (12 chars, finer granularity) ---
@@ -88,7 +104,7 @@ CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/claude-statusline"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 CACHE_KEY=$(echo "$PWD" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "default")
 CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
-NOW=$(date +%s)
+printf -v NOW '%(%s)T' -1
 NEED_REFRESH=1
 
 if [ -f "$CACHE_FILE" ]; then
@@ -138,12 +154,6 @@ elif [ -f "$CACHE_FILE" ]; then
   IN_GIT_REPO=1
 fi
 
-# Load from cache if still fresh
-if [ "$NEED_REFRESH" -ne 1 ] && [ -f "$CACHE_FILE" ]; then
-  IFS=$'\t' read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
-  IN_GIT_REPO=1
-fi
-
 # Defaults for non-git directories
 BRANCH="${BRANCH:-}"
 REMOTE_URL="${REMOTE_URL:-}"
@@ -180,11 +190,11 @@ elif [ -f ".claude-color" ]; then
   REPO_COLOR_HEX=$(head -1 ".claude-color" 2>/dev/null | tr -d '[:space:]#')
 fi
 if [[ "${REPO_COLOR_HEX:-}" =~ ^[0-9a-fA-F]{6}$ ]]; then
-  # Convert hex to 256-color approximate or use true color
+  # Convert hex to true color escape
   R=$((16#${REPO_COLOR_HEX:0:2}))
   G=$((16#${REPO_COLOR_HEX:2:2}))
   B=$((16#${REPO_COLOR_HEX:4:2}))
-  REPO_COLOR="\033[38;2;${R};${G};${B}m"
+  REPO_COLOR="${ESC}[38;2;${R};${G};${B}m"
 fi
 
 # =============================================
@@ -296,16 +306,16 @@ fi
 # =============================================
 # OUTPUT
 # =============================================
-printf '%b\n' "$L1"
+printf '%s\n' "$L1"
 
 # Only show line 2 if we have git info
 if [ -n "$L2" ]; then
-  printf '%b' "$L2"
+  printf '%s' "$L2"
 else
-  printf '%b' "${DIM}(no git repo)${RESET}"
+  printf '%s' "${DIM}(no git repo)${RESET}"
 fi
 
 # Context warning on third line when getting full
 if [ "$PCT" -ge 80 ]; then
-  printf '\n%b' "${RED}⚠ Context ${PCT}% full — consider /clear or /handoff${RESET}"
+  printf '\n%s' "${RED}⚠ Context ${PCT}% full — consider /clear or /handoff${RESET}"
 fi
