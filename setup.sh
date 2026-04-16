@@ -44,7 +44,7 @@ run_health_audit() {
   done
 
   # Hooks
-  for f in "$CLAUDE_SRC/hooks/"*.sh; do
+  for f in "$CLAUDE_SRC/hooks/"*.sh "$CLAUDE_SRC/hooks/"*.ts; do
     [ -f "$f" ] || continue
     local name
     name="$(basename "$f")"
@@ -357,12 +357,12 @@ echo "  -> Claude config linked"
 # Hooks
 if [ -d "$DOTFILES_DIR/claude/hooks" ]; then
   mkdir -p "$HOME_DIR/.claude/hooks"
-  for hook in "$DOTFILES_DIR/claude/hooks/"*.sh; do
+  for hook in "$DOTFILES_DIR/claude/hooks/"*.sh "$DOTFILES_DIR/claude/hooks/"*.ts; do
     [ -f "$hook" ] || continue
     link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
   done
   # chmod source files (symlinks inherit target permissions)
-  chmod +x "$DOTFILES_DIR/claude/hooks/"*.sh 2>/dev/null || true
+  chmod +x "$DOTFILES_DIR/claude/hooks/"*.sh "$DOTFILES_DIR/claude/hooks/"*.ts 2>/dev/null || true
   echo "  -> Claude hooks linked"
 fi
 

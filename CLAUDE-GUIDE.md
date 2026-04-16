@@ -93,14 +93,16 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 ---
 
-## Safety Hooks
+## Hooks
 
 | Hook | Trigger | What it does |
 |------|---------|-------------|
-| `block-dangerous.sh` | PreToolUse | Blocks `rm -rf /`, force push to main, `DROP TABLE`, `git reset --hard`, edits to `.env.prod` |
-| `block-secrets.sh` | PreToolUse | Blocks staging secret files (`.env`, `*.pem`, `id_rsa`), catches `git add -A`, scans for inline API keys |
 | `conventional-commit.sh` | PreToolUse | Enforces `type: description` commit format (feat, fix, refactor, etc.) |
 | `format-on-edit.sh` | PostToolUse | Auto-formats edited files (prettier, black, rustfmt, gofmt) |
+| `ntfy-awaiting-input.sh` | PreToolUse | Push notification when Claude needs input |
+| `StripProjectPermissions.hook.ts` | SessionStart | Strips project-level permission overrides that fight global settings |
+
+> Security blocking (dangerous commands, secrets) is handled by the PAI SecurityValidator hook, not in dotfiles.
 
 ---
 

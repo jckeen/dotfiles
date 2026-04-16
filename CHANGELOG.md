@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-16 — Fix permission prompts and update documentation
+
+### What changed
+- **StripProjectPermissions hook** — New SessionStart hook auto-strips `permissions` blocks from project-level `settings.local.json` that override global blanket permissions. Root cause of recurring permission prompts.
+- **Removed redundant permissions** — Dropped `Write(~/.claude/**)` and `Edit(~/.claude/**)` from settings.json allow list (already covered by blanket `Write`/`Edit`).
+- **setup.sh --check / --repair** — New flags for symlink health audits across both dotfiles and claude-memory repos. Normal setup.sh now also calls bootstrap.sh.
+- **cc alias health check** — `_check_critical_symlinks()` validates settings.json and CLAUDE.md symlinks before every launch, auto-repairs if broken.
+- **Handoff read-before-write** — Skill now reads existing handoff file before writing to avoid Claude Code's overwrite confirmation prompt.
+- **setup.sh deploys .ts hooks** — Hook symlink loop now includes `*.ts` files, not just `*.sh`.
+- **Documentation updated** — README and CLAUDE-GUIDE hook tables corrected (removed references to deleted block-dangerous.sh/block-secrets.sh, added new hooks). Added decompose and max skills to repo tree.
+- **Standing orders in CLAUDE.md** — Added top-of-file "ACT, NEVER ASK" section to prevent model from asking permission for standing-order operations.
+
 ## 2026-04-15 — Fix statusline CWD parsing and tab colors
 
 ### What changed

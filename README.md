@@ -1,6 +1,6 @@
 # Dotfiles — Claude Code Power User Setup
 
-Production-ready Claude Code setup with 4 safety hooks, 9 slash commands, a 16-agent review orchestra, and a custom status line. Clone it, run `setup.sh`, and skip the config trial-and-error.
+Production-ready Claude Code setup with 4 hooks, 11 slash commands, a 16-agent review orchestra, and a custom status line. Clone it, run `setup.sh`, and skip the config trial-and-error.
 
 Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
 
@@ -66,10 +66,10 @@ Everything is **symlinked** from this repo to `~/.claude/`, so edits in either l
 | **Settings** | `settings.json` | Permissions, hooks, preferred model (Opus), remote control |
 | **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
-| **Safety hooks** | `hooks/block-dangerous.sh` | Blocks `rm -rf /`, force push to main, `DROP TABLE`, etc. |
-| **Secret hook** | `hooks/block-secrets.sh` | Blocks staging .env, credentials, keys; catches `git add -A` |
 | **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
+| **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
+| **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
 | **Skills** | `skills/*/SKILL.md` | 9 slash commands (see below) |
 | **Subagents** | `agents/*.md` | 16 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
@@ -212,19 +212,6 @@ A team of 16 specialized subagents, each running in **its own isolated context**
 
 Hooks run automatically — they can't be forgotten like CLAUDE.md rules.
 
-**`block-dangerous.sh`** (PreToolUse) blocks:
-- `rm -rf` on `/`, `~`, `$HOME`, `..`, `.`, or `*`
-- `git push --force` to main/master (any argument order)
-- `DROP DATABASE` / `DROP TABLE`
-- Edits to `.env.prod` / `.env.production`
-- `git reset --hard` and `git clean -f`
-- Deletion of Windows system paths (WSL)
-
-**`block-secrets.sh`** (PreToolUse) blocks:
-- Staging known secret files (`.env*`, `credentials.json`, `*.pem`, `*.key`, `id_rsa`, etc.)
-- `git add -A` and `git add .` (forces explicit file staging)
-- Commit messages containing inline API keys (AWS, GitHub, GitLab, OpenAI patterns)
-
 **`conventional-commit.sh`** (PreToolUse) enforces:
 - Commit messages must start with `type: description`
 - Valid types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `style`
@@ -235,6 +222,15 @@ Hooks run automatically — they can't be forgotten like CLAUDE.md rules.
 - Python → black or ruff
 - Rust → rustfmt
 - Go → gofmt
+
+**`ntfy-awaiting-input.sh`** (PreToolUse on AskUserQuestion) sends:
+- Push notification via ntfy when Claude is waiting for user input
+
+**`StripProjectPermissions.hook.ts`** (SessionStart) prevents:
+- Project-level `settings.local.json` from accumulating `permissions` blocks that override global blanket permissions
+- Reads the current project's settings.local.json, removes only the `permissions` key, preserves everything else
+
+> **Note:** Security blocking (dangerous commands, secret detection) is handled by the PAI SecurityValidator hook in `~/.claude/hooks/SecurityValidator.hook.ts`, configured via `patterns.yaml`. The old `block-dangerous.sh` and `block-secrets.sh` hooks have been replaced.
 
 ---
 
@@ -348,7 +344,7 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 - `.bash_aliases` — your shell shortcuts
 
 **Leave these (the framework):**
-- `claude/hooks/*.sh` — safety guards (add new ones, but keep the defaults)
+- `claude/hooks/*.sh` and `*.ts` — hooks (add new ones, but keep the defaults)
 - `claude/skills/*/SKILL.md` — slash commands (add new ones as needed)
 - `claude/agents/*.md` — subagent definitions
 - `setup.sh` — cross-platform installer
@@ -416,10 +412,10 @@ dotfiles/
     ├── settings.json           # Permissions, hooks, model preferences
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
-    │   ├── block-dangerous.sh  # PreToolUse safety guard
-    │   ├── block-secrets.sh    # PreToolUse secret-detection guard
-    │   ├── conventional-commit.sh # PreToolUse commit message validator
-    │   └── format-on-edit.sh   # PostToolUse auto-formatter
+    │   ├── conventional-commit.sh          # PreToolUse commit message validator
+    │   ├── format-on-edit.sh               # PostToolUse auto-formatter
+    │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
+    │   └── StripProjectPermissions.hook.ts # SessionStart permission guard
     ├── skills/
     │   ├── kickoff/            # /kickoff — new project bootstrap
     │   ├── changelog/          # /changelog — session logging
@@ -429,7 +425,9 @@ dotfiles/
     │   ├── fix-issue/          # /fix-issue — GitHub issue workflow
     │   ├── simplify/           # /simplify — complexity removal
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
-    │   └── claude-server/      # /claude-server — remote worktree
+    │   ├── claude-server/      # /claude-server — remote worktree
+    │   ├── decompose/          # /decompose — deep task decomposition
+    │   └── max/                # /max — maximum effort parallel execution
     ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
     ├── scripts/                # Headless automation scripts
     │   ├── common.sh           # Shared safety tiers + runner
