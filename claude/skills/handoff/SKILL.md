@@ -32,7 +32,7 @@ When the user runs /handoff, do the following:
 ```
 
 2. Save the note to `~/.claude/handoffs/[date]-[project-name]-handoff.md` (the global Claude config directory, NOT inside the project repo). Create the directory if needed. Include the project name in the filename so handoffs from different repos don't collide.
-3. If the project has a `CHANGELOG.md`, update it with what happened this session.
+3. Update `CHANGELOG.md` with what happened this session. Create it if it doesn't exist. Keep entries concise — what changed and why, not how.
 4. Commit all pending work (do NOT commit the handoff note — it lives outside the repo).
 5. Display the handoff note so the user can copy it or reference it when starting a new session.
 
