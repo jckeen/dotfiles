@@ -10,6 +10,168 @@ set -e
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="$HOME"
+BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
+
+# Counters for summary
+LINKS_CREATED=0
+LINKS_VERIFIED=0
+LINKS_BROKEN=0
+
+# ─── Symlink health audit (--check / --repair) ──────────────────────
+# Checks ALL symlinks: dotfiles AND claude-memory (bootstrap.sh)
+run_health_audit() {
+  local mode="$1"  # "check" or "repair"
+  local errors=0
+  local verified=0
+  local repaired=0
+
+  echo "=== Symlink Health Audit (mode: $mode) ==="
+  echo ""
+
+  # ── Dotfiles symlinks ──
+  echo "--- Dotfiles symlinks ---"
+  local CLAUDE_SRC="$DOTFILES_DIR/claude"
+  local CLAUDE_DST="$HOME_DIR/.claude"
+  local NOLINK="AgentPack.md CLAUDE.md settings.json"
+
+  # Top-level files
+  for f in "$CLAUDE_SRC/"*; do
+    [ -f "$f" ] || continue
+    local name
+    name="$(basename "$f")"
+    case " $NOLINK " in *" $name "*) continue ;; esac
+    audit_link "$f" "$CLAUDE_DST/$name" "$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+  done
+
+  # Hooks
+  for f in "$CLAUDE_SRC/hooks/"*.sh; do
+    [ -f "$f" ] || continue
+    local name
+    name="$(basename "$f")"
+    audit_link "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+  done
+
+  # Skills
+  for skill_dir in "$CLAUDE_SRC/skills/"*/; do
+    [ -d "$skill_dir" ] || continue
+    local skill_name
+    skill_name="$(basename "$skill_dir")"
+    for skill_file in "$skill_dir"*; do
+      [ -f "$skill_file" ] || continue
+      local fname
+      fname="$(basename "$skill_file")"
+      audit_link "$skill_file" "$CLAUDE_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    done
+  done
+
+  # Agents
+  for f in "$CLAUDE_SRC/agents/"*.md; do
+    [ -f "$f" ] || continue
+    local name
+    name="$(basename "$f")"
+    audit_link "$f" "$CLAUDE_DST/agents/$name" "agents/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+  done
+
+  # Scripts
+  if [ -d "$CLAUDE_SRC/scripts" ]; then
+    for f in "$CLAUDE_SRC/scripts/"*.sh; do
+      [ -f "$f" ] || continue
+      local name
+      name="$(basename "$f")"
+      audit_link "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    done
+  fi
+
+  # Chrome
+  if [ -d "$CLAUDE_SRC/chrome" ]; then
+    for f in "$CLAUDE_SRC/chrome/"*; do
+      [ -f "$f" ] || continue
+      local name
+      name="$(basename "$f")"
+      audit_link "$f" "$CLAUDE_DST/chrome/$name" "chrome/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    done
+  fi
+
+  echo ""
+
+  # ── Claude-memory symlinks (via bootstrap.sh --check) ──
+  echo "--- Claude-memory symlinks ---"
+  if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+    if bash "$BOOTSTRAP_SCRIPT" --check; then
+      echo "  All claude-memory symlinks OK"
+    else
+      errors=$((errors + 1))
+      if [ "$mode" = "repair" ]; then
+        echo "  Repairing claude-memory symlinks..."
+        bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+      fi
+    fi
+  else
+    echo "  (bootstrap.sh not found at $BOOTSTRAP_SCRIPT — skipping claude-memory checks)"
+  fi
+
+  echo ""
+  echo "=== Audit Summary ==="
+  echo "  Verified: $verified"
+  echo "  Broken:   $errors"
+  if [ "$mode" = "repair" ] && [ "$errors" -gt 0 ]; then
+    echo "  (Attempted repairs on broken links)"
+  fi
+
+  [ "$errors" -eq 0 ] && return 0 || return 1
+}
+
+# Check a single symlink. Returns 0 if OK, 1 if broken.
+# In repair mode, recreates broken links.
+audit_link() {
+  local src="$1" dst="$2" label="$3" mode="$4"
+  if [ -L "$dst" ]; then
+    local target
+    target="$(readlink "$dst")"
+    if [ "$target" = "$src" ] && [ -e "$dst" ]; then
+      return 0  # OK
+    fi
+    # Wrong target or broken
+    printf '  \033[31mBROKEN\033[0m  %s -> %s (expected %s)\n' "$label" "$target" "$src"
+    if [ "$mode" = "repair" ]; then
+      rm "$dst"
+      mkdir -p "$(dirname "$dst")"
+      ln -s "$src" "$dst"
+      printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+    fi
+    return 1
+  elif [ -f "$dst" ]; then
+    printf '  \033[33mNOT LINKED\033[0m  %s (regular file, not symlink)\n' "$label"
+    if [ "$mode" = "repair" ]; then
+      mv "$dst" "$dst.backup"
+      mkdir -p "$(dirname "$dst")"
+      ln -s "$src" "$dst"
+      printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
+    fi
+    return 1
+  elif [ ! -e "$dst" ]; then
+    printf '  \033[33mMISSING\033[0m  %s\n' "$label"
+    if [ "$mode" = "repair" ]; then
+      mkdir -p "$(dirname "$dst")"
+      ln -s "$src" "$dst"
+      printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# Handle --check and --repair flags
+case "${1:-}" in
+  --check)
+    run_health_audit "check"
+    exit $?
+    ;;
+  --repair)
+    run_health_audit "repair"
+    exit $?
+    ;;
+esac
 
 # ─── Platform detection ──────────────────────────────────────────────
 detect_platform() {
@@ -353,8 +515,20 @@ else
   fi
 fi
 
+# ─── 8. Bootstrap claude-memory (private repo) ──────────────────────
+if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+  echo ""
+  echo "--- Running claude-memory bootstrap ---"
+  bash "$BOOTSTRAP_SCRIPT" || echo "  (bootstrap.sh had errors — run it manually to debug)"
+fi
+
+# ─── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "=== Setup complete ($PLATFORM) ==="
+echo ""
+echo "Running post-setup health audit..."
+echo ""
+run_health_audit "check" || true
 echo ""
 echo "All config files are symlinked — edits in ~/.claude/"
 echo "will automatically be reflected in your dotfiles repo."

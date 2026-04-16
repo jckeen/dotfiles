@@ -67,6 +67,31 @@ sync-pai-config() {
   fi
 }
 
+# Validate critical claude-memory symlinks before launching Claude
+# Fast check: just tests the 4 most important symlinks exist and aren't broken
+_check_critical_symlinks() {
+  local broken=0
+  for f in "$HOME/.claude/settings.json" "$HOME/.claude/CLAUDE.md"; do
+    if [ ! -L "$f" ]; then
+      echo "WARNING: $f is not a symlink (expected symlink from claude-memory)"
+      broken=1
+    elif [ ! -e "$f" ]; then
+      echo "WARNING: $f is a broken symlink -> $(readlink "$f")"
+      broken=1
+    fi
+  done
+  if [ "$broken" -eq 1 ]; then
+    echo "Critical symlinks broken — attempting auto-repair..."
+    if [ -f "$HOME/dev/claude-memory/bootstrap.sh" ]; then
+      bash "$HOME/dev/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
+    elif [ -f "$(_dev_dir)/dotfiles/setup.sh" ]; then
+      bash "$(_dev_dir)/dotfiles/setup.sh" --repair && echo "Repair complete." || echo "Repair failed — run setup.sh --repair manually."
+    else
+      echo "No repair script found. Run setup.sh or bootstrap.sh manually."
+    fi
+  fi
+}
+
 # Launch Claude, syncing everything first
 # Usage: cc          — launch from current dir (defaults to ~/dev if outside a git repo)
 #        cc <project> — cd into ~/dev/<project> first, then launch
@@ -81,6 +106,9 @@ cc() {
     # Not in a git repo — default to dev directory
     cd "$dev_dir"
   fi
+
+  # Quick critical symlink validation (fast — just 2 stat calls)
+  _check_critical_symlinks
 
   echo "Syncing repos..."
   pull-all
