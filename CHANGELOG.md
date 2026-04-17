@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-16 — PAI upgrade integration (Algorithm gates + env cleanup)
+
+### What changed
+- **`.bash_aliases`** — Removed `CLAUDE_CODE_NO_FLICKER=0` workaround (v2.1.110 `/tui fullscreen` replaces it); added `ENABLE_PROMPT_CACHING_1H=1` (v2.1.108+, extends prompt cache TTL 5m→1h for long Algorithm sessions).
+- **Algorithm v3.7.0 PLAN phase** — Added **File Ownership Gate** (mandatory when 2+ parallel agents selected): produce File Ownership Map in PRD Decisions, no two agents write to the same file. Fixes the #1 reflection failure mode (15+ occurrences of shared-file stomping).
+- **Algorithm v3.7.0 PLAN phase** — Added **Worktree Agent Pre-Commit Footer**: formatter + typechecker + linter required before worktree commits. Fixes 6 reflections of unformatted-commit merge failures.
+- **Algorithm v3.7.0 VERIFY phase** — Added **Capability-Obligation Enforcement**: selected capabilities must be invoked or explicitly dropped with logged reason (`/simplify` was silently skipped 8 times).
+- **Algorithm v3.7.0 VERIFY phase** — Added **Claim-Verification Gate**: when 2+ sub-agents used, independently spot-verify 2-3 concrete claims per agent (fixes 5 reflections of hallucinated SHA/line-ref findings creating false blockers).
+- **Algorithm v3.7.0 OBSERVE phase** — Added **Prescribed-Task Fast-Path**: skip THINK/PLAN for fully-specified tasks ≤3 files.
+- **Algorithm v3.7.0 OBSERVE phase** — Added **Browser Smoke Check** as first context-recovery action for UI/frontend tasks (fixes 5 reflections of CSP/render bugs missed by code-only analysis).
+- **Memory cleanup** — Removed `project_no_flicker_workaround.md` (condition met; workaround retired).
+
+### Audits (no changes required)
+- **Hooks audit** — Zero uses of `updatedInput` or `additionalContext` in `~/.claude/hooks/`. PAI hooks not affected by v2.1.110 bug fixes.
+- **`--enable-auto-mode` flag** — Only appears in old session logs, not in any active PAI code. Nothing to clean up.
+- **SKILL.md front-matter** — All 59 SKILL.md files have required `name` + `description` (spec-compliant on mandatory fields). Follow-ups flagged: no skills use `allowed-tools:` (future permission-prompt reduction opportunity); `Utilities/SKILL.md` description is 2020 chars (spec max 1024) — needs dedicated refactor.
+
+### Source
+Three-thread PAI upgrade scan: user context (Thread 1) + Anthropic ecosystem sources (Thread 2, 15 techniques from v2.1.108–2.1.112 + Agent Skills spec + MCP 2025-11-25) + internal reflection mining (Thread 3, 90 entries over 13 days, 6 upgrade candidates).
+
 ## 2026-04-16 — Fix permission prompts and update documentation
 
 ### What changed

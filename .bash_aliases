@@ -287,5 +287,5 @@ sessions() {
 export BROWSER="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 # WSL: force-enable Claude in Chrome
 export CLAUDE_CODE_ENABLE_CFC=1
-# Disable alt-screen flicker-free rendering (causes scroll-to-top bug)
-export CLAUDE_CODE_NO_FLICKER=0
+# Extend prompt cache TTL from 5m to 1h (v2.1.108+) for long Algorithm sessions
+export ENABLE_PROMPT_CACHING_1H=1
