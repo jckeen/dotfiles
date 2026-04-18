@@ -319,7 +319,9 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null; then
     plugin="$(echo "$plugin" | tr -d '[:space:]')"
     [ -z "$plugin" ] && continue
 
-    if echo "$INSTALLED_PLUGINS" | grep -Fq "$plugin"; then
+    # Match "❯ <plugin>@<marketplace>" exactly at a word boundary so e.g.
+    # "code-review@x" cannot false-match "code-review-2@x".
+    if echo "$INSTALLED_PLUGINS" | grep -qE "❯[[:space:]]+${plugin}([[:space:]]|$)"; then
       echo "  -> $plugin already installed"
     else
       echo "  -> Installing $plugin"

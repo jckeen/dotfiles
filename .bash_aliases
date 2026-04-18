@@ -113,21 +113,18 @@ cc() {
     esac
   done
 
-  if [ "$resuming" -eq 1 ]; then
-    # Quick-resume path: honor current dir (don't cd away), skip sync.
-    _check_critical_symlinks
-  else
-    # If a project name was passed, cd into it
-    if [ -n "$1" ] && [ -d "$dev_dir/$1" ]; then
-      cd "$dev_dir/$1"
-    elif ! git rev-parse --is-inside-work-tree &>/dev/null; then
-      # Not in a git repo — default to dev directory
-      cd "$dev_dir"
-    fi
+  # If a project name was passed, cd into it (honored even when resuming)
+  if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    cd "$dev_dir/$1"
+  elif [ "$resuming" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    # Not resuming and not in a git repo — default to dev directory
+    cd "$dev_dir"
+  fi
 
-    # Quick critical symlink validation (fast — just 2 stat calls)
-    _check_critical_symlinks
+  # Quick critical symlink validation (fast — just 2 stat calls)
+  _check_critical_symlinks
 
+  if [ "$resuming" -eq 0 ]; then
     echo "Syncing repos..."
     pull-all
     echo ""
