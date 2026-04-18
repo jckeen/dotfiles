@@ -93,30 +93,49 @@ _check_critical_symlinks() {
 }
 
 # Launch Claude, syncing everything first
-# Usage: cc          — launch from current dir (defaults to ~/dev if outside a git repo)
-#        cc <project> — cd into ~/dev/<project> first, then launch
+# Usage: cc                — launch from current dir (defaults to ~/dev if outside a git repo)
+#        cc <project>       — cd into ~/dev/<project> first, then launch
+#        cc --resume        — resume a session in the current dir (skips sync for fast path)
+#        cc -c / --continue — continue most recent session in current dir (skips sync)
+#        cc --resume <id>   — resume a specific session id (skips sync)
+# Any --resume/-r/--continue/-c in the args triggers the quick-resume path:
+# no repo sync, no memory sync, no PAI config sync, no claude health check.
 cc() {
   local dev_dir
   dev_dir="$(_dev_dir)"
 
-  # If a project name was passed, cd into it
-  if [ -n "$1" ] && [ -d "$dev_dir/$1" ]; then
-    cd "$dev_dir/$1"
-  elif ! git rev-parse --is-inside-work-tree &>/dev/null; then
-    # Not in a git repo — default to dev directory
-    cd "$dev_dir"
+  # Detect resume-style invocation anywhere in the args
+  local resuming=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --resume|-r|--continue|-c) resuming=1; break ;;
+    esac
+  done
+
+  if [ "$resuming" -eq 1 ]; then
+    # Quick-resume path: honor current dir (don't cd away), skip sync.
+    _check_critical_symlinks
+  else
+    # If a project name was passed, cd into it
+    if [ -n "$1" ] && [ -d "$dev_dir/$1" ]; then
+      cd "$dev_dir/$1"
+    elif ! git rev-parse --is-inside-work-tree &>/dev/null; then
+      # Not in a git repo — default to dev directory
+      cd "$dev_dir"
+    fi
+
+    # Quick critical symlink validation (fast — just 2 stat calls)
+    _check_critical_symlinks
+
+    echo "Syncing repos..."
+    pull-all
+    echo ""
+    sync-memory
+    sync-pai-config
+    "$(_dev_dir)/dotfiles/check-claude.sh"
+    echo ""
   fi
-
-  # Quick critical symlink validation (fast — just 2 stat calls)
-  _check_critical_symlinks
-
-  echo "Syncing repos..."
-  pull-all
-  echo ""
-  sync-memory
-  sync-pai-config
-  "$(_dev_dir)/dotfiles/check-claude.sh"
-  echo ""
 
   # Preload architecture diagrams if the project has them
   local diagram_args=()
