@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-17 — Plugin auto-install on setup + `cc --resume` fast path
+
+### What changed
+- **`claude/plugins.txt`** — New manifest listing 18 Claude Code plugins (format: `plugin@marketplace`). Source of truth for fresh-machine plugin installation.
+- **`setup.sh`** — Added §3b "Claude Code plugins" step: registers each referenced marketplace (`claude-plugins-official`, `anthropic-agent-skills`) if missing, then installs each manifest plugin that isn't already present. Fully idempotent — safe to re-run.
+- **`.bash_aliases` `cc()`** — Detects `--resume` / `-r` / `--continue` / `-c` anywhere in args. Resume path skips the heavy sync (pull-all, sync-memory, sync-pai-config, check-claude.sh) and never cds away from the current directory. Flag passes through to `claude` unchanged.
+
+### Why
+Setting up a new laptop next week — plugin list was manual. Resume was slow because every invocation did a full repo + memory sync even when the user just wanted to pick up where they left off.
+
 ## 2026-04-16 — PAI upgrade integration (Algorithm gates + env cleanup)
 
 ### What changed

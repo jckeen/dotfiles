@@ -272,6 +272,64 @@ else
   echo "Claude Code already installed: $(claude --version 2>/dev/null || echo 'installed')"
 fi
 
+# ─── 3b. Claude Code plugins ─────────────────────────────────────────
+# Installs plugins listed in claude/plugins.txt (format: plugin@marketplace).
+# Idempotent: marketplace registration and each plugin install are skipped
+# when already present.
+PLUGIN_LIST="$DOTFILES_DIR/claude/plugins.txt"
+if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null; then
+  echo ""
+  echo "--- Installing Claude Code plugins ---"
+
+  # Collect marketplaces referenced by the plugin list
+  MARKETPLACES="$(awk -F'@' '/^[^#[:space:]]/ && NF==2 {print $2}' "$PLUGIN_LIST" | sort -u)"
+
+  # Register each marketplace if not already known
+  MARKETPLACE_LIST="$(claude plugin marketplace list 2>/dev/null || true)"
+  for mp in $MARKETPLACES; do
+    # Match header lines like "  ❯ <marketplace-name>" (anchor on word boundaries)
+    if echo "$MARKETPLACE_LIST" | grep -Eq "❯[[:space:]]+${mp}([[:space:]]|$)"; then
+      echo "  -> Marketplace $mp already registered"
+    else
+      case "$mp" in
+        claude-plugins-official)
+          claude plugin marketplace add github:anthropics/claude-plugins-official \
+            && echo "  -> Registered marketplace: $mp" \
+            || echo "  -> Failed to register marketplace: $mp (continuing)"
+          ;;
+        anthropic-agent-skills)
+          claude plugin marketplace add github:anthropics/skills \
+            && echo "  -> Registered marketplace: $mp" \
+            || echo "  -> Failed to register marketplace: $mp (continuing)"
+          ;;
+        *)
+          echo "  -> Unknown marketplace $mp — add registration logic to setup.sh or register manually"
+          ;;
+      esac
+    fi
+  done
+
+  # Cache installed plugin list once to avoid spawning claude per-plugin
+  INSTALLED_PLUGINS="$(claude plugin list 2>/dev/null || true)"
+
+  # Install each plugin if not already installed
+  while IFS= read -r line; do
+    # Strip comments/whitespace
+    plugin="${line%%#*}"
+    plugin="$(echo "$plugin" | tr -d '[:space:]')"
+    [ -z "$plugin" ] && continue
+
+    # Match "❯ <plugin>@<marketplace>" exactly at a word boundary so e.g.
+    # "code-review@x" cannot false-match "code-review-2@x".
+    if echo "$INSTALLED_PLUGINS" | grep -qE "❯[[:space:]]+${plugin}([[:space:]]|$)"; then
+      echo "  -> $plugin already installed"
+    else
+      echo "  -> Installing $plugin"
+      claude plugin install "$plugin" || echo "     (install failed — continuing)"
+    fi
+  done < "$PLUGIN_LIST"
+fi
+
 # ─── 4. Git config ───────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Git config ---"
