@@ -309,31 +309,65 @@ sessions                 # See what's running
 
 ---
 
-## Persistent Memory
+## The `claude-memory` private repo
 
-Claude Code stores memory files (user preferences, project context, feedback) in `~/.claude/projects/`. By default these only exist on your local machine — rebuild your environment and they're gone.
+This setup pairs the public dotfiles repo with a **separate private repo** called `claude-memory`, which holds three things that don't belong in a public repo:
 
-This setup solves that with a **separate private repo**:
+1. Your **persistent Claude memory** (`dev/memory/`) — per-machine memory files Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
+2. Your **PAI config** (`pai-config/`, `pai-user/`) — the `CLAUDE.md`, `settings.json`, identity, steering rules, and DA personality that layer on top of the upstream [PAI](https://github.com/danielmiessler/Personal_AI_Infrastructure) install. **Only needed in PAI mode.**
+3. The `bootstrap.sh` script that links it all together and (re)installs the systemd voice server.
 
-1. Create a private repo for your memory:
-   ```bash
-   mkdir -p ~/dev/claude-memory/dev/memory
-   cd ~/dev/claude-memory
-   git init && git add -A && git commit -m "init: claude memory"
-   gh repo create claude-memory --private --source=. --push
-   ```
+**Skip this section entirely if you run `setup.sh --no-pai`** — the non-PAI mode doesn't touch `claude-memory` at all. It's optional even for memory persistence; you'll just lose auto-memory between machines.
 
-2. Run `setup.sh` — it auto-detects the `claude-memory` repo and symlinks it into `~/.claude/projects/`
+### Minimum structure (PAI mode)
 
-3. That's it. The `cc` command auto-commits and pushes memory changes before each session, so your memory is always backed up.
+```
+~/dev/claude-memory/
+├── bootstrap.sh                   # idempotent; runs at end of setup.sh
+├── dev/
+│   └── memory/                    # Claude auto-memory (symlinked into ~/.claude/projects/)
+├── pai-config/
+│   ├── CLAUDE.md                  # copied to ~/.claude/CLAUDE.md
+│   └── settings.json              # copied to ~/.claude/settings.json
+└── pai-user/
+    ├── ABOUTME.md                 # who you are
+    ├── AISTEERINGRULES.md         # overrides PAI system rules
+    ├── DAIDENTITY.md              # your Digital Assistant's personality
+    ├── PROJECTS/PROJECTS.md       # project catalog (optional)
+    └── TELOS/                     # goals, frames, challenges (optional)
+```
 
-**Why a separate repo?** Memory files contain personal context (your role, project details, preferences). If your dotfiles repo is public, memory needs to stay private. If your dotfiles are private, you could skip this — but the separation is still cleaner.
+`setup.sh` copies (not symlinks) `pai-config/*` into `~/.claude/` and `pai-user/*.md` into `~/.claude/PAI/USER/`. `bootstrap.sh` is expected to:
 
-**What gets stored:**
-- User context (role, expertise, how you like to work)
-- Feedback (corrections you've given Claude, validated approaches)
-- Project state (what's being built, blockers, deadlines)
-- References (where to find things in external systems)
+- symlink `dev/memory` → `~/.claude/projects/-<dev-dir-encoded>/memory`
+- symlink `pai-user/*` → `~/.claude/PAI/USER/*` (so edits in either place flow back)
+- verify `~/.env` contains `ELEVENLABS_API_KEY`
+- run `~/dev/dotfiles/claude/systemd/install.sh` to install the voice server
+
+### Creating your own
+
+This is a deliberately hand-crafted repo — there's no generator. Start minimal and add as you go:
+
+```bash
+# Create the skeleton
+mkdir -p ~/dev/claude-memory/{pai-config,pai-user,dev/memory}
+cd ~/dev/claude-memory
+
+# Minimum files to pass setup.sh's PAI prereq checks
+touch pai-config/CLAUDE.md pai-config/settings.json
+touch pai-user/ABOUTME.md pai-user/AISTEERINGRULES.md pai-user/DAIDENTITY.md
+
+# You'll need your own bootstrap.sh — see
+# https://github.com/jckeen/dotfiles/blob/main/README.md for the contract above
+
+# Publish it private
+git init && git add -A && git commit -m "init: claude memory"
+gh repo create claude-memory --private --source=. --push
+```
+
+Populate `pai-config/CLAUDE.md` with your personal Claude Code system instructions, `pai-user/AISTEERINGRULES.md` with user-level overrides (these take precedence over PAI's system rules), and `pai-user/ABOUTME.md` with whatever identity info you want Claude to always have.
+
+**Or just use `--no-pai`** and skip the whole thing. The public dotfiles repo (`setup.sh --no-pai`) gives you: hooks, skills, agents, the `cc` alias scaffolding, the status line, git config, plugin auto-install, and credential wiring — no PAI runtime dependency.
 
 `check-claude.sh` verifies the memory symlink is healthy alongside everything else.
 

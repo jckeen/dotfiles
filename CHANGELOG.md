@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-20 — Document the `claude-memory` private repo contract
+
+### What changed
+- **`README.md`** — Replaced the thin "Persistent Memory" section with a full "The `claude-memory` private repo" section covering structure (pai-config, pai-user, dev/memory, bootstrap.sh), what setup.sh copies vs. what bootstrap.sh symlinks, and a minimal scaffold for anyone creating their own.
+- **`setup.sh`** — When `claude-memory/pai-config` is missing, the message now points at the README section; when the memory repo is missing, the message distinguishes auto-memory-only vs. full PAI integration.
+
+### Why
+Prior docs only covered `dev/memory/` (Claude's native auto-memory). Anyone following them hit "pai-config not found" the instant they enabled PAI mode. The README now documents the contract explicitly so a fork can either fulfill it or know to use `--no-pai`.
+
 ## 2026-04-20 — PAI mode is now opt-in via prompt / flag
 
 ### What changed
