@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-20 — Setup.sh writes gh credential helper to `.gitconfig.local`
+
+### What changed
+- **`setup.sh` §6** — Replaced `gh auth setup-git` with direct `git config --file ~/.gitconfig.local` writes for `credential.https://github.com.helper` and `credential.https://gist.github.com.helper`. Uses `$(command -v gh)` for portability across macOS (`/opt/homebrew/bin/gh`) and Linux (`/usr/bin/gh`).
+- **`claude/hooks/*.{sh,ts}` + `setup.sh`** — Restored executable bit (`0755`); they had been committed as `0644`, causing "Permission denied" at SessionStart.
+- **`README.md`** — Added `bun` to the "What Gets Installed" table.
+
+### Why
+`gh auth setup-git` (added in the prior entry) writes to `~/.gitconfig` — which is symlinked to this repo's tracked `.gitconfig`. Running it on a new machine was mutating the shared dotfile with machine-specific helper paths and trying to commit them back. Writing to `.gitconfig.local` (gitignored, per-machine) keeps the shared `.gitconfig` clean while still giving every machine a working credential helper for github.com.
+
 ## 2026-04-20 — Setup.sh installs Bun for TypeScript hooks
 
 ### What changed

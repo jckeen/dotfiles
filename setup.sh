@@ -582,10 +582,19 @@ else
   # Wire gh as git's credential helper for github.com so `git pull` /
   # `git clone` in every repo (e.g., `pull-all` inside cc) uses the
   # existing gh token instead of prompting for username/password.
-  # Safe to re-run; gh writes to the global gitconfig idempotently.
-  if ! git config --global --get-all credential.https://github.com.helper 2>/dev/null | grep -q "gh auth git-credential"; then
-    echo "  -> Wiring gh as git credential helper (gh auth setup-git)..."
-    gh auth setup-git || echo "     (gh auth setup-git failed — resolve manually)"
+  #
+  # We write directly to ~/.gitconfig.local instead of running
+  # `gh auth setup-git`, because the latter edits ~/.gitconfig — which
+  # is symlinked to this repo's tracked .gitconfig and would pollute
+  # the shared dotfile with machine-specific helper paths.
+  GH_BIN="$(command -v gh)"
+  LOCAL_GITCONFIG="$HOME_DIR/.gitconfig.local"
+  if [ -n "$GH_BIN" ] && ! git config --file "$LOCAL_GITCONFIG" --get-all credential.https://github.com.helper 2>/dev/null | grep -q "gh auth git-credential"; then
+    echo "  -> Wiring gh as git credential helper (→ $LOCAL_GITCONFIG)..."
+    for host in github.com gist.github.com; do
+      git config --file "$LOCAL_GITCONFIG" --add "credential.https://${host}.helper" ""
+      git config --file "$LOCAL_GITCONFIG" --add "credential.https://${host}.helper" "!${GH_BIN} auth git-credential"
+    done
   else
     echo "  -> git credential helper already wired to gh"
   fi

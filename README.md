@@ -53,6 +53,7 @@ Once inside Claude:
 | `node` | Node.js LTS | Homebrew / NodeSource |
 | `jq` | JSON processing (used by hooks) | Homebrew / apt |
 | `claude` | Claude Code CLI | npm |
+| `bun` | Runtime for `*.hook.ts` hooks | Homebrew / npm |
 
 WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voice` support).
 
