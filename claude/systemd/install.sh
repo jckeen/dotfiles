@@ -8,7 +8,7 @@
 #
 # Requirements:
 #   - systemd (WSL2: set `systemd=true` in /etc/wsl.conf under [boot])
-#   - bun installed at ~/.bun/bin/bun
+#   - bun on PATH (symlinks to ~/.bun/bin/bun if elsewhere)
 #   - ~/.claude/VoiceServer/server.ts present (shipped with PAI)
 #   - ~/.env (or symlink) containing ELEVENLABS_API_KEY
 #
@@ -31,7 +31,22 @@ info()  { printf '\033[0;34m%s\033[0m\n' "$*"; }
 
 info "==> Checking prerequisites"
 command -v systemctl >/dev/null || { red "X systemctl not found — systemd required"; exit 1; }
-[ -x "$HOME/.bun/bin/bun" ] || { red "X bun not found at ~/.bun/bin/bun — install bun first"; exit 1; }
+
+# Bun: the systemd unit hardcodes %h/.bun/bin/bun. Accept bun installed
+# anywhere on PATH (brew, npm, curl installer) and symlink it into the
+# canonical path so the unit works regardless of install method.
+BUN_CANON="$HOME/.bun/bin/bun"
+if [ ! -x "$BUN_CANON" ]; then
+    BUN_FOUND="$(command -v bun 2>/dev/null || true)"
+    if [ -n "$BUN_FOUND" ]; then
+        info "    bun found at $BUN_FOUND — symlinking to $BUN_CANON"
+        mkdir -p "$HOME/.bun/bin"
+        ln -sf "$BUN_FOUND" "$BUN_CANON"
+    else
+        red "X bun not found on PATH or at $BUN_CANON — install bun first"
+        exit 1
+    fi
+fi
 [ -f "$HOME/.claude/VoiceServer/server.ts" ] || { red "X ~/.claude/VoiceServer/server.ts missing — install PAI first"; exit 1; }
 [ -f "$SRC_UNIT" ] || { red "X Source unit missing: $SRC_UNIT"; exit 1; }
 if [ ! -e "$HOME/.env" ]; then

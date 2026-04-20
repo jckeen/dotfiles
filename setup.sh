@@ -267,6 +267,11 @@ fi
 # StripProjectPermissions.hook.ts and any future TypeScript hooks run via
 # bun at SessionStart. Missing bun = `cc` fails on first launch with a
 # confusing "bun: not found" error.
+#
+# The systemd voice-server unit hardcodes %h/.bun/bin/bun (systemd can't
+# do PATH lookups), so we always ensure a symlink at ~/.bun/bin/bun
+# pointing at whichever bun is on PATH — regardless of install method
+# (brew, npm, curl installer).
 if ! command -v bun &>/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
   echo ""
   echo "--- Installing Bun (JS runtime for TypeScript hooks) ---"
@@ -289,6 +294,16 @@ else
     export PATH="$HOME/.bun/bin:$PATH"
   fi
   echo "Bun already installed: $(bun --version 2>/dev/null || echo 'installed')"
+fi
+
+# Canonicalize bun at ~/.bun/bin/bun — the systemd unit and other scripts
+# hardcode this path. If bun ended up somewhere else (brew, npm), drop a
+# symlink so hardcoded paths keep working.
+if command -v bun &>/dev/null && [ ! -e "$HOME/.bun/bin/bun" ]; then
+  _bun_found="$(command -v bun)"
+  mkdir -p "$HOME/.bun/bin"
+  ln -sf "$_bun_found" "$HOME/.bun/bin/bun"
+  echo "  -> bun symlinked: ~/.bun/bin/bun -> $_bun_found"
 fi
 
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
