@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-20 — Setup.sh wires `gh` as git credential helper
+
+### What changed
+- **`setup.sh` §6** — After detecting `gh auth status` is OK, now also runs `gh auth setup-git` (idempotent: skipped when `credential.https://github.com.helper` already points to `gh auth git-credential`).
+
+### Why
+On the fresh laptop, `cc` ran `pull-all` across many repos and each `git pull` prompted for a GitHub username/password — because `gh auth login` only authenticates the `gh` CLI, not git itself. `gh auth setup-git` registers gh as the per-host credential helper so every `git pull` uses the existing gh token with no prompt. Per-host wiring means non-github hosts still use the platform helper (osxkeychain / git-credential-manager.exe / store).
+
 ## 2026-04-20 — Setup.sh Claude auth gate
 
 ### What changed
