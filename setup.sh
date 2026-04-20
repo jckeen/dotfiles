@@ -551,6 +551,16 @@ if ! gh auth status &>/dev/null; then
   echo "(Choose HTTPS and browser-based login)"
 else
   echo "GitHub CLI already authenticated"
+  # Wire gh as git's credential helper for github.com so `git pull` /
+  # `git clone` in every repo (e.g., `pull-all` inside cc) uses the
+  # existing gh token instead of prompting for username/password.
+  # Safe to re-run; gh writes to the global gitconfig idempotently.
+  if ! git config --global --get-all credential.https://github.com.helper 2>/dev/null | grep -q "gh auth git-credential"; then
+    echo "  -> Wiring gh as git credential helper (gh auth setup-git)..."
+    gh auth setup-git || echo "     (gh auth setup-git failed — resolve manually)"
+  else
+    echo "  -> git credential helper already wired to gh"
+  fi
 fi
 
 # ─── 7. Shell config ─────────────────────────────────────────────────
