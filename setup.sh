@@ -272,12 +272,40 @@ else
   echo "Claude Code already installed: $(claude --version 2>/dev/null || echo 'installed')"
 fi
 
+# ─── 3a. Claude Code authentication ──────────────────────────────────
+# Plugin install and `cc` itself need an authenticated session. Detect
+# unauth state via `claude auth status` (exit 0 + "loggedIn": true) and
+# offer to run `claude auth login` (browser OAuth) right now.
+CLAUDE_AUTHED=0
+if command -v claude &>/dev/null; then
+  echo ""
+  echo "--- Checking Claude Code authentication ---"
+  if claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+    echo "  -> Already signed in to Claude"
+    CLAUDE_AUTHED=1
+  else
+    echo "  Claude Code is not authenticated."
+    echo "  Plugin install and 'cc' both require a signed-in session."
+    read -rp "Run 'claude auth login' now (opens browser)? [Y/n] " yn
+    if [[ ! "$yn" =~ ^[Nn] ]]; then
+      claude auth login || true
+      if claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+        CLAUDE_AUTHED=1
+      fi
+    fi
+    if [ "$CLAUDE_AUTHED" -eq 0 ]; then
+      echo ""
+      echo "  Skipping plugin install. After login, re-run: $0"
+    fi
+  fi
+fi
+
 # ─── 3b. Claude Code plugins ─────────────────────────────────────────
 # Installs plugins listed in claude/plugins.txt (format: plugin@marketplace).
 # Idempotent: marketplace registration and each plugin install are skipped
-# when already present.
+# when already present. Requires Claude authentication (§3a).
 PLUGIN_LIST="$DOTFILES_DIR/claude/plugins.txt"
-if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null; then
+if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" -eq 1 ]; then
   echo ""
   echo "--- Installing Claude Code plugins ---"
 
@@ -593,7 +621,13 @@ echo "will automatically be reflected in your dotfiles repo."
 echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
-echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
+if [ "${CLAUDE_AUTHED:-0}" -eq 0 ]; then
+  echo "  2. Run 'claude auth login' to sign in to Claude (required for cc + plugins)"
+  echo "  3. Re-run this setup.sh to install plugins"
+  echo "  4. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
+else
+  echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
+fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
   echo "  WSL Chrome bridge:"
