@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-20 — Bun install-location agnosticism
+
+### What changed
+- **`setup.sh` §2b** — After bun is present (installed or found), always ensure a symlink at `~/.bun/bin/bun` pointing at the detected binary.
+- **`claude/systemd/install.sh`** — Replaced the strict `[ -x ~/.bun/bin/bun ]` prerequisite with detect-and-symlink; fails only if bun is absent everywhere.
+
+### Why
+The systemd voice-server unit hardcodes `%h/.bun/bin/bun` (systemd can't do PATH lookups). Users installing bun via brew (`/opt/homebrew/bin/bun`), npm, or any non-curl path saw "bun not found at ~/.bun/bin/bun" even though `bun --version` worked. Canonicalizing via symlink keeps the unit file + every hardcoded path happy regardless of install method.
+
 ## 2026-04-20 — Setup.sh writes gh credential helper to `.gitconfig.local`
 
 ### What changed
