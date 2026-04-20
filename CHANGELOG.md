@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-20 — Setup.sh Claude auth gate
+
+### What changed
+- **`setup.sh` §3a** — New "Checking Claude Code authentication" step runs `claude auth status`, offers to launch `claude auth login` (browser OAuth) if unauthenticated. Only runs §3b plugin install when signed in (prevents the silent install failures we hit on the fresh laptop).
+- **Setup footer** — Manual-steps list now includes `claude auth login` + "re-run setup.sh" when auth was skipped.
+
+### Why
+Fresh-machine setup installed the CLI and *tried* to install plugins before the user had run `claude auth login`. Plugin installs swallowed errors, then `cc` failed because `claude --remote-control` needs a valid token. The gate makes the dependency explicit and recoverable in-place.
+
 ## 2026-04-17 — Plugin auto-install on setup + `cc --resume` fast path
 
 ### What changed
