@@ -18,7 +18,10 @@ cd dotfiles
 
 # Run setup (auto-detects macOS, WSL, or Linux)
 chmod +x setup.sh
-./setup.sh
+./setup.sh            # prompts: are you using PAI? [Y/n]
+# Or skip the prompt:
+# ./setup.sh --no-pai   # Claude Code + hooks only, no PAI
+# ./setup.sh --pai      # assume PAI (requires claude-memory repo + ~/.claude/PAI)
 
 # Authenticate
 gh auth login          # GitHub CLI (choose HTTPS + browser)
@@ -26,6 +29,8 @@ claude                 # Follow the login prompt
 ```
 
 The setup script auto-detects your platform, installs tools, prompts for git identity, and symlinks all Claude config into `~/.claude/`.
+
+**PAI mode** (default) wires in [Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) — install PAI first (`danielmiessler/Personal_AI_Infrastructure/Releases/v4.0.3` → `bash ~/.claude/install.sh`) and clone your private `claude-memory` repo under `~/dev/` before running `setup.sh`. **Non-PAI mode** (`--no-pai`) skips the claude-memory integration and leaves you with the Claude Code hooks, skills, agents, and dotfiles.
 
 > **WSL users:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
 

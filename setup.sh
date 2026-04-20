@@ -161,17 +161,22 @@ audit_link() {
   return 0
 }
 
-# Handle --check and --repair flags
-case "${1:-}" in
-  --check)
-    run_health_audit "check"
-    exit $?
-    ;;
-  --repair)
-    run_health_audit "repair"
-    exit $?
-    ;;
-esac
+# Flags. USE_PAI may come from env; CLI flags override. We do TWO passes so
+# flag order doesn't matter: first set USE_PAI, then handle action flags
+# (--check/--repair) which exit.
+USE_PAI="${USE_PAI:-}"
+for arg in "$@"; do
+  case "$arg" in
+    --no-pai) USE_PAI=0 ;;
+    --pai)    USE_PAI=1 ;;
+  esac
+done
+for arg in "$@"; do
+  case "$arg" in
+    --check)  run_health_audit "check";  exit $? ;;
+    --repair) run_health_audit "repair"; exit $? ;;
+  esac
+done
 
 # ─── Platform detection ──────────────────────────────────────────────
 detect_platform() {
@@ -200,6 +205,27 @@ link_file() {
 detect_platform
 
 echo "=== Dotfiles setup from $DOTFILES_DIR ==="
+
+# ─── PAI opt-in prompt ───────────────────────────────────────────────
+# PAI (Personal AI Infrastructure — danielmiessler/Personal_AI_Infrastructure)
+# provides the Algorithm, skills, agents, and hooks that live in ~/.claude/PAI.
+# The claude-memory private repo integration below layers user-specific config
+# on top of PAI. Users who just want Claude Code + hooks from this dotfiles
+# repo can opt out; nothing PAI-specific runs in that mode.
+if [ -z "$USE_PAI" ]; then
+  echo ""
+  read -rp "Are you using (or planning to use) PAI? [Y/n] " _pai_yn
+  if [[ "$_pai_yn" =~ ^[Nn] ]]; then
+    USE_PAI=0
+  else
+    USE_PAI=1
+  fi
+fi
+if [ "$USE_PAI" = "1" ]; then
+  echo "  -> PAI mode: ON (will copy claude-memory config + run bootstrap)"
+else
+  echo "  -> PAI mode: OFF (skipping claude-memory integration)"
+fi
 
 # ─── 1. System packages ───────────────────────────────────────────────
 echo ""
@@ -525,26 +551,30 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
-# PAI config from claude-memory (private repo)
-_mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
+# PAI config from claude-memory (private repo) — PAI mode only
+if [ "$USE_PAI" = "1" ]; then
+  _mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
 
-# Core PAI config (CLAUDE.md, settings.json)
-if [ -d "$_mem_repo/pai-config" ]; then
-  for f in "$_mem_repo/pai-config/"*; do
-    [ -f "$f" ] || continue
-    cp "$f" "$HOME_DIR/.claude/$(basename "$f")"
-  done
-  echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
-fi
+  # Core PAI config (CLAUDE.md, settings.json)
+  if [ -d "$_mem_repo/pai-config" ]; then
+    for f in "$_mem_repo/pai-config/"*; do
+      [ -f "$f" ] || continue
+      cp "$f" "$HOME_DIR/.claude/$(basename "$f")"
+    done
+    echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
+  else
+    echo "  -> claude-memory/pai-config not found at $_mem_repo — clone it, or re-run with --no-pai"
+  fi
 
-# PAI USER config (identity, steering rules, DA personality)
-if [ -d "$_mem_repo/pai-user" ]; then
-  mkdir -p "$HOME_DIR/.claude/PAI/USER"
-  for f in "$_mem_repo/pai-user/"*.md; do
-    [ -f "$f" ] || continue
-    cp "$f" "$HOME_DIR/.claude/PAI/USER/$(basename "$f")"
-  done
-  echo "  -> PAI USER config copied (from claude-memory)"
+  # PAI USER config (identity, steering rules, DA personality)
+  if [ -d "$_mem_repo/pai-user" ]; then
+    mkdir -p "$HOME_DIR/.claude/PAI/USER"
+    for f in "$_mem_repo/pai-user/"*.md; do
+      [ -f "$f" ] || continue
+      cp "$f" "$HOME_DIR/.claude/PAI/USER/$(basename "$f")"
+    done
+    echo "  -> PAI USER config copied (from claude-memory)"
+  fi
 fi
 
 # Chrome (WSL bridge setup script)
@@ -663,8 +693,8 @@ else
   fi
 fi
 
-# ─── 8. Bootstrap claude-memory (private repo) ──────────────────────
-if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+# ─── 8. Bootstrap claude-memory (private repo) — PAI mode only ───────
+if [ "$USE_PAI" = "1" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
   echo ""
   echo "--- Running claude-memory bootstrap ---"
   bash "$BOOTSTRAP_SCRIPT" || echo "  (bootstrap.sh had errors — run it manually to debug)"
@@ -684,11 +714,16 @@ echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
 if [ "${CLAUDE_AUTHED:-0}" -eq 0 ]; then
-  echo "  2. Run 'claude auth login' to sign in to Claude (required for cc + plugins)"
+  echo "  2. Run 'claude auth login' to sign in to Claude (required for plugins)"
   echo "  3. Re-run this setup.sh to install plugins"
-  echo "  4. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
+  _launch_step=4
 else
-  echo "  2. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
+  _launch_step=2
+fi
+if [ "$USE_PAI" = "1" ]; then
+  echo "  ${_launch_step}. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
+else
+  echo "  ${_launch_step}. Run 'claude' to launch (PAI mode was off; the 'cc' wrapper assumes PAI)"
 fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""

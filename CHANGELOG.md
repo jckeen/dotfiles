@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-04-20 — PAI mode is now opt-in via prompt / flag
+
+### What changed
+- **`setup.sh`** — New prompt "Are you using (or planning to use) PAI? [Y/n]" runs near the top. Default is **Y** (current behavior preserved). Non-interactive override via `--no-pai` / `--pai` flags or `USE_PAI=0|1` env var.
+- **Gated under `USE_PAI=1`:** the `claude-memory/pai-config` copy, the `claude-memory/pai-user` copy, and the final `bash claude-memory/bootstrap.sh` step.
+- **Manual-steps footer** — non-PAI users are pointed at `claude` instead of `cc` (the `cc` wrapper assumes PAI).
+- **`README.md`** — Quick Start documents the flags and the PAI/non-PAI distinction.
+
+### Why
+`setup.sh` previously assumed every user runs PAI and its private `claude-memory` repo. That's fine for my laptops but blocks anyone else from forking this repo for a Claude-Code-only setup. Making PAI opt-in costs 10 lines and unlocks the non-PAI path without changing the default experience.
+
 ## 2026-04-20 — Bun install-location agnosticism
 
 ### What changed
