@@ -263,6 +263,34 @@ else
   echo "Node.js already installed: $(node -v)"
 fi
 
+# ─── 2b. Bun (required by *.hook.ts files — #!/usr/bin/env bun) ───────
+# StripProjectPermissions.hook.ts and any future TypeScript hooks run via
+# bun at SessionStart. Missing bun = `cc` fails on first launch with a
+# confusing "bun: not found" error.
+if ! command -v bun &>/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
+  echo ""
+  echo "--- Installing Bun (JS runtime for TypeScript hooks) ---"
+  if [[ "$PLATFORM" == "macos" ]] && command -v brew &>/dev/null; then
+    brew install oven-sh/bun/bun
+  else
+    # Official installer; writes to ~/.bun and appends PATH lines to
+    # ~/.bashrc and ~/.zshrc automatically.
+    curl -fsSL https://bun.sh/install | bash
+  fi
+  # Make bun usable for the remainder of this script
+  if [ -x "$HOME/.bun/bin/bun" ]; then
+    export BUN_INSTALL="$HOME/.bun"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+  fi
+  echo "  -> Bun installed: $(bun --version 2>/dev/null || echo 'see installer output')"
+else
+  # Ensure current shell can find bun if only ~/.bun/bin exists on disk
+  if ! command -v bun &>/dev/null && [ -x "$HOME/.bun/bin/bun" ]; then
+    export PATH="$HOME/.bun/bin:$PATH"
+  fi
+  echo "Bun already installed: $(bun --version 2>/dev/null || echo 'installed')"
+fi
+
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
 if ! command -v claude &>/dev/null; then
   echo ""

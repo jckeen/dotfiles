@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-20 — Setup.sh installs Bun for TypeScript hooks
+
+### What changed
+- **`setup.sh` §2b** — Installs Bun if missing (via `brew install oven-sh/bun/bun` on macOS when brew is present, otherwise the official `curl | bash` installer). Also PATH-prepends `~/.bun/bin` in the current script session when bun is found on disk but not on PATH yet.
+
+### Why
+`StripProjectPermissions.hook.ts` and any future `*.hook.ts` files use `#!/usr/bin/env bun` and fire at SessionStart. Missing bun causes `cc` to fail on first launch with a confusing "bun: not found" error.
+
 ## 2026-04-20 — Setup.sh wires `gh` as git credential helper
 
 ### What changed
