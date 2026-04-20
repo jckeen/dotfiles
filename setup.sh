@@ -563,7 +563,9 @@ if [ "$USE_PAI" = "1" ]; then
     done
     echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
   else
-    echo "  -> claude-memory/pai-config not found at $_mem_repo — clone it, or re-run with --no-pai"
+    echo "  -> claude-memory/pai-config not found at $_mem_repo"
+    echo "     PAI mode needs this repo. See README 'The claude-memory private repo' for structure,"
+    echo "     or re-run with --no-pai to skip PAI integration entirely."
   fi
 
   # PAI USER config (identity, steering rules, DA personality)
@@ -612,8 +614,9 @@ if [ -d "$MEMORY_SRC" ]; then
   echo "  -> Claude memory linked (private repo)"
 else
   echo "  -> Claude memory repo not found at $MEMORY_REPO"
-  echo "     Create your own: gh repo create claude-memory --private --clone"
-  echo "     Then mkdir -p claude-memory/dev/memory and re-run setup.sh"
+  echo "     For auto-memory persistence: mkdir -p ~/dev/claude-memory/dev/memory,"
+  echo "     then 'gh repo create claude-memory --private --source=. --push' and re-run setup.sh."
+  echo "     For full PAI integration (pai-config, pai-user, bootstrap.sh) see README."
 fi
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
