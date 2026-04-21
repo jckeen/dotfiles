@@ -4,15 +4,17 @@
 # from PowerShell on Windows. Each pane/tab runs `cc <project>` inside WSL,
 # which pulls the repo and launches Claude.
 #
-# Dot-source this file from your PowerShell profile:
-#
-#   . \\wsl.localhost\Ubuntu\home\jckee\dev\dotfiles\windows\cc-functions.ps1
+# This file is intended to be COPIED to a local Windows path (not dot-sourced
+# directly from \\wsl.localhost\...). The RemoteSigned execution policy blocks
+# scripts loaded over UNC/network paths with a "not digitally signed" error,
+# so a local copy is required. See README for the install snippet.
 #
 # Commands:
 #   ccprojects                               List available projects
 #   cctab <project> [<project> ...]          One tab per project
 #   ccpane <project> [-Horizontal]           Split current WT window
 #   ccgrid <project> <project> ...           New tab, split into a grid of panes
+#   ccupdate                                 Refresh local copy from WSL source
 
 $script:WslDistro  = $env:CC_WSL_DISTRO
 if (-not $script:WslDistro) { $script:WslDistro = 'Ubuntu' }
@@ -72,6 +74,35 @@ function ccpane {
     }
     $splitFlag = if ($Horizontal) { '-H' } else { '-V' }
     wt.exe -w 0 split-pane $splitFlag wsl.exe -d $script:WslDistro -- bash -ic "cc $Project"
+}
+
+function ccupdate {
+    [CmdletBinding()]
+    param(
+        [string]$Source,
+        [string]$Destination
+    )
+    if (-not $Destination) {
+        $Destination = $MyInvocation.MyCommand.ScriptBlock.File
+    }
+    if (-not $Destination) {
+        Write-Error 'ccupdate: cannot determine local script path. Pass -Destination <path>.'
+        return
+    }
+    if (-not $Source) {
+        $wslUser = (wsl.exe -d $script:WslDistro -- bash -c 'echo $USER' 2>$null | ForEach-Object { $_.Trim() }) -join ''
+        if (-not $wslUser) {
+            Write-Error 'ccupdate: could not resolve WSL username. Pass -Source <path>.'
+            return
+        }
+        $Source = "\\wsl.localhost\$($script:WslDistro)\home\$wslUser\dev\dotfiles\windows\cc-functions.ps1"
+    }
+    if (-not (Test-Path $Source)) {
+        Write-Error "ccupdate: source not found: $Source"
+        return
+    }
+    Copy-Item $Source $Destination -Force
+    Write-Host "Updated $Destination from $Source. Re-run '. `$PROFILE' to reload."
 }
 
 function ccgrid {
