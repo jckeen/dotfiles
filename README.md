@@ -158,6 +158,46 @@ cc-pane stringer -H                # horizontal split
 
 > **Tip:** From inside an active Claude session, use `! cc-pane <project>` to open another project alongside without leaving Claude.
 
+#### From PowerShell (Windows-side)
+
+If you launch Claude from PowerShell rather than from inside WSL, dot-source `windows/cc-functions.ps1` from your PowerShell profile to get equivalent commands. Each pane/tab shells into WSL and runs `cc <project>`, so repo sync + health check still happen.
+
+| Command | What it does |
+|---------|-------------|
+| `ccgrid <p1> <p2> ...` | One new tab, each project in its own **split pane** (auto-tiled grid) |
+| `ccpane <project> [-Horizontal]` | Split the current WT window with one project |
+| `cctab <p1> <p2> ...` | One **tab** per project |
+| `ccprojects` | List available projects (from WSL) |
+
+**Install:**
+
+```powershell
+# One-time: allow local signed/unsigned scripts (required for dot-sourcing)
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+# Create profile if it doesn't exist, then append a dot-source line
+if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
+Add-Content $PROFILE '. \\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows\cc-functions.ps1'
+
+# Reload
+. $PROFILE
+```
+
+Override the WSL distro or dev dir before dot-sourcing if yours differ:
+
+```powershell
+$env:CC_WSL_DISTRO = 'Ubuntu-22.04'   # default: Ubuntu
+$env:CC_DEV_DIR    = '~/code'         # default: ~/dev
+```
+
+**Example — five repos in a split-pane grid, one command:**
+
+```powershell
+ccgrid dotfiles atlas stringer beacon pai
+```
+
+That opens a new Windows Terminal tab with five panes (alternating vertical/horizontal splits), each running `cc <project>` inside WSL.
+
 ---
 
 ## Skills (Slash Commands)
@@ -478,6 +518,8 @@ dotfiles/
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
     └── agents/                 # 16 specialized review subagents
+└── windows/
+    └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md

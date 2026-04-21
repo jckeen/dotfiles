@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-21 — PowerShell launchers: ccgrid / ccpane / cctab / ccprojects
+
+### What changed
+- **`windows/cc-functions.ps1`** — New dot-sourceable PowerShell module defining four commands that mirror the bash `cc-pane` / `cc-tab` / `cc-multi` helpers. `ccgrid` in particular opens a new Windows Terminal tab with N auto-tiled split panes, one per project, each running `cc <project>` inside WSL.
+- **`README.md`** — New "From PowerShell (Windows-side)" subsection under Multi-session documenting install (execution policy + `$PROFILE` dot-source), env-var overrides (`CC_WSL_DISTRO`, `CC_DEV_DIR`), command table, and a `ccgrid` example.
+
+### Why
+The existing bash helpers only work when you're already inside WSL. Running Claude from a native PowerShell prompt (common on Windows laptops) meant manually chaining `wt.exe split-pane wsl.exe ...` or opening panes one at a time. `ccgrid dotfiles atlas stringer beacon pai` now does five repos in one command.
+
 ## 2026-04-21 — systemd installer clears stale :8888 squatters before restart
 
 ### What changed
