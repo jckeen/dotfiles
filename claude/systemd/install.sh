@@ -61,6 +61,28 @@ cp "$SRC_UNIT" "$DEST_UNIT"
 info "==> Reloading systemd user daemon"
 systemctl --user daemon-reload
 
+info "==> Clearing port 8888 before restart"
+# Stop any existing systemd instance first so anything still bound to :8888
+# afterward can be identified as a foreign (non-systemd) squatter. This is the
+# common WSL/Linux failure mode: a manually-started `bun run server.ts` squats
+# the port and the unit crash-loops with EADDRINUSE forever.
+systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+sleep 1
+squatter_pids="$(ss -H -lntp 2>/dev/null | awk '$4 ~ /:8888$/' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+if [ -n "$squatter_pids" ]; then
+    yell "! Foreign process(es) holding :8888: $squatter_pids — killing so $SERVICE_NAME can bind"
+    for p in $squatter_pids; do kill "$p" 2>/dev/null || true; done
+    sleep 1
+    squatter_pids="$(ss -H -lntp 2>/dev/null | awk '$4 ~ /:8888$/' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+    if [ -n "$squatter_pids" ]; then
+        for p in $squatter_pids; do kill -9 "$p" 2>/dev/null || true; done
+        sleep 1
+    fi
+fi
+# Prior crash-loops may have tripped the start-rate limit; clear it so the
+# first post-install start isn't blocked.
+systemctl --user reset-failed "$SERVICE_NAME" 2>/dev/null || true
+
 info "==> Enabling and (re)starting $SERVICE_NAME"
 systemctl --user enable "$SERVICE_NAME" >/dev/null
 systemctl --user restart "$SERVICE_NAME"
