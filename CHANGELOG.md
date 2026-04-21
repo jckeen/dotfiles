@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-21 — systemd installer clears stale :8888 squatters before restart
+
+### What changed
+- **`claude/systemd/install.sh`** — New "Clearing port 8888 before restart" step: stops the unit, scans `ss -lntp` for any remaining :8888 listener, and SIGTERM→SIGKILLs it. Runs `systemctl --user reset-failed` before the final restart so a prior crash-loop's rate-limit counter doesn't block the first good start.
+
+### Why
+On a fresh WSL/Linux laptop, a manually-launched `bun run ~/.claude/VoiceServer/server.ts` can be holding port 8888 when the installer runs. The systemd unit then crash-loops with `EADDRINUSE`, `bootstrap.sh --check` reports `DOWN`, and re-running `bootstrap.sh` doesn't help — nothing in the pipeline was killing the foreign process. The detection block is idempotent: when nothing is squatting the port, it's a silent no-op.
+
 ## 2026-04-20 — Document the `claude-memory` private repo contract
 
 ### What changed
