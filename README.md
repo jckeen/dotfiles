@@ -158,6 +158,57 @@ cc-pane stringer -H                # horizontal split
 
 > **Tip:** From inside an active Claude session, use `! cc-pane <project>` to open another project alongside without leaving Claude.
 
+#### From PowerShell (Windows-side)
+
+If you launch Claude from PowerShell rather than from inside WSL, dot-source `windows/cc-functions.ps1` from your PowerShell profile to get equivalent commands. Each pane/tab shells into WSL and runs `cc <project>`, so repo sync + health check still happen.
+
+| Command | What it does |
+|---------|-------------|
+| `ccgrid <p1> <p2> ...` | One new tab, each project in its own **split pane** (auto-tiled grid) |
+| `ccpane <project> [-Horizontal]` | Split the current WT window with one project |
+| `cctab <p1> <p2> ...` | One **tab** per project |
+| `ccprojects` | List available projects (from WSL) |
+| `ccupdate` | Refresh the local copy from the WSL source |
+
+**Install** (copy-paste into an elevated-free PowerShell window, replacing `<you>` with your WSL username):
+
+```powershell
+# 1. Allow local scripts (one time, per-user)
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+# 2. Copy cc-functions.ps1 from the WSL dotfiles checkout to a LOCAL Windows path.
+#    (RemoteSigned blocks scripts loaded directly from \\wsl.localhost\... with a
+#    "not digitally signed" error, so dot-sourcing a local copy is required.)
+$src  = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows\cc-functions.ps1'
+$dest = "$env:USERPROFILE\.cc-functions.ps1"
+Copy-Item $src $dest -Force
+
+# 3. Wire it into your PowerShell profile
+if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
+Add-Content $PROFILE ('. "' + $dest + '"')
+
+# 4. Reload
+. $PROFILE
+```
+
+After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy (then `. $PROFILE` to reload).
+
+Override the WSL distro or dev dir in your profile **before** the dot-source line if yours differ:
+
+```powershell
+$env:CC_WSL_DISTRO = 'Ubuntu-22.04'   # default: Ubuntu
+$env:CC_DEV_DIR    = '~/code'         # default: ~/dev
+. "$env:USERPROFILE\.cc-functions.ps1"
+```
+
+**Example — five repos in a split-pane grid, one command:**
+
+```powershell
+ccgrid dotfiles atlas stringer beacon pai
+```
+
+That opens a new Windows Terminal tab with five panes (alternating vertical/horizontal splits), each running `cc <project>` inside WSL.
+
 ---
 
 ## Skills (Slash Commands)
@@ -478,6 +529,8 @@ dotfiles/
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
     └── agents/                 # 16 specialized review subagents
+└── windows/
+    └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md

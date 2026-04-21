@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-04-21 — PowerShell launchers: ccgrid / ccpane / cctab / ccprojects / ccupdate
+
+### What changed
+- **`windows/cc-functions.ps1`** — New PowerShell module defining five commands that mirror the bash `cc-pane` / `cc-tab` / `cc-multi` helpers. `ccgrid` opens a new Windows Terminal tab with N auto-tiled split panes, one per project, each running `cc <project>` inside WSL. `ccupdate` refreshes the local copy from the canonical WSL source after dotfiles pulls.
+- **`README.md`** — New "From PowerShell (Windows-side)" subsection under Multi-session. Install snippet copies the file to a local Windows path and dot-sources *that*, because `RemoteSigned` (the recommended policy) blocks scripts loaded directly from `\\wsl.localhost\...` with a "not digitally signed" error. Documents env-var overrides (`CC_WSL_DISTRO`, `CC_DEV_DIR`) and gives a five-repo `ccgrid` example.
+
+### Why
+The existing bash helpers only work when you're already inside WSL. Running Claude from a native PowerShell prompt (common on Windows laptops) meant manually chaining `wt.exe split-pane wsl.exe ...` or opening panes one at a time. `ccgrid dotfiles atlas stringer beacon pai` now does five repos in one command.
+
+### Verified
+- `powershell.exe -ExecutionPolicy RemoteSigned` dot-sourcing the local copy registers all five functions.
+- `ccupdate` resolves its own script path via `$MyInvocation.MyCommand.ScriptBlock.File` (since `$PSCommandPath` is empty inside dot-sourced function bodies), discovers the WSL source via `wsl.exe -- bash -c 'echo $USER'`, and copies successfully.
+
 ## 2026-04-21 — systemd installer clears stale :8888 squatters before restart
 
 ### What changed
