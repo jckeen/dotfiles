@@ -170,7 +170,7 @@ If you launch Claude from PowerShell rather than from inside WSL, dot-source `wi
 | `ccprojects` | List available projects (from WSL) |
 | `ccupdate` | Refresh the local copy from the WSL source |
 
-**Install** (copy-paste into an elevated-free PowerShell window, replacing `<you>` with your WSL username):
+**Install — run these in PowerShell** (not bash/WSL). Open a PowerShell window (Start menu → "Windows Terminal" with a PowerShell profile, or Win+R → `powershell`), then copy-paste the block below, replacing `<you>` with your WSL username:
 
 ```powershell
 # 1. Allow local scripts (one time, per-user)
@@ -190,6 +190,23 @@ Add-Content $PROFILE ('. "' + $dest + '"')
 # 4. Reload
 . $PROFILE
 ```
+
+**Running from bash/WSL?** Bridge into PowerShell with this one-liner — it does the whole install from inside a WSL terminal:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
+  $src  = "\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows\cc-functions.ps1"
+  $dest = "$env:USERPROFILE\.cc-functions.ps1"
+  Copy-Item $src $dest -Force
+  if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
+  if (-not (Select-String -Path $PROFILE -Pattern ".cc-functions.ps1" -Quiet)) {
+    Add-Content $PROFILE ". `"$dest`""
+  }
+'
+```
+
+Then open a new PowerShell window and `ccgrid` / `cctab` / etc. will be defined.
 
 After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy (then `. $PROFILE` to reload).
 
