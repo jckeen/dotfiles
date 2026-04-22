@@ -27,7 +27,7 @@
 
 ### [MEDIUM] Windows cmd.exe output used unsanitised in heredoc
 
-- **File:** `setup.sh:361`
+- **File:** `setup.sh:458`
 - **CWE:** CWE-78 (Improper Neutralization of Special Elements Used in an OS Command)
 - **Description:** `WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')` captures output from the Windows environment and uses it directly in a heredoc without format validation. A compromised or attacker-controlled `%USERNAME%` could inject shell metacharacters.
 - **Remediation:** Sanitise immediately after capture: `WIN_USER=$(echo "$WIN_USER" | sed 's/[^a-zA-Z0-9._-]//g')`. Document the assumption that the Windows mount is trusted.
@@ -45,7 +45,7 @@
 
 ### [MEDIUM] git safe.directory entries set without path validation
 
-- **File:** `setup.sh:388–389`
+- **File:** `setup.sh:485–486`
 - **CWE:** CWE-426 (Untrusted Search Path)
 - **Description:** `git config --global --add safe.directory "$DOTFILES_DIR"` and `"$DEV_DIR/claude-memory"` are added without verifying the paths exist or are under `$HOME`. A symlink attack could add an attacker-controlled directory to the global git safe list.
 - **Remediation:** Validate paths with `realpath` before adding: confirm each resolves under `$HOME` and contains a `.git` directory.
@@ -54,7 +54,7 @@
 
 ### [MEDIUM] NTFY_TOPIC value not validated before use in curl URL
 
-- **File:** `hooks/ntfy-awaiting-input.sh:49`
+- **File:** `claude/hooks/ntfy-awaiting-input.sh:49`
 - **CWE:** CWE-95 (Improper Neutralization of Directives in Dynamically Evaluated Code)
 - **Description:** `curl ... "https://${NTFY_SERVER}/${NTFY_TOPIC}"` constructs the URL directly from the environment variable without validating that `NTFY_TOPIC` contains only safe URL-path characters. A topic value with special characters could alter the target URL.
 - **Remediation:** Validate topic format before use: `[[ "$NTFY_TOPIC" =~ ^[a-zA-Z0-9_-]+$ ]] || exit 1`.
@@ -63,7 +63,7 @@
 
 ### [MEDIUM] Notification hook may transmit sensitive data from Claude responses
 
-- **File:** `hooks/ntfy-awaiting-input.sh:27–41`
+- **File:** `claude/hooks/ntfy-awaiting-input.sh:27–41`
 - **CWE:** CWE-532 (Insertion of Sensitive Information into Log File)
 - **Description:** The hook reads arbitrary JSON from stdin and forwards extracted `header`/`question` text to external services (ntfy.sh, Discord, Twilio). If Claude's response contains sensitive information (credentials, PII), it is transmitted to third-party endpoints.
 - **Remediation:** Scrub common secret patterns from notification text before sending. Document that notifications should not be enabled for sensitive workloads.

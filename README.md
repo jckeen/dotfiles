@@ -191,17 +191,18 @@ Add-Content $PROFILE ('. "' + $dest + '"')
 . $PROFILE
 ```
 
-**Running from bash/WSL?** Bridge into PowerShell with this one-liner — it does the whole install from inside a WSL terminal:
+**Running from bash/WSL?** Bridge into PowerShell with this one-liner — it auto-resolves your WSL username and distro via env vars, so paste it verbatim:
 
 ```bash
+WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-  $src  = "\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows\cc-functions.ps1"
+  $src  = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows\cc-functions.ps1"
   $dest = "$env:USERPROFILE\.cc-functions.ps1"
   Copy-Item $src $dest -Force
   if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-  if (-not (Select-String -Path $PROFILE -Pattern ".cc-functions.ps1" -Quiet)) {
-    Add-Content $PROFILE ". `"$dest`""
+  if (-not (Select-String -Path $PROFILE -Pattern "\.cc-functions\.ps1" -Quiet)) {
+    Add-Content $PROFILE (". `"$dest`"")
   }
 '
 ```
@@ -546,8 +547,6 @@ dotfiles/
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
     └── agents/                 # 16 specialized review subagents
-└── windows/
-    └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md
@@ -564,6 +563,8 @@ dotfiles/
         ├── dependency-doctor.md
         ├── test-writer.md
         └── schema-reviewer.md
+└── windows/
+    └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
 ```
 
 ---
