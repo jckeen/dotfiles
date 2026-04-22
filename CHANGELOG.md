@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-04-22 — Post-merge cleanup: PS injection, installer portability, README fixes
+
+### What changed
+- **`windows/cc-functions.ps1`** — Added `Test-SafeProjectName` helper (allow-list `^[A-Za-z0-9][A-Za-z0-9._-]*$`) and gated `Test-WslProject` on it. Closes shell-metachar interpolation into `bash -ic "cc $p"` — the project-name validator runs upstream of every `wsl.exe`/`wt.exe` call site.
+- **`claude/systemd/install.sh`** — Wrapped the :8888 squatter scan in `command -v ss` so the installer warns and skips instead of silently falling through on minimal environments without `iproute2`.
+- **`SECURITY_FINDINGS_20260419.md`** — Corrected stale refs: `setup.sh:361` → `:458`; `setup.sh:388–389` → `:485–486`; `hooks/ntfy-awaiting-input.sh` → `claude/hooks/ntfy-awaiting-input.sh` (both findings). Vulnerabilities unchanged; line numbers now match the current tree.
+- **`README.md`** — Fixed displaced agents-list tree (16 agent files were rendering under `windows/cc-functions.ps1`) and replaced the bash→PowerShell bridge one-liner's `<you>` literal with auto-resolved `$(whoami)` + `${WSL_DISTRO_NAME:-Ubuntu}` env vars so it pastes verbatim.
+
+### Why
+Post-merge verification of 2026-04-21's four PRs surfaced real defects: stale doc refs that would waste triage time, a self-targeting injection vector in the new PS launchers, a `ss`-missing environment gap in the installer, and two README regressions. All fixed in one bundled PR to avoid splinter PRs.
+
 ## 2026-04-21 — PowerShell launchers: ccgrid / ccpane / cctab / ccprojects / ccupdate
 
 ### What changed

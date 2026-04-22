@@ -30,8 +30,17 @@ function Test-WtAvailable {
     return $true
 }
 
+# Project names are interpolated into `bash -ic "cc $p"`. Allow only characters
+# safe in an unquoted bash arg so metachars (;, &, |, $, backticks, spaces) can't
+# smuggle extra commands into WSL.
+function Test-SafeProjectName {
+    param([string]$Project)
+    return ($Project -match '^[A-Za-z0-9][A-Za-z0-9._-]*$')
+}
+
 function Test-WslProject {
     param([string]$Project)
+    if (-not (Test-SafeProjectName $Project)) { return $false }
     $check = wsl.exe -d $script:WslDistro -- bash -ic "[ -d $script:DevDir/$Project ] && echo ok" 2>$null
     return ($check -match 'ok')
 }
