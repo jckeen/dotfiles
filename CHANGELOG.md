@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-24 — check-claude.sh: exclude `plugins.txt` from symlink audit
+
+### What changed
+- **`check-claude.sh`** — Added `plugins.txt` to the `NOLINK` exclusion list alongside `AgentPack.md`. The manifest is consumed directly by `setup.sh` from `$DOTFILES_DIR/claude/plugins.txt` (see `setup.sh:376`) and is not meant to be symlinked into `~/.claude/`.
+
+### Why
+Auditor was reporting a spurious `MISSING plugins.txt (not present in ~/.claude/)` warning on every run since the plugin manifest landed in #2 — the file exists where it's used, the check was asking the wrong question.
+
 ## 2026-04-22 — Post-merge cleanup: PS injection, installer portability, README fixes
 
 ### What changed

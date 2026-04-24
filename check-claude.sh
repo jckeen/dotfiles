@@ -40,8 +40,10 @@ check_link() {
 echo "Checking Claude Code config..."
 echo ""
 
-# Files kept in dotfiles but NOT symlinked (loaded on-demand)
-NOLINK="AgentPack.md"
+# Files kept in dotfiles but NOT symlinked (loaded on-demand or consumed
+# directly from the dotfiles dir — e.g. plugins.txt is read by setup.sh
+# from $DOTFILES_DIR/claude/plugins.txt, not from ~/.claude/).
+NOLINK="AgentPack.md plugins.txt"
 
 # Memory repo check
 echo "Checking memory repo..."
