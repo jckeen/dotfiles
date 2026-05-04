@@ -434,16 +434,19 @@ When you add a new entry point to one of these stacks, verify in code review:
 
 ## Cross-references — per-repo fix PRs
 
-| Repo                 | PR                                                |
-| -------------------- | ------------------------------------------------- |
-| `stringer`           | <TBD>                                             |
-| `atlas`              | <TBD>                                             |
-| `beacon`             | <TBD>                                             |
-| `clarity-engine`     | <TBD>                                             |
-| `pp2qbo`             | <TBD>                                             |
-| `pai-voice-server`   | <TBD>                                             |
+| Repo                 | PR                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `parlance`           | [#18](https://github.com/jckeen/parlance/pull/18) (Fastify bearer-token preHandler) + [#19](https://github.com/jckeen/parlance/pull/19) (apps/web Route Handler proxy) |
+| `impact-dash`        | [#21](https://github.com/jckeen/impact-dash/pull/21) (FastAPI JWT, `AUTH_MODE=required` default, separate `JWT_SIGNING_SECRET`) |
+| `pp2qbo`             | [#19](https://github.com/jckeen/pp2qbo/pull/19) (`POSTGRES_USER`/`POSTGRES_PASSWORD` required, no insecure defaults)      |
+| `smss`               | [#18](https://github.com/jckeen/smss/pull/18) (`IP_HASH_SALT` lazy resolution, `CRON_SECRET` required in production)     |
+| `stringer`           | <TBD>                                                                                                                    |
+| `atlas`              | <TBD>                                                                                                                    |
+| `beacon`             | <TBD>                                                                                                                    |
+| `clarity-engine`     | <TBD>                                                                                                                    |
+| `pai-voice-server`   | <TBD>                                                                                                                    |
 
-Placeholders are intentional — sibling agents are opening these PRs in parallel; URLs will be backfilled.
+The first four rows are landed. The remaining `<TBD>` rows are repos where the parallel work didn't produce a CWE-306 fix this round — open follow-ups before claiming ADR conformance for those services.
 
 ---
 
