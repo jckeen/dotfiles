@@ -15,13 +15,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$0")"
 DEEP=false
-FULL_AUTO_FLAG=""
+FULL_AUTO_ARGS=()
 
 # Parse args
 for arg in "$@"; do
   case "$arg" in
     --deep) DEEP=true ;;
-    --full-auto) FULL_AUTO_FLAG="--full-auto" ;;
+    --full-auto) FULL_AUTO_ARGS=(--full-auto) ;;
   esac
 done
 
@@ -95,7 +95,7 @@ echo "╔═══════════════════════�
 echo "║  Claude Overnight Runner                             ║"
 echo "║  Repos: ${#REPOS[@]}                                 ║"
 echo "║  Mode: $([ "$DEEP" = true ] && echo "deep" || echo "health-only")  ║"
-echo "║  Auto: $([ -n "$FULL_AUTO_FLAG" ] && echo "FULL AUTO" || echo "scoped permissions")  ║"
+echo "║  Auto: $([ ${#FULL_AUTO_ARGS[@]} -gt 0 ] && echo "FULL AUTO" || echo "scoped permissions")  ║"
 echo "║  Started: $(date)                                    ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
@@ -106,7 +106,7 @@ pids=()
 for repo in "${REPOS[@]}"; do
   if [[ -d "$repo" ]]; then
     echo "→ Starting health check: $(basename "$repo")"
-    "$SCRIPT_DIR/health-check.sh" "$repo" $FULL_AUTO_FLAG &
+    "$SCRIPT_DIR/health-check.sh" "$repo" "${FULL_AUTO_ARGS[@]}" &
     pids+=($!)
   else
     echo "⚠ Skipping $repo (not found)"
@@ -127,7 +127,7 @@ if [[ "$DEEP" == "true" ]]; then
   for repo in "${REPOS[@]}"; do
     if [[ -d "$repo" ]]; then
       echo "→ Improving tests: $(basename "$repo")"
-      "$SCRIPT_DIR/test-coverage.sh" "$repo" $FULL_AUTO_FLAG || true
+      "$SCRIPT_DIR/test-coverage.sh" "$repo" "${FULL_AUTO_ARGS[@]}" || true
     fi
   done
 
@@ -136,7 +136,7 @@ if [[ "$DEEP" == "true" ]]; then
   for repo in "${REPOS[@]}"; do
     if [[ -d "$repo" ]]; then
       echo "→ Fixing issues: $(basename "$repo")"
-      "$SCRIPT_DIR/fix-issues.sh" "$repo" $FULL_AUTO_FLAG || true
+      "$SCRIPT_DIR/fix-issues.sh" "$repo" "${FULL_AUTO_ARGS[@]}" || true
     fi
   done
 fi

@@ -6,7 +6,7 @@
 # Usage:
 #   test-coverage.sh /path/to/repo
 #   test-coverage.sh /path/to/repo --max-turns 20
-#   FULL_AUTO=true test-coverage.sh /path/to/repo  # bypass all permissions
+#   test-coverage.sh /path/to/repo --full-auto  # bypass all permissions
 
 source "$(dirname "$0")/common.sh"
 parse_args "$@"

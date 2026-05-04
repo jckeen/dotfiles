@@ -125,6 +125,19 @@ run_health_audit() {
 # In repair mode, recreates broken links.
 audit_link() {
   local src="$1" dst="$2" label="$3" mode="$4"
+  local src_real dotfiles_real
+  src_real="$(realpath "$src" 2>/dev/null)" || {
+    printf '  \033[31mINVALID\033[0m %s source cannot be resolved: %s\n' "$label" "$src"
+    return 1
+  }
+  dotfiles_real="$(realpath "$DOTFILES_DIR" 2>/dev/null)" || return 1
+  case "$src_real" in
+    "$dotfiles_real"/*) ;;
+    *)
+      printf '  \033[31mINVALID\033[0m %s source outside dotfiles: %s\n' "$label" "$src_real"
+      return 1
+      ;;
+  esac
   if [ -L "$dst" ]; then
     local target
     target="$(readlink "$dst")"
@@ -331,6 +344,9 @@ if command -v bun &>/dev/null && [ ! -e "$HOME/.bun/bin/bun" ]; then
   ln -sf "$_bun_found" "$HOME/.bun/bin/bun"
   echo "  -> bun symlinked: ~/.bun/bin/bun -> $_bun_found"
 fi
+if [ ! -e "$HOME/.bun/bin/bun" ]; then
+  echo "  -> WARNING: ~/.bun/bin/bun is missing; PAI voice server may not start until bun is installed"
+fi
 
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
 if ! command -v claude &>/dev/null; then
@@ -456,6 +472,11 @@ if [[ "$PLATFORM" == "macos" ]]; then
 GITCONF
 elif [[ "$PLATFORM" == "wsl" ]]; then
   WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+  if [[ ! "$WIN_USER" =~ ^[A-Za-z0-9._\ -]+$ ]]; then
+    echo "  Warning: Windows username contains unsupported characters; using PATH-based code lookup for editor."
+    WIN_USER=""
+  fi
+  if [ -n "$WIN_USER" ]; then
   cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
 [user]
 	name = ${GIT_NAME}
@@ -465,6 +486,17 @@ elif [[ "$PLATFORM" == "wsl" ]]; then
 [credential]
 	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
 GITCONF
+  else
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+[user]
+	name = ${GIT_NAME}
+	email = ${GIT_EMAIL}
+[core]
+	editor = code --wait
+[credential]
+	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
+GITCONF
+  fi
 else
   cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
 [user]
@@ -476,6 +508,7 @@ else
 	helper = store
 GITCONF
 fi
+chmod 600 "$DOTFILES_DIR/.gitconfig.local"
 
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"

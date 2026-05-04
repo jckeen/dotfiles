@@ -71,6 +71,7 @@ run_claude() {
   local tier_name="$1"
   local prompt="$2"
   local extra_args="${3:-}"
+  local extra_args_array=()
   local log
   log=$(log_file "$tier_name")
 
@@ -81,16 +82,21 @@ run_claude() {
     tool_args+=(--allowedTools "$tool")
   done
 
-  # Check for --full-auto override
+  # Check for explicit --full-auto override. Do not honor FULL_AUTO from the
+  # environment; a safety bypass should only come from this script's CLI parser.
   local perm_args=()
   if [[ "${FULL_AUTO:-false}" == "true" ]]; then
     echo "╔══════════════════════════════════════════════════════╗"
     echo "║  ⚠  FULL AUTO MODE — all permissions bypassed       ║"
-    echo "║  Override: FULL_AUTO=true                            ║"
+    echo "║  Override: --full-auto                               ║"
     echo "║  Repo: $REPO_DIR"
     echo "╚══════════════════════════════════════════════════════╝"
     perm_args=(--dangerously-skip-permissions)
     tool_args=()  # not needed with full bypass
+  fi
+
+  if [[ -n "$extra_args" ]]; then
+    read -r -a extra_args_array <<< "$extra_args"
   fi
 
   # Append honesty guardrail to every prompt
@@ -111,7 +117,7 @@ IMPORTANT: Only report real issues that you can point to in the code with file p
     "${perm_args[@]}" \
     --max-turns "$MAX_TURNS" \
     --model "$MODEL" \
-    $extra_args \
+    "${extra_args_array[@]}" \
     2>&1 | tee "$log"
 }
 
@@ -119,7 +125,7 @@ IMPORTANT: Only report real issues that you can point to in the code with file p
 
 parse_args() {
   REPO_DIR=""
-  FULL_AUTO="${FULL_AUTO:-false}"
+  FULL_AUTO=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in

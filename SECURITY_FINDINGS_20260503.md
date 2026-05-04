@@ -1,6 +1,10 @@
 # Security Findings — dotfiles — 2026-05-03
 
 > Weekly automated security sweep. Static analysis only — no code was executed.
+>
+> Remediation update: this PR now includes fixes for the confirmed high-risk
+> command/argument injection findings and small hardening changes for local file
+> permissions, bun path validation, and port-cleanup error reporting.
 
 ## Summary
 

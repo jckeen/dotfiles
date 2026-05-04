@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-04 — Security sweep remediations
+
+### What changed
+- **`claude/scripts/common.sh` + `overnight.sh`** — `FULL_AUTO=true` in the environment is ignored; full-auto now requires the explicit `--full-auto` CLI flag. Overnight runner forwards that flag with an array instead of unquoted string expansion.
+- **`windows/cc-functions.ps1`** — WSL launch commands now pass project names as positional bash args (`cc "$1"`) instead of interpolating them into `bash -ic "cc $p"`.
+- **`setup.sh`** — Validates the Windows username before writing WSL editor config, writes `.gitconfig.local` with mode `0600`, validates audit sources are inside the dotfiles tree, and warns if the canonical bun path is missing.
+- **`claude/systemd/install.sh`** — Port cleanup now reports failed `kill` / `kill -9` attempts instead of masking them.
+
+### Why
+Follow-up to the 2026-05-03 static security sweep. The report-only PR is now actionable: confirmed injection and unsafe-bypass paths are fixed while preserving the normal Claude launcher workflow.
+
 ## 2026-04-24 — check-claude.sh: exclude `plugins.txt` from symlink audit
 
 ### What changed

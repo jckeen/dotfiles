@@ -72,11 +72,19 @@ if command -v ss >/dev/null; then
     squatter_pids="$(ss -H -lntp 2>/dev/null | awk '$4 ~ /:8888$/' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
     if [ -n "$squatter_pids" ]; then
         yell "! Foreign process(es) holding :8888: $squatter_pids — killing so $SERVICE_NAME can bind"
-        for p in $squatter_pids; do kill "$p" 2>/dev/null || true; done
+        for p in $squatter_pids; do
+            if ! kill "$p" 2>/dev/null; then
+                yell "! Failed to terminate PID $p"
+            fi
+        done
         sleep 1
         squatter_pids="$(ss -H -lntp 2>/dev/null | awk '$4 ~ /:8888$/' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
         if [ -n "$squatter_pids" ]; then
-            for p in $squatter_pids; do kill -9 "$p" 2>/dev/null || true; done
+            for p in $squatter_pids; do
+                if ! kill -9 "$p" 2>/dev/null; then
+                    yell "! Failed to force-kill PID $p"
+                fi
+            done
             sleep 1
         fi
     fi
