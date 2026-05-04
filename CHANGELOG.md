@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-05-03 — ADR cross-references: stringer #64 added
+
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Added `stringer` row to the cross-reference table linking [#64](https://github.com/jckeen/stringer/pull/64) (256-bit CSPRNG OAuth state nonce + `crypto.timingSafeEqual` validation + `SEED_USER_PASSWORD` env-required). Five rows are now landed (`parlance`, `impact-dash`, `pp2qbo`, `smss`, `stringer`); `<TBD>` remains for `atlas`, `beacon`, `clarity-engine`, `pai-voice-server`. Annotated that `atlas` #5 (CWE-209/532) and `beacon` #17 (security headers + rate limiting) are adjacent hardening but don't add the auth-at-boundary property this ADR codifies.
+
 ### 2026-05-03 — ADR cross-references backfilled
 
 - **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Backfilled the per-repo cross-reference table with the four landed auth fixes from the 2026-05-03 multi-repo campaign: `parlance` #18 + #19, `impact-dash` #21, `pp2qbo` #19, `smss` #18. Honest `<TBD>` retained for `stringer`, `atlas`, `beacon`, `clarity-engine`, and `pai-voice-server` — these need CWE-306 follow-ups before claiming ADR conformance. Placeholder note rewritten to reflect that the parallel work concluded with partial coverage.
