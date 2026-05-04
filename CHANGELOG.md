@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### 2026-05-03 — ADR: Auth at the Boundary
+
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — New cross-repo Architecture Decision Record codifying auth-by-default at the entry boundary as the standing rule for all jckeen-owned services. Captures the principle behind a CWE-306 (Missing Authentication) finding pattern that hit 6 repos across 4 unrelated stacks (Fastify TS, FastAPI, Next.js + Better-Auth, Next.js + jose, Next.js bearer, Python Unix-socket IPC) in the same audit week. Includes drop-in code snippets per stack, six anti-patterns with wrong/right diffs, per-framework checklists, and placeholders for the per-repo fix PRs (linked once those PRs land).
+- **`README.md`** — New top-level `## ADRs` section linking the new doc.
+
+### Why
+The 6 findings shared no code — they shared an assumption ("auth is handled somewhere upstream") that's not enforceable through code review alone. The ADR makes auth-by-default the framework wiring, not the reviewer's job, and gives every stack a copy-paste pattern that fails closed by construction.
+
 ## 2026-04-24 — check-claude.sh: exclude `plugins.txt` from symlink audit
 
 ### What changed

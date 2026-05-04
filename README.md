@@ -569,6 +569,16 @@ dotfiles/
 
 ---
 
+## ADRs
+
+Architecture Decision Records that apply across jckeen-owned repos live in [`ADR/`](ADR/).
+
+| ADR | Status | Summary |
+| --- | ------ | ------- |
+| [Auth at the Boundary](ADR/AUTH-AT-THE-BOUNDARY.md) | Accepted (2026-05-03) | Every entry point rejects unauthenticated requests at the boundary. Auth-by-default, not auth-by-config. Optional or "off when unconfigured" auth modes are forbidden. |
+
+---
+
 ## Sources
 
 - [How Boris Uses Claude Code](https://howborisusesclaudecode.com) — Tips from the creator
