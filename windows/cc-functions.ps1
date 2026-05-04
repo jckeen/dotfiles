@@ -30,9 +30,8 @@ function Test-WtAvailable {
     return $true
 }
 
-# Project names are interpolated into `bash -ic "cc $p"`. Allow only characters
-# safe in an unquoted bash arg so metachars (;, &, |, $, backticks, spaces) can't
-# smuggle extra commands into WSL.
+# Project names are passed as positional args to bash. Keep a strict allowlist
+# anyway so WT titles and WSL path checks stay predictable.
 function Test-SafeProjectName {
     param([string]$Project)
     return ($Project -match '^[A-Za-z0-9][A-Za-z0-9._-]*$')
@@ -41,7 +40,7 @@ function Test-SafeProjectName {
 function Test-WslProject {
     param([string]$Project)
     if (-not (Test-SafeProjectName $Project)) { return $false }
-    $check = wsl.exe -d $script:WslDistro -- bash -ic "[ -d $script:DevDir/$Project ] && echo ok" 2>$null
+    $check = wsl.exe -d $script:WslDistro -- bash -lc 'dev_dir="$2"; case "$dev_dir" in "~") dev_dir="$HOME" ;; "~/"*) dev_dir="$HOME/${dev_dir#~/}" ;; esac; [ -d "$dev_dir/$1" ] && echo ok' -- $Project $script:DevDir 2>$null
     return ($check -match 'ok')
 }
 
@@ -65,7 +64,7 @@ function cctab {
             Write-Warning "Skipping unknown project: $p"
             continue
         }
-        wt.exe -w 0 new-tab --title $p wsl.exe -d $script:WslDistro -- bash -ic "cc $p"
+        wt.exe -w 0 new-tab --title $p wsl.exe -d $script:WslDistro -- bash -lc 'cc "$1"' -- $p
     }
 }
 
@@ -82,7 +81,7 @@ function ccpane {
         return
     }
     $splitFlag = if ($Horizontal) { '-H' } else { '-V' }
-    wt.exe -w 0 split-pane $splitFlag wsl.exe -d $script:WslDistro -- bash -ic "cc $Project"
+    wt.exe -w 0 split-pane $splitFlag wsl.exe -d $script:WslDistro -- bash -lc 'cc "$1"' -- $Project
 }
 
 function ccupdate {
@@ -136,14 +135,14 @@ function ccgrid {
     # `';'` as its own argument so wt interprets it instead of the shell.
     $first = $valid[0]
     $wtArgs = @('-w', '0', 'new-tab', '--title', $first,
-                'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-ic', "cc $first")
+                'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-lc', 'cc "$1"', '--', $first)
 
     # Alternate vertical / horizontal splits for an even-ish grid.
     for ($i = 1; $i -lt $valid.Count; $i++) {
         $p = $valid[$i]
         $splitFlag = if ($i % 2 -eq 1) { '-V' } else { '-H' }
         $wtArgs += @(';', 'split-pane', $splitFlag, '--title', $p,
-                     'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-ic', "cc $p")
+                     'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-lc', 'cc "$1"', '--', $p)
     }
 
     # Tile evenly once all panes exist so none get starved.

@@ -75,14 +75,11 @@ If you trust a script to run completely unattended:
 # Per-script
 ./test-coverage.sh ~/dev/atlas --full-auto
 
-# Or via environment variable
-FULL_AUTO=true ./overnight.sh --deep
-
 # Overnight run with full auto
 ./overnight.sh --deep --full-auto
 ```
 
-This adds `--dangerously-skip-permissions` and removes tool restrictions. A warning banner prints when active. **Use only when you've already run the script in scoped mode and trust it.**
+This adds `--dangerously-skip-permissions` and removes tool restrictions. A warning banner prints when active. **Use only when you've already run the script in scoped mode and trust it.** `FULL_AUTO=true` in the environment is intentionally ignored; the bypass must be passed explicitly as a CLI flag.
 
 ## Scheduling with Cron
 
@@ -126,7 +123,6 @@ Environment variables:
 
 | Variable | Effect |
 |----------|--------|
-| `FULL_AUTO=true` | Same as `--full-auto` flag |
 | `MAX_TURNS=N` | Override max turns |
 | `LOG_DIR=/path` | Override log directory (default: `~/.claude/logs/`) |
 | `MODEL=sonnet` | Override model (default: opus) |
