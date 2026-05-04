@@ -440,13 +440,13 @@ When you add a new entry point to one of these stacks, verify in code review:
 | `impact-dash`        | [#21](https://github.com/jckeen/impact-dash/pull/21) (FastAPI JWT, `AUTH_MODE=required` default, separate `JWT_SIGNING_SECRET`) |
 | `pp2qbo`             | [#19](https://github.com/jckeen/pp2qbo/pull/19) (`POSTGRES_USER`/`POSTGRES_PASSWORD` required, no insecure defaults)      |
 | `smss`               | [#18](https://github.com/jckeen/smss/pull/18) (`IP_HASH_SALT` lazy resolution, `CRON_SECRET` required in production)     |
-| `stringer`           | <TBD>                                                                                                                    |
+| `stringer`           | [#64](https://github.com/jckeen/stringer/pull/64) (OAuth state-binding: 256-bit CSPRNG nonce in httpOnly cookie + `crypto.timingSafeEqual` validation; `SEED_USER_PASSWORD` env-required, no default) |
 | `atlas`              | <TBD>                                                                                                                    |
 | `beacon`             | <TBD>                                                                                                                    |
 | `clarity-engine`     | <TBD>                                                                                                                    |
 | `pai-voice-server`   | <TBD>                                                                                                                    |
 
-The first four rows are landed. The remaining `<TBD>` rows are repos where the parallel work didn't produce a CWE-306 fix this round — open follow-ups before claiming ADR conformance for those services.
+Five rows are landed. The remaining `<TBD>` rows are repos where prior rounds didn't produce a CWE-306 (missing auth) fix — open follow-ups before claiming full ADR conformance for those services. Note: `atlas` PR [#5](https://github.com/jckeen/atlas/pull/5) (CWE-209 error disclosure + CWE-532 PII logging) and `beacon` PR [#17](https://github.com/jckeen/beacon/pull/17) (security headers + rate limiting) are adjacent hardening but don't address the "auth at every entry point" property this ADR codifies.
 
 ---
 
