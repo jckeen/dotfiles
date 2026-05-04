@@ -32,7 +32,7 @@ run_health_audit() {
   echo "--- Dotfiles symlinks ---"
   local CLAUDE_SRC="$DOTFILES_DIR/claude"
   local CLAUDE_DST="$HOME_DIR/.claude"
-  local NOLINK="AgentPack.md CLAUDE.md settings.json"
+  local NOLINK="AgentPack.md CLAUDE.md settings.json plugins.txt"
 
   # Top-level files
   for f in "$CLAUDE_SRC/"*; do
@@ -88,6 +88,7 @@ run_health_audit() {
       [ -f "$f" ] || continue
       local name
       name="$(basename "$f")"
+      case "$name" in *.md) continue ;; esac
       audit_link "$f" "$CLAUDE_DST/chrome/$name" "chrome/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
     done
   fi
@@ -427,6 +428,40 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
   done < "$PLUGIN_LIST"
 fi
 
+# ─── 3c. Codex CLI ───────────────────────────────────────────────────
+# Codex is configured in parallel with Claude. This public repo must never
+# import live ~/.codex state wholesale: auth, sessions, sqlite files, logs,
+# caches, and project trust entries are private/generated.
+CODEX_AUTHED=0
+if ! command -v codex &>/dev/null; then
+  echo ""
+  echo "--- Installing Codex CLI ---"
+  npm install -g @openai/codex || echo "  -> Codex install failed (continuing; install manually and re-run setup.sh)"
+else
+  echo "Codex CLI already installed: $(codex --version 2>/dev/null || echo 'installed')"
+fi
+
+if command -v codex &>/dev/null; then
+  echo ""
+  echo "--- Checking Codex authentication ---"
+  if codex login status &>/dev/null; then
+    echo "  -> Already signed in to Codex"
+    CODEX_AUTHED=1
+  else
+    echo "  Codex is not authenticated."
+    read -rp "Run 'codex login' now? [Y/n] " yn
+    if [[ ! "$yn" =~ ^[Nn] ]]; then
+      codex login || true
+      if codex login status &>/dev/null; then
+        CODEX_AUTHED=1
+      fi
+    fi
+    if [ "$CODEX_AUTHED" -eq 0 ]; then
+      echo "  After login, run: codex login"
+    fi
+  fi
+fi
+
 # ─── 4. Git config ───────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Git config ---"
@@ -619,6 +654,41 @@ else
   echo "     For full PAI integration (pai-config, pai-user, bootstrap.sh) see README."
 fi
 
+# ─── 5b. Codex config ────────────────────────────────────────────────
+echo ""
+echo "--- Setting up Codex config ---"
+mkdir -p "$HOME_DIR/.codex"
+
+if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
+  link_file "$DOTFILES_DIR/codex/AGENTS.md" "$HOME_DIR/.codex/AGENTS.md"
+  echo "  -> Codex AGENTS.md linked"
+fi
+
+if [ -L "$HOME_DIR/.codex/config.toml" ]; then
+  echo "  -> WARNING: ~/.codex/config.toml is a symlink."
+  echo "     Codex writes machine-specific project trust there; replace it with a local file before committing changes."
+elif [ -f "$HOME_DIR/.codex/config.toml" ]; then
+  echo "  -> Codex config.toml left local (public-safe)"
+elif [ -f "$DOTFILES_DIR/codex/config.toml.example" ]; then
+  echo "  -> No local Codex config.toml found."
+  echo "     Review $DOTFILES_DIR/codex/config.toml.example before creating one."
+fi
+
+CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
+if [ -d "$CODEX_MEMORY_REPO" ]; then
+  echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
+  for f in AGENTS.local.md MEMORY.md; do
+    if [ -f "$CODEX_MEMORY_REPO/$f" ]; then
+      link_file "$CODEX_MEMORY_REPO/$f" "$HOME_DIR/.codex/$f"
+      echo "  -> Codex private $f linked"
+    fi
+  done
+  echo "     Keep personal Codex memory there, not in public dotfiles."
+else
+  echo "  -> Optional private Codex memory repo not found at $CODEX_MEMORY_REPO"
+  echo "     Create it only if you want portable private Codex memory."
+fi
+
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
   echo ""
@@ -710,9 +780,14 @@ echo ""
 echo "Running post-setup health audit..."
 echo ""
 run_health_audit "check" || true
+if [ -x "$DOTFILES_DIR/check-codex.sh" ]; then
+  echo ""
+  "$DOTFILES_DIR/check-codex.sh" || true
+fi
 echo ""
-echo "All config files are symlinked — edits in ~/.claude/"
+echo "Claude config files are symlinked — edits in ~/.claude/"
 echo "will automatically be reflected in your dotfiles repo."
+echo "Codex auth, sessions, logs, sqlite state, caches, and live config.toml stay local/private."
 echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
@@ -727,6 +802,11 @@ if [ "$USE_PAI" = "1" ]; then
   echo "  ${_launch_step}. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 else
   echo "  ${_launch_step}. Run 'claude' to launch (PAI mode was off; the 'cc' wrapper assumes PAI)"
+fi
+if [ "${CODEX_AUTHED:-0}" -eq 0 ]; then
+  echo "  Next Codex step: run 'codex login', then use 'cx' to launch Codex"
+else
+  echo "  Codex: run 'cx' to pull repos and start Codex"
 fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""

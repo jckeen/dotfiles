@@ -1,0 +1,13 @@
+# Public-safe Codex config example.
+#
+# Do not symlink this over ~/.codex/config.toml without reviewing it first.
+# Codex stores machine-specific project trust entries in the live config file,
+# and those paths do not belong in this public dotfiles repository.
+#
+# Keep secrets, bearer token env values, private MCP endpoints, account IDs,
+# and personal project paths out of this file.
+
+# Example profile shape for experiments:
+#
+# [profiles.readonly]
+# sandbox = "read-only"
