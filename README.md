@@ -1,6 +1,6 @@
-# Dotfiles — Claude Code Power User Setup
+# Dotfiles — Claude Code + Codex Power Setup
 
-Production-ready Claude Code setup with 4 hooks, 11 slash commands, a 16-agent review orchestra, and a custom status line. Clone it, run `setup.sh`, and skip the config trial-and-error.
+Production-ready Claude Code setup with 4 hooks, 11 slash commands, a 16-agent review orchestra, a custom status line, and a parallel public-safe Codex setup. Clone it, run `setup.sh`, and skip the config trial-and-error.
 
 Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
 
@@ -26,9 +26,12 @@ chmod +x setup.sh
 # Authenticate
 gh auth login          # GitHub CLI (choose HTTPS + browser)
 claude                 # Follow the login prompt
+codex login            # Optional: sign in for Codex CLI
 ```
 
-The setup script auto-detects your platform, installs tools, prompts for git identity, and symlinks all Claude config into `~/.claude/`.
+The setup script auto-detects your platform, installs tools, prompts for git identity, symlinks Claude config into `~/.claude/`, and links only public-safe Codex guidance into `~/.codex/`.
+
+> **Public repo safety:** this dotfiles repo is public. Do not commit Codex or Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or private client/project context. Use `claude-memory` and `codex-memory` for private portable state.
 
 **PAI mode** (default) wires in [Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) — install PAI first (`danielmiessler/Personal_AI_Infrastructure/Releases/v4.0.3` → `bash ~/.claude/install.sh`) and clone your private `claude-memory` repo under `~/dev/` before running `setup.sh`. **Non-PAI mode** (`--no-pai`) skips the claude-memory integration and leaves you with the Claude Code hooks, skills, agents, and dotfiles.
 
@@ -40,6 +43,7 @@ After setup, try these to see what you've got:
 
 ```bash
 cc                    # pulls all your repos, then launches Claude
+cx                    # pulls all your repos, then launches Codex
 ```
 
 Once inside Claude:
@@ -58,13 +62,14 @@ Once inside Claude:
 | `node` | Node.js LTS | Homebrew / NodeSource |
 | `jq` | JSON processing (used by hooks) | Homebrew / apt |
 | `claude` | Claude Code CLI | npm |
+| `codex` | OpenAI Codex CLI | npm |
 | `bun` | Runtime for `*.hook.ts` hooks | Homebrew / npm |
 
 WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voice` support).
 
 ## What Gets Configured
 
-Everything is **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync.
+Claude config is **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Codex is stricter: only public-safe `AGENTS.md` is symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
 |------|-------|---------|
@@ -79,6 +84,8 @@ Everything is **symlinked** from this repo to `~/.claude/`, so edits in either l
 | **Skills** | `skills/*/SKILL.md` | 9 slash commands (see below) |
 | **Subagents** | `agents/*.md` | 16 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
+| **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
+| **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing for voice mode |
 
@@ -107,6 +114,16 @@ These are available after setup (sourced from `.bash_aliases`).
 | `claude-rc` | Start with explicit remote control flag |
 | `claude-server` | Spawn an isolated worktree + remote control session |
 
+### Starting Codex
+
+| Command | What it does |
+|---------|-------------|
+| `cx` | Pulls repos, runs `check-codex`, then launches Codex |
+| `cx <project>` | Start Codex in `~/dev/<project>` |
+| `codex` | Start Codex directly (no repo sync) |
+| `codex resume` | Resume a previous Codex session |
+| `codex review --uncommitted` | Review staged, unstaged, and untracked changes |
+
 ### Repo management
 
 | Command | What it does |
@@ -114,7 +131,9 @@ These are available after setup (sourced from `.bash_aliases`).
 | `pull-all` | Git pull (fast-forward only) on every repo in your dev directory that has a remote. Skips local-only repos |
 | `sync-memory` | Commit and push any pending memory changes (runs automatically as part of `cc`) |
 | `check-claude` | Verify all Claude config symlinks, memory, and hooks are healthy |
+| `check-codex` | Verify public-safe Codex symlinks and warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
+| `codex-update` | Run `codex update` |
 
 ### Git worktree shortcuts
 
@@ -366,6 +385,11 @@ claude --continue        # Resume most recent session
 claude --resume          # Pick from recent sessions
 claude -p "prompt"       # Non-interactive mode (for scripts/CI)
 claude-server            # Spawn isolated worktree + remote control
+cx                       # Pull all repos + start Codex
+cx dotfiles              # Start Codex in a specific project
+codex                    # Start Codex directly
+codex resume             # Resume a Codex session
+codex review --uncommitted
 
 # Multi-session (WSL + Windows Terminal)
 cc-pane pai              # Split pane with Claude in ~/dev/pai
@@ -442,15 +466,51 @@ Populate `pai-config/CLAUDE.md` with your personal Claude Code system instructio
 
 ---
 
+## The `codex-memory` private repo
+
+This public repo only tracks reusable Codex guidance and examples. Anything personal or generated belongs outside it.
+
+Use an optional private repo at `~/dev/codex-memory` for portable Codex memory and private instructions. Keep this separate from `claude-memory`; the tools have different runtime state and different config formats.
+
+Minimum structure:
+
+```
+~/dev/codex-memory/
+├── AGENTS.local.md              # private Codex preferences
+├── MEMORY.md                    # durable private notes
+├── README.md
+└── .gitignore
+```
+
+Never commit these from `~/.codex/`:
+
+- `auth.json`
+- `history.jsonl`
+- `logs_*.sqlite*` or `state_*.sqlite*`
+- `log/`, `sessions/`, `shell_snapshots/`, `cache/`, `.tmp/`, `tmp/`
+- live `config.toml` project trust entries
+- private MCP endpoints, token env values, account IDs, client names, or private project details
+
+`setup.sh` links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
+
+---
+
 ## Customizing
 
 This repo is designed to be forked and adapted. Here's what to edit vs. leave alone:
 
-**Edit these (your personal config):**
-- `claude/CLAUDE.md` — your workflow rules and preferences
-- `claude/settings.json` — your permissions and tool allowlists
+**Edit these only with public-safe content:**
+- `claude/CLAUDE.md` — reusable workflow rules and preferences
+- `claude/settings.json` — reusable permissions and tool allowlists
 - `claude/AgentPack.md` — add, remove, or modify review agents
+- `codex/AGENTS.md` — reusable Codex working rules
+- `codex/config.toml.example` — example Codex config only
 - `.bash_aliases` — your shell shortcuts
+
+**Keep private:**
+- `~/dev/claude-memory` — personal Claude/PAI memory, identity, and config
+- `~/dev/codex-memory` — personal Codex memory and private instructions
+- live `~/.codex/config.toml` — machine-specific project trust and local settings
 
 **Leave these (the framework):**
 - `claude/hooks/*.sh` and `*.ts` — hooks (add new ones, but keep the defaults)
@@ -566,6 +626,16 @@ dotfiles/
 └── windows/
     └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
 ```
+
+---
+
+## ADRs
+
+Architecture Decision Records that apply across jckeen-owned repos live in [`ADR/`](ADR/).
+
+| ADR | Status | Summary |
+| --- | ------ | ------- |
+| [Auth at the Boundary](ADR/AUTH-AT-THE-BOUNDARY.md) | Accepted (2026-05-03) | Every entry point rejects unauthenticated requests at the boundary. Auth-by-default, not auth-by-config. Optional or "off when unconfigured" auth modes are forbidden. |
 
 ---
 

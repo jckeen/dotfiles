@@ -11,6 +11,24 @@
 ### Why
 Follow-up to the 2026-05-03 static security sweep. The report-only PR is now actionable: confirmed injection and unsafe-bypass paths are fixed while preserving the normal Claude launcher workflow.
 
+## [Unreleased]
+
+### 2026-05-03 — ADR cross-references: stringer #64 added
+
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Added `stringer` row to the cross-reference table linking [#64](https://github.com/jckeen/stringer/pull/64) (256-bit CSPRNG OAuth state nonce + `crypto.timingSafeEqual` validation + `SEED_USER_PASSWORD` env-required). Five rows are now landed (`parlance`, `impact-dash`, `pp2qbo`, `smss`, `stringer`); `<TBD>` remains for `atlas`, `beacon`, `clarity-engine`, `pai-voice-server`. Annotated that `atlas` #5 (CWE-209/532) and `beacon` #17 (security headers + rate limiting) are adjacent hardening but don't add the auth-at-boundary property this ADR codifies.
+
+### 2026-05-03 — ADR cross-references backfilled
+
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Backfilled the per-repo cross-reference table with the four landed auth fixes from the 2026-05-03 multi-repo campaign: `parlance` #18 + #19, `impact-dash` #21, `pp2qbo` #19, `smss` #18. Honest `<TBD>` retained for `stringer`, `atlas`, `beacon`, `clarity-engine`, and `pai-voice-server` — these need CWE-306 follow-ups before claiming ADR conformance. Placeholder note rewritten to reflect that the parallel work concluded with partial coverage.
+
+### 2026-05-03 — ADR: Auth at the Boundary
+
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — New cross-repo Architecture Decision Record codifying auth-by-default at the entry boundary as the standing rule for all jckeen-owned services. Captures the principle behind a CWE-306 (Missing Authentication) finding pattern that hit 6 repos across 4 unrelated stacks (Fastify TS, FastAPI, Next.js + Better-Auth, Next.js + jose, Next.js bearer, Python Unix-socket IPC) in the same audit week. Includes drop-in code snippets per stack, six anti-patterns with wrong/right diffs, per-framework checklists, and placeholders for the per-repo fix PRs (linked once those PRs land).
+- **`README.md`** — New top-level `## ADRs` section linking the new doc.
+
+### Why
+The 6 findings shared no code — they shared an assumption ("auth is handled somewhere upstream") that's not enforceable through code review alone. The ADR makes auth-by-default the framework wiring, not the reviewer's job, and gives every stack a copy-paste pattern that fails closed by construction.
+
 ## 2026-04-24 — check-claude.sh: exclude `plugins.txt` from symlink audit
 
 ### What changed

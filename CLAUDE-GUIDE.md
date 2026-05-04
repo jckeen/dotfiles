@@ -9,7 +9,8 @@ See the [README](README.md) for the full best practices guide. This is the cheat
 ```bash
 cd ~/dev
 git clone https://github.com/jckeen/dotfiles.git
-cd dotfiles && chmod +x setup.sh && ./setup.sh
+cd dotfiles && chmod +x setup.sh && ./setup.sh      # prompts: are you using PAI? [Y/n]
+# Flags: --no-pai (Claude Code only, no PAI) | --pai (assume yes, non-interactive)
 ```
 
 The script auto-detects your platform (macOS, WSL, or Linux) and installs everything accordingly.
@@ -111,7 +112,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts/` (on PATH after setup).
 
 | Script | What it does | Example |
-|--------|-------------|---------|
+|--------|-------------|--------|
 | `health-check.sh` | Read-only repo health audit | `health-check.sh ~/dev/atlas` |
 | `test-coverage.sh` | Write tests for uncovered code | `test-coverage.sh ~/dev/atlas --full-auto` |
 | `fix-issues.sh` | Auto-pick and fix GitHub issues | `fix-issues.sh ~/dev/atlas` |

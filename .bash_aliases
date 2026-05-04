@@ -38,6 +38,11 @@ check-claude() {
   "$(_dev_dir)/dotfiles/check-claude.sh" "$@"
 }
 
+# Check Codex public config and private/generated state boundaries
+check-codex() {
+  "$(_dev_dir)/dotfiles/check-codex.sh" "$@"
+}
+
 # Commit and push any pending memory changes from last session
 sync-memory() {
   local dev_dir
@@ -159,6 +164,45 @@ cc() {
 
   # Reset tab color on exit
   printf '\033]9;9;\033\\' 2>/dev/null
+}
+
+# Launch Codex with the same project-selection ergonomics as cc, but without
+# touching Claude memory, PAI config, or ~/.claude health checks.
+# Usage: cx                 — launch from current dir (defaults to ~/dev outside git)
+#        cx <project>        — cd into ~/dev/<project> first, then launch
+#        cx resume|fork ...  — resume/fork without repo sync
+cx() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+
+  local session_cmd=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      resume|fork) session_cmd=1; break ;;
+    esac
+  done
+
+  if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    cd "$dev_dir/$1"
+    shift
+  elif [ "$session_cmd" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    cd "$dev_dir"
+  fi
+
+  if [ "$session_cmd" -eq 0 ]; then
+    echo "Syncing repos..."
+    pull-all
+    echo ""
+    "$(_dev_dir)/dotfiles/check-codex.sh"
+    echo ""
+  fi
+
+  codex "$@"
+}
+
+codex-update() {
+  codex update
 }
 
 # Update dotfiles: pull latest and re-run setup
