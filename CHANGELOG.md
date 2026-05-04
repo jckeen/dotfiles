@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-05-03 — ADR cross-references backfilled
+
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Backfilled the per-repo cross-reference table with the four landed auth fixes from the 2026-05-03 multi-repo campaign: `parlance` #18 + #19, `impact-dash` #21, `pp2qbo` #19, `smss` #18. Honest `<TBD>` retained for `stringer`, `atlas`, `beacon`, `clarity-engine`, and `pai-voice-server` — these need CWE-306 follow-ups before claiming ADR conformance. Placeholder note rewritten to reflect that the parallel work concluded with partial coverage.
+
 ### 2026-05-03 — ADR: Auth at the Boundary
 
 - **`ADR/AUTH-AT-THE-BOUNDARY.md`** — New cross-repo Architecture Decision Record codifying auth-by-default at the entry boundary as the standing rule for all jckeen-owned services. Captures the principle behind a CWE-306 (Missing Authentication) finding pattern that hit 6 repos across 4 unrelated stacks (Fastify TS, FastAPI, Next.js + Better-Auth, Next.js + jose, Next.js bearer, Python Unix-socket IPC) in the same audit week. Includes drop-in code snippets per stack, six anti-patterns with wrong/right diffs, per-framework checklists, and placeholders for the per-repo fix PRs (linked once those PRs land).
