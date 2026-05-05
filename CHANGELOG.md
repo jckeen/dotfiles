@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-05 — Fix WSL→Windows PowerShell install: clone-path agnostic + WSLENV + error propagation
+
+### What changed
+- **`setup.sh`** section 7b — Builds `$DOTFILES_UNC` dynamically from `$DOTFILES_DIR` (replaces hardcoded `\home\<user>\dev\dotfiles\`). Adds `WSLENV="DOTFILES_UNC"` so the env var actually crosses the WSL→Windows boundary (without it, `$env:DOTFILES_UNC` arrived empty and the install silently fell back to a malformed UNC path). Captures `${PIPESTATUS[0]}` so a failing `powershell.exe` no longer gets masked by the `sed 's/^/  /'` pipe — failure now prints "PowerShell install FAILED (exit N)" instead of the success message.
+- **`README.md`** — Same `WSLENV` fix to the documented bash bridge one-liner. Without it, the example as published would silently fail on a fresh machine because `$env:WSL_USER` and `$env:WSL_DISTRO` arrived empty in PowerShell.
+
+### Why
+Codex review on PR #21 flagged P1 (clone path hardcoded) and P2 (sed masking the exit code). End-to-end testing of the fix surfaced a third bug: WSL2 does not auto-propagate env vars to `powershell.exe` — `WSLENV` opt-in is required. So the bash bridge in both setup.sh and the README would have failed on any machine that hadn't pre-set `WSLENV`. All three issues are fixed; verified by test runs that confirm correct UNC resolution, env var propagation, and non-zero exit propagation through the `sed` pipe.
+
 ## 2026-05-05 — `wsl6` PowerShell helper + auto-install on WSL setup
 
 ### What changed

@@ -824,10 +824,16 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   else
     read -rp "Install Windows-side PowerShell helpers (ccgrid, wsl6, cctab, ccpane)? [Y/n] " yn
     if [[ ! "$yn" =~ ^[Nn] ]]; then
-      WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
+      # Build the UNC path to THIS dotfiles checkout so the helper resolves
+      # regardless of where the repo was cloned (~/dev/dotfiles, ~/dotfiles, …).
+      WSL_DISTRO_NAME_EFFECTIVE="${WSL_DISTRO_NAME:-Ubuntu}"
+      DOTFILES_UNC="\\\\wsl.localhost\\${WSL_DISTRO_NAME_EFFECTIVE}${DOTFILES_DIR//\//\\}"
+      # WSLENV is required for env vars to cross the WSL → Windows boundary.
+      # Without it, $env:DOTFILES_UNC arrives empty in PowerShell.
+      DOTFILES_UNC="$DOTFILES_UNC" WSLENV="DOTFILES_UNC" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
           Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-          $src  = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows\cc-functions.ps1"
+          $src  = "$env:DOTFILES_UNC\windows\cc-functions.ps1"
           $dest = "$env:USERPROFILE\.cc-functions.ps1"
           if (-not (Test-Path $src)) {
             Write-Error "Source not found: $src"
@@ -842,7 +848,15 @@ if [[ "$PLATFORM" == "wsl" ]]; then
             Write-Host "  -> cc-functions.ps1 already wired into `$PROFILE (refreshed local copy)"
           }
         ' 2>&1 | sed 's/^/  /'
-      echo "  -> Open a new PowerShell window: try 'wsl6' or 'ccprojects'"
+      # Capture powershell.exe's exit (PIPESTATUS[0]) before the success
+      # message — sed always succeeds and would mask install failures otherwise.
+      ps_status=${PIPESTATUS[0]}
+      if [ "$ps_status" -eq 0 ]; then
+        echo "  -> Open a new PowerShell window: try 'wsl6' or 'ccprojects'"
+      else
+        echo "  -> PowerShell install FAILED (exit $ps_status); helpers NOT installed."
+        echo "     Source attempted: $DOTFILES_UNC\\windows\\cc-functions.ps1"
+      fi
     else
       echo "  -> Skipped"
     fi

@@ -214,10 +214,11 @@ Add-Content $PROFILE ('. "' + $dest + '"')
 . $PROFILE
 ```
 
-**Running from bash/WSL?** Bridge into PowerShell with this one-liner — it auto-resolves your WSL username and distro via env vars, so paste it verbatim:
+**Running from bash/WSL?** Bridge into PowerShell with this one-liner — it auto-resolves your WSL username and distro via env vars, so paste it verbatim. **`WSLENV` is required**: WSL→Windows interop does *not* propagate env vars to `powershell.exe` by default.
 
 ```bash
 WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
+WSLENV="WSL_USER:WSL_DISTRO" \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
   $src  = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows\cc-functions.ps1"
