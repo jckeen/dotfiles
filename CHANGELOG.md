@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-05 — git-hygiene multi-repo audit/clean tool
+
+### What changed
+- **`git-hygiene.sh`** — New script for multi-repo branch hygiene. `audit` mode reports (default branch, dirty state, deletable branches); `clean` mode runs `git fetch --prune`, sets `origin/HEAD` if missing, and deletes local branches that are confirmed merged via three independent signals: cherry patch-equivalence, commit-subject presence on default, or `gh pr` MERGED state. Skips current branches, worktree-checked-out branches, and dirty trees. `--yes` flag for non-interactive runs.
+
+### Why
+Server-side auto-hygiene (delete-branch-on-merge, GitHub Pro auto-merge) added 2026-05-04 cleans the remote but leaves stale local branches and "gone" upstream tracking refs. This script closes the local-side gap so multi-repo `git pull` stays clean. `git cherry` alone misses squash-merged branches when squash collapses 2+ commits — the subject-search and PR-state signals catch that case.
+
 ## 2026-05-04 — Security sweep remediations
 
 ### What changed
