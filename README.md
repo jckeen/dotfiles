@@ -187,10 +187,13 @@ If you launch Claude from PowerShell rather than from inside WSL, dot-source `wi
 | `ccgrid <p1> <p2> ...` | One new tab, each project in its own **split pane** (auto-tiled grid) |
 | `ccpane <project> [-Horizontal]` | Split the current WT window with one project |
 | `cctab <p1> <p2> ...` | One **tab** per project |
+| `wsl6` | New tab with a **3×2 grid of plain WSL shells** (3 up, 3 down) |
 | `ccprojects` | List available projects (from WSL) |
 | `ccupdate` | Refresh the local copy from the WSL source |
 
-**Install — run these in PowerShell** (not bash/WSL). Open a PowerShell window (Start menu → "Windows Terminal" with a PowerShell profile, or Win+R → `powershell`), then copy-paste the block below, replacing `<you>` with your WSL username:
+**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls `powershell.exe`, copies `cc-functions.ps1` to `$env:USERPROFILE\.cc-functions.ps1`, and dot-sources it from your `$PROFILE` — idempotent, so re-running setup just refreshes the local copy. Open a new PowerShell window after setup and `wsl6` / `ccgrid` are ready.
+
+**Manual install** (if you skipped the setup.sh prompt or are on a machine that didn't run setup) — run these in PowerShell, replacing `<you>` with your WSL username:
 
 ```powershell
 # 1. Allow local scripts (one time, per-user)

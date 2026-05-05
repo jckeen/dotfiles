@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-05-05 — `wsl6` PowerShell helper + auto-install on WSL setup
+
+### What changed
+- **`windows/cc-functions.ps1`** — New `wsl6` function. Opens a Windows Terminal tab with 6 plain WSL shells in a precise 3-column × 2-row grid (3 up, 3 down). Three even-width columns via `-V -s 0.6667` then `-V -s 0.5`, then horizontal split each column. No project launching — just plain WSL shells.
+- **`setup.sh`** — New section 7b. On WSL, calls `powershell.exe` to copy `cc-functions.ps1` to `$env:USERPROFILE\.cc-functions.ps1` and dot-source it from `$PROFILE`. Idempotent: re-running setup refreshes the local copy and skips the profile edit if already wired. Replaces the manual README copy-paste step.
+- **`README.md`** — Documents `wsl6` in the PowerShell command table; flags the README install block as the manual fallback (setup.sh is now primary).
+
+### Why
+The README install block worked but required reading docs and copy-pasting on every new machine. Setup.sh now does it automatically, which matches the rest of the dotfiles bootstrap pattern (audio routing, claude-memory bootstrap, etc.). The `wsl6` function specifically addresses "open 6 WSL shells in a 3×2 grid" without needing project arguments — the existing `ccgrid` requires named projects and uses alternating splits, which doesn't produce a clean 3×2 layout.
+
 ## 2026-05-05 — Hygiene automation: shared status reader + Codex parity
 
 ### What changed

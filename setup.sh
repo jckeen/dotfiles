@@ -812,6 +812,43 @@ else
   fi
 fi
 
+# ─── 7b. PowerShell helpers (WSL only — windows/cc-functions.ps1) ─────
+# Installs Windows-side PowerShell launchers (ccgrid, cctab, ccpane,
+# ccprojects, wsl6, ccupdate) so the user can drive WSL panes from a
+# native PowerShell prompt without manually copy-pasting the README block.
+if [[ "$PLATFORM" == "wsl" ]]; then
+  echo ""
+  echo "--- PowerShell helpers (cc-functions.ps1) ---"
+  if ! command -v powershell.exe &>/dev/null; then
+    echo "  -> powershell.exe not found in WSL PATH; skipping."
+  else
+    read -rp "Install Windows-side PowerShell helpers (ccgrid, wsl6, cctab, ccpane)? [Y/n] " yn
+    if [[ ! "$yn" =~ ^[Nn] ]]; then
+      WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
+          Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
+          $src  = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows\cc-functions.ps1"
+          $dest = "$env:USERPROFILE\.cc-functions.ps1"
+          if (-not (Test-Path $src)) {
+            Write-Error "Source not found: $src"
+            exit 1
+          }
+          Copy-Item $src $dest -Force
+          if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
+          if (-not (Select-String -Path $PROFILE -Pattern "\.cc-functions\.ps1" -Quiet)) {
+            Add-Content $PROFILE (". `"$dest`"")
+            Write-Host "  -> Added cc-functions.ps1 to PowerShell `$PROFILE"
+          } else {
+            Write-Host "  -> cc-functions.ps1 already wired into `$PROFILE (refreshed local copy)"
+          }
+        ' 2>&1 | sed 's/^/  /'
+      echo "  -> Open a new PowerShell window: try 'wsl6' or 'ccprojects'"
+    else
+      echo "  -> Skipped"
+    fi
+  fi
+fi
+
 # ─── 8. Bootstrap claude-memory (private repo) — PAI mode only ───────
 if [ "$USE_PAI" = "1" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
   echo ""
