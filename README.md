@@ -29,7 +29,7 @@ claude                 # Follow the login prompt
 codex login            # Optional: sign in for Codex CLI
 ```
 
-The setup script auto-detects your platform, installs tools, prompts for git identity, symlinks Claude config into `~/.claude/`, and links only public-safe Codex guidance into `~/.codex/`.
+The setup script auto-detects your platform, installs tools, prompts for git identity, symlinks Claude config into `~/.claude/`, and links only public-safe Codex guidance and skills into `~/.codex/`.
 
 > **Public repo safety:** this dotfiles repo is public. Do not commit Codex or Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or private client/project context. Use `claude-memory` and `codex-memory` for private portable state.
 
@@ -69,22 +69,23 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voi
 
 ## What Gets Configured
 
-Claude config is **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Codex is stricter: only public-safe `AGENTS.md` is symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
+Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
 |------|-------|---------|
-| **Claude instructions** | `CLAUDE.md` | Global rules Claude follows in every session |
-| **Settings** | `settings.json` | Permissions, hooks, preferred model (Opus), remote control |
+| **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
+| **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
 | **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
-| **Skills** | `skills/*/SKILL.md` | 9 slash commands (see below) |
+| **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 16 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
+| **Codex skills** | `codex/skills/*/SKILL.md` | Public-safe Codex workflows for review, issue fixes, PRs, handoffs |
 | **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing for voice mode |
@@ -468,7 +469,7 @@ Populate `pai-config/CLAUDE.md` with your personal Claude Code system instructio
 
 ## The `codex-memory` private repo
 
-This public repo only tracks reusable Codex guidance and examples. Anything personal or generated belongs outside it.
+This public repo only tracks reusable Codex guidance, skills, and examples. Anything personal or generated belongs outside it.
 
 Use an optional private repo at `~/dev/codex-memory` for portable Codex memory and private instructions. Keep this separate from `claude-memory`; the tools have different runtime state and different config formats.
 
@@ -491,7 +492,7 @@ Never commit these from `~/.codex/`:
 - live `config.toml` project trust entries
 - private MCP endpoints, token env values, account IDs, client names, or private project details
 
-`setup.sh` links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
+`setup.sh` links public `codex/AGENTS.md` and `codex/skills/*/SKILL.md` into `~/.codex/`. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
 
 ---
 
@@ -500,15 +501,16 @@ Never commit these from `~/.codex/`:
 This repo is designed to be forked and adapted. Here's what to edit vs. leave alone:
 
 **Edit these only with public-safe content:**
-- `claude/CLAUDE.md` — reusable workflow rules and preferences
-- `claude/settings.json` — reusable permissions and tool allowlists
 - `claude/AgentPack.md` — add, remove, or modify review agents
 - `codex/AGENTS.md` — reusable Codex working rules
+- `codex/skills/*/SKILL.md` — reusable Codex workflows
 - `codex/config.toml.example` — example Codex config only
 - `.bash_aliases` — your shell shortcuts
 
 **Keep private:**
 - `~/dev/claude-memory` — personal Claude/PAI memory, identity, and config
+- `~/dev/claude-memory/pai-config/CLAUDE.md` — private Claude instructions and PAI steering
+- `~/dev/claude-memory/pai-config/settings.json` — private Claude permissions and settings
 - `~/dev/codex-memory` — personal Codex memory and private instructions
 - live `~/.codex/config.toml` — machine-specific project trust and local settings
 
@@ -575,10 +577,19 @@ dotfiles/
 ├── README.md                   # This file
 ├── CLAUDE-GUIDE.md             # Quick reference cheat sheet
 ├── CHANGELOG.md                # Change log
+├── codex/
+│   ├── AGENTS.md               # Public-safe Codex global guidance
+│   ├── config.toml.example     # Public-safe Codex config example
+│   └── skills/                 # Public-safe Codex workflows
+│       ├── review/
+│       ├── simplify/
+│       ├── fix-issue/
+│       ├── commit-push-pr/
+│       ├── handoff/
+│       ├── changelog/
+│       └── repo-health/
 └── claude/
-    ├── CLAUDE.md               # Global Claude instructions
     ├── AgentPack.md            # 16-agent review orchestra
-    ├── settings.json           # Permissions, hooks, model preferences
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
     │   ├── conventional-commit.sh          # PreToolUse commit message validator

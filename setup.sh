@@ -697,6 +697,19 @@ if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
   echo "  -> Codex AGENTS.md linked"
 fi
 
+if [ -d "$DOTFILES_DIR/codex/skills" ]; then
+  mkdir -p "$HOME_DIR/.codex/skills"
+  for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    mkdir -p "$HOME_DIR/.codex/skills/$skill_name"
+    for skill_file in "$skill_dir"*; do
+      [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.codex/skills/$skill_name/$(basename "$skill_file")"
+    done
+  done
+  echo "  -> Codex skills linked"
+fi
+
 if [ -L "$HOME_DIR/.codex/config.toml" ]; then
   echo "  -> WARNING: ~/.codex/config.toml is a symlink."
   echo "     Codex writes machine-specific project trust there; replace it with a local file before committing changes."

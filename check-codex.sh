@@ -52,6 +52,18 @@ if [ ! -d "$CODEX_DST" ]; then
 else
   check_link "$CODEX_SRC/AGENTS.md" "$CODEX_DST/AGENTS.md" "AGENTS.md"
 
+  if [ -d "$CODEX_SRC/skills" ]; then
+    for skill_dir in "$CODEX_SRC/skills/"*/; do
+      [ -d "$skill_dir" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      for skill_file in "$skill_dir"*; do
+        [ -f "$skill_file" ] || continue
+        fname="$(basename "$skill_file")"
+        check_link "$skill_file" "$CODEX_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname"
+      done
+    done
+  fi
+
   if [ -d "$CODEX_MEMORY_REPO" ]; then
     for f in AGENTS.local.md MEMORY.md; do
       if [ -f "$CODEX_MEMORY_REPO/$f" ]; then

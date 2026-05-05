@@ -6,6 +6,7 @@ is public, so live Codex state must stay local or in a separate private repo.
 ## Safe to Track Here
 
 - General, reusable Codex guidance such as `AGENTS.md`
+- General, reusable Codex skills such as `skills/*/SKILL.md`
 - Documentation about how this setup works
 - Example config files with no secrets, private paths, account IDs, or project
   names
@@ -33,3 +34,12 @@ When present, `setup.sh` links these private files into `~/.codex/`:
 - `MEMORY.md`
 
 It does not import or publish live `~/.codex` runtime state.
+
+## Public Skills
+
+Public, reusable Codex workflows live under `codex/skills/` and are symlinked
+into `~/.codex/skills/` by `setup.sh`.
+
+Keep these skills generic and public-safe. Put personal preferences, private
+project context, and machine-specific instructions in `~/dev/codex-memory`
+instead.
