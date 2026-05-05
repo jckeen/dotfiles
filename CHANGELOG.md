@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-05 — Hygiene automation: shared status reader + Codex parity
+
+### What changed
+- **`hygiene-status.sh`** — New top-level script. Reads `~/.local/state/hygiene/status.json` (the cached drift state) and emits in one of 5 modes: `--status` (one-liner), `--text` (silent if clean), `--cli` (color, silent if clean), `--json` (raw), `--reminder` (Claude hook). Single source of truth for both agents and CLI.
+- **`claude/hooks/HygieneStatus.hook.sh`** — Refactored to a thin `exec` wrapper around `hygiene-status.sh --reminder`. Behavior unchanged; logic now shared.
+- **`claude/scripts/hygiene-cron.sh`** — State file moved from `~/.claude/state/` to `~/.local/state/hygiene/` (XDG-neutral). Logs moved from `~/.local/share/git-hygiene/` to the same dir.
+- **`check-claude.sh` and `check-codex.sh`** — Both now call `hygiene-status.sh --cli` so `cc` and `cx` surface drift the same way at launch.
+- **`claude/skills/branch-hygiene/SKILL.md` and `codex/skills/branch-hygiene/SKILL.md`** — New skill registered for both agents. Documents the three-layer setup, the 3-signal merge confirmation, and the rule that agent-spawned `gh repo create`/`clone` must run `gh-bootstrap.sh` manually (the shell wrapper only fires from the user's interactive shell).
+
+### Why
+Original implementation was Claude-pathed (`~/.claude/state/`) and the hook surfaced drift only on Claude SessionStart. Codex has no SessionStart hook, so `cx` had no drift visibility. Moving state to XDG-neutral path and routing both check scripts through the same status reader makes the whole loop agent-agnostic. The new skill teaches both agents how to inspect, fix, and respond to hygiene state on demand.
+
 ## 2026-05-05 — Hygiene automation: zero-touch loop
 
 ### What changed

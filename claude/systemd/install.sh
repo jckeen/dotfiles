@@ -133,7 +133,7 @@ HYG_SCRIPT="$HOME/dev/dotfiles/claude/scripts/hygiene-cron.sh"
 if [ -f "$SRC_DIR/$HYG_SERVICE" ] && [ -f "$SRC_DIR/$HYG_TIMER" ] && [ -x "$HYG_SCRIPT" ]; then
     cp "$SRC_DIR/$HYG_SERVICE" "$DEST_DIR/$HYG_SERVICE"
     cp "$SRC_DIR/$HYG_TIMER" "$DEST_DIR/$HYG_TIMER"
-    mkdir -p "$HOME/.local/share/git-hygiene" "$HOME/.claude/state"
+    mkdir -p "$HOME/.local/state/hygiene"
     systemctl --user daemon-reload
     systemctl --user enable --now "$HYG_TIMER" >/dev/null 2>&1 || \
         systemctl --user enable "$HYG_TIMER" >/dev/null
@@ -160,4 +160,4 @@ echo "  tail -f ~/.claude/VoiceServer/logs/voice-server.log"
 echo
 echo "  systemctl --user list-timers $HYG_TIMER"
 echo "  systemctl --user start $HYG_SERVICE   # run hygiene check now"
-echo "  tail -f ~/.local/share/git-hygiene/cron.log"
+echo "  tail -f ~/.local/state/hygiene/cron.log"

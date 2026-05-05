@@ -158,6 +158,11 @@ while IFS= read -r backup; do
   fi
 done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
 
+# Branch hygiene status (silent if clean)
+if [ -x "$DOTFILES_DIR/hygiene-status.sh" ]; then
+  "$DOTFILES_DIR/hygiene-status.sh" --cli || true
+fi
+
 # Summary
 echo ""
 if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then

@@ -116,6 +116,11 @@ else
   done < <(find "$CODEX_DST" -maxdepth 3 -type l 2>/dev/null)
 fi
 
+# Branch hygiene status (silent if clean)
+if [ -x "$DOTFILES_DIR/hygiene-status.sh" ]; then
+  "$DOTFILES_DIR/hygiene-status.sh" --cli || true
+fi
+
 echo ""
 if [ $ERRORS -eq 0 ]; then
   if [ $WARNINGS -eq 0 ]; then

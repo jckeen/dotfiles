@@ -8,12 +8,13 @@
 set -uo pipefail
 
 DEV_DIR="${HYGIENE_DEV_DIR:-$HOME/dev}"
-STATE_FILE="$HOME/.claude/state/hygiene-status.json"
-LOG_DIR="$HOME/.local/share/git-hygiene"
+# State file is XDG-neutral (not under ~/.claude/) so Codex/Claude/CLI all share one source
+STATE_FILE="$HOME/.local/state/hygiene/status.json"
+LOG_DIR="$HOME/.local/state/hygiene"
 LOG_FILE="$LOG_DIR/cron.log"
 SCRIPT_DIR="$DEV_DIR/dotfiles"
 
-mkdir -p "$(dirname "$STATE_FILE")" "$LOG_DIR"
+mkdir -p "$LOG_DIR"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
