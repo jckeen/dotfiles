@@ -125,6 +125,29 @@ else
     yell "    sudo loginctl enable-linger $USER"
 fi
 
+info "==> Installing git-hygiene timer"
+HYG_SERVICE="git-hygiene.service"
+HYG_TIMER="git-hygiene.timer"
+HYG_SCRIPT="$HOME/dev/dotfiles/claude/scripts/hygiene-cron.sh"
+
+if [ -f "$SRC_DIR/$HYG_SERVICE" ] && [ -f "$SRC_DIR/$HYG_TIMER" ] && [ -x "$HYG_SCRIPT" ]; then
+    cp "$SRC_DIR/$HYG_SERVICE" "$DEST_DIR/$HYG_SERVICE"
+    cp "$SRC_DIR/$HYG_TIMER" "$DEST_DIR/$HYG_TIMER"
+    mkdir -p "$HOME/.local/share/git-hygiene" "$HOME/.claude/state"
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$HYG_TIMER" >/dev/null 2>&1 || \
+        systemctl --user enable "$HYG_TIMER" >/dev/null
+    systemctl --user start "$HYG_TIMER" 2>/dev/null || true
+    if systemctl --user is-enabled --quiet "$HYG_TIMER"; then
+        green "OK $HYG_TIMER enabled"
+        systemctl --user list-timers "$HYG_TIMER" --no-pager 2>/dev/null | tail -3 || true
+    else
+        yell "! $HYG_TIMER did not enable — check: systemctl --user status $HYG_TIMER"
+    fi
+else
+    yell "! Skipping $HYG_TIMER install — unit files or hygiene-cron.sh missing"
+fi
+
 echo
 green "==> Done."
 echo
@@ -134,3 +157,7 @@ echo "  systemctl --user restart $SERVICE_NAME"
 echo "  systemctl --user stop    $SERVICE_NAME"
 echo "  journalctl --user -u $SERVICE_NAME -f"
 echo "  tail -f ~/.claude/VoiceServer/logs/voice-server.log"
+echo
+echo "  systemctl --user list-timers $HYG_TIMER"
+echo "  systemctl --user start $HYG_SERVICE   # run hygiene check now"
+echo "  tail -f ~/.local/share/git-hygiene/cron.log"

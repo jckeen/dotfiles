@@ -219,6 +219,53 @@ dotfiles-update() {
   bash "$dotfiles_dir/setup.sh"
 }
 
+# ─── gh wrapper: auto-bootstrap auto-hygiene on new repos ────────────
+# Wraps `gh repo create` and `gh repo clone` so the canonical 8 auto-hygiene
+# settings (delete-branch-on-merge, allow-auto-merge, squash-only, etc.) are
+# applied the moment a new repo touches your filesystem. Pass-through for all
+# other gh subcommands.
+gh() {
+  local bootstrap="$(_dev_dir)/dotfiles/gh-bootstrap.sh"
+  case "${1:-}" in
+    repo)
+      case "${2:-}" in
+        create)
+          command gh "$@" || return $?
+          # Determine the slug from args; --source means a local path with origin remote
+          local slug=""
+          local i=0 a
+          for a in "$@"; do
+            i=$((i+1))
+            if [[ "$i" -ge 3 && "$a" != -* && "$a" != "--"* ]]; then
+              slug="$a"; break
+            fi
+          done
+          if [[ -z "$slug" ]]; then
+            slug="$(command gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+          fi
+          [[ -n "$slug" && -x "$bootstrap" ]] && "$bootstrap" "$slug" || true
+          ;;
+        clone)
+          command gh "$@" || return $?
+          # Last positional arg without a leading dash is the dest dir or slug
+          local dest=""
+          local a
+          for a in "$@"; do
+            [[ "$a" != -* ]] && dest="$a"
+          done
+          local target_slug="$dest"
+          if [[ -d "$dest" ]]; then
+            target_slug="$(git -C "$dest" remote get-url origin 2>/dev/null | sed -E 's|.*[:/]([^/:]+/[^/]+)\.git$|\1|; s|.*[:/]([^/:]+/[^/]+)$|\1|')"
+          fi
+          [[ -n "$target_slug" && -x "$bootstrap" ]] && "$bootstrap" "$target_slug" || true
+          ;;
+        *) command gh "$@" ;;
+      esac
+      ;;
+    *) command gh "$@" ;;
+  esac
+}
+
 # ─── Git worktree shortcuts (Boris's #1 productivity tip) ────────────
 # Quick jump to worktrees: za, zb, zc, zd, ze
 # Create them with: git worktree add ../project-a -b feature-a

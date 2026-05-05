@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily branch-hygiene check + weekly auto-clean (jckeen/dotfiles)
+Documentation=https://github.com/jckeen/dotfiles
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+ExecStart=%h/dev/dotfiles/claude/scripts/hygiene-cron.sh
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true

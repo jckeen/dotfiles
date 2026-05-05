@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-05 — Hygiene automation: zero-touch loop
+
+### What changed
+- **`claude/systemd/git-hygiene.service` + `git-hygiene.timer`** — New systemd user units. Timer fires daily at 09:30 (with 15min jitter, `Persistent=true` so missed runs catch up); service is oneshot.
+- **`claude/scripts/hygiene-cron.sh`** — Daily wrapper invoked by the service. Always runs `gh-bootstrap --check --all ~/dev` and writes `~/.claude/state/hygiene-status.json`. On Sundays only, also runs `git-hygiene clean ~/dev --yes`. Logs to `~/.local/share/git-hygiene/cron.log`.
+- **`claude/hooks/HygieneStatus.hook.sh`** — SessionStart hook (registered in claude-memory's `pai-config/settings.json`). Reads the cached JSON state in ~11ms; emits a `<system-reminder>` only when drift exists or state is older than 48h. Silent otherwise.
+- **`.bash_aliases`** — New `gh()` wrapper function. Intercepts `gh repo create` and `gh repo clone` to run `gh-bootstrap.sh` on the new repo immediately. All other gh subcommands pass through unchanged.
+- **`claude/systemd/install.sh`** — Extended to install `git-hygiene.timer` alongside `pai-voice-server.service`. Voice server logic is unchanged.
+
+### Why
+Closes the "remember to run the script" gap from the 2026-05-05 morning session. Now the loop is fully automatic: GitHub auto-deletes branches on merge → `git-hygiene` weekly cleans whatever local state slips through → `gh-bootstrap` auto-applies on every new repo via shell wrapper → SessionStart hook surfaces drift if any of the above ever stops working. Drift detection is daily (cached, hooks read-only), cleanup is weekly (Sunday-only inside the daily wrapper).
+
 ## 2026-05-05 — Branch hygiene tooling: `git-hygiene.sh` + `gh-bootstrap.sh`
 
 ### What changed

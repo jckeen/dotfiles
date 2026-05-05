@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily fire of git-hygiene.service
+
+[Timer]
+# Daily at 09:30 local time. If the machine was off, run on next boot.
+OnCalendar=*-*-* 09:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
