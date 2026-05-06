@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-05 — Repo hygiene: redact per-project audit details from older entries
+
+### What changed
+- **`CHANGELOG.md`** — Compressed three older 2026-05-03 ADR entries into a single, generic entry. Removed the per-project CWE-306 cross-reference enumeration and the per-stack audit details. Removed project names from the 2026-04-04 Stop-hook and architecture-diagram bullets.
+
+### Why
+The deleted entries paired specific personal-project names with specific vulnerability classes and "still-TBD" status. That mapping is more useful to an outside reader than the changelog actually needed to be — the projects are public on the GitHub profile already, but enumerating them next to vuln status creates a hit-list that no one needed. The changelog still records *that* the work happened and *what* the principle is; it no longer hands out the per-repo scorecard. Innocuous mentions (alias-usage examples, service filenames) left intact.
+
 ## 2026-05-05 — Repo hygiene: remove stale root-level docs; gitignore prevention rules
 
 ### What changed
@@ -106,21 +114,15 @@ Follow-up to the 2026-05-03 static security sweep. The report-only PR is now act
 
 ## [Unreleased]
 
-### 2026-05-03 — ADR cross-references: stringer #64 added
-
-- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Added `stringer` row to the cross-reference table linking [#64](https://github.com/jckeen/stringer/pull/64) (256-bit CSPRNG OAuth state nonce + `crypto.timingSafeEqual` validation + `SEED_USER_PASSWORD` env-required). Five rows are now landed (`parlance`, `impact-dash`, `pp2qbo`, `smss`, `stringer`); `<TBD>` remains for `atlas`, `beacon`, `clarity-engine`, `pai-voice-server`. Annotated that `atlas` #5 (CWE-209/532) and `beacon` #17 (security headers + rate limiting) are adjacent hardening but don't add the auth-at-boundary property this ADR codifies.
-
-### 2026-05-03 — ADR cross-references backfilled
-
-- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — Backfilled the per-repo cross-reference table with the four landed auth fixes from the 2026-05-03 multi-repo campaign: `parlance` #18 + #19, `impact-dash` #21, `pp2qbo` #19, `smss` #18. Honest `<TBD>` retained for `stringer`, `atlas`, `beacon`, `clarity-engine`, and `pai-voice-server` — these need CWE-306 follow-ups before claiming ADR conformance. Placeholder note rewritten to reflect that the parallel work concluded with partial coverage.
-
 ### 2026-05-03 — ADR: Auth at the Boundary
 
-- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — New cross-repo Architecture Decision Record codifying auth-by-default at the entry boundary as the standing rule for all jckeen-owned services. Captures the principle behind a CWE-306 (Missing Authentication) finding pattern that hit 6 repos across 4 unrelated stacks (Fastify TS, FastAPI, Next.js + Better-Auth, Next.js + jose, Next.js bearer, Python Unix-socket IPC) in the same audit week. Includes drop-in code snippets per stack, six anti-patterns with wrong/right diffs, per-framework checklists, and placeholders for the per-repo fix PRs (linked once those PRs land).
+- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — New cross-repo Architecture Decision Record codifying auth-by-default at the entry boundary. Captures the principle behind a CWE-306 (Missing Authentication) finding pattern surfaced in a multi-repo audit. Includes drop-in code snippets per framework, anti-patterns with wrong/right diffs, per-framework checklists, and a cross-reference table for per-repo fix PRs (filled in as fixes land).
 - **`README.md`** — New top-level `## ADRs` section linking the new doc.
 
 ### Why
-The 6 findings shared no code — they shared an assumption ("auth is handled somewhere upstream") that's not enforceable through code review alone. The ADR makes auth-by-default the framework wiring, not the reviewer's job, and gives every stack a copy-paste pattern that fails closed by construction.
+The findings shared no code — they shared an assumption ("auth is handled somewhere upstream") that's not enforceable through code review alone. The ADR makes auth-by-default the framework wiring, not the reviewer's job, and gives every stack a copy-paste pattern that fails closed by construction.
+
+> **Update 2026-05-05:** This ADR was later removed from this repo (it didn't belong in dotfiles). The principle was distilled to a steering rule in the personal `claude-memory` repo. See the 2026-05-05 entry above and PR #24.
 
 ## 2026-04-24 — check-claude.sh: exclude `plugins.txt` from symlink audit
 
@@ -317,9 +319,8 @@ Three-thread PAI upgrade scan: user context (Thread 1) + Anthropic ecosystem sou
 - **Stop hook template in CLAUDE-GUIDE.md** — added `Stop` hook pattern for auto-QA (typecheck/lint/test after each Claude response). Template goes in project-level `.claude/settings.local.json`, not global
 - **Architecture diagram preloading in `cc()`** — if `.ai/diagrams/*.md` exists in the current directory, diagrams are appended to Claude's system prompt via `--append-system-prompt`. Opt-in per project, no change to behavior when diagrams don't exist
 - **CLAUDE.local.md documented** — added brief section to CLAUDE-GUIDE.md explaining the gitignored personal preferences file
-- **Stop hooks deployed to all 5 projects** — atlas (pytest), smss (eslint), pp2qbo (typecheck+lint), stringer (next build), TRNN (jest). All via `.claude/settings.local.json` (gitignored)
-- **Architecture diagrams for pp2qbo** — 3 Mermaid diagrams: data flow pipeline, package dependency graph, service boundaries
-- **Architecture diagrams for stringer** — 3 Mermaid diagrams: service architecture, assignment lifecycle state machine, core data model ER diagram
+- **Stop hooks deployed to 5 active projects** — covering pytest, eslint, typecheck+lint, next build, and jest stacks. All via `.claude/settings.local.json` (gitignored)
+- **Architecture diagrams added to two projects** — Mermaid diagrams for data flow / dependency / service boundaries on a Python pipeline, and service-architecture / state-machine / ER diagrams on a Next.js service.
 - **block-secrets.sh regex fix** — `git add .ai/...` was falsely matching the `git add .` blocker. Fixed to only match `.` as the full argument
 - **Cleaned stale SMSS permissions** — removed old one-off `Bash(...)` permission entries from early sessions
 
