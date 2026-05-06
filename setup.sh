@@ -818,56 +818,81 @@ fi
 #   cc-functions.ps1 — Claude-specific (cctab, ccpane, ccgrid, ccprojects, ccupdate)
 # Both are copied to $env:USERPROFILE\.<name>.ps1 and dot-sourced from $PROFILE
 # so PowerShell users can drive WSL panes without copy-pasting the README block.
+#
+# Installs into BOTH Windows PowerShell 5.1 ($PROFILE under
+# Documents\WindowsPowerShell\) and PowerShell 7 ($PROFILE under
+# Documents\PowerShell\) when each host is available — they have different
+# profile paths, so wiring only powershell.exe leaves pwsh.exe broken.
+install_ps_helpers_for_host() {
+  local host_exe="$1"  # "powershell.exe" or "pwsh.exe"
+  # Build the UNC path to THIS dotfiles checkout so the helper resolves
+  # regardless of where the repo was cloned (~/dev/dotfiles, ~/dotfiles, …).
+  local WSL_DISTRO_NAME_EFFECTIVE="${WSL_DISTRO_NAME:-Ubuntu}"
+  local DOTFILES_UNC="\\\\wsl.localhost\\${WSL_DISTRO_NAME_EFFECTIVE}${DOTFILES_DIR//\//\\}"
+  # WSLENV is required for env vars to cross the WSL → Windows boundary.
+  # Without it, $env:DOTFILES_UNC arrives empty in PowerShell.
+  DOTFILES_UNC="$DOTFILES_UNC" WSLENV="DOTFILES_UNC" \
+    "$host_exe" -NoProfile -ExecutionPolicy Bypass -Command '
+      # Set RemoteSigned so dot-sourced profile scripts run in fresh sessions.
+      # Suppress noise: PS 5.1 may complain the module cannot autoload here;
+      # PS 7 may complain a more-specific scope overrides it. Both are benign:
+      # the policy ends up correct and the install succeeds either way.
+      try { Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force *>$null } catch {}
+      $profileDir = Split-Path $PROFILE -Parent
+      if (-not (Test-Path $profileDir)) { New-Item -Type Directory -Path $profileDir -Force | Out-Null }
+      if (-not (Test-Path $PROFILE))    { New-Item -Type File      -Path $PROFILE    -Force | Out-Null }
+      Write-Host "  Host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)  PROFILE: $PROFILE"
+      $files = @("wsl-helpers.ps1", "cc-functions.ps1")
+      $failed = 0
+      foreach ($f in $files) {
+        $src  = "$env:DOTFILES_UNC\windows\$f"
+        $dest = "$env:USERPROFILE\.$f"
+        if (-not (Test-Path $src)) {
+          Write-Error "Source not found: $src"
+          $failed = 1
+          continue
+        }
+        Copy-Item $src $dest -Force
+        $pattern = [regex]::Escape($f)
+        if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
+          Add-Content $PROFILE (". `"$dest`"")
+          Write-Host "    -> Added $f to PROFILE"
+        } else {
+          Write-Host "    -> $f already wired into PROFILE (refreshed local copy)"
+        }
+      }
+      if ($failed -ne 0) { exit 1 }
+    ' 2>&1 | sed 's/^/  /'
+  # Capture exit status before sed pipe masks it (sed always succeeds).
+  return ${PIPESTATUS[0]}
+}
+
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
   echo "--- PowerShell helpers (wsl-helpers.ps1 + cc-functions.ps1) ---"
-  if ! command -v powershell.exe &>/dev/null; then
-    echo "  -> powershell.exe not found in WSL PATH; skipping."
+  if ! command -v powershell.exe &>/dev/null && ! command -v pwsh.exe &>/dev/null; then
+    echo "  -> Neither powershell.exe nor pwsh.exe found in WSL PATH; skipping."
   else
     echo "  Installs:"
     echo "    wsl-helpers.ps1  → wsl6 (agent-neutral 3×2 WSL grid)"
     echo "    cc-functions.ps1 → ccgrid, cctab, ccpane, ccprojects (Claude launchers)"
-    read -rp "Install both into your PowerShell profile? [Y/n] " yn
+    echo "  Wires into BOTH Windows PowerShell 5.1 and PowerShell 7 profiles when present."
+    read -rp "Install into your PowerShell profile(s)? [Y/n] " yn
     if [[ ! "$yn" =~ ^[Nn] ]]; then
-      # Build the UNC path to THIS dotfiles checkout so the helper resolves
-      # regardless of where the repo was cloned (~/dev/dotfiles, ~/dotfiles, …).
-      WSL_DISTRO_NAME_EFFECTIVE="${WSL_DISTRO_NAME:-Ubuntu}"
-      DOTFILES_UNC="\\\\wsl.localhost\\${WSL_DISTRO_NAME_EFFECTIVE}${DOTFILES_DIR//\//\\}"
-      # WSLENV is required for env vars to cross the WSL → Windows boundary.
-      # Without it, $env:DOTFILES_UNC arrives empty in PowerShell.
-      DOTFILES_UNC="$DOTFILES_UNC" WSLENV="DOTFILES_UNC" \
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
-          Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-          if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-          $files = @("wsl-helpers.ps1", "cc-functions.ps1")
-          $failed = 0
-          foreach ($f in $files) {
-            $src  = "$env:DOTFILES_UNC\windows\$f"
-            $dest = "$env:USERPROFILE\.$f"
-            if (-not (Test-Path $src)) {
-              Write-Error "Source not found: $src"
-              $failed = 1
-              continue
-            }
-            Copy-Item $src $dest -Force
-            $pattern = [regex]::Escape($f)
-            if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
-              Add-Content $PROFILE (". `"$dest`"")
-              Write-Host "  -> Added $f to PowerShell `$PROFILE"
-            } else {
-              Write-Host "  -> $f already wired into `$PROFILE (refreshed local copy)"
-            }
-          }
-          if ($failed -ne 0) { exit 1 }
-        ' 2>&1 | sed 's/^/  /'
-      # Capture powershell.exe's exit (PIPESTATUS[0]) before the success
-      # message — sed always succeeds and would mask install failures otherwise.
-      ps_status=${PIPESTATUS[0]}
-      if [ "$ps_status" -eq 0 ]; then
+      ps_overall=0
+      installed_any=0
+      for host_exe in powershell.exe pwsh.exe; do
+        if command -v "$host_exe" &>/dev/null; then
+          installed_any=1
+          install_ps_helpers_for_host "$host_exe" || ps_overall=1
+        fi
+      done
+      if [ "$installed_any" -eq 0 ]; then
+        echo "  -> No PowerShell host found; nothing installed."
+      elif [ "$ps_overall" -eq 0 ]; then
         echo "  -> Open a new PowerShell window: try 'wsl6' (no agent) or 'ccprojects' (Claude)"
       else
-        echo "  -> PowerShell install FAILED (exit $ps_status); helpers NOT installed."
-        echo "     Source attempted: $DOTFILES_UNC\\windows\\"
+        echo "  -> One or more PowerShell installs FAILED; check messages above."
       fi
     else
       echo "  -> Skipped"
