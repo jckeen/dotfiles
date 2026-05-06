@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-05 — Repo hygiene: remove stale root-level docs; gitignore prevention rules
+
+### What changed
+- **Deleted** `PAI-MIGRATION-HANDOFF.md` (one-shot migration doc from 2026-03-22, migration long since complete; full text preserved in commit `8ddea74`).
+- **Deleted** `SECURITY_FINDINGS_20260419.md` and `SECURITY_FINDINGS_20260503.md` (point-in-time static-analysis snapshots; remediations already shipped in PRs #3 and #18 — the audit trail lives in those PRs, not in committed report files).
+- **Deleted** `ADR/AUTH-AT-THE-BOUNDARY.md` and the empty `ADR/` and `Plans/` directories. The cross-service architectural decision didn't belong in dotfiles. The load-bearing principle was distilled into a new `## Auth at the Boundary` section in `~/dev/claude-memory/pai-user/AISTEERINGRULES.md` (steers all PAI agents). Per-stack code snippets remain available in commit `ed86ea2` if needed for reference.
+- **`.gitignore`** — Added `SECURITY_FINDINGS_*.md` and `*-HANDOFF.md` patterns so future agents writing one-off reports at the root don't accidentally commit them. Ignore comment points authors to `claude-memory/pai-user/AISTEERINGRULES.md` as the right home for cross-cutting decisions.
+
+### Why
+Root of the dotfiles repo had collected three one-off documents (a migration handoff, two weekly security reports) and an architectural decision record that was binding on six service repos but only physically present here. Symptom of "no convention for where reports go." Distilling the ADR into a steering rule retains the prescriptive value (auth-by-default at the boundary, refuses to start if secret unset, opt-out is greppable) without dragging 462 lines of per-stack code into a config repo.
+
 ## 2026-05-05 — branch-hygiene: add `claude project purge` step
 
 ### What changed
