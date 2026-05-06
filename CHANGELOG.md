@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-05 — README: collapse platform-specific & reference content into accordions
+
+### What changed
+- **`README.md`** — Restructured for intentional, audience-aware reading. The three Quick Start platforms (Windows / macOS / Linux) are now `<details>` accordions so a reader on one platform isn't scrolling past the other two. The Windows-only PowerShell helper deep-dive (~85 lines of WSL ↔ PS bridging) is now collapsed by default. Reference-density sections — *What gets installed / configured*, *Platform-specific behavior*, *Safety hooks line-by-line*, *full keyboard shortcut list*, *claude-memory* and *codex-memory* deep dives, *Customizing*, *Repo Structure tree* — also collapsed, with one-line summaries left visible. Added `<br>` after each `<summary>` so GitHub renders code blocks/tables inside `<details>` correctly. The Session Management section was redundant with Shell Commands & Aliases above; compressed to a one-line "remote access is always on" pointer.
+
+### Why
+The README was 780 lines, and reading it top-to-bottom forced a Windows user past macOS prerequisites, an experienced user past tool-install tables, and a non-PAI user past memory-repo internals. Accordions let each reader stop at the depth they need without losing the "I know this exists if I want it" affordance. Net length went up slightly (843 lines from `<details>` wrappers and blank-line padding) but visible-on-load length is roughly half of what it was.
+
 ## 2026-05-05 — Repo hygiene: redact per-project audit details from older entries
 
 ### What changed

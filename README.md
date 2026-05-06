@@ -31,7 +31,10 @@ After setup, you don't have to remember much. Open a terminal and:
 
 Pick your platform. Each path leaves you with the same end state: Claude Code + Codex installed, hooks wired, slash commands available, status line showing, multi-session helpers ready.
 
-### Windows (use WSL2 — strongly recommended)
+<details>
+<summary><strong>🪟 Windows (WSL2 — recommended)</strong></summary>
+
+<br>
 
 Claude Code runs *much* better in WSL2 than directly on Windows: native Linux filesystem (~10x faster I/O than `/mnt/c/`), full POSIX tooling, and our PowerShell helpers (`wsl6`, `ccgrid`, etc.) bridge nicely between Windows Terminal and WSL.
 
@@ -70,7 +73,12 @@ codex login            # Optional: sign in for Codex CLI
 
 You're done. Open a new PowerShell 7 window and try `wsl6`, or run `cc` inside WSL.
 
-### macOS
+</details>
+
+<details>
+<summary><strong>🍎 macOS</strong></summary>
+
+<br>
 
 **Prerequisites** — install these once if you don't have them:
 
@@ -100,7 +108,12 @@ codex login            # Optional
 
 > **Why macOS?** Native Unix toolchain, no VM overhead, excellent terminal options (Terminal.app, iTerm2, Ghostty, Warp — pick your favorite). The setup script handles macOS-specific things (osxkeychain credential helper, brew package install, zsh `.bash_aliases` sourcing) automatically.
 
-### Linux (native, not WSL)
+</details>
+
+<details>
+<summary><strong>🐧 Linux (native, not WSL)</strong></summary>
+
+<br>
 
 ```bash
 mkdir -p ~/dev && cd ~/dev
@@ -111,6 +124,8 @@ gh auth login
 claude
 codex login            # Optional
 ```
+
+</details>
 
 ### Setup-script flags (all platforms)
 
@@ -162,7 +177,14 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 
 ---
 
-## What Gets Installed
+## What this installs and configures
+
+`setup.sh` installs CLI tools, symlinks Claude/Codex config into `~/.claude/` and `~/.codex/`, and wires platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
+
+<details>
+<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, claude, codex, bun)</summary>
+
+<br>
 
 | Tool | Purpose | Install method |
 |------|---------|---------------|
@@ -176,7 +198,12 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 
 WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voice` support).
 
-## What Gets Configured
+</details>
+
+<details>
+<summary><strong>⚙️ Files & symlinks configured</strong> (CLAUDE.md, hooks, skills, agents, aliases…)</summary>
+
+<br>
 
 Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
@@ -199,7 +226,12 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing for voice mode |
 
-## Platform-specific behavior
+</details>
+
+<details>
+<summary><strong>🖥️ Platform-specific behavior</strong> (what differs across macOS / WSL / Linux)</summary>
+
+<br>
 
 | Feature | macOS | WSL | Linux |
 |---------|-------|-----|-------|
@@ -208,6 +240,8 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | Credential helper | osxkeychain | Git Credential Manager (Windows) | git-credential-store |
 | Audio (for /voice) | Built-in | ALSA → PulseAudio | N/A |
 | Git safe.directory | Not needed | Auto-configured for `/mnt/c/` | Not needed |
+
+</details>
 
 ---
 
@@ -287,7 +321,10 @@ cc-pane stringer -H                # horizontal split
 
 > **Tip:** From inside an active Claude session, use `! cc-pane <project>` to open another project alongside without leaving Claude.
 
-#### From PowerShell (Windows-side)
+<details>
+<summary><strong>🪟 PowerShell helpers (Windows users only)</strong> — multi-session from outside WSL</summary>
+
+<br>
 
 **Use PowerShell 7** (`pwsh.exe`) if at all possible — it's the modern, cross-platform PowerShell and what these helpers are designed for. Windows ships with PowerShell 5.1 (`powershell.exe`) which still works (we wire both profiles), but PS 7 is faster and is what you should default to. Install PS 7 with `winget install --id Microsoft.PowerShell` if you don't have it.
 
@@ -376,6 +413,8 @@ ccgrid dotfiles atlas stringer beacon pai
 
 That opens a new Windows Terminal tab with five panes (alternating vertical/horizontal splits), each running `cc <project>` inside WSL.
 
+</details>
+
 ---
 
 ## Skills (Slash Commands)
@@ -434,7 +473,12 @@ A team of 16 specialized subagents, each running in **its own isolated context**
 
 ## Safety Hooks
 
-Hooks run automatically — they can't be forgotten like CLAUDE.md rules.
+Hooks run automatically and can't be forgotten like CLAUDE.md rules. Four ship by default: **conventional-commit** (enforces commit message format), **format-on-edit** (auto-formats after edits), **ntfy-awaiting-input** (push notification when Claude needs you), and **StripProjectPermissions** (prevents per-project permission creep).
+
+<details>
+<summary><strong>Hook-by-hook details</strong></summary>
+
+<br>
 
 **`conventional-commit.sh`** (PreToolUse) enforces:
 - Commit messages must start with `type: description`
@@ -455,6 +499,8 @@ Hooks run automatically — they can't be forgotten like CLAUDE.md rules.
 - Reads the current project's settings.local.json, removes only the `permissions` key, preserves everything else
 
 > **Note:** Security blocking (dangerous commands, secret detection) is handled by the PAI SecurityValidator hook in `~/.claude/hooks/SecurityValidator.hook.ts`, configured via `patterns.yaml`. The old `block-dangerous.sh` and `block-secrets.sh` hooks have been replaced.
+
+</details>
 
 ---
 
@@ -492,6 +538,20 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 
 ## Keyboard Shortcuts
 
+The four you'll use constantly:
+
+| Shortcut | What it does |
+|----------|-------------|
+| `Shift+Tab` (x2) | Toggle Plan Mode |
+| `Esc` | Stop Claude mid-response |
+| `/clear` | Reset context |
+| `/compact` | Compress conversation |
+
+<details>
+<summary>The full list (rewind, background, side-questions, …)</summary>
+
+<br>
+
 | Shortcut | What it does |
 |----------|-------------|
 | `Shift+Tab` (x2) | Toggle Plan Mode |
@@ -503,46 +563,36 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 | `/clear` | Reset context |
 | `/btw` | Side question (no context cost) |
 
+</details>
+
 ---
 
 ## Session Management
 
-```bash
-cc                       # Pull all repos + start Claude (recommended)
-cc dotfiles              # Start Claude in a specific project
-claude                   # Start new session directly
-claude --continue        # Resume most recent session
-claude --resume          # Pick from recent sessions
-claude -p "prompt"       # Non-interactive mode (for scripts/CI)
-claude-server            # Spawn isolated worktree + remote control
-cx                       # Pull all repos + start Codex
-cx dotfiles              # Start Codex in a specific project
-codex                    # Start Codex directly
-codex resume             # Resume a Codex session
-codex review --uncommitted
+**Remote access** is always on — connect from `claude.ai/code` or the Claude mobile app from anywhere.
 
-# Multi-session (WSL + Windows Terminal)
-cc-pane pai              # Split pane with Claude in ~/dev/pai
-cc-tab stringer          # New tab with Claude in ~/dev/stringer
-cc-multi dotfiles pai    # Multiple tabs at once
-sessions                 # See what's running
-```
-
-**Remote access** is always on. Connect from `claude.ai/code` or the Claude mobile app.
+For the day-to-day commands (`cc`, `cx`, `claude --continue`, `claude --resume`, multi-pane), see the [Shell Commands & Aliases](#shell-commands--aliases) section above. They're the same surface; this section just exists to anchor the "remote access" note that people search for.
 
 ---
 
-## The `claude-memory` private repo
+## The private memory repos (PAI users)
 
-This setup pairs the public dotfiles repo with a **separate private repo** called `claude-memory`, which holds three things that don't belong in a public repo:
+This public dotfiles repo pairs with up to two **separate private repos** — `claude-memory` and (optional) `codex-memory` — that hold things that don't belong in public: Claude auto-memory, PAI config, identity, steering rules, Codex preferences. Both are optional.
+
+> **Running `setup.sh --no-pai`?** You can skip both subsections below — non-PAI mode doesn't touch either repo. You'll get hooks, skills, agents, status line, git config, and `cc`/`cx` scaffolding — no PAI runtime dependency, no memory repo required.
+
+<details>
+<summary><strong>📁 The <code>claude-memory</code> private repo</strong> — structure, contract, how to create your own</summary>
+
+<br>
+
+`claude-memory` holds three things:
 
 1. Your **persistent Claude memory** (`dev/memory/`) — per-machine memory files Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
 2. Your **PAI config** (`pai-config/`, `pai-user/`) — the `CLAUDE.md`, `settings.json`, identity, steering rules, and DA personality that layer on top of the upstream [PAI](https://github.com/danielmiessler/Personal_AI_Infrastructure) install. **Only needed in PAI mode.**
 3. The `bootstrap.sh` script that links it all together and (re)installs the systemd voice server.
 
-**Skip this section entirely if you run `setup.sh --no-pai`** — the non-PAI mode doesn't touch `claude-memory` at all. It's optional even for memory persistence; you'll just lose auto-memory between machines.
-
-### Minimum structure (PAI mode)
+**Minimum structure:**
 
 ```
 ~/dev/claude-memory/
@@ -567,9 +617,7 @@ This setup pairs the public dotfiles repo with a **separate private repo** calle
 - verify `~/.env` contains `ELEVENLABS_API_KEY`
 - run `~/dev/dotfiles/claude/systemd/install.sh` to install the voice server
 
-### Creating your own
-
-This is a deliberately hand-crafted repo — there's no generator. Start minimal and add as you go:
+**Creating your own** — deliberately hand-crafted, no generator:
 
 ```bash
 # Create the skeleton
@@ -590,19 +638,18 @@ gh repo create claude-memory --private --source=. --push
 
 Populate `pai-config/CLAUDE.md` with your personal Claude Code system instructions, `pai-user/AISTEERINGRULES.md` with user-level overrides (these take precedence over PAI's system rules), and `pai-user/ABOUTME.md` with whatever identity info you want Claude to always have.
 
-**Or just use `--no-pai`** and skip the whole thing. The public dotfiles repo (`setup.sh --no-pai`) gives you: hooks, skills, agents, the `cc` alias scaffolding, the status line, git config, plugin auto-install, and credential wiring — no PAI runtime dependency.
-
 `check-claude.sh` verifies the memory symlink is healthy alongside everything else.
 
----
+</details>
 
-## The `codex-memory` private repo
+<details>
+<summary><strong>📁 The <code>codex-memory</code> private repo</strong> — structure, what never to commit</summary>
 
-This public repo only tracks reusable Codex guidance, skills, and examples. Anything personal or generated belongs outside it.
+<br>
 
-Use an optional private repo at `~/dev/codex-memory` for portable Codex memory and private instructions. Keep this separate from `claude-memory`; the tools have different runtime state and different config formats.
+This public dotfiles repo only tracks reusable Codex guidance, skills, and examples. Anything personal or generated belongs in an optional private repo at `~/dev/codex-memory` for portable Codex memory and private instructions. Keep this separate from `claude-memory`; the tools have different runtime state and different config formats.
 
-Minimum structure:
+**Minimum structure:**
 
 ```
 ~/dev/codex-memory/
@@ -612,7 +659,7 @@ Minimum structure:
 └── .gitignore
 ```
 
-Never commit these from `~/.codex/`:
+**Never commit these from `~/.codex/`:**
 
 - `auth.json`
 - `history.jsonl`
@@ -623,9 +670,16 @@ Never commit these from `~/.codex/`:
 
 `setup.sh` links public `codex/AGENTS.md` and `codex/skills/*/SKILL.md` into `~/.codex/`. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
 
+</details>
+
 ---
 
-## Customizing
+## Customizing (forking this repo)
+
+<details>
+<summary><strong>What to edit, keep private, and leave alone</strong></summary>
+
+<br>
 
 This repo is designed to be forked and adapted. Here's what to edit vs. leave alone:
 
@@ -649,6 +703,8 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 - `claude/agents/*.md` — subagent definitions
 - `setup.sh` — cross-platform installer
 - `claude/statusline.sh` — status line display
+
+</details>
 
 ---
 
@@ -692,6 +748,11 @@ CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules int
 ---
 
 ## Repo Structure
+
+<details>
+<summary><strong>Full file tree</strong></summary>
+
+<br>
 
 ```
 dotfiles/
@@ -767,6 +828,8 @@ dotfiles/
     ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
     └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
 ```
+
+</details>
 
 ---
 
