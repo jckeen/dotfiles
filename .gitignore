@@ -4,6 +4,11 @@
 # Session handoff notes (ephemeral, potentially sensitive)
 claude/handoffs/
 
+# One-off reports & migration notes — keep findings in PRs/issues, not as committed docs.
+# Architectural decisions belong in ~/dev/claude-memory/pai-user/AISTEERINGRULES.md, not at repo root.
+SECURITY_FINDINGS_*.md
+*-HANDOFF.md
+
 # Symlink artifacts (setup.sh creates these as symlinks in ~/.claude/)
 .claude/
 
