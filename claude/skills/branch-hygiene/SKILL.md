@@ -68,3 +68,19 @@ clean (checked 4h ago)
 If drift exists, the same command emits a summary and the user can run
 `gh-bootstrap.sh --all ~/dev` to fix it. Be specific about which repos
 drifted — they're listed in `drifted_repos` of the JSON.
+
+## Project state cleanup
+
+After archiving or deleting a repo locally, also purge its Claude Code state (transcripts, file history, config entries, tasks):
+
+```bash
+# Always dry-run first
+claude project purge "$REPO_PATH" --dry-run
+
+# When the dry-run looks right
+claude project purge "$REPO_PATH" --yes
+```
+
+The `--all` flag purges every project not currently on disk in one pass — useful after a quarterly cleanup.
+
+This is the v2.1.126 primitive. Without it, `~/.claude/projects/` and `~/.claude/file-history/` accumulate state for dead projects forever.
