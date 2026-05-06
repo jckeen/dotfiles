@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-05 — branch-hygiene: add `claude project purge` step
+
+### What changed
+- **`claude/skills/branch-hygiene/SKILL.md`** — Added `## Project state cleanup` section documenting the v2.1.126 `claude project purge [path]` primitive. Wires post-archive cleanup so dead-project Claude Code state (transcripts, file history, config entries, tasks) gets reclaimed alongside branches. Recommends `--dry-run` before `--yes`, mentions `--all` for periodic cleanup. From the PAI Upgrade Report 2026-05-05 (MEDIUM tier).
+
+Commit `45cede3`.
+
 ## 2026-05-05 — Reposition README as jumpstart guide; install PS helpers into both PS 5.1 and PS 7
 
 ### What changed
