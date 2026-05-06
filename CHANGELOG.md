@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-05 — Reposition README as jumpstart guide; install PS helpers into both PS 5.1 and PS 7
+
+### What changed
+- **`README.md`** — Significant top-of-file rewrite. New "What you get (and why it matters)" section explicitly outlines the UX wins (`cc`/`cx` aliases, status line, slash commands, agent pack, hooks, multi-session tooling, auto-hygiene, Codex parity, symlink hygiene) so users understand the experience before installing. Quick Start split into per-platform sections — **Windows (WSL2)** with explicit prerequisites (`wsl --install -d Ubuntu`, `winget install Microsoft.PowerShell` for PS 7, Windows Terminal), **macOS** (Xcode CLT + Homebrew), and **Linux**. Repositions the repo as "the jumpstart for Claude Code + Codex" rather than just dotfiles. Try-it-now block moved up and expanded with `projects` / `sessions` aliases. PowerShell section calls out PS 7 as preferred and explains the dual-host install behavior. Setup-script flag table added (`--check`, `--repair`, `--no-pai`, `--pai`).
+- **`setup.sh`** §7b — Refactored into `install_ps_helpers_for_host()` that takes the host exe. Loops over **both** `powershell.exe` (5.1) and `pwsh.exe` (7) when present so users opening either host see the helpers. Creates the profile directory before the file (PS 7 path doesn't exist by default on a fresh machine). Suppresses benign `Set-ExecutionPolicy` noise via try/catch + `*>$null`. Prints which host + version + profile path is being wired so the user can confirm.
+
+### Why
+1. **PS 7 dual-host bug**: User reported `wsl6: term not recognized` in PowerShell 7 immediately after the previous PR merged. Root cause: PS 5.1 and PS 7 use different `$PROFILE` paths, and the installer only ran `powershell.exe` (5.1). Fixed by looping over both hosts.
+2. **README positioning**: The previous README opened with "Production-ready Claude Code setup with 4 hooks, 11 slash commands…" — feature-list framing. Restated as a jumpstart for using Claude/Codex on a fresh Mac or Windows machine, with explicit per-platform prerequisites and a "what you get and why it matters" section so users understand the experience and don't have to remember commands.
+
+End-to-end verified by running the new dual-host installer against the live machine (PS 5.1 + PS 7), refreshing both profiles, and confirming `wsl6` is dot-sourced in both. Audit clean (44/44 symlinks).
+
 ## 2026-05-05 — Make `wsl6` agent-neutral by file split; clarify README install path
 
 ### What changed
