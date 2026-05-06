@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-05-05 — Reposition README as jumpstart guide; install PS helpers into both PS 5.1 and PS 7
+
+### What changed
+- **`README.md`** — Significant top-of-file rewrite. New "What you get (and why it matters)" section explicitly outlines the UX wins (`cc`/`cx` aliases, status line, slash commands, agent pack, hooks, multi-session tooling, auto-hygiene, Codex parity, symlink hygiene) so users understand the experience before installing. Quick Start split into per-platform sections — **Windows (WSL2)** with explicit prerequisites (`wsl --install -d Ubuntu`, `winget install Microsoft.PowerShell` for PS 7, Windows Terminal), **macOS** (Xcode CLT + Homebrew), and **Linux**. Repositions the repo as "the jumpstart for Claude Code + Codex" rather than just dotfiles. Try-it-now block moved up and expanded with `projects` / `sessions` aliases. PowerShell section calls out PS 7 as preferred and explains the dual-host install behavior. Setup-script flag table added (`--check`, `--repair`, `--no-pai`, `--pai`).
+- **`setup.sh`** §7b — Refactored into `install_ps_helpers_for_host()` that takes the host exe. Loops over **both** `powershell.exe` (5.1) and `pwsh.exe` (7) when present so users opening either host see the helpers. Creates the profile directory before the file (PS 7 path doesn't exist by default on a fresh machine). Suppresses benign `Set-ExecutionPolicy` noise via try/catch + `*>$null`. Prints which host + version + profile path is being wired so the user can confirm.
+
+### Why
+1. **PS 7 dual-host bug**: User reported `wsl6: term not recognized` in PowerShell 7 immediately after the previous PR merged. Root cause: PS 5.1 and PS 7 use different `$PROFILE` paths, and the installer only ran `powershell.exe` (5.1). Fixed by looping over both hosts.
+2. **README positioning**: The previous README opened with "Production-ready Claude Code setup with 4 hooks, 11 slash commands…" — feature-list framing. Restated as a jumpstart for using Claude/Codex on a fresh Mac or Windows machine, with explicit per-platform prerequisites and a "what you get and why it matters" section so users understand the experience and don't have to remember commands.
+
+End-to-end verified by running the new dual-host installer against the live machine (PS 5.1 + PS 7), refreshing both profiles, and confirming `wsl6` is dot-sourced in both. Audit clean (44/44 symlinks).
+
+## 2026-05-05 — Make `wsl6` agent-neutral by file split; clarify README install path
+
+### What changed
+- **`windows/wsl-helpers.ps1`** (new) — Agent-neutral PowerShell helpers. `wsl6` moved here from `cc-functions.ps1`. Self-contained: defines its own `Test-WtAvailable` and `$WslDistro`, depends on nothing Claude-specific. Header explicitly states "These helpers do NOT call Claude Code, Codex, or any AI agent."
+- **`windows/cc-functions.ps1`** — `wsl6` removed; replaced by a one-line pointer comment to `wsl-helpers.ps1`. Header updated to call out the split and note future `cx-functions.ps1` could mirror cc-functions for Codex.
+- **`setup.sh`** §7b — Now copies BOTH files to `$env:USERPROFILE\.<name>.ps1` and dot-sources each from `$PROFILE`. Loop-based, idempotent, regex-escaped duplicate-check per file. Prompt reworded to call out which file is agent-neutral and which is Claude-specific.
+- **`README.md`** — "Try it now" expands with a WSL-PowerShell callout (`wsl6` first, then `ccgrid`/`cctab`/`ccpane`/`ccprojects`), `dotfiles-update` documented as the "I missed a prompt" recovery path. Multi-session/PowerShell section adds a file-scope table (agent-neutral vs Claude-specific). Manual install snippet + bash bridge updated to install both files. Repo Structure tree updated.
+
+### Why
+`wsl6` worked regardless of agent but lived inside a file named `cc-functions.ps1`, which made it look Claude-coupled. The split makes the agent-neutral nature visible at the filesystem level — a Codex-only or no-agent user can dot-source just `wsl-helpers.ps1`. The README "Try it now" section now answers "how do I get wsl6?" upfront instead of burying it 150 lines into the multi-session subsection. End-to-end verified by running the new install snippet against the user's live `$PROFILE` — both files deployed, no duplicate profile entries, audit clean (44/44 symlinks).
+
 ## 2026-05-05 — Fix WSL→Windows PowerShell install: clone-path agnostic + WSLENV + error propagation
 
 ### What changed

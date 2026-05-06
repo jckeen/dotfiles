@@ -1,55 +1,164 @@
-# Dotfiles — Claude Code + Codex Power Setup
+# Dotfiles — A Jumpstart for Claude Code + Codex
 
-Production-ready Claude Code setup with 4 hooks, 11 slash commands, a 16-agent review orchestra, a custom status line, and a parallel public-safe Codex setup. Clone it, run `setup.sh`, and skip the config trial-and-error.
+A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 16-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
-Works on **macOS**, **WSL (Ubuntu)**, and **native Linux**.
+This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
-Best practices sourced from [Boris Cherny](https://howborisusesclaudecode.com) (creator of Claude Code), the [official Claude Code docs](https://code.claude.com/docs/en/best-practices), and hard-won experience.
+Best practices sourced from [Boris Cherny](https://howborisusesclaudecode.com) (creator of Claude Code), the [official Claude Code docs](https://code.claude.com/docs/en/best-practices), and hard-won experience across thousands of agent sessions.
+
+---
+
+## What you get (and why it matters)
+
+After setup, you don't have to remember much. Open a terminal and:
+
+- **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
+- **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
+- **11 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`. Type the verb, get the workflow.
+- **A 16-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 8 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
+- **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
+- **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
+- **Auto-hygiene** — a daily systemd timer cleans stale branches across every repo in `~/dev/`, surfaces drift at every Claude/Codex session start, and bootstraps the canonical 8 GitHub auto-merge settings on every newly-created or cloned repo.
+- **Public-safe Codex parity** — same skill set as Claude (review, simplify, fix-issue, commit-push-pr, handoff, changelog, repo-health, branch-hygiene), wired so `cx` mirrors `cc`. Codex auth, sessions, sqlite state, and live `config.toml` stay local; only public-safe guidance and skills are shared.
+- **Cross-platform symlink hygiene** — `setup.sh` is idempotent and runs the same on macOS and WSL. Edit `~/.claude/agents/foo.md` and the change is in your repo automatically (it's a symlink). `dotfiles-update` keeps everything in sync with one command.
+
+> **Why this exists:** Claude Code and Codex are powerful but the defaults aren't tuned for serious daily work — context bloats, sessions vanish without handoffs, branches pile up, agent reviews are ad-hoc, and you re-discover the same gotchas every project. This repo encodes the "second-day knowledge" that makes the tools actually compound. If you're going to spend hundreds of hours in these CLIs, spend the first 10 minutes setting up properly.
 
 ---
 
 ## Quick Start
 
+Pick your platform. Each path leaves you with the same end state: Claude Code + Codex installed, hooks wired, slash commands available, status line showing, multi-session helpers ready.
+
+### Windows (use WSL2 — strongly recommended)
+
+Claude Code runs *much* better in WSL2 than directly on Windows: native Linux filesystem (~10x faster I/O than `/mnt/c/`), full POSIX tooling, and our PowerShell helpers (`wsl6`, `ccgrid`, etc.) bridge nicely between Windows Terminal and WSL.
+
+**Prerequisites** — install these once, in PowerShell as Administrator (skip any you already have):
+
+```powershell
+# 1. WSL2 + Ubuntu (reboot if it's a fresh WSL install)
+wsl --install -d Ubuntu
+
+# 2. PowerShell 7 (preferred — Windows ships with PS 5.1, but PS 7 is faster
+#    and is what you should be using day-to-day)
+winget install --id Microsoft.PowerShell --source winget
+
+# 3. Windows Terminal (preinstalled on Windows 11; install on 10)
+winget install --id Microsoft.WindowsTerminal --source winget
+```
+
+> **Why PowerShell 7?** PS 5.1 is end-of-life maintenance only and uses `Documents\WindowsPowerShell\` for its profile. PS 7 is the modern, cross-platform Core build, uses `Documents\PowerShell\`, and is faster on every workload. `setup.sh` wires our helpers into **both** profiles so you're covered either way, but you should default to PS 7.
+
+**Inside WSL** (open Ubuntu from the Start menu, or `wsl` from any terminal):
+
 ```bash
-# Clone this repo
-cd ~/dev  # or wherever you keep code
+# Clone this repo into the Linux filesystem (NOT /mnt/c/ — that's ~10x slower)
+mkdir -p ~/dev && cd ~/dev
 git clone https://github.com/jckeen/dotfiles.git
 cd dotfiles
 
-# Run setup (auto-detects macOS, WSL, or Linux)
-chmod +x setup.sh
-./setup.sh            # prompts: are you using PAI? [Y/n]
-# Or skip the prompt:
-# ./setup.sh --no-pai   # Claude Code + hooks only, no PAI
-# ./setup.sh --pai      # assume PAI (requires claude-memory repo + ~/.claude/PAI)
+# Run setup — auto-detects WSL, installs everything, prompts where it matters
+./setup.sh
 
-# Authenticate
-gh auth login          # GitHub CLI (choose HTTPS + browser)
-claude                 # Follow the login prompt
+# Authenticate (do these once)
+gh auth login          # GitHub CLI — choose HTTPS + browser
+claude                 # Sign in to Claude (or 'claude auth login' if it doesn't prompt)
 codex login            # Optional: sign in for Codex CLI
 ```
 
-The setup script auto-detects your platform, installs tools, prompts for git identity, symlinks Claude config into `~/.claude/`, and links only public-safe Codex guidance and skills into `~/.codex/`.
+You're done. Open a new PowerShell 7 window and try `wsl6`, or run `cc` inside WSL.
 
-> **Public repo safety:** this dotfiles repo is public. Do not commit Codex or Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or private client/project context. Use `claude-memory` and `codex-memory` for private portable state.
+### macOS
 
-**PAI mode** (default) wires in [Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) — install PAI first (`danielmiessler/Personal_AI_Infrastructure/Releases/v4.0.3` → `bash ~/.claude/install.sh`) and clone your private `claude-memory` repo under `~/dev/` before running `setup.sh`. **Non-PAI mode** (`--no-pai`) skips the claude-memory integration and leaves you with the Claude Code hooks, skills, agents, and dotfiles.
+**Prerequisites** — install these once if you don't have them:
 
-> **WSL users:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
+```bash
+# 1. Xcode Command Line Tools (gives you git, clang, etc.)
+xcode-select --install
+
+# 2. Homebrew (everything else installs through this)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+**Then:**
+
+```bash
+mkdir -p ~/dev && cd ~/dev
+git clone https://github.com/jckeen/dotfiles.git
+cd dotfiles
+
+# Run setup — auto-detects macOS, installs Node/bun/gh/jq via brew if missing
+./setup.sh
+
+# Authenticate
+gh auth login
+claude
+codex login            # Optional
+```
+
+> **Why macOS?** Native Unix toolchain, no VM overhead, excellent terminal options (Terminal.app, iTerm2, Ghostty, Warp — pick your favorite). The setup script handles macOS-specific things (osxkeychain credential helper, brew package install, zsh `.bash_aliases` sourcing) automatically.
+
+### Linux (native, not WSL)
+
+```bash
+mkdir -p ~/dev && cd ~/dev
+git clone https://github.com/jckeen/dotfiles.git
+cd dotfiles
+./setup.sh
+gh auth login
+claude
+codex login            # Optional
+```
+
+### Setup-script flags (all platforms)
+
+```bash
+./setup.sh             # default: prompts "Are you using PAI? [Y/n]"
+./setup.sh --no-pai    # skip the prompt — Claude Code + hooks only
+./setup.sh --pai       # skip the prompt — assume PAI (needs claude-memory repo)
+./setup.sh --check     # read-only audit of all symlinks; exits non-zero if broken
+./setup.sh --repair    # audit + recreate any broken/missing symlinks
+```
+
+> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below).
+
+> **PAI mode:** Default-on. Wires in [Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) — install PAI first (`danielmiessler/Personal_AI_Infrastructure/Releases/v4.0.3` → `bash ~/.claude/install.sh`) and clone your private `claude-memory` repo under `~/dev/` before running `setup.sh`. **`--no-pai`** skips the claude-memory integration entirely and leaves you with hooks, skills, agents, and dotfiles only.
+
+> **WSL filesystem rule:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
+
+---
 
 ### Try it now
 
-After setup, try these to see what you've got:
+After setup, run these to see what you've got:
 
 ```bash
 cc                    # pulls all your repos, then launches Claude
 cx                    # pulls all your repos, then launches Codex
+dotfiles-update       # pull latest dotfiles + re-run setup (idempotent — safe anytime)
+projects              # list everything under ~/dev/
+sessions              # show active Claude sessions and their cwds
 ```
 
 Once inside Claude:
 - Type `/review` to run a code quality check on your last few commits
+- Type `/simplify` after writing code to remove unnecessary complexity
 - Ask "Run the qa-lead agent on this project" to spawn an isolated review
 - Watch the status line — it shows context %, git branch, cost, and lines changed
+
+**Windows (PowerShell 7) users — open a fresh PowerShell 7 window and try:**
+
+| Command | What it does |
+|---------|-------------|
+| `wsl6` | Opens a Windows Terminal tab with a 3×2 grid of plain WSL shells (agent-neutral) |
+| `ccprojects` | Lists projects available under your WSL `~/dev/` |
+| `ccgrid dotfiles atlas stringer` | One new tab, three split panes, each running `cc <project>` inside WSL |
+| `cctab dotfiles atlas` | One tab per project, each running `cc <project>` inside WSL |
+| `ccpane dotfiles` | Splits the current Windows Terminal window with `cc dotfiles` |
+
+These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerShell profile(s)? [Y/n]" — answer Y). The installer wires both PS 5.1 and PS 7 profiles, so the helpers work in whichever you prefer. **If you missed the prompt or installed before this fix, just run `dotfiles-update` from WSL.**
 
 ---
 
@@ -180,18 +289,29 @@ cc-pane stringer -H                # horizontal split
 
 #### From PowerShell (Windows-side)
 
-If you launch Claude from PowerShell rather than from inside WSL, dot-source `windows/cc-functions.ps1` from your PowerShell profile to get equivalent commands. Each pane/tab shells into WSL and runs `cc <project>`, so repo sync + health check still happen.
+**Use PowerShell 7** (`pwsh.exe`) if at all possible — it's the modern, cross-platform PowerShell and what these helpers are designed for. Windows ships with PowerShell 5.1 (`powershell.exe`) which still works (we wire both profiles), but PS 7 is faster and is what you should default to. Install PS 7 with `winget install --id Microsoft.PowerShell` if you don't have it.
 
-| Command | What it does |
-|---------|-------------|
-| `ccgrid <p1> <p2> ...` | One new tab, each project in its own **split pane** (auto-tiled grid) |
-| `ccpane <project> [-Horizontal]` | Split the current WT window with one project |
-| `cctab <p1> <p2> ...` | One **tab** per project |
-| `wsl6` | New tab with a **3×2 grid of plain WSL shells** (3 up, 3 down) |
-| `ccprojects` | List available projects (from WSL) |
-| `ccupdate` | Refresh the local copy from the WSL source |
+The dotfiles ship two PowerShell helper files:
 
-**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls `powershell.exe`, copies `cc-functions.ps1` to `$env:USERPROFILE\.cc-functions.ps1`, and dot-sources it from your `$PROFILE` — idempotent, so re-running setup just refreshes the local copy. Open a new PowerShell window after setup and `wsl6` / `ccgrid` are ready.
+| File | Scope | Functions |
+|------|-------|-----------|
+| `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
+| `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
+
+`setup.sh` installs **both** files into **both PowerShell hosts** (5.1 and 7) automatically on WSL — they have different `$PROFILE` paths (`Documents\WindowsPowerShell\` vs `Documents\PowerShell\`), so wiring only one would leave the other broken. If you want only the agent-neutral piece on a machine that doesn't run Claude, you can copy just `wsl-helpers.ps1` and skip `cc-functions.ps1`.
+
+| Command | File | What it does |
+|---------|------|-------------|
+| `wsl6` | wsl-helpers | New tab with a **3×2 grid of plain WSL shells** (no agent) |
+| `ccgrid <p1> <p2> ...` | cc-functions | One new tab, each project in its own **split pane** (auto-tiled grid) |
+| `ccpane <project> [-Horizontal]` | cc-functions | Split the current WT window with one project |
+| `cctab <p1> <p2> ...` | cc-functions | One **tab** per project |
+| `ccprojects` | cc-functions | List available projects (from WSL) |
+| `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
+
+**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
+
+> **Missed the prompt or installed before this split?** Just run `dotfiles-update` from WSL — it pulls the latest and re-runs setup. The PowerShell prompt fires again and both files are installed/refreshed in both PS profiles.
 
 **Manual install** (if you skipped the setup.sh prompt or are on a machine that didn't run setup) — run these in PowerShell, replacing `<you>` with your WSL username:
 
@@ -199,16 +319,19 @@ If you launch Claude from PowerShell rather than from inside WSL, dot-source `wi
 # 1. Allow local scripts (one time, per-user)
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
-# 2. Copy cc-functions.ps1 from the WSL dotfiles checkout to a LOCAL Windows path.
+# 2. Copy both helper files from the WSL dotfiles checkout to LOCAL Windows paths.
 #    (RemoteSigned blocks scripts loaded directly from \\wsl.localhost\... with a
-#    "not digitally signed" error, so dot-sourcing a local copy is required.)
-$src  = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows\cc-functions.ps1'
-$dest = "$env:USERPROFILE\.cc-functions.ps1"
-Copy-Item $src $dest -Force
+#    "not digitally signed" error, so dot-sourcing local copies is required.)
+$base = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows'
+foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
+  Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+}
 
-# 3. Wire it into your PowerShell profile
+# 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
-Add-Content $PROFILE ('. "' + $dest + '"')
+foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
+  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
+}
 
 # 4. Reload
 . $PROFILE
@@ -221,19 +344,21 @@ WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
 WSLENV="WSL_USER:WSL_DISTRO" \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-  $src  = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows\cc-functions.ps1"
-  $dest = "$env:USERPROFILE\.cc-functions.ps1"
-  Copy-Item $src $dest -Force
   if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-  if (-not (Select-String -Path $PROFILE -Pattern "\.cc-functions\.ps1" -Quiet)) {
-    Add-Content $PROFILE (". `"$dest`"")
+  $base = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows"
+  foreach ($f in @("wsl-helpers.ps1", "cc-functions.ps1")) {
+    Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+    $pattern = [regex]::Escape($f)
+    if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
+      Add-Content $PROFILE (". `"$env:USERPROFILE\.$f`"")
+    }
   }
 '
 ```
 
-Then open a new PowerShell window and `ccgrid` / `cctab` / etc. will be defined.
+Then open a new PowerShell window and `wsl6` / `ccgrid` / `cctab` / etc. will be defined.
 
-After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy (then `. $PROFILE` to reload).
+After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy of `cc-functions.ps1` (then `. $PROFILE` to reload). For `wsl-helpers.ps1`, re-run `setup.sh` (or `dotfiles-update` from WSL).
 
 Override the WSL distro or dev dir in your profile **before** the dot-source line if yours differ:
 
@@ -639,7 +764,8 @@ dotfiles/
         ├── test-writer.md
         └── schema-reviewer.md
 └── windows/
-    └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
+    ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
+    └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
 ```
 
 ---
