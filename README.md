@@ -44,12 +44,20 @@ After setup, try these to see what you've got:
 ```bash
 cc                    # pulls all your repos, then launches Claude
 cx                    # pulls all your repos, then launches Codex
+dotfiles-update       # pull latest dotfiles + re-run setup (idempotent — safe anytime)
 ```
 
 Once inside Claude:
 - Type `/review` to run a code quality check on your last few commits
 - Ask "Run the qa-lead agent on this project" to spawn an isolated review
 - Watch the status line — it shows context %, git branch, cost, and lines changed
+
+**WSL users — open a new PowerShell window after setup and you have:**
+- `wsl6` — agent-neutral 3×2 grid of plain WSL shells (no Claude, no Codex, just shells)
+- `ccgrid <p1> <p2> ...` — one tab, one pane per project, each running `cc <project>` inside WSL
+- `cctab <p1> <p2> ...` / `ccpane <project>` / `ccprojects` — tab/split-pane variants
+
+These are auto-installed by `setup.sh` on WSL (Section 7b prompts you). If you missed the prompt, just run `dotfiles-update` and answer Y.
 
 ---
 
@@ -180,18 +188,27 @@ cc-pane stringer -H                # horizontal split
 
 #### From PowerShell (Windows-side)
 
-If you launch Claude from PowerShell rather than from inside WSL, dot-source `windows/cc-functions.ps1` from your PowerShell profile to get equivalent commands. Each pane/tab shells into WSL and runs `cc <project>`, so repo sync + health check still happen.
+If you launch Claude from PowerShell rather than from inside WSL, the dotfiles ship two PowerShell helper files:
 
-| Command | What it does |
-|---------|-------------|
-| `ccgrid <p1> <p2> ...` | One new tab, each project in its own **split pane** (auto-tiled grid) |
-| `ccpane <project> [-Horizontal]` | Split the current WT window with one project |
-| `cctab <p1> <p2> ...` | One **tab** per project |
-| `wsl6` | New tab with a **3×2 grid of plain WSL shells** (3 up, 3 down) |
-| `ccprojects` | List available projects (from WSL) |
-| `ccupdate` | Refresh the local copy from the WSL source |
+| File | Scope | Functions |
+|------|-------|-----------|
+| `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
+| `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
 
-**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls `powershell.exe`, copies `cc-functions.ps1` to `$env:USERPROFILE\.cc-functions.ps1`, and dot-sources it from your `$PROFILE` — idempotent, so re-running setup just refreshes the local copy. Open a new PowerShell window after setup and `wsl6` / `ccgrid` are ready.
+`setup.sh` installs **both** on WSL automatically (Section 7b). If you want only the agent-neutral piece on a machine that doesn't run Claude, you can copy just `wsl-helpers.ps1` and skip `cc-functions.ps1`.
+
+| Command | File | What it does |
+|---------|------|-------------|
+| `wsl6` | wsl-helpers | New tab with a **3×2 grid of plain WSL shells** (no agent) |
+| `ccgrid <p1> <p2> ...` | cc-functions | One new tab, each project in its own **split pane** (auto-tiled grid) |
+| `ccpane <project> [-Horizontal]` | cc-functions | Split the current WT window with one project |
+| `cctab <p1> <p2> ...` | cc-functions | One **tab** per project |
+| `ccprojects` | cc-functions | List available projects (from WSL) |
+| `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
+
+**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls `powershell.exe`, copies both files to `$env:USERPROFILE\.<name>.ps1`, and dot-sources each from your `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window after setup and `wsl6` / `ccgrid` are ready.
+
+> **Missed the prompt or installed before this split?** Just run `dotfiles-update` from WSL — it pulls the latest and re-runs setup. The PowerShell prompt fires again and both files are installed/refreshed.
 
 **Manual install** (if you skipped the setup.sh prompt or are on a machine that didn't run setup) — run these in PowerShell, replacing `<you>` with your WSL username:
 
@@ -199,16 +216,19 @@ If you launch Claude from PowerShell rather than from inside WSL, dot-source `wi
 # 1. Allow local scripts (one time, per-user)
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
-# 2. Copy cc-functions.ps1 from the WSL dotfiles checkout to a LOCAL Windows path.
+# 2. Copy both helper files from the WSL dotfiles checkout to LOCAL Windows paths.
 #    (RemoteSigned blocks scripts loaded directly from \\wsl.localhost\... with a
-#    "not digitally signed" error, so dot-sourcing a local copy is required.)
-$src  = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows\cc-functions.ps1'
-$dest = "$env:USERPROFILE\.cc-functions.ps1"
-Copy-Item $src $dest -Force
+#    "not digitally signed" error, so dot-sourcing local copies is required.)
+$base = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows'
+foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
+  Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+}
 
-# 3. Wire it into your PowerShell profile
+# 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
-Add-Content $PROFILE ('. "' + $dest + '"')
+foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
+  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
+}
 
 # 4. Reload
 . $PROFILE
@@ -221,19 +241,21 @@ WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
 WSLENV="WSL_USER:WSL_DISTRO" \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-  $src  = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows\cc-functions.ps1"
-  $dest = "$env:USERPROFILE\.cc-functions.ps1"
-  Copy-Item $src $dest -Force
   if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-  if (-not (Select-String -Path $PROFILE -Pattern "\.cc-functions\.ps1" -Quiet)) {
-    Add-Content $PROFILE (". `"$dest`"")
+  $base = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows"
+  foreach ($f in @("wsl-helpers.ps1", "cc-functions.ps1")) {
+    Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+    $pattern = [regex]::Escape($f)
+    if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
+      Add-Content $PROFILE (". `"$env:USERPROFILE\.$f`"")
+    }
   }
 '
 ```
 
-Then open a new PowerShell window and `ccgrid` / `cctab` / etc. will be defined.
+Then open a new PowerShell window and `wsl6` / `ccgrid` / `cctab` / etc. will be defined.
 
-After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy (then `. $PROFILE` to reload).
+After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy of `cc-functions.ps1` (then `. $PROFILE` to reload). For `wsl-helpers.ps1`, re-run `setup.sh` (or `dotfiles-update` from WSL).
 
 Override the WSL distro or dev dir in your profile **before** the dot-source line if yours differ:
 
@@ -639,7 +661,8 @@ dotfiles/
         ├── test-writer.md
         └── schema-reviewer.md
 └── windows/
-    └── cc-functions.ps1        # PowerShell equivalents of cc-pane/cc-tab/cc-multi (plus ccgrid)
+    ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
+    └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
 ```
 
 ---

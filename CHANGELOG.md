@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-05 — Make `wsl6` agent-neutral by file split; clarify README install path
+
+### What changed
+- **`windows/wsl-helpers.ps1`** (new) — Agent-neutral PowerShell helpers. `wsl6` moved here from `cc-functions.ps1`. Self-contained: defines its own `Test-WtAvailable` and `$WslDistro`, depends on nothing Claude-specific. Header explicitly states "These helpers do NOT call Claude Code, Codex, or any AI agent."
+- **`windows/cc-functions.ps1`** — `wsl6` removed; replaced by a one-line pointer comment to `wsl-helpers.ps1`. Header updated to call out the split and note future `cx-functions.ps1` could mirror cc-functions for Codex.
+- **`setup.sh`** §7b — Now copies BOTH files to `$env:USERPROFILE\.<name>.ps1` and dot-sources each from `$PROFILE`. Loop-based, idempotent, regex-escaped duplicate-check per file. Prompt reworded to call out which file is agent-neutral and which is Claude-specific.
+- **`README.md`** — "Try it now" expands with a WSL-PowerShell callout (`wsl6` first, then `ccgrid`/`cctab`/`ccpane`/`ccprojects`), `dotfiles-update` documented as the "I missed a prompt" recovery path. Multi-session/PowerShell section adds a file-scope table (agent-neutral vs Claude-specific). Manual install snippet + bash bridge updated to install both files. Repo Structure tree updated.
+
+### Why
+`wsl6` worked regardless of agent but lived inside a file named `cc-functions.ps1`, which made it look Claude-coupled. The split makes the agent-neutral nature visible at the filesystem level — a Codex-only or no-agent user can dot-source just `wsl-helpers.ps1`. The README "Try it now" section now answers "how do I get wsl6?" upfront instead of burying it 150 lines into the multi-session subsection. End-to-end verified by running the new install snippet against the user's live `$PROFILE` — both files deployed, no duplicate profile entries, audit clean (44/44 symlinks).
+
 ## 2026-05-05 — Fix WSL→Windows PowerShell install: clone-path agnostic + WSLENV + error propagation
 
 ### What changed

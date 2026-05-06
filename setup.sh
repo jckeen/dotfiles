@@ -812,17 +812,22 @@ else
   fi
 fi
 
-# ─── 7b. PowerShell helpers (WSL only — windows/cc-functions.ps1) ─────
-# Installs Windows-side PowerShell launchers (ccgrid, cctab, ccpane,
-# ccprojects, wsl6, ccupdate) so the user can drive WSL panes from a
-# native PowerShell prompt without manually copy-pasting the README block.
+# ─── 7b. PowerShell helpers (WSL only) ───────────────────────────────
+# Installs Windows-side PowerShell launchers from windows/. Two files:
+#   wsl-helpers.ps1  — agent-neutral (currently: wsl6)
+#   cc-functions.ps1 — Claude-specific (cctab, ccpane, ccgrid, ccprojects, ccupdate)
+# Both are copied to $env:USERPROFILE\.<name>.ps1 and dot-sourced from $PROFILE
+# so PowerShell users can drive WSL panes without copy-pasting the README block.
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
-  echo "--- PowerShell helpers (cc-functions.ps1) ---"
+  echo "--- PowerShell helpers (wsl-helpers.ps1 + cc-functions.ps1) ---"
   if ! command -v powershell.exe &>/dev/null; then
     echo "  -> powershell.exe not found in WSL PATH; skipping."
   else
-    read -rp "Install Windows-side PowerShell helpers (ccgrid, wsl6, cctab, ccpane)? [Y/n] " yn
+    echo "  Installs:"
+    echo "    wsl-helpers.ps1  → wsl6 (agent-neutral 3×2 WSL grid)"
+    echo "    cc-functions.ps1 → ccgrid, cctab, ccpane, ccprojects (Claude launchers)"
+    read -rp "Install both into your PowerShell profile? [Y/n] " yn
     if [[ ! "$yn" =~ ^[Nn] ]]; then
       # Build the UNC path to THIS dotfiles checkout so the helper resolves
       # regardless of where the repo was cloned (~/dev/dotfiles, ~/dotfiles, …).
@@ -833,29 +838,36 @@ if [[ "$PLATFORM" == "wsl" ]]; then
       DOTFILES_UNC="$DOTFILES_UNC" WSLENV="DOTFILES_UNC" \
         powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
           Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-          $src  = "$env:DOTFILES_UNC\windows\cc-functions.ps1"
-          $dest = "$env:USERPROFILE\.cc-functions.ps1"
-          if (-not (Test-Path $src)) {
-            Write-Error "Source not found: $src"
-            exit 1
-          }
-          Copy-Item $src $dest -Force
           if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-          if (-not (Select-String -Path $PROFILE -Pattern "\.cc-functions\.ps1" -Quiet)) {
-            Add-Content $PROFILE (". `"$dest`"")
-            Write-Host "  -> Added cc-functions.ps1 to PowerShell `$PROFILE"
-          } else {
-            Write-Host "  -> cc-functions.ps1 already wired into `$PROFILE (refreshed local copy)"
+          $files = @("wsl-helpers.ps1", "cc-functions.ps1")
+          $failed = 0
+          foreach ($f in $files) {
+            $src  = "$env:DOTFILES_UNC\windows\$f"
+            $dest = "$env:USERPROFILE\.$f"
+            if (-not (Test-Path $src)) {
+              Write-Error "Source not found: $src"
+              $failed = 1
+              continue
+            }
+            Copy-Item $src $dest -Force
+            $pattern = [regex]::Escape($f)
+            if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
+              Add-Content $PROFILE (". `"$dest`"")
+              Write-Host "  -> Added $f to PowerShell `$PROFILE"
+            } else {
+              Write-Host "  -> $f already wired into `$PROFILE (refreshed local copy)"
+            }
           }
+          if ($failed -ne 0) { exit 1 }
         ' 2>&1 | sed 's/^/  /'
       # Capture powershell.exe's exit (PIPESTATUS[0]) before the success
       # message — sed always succeeds and would mask install failures otherwise.
       ps_status=${PIPESTATUS[0]}
       if [ "$ps_status" -eq 0 ]; then
-        echo "  -> Open a new PowerShell window: try 'wsl6' or 'ccprojects'"
+        echo "  -> Open a new PowerShell window: try 'wsl6' (no agent) or 'ccprojects' (Claude)"
       else
         echo "  -> PowerShell install FAILED (exit $ps_status); helpers NOT installed."
-        echo "     Source attempted: $DOTFILES_UNC\\windows\\cc-functions.ps1"
+        echo "     Source attempted: $DOTFILES_UNC\\windows\\"
       fi
     else
       echo "  -> Skipped"

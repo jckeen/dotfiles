@@ -4,6 +4,10 @@
 # from PowerShell on Windows. Each pane/tab runs `cc <project>` inside WSL,
 # which pulls the repo and launches Claude.
 #
+# Agent-neutral helpers (e.g. `wsl6`) live in `wsl-helpers.ps1` so they can be
+# used without implying any Claude/Codex/agent dependency. setup.sh installs
+# both files side-by-side and dot-sources each from your $PROFILE.
+#
 # This file is intended to be COPIED to a local Windows path (not dot-sourced
 # directly from \\wsl.localhost\...). The RemoteSigned execution policy blocks
 # scripts loaded over UNC/network paths with a "not digitally signed" error,
@@ -14,7 +18,6 @@
 #   cctab <project> [<project> ...]          One tab per project
 #   ccpane <project> [-Horizontal]           Split current WT window
 #   ccgrid <project> <project> ...           New tab, split into a grid of panes
-#   wsl6                                     New tab, 3x2 grid of plain WSL shells
 #   ccupdate                                 Refresh local copy from WSL source
 
 $script:WslDistro  = $env:CC_WSL_DISTRO
@@ -152,31 +155,4 @@ function ccgrid {
     & wt.exe @wtArgs
 }
 
-function wsl6 {
-    # Open a new Windows Terminal tab with 6 plain WSL shells in a 3-column x
-    # 2-row grid (3 across the top, 3 across the bottom). No project launching —
-    # each pane is just `wsl.exe -d <distro>` at its default cwd.
-    [CmdletBinding()]
-    param()
-    if (-not (Test-WtAvailable)) { return }
-
-    $wsl = @('wsl.exe', '-d', $script:WslDistro)
-
-    # Build 3 even-width columns: first split gives the right-hand pane 2/3 of
-    # the width, then split that 2/3 region in half so all three columns are 1/3.
-    $wtArgs  = @('-w', '0', 'new-tab') + $wsl
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl
-
-    # Focus is on the rightmost column. Split it horizontally, walk left, repeat.
-    $wtArgs += @(';', 'split-pane', '-H') + $wsl
-    $wtArgs += @(';', 'move-focus', 'left')
-    $wtArgs += @(';', 'split-pane', '-H') + $wsl
-    $wtArgs += @(';', 'move-focus', 'left')
-    $wtArgs += @(';', 'split-pane', '-H') + $wsl
-
-    # Land in the top-left pane so the user starts at a predictable position.
-    $wtArgs += @(';', 'move-focus', 'first')
-
-    & wt.exe @wtArgs
-}
+# `wsl6` (agent-neutral 3×2 WSL shell grid) lives in `wsl-helpers.ps1`.
