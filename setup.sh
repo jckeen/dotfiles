@@ -811,22 +811,32 @@ else
     fi
   fi
 
-  # Bash login shells (`wsl.exe`, `bash -l`) read .bash_profile and skip
-  # .bashrc by design. The PAI installer creates .bash_profile to add bun to
-  # PATH but does not delegate to .bashrc, so cc/aliases/dev paths only show
-  # up after `source ~/.bashrc`. Standard convention: .bash_profile sources
-  # .bashrc for login shells. Make this self-healing on every setup run.
-  if [ -f "$HOME_DIR/.bash_profile" ]; then
-    if ! grep -q 'source.*\.bashrc\|\. .*\.bashrc' "$HOME_DIR/.bash_profile" 2>/dev/null; then
-      echo '' >> "$HOME_DIR/.bash_profile"
-      echo '# Source .bashrc for login shells (so wsl.exe / bash -l get aliases & dev env)' >> "$HOME_DIR/.bash_profile"
-      echo 'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi' >> "$HOME_DIR/.bash_profile"
-      echo "  -> Added .bashrc sourcing to .bash_profile (login shells now load dev env)"
-    fi
+  # .bash_profile is symlinked from dotfiles. Login shells (wsl.exe, `bash -l`,
+  # ssh) skip .bashrc by design; without a .bash_profile that sources .bashrc,
+  # every wsl6 pane starts without `cc`, NVM, cargo, aliases, or auto-cd. The
+  # tracked dotfiles file owns the bun-PATH export and the .bashrc delegation,
+  # so the PAI installer's idempotent `grep -q '\.bun/bin'` skip-check sees
+  # the line already and won't re-append. link_file backs up any pre-existing
+  # ~/.bash_profile to ~/.bash_profile.backup.
+  link_file "$DOTFILES_DIR/.bash_profile" "$HOME_DIR/.bash_profile"
+  echo "  -> .bash_profile linked (login shells now source .bashrc)"
+fi
+
+# ─── 7c. Verification — login shell can resolve cc ───────────────────
+# Catches regressions before the user hits them. If `bash -li -c 'type cc'`
+# does not report `function`, something downstream of .bash_profile/.bashrc
+# is broken: a stray local override, a missing symlink, a botched PAI
+# install, etc. Non-fatal — we report and move on so other steps still run.
+if [[ "$PLATFORM" != "macos" ]]; then
+  echo ""
+  echo "--- Verifying login-shell environment ---"
+  cc_type="$(bash -li -c 'type -t cc 2>/dev/null' 2>/dev/null | tail -1)"
+  if [ "$cc_type" = "function" ]; then
+    echo "  -> bash -li resolves cc as function (wsl6 / login shells healthy)"
   else
-    echo '# Source .bashrc for login shells (so wsl.exe / bash -l get aliases & dev env)' > "$HOME_DIR/.bash_profile"
-    echo 'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi' >> "$HOME_DIR/.bash_profile"
-    echo "  -> Created .bash_profile (login shells now load dev env)"
+    echo "  !! WARNING: bash -li does not see cc (got: '$cc_type')"
+    echo "     Login shells will need 'source ~/.bashrc' before cc works."
+    echo "     Check ~/.bash_profile, ~/.bashrc, ~/.bash_aliases symlinks."
   fi
 fi
 
