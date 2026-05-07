@@ -68,7 +68,7 @@ function cctab {
             Write-Warning "Skipping unknown project: $p"
             continue
         }
-        wt.exe -w 0 new-tab --title $p wsl.exe -d $script:WslDistro -- bash -lc 'cc "$1"' -- $p
+        wt.exe -w 0 new-tab --title $p wsl.exe -d $script:WslDistro -- bash -lic 'cc "$1"' -- $p
     }
 }
 
@@ -85,7 +85,7 @@ function ccpane {
         return
     }
     $splitFlag = if ($Horizontal) { '-H' } else { '-V' }
-    wt.exe -w 0 split-pane $splitFlag wsl.exe -d $script:WslDistro -- bash -lc 'cc "$1"' -- $Project
+    wt.exe -w 0 split-pane $splitFlag wsl.exe -d $script:WslDistro -- bash -lic 'cc "$1"' -- $Project
 }
 
 function ccupdate {
@@ -139,14 +139,14 @@ function ccgrid {
     # `';'` as its own argument so wt interprets it instead of the shell.
     $first = $valid[0]
     $wtArgs = @('-w', '0', 'new-tab', '--title', $first,
-                'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-lc', 'cc "$1"', '--', $first)
+                'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-lic', 'cc "$1"', '--', $first)
 
     # Alternate vertical / horizontal splits for an even-ish grid.
     for ($i = 1; $i -lt $valid.Count; $i++) {
         $p = $valid[$i]
         $splitFlag = if ($i % 2 -eq 1) { '-V' } else { '-H' }
         $wtArgs += @(';', 'split-pane', $splitFlag, '--title', $p,
-                     'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-lc', 'cc "$1"', '--', $p)
+                     'wsl.exe', '-d', $script:WslDistro, '--', 'bash', '-lic', 'cc "$1"', '--', $p)
     }
 
     # Tile evenly once all panes exist so none get starved.
