@@ -21,7 +21,14 @@ $script:WslDistro = $env:CC_WSL_DISTRO
 if (-not $script:WslDistro) { $script:WslDistro = 'Ubuntu' }
 
 $script:Wsl6Cd = $env:WSL6_CD
-if (-not $script:Wsl6Cd) { $script:Wsl6Cd = '~/dev' }
+if (-not $script:Wsl6Cd) {
+    # wsl.exe --cd does NOT expand ~ — pass an absolute Linux path.
+    # Default: $HOME/dev for the WSL user, resolved via wslvar/wslpath fallback.
+    $linuxHome = $null
+    try { $linuxHome = (& wsl.exe -d $script:WslDistro -- printf '%s' "`$HOME") } catch {}
+    if (-not $linuxHome) { $linuxHome = "/home/$env:USERNAME" }
+    $script:Wsl6Cd = "$linuxHome/dev"
+}
 
 function Test-WtAvailable {
     if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
