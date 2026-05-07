@@ -812,12 +812,11 @@ else
   fi
 
   # .bash_profile is symlinked from dotfiles. Login shells (wsl.exe, `bash -l`,
-  # ssh) skip .bashrc by design; without a .bash_profile that sources .bashrc,
-  # every wsl6 pane starts without `cc`, NVM, cargo, aliases, or auto-cd. The
-  # tracked dotfiles file owns the bun-PATH export and the .bashrc delegation,
-  # so the PAI installer's idempotent `grep -q '\.bun/bin'` skip-check sees
-  # the line already and won't re-append. link_file backs up any pre-existing
-  # ~/.bash_profile to ~/.bash_profile.backup.
+  # ssh, fresh Terminal.app on a bash account) skip .bashrc by design; without
+  # a .bash_profile that sources .bashrc, every login pane starts without
+  # `cc`, NVM, cargo, aliases, or auto-cd. The tracked file is safe whether
+  # or not you use PAI: the bun-PATH line is a no-op when bun isn't installed.
+  # link_file backs up any pre-existing ~/.bash_profile to ~/.bash_profile.backup.
   link_file "$DOTFILES_DIR/.bash_profile" "$HOME_DIR/.bash_profile"
   echo "  -> .bash_profile linked (login shells now source .bashrc)"
 fi
@@ -825,14 +824,16 @@ fi
 # ─── 7c. Verification — login shell can resolve cc ───────────────────
 # Catches regressions before the user hits them. If `bash -li -c 'type cc'`
 # does not report `function`, something downstream of .bash_profile/.bashrc
-# is broken: a stray local override, a missing symlink, a botched PAI
-# install, etc. Non-fatal — we report and move on so other steps still run.
+# is broken: a stray local override, a missing symlink, a third-party
+# installer that overwrote .bash_profile, etc. Non-fatal — we report and
+# move on so other steps still run. Skipped on macOS (zsh-default path
+# above handles the equivalent).
 if [[ "$PLATFORM" != "macos" ]]; then
   echo ""
   echo "--- Verifying login-shell environment ---"
   cc_type="$(bash -li -c 'type -t cc 2>/dev/null' 2>/dev/null | tail -1)"
   if [ "$cc_type" = "function" ]; then
-    echo "  -> bash -li resolves cc as function (wsl6 / login shells healthy)"
+    echo "  -> bash -li resolves cc as function (login shells healthy)"
   else
     echo "  !! WARNING: bash -li does not see cc (got: '$cc_type')"
     echo "     Login shells will need 'source ~/.bashrc' before cc works."
