@@ -12,9 +12,16 @@
 #
 # Commands:
 #   wsl6                                     New WT tab, 3x2 grid of plain WSL shells
+#
+# Each pane opens at $env:WSL6_CD (default `~/dev`) inside the WSL distro,
+# not at WT's launching cwd — otherwise PowerShell sitting in C:\Users\<user>
+# pushes every pane to /mnt/c/... which is the wrong filesystem for dev work.
 
 $script:WslDistro = $env:CC_WSL_DISTRO
 if (-not $script:WslDistro) { $script:WslDistro = 'Ubuntu' }
+
+$script:Wsl6Cd = $env:WSL6_CD
+if (-not $script:Wsl6Cd) { $script:Wsl6Cd = '~/dev' }
 
 function Test-WtAvailable {
     if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
@@ -34,7 +41,7 @@ function wsl6 {
     param()
     if (-not (Test-WtAvailable)) { return }
 
-    $wsl = @('wsl.exe', '-d', $script:WslDistro)
+    $wsl = @('wsl.exe', '-d', $script:WslDistro, '--cd', $script:Wsl6Cd)
 
     # Build 3 even-width columns: first split gives the right-hand pane 2/3 of
     # the width, then split that 2/3 region in half so all three columns are 1/3.
