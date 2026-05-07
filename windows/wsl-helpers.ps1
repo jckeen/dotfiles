@@ -50,18 +50,21 @@ function wsl6 {
 
     $wsl = @('wsl.exe', '-d', $script:WslDistro, '--cd', $script:Wsl6Cd)
 
-    # Build 3 even-width columns: first split gives the right-hand pane 2/3 of
-    # the width, then split that 2/3 region in half so all three columns are 1/3.
+    # Top-down split for an even 3x2 grid:
+    #   1. Split horizontally into top + bottom halves (50/50).
+    #   2. Inside the bottom half, split into thirds (1/3 left, then split the
+    #      remaining 2/3 in half).
+    #   3. Move focus up to the top half, repeat the thirds split.
+    # This keeps every pane bound to the same parent geometry, so rounding
+    # doesn't accumulate into one runt column the way a flat L-to-R split chain
+    # did in the previous version.
     $wtArgs  = @('-w', '0', 'new-tab') + $wsl
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl
-
-    # Focus is on the rightmost column. Split it horizontally, walk left, repeat.
-    $wtArgs += @(';', 'split-pane', '-H') + $wsl
-    $wtArgs += @(';', 'move-focus', 'left')
-    $wtArgs += @(';', 'split-pane', '-H') + $wsl
-    $wtArgs += @(';', 'move-focus', 'left')
-    $wtArgs += @(';', 'split-pane', '-H') + $wsl
+    $wtArgs += @(';', 'split-pane', '-H', '-s', '0.5')    + $wsl   # bottom half
+    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl   # bottom: 1/3 | 2/3
+    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl   # bottom: 1/3 | 1/3 | 1/3
+    $wtArgs += @(';', 'move-focus', 'up')
+    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl   # top: 1/3 | 2/3
+    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl   # top: 1/3 | 1/3 | 1/3
 
     # Land in the top-left pane so the user starts at a predictable position.
     $wtArgs += @(';', 'move-focus', 'first')
