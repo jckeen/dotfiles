@@ -14,7 +14,7 @@ After setup, you don't have to remember much. Open a terminal and:
 
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
-- **11 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`. Type the verb, get the workflow.
+- **12 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`. Type the verb, get the workflow.
 - **A 16-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 8 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
@@ -432,6 +432,7 @@ Type these directly in Claude Code.
 | `/simplify` | After building — delegates to code-simplifier subagent, removes over-engineering |
 | `/commit-push-pr` | Commit, push, and create PR in one shot |
 | `/claude-server` | Spawn isolated worktree + remote control session |
+| `/branch-hygiene` | Clean up stale branches across repos |
 
 ---
 
@@ -777,7 +778,8 @@ dotfiles/
 │       ├── commit-push-pr/
 │       ├── handoff/
 │       ├── changelog/
-│       └── repo-health/
+│       ├── repo-health/
+│       └── branch-hygiene/
 └── claude/
     ├── AgentPack.md            # 16-agent review orchestra
     ├── statusline.sh           # Context bar, git branch, cost display
@@ -785,6 +787,7 @@ dotfiles/
     │   ├── conventional-commit.sh          # PreToolUse commit message validator
     │   ├── format-on-edit.sh               # PostToolUse auto-formatter
     │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
+    │   ├── HygieneStatus.hook.sh           # SessionStart branch hygiene status
     │   └── StripProjectPermissions.hook.ts # SessionStart permission guard
     ├── skills/
     │   ├── kickoff/            # /kickoff — new project bootstrap
@@ -797,7 +800,8 @@ dotfiles/
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
     │   ├── claude-server/      # /claude-server — remote worktree
     │   ├── decompose/          # /decompose — deep task decomposition
-    │   └── max/                # /max — maximum effort parallel execution
+    │   ├── max/                # /max — maximum effort parallel execution
+    │   └── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
     ├── scripts/                # Headless automation scripts
     │   ├── common.sh           # Shared safety tiers + runner
@@ -805,6 +809,7 @@ dotfiles/
     │   ├── full-review.sh      # 3-phase agent pack review
     │   ├── test-coverage.sh    # Write tests for uncovered code
     │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
+    │   ├── hygiene-cron.sh     # Daily branch hygiene cron job
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
     └── agents/                 # 16 specialized review subagents
@@ -823,7 +828,8 @@ dotfiles/
         ├── repo-scout.md
         ├── dependency-doctor.md
         ├── test-writer.md
-        └── schema-reviewer.md
+        ├── schema-reviewer.md
+        └── package-scout.md
 └── windows/
     ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
     └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
