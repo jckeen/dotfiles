@@ -304,12 +304,31 @@ interface CommentRow {
   commit_id?: string;
   created_at: string;
 }
+interface ReactionRow {
+  id: number;
+  user: { login: string } | null;
+  content: string; // "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes"
+  created_at: string;
+}
 interface PRView {
   state: "OPEN" | "MERGED" | "CLOSED";
   mergeStateStatus: string;
   reviewDecision: string;
   headRefOid: string;
   statusCheckRollup: Array<{ name: string; conclusion: string; status: string }>;
+}
+
+// Allowlisted Codex bot logins. Anchored exact-match — a loose `/codex/i`
+// would let any user with `codex` in their handle (e.g. `codex-fan` or a
+// hostile `mycodex-bot`) trigger an `[approval]` event and, in v2,
+// auto-merge. Real privilege-escalation vector. Add new variants here only
+// after verifying GitHub's actual bot login string.
+const CODEX_BOT_LOGINS: ReadonlySet<string> = new Set([
+  "chatgpt-codex-connector[bot]",
+]);
+
+function isCodexLogin(login: string | undefined): boolean {
+  return !!login && CODEX_BOT_LOGINS.has(login);
 }
 
 const TERMINAL_STATES: ReadonlySet<string> = new Set(["MERGED", "CLOSED"]);
@@ -356,6 +375,7 @@ async function main(): Promise<void> {
   const seenReviews = new Set<number>();
   const seenComments = new Set<number>();
   const seenIssueComments = new Set<number>();
+  const seenReactions = new Set<number>();
   let lastCISummary: string | null = null;
   let lastState: string | null = null;
   let firstPoll = true;
@@ -378,6 +398,10 @@ async function main(): Promise<void> {
     const reviews = ghPaginate<ReviewRow>(`repos/${args.repo}/pulls/${args.pr}/reviews`);
     const inlineComments = ghPaginate<CommentRow>(`repos/${args.repo}/pulls/${args.pr}/comments`);
     const issueComments = ghPaginate<CommentRow>(`repos/${args.repo}/issues/${args.pr}/comments`);
+    // Reactions on the PR description carry Codex's canonical APPROVED
+    // signal — Codex 👍s the PR body when it has no findings instead of
+    // posting a formal APPROVED review (gotcha_codex_thumbs_reaction).
+    const reactions = ghPaginate<ReactionRow>(`repos/${args.repo}/issues/${args.pr}/reactions`);
     const view = ghJson<PRView>([
       "pr",
       "view",
@@ -428,6 +452,33 @@ async function main(): Promise<void> {
         if (firstPoll && args.quietOnce) continue;
         if (!passesBotFilter(c.user.login)) continue;
         record(`[comment] ${tag} ${c.user.login} | ${firstLine(c.body)}`);
+      }
+    }
+
+    if (reactions) {
+      for (const r of reactions) {
+        const known = seenReactions.has(r.id);
+        seenReactions.add(r.id);
+        if (known) continue;
+        if (firstPoll && args.quietOnce) continue;
+        // Only surface signals that actually carry approval/rejection
+        // semantics. The +1/-1 reactions from Codex are the canonical
+        // APPROVED / CHANGES_REQUESTED signal per the gotcha memory.
+        // Filter to bot/login per the existing bot filter so a human's
+        // 👍 isn't auto-classified as approval.
+        if (r.content !== "+1" && r.content !== "-1") continue;
+        const login = r.user?.login ?? "(deleted-user)";
+        if (!passesBotFilter(login)) continue;
+        if (isCodexLogin(login)) {
+          // Distinct kind so the surface hook can flag it differently
+          // and the v2 auto-merge gate has a single signal to key on.
+          const verdict = r.content === "+1" ? "APPROVED" : "CHANGES_REQUESTED";
+          record(`[approval] ${tag} ${login} ${verdict} via ${r.content === "+1" ? "👍" : "👎"} on PR body`);
+        } else {
+          // Non-Codex reactions get a plain [reaction] tag — informative
+          // but never trigger auto-merge logic.
+          record(`[reaction] ${tag} ${login} ${r.content} on PR body`);
+        }
       }
     }
 

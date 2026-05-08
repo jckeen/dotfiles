@@ -47,6 +47,8 @@ const ACTIONABLE: ReadonlySet<string> = new Set([
   "review",
   "inline",
   "comment",
+  "approval", // Codex 👍 / 👎 reaction on PR body — APPROVED / CHANGES_REQUESTED
+  "reaction", // any other +1/-1 reaction (humans) — informative
   "ci FINAL",
   "state",
   "shutdown",
@@ -134,20 +136,25 @@ function summarize(events: Event[]): string {
       .map((e) => `• ${e.repo}#${e.pr} ${sanitize(e.line.replace(/^\[[^\]]+\]\s*/, "[" + e.kind + "] "))}`)
       .join("\n");
   }
-  // >5: bucket per PR
-  const buckets = new Map<string, { reviews: number; comments: number; state: number; ci: number }>();
+  // >5: bucket per PR. `approvals` is its own counter so v2 auto-merge
+  // can key on it without scanning the raw event line — a Codex 👍 buried
+  // in a 50-event summary stays surfacable as "1 approval".
+  const buckets = new Map<string, { reviews: number; comments: number; approvals: number; state: number; ci: number }>();
   for (const e of events) {
     const key = `${e.repo}#${e.pr}`;
-    const b = buckets.get(key) ?? { reviews: 0, comments: 0, state: 0, ci: 0 };
+    const b = buckets.get(key) ?? { reviews: 0, comments: 0, approvals: 0, state: 0, ci: 0 };
     if (e.kind === "review") b.reviews++;
     else if (e.kind === "inline" || e.kind === "comment") b.comments++;
     else if (e.kind === "state" || e.kind === "shutdown") b.state++;
     else if (e.kind === "ci FINAL") b.ci++;
+    else if (e.kind === "approval") b.approvals++;
+    else if (e.kind === "reaction") b.comments++;
     buckets.set(key, b);
   }
   return Array.from(buckets.entries())
     .map(([k, b]) => {
       const parts: string[] = [];
+      if (b.approvals) parts.push(`**${b.approvals} approval${b.approvals > 1 ? "s" : ""}**`);
       if (b.reviews) parts.push(`${b.reviews} review${b.reviews > 1 ? "s" : ""}`);
       if (b.comments) parts.push(`${b.comments} comment${b.comments > 1 ? "s" : ""}`);
       if (b.ci) parts.push(`CI final`);
