@@ -90,7 +90,7 @@ function writeActive(entries: ActiveEntry[]): void {
   }
 }
 
-async function withActiveLock<T>(fn: () => Promise<T> | T): Promise<T> {
+async function withActiveLock<T>(fn: () => Promise<T> | T): Promise<T | undefined> {
   // Cooperative file lock around RMW of active.json. `openSync(path, 'wx')`
   // throws EEXIST if the file already exists, which is our test-and-set.
   // Stale lockfile (older than LOCK_STALE_MS) is auto-removed on next try
@@ -128,7 +128,7 @@ async function withActiveLock<T>(fn: () => Promise<T> | T): Promise<T> {
     // as a fallback. (If lock contention persists past 2s the system has
     // a deeper problem worth surfacing in spawn.log.)
     logDiag("active.json.lock acquire timed out — skipping spawn (no unlocked write)");
-    return undefined as unknown as T;
+    return undefined;
   }
   try {
     return await fn();
