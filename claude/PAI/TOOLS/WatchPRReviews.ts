@@ -248,6 +248,16 @@ function removeFromActive(activePath: string, pr: number, repo: string): void {
   }
 
   try {
+    if (!held) {
+      // Lock acquisition timed out — DO NOT write. An unlocked RMW here
+      // would race the auto-launch hook's locked write and could clobber
+      // newly added entries (Codex P2). Leave our entry in active.json;
+      // reapDead in the next auto-launch hook tick reaps us via pidAlive
+      // since this process is about to exit. (Worst case: stale row
+      // lingers until next PR is opened — far better than overwriting
+      // a competing live entry.)
+      return;
+    }
     if (!existsSync(activePath)) return;
     const raw = readFileSync(activePath, "utf8").trim();
     if (!raw) return;
@@ -303,6 +313,12 @@ interface PRView {
 }
 
 const TERMINAL_STATES: ReadonlySet<string> = new Set(["MERGED", "CLOSED"]);
+// GitHub check-run conclusion enumeration — every terminal value listed in
+// the public docs. Missing any of these means the rollup never satisfies
+// ciAllFinal, so [ci FINAL] never fires on PRs whose checks legitimately
+// land in NEUTRAL / SKIPPED / STALE — and the surface hook silently hides
+// CI completion for those repos because it only forwards actionable kinds
+// including 'ci FINAL' (Codex P2).
 const FINAL_CI: ReadonlySet<string> = new Set([
   "SUCCESS",
   "FAILURE",
@@ -310,6 +326,9 @@ const FINAL_CI: ReadonlySet<string> = new Set([
   "TIMED_OUT",
   "ACTION_REQUIRED",
   "STARTUP_FAILURE",
+  "NEUTRAL",
+  "SKIPPED",
+  "STALE",
 ]);
 
 function ciSummary(rollup: PRView["statusCheckRollup"] | undefined): string {

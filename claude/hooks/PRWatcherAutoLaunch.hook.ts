@@ -120,7 +120,15 @@ async function withActiveLock<T>(fn: () => Promise<T> | T): Promise<T> {
     }
   }
   if (!held) {
-    logDiag("active.json.lock acquire timed out — proceeding without lock");
+    // Lock timeout — DO NOT proceed with unlocked RMW. Same reasoning as
+    // the watcher's removeFromActive (Codex P2): an unlocked write could
+    // overwrite a competing locked write and drop live entries. Skip this
+    // spawn opportunity; reapDead on the next hook tick will catch any
+    // dead entries left behind, and the user can manually invoke Monitor
+    // as a fallback. (If lock contention persists past 2s the system has
+    // a deeper problem worth surfacing in spawn.log.)
+    logDiag("active.json.lock acquire timed out — skipping spawn (no unlocked write)");
+    return undefined as unknown as T;
   }
   try {
     return await fn();
