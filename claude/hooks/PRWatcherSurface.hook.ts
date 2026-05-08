@@ -188,7 +188,7 @@ async function main(): Promise<void> {
       body,
       "UNTRUSTED_PR_FEEDBACK>>>",
       "",
-      "Address Codex P1/P2 findings on your own judgment; merge when clean per feedback_pr_codex_review.",
+      "ACTION: fetch full bodies via mcp__github__pull_request_read get_review_comments, write the fix, push to the same branch, then `@codex review`. Do NOT narrate the findings back — feedback in context = directive to close the loop. Merge when clean per feedback_pr_codex_review.",
     ].join("\n") + "\n",
   );
 
