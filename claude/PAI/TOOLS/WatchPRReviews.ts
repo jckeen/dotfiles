@@ -47,7 +47,7 @@
  */
 
 import { execSync, spawnSync, spawn } from "child_process";
-import { appendFileSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, openSync, closeSync, unlinkSync, renameSync, statSync } from "fs";
 
 interface Args {
   pr: number;
@@ -139,6 +139,27 @@ function ghJson<T>(args: string[]): T | null {
   }
 }
 
+const PAGINATE_PER_PAGE = 100;
+const PAGINATE_MAX_PAGES = 20; // 2000 events ceiling — way more than any sane PR
+
+function ghPaginate<T>(endpoint: string): T[] | null {
+  // GitHub's list-reviews / list-pull-comments / list-issue-comments default
+  // to per_page=30 page=1 oldest-first. Without pagination the watcher would
+  // silently miss every new event past the first 30 on a busy PR (Codex P1).
+  // We walk every page to the cap; any single-page failure aborts the tick
+  // (returning null) so we don't surface a half-snapshot of events.
+  const all: T[] = [];
+  for (let page = 1; page <= PAGINATE_MAX_PAGES; page++) {
+    const sep = endpoint.includes("?") ? "&" : "?";
+    const rows = ghJson<T[]>(["api", `${endpoint}${sep}per_page=${PAGINATE_PER_PAGE}&page=${page}`]);
+    if (rows === null) return null; // transient — retry next poll
+    if (rows.length === 0) break;
+    all.push(...rows);
+    if (rows.length < PAGINATE_PER_PAGE) break;
+  }
+  return all;
+}
+
 function isBot(login: string): boolean {
   return /\[bot\]$/i.test(login) || /-(bot|connector)$/i.test(login);
 }
@@ -192,18 +213,58 @@ function appendQueue(queuePath: string, kind: string, pr: number, repo: string, 
   }
 }
 
+const ACTIVE_LOCK_STALE_MS = 30_000;
+
 function removeFromActive(activePath: string, pr: number, repo: string): void {
-  // Read-modify-write of active.json on terminal state. Single watcher per
-  // (repo, pr) so the no-lock race is bounded by hook spawn frequency.
+  // Read-modify-write of active.json on terminal state under a cooperative
+  // O_EXCL lockfile — same lock the auto-launch hook uses, so a watcher
+  // self-reaping cannot race with a hook adding/reaping entries (Codex P2).
+  // Atomic write via tmp+rename so partial files never appear.
+  const lockPath = `${activePath}.lock`;
+  const start = Date.now();
+  let fd: number | null = null;
+  let held = false;
+
+  while (Date.now() - start < 2_000) {
+    try {
+      fd = openSync(lockPath, "wx");
+      writeFileSync(fd, String(process.pid));
+      held = true;
+      break;
+    } catch {
+      try {
+        const s = statSync(lockPath);
+        if (Date.now() - s.mtimeMs > ACTIVE_LOCK_STALE_MS) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // lockfile vanished between attempts — loop and retry openSync
+      }
+      // Brief sleep without going async (we're in a process about to exit).
+      const spinUntil = Date.now() + 25;
+      while (Date.now() < spinUntil) { /* spin */ }
+    }
+  }
+
   try {
     if (!existsSync(activePath)) return;
     const raw = readFileSync(activePath, "utf8").trim();
     if (!raw) return;
     const arr = JSON.parse(raw) as Array<{ pr: number; repo: string; pid: number }>;
     const next = arr.filter((e) => !(e.pr === pr && e.repo === repo));
-    writeFileSync(activePath, JSON.stringify(next, null, 2) + "\n");
+    const tmp = `${activePath}.tmp.${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n");
+    renameSync(tmp, activePath);
   } catch {
     // best-effort — auto-launch hook reaps stale entries on next tick
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+    if (held) {
+      try { unlinkSync(lockPath); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -295,18 +356,9 @@ async function main(): Promise<void> {
   // Persistent loop. Monitor's persistent:true keeps us alive; we only
   // exit when the PR reaches a terminal state (merged/closed).
   while (true) {
-    const reviews = ghJson<ReviewRow[]>([
-      "api",
-      `repos/${args.repo}/pulls/${args.pr}/reviews`,
-    ]);
-    const inlineComments = ghJson<CommentRow[]>([
-      "api",
-      `repos/${args.repo}/pulls/${args.pr}/comments`,
-    ]);
-    const issueComments = ghJson<CommentRow[]>([
-      "api",
-      `repos/${args.repo}/issues/${args.pr}/comments`,
-    ]);
+    const reviews = ghPaginate<ReviewRow>(`repos/${args.repo}/pulls/${args.pr}/reviews`);
+    const inlineComments = ghPaginate<CommentRow>(`repos/${args.repo}/pulls/${args.pr}/comments`);
+    const issueComments = ghPaginate<CommentRow>(`repos/${args.repo}/issues/${args.pr}/comments`);
     const view = ghJson<PRView>([
       "pr",
       "view",
