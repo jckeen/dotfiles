@@ -1,6 +1,6 @@
 # Dotfiles — A Jumpstart for Claude Code + Codex
 
-A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 16-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
+A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 17-agent review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
 This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
@@ -15,7 +15,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **11 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`. Type the verb, get the workflow.
-- **A 16-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 8 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
@@ -208,7 +208,7 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voi
 Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
-|------|-------|---------|
+|------|-------|--------|
 | **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
 | **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
@@ -331,7 +331,7 @@ cc-pane stringer -H                # horizontal split
 The dotfiles ship two PowerShell helper files:
 
 | File | Scope | Functions |
-|------|-------|-----------|
+|------|-------|----------|
 | `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
 | `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
 
@@ -367,7 +367,7 @@ foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
+  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + "'")
 }
 
 # 4. Reload
@@ -435,9 +435,9 @@ Type these directly in Claude Code.
 
 ---
 
-## Agent Pack (16-Agent Review Orchestra)
+## Agent Pack (17-Agent Review Orchestra)
 
-A team of 16 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
+A team of 17 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
 
 | Agent | Focus |
 |-------|-------|
@@ -455,6 +455,7 @@ A team of 16 specialized subagents, each running in **its own isolated context**
 | `code-simplifier` | Over-engineering, dead code, premature abstractions |
 | `repo-scout` | Fast codebase orientation and status briefing |
 | `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths |
+| `package-scout` | Researches existing packages before building from scratch |
 | `test-writer` | Bug reproduction, feature coverage, edge case tests |
 | `schema-reviewer` | DB schema, migrations, data integrity, query patterns |
 
@@ -771,15 +772,16 @@ dotfiles/
 │   ├── AGENTS.md               # Public-safe Codex global guidance
 │   ├── config.toml.example     # Public-safe Codex config example
 │   └── skills/                 # Public-safe Codex workflows
-│       ├── review/
-│       ├── simplify/
-│       ├── fix-issue/
-│       ├── commit-push-pr/
-│       ├── handoff/
+│       ├── branch-hygiene/
 │       ├── changelog/
-│       └── repo-health/
+│       ├── commit-push-pr/
+│       ├── fix-issue/
+│       ├── handoff/
+│       ├── repo-health/
+│       ├── review/
+│       └── simplify/
 └── claude/
-    ├── AgentPack.md            # 16-agent review orchestra
+    ├── AgentPack.md            # 17-agent review orchestra
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
     │   ├── conventional-commit.sh          # PreToolUse commit message validator
@@ -787,6 +789,7 @@ dotfiles/
     │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
     │   └── StripProjectPermissions.hook.ts # SessionStart permission guard
     ├── skills/
+    │   ├── branch-hygiene/     # /branch-hygiene
     │   ├── kickoff/            # /kickoff — new project bootstrap
     │   ├── changelog/          # /changelog — session logging
     │   ├── log-error/          # /log-error — error documentation
@@ -807,23 +810,24 @@ dotfiles/
     │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
-    └── agents/                 # 16 specialized review subagents
-        ├── product-strategist.md
-        ├── ux-reviewer.md
-        ├── frontend-architect.md
+    └── agents/                 # 17 specialized review subagents
         ├── backend-architect.md
-        ├── growth-strategist.md
-        ├── content-reviewer.md
-        ├── trust-safety.md
-        ├── qa-lead.md
-        ├── perf-accessibility.md
-        ├── launch-operator.md
-        ├── security-reviewer.md
         ├── code-simplifier.md
-        ├── repo-scout.md
+        ├── content-reviewer.md
         ├── dependency-doctor.md
+        ├── frontend-architect.md
+        ├── growth-strategist.md
+        ├── launch-operator.md
+        ├── package-scout.md
+        ├── perf-accessibility.md
+        ├── product-strategist.md
+        ├── qa-lead.md
+        ├── repo-scout.md
+        ├── schema-reviewer.md
+        ├── security-reviewer.md
         ├── test-writer.md
-        └── schema-reviewer.md
+        ├── trust-safety.md
+        └── ux-reviewer.md
 └── windows/
     ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
     └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
