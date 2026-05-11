@@ -758,7 +758,12 @@ CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules int
 dotfiles/
 ├── setup.sh                    # Cross-platform bootstrap script
 ├── check-claude.sh             # Health check — verifies symlinks, memory, detects orphans
+├── check-codex.sh              # Health check — verifies public-safe Codex symlinks
+├── gh-bootstrap.sh             # Bootstrap GitHub auto-merge settings on new repos
+├── git-hygiene.sh              # Stale-branch cleanup across repos in ~/dev/
+├── hygiene-status.sh           # Surface hygiene drift at session start
 ├── .bash_aliases               # Shell aliases, functions, worktree shortcuts
+├── .bash_profile               # Login-shell bootstrap (sources .bashrc for wsl6/ssh)
 ├── .gitconfig                  # Base git config (includes .gitconfig.local)
 ├── .gitignore                  # Ignores generated files
 ├── .gitattributes              # Line ending normalization (LF for scripts)
@@ -771,6 +776,7 @@ dotfiles/
 │   ├── AGENTS.md               # Public-safe Codex global guidance
 │   ├── config.toml.example     # Public-safe Codex config example
 │   └── skills/                 # Public-safe Codex workflows
+│       ├── branch-hygiene/
 │       ├── review/
 │       ├── simplify/
 │       ├── fix-issue/
@@ -785,8 +791,13 @@ dotfiles/
     │   ├── conventional-commit.sh          # PreToolUse commit message validator
     │   ├── format-on-edit.sh               # PostToolUse auto-formatter
     │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
-    │   └── StripProjectPermissions.hook.ts # SessionStart permission guard
+    │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
+    │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
+    │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
+    │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
+    │   └── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
     ├── skills/
+    │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
     │   ├── changelog/          # /changelog — session logging
     │   ├── log-error/          # /log-error — error documentation
@@ -802,11 +813,13 @@ dotfiles/
     ├── scripts/                # Headless automation scripts
     │   ├── common.sh           # Shared safety tiers + runner
     │   ├── health-check.sh     # Read-only repo health audit
+    │   ├── hygiene-cron.sh     # Daily cron wrapper for git-hygiene across all repos
     │   ├── full-review.sh      # 3-phase agent pack review
     │   ├── test-coverage.sh    # Write tests for uncovered code
     │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
+    ├── systemd/                # systemd units (voice server, hygiene timer)
     └── agents/                 # 16 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
@@ -822,6 +835,7 @@ dotfiles/
         ├── code-simplifier.md
         ├── repo-scout.md
         ├── dependency-doctor.md
+        ├── package-scout.md
         ├── test-writer.md
         └── schema-reviewer.md
 └── windows/
