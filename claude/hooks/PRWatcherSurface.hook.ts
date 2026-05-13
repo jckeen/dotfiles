@@ -195,7 +195,7 @@ async function main(): Promise<void> {
       body,
       "UNTRUSTED_PR_FEEDBACK>>>",
       "",
-      "ACTION: fetch full bodies via mcp__github__pull_request_read get_review_comments, write the fix, push to the same branch, then `@codex review`. Do NOT narrate the findings back — feedback in context = directive to close the loop. Merge when clean per feedback_pr_codex_review.",
+      "ACTIONS: (1) For [review]/[inline]/[comment] findings: fetch full bodies via mcp__github__pull_request_read get_review_comments, write the fix (Forge-on-diff before push per feedback_forge_before_push_to_active_pr), push, then `@codex review`. Do NOT narrate findings back — feedback = directive to close the loop. (2) For [approval]/[state]/[ci FINAL]/[shutdown] state-change events: ANNOUNCE them with a one-line status banner at the top of your next reply, before any other content (per feedback_announce_state_changes). State changes are headline material, not footnotes. (3) Merge when clean per feedback_pr_codex_review.",
     ].join("\n") + "\n",
   );
 
