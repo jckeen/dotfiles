@@ -25,6 +25,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `fix-issues.sh` | Picks up GitHub issues, creates fix branches | Commit (edit + commit) | Yes — review branches |
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
 | `review-and-push.sh` | AI-reviews overnight changes, pushes if safe | Read-only review + push | Only pushes after validation |
+| `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent | Install (calls `claude plugin install`) | No file edits — updates plugin state |
 
 ## The Morning Workflow
 
