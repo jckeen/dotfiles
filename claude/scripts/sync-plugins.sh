@@ -39,7 +39,7 @@ fi
 installed=()
 failed=()
 
-while IFS= read -r line; do
+while IFS= read -r line || [[ -n "$line" ]]; do
   p="${line%%#*}"
   # Strip all whitespace (spaces, tabs, and CR from CRLF line endings)
   p="${p//[[:space:]]/}"
