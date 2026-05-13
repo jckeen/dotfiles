@@ -1,6 +1,15 @@
 # Changelog
 
-## 2026-05-07 — fix(wsl): `wsl6` panes (and PowerShell `cctab/ccgrid/ccpane`) load `cc` without `source ~/.bashrc`
+## 2026-05-13 — feat(claude): SessionStart plugin-drift warning + sync-plugins.sh
+
+### What changed
+- **`claude/hooks/PluginDriftCheck.hook.ts`** (new, 100755) — SessionStart hook that diffs the dotfiles plugin manifest against `~/.claude/plugins/installed_plugins.json` and emits a `<system-reminder>` warning when any manifest entry is missing. Non-blocking (exit 0 always). Resolves the manifest via `realpathSync(import.meta.url)` walked up to the dotfiles repo, with `$DOTFILES_DIR` env-var override.
+- **`claude/scripts/sync-plugins.sh`** (new, 100755) — Companion installer. Walks the manifest line by line and runs `claude plugin install` for each entry. Uses `set -eo pipefail` so install failures actually fail the script (without pipefail, `cmd | tail -1` masks the install's exit). Symlink resolution uses a portable `resolve_script_path()` (`cd -P` + `readlink` with no flags) so it works on BSD readlink (macOS) and GNU readlink alike.
+
+### Why
+Before this PR, plugin drift between machines was invisible until someone noticed a slash command was missing. The hook surfaces drift at SessionStart so the user knows what to reconcile, and `sync-plugins.sh` is the one-shot remediation the warning points at. Both resolve their manifest from the dotfiles repo (where `setup.sh` actually keeps it — `plugins.txt` is in the `NOLINK` list and is not symlinked into `~/.claude/`), so they work even when run on a clean bootstrap.
+
+
 
 ### What changed
 - **`.bash_profile`** (new, tracked) — Adopts the standard distro convention: exports the bun PATH (so the PAI installer's `grep -q '\.bun/bin'` skip-check holds) and sources `~/.bashrc` for login shells. Single source of truth, version controlled, audit-able.
