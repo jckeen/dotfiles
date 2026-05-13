@@ -5,7 +5,7 @@
 # Source of truth: ~/.claude/plugins.txt (one `<plugin>@<marketplace>` per line).
 # Triggered manually, or by the warning emitted by PluginDriftCheck.hook.ts.
 
-set -e
+set -eo pipefail
 
 MANIFEST="$HOME/.claude/plugins.txt"
 
