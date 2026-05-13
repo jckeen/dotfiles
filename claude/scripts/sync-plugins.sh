@@ -41,7 +41,8 @@ failed=()
 
 while IFS= read -r line; do
   p="${line%%#*}"
-  p="${p// /}"
+  # Strip all whitespace (spaces, tabs, and CR from CRLF line endings)
+  p="${p//[[:space:]]/}"
   [[ -z "$p" ]] && continue
   echo "── $p"
   if claude plugin install "$p" 2>&1 | tail -1; then
