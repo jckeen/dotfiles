@@ -2,21 +2,29 @@
 /**
  * PluginDriftCheck.hook.ts — Warn if installed plugins drift from manifest.
  *
- * Reads ~/.claude/plugins.txt (the install manifest, source of truth across
- * machines) and diffs against ~/.claude/plugins/installed_plugins.json.
- * If anything is missing or extra, emits a <system-reminder> warning at
- * SessionStart pointing at ~/.claude/scripts/sync-plugins.sh.
+ * Reads $DOTFILES_DIR/claude/plugins.txt (the install manifest, source of
+ * truth across machines — setup.sh keeps it in the dotfiles repo and does
+ * not symlink it into ~/.claude/) and diffs against
+ * ~/.claude/plugins/installed_plugins.json. If anything is missing, emits a
+ * <system-reminder> warning at SessionStart pointing at sync-plugins.sh.
  *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 const HOME = homedir();
-const MANIFEST = join(HOME, '.claude', 'plugins.txt');
+
+// Resolve the dotfiles repo via the real (symlink-resolved) path of this
+// hook file: $DOTFILES_DIR/claude/hooks/PluginDriftCheck.hook.ts
+const HOOK_PATH = realpathSync(fileURLToPath(import.meta.url));
+const DOTFILES_DIR =
+  process.env.DOTFILES_DIR ?? join(dirname(HOOK_PATH), '..', '..');
+const MANIFEST = join(DOTFILES_DIR, 'claude', 'plugins.txt');
 const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
 
 function readManifest(): string[] {
@@ -49,7 +57,7 @@ function main(): void {
   process.stdout.write(
     `<system-reminder>\n` +
       `⚠️  Plugin drift: ${missing.length} of ${desired.length} plugins from ` +
-      `~/.claude/plugins.txt are not installed:\n${list}\n\n` +
+      `${MANIFEST} are not installed:\n${list}\n\n` +
       `Run \`~/.claude/scripts/sync-plugins.sh\` to install them, then restart Claude Code.\n` +
       `</system-reminder>\n`,
   );
