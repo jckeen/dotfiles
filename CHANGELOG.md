@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-14 — feat(claude): SessionStart symlink self-heal
+
+### What changed
+- **`claude/hooks/SymlinkRepair.hook.ts`** (new, 100755) — SessionStart hook that re-links missing/broken dotfiles → `~/.claude/` symlinks. Mirrors `setup.sh`'s link logic for hooks (`*.{sh,ts}`), scripts (`*.sh`), agents (`*.md`), chrome, per-skill files, and top-level claude/* files (minus the `NOLINK` set: `AgentPack.md`, `CLAUDE.md`, `settings.json`). Resolves `$DOTFILES_DIR` via `realpathSync(self)` so it works regardless of where dotfiles live.
+- Safe-by-default: only installs missing entries or replaces broken symlinks. Existing regular files and symlinks pointing elsewhere are skipped and reported — clobbering remains `setup.sh`'s job.
+- Emits a single `<system-reminder>` summarizing linked/fixed/skipped entries; silent when nothing to do. Non-blocking (exit 0 always).
+- Registered first in `pai-config/settings.json` SessionStart array so it can repair sibling hooks (including `PluginDriftCheck` itself) before they fire next session.
+
+### Why
+The 2026-05-13 PR added `PluginDriftCheck.hook.ts` and `sync-plugins.sh` to the dotfiles repo but neither got symlinked into `~/.claude/` on this machine because `setup.sh` wasn't re-run. The hook runner silently skips registered commands whose paths don't exist, and `PluginDriftCheck` only detects *plugin* drift, not its own missing symlink — chicken-and-egg. `SymlinkRepair` closes that loop: once linked, it self-heals all sibling drift going forward, so `git pull` in the dotfiles repo is enough to install new hooks/scripts at next SessionStart without a manual `setup.sh` invocation.
+
 ## 2026-05-13 — feat(claude): SessionStart plugin-drift warning + sync-plugins.sh
 
 ### What changed
