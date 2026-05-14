@@ -44,30 +44,69 @@ function wsl6 {
     # no agent invocation — each pane is just `wsl.exe -d <distro>` at its
     # default cwd. Use it for ad-hoc multi-shell work, not for spawning Claude
     # or Codex sessions (see cctab/ccpane/cxtab/cxpane for those).
+    #
+    # Reliability on slower hardware (Surface ARM, low-spec laptops):
+    # Six `wsl.exe` spawns chained through a single `wt.exe` call all race
+    # the WSL2 VM cold-start in parallel. Pre-warming the distro before the
+    # tab spawns means each pane attaches to an already-running VM and
+    # connects ConPTY fast. If you still see a stuck pane after this, set
+    # $env:WSL6_PANE_DELAY_MS to a non-zero value (e.g. 200) to serialize
+    # the split-pane calls — each pane is then fully attached before the
+    # next is created. Default 0 preserves the all-at-once visual.
     [CmdletBinding()]
     param()
     if (-not (Test-WtAvailable)) { return }
 
+    # Pre-warm. Idempotent — no-op if the distro is already running.
+    try { & wsl.exe -d $script:WslDistro --cd $script:Wsl6Cd -- true 2>&1 | Out-Null } catch {}
+
     $wsl = @('wsl.exe', '-d', $script:WslDistro, '--cd', $script:Wsl6Cd)
 
-    # Top-down split for an even 3x2 grid:
-    #   1. Split horizontally into top + bottom halves (50/50).
-    #   2. Inside the bottom half, split into thirds (1/3 left, then split the
-    #      remaining 2/3 in half).
-    #   3. Move focus up to the top half, repeat the thirds split.
-    # This keeps every pane bound to the same parent geometry, so rounding
-    # doesn't accumulate into one runt column the way a flat L-to-R split chain
-    # did in the previous version.
-    $wtArgs  = @('-w', '0', 'new-tab') + $wsl
-    $wtArgs += @(';', 'split-pane', '-H', '-s', '0.5')    + $wsl   # bottom half
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl   # bottom: 1/3 | 2/3
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl   # bottom: 1/3 | 1/3 | 1/3
-    $wtArgs += @(';', 'move-focus', 'up')
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl   # top: 1/3 | 2/3
-    $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl   # top: 1/3 | 1/3 | 1/3
+    $delayMs = 0
+    if ($env:WSL6_PANE_DELAY_MS) {
+        try { $delayMs = [int]$env:WSL6_PANE_DELAY_MS } catch {}
+    }
 
-    # Land in the top-left pane so the user starts at a predictable position.
-    $wtArgs += @(';', 'move-focus', 'first')
+    if ($delayMs -le 0) {
+        # Fast path — single chained wt.exe invocation. Same structure as
+        # before: top-down split for an even 3x2 grid.
+        $wtArgs  = @('-w', '0', 'new-tab') + $wsl
+        $wtArgs += @(';', 'split-pane', '-H', '-s', '0.5')    + $wsl   # bottom half
+        $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl   # bottom: 1/3 | 2/3
+        $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl   # bottom: 1/3 | 1/3 | 1/3
+        $wtArgs += @(';', 'move-focus', 'up')
+        $wtArgs += @(';', 'split-pane', '-V', '-s', '0.6667') + $wsl   # top: 1/3 | 2/3
+        $wtArgs += @(';', 'split-pane', '-V', '-s', '0.5')    + $wsl   # top: 1/3 | 1/3 | 1/3
+        $wtArgs += @(';', 'move-focus', 'first')
+        & wt.exe @wtArgs
+        return
+    }
 
-    & wt.exe @wtArgs
+    # Slow path — serialize split-pane calls. Each `wt.exe` call is a
+    # separate IPC round-trip; the delay lets the prior pane finish ConPTY
+    # attach + bash startup before the next split-pane targets the focused
+    # pane. Costs ~$delayMs * 7 of visible tab assembly, in exchange for
+    # eliminating any spawn race on very slow machines.
+    & wt.exe -w 0 new-tab @wsl
+    Start-Sleep -Milliseconds $delayMs
+
+    & wt.exe -w 0 split-pane -H -s 0.5 @wsl   # bottom half
+    Start-Sleep -Milliseconds $delayMs
+
+    & wt.exe -w 0 split-pane -V -s 0.6667 @wsl   # bottom: 1/3 | 2/3
+    Start-Sleep -Milliseconds $delayMs
+
+    & wt.exe -w 0 split-pane -V -s 0.5 @wsl   # bottom: 1/3 | 1/3 | 1/3
+    Start-Sleep -Milliseconds $delayMs
+
+    & wt.exe -w 0 move-focus up
+    Start-Sleep -Milliseconds ([Math]::Max(100, [int]($delayMs / 2)))
+
+    & wt.exe -w 0 split-pane -V -s 0.6667 @wsl   # top: 1/3 | 2/3
+    Start-Sleep -Milliseconds $delayMs
+
+    & wt.exe -w 0 split-pane -V -s 0.5 @wsl   # top: 1/3 | 1/3 | 1/3
+    Start-Sleep -Milliseconds $delayMs
+
+    & wt.exe -w 0 move-focus first
 }

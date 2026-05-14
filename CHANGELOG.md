@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-05-14 — fix(windows/wsl6): pre-warm WSL distro + opt-in pane serialization
+
+### What changed
+- **`windows/wsl-helpers.ps1`** — `wsl6` now pre-warms the WSL distro (single `wsl.exe -d <distro> -- true` call) before spawning the six panes, so they attach to an already-running VM instead of cold-starting it six times in parallel. Adds a `$env:WSL6_PANE_DELAY_MS` opt-in: when set to a positive integer, `wsl6` issues each `split-pane` as a separate `wt.exe` IPC call with the configured delay between them, fully serializing pane creation. Default 0 preserves the previous all-at-once chained-command behavior.
+
+### Why
+On the Surface Pro 11 (Snapdragon X / ARM, less compute than the desktop), `wsl6` occasionally lands one of the six panes in a state where stdin isn't wired to its bash child — cursor blinks, typing produces nothing. Single warm `wsl.exe` attach measures ~300ms on this machine; six in parallel against a cold WSL2 VM contend for VM startup + ConPTY allocation slots. Pre-warming collapses the cold-start window and is free when the distro is already running. The serialization knob is the bigger hammer reserved for cases where pre-warm alone isn't enough — costs ~$delayMs × 7 of visible tab assembly in exchange for a guaranteed-attached pane.
+
+Note on scope: the user reports the stuck-pane symptom most often manifests *after* running `cc` (which launches `claude --remote-control --chrome` plus MCP servers) inside one of the panes. That timing suggests a second contributor beyond the pure spawn race — likely resource contention or focus loss when chrome / playwright-mcp / context7-mcp all spin up on a memory-tight ARM box. This change targets the spawn-race contributor only; if `wsl6 → cc → stuck pane` still reproduces after this, the next investigation is on the cc-launch side (chrome focus stealing, EcoQoS suspension of background bash processes, etc.).
+
 ## 2026-05-14 — feat(claude): SessionStart symlink self-heal
 
 ### What changed
