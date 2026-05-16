@@ -4,4 +4,4 @@
 	path = ~/.gitconfig.local
 [safe]
 	directory = /home/jckee/dev/dotfiles
-	directory = /claude-memory
+	directory = /home/jckee/dev/claude-memory
