@@ -208,7 +208,7 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voi
 Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
-|------|-------|---------|
+|------|-------|--------|
 | **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
 | **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
@@ -346,7 +346,7 @@ The dotfiles ship two PowerShell helper files:
 | `ccprojects` | cc-functions | List available projects (from WSL) |
 | `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
 
-**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
+**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.\<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
 
 > **Missed the prompt or installed before this split?** Just run `dotfiles-update` from WSL — it pulls the latest and re-runs setup. The PowerShell prompt fires again and both files are installed/refreshed in both PS profiles.
 
@@ -367,7 +367,7 @@ foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
+  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + "'")
 }
 
 # 4. Reload
@@ -382,12 +382,12 @@ WSLENV="WSL_USER:WSL_DISTRO" \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
   if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-  $base = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows"
+  $base = "\\\\wsl.localhost\\$env:WSL_DISTRO\\home\\$env:WSL_USER\\dev\\dotfiles\\windows"
   foreach ($f in @("wsl-helpers.ps1", "cc-functions.ps1")) {
-    Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+    Copy-Item "$base\\$f" "$env:USERPROFILE\\.$f" -Force
     $pattern = [regex]::Escape($f)
     if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
-      Add-Content $PROFILE (". `"$env:USERPROFILE\.$f`"")
+      Add-Content $PROFILE (". `"$env:USERPROFILE\\.$f`"")
     }
   }
 '
@@ -432,6 +432,8 @@ Type these directly in Claude Code.
 | `/simplify` | After building — delegates to code-simplifier subagent, removes over-engineering |
 | `/commit-push-pr` | Commit, push, and create PR in one shot |
 | `/claude-server` | Spawn isolated worktree + remote control session |
+| `/decompose` | Deep task decomposition into parallel workstreams |
+| `/max` | Maximum effort parallel execution across multiple agents |
 
 ---
 
@@ -795,7 +797,7 @@ dotfiles/
     │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
-    │   └── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+    │   └── PrePushStaleSHACheck.hook.ts   # Warn on stale SHA before push
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
