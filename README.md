@@ -208,7 +208,7 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voi
 Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
-|------|-------|--------|
+|------|-------|----------|
 | **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
 | **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
@@ -331,14 +331,14 @@ cc-pane stringer -H                # horizontal split
 The dotfiles ship two PowerShell helper files:
 
 | File | Scope | Functions |
-|------|-------|-----------|
+|------|-------|----------|
 | `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
 | `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
 
 `setup.sh` installs **both** files into **both PowerShell hosts** (5.1 and 7) automatically on WSL — they have different `$PROFILE` paths (`Documents\WindowsPowerShell\` vs `Documents\PowerShell\`), so wiring only one would leave the other broken. If you want only the agent-neutral piece on a machine that doesn't run Claude, you can copy just `wsl-helpers.ps1` and skip `cc-functions.ps1`.
 
 | Command | File | What it does |
-|---------|------|-------------|
+|---------|------|--------------|
 | `wsl6` | wsl-helpers | New tab with a **3×2 grid of plain WSL shells** (no agent) |
 | `ccgrid <p1> <p2> ...` | cc-functions | One new tab, each project in its own **split pane** (auto-tiled grid) |
 | `ccpane <project> [-Horizontal]` | cc-functions | Split the current WT window with one project |
@@ -346,7 +346,7 @@ The dotfiles ship two PowerShell helper files:
 | `ccprojects` | cc-functions | List available projects (from WSL) |
 | `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
 
-**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.\<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
+**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
 
 > **Missed the prompt or installed before this split?** Just run `dotfiles-update` from WSL — it pulls the latest and re-runs setup. The PowerShell prompt fires again and both files are installed/refreshed in both PS profiles.
 
@@ -367,7 +367,7 @@ foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + "'")
+  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
 }
 
 # 4. Reload
@@ -382,12 +382,12 @@ WSLENV="WSL_USER:WSL_DISTRO" \
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
   if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-  $base = "\\\\wsl.localhost\\$env:WSL_DISTRO\\home\\$env:WSL_USER\\dev\\dotfiles\\windows"
+  $base = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows"
   foreach ($f in @("wsl-helpers.ps1", "cc-functions.ps1")) {
-    Copy-Item "$base\\$f" "$env:USERPROFILE\\.$f" -Force
+    Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
     $pattern = [regex]::Escape($f)
     if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
-      Add-Content $PROFILE (". `"$env:USERPROFILE\\.$f`"")
+      Add-Content $PROFILE (". `"$env:USERPROFILE\.$f`"")
     }
   }
 '
@@ -543,7 +543,7 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 The four you'll use constantly:
 
 | Shortcut | What it does |
-|----------|-------------|
+|----------|--------------|
 | `Shift+Tab` (x2) | Toggle Plan Mode |
 | `Esc` | Stop Claude mid-response |
 | `/clear` | Reset context |
@@ -555,7 +555,7 @@ The four you'll use constantly:
 <br>
 
 | Shortcut | What it does |
-|----------|-------------|
+|----------|--------------|
 | `Shift+Tab` (x2) | Toggle Plan Mode |
 | `Ctrl+G` | Open plan in text editor |
 | `Ctrl+B` | Send current task to background |
@@ -797,7 +797,7 @@ dotfiles/
     │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
-    │   └── PrePushStaleSHACheck.hook.ts   # Warn on stale SHA before push
+    │   └── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
