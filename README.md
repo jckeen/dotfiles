@@ -331,7 +331,7 @@ cc-pane stringer -H                # horizontal split
 The dotfiles ship two PowerShell helper files:
 
 | File | Scope | Functions |
-|------|-------|-----------|
+|------|-------|----------|
 | `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
 | `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
 
@@ -367,7 +367,7 @@ foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + "'")
+  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
 }
 
 # 4. Reload
