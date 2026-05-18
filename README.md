@@ -1,6 +1,6 @@
 # Dotfiles — A Jumpstart for Claude Code + Codex
 
-A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 16-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
+A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 17-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
 This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
@@ -15,7 +15,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **11 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`. Type the verb, get the workflow.
-- **A 16-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 8 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
@@ -211,14 +211,14 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 |------|-------|----------|
 | **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
-| **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
+| **Agent Pack** | `AgentPack.md` | 17-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
-| **Subagents** | `agents/*.md` | 16 specialized review agents |
+| **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
 | **Codex skills** | `codex/skills/*/SKILL.md` | Public-safe Codex workflows for review, issue fixes, PRs, handoffs |
@@ -435,9 +435,9 @@ Type these directly in Claude Code.
 
 ---
 
-## Agent Pack (16-Agent Review Orchestra)
+## Agent Pack (17-Agent Review Orchestra)
 
-A team of 16 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
+A team of 17 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
 
 | Agent | Focus |
 |-------|-------|
@@ -786,7 +786,7 @@ dotfiles/
 │       ├── changelog/
 │       └── repo-health/
 └── claude/
-    ├── AgentPack.md            # 16-agent review orchestra
+    ├── AgentPack.md            # 17-agent review orchestra
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
     │   ├── conventional-commit.sh          # PreToolUse commit message validator
@@ -824,7 +824,7 @@ dotfiles/
     │   ├── review-and-push.sh  # Morning review of overnight changes
     │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
     ├── systemd/                # systemd units (voice server, hygiene timer)
-    └── agents/                 # 16 specialized review subagents
+    └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md
