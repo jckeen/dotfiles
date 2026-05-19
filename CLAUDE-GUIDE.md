@@ -104,6 +104,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `StripProjectPermissions.hook.ts` | SessionStart | Strips project-level permission overrides that fight global settings |
 | `HygieneStatus.hook.sh` | SessionStart | Surfaces branch-hygiene drift detected by the daily systemd timer (thin wrapper around `hygiene-status.sh --reminder`) |
 | `PluginDriftCheck.hook.ts` | SessionStart | Diffs installed plugins against `claude/plugins.txt` manifest; warns and points at `sync-plugins.sh` if anything is missing |
+| `SymlinkRepair.hook.ts` | SessionStart (place FIRST) | Re-installs missing dotfiles→`~/.claude/` symlinks for hooks/scripts/agents/skills when new files land in the repo and `setup.sh` hasn't been re-run; advisory-only, never clobbers |
 | `PRWatcherAutoLaunch.hook.ts` | PostToolUse | Detects `gh pr create` / `mcp__github__create_pull_request` and spawns `WatchPRReviews.ts` in the background so the watch→fix→re-review loop runs without manual Monitor invocation |
 | `PRWatcherSurface.hook.ts` | UserPromptSubmit | Surfaces unread PR-watcher events (Codex/human reviews, comments, CI) into `additionalContext` so the assistant proactively addresses feedback |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event for the surface hook |
