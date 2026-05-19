@@ -466,7 +466,7 @@ A team of 17 specialized subagents, each running in **its own isolated context**
 - Via skill: `/simplify` and `/review` use agents automatically
 
 **Orchestration** (see `AgentPack.md` for full details):
-- **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety (parallel)
+- **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety + package-scout (parallel)
 - **Phase 2 — Architecture:** frontend-architect + backend-architect + content-reviewer + security-reviewer (parallel)
 - **Phase 3 — Launch:** qa-lead + perf-accessibility + launch-operator + code-simplifier (parallel)
 
