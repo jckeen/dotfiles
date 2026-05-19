@@ -57,10 +57,17 @@ if [ -z "$MSG" ]; then
   exit 0
 fi
 
-# Validate: first line must match type: description
+# M1: The PAI standing-orders commit pattern uses a heredoc body that frequently
+# opens with a blank line before the actual subject (e.g. when the heredoc is
+# constructed by appending sections). Skip leading blank/whitespace-only lines
+# so the conventional-commit regex check applies to the FIRST NON-BLANK line —
+# which is the real subject — instead of erroring on a leading blank.
+FIRST_LINE=$(printf '%s\n' "$MSG" | grep -v -m1 '^[[:space:]]*$' || true)
+
+# Validate: first non-blank line must match type: description
 VALID_TYPES="feat|fix|refactor|chore|docs|test|style|auto"
-if ! echo "$MSG" | head -1 | grep -qE "^($VALID_TYPES): .+"; then
-  deny "Commit message must start with a conventional type: 'feat:', 'fix:', 'refactor:', 'chore:', 'docs:', 'test:', or 'style:'. Got: '$(echo "$MSG" | head -1 | cut -c1-60)'"
+if ! printf '%s' "$FIRST_LINE" | grep -qE "^($VALID_TYPES): .+"; then
+  deny "Commit message must start with a conventional type: 'feat:', 'fix:', 'refactor:', 'chore:', 'docs:', 'test:', or 'style:'. Got: '$(printf '%s' "$FIRST_LINE" | cut -c1-60)'"
 fi
 
 exit 0

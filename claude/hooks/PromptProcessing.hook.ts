@@ -64,9 +64,46 @@ function emitAdditionalContext(mode: Mode, tier: number | null, reason: string):
   }));
 }
 
+// H8: Secret-pattern redaction for prompt excerpts. Centralized so any future
+// caller that needs to log user prompt text can call through this single
+// surface. Patterns cover the prefix-anchored API key families we've observed
+// in real prompts plus generic high-entropy contiguous runs.
+function redactSecrets(s: string): string {
+  if (!s) return s;
+  let out = s;
+  // JWT-shaped tokens: header.payload.signature, all base64url
+  out = out.replace(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED]');
+  // Prefix-anchored API keys (Anthropic/OpenAI sk-, GitHub ghp_/gho_,
+  // Slack xoxb-/xoxa-/xoxp-, Google AIza, AWS AKIA)
+  out = out.replace(/\b(?:sk-|ghp_|gho_|xoxb-|xoxa-|xoxp-|AIza|AKIA)[A-Za-z0-9_\-]{10,}/g, '[REDACTED]');
+  // Generic 32+ char contiguous hex (sha256, GUID-less hashes, signing tokens).
+  out = out.replace(/\b[a-fA-F0-9]{32,}\b/g, '[REDACTED]');
+  // Generic 32+ char contiguous base64url (covers OAuth bearers, refresh tokens).
+  // Anchored on token boundaries (\b doesn't catch trailing `=`, so we match the body).
+  out = out.replace(/\b[A-Za-z0-9+/_-]{32,}={0,2}\b/g, '[REDACTED]');
+  return out;
+}
+
+// H8: max bytes the telemetry log may grow to before we rotate to .1 (N=1).
+const PROMPT_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
 function appendPromptProcessingTelemetry(entry: Record<string, unknown>): void {
   try {
     const logPath = paiPath('MEMORY', 'OBSERVABILITY', 'prompt-processing.jsonl');
+    // Rotation: any failure here is best-effort and must not block the write
+    // that follows. We keep one generation (.jsonl.1, overwritten on each
+    // rotation) to bound disk usage without losing the most recent rolled batch.
+    try {
+      if (existsSync(logPath)) {
+        const st = statSync(logPath);
+        if (st.size > PROMPT_LOG_MAX_BYTES) {
+          renameSync(logPath, logPath + '.1');
+        }
+      }
+    } catch {
+      // Stat or rename failed — fall through to write. We'd rather over-grow
+      // the log than drop a telemetry row.
+    }
     const serialized = JSON.stringify(entry);
     if (serialized.includes('\n')) return;
     appendFileSync(logPath, `${serialized}\n`, 'utf-8');
@@ -874,7 +911,7 @@ async function main() {
       emitAdditionalContext('MINIMAL', null, 'explicit rating');
       appendPromptProcessingTelemetry({
         timestamp: new Date().toISOString(), session_id: sessionId,
-        prompt_excerpt: prompt.slice(0, 120), mode: 'MINIMAL', tier: null,
+        prompt_excerpt: redactSecrets(prompt).slice(0, 120), mode: 'MINIMAL', tier: null,
         mode_reason: 'explicit rating', source: 'fast-path', latency_ms: 0,
       });
       await kvPush; process.exit(0);
@@ -889,7 +926,7 @@ async function main() {
         emitAdditionalContext('MINIMAL', null, 'positive praise / acknowledgment');
         appendPromptProcessingTelemetry({
           timestamp: new Date().toISOString(), session_id: sessionId,
-          prompt_excerpt: prompt.slice(0, 120), mode: 'MINIMAL', tier: null,
+          prompt_excerpt: redactSecrets(prompt).slice(0, 120), mode: 'MINIMAL', tier: null,
           mode_reason: 'positive praise / acknowledgment', source: 'fast-path', latency_ms: 0,
         });
         await kvPush; process.exit(0);
@@ -907,7 +944,7 @@ async function main() {
       emitAdditionalContext('MINIMAL', null, 'prompt too short for classification');
       appendPromptProcessingTelemetry({
         timestamp: new Date().toISOString(), session_id: sessionId,
-        prompt_excerpt: prompt.slice(0, 120), mode: 'MINIMAL', tier: null,
+        prompt_excerpt: redactSecrets(prompt).slice(0, 120), mode: 'MINIMAL', tier: null,
         mode_reason: 'prompt too short', source: 'fast-path', latency_ms: 0,
       });
       await kvPush; process.exit(0);
@@ -923,7 +960,12 @@ async function main() {
     // ── INFERENCE: Tab title + session name ──
     console.error('[PromptProcessing] Running inference (tab title' + (isFirstPrompt ? ' + session name)...' : ')...'));
 
-    const cleanPrompt = prompt.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+    // H8: redactSecrets runs BEFORE the 1000-char slice so a long prompt that
+    // contains a token can't have the token survive at the tail end of the
+    // slice. The redacted text is what gets logged in `prompt_excerpt` later.
+    const cleanPrompt = redactSecrets(
+      prompt.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    ).slice(0, 1000);
     // Naming is permanent and first-prompt-only; exclude Assistant turns so Algorithm scaffolding
     // (phase headers, agent names, SUMMARY lines) cannot contaminate the session name. Tab-title
     // inference on later prompts keeps Assistant context for "continue with X" style follow-ups.

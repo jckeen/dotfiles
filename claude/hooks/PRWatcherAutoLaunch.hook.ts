@@ -165,11 +165,24 @@ interface PRRef {
   pr: number;
 }
 
+// Strict character class for owner/repo segments. GitHub's own allowed set is
+// alphanumerics, dot, underscore, hyphen — nothing else. The loose original
+// regex used `[^/\s]+` which would happily capture `$(curl evil)` or `;rm -rf /`
+// from a malicious GitHub API response and pass it downstream into a shell.
+const OWNER_REPO_RE = /^[A-Za-z0-9._-]+$/;
+
 function parsePRUrl(s: string | undefined): PRRef | null {
   if (!s) return null;
   const m = s.match(/https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/);
   if (!m) return null;
-  return { owner: m[1], repo: m[2], pr: Number(m[3]) };
+  const owner = m[1];
+  const repo = m[2];
+  // Defense in depth: re-validate captures against the strict charset and
+  // reject anything that doesn't match. A malicious upstream embedding
+  // shell metacharacters (`$()`, backticks, `;`, `&`, newlines, quotes) is
+  // dropped here before it can reach spawnWatcher.
+  if (!OWNER_REPO_RE.test(owner) || !OWNER_REPO_RE.test(repo)) return null;
+  return { owner, repo, pr: Number(m[3]) };
 }
 
 function extractPRFromBash(input: Record<string, unknown> | undefined, response: unknown): PRRef | null {
@@ -230,44 +243,70 @@ function spawnWatcher(ref: PRRef): Promise<ActiveEntry | null> {
   const repoSlug = `${ref.owner}/${ref.repo}`;
   const logPath = join(PAI, `watcher-${ref.owner}-${ref.repo}-${ref.pr}.log`);
   return new Promise<ActiveEntry | null>((resolve) => {
+    // SECURITY (C4): We previously spawned `bash -c "<cmd>"` with the repoSlug
+    // and log path interpolated into the shell string. A malicious GitHub API
+    // response embedding `$(...)`, backticks, `;`, `&`, or newline in owner/repo
+    // would be EVAL'd by bash, not just passed as an argument. parsePRUrl now
+    // rejects non-`[A-Za-z0-9._-]` owner/repo (defense layer one). Here we
+    // remove the shell entirely (defense layer two): spawn `bun` directly with
+    // an argv array, redirect stdout/stderr to logFd at the OS level (no shell
+    // redirection operator), and detach. No string interpolation reaches a
+    // shell. There is no path by which a hostile owner/repo string can become
+    // executable, regardless of how parsePRUrl's regex evolves.
+    let logFd: number;
     try {
-      // Use bash -c so nohup + redirection + & detach cleanly. We do NOT
-      // double-fork ourselves; the shell handles it.
-      const cmd = [
-        "nohup",
-        "bun",
-        WATCHER,
-        "--pr",
-        String(ref.pr),
-        "--repo",
-        repoSlug,
-        "--notify",
-        "--queue",
-        QUEUE,
-        "--active",
-        ACTIVE,
-        "--quiet-once",
-      ]
-        .map((p) => (/[\s"']/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p))
-        .join(" ");
+      // 0o600: log may contain repo metadata/PR titles, keep it user-only.
+      logFd = openSync(logPath, "a", 0o600);
+    } catch (e) {
+      logDiag(`spawnWatcher: cannot open log ${logPath}: ${(e as Error).message}`);
+      resolve(null);
+      return;
+    }
 
-      const child = spawn("bash", ["-c", `${cmd} >>'${logPath.replace(/'/g, "'\\''")}' 2>&1 &  echo $!`], {
-        stdio: ["ignore", "pipe", "pipe"],
+    try {
+      const args = [
+        WATCHER,
+        "--pr", String(ref.pr),
+        "--repo", repoSlug,
+        "--notify",
+        "--queue", QUEUE,
+        "--active", ACTIVE,
+        "--quiet-once",
+      ];
+
+      const child = spawn("bun", args, {
+        // stdin closed; stdout/stderr → logFd (OS-level redirection, no shell).
+        stdio: ["ignore", logFd, logFd],
         detached: true,
       });
 
-      let pidOut = "";
-      child.stdout?.on("data", (d) => (pidOut += d.toString()));
+      // Close our handle to the log fd; the child inherited its own copy.
+      try { closeSync(logFd); } catch { /* ignore */ }
 
-      const settle = (): void => {
-        const pid = Number(pidOut.trim().split("\n").pop());
-        if (!Number.isFinite(pid) || pid <= 0) {
-          logDiag(`spawnWatcher: failed to capture PID for ${repoSlug}#${ref.pr}, output=${pidOut.slice(0, 200)}`);
-          try { child.unref(); } catch { /* ignore */ }
-          resolve(null);
-          return;
-        }
+      const pid = child.pid;
+      if (!pid || pid <= 0) {
+        logDiag(`spawnWatcher: no pid returned for ${repoSlug}#${ref.pr}`);
         try { child.unref(); } catch { /* ignore */ }
+        resolve(null);
+        return;
+      }
+
+      // Detach so the watcher outlives this hook process.
+      try { child.unref(); } catch { /* ignore */ }
+
+      let settled = false;
+      child.on("error", (e) => {
+        if (settled) return;
+        settled = true;
+        logDiag(`spawnWatcher error: ${e.message}`);
+        resolve(null);
+      });
+
+      // Resolve immediately — pid is known the moment spawn returns. There's
+      // no subshell PID indirection to wait on anymore, so we can skip the
+      // 1s settle timeout entirely.
+      if (!settled) {
+        settled = true;
         resolve({
           pr: ref.pr,
           repo: repoSlug,
@@ -275,29 +314,9 @@ function spawnWatcher(ref: PRRef): Promise<ActiveEntry | null> {
           started_at: new Date().toISOString(),
           log_path: logPath,
         });
-      };
-
-      // Resolve on the bash subshell's exit (or its stdout EOF) — both
-      // signal that `echo $!` has flushed. Fall back to a 1s timeout so a
-      // hung subshell can never wedge the hook.
-      let settled = false;
-      const wrap = (): void => {
-        if (settled) return;
-        settled = true;
-        settle();
-      };
-      child.on("exit", wrap);
-      child.stdout?.on("end", wrap);
-      const guard = setTimeout(wrap, 1000);
-      child.on("error", (e) => {
-        clearTimeout(guard);
-        if (settled) return;
-        settled = true;
-        logDiag(`spawnWatcher error: ${e.message}`);
-        try { child.unref(); } catch { /* ignore */ }
-        resolve(null);
-      });
+      }
     } catch (e) {
+      try { closeSync(logFd); } catch { /* ignore */ }
       logDiag(`spawnWatcher threw: ${(e as Error).message}`);
       resolve(null);
     }
