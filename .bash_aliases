@@ -1,3 +1,6 @@
+# shellcheck shell=bash
+# ~/.bash_aliases — sourced by .bashrc / .bash_profile. Not a standalone script.
+
 # Claude Code scripts on PATH
 export PATH="$HOME/.claude/scripts:$PATH"
 

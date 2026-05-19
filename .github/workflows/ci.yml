@@ -45,6 +45,12 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install hook type definitions
+        working-directory: claude/hooks
+        # bun-types and @types/node are referenced by tsconfig.json.
+        # Install them locally for the type-check; they are not runtime deps.
+        run: bun add --dev bun-types @types/node
+
       - name: Type-check Claude hooks
         working-directory: claude/hooks
         run: bunx tsc --noEmit

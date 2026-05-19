@@ -1,11 +1,15 @@
 name: smoke-install
 
-# Rationale: this workflow exercises ./setup.sh --check on macOS and Linux runners
-# to catch obvious regressions in the bootstrap script. It is marked
-# continue-on-error for the FIRST SIX MONTHS (through ~2026-11-19) while we
-# shake out flakiness on fresh runners (Homebrew availability, Claude/Codex CLI
-# version drift, ad-hoc env quirks). After that, flip continue-on-error to false
-# and start gating PRs on it.
+# Rationale: read-only smoke for setup.sh and the shell rc files on a fresh
+# runner. We deliberately don't run the full installer — fresh runners don't
+# have Homebrew, Claude Code, or Codex, and the audit-mode `--check` flag
+# expects symlinks to already exist (so it would always report MISSING). What
+# we CAN cheaply verify on every PR is that the scripts parse cleanly and the
+# argument plumbing (--help) responds.
+#
+# Marked continue-on-error: true for the FIRST SIX MONTHS (through ~2026-11-19)
+# while we extend coverage. After that, flip continue-on-error to false and
+# start gating PRs on it.
 
 on:
   pull_request:
@@ -14,11 +18,12 @@ on:
       - "check-claude.sh"
       - "gh-bootstrap.sh"
       - ".bash_aliases"
+      - ".bash_profile"
   workflow_dispatch:
 
 jobs:
   smoke:
-    name: setup.sh --check
+    name: setup.sh syntax + --help
     strategy:
       fail-fast: false
       matrix:
@@ -29,16 +34,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Syntax check setup.sh
-        run: bash -n ./setup.sh
-
-      - name: Run read-only smoke (./setup.sh --check)
-        env:
-          # Use the runner's HOME — read-only audit, no installs.
-          PAI_DIR: ${{ runner.temp }}/pai-smoke
+      - name: Syntax check shell scripts
         run: |
-          mkdir -p "$PAI_DIR"
-          ./setup.sh --check || {
-            echo "::warning::setup.sh --check exited non-zero on ${{ matrix.os }}; review output above"
+          set -euo pipefail
+          for f in setup.sh check-claude.sh check-codex.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh .bash_aliases .bash_profile; do
+            if [ -f "$f" ]; then
+              echo "==> bash -n $f"
+              bash -n "$f"
+            fi
+          done
+
+      - name: setup.sh --help responds
+        run: |
+          # --help should print usage and exit 0 without doing any real work.
+          ./setup.sh --help > /tmp/help.out 2>&1 || {
+            echo "::error::./setup.sh --help failed on ${{ matrix.os }}"
+            cat /tmp/help.out
             exit 1
           }
+          # Sanity: help output should mention at least one known flag.
+          grep -qE -- "--no-pai|--check|--dry-run" /tmp/help.out || {
+            echo "::error::./setup.sh --help on ${{ matrix.os }} did not include expected flags"
+            cat /tmp/help.out
+            exit 1
+          }
+          echo "✓ ./setup.sh --help OK on ${{ matrix.os }}"
