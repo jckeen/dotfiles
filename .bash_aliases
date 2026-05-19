@@ -52,6 +52,14 @@ sync-memory() {
     if [ -n "$(git -C "$mem_repo" status --porcelain 2>/dev/null)" ]; then
       echo "  Saving memory..."
       git -C "$mem_repo" add -A
+      # Defense in depth: refuse to commit if anything that looks like a secret
+      # got staged (env files, keys, pem/credentials, or paths containing "secret").
+      if git -C "$mem_repo" diff --cached --name-only \
+           | grep -E '\.(env|key|pem)$|secret|credentials' >/dev/null; then
+        echo "  SECRET-LIKE FILE STAGED — aborting memory sync." >&2
+        git -C "$mem_repo" reset -q
+        return 1
+      fi
       git -C "$mem_repo" commit -q -m "auto: sync memory $(date +%Y-%m-%d)"
       git -C "$mem_repo" push -q 2>/dev/null && echo "  Memory saved." || echo "  Memory committed locally (push failed)."
     fi
@@ -139,14 +147,34 @@ cc() {
     echo ""
   fi
 
-  # Preload architecture diagrams if the project has them
+  # Preload architecture diagrams if the project has them.
+  # Treated as untrusted content: requires .ai/diagrams/.trusted opt-in marker,
+  # capped at 16 KB, and XML-fenced so a CLAUDE.md rule can recognize it.
   local diagram_args=()
   if [ -d ".ai/diagrams" ] && ls .ai/diagrams/*.md &>/dev/null; then
-    local diagrams=""
-    for f in .ai/diagrams/*.md; do
-      diagrams+="$(cat "$f")"$'\n'
-    done
-    diagram_args=(--append-system-prompt "$diagrams")
+    if [ ! -f ".ai/diagrams/.trusted" ]; then
+      echo "# diagram preload skipped (no .ai/diagrams/.trusted marker)" >&2
+    else
+      local diagrams=""
+      local total_bytes=0
+      local cap=16384
+      local skipped_size=0
+      for f in .ai/diagrams/*.md; do
+        local chunk
+        chunk="<untrusted_diagram source=\"$f\">"$'\n'"$(cat "$f")"$'\n'"</untrusted_diagram>"$'\n'
+        total_bytes=$(( total_bytes + ${#chunk} ))
+        if [ "$total_bytes" -gt "$cap" ]; then
+          skipped_size=1
+          break
+        fi
+        diagrams+="$chunk"
+      done
+      if [ "$skipped_size" -eq 1 ]; then
+        echo "# diagram preload skipped (content exceeds ${cap}-byte cap)" >&2
+      elif [ -n "$diagrams" ]; then
+        diagram_args=(--append-system-prompt "$diagrams")
+      fi
+    fi
   fi
 
   # Set terminal tab color from .claude-color if present
@@ -333,7 +361,7 @@ cc-pane() {
     projects
     return 1
   fi
-  wt.exe -w 0 sp "$split_flag" -- wsl.exe bash -ic "cc $project"
+  wt.exe -w 0 sp "$split_flag" -- wsl.exe bash -ic 'cc "$1"' _ "$project"
 }
 
 # Open project in a new Windows Terminal tab
@@ -357,7 +385,7 @@ cc-tab() {
     projects
     return 1
   fi
-  wt.exe -w 0 nt -- wsl.exe bash -ic "cc $project"
+  wt.exe -w 0 nt -- wsl.exe bash -ic 'cc "$1"' _ "$project"
 }
 
 # Open multiple projects, each in its own tab
