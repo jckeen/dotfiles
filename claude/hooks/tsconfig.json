@@ -14,5 +14,17 @@
     "lib": ["ES2022"]
   },
   "include": ["*.hook.ts"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "*.d.ts",
+    // PromptProcessing.hook.ts is a fork of the PAI v5.0.0 hook with a
+    // single classifier-timeout tweak. It imports from `../PAI/TOOLS/Inference`
+    // and `./lib/*` — those modules live in the operator's PAI repo
+    // (private), not in dotfiles. The hook is type-checked in PAI's own CI,
+    // not here. Removing this exclude requires either:
+    //   (a) Inlining all PAI deps into dotfiles (large, defeats the fork's
+    //       purpose of staying close to upstream), or
+    //   (b) Shipping ambient .d.ts stubs that mirror the PAI surface.
+    "PromptProcessing.hook.ts"
+  ]
 }
