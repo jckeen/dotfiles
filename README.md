@@ -213,7 +213,7 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voi
 Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
-|------|-------|---------|
+|------|-------|----------|
 | **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
 | **Agent Pack** | `AgentPack.md` | 17-agent review orchestra (loaded on-demand, not symlinked) |
@@ -336,7 +336,7 @@ cc-pane stringer -H                # horizontal split
 The dotfiles ship two PowerShell helper files:
 
 | File | Scope | Functions |
-|------|-------|-----------|
+|------|-------|----------|
 | `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
 | `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
 
@@ -463,7 +463,7 @@ A team of 17 specialized subagents, each running in **its own isolated context**
 | `code-simplifier` | Over-engineering, dead code, premature abstractions |
 | `repo-scout` | Fast codebase orientation and status briefing |
 | `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths |
-| `package-scout` | New package vetting, supply chain checks, alternatives |
+| `package-scout` | Package discovery, alternatives, and ecosystem fit |
 | `test-writer` | Bug reproduction, feature coverage, edge case tests |
 | `schema-reviewer` | DB schema, migrations, data integrity, query patterns |
 
@@ -474,7 +474,7 @@ A team of 17 specialized subagents, each running in **its own isolated context**
 - Via skill: `/simplify` and `/review` use agents automatically
 
 **Orchestration** (see `AgentPack.md` for full details):
-- **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety (parallel)
+- **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety + package-scout (parallel)
 - **Phase 2 — Architecture:** frontend-architect + backend-architect + content-reviewer + security-reviewer (parallel)
 - **Phase 3 — Launch:** qa-lead + perf-accessibility + launch-operator + code-simplifier (parallel)
 
@@ -550,7 +550,7 @@ opus · [████████░░] 42% · main · +127 -34 · $0.82
 The four you'll use constantly:
 
 | Shortcut | What it does |
-|----------|-------------|
+|----------|--------------|
 | `Shift+Tab` (x2) | Toggle Plan Mode |
 | `Esc` | Stop Claude mid-response |
 | `/clear` | Reset context |
@@ -562,7 +562,7 @@ The four you'll use constantly:
 <br>
 
 | Shortcut | What it does |
-|----------|-------------|
+|----------|--------------|
 | `Shift+Tab` (x2) | Toggle Plan Mode |
 | `Ctrl+G` | Open plan in text editor |
 | `Ctrl+B` | Send current task to background |
@@ -804,7 +804,9 @@ dotfiles/
     │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
-    │   └── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+    │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+    │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
+    │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
@@ -827,7 +829,8 @@ dotfiles/
     │   ├── test-coverage.sh    # Write tests for uncovered code
     │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
     │   ├── overnight.sh        # Orchestrate all scripts across repos
-    │   └── review-and-push.sh  # Morning review of overnight changes
+    │   ├── review-and-push.sh  # Morning review of overnight changes
+    │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
     ├── systemd/                # systemd units (voice server, hygiene timer)
     └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md

@@ -30,6 +30,10 @@ run() {
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="$HOME"
+# Dev dir: derived from dotfiles repo location (parent of this repo).
+# Defined early so it can be used throughout (was previously set mid-script,
+# which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
+DEV_DIR="$(dirname "$DOTFILES_DIR")"
 BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
 
 # Bootstrap exit code surfaced in final summary (M14). 0 = not run or success.
@@ -681,19 +685,14 @@ chmod 600 "$DOTFILES_DIR/.gitconfig.local"
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
-# DEV_DIR is referenced by both the WSL safe.directory block (below) and the
-# Claude config / memory wiring later. Define it here so order is correct (C1).
-DEV_DIR="$(dirname "$DOTFILES_DIR")"
-
-# WSL-specific: mark dev repos as safe. Use a check-then-add pattern so reruns
-# don't append duplicate entries to ~/.gitconfig (M2).
+# WSL-specific: mark dev repos as safe (idempotent — skip if already present).
+# DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
 if [[ "$PLATFORM" == "wsl" ]]; then
-  git config --global --get-all safe.directory 2>/dev/null \
-    | grep -qxF "$DOTFILES_DIR" \
-    || git config --global --add safe.directory "$DOTFILES_DIR"
-  git config --global --get-all safe.directory 2>/dev/null \
-    | grep -qxF "$DEV_DIR/claude-memory" \
-    || git config --global --add safe.directory "$DEV_DIR/claude-memory"
+  for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
+    git config --global --get-all safe.directory 2>/dev/null \
+      | grep -Fxq "$_safe_dir" \
+      || git config --global --add safe.directory "$_safe_dir"
+  done
 fi
 
 echo "  -> .gitconfig linked"
@@ -769,7 +768,9 @@ if [ "$USE_PAI" = "1" ]; then
   if [ -d "$_mem_repo/pai-config" ]; then
     for f in "$_mem_repo/pai-config/"*; do
       [ -f "$f" ] || continue
-      cp "$f" "$HOME_DIR/.claude/$(basename "$f")"
+      dest="$HOME_DIR/.claude/$(basename "$f")"
+      [ -e "$dest" ] && [ "$f" -ef "$dest" ] && continue
+      cp "$f" "$dest"
     done
     echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
   else
@@ -783,7 +784,9 @@ if [ "$USE_PAI" = "1" ]; then
     mkdir -p "$HOME_DIR/.claude/PAI/USER"
     for f in "$_mem_repo/pai-user/"*.md; do
       [ -f "$f" ] || continue
-      cp "$f" "$HOME_DIR/.claude/PAI/USER/$(basename "$f")"
+      dest="$HOME_DIR/.claude/PAI/USER/$(basename "$f")"
+      [ -e "$dest" ] && [ "$f" -ef "$dest" ] && continue
+      cp "$f" "$dest"
     done
     echo "  -> PAI USER config copied (from claude-memory)"
   fi
@@ -799,10 +802,8 @@ if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
   echo "  -> Claude chrome scripts linked"
 fi
 
-# Dev dir: derived from dotfiles repo location (parent of this repo).
-# DEV_DIR was defined earlier (just before the WSL safe.directory block) so
-# the value is reused here; we just write it to ~/.claude/dev-dir as the
-# single source of truth for downstream scripts.
+# Dev dir already derived at top of script (C1) — write it out so all scripts
+# have a single source of truth.
 echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
 echo "  -> dev-dir set to $DEV_DIR"
 
