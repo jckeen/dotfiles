@@ -22,9 +22,13 @@ ProtectSystem=strict
 # NOTE: ProtectHome=tmpfs would break this service — it reads scripts from $HOME/dev/dotfiles
 # and writes state under $HOME/.local/state/hygiene/. Using read-only + explicit ReadWritePaths.
 ProtectHome=read-only
-# hygiene-cron writes status.json + cron.log under this dir; needs to be writable.
-ReadWritePaths=%h/.local/state/hygiene
-# TODO: verify ReadWritePaths covers anything git-hygiene clean touches outside ~/dev (git refs, locks, etc.)
+# Writable paths:
+#   - %h/.local/state/hygiene — status.json + cron.log
+#   - %h/dev                  — Sunday `git-hygiene clean ~/dev --yes` needs to
+#                                update git refs, prune branches, and acquire
+#                                index locks across every repo under ~/dev/.
+#                                Without this, the weekly clean silently fails.
+ReadWritePaths=%h/.local/state/hygiene %h/dev
 # Drop AF_NETLINK, AF_PACKET, raw sockets — keep only UNIX + IPv4/IPv6 (gh API + git fetch).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # Forbid creating new user/mount/net/uts/ipc/pid/cgroup namespaces.

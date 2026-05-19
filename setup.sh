@@ -375,23 +375,41 @@ fi
 # (brew, npm, curl installer).
 # Pin + verify the bun installer to defend against upstream compromise (H6).
 # Rationale: piping a remote script to bash with no integrity check is the
-# classic supply-chain hole. We pin to a known version and verify the SHA-256
-# of the installer script before executing it. To refresh the pin: download
-# the new installer, run `sha256sum`, paste the digest into EXPECTED_SHA256,
-# and bump BUN_INSTALL_VERSION.
-BUN_INSTALL_VERSION="bun-v1.1.38"
-# TODO: fill in once verified locally:
+# classic supply-chain hole. We download to a temp file, verify the SHA-256
+# of the installer script against an expected digest, then execute. The
+# installer itself is responsible for fetching pinned bun binaries via
+# BUN_INSTALL_VERSION.
+#
+# To refresh the pin when bun's installer script changes upstream:
 #   curl -fsSL https://bun.sh/install | sha256sum
-# Until then we treat an empty hash as "verification not configured" and
-# refuse to execute the installer (fail-closed). Users who want the prior
-# behavior can `brew install oven-sh/bun/bun` or install bun manually.
-EXPECTED_SHA256=""
+#   # then paste the digest into EXPECTED_SHA256 below
+#
+# Escape hatch: set BUN_UNPINNED=1 in the environment to skip verification
+# and run the bare installer (matches the pre-H6 behavior). Use only if the
+# upstream installer changed and you've reviewed the new content. The
+# default path remains pinned-and-verified.
+BUN_INSTALL_VERSION="bun-v1.1.38"
+EXPECTED_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
 
 install_bun_pinned() {
   local tmp
   tmp="$(mktemp)" || { echo "  -> mktemp failed; skipping bun install"; return 1; }
   # Always clean up the temp installer.
   trap 'rm -f "$tmp"' RETURN
+
+  # Escape hatch for the case where upstream changed and we haven't refreshed
+  # EXPECTED_SHA256 yet. Loud warning, but unblocks new-machine bootstrap.
+  if [ "${BUN_UNPINNED:-0}" = "1" ]; then
+    echo "  -> WARNING: BUN_UNPINNED=1 set; running unverified bun installer"
+    echo "     (pre-H6 behavior — supply-chain risk)"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would exec unverified bun installer"
+      return 0
+    fi
+    run curl -fsSL https://bun.sh/install | bash
+    return
+  fi
+
   echo "  -> Downloading bun installer (pinned: $BUN_INSTALL_VERSION)"
   if ! run curl -fsSL https://bun.sh/install -o "$tmp"; then
     echo "  -> Download failed; skipping bun install"
@@ -402,16 +420,14 @@ install_bun_pinned() {
     echo "  [DRY] would verify SHA-256 and exec bun installer"
     return 0
   fi
-  if [ -z "$EXPECTED_SHA256" ]; then
-    echo "  -> WARNING: EXPECTED_SHA256 is empty; refusing to execute unverified installer."
-    echo "     To enable: run 'curl -fsSL https://bun.sh/install | sha256sum',"
-    echo "     paste the digest into setup.sh, and re-run. Skipping bun install."
-    return 1
-  fi
   local actual
   actual="$(sha256sum "$tmp" | awk '{print $1}')"
   if [ "$actual" != "$EXPECTED_SHA256" ]; then
-    echo "  -> SHA-256 mismatch (expected $EXPECTED_SHA256, got $actual); skipping bun install."
+    echo "  -> SHA-256 mismatch — installer changed upstream."
+    echo "     Expected: $EXPECTED_SHA256"
+    echo "     Got:      $actual"
+    echo "     If you've reviewed the new installer, refresh the digest in"
+    echo "     setup.sh or re-run with BUN_UNPINNED=1 to override."
     return 1
   fi
   echo "  -> SHA-256 verified; running installer"
