@@ -1,6 +1,6 @@
 # Dotfiles — A Jumpstart for Claude Code + Codex
 
-A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 16-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
+A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 17-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
 This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
@@ -15,8 +15,8 @@ After setup, you don't have to remember much. Open a terminal and:
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **11 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`. Type the verb, get the workflow.
-- **A 16-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 8 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
-- **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
+- **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **Safety hooks that can't be forgotten** — `claude/hooks/` currently contains 11 hook files. Seven are wired by default, two are documented opt-in PR-watch hooks, and two more are in-repo hook files that are not documented here as default-wired.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
 - **Auto-hygiene** — a daily systemd timer cleans stale branches across every repo in `~/dev/`, surfaces drift at every Claude/Codex session start, and bootstraps the canonical 8 GitHub auto-merge settings on every newly-created or cloned repo.
@@ -211,14 +211,11 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 |------|-------|---------|
 | **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
-| **Agent Pack** | `AgentPack.md` | 16-agent review orchestra (loaded on-demand, not symlinked) |
+| **Agent Pack** | `AgentPack.md` | 17-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
-| **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
-| **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
-| **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
-| **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
+| **Hooks** | `hooks/*` | 11 hook files; 7 wired by default, 2 documented opt-in PR-watch hooks, 2 additional in-repo hook files |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
-| **Subagents** | `agents/*.md` | 16 specialized review agents |
+| **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
 | **Codex skills** | `codex/skills/*/SKILL.md` | Public-safe Codex workflows for review, issue fixes, PRs, handoffs |
@@ -435,9 +432,9 @@ Type these directly in Claude Code.
 
 ---
 
-## Agent Pack (16-Agent Review Orchestra)
+## Agent Pack (17-Agent Review Orchestra)
 
-A team of 16 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
+A team of 17 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
 
 | Agent | Focus |
 |-------|-------|
@@ -455,6 +452,7 @@ A team of 16 specialized subagents, each running in **its own isolated context**
 | `code-simplifier` | Over-engineering, dead code, premature abstractions |
 | `repo-scout` | Fast codebase orientation and status briefing |
 | `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths |
+| `package-scout` | Researches whether what you're about to build already exists as a well-maintained package — prevents reinventing the wheel |
 | `test-writer` | Bug reproduction, feature coverage, edge case tests |
 | `schema-reviewer` | DB schema, migrations, data integrity, query patterns |
 
@@ -473,30 +471,32 @@ A team of 16 specialized subagents, each running in **its own isolated context**
 
 ## Safety Hooks
 
-Hooks run automatically and can't be forgotten like CLAUDE.md rules. Four ship by default: **conventional-commit** (enforces commit message format), **format-on-edit** (auto-formats after edits), **ntfy-awaiting-input** (push notification when Claude needs you), and **StripProjectPermissions** (prevents per-project permission creep).
+Hooks run automatically and can't be forgotten like CLAUDE.md rules. `claude/hooks/` currently contains 11 hook files. Based on the repo-documented `settings.json` wiring, 7 ship enabled by default, 2 are documented opt-in PR-watch hooks, and 2 more hook files are present in the repo but not documented here as default-wired.
 
 <details>
 <summary><strong>Hook-by-hook details</strong></summary>
 
 <br>
 
-**`conventional-commit.sh`** (PreToolUse) enforces:
-- Commit messages must start with `type: description`
-- Valid types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `style`
-- Handles both heredoc and inline `-m` styles; skips `--amend`
+**Enabled by default**
 
-**`format-on-edit.sh`** (PostToolUse) auto-formats after file edits:
-- JS/TS/JSON/CSS → prettier (finds project root automatically)
-- Python → black or ruff
-- Rust → rustfmt
-- Go → gofmt
+- `conventional-commit.sh` — PreToolUse hook that enforces `type: description` commit messages
+- `format-on-edit.sh` — PostToolUse hook that auto-formats edited files with the project formatter
+- `ntfy-awaiting-input.sh` — PreToolUse hook that sends an ntfy push when Claude needs user input
+- `StripProjectPermissions.hook.ts` — SessionStart hook that removes project-level permission overrides from `settings.local.json`
+- `HygieneStatus.hook.sh` — SessionStart hook that surfaces cached branch-hygiene drift
+- `PluginDriftCheck.hook.ts` — SessionStart hook that warns when installed Claude plugins drift from `claude/plugins.txt`
+- `SymlinkRepair.hook.ts` — SessionStart hook that re-links missing or broken dotfiles into `~/.claude/`
 
-**`ntfy-awaiting-input.sh`** (PreToolUse on AskUserQuestion) sends:
-- Push notification via ntfy when Claude is waiting for user input
+**Documented opt-in PR-watch hooks**
 
-**`StripProjectPermissions.hook.ts`** (SessionStart) prevents:
-- Project-level `settings.local.json` from accumulating `permissions` blocks that override global blanket permissions
-- Reads the current project's settings.local.json, removes only the `permissions` key, preserves everything else
+- `PRWatcherAutoLaunch.hook.ts` — PostToolUse hook that detects PR creation and starts the review watcher loop
+- `PRWatcherSurface.hook.ts` — UserPromptSubmit hook that surfaces unread PR review events into prompt context
+
+**Additional in-repo hook files**
+
+- `PrePushStaleSHACheck.hook.ts` — PreToolUse Bash hook that warns when `git push` would obsolete an in-flight PR review
+- `PromptProcessing.hook.ts` — UserPromptSubmit hook for tab-title updates and session auto-naming
 
 > **Note:** Security blocking (dangerous commands, secret detection) is handled by the PAI SecurityValidator hook in `~/.claude/hooks/SecurityValidator.hook.ts`, configured via `patterns.yaml`. The old `block-dangerous.sh` and `block-secrets.sh` hooks have been replaced.
 
@@ -785,7 +785,7 @@ dotfiles/
 │       ├── changelog/
 │       └── repo-health/
 └── claude/
-    ├── AgentPack.md            # 16-agent review orchestra
+    ├── AgentPack.md            # 17-agent review orchestra
     ├── statusline.sh           # Context bar, git branch, cost display
     ├── hooks/
     │   ├── conventional-commit.sh          # PreToolUse commit message validator
@@ -793,9 +793,12 @@ dotfiles/
     │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
     │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
     │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
+    │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift warning
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
-    │   └── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+    │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+    │   ├── PromptProcessing.hook.ts        # Tab-title updates and session auto-naming
+    │   └── SymlinkRepair.hook.ts           # Repair missing ~/.claude symlinks on SessionStart
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
@@ -820,7 +823,7 @@ dotfiles/
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   └── review-and-push.sh  # Morning review of overnight changes
     ├── systemd/                # systemd units (voice server, hygiene timer)
-    └── agents/                 # 16 specialized review subagents
+    └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md
