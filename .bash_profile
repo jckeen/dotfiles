@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ~/.bash_profile — read by bash for LOGIN shells (wsl.exe, `bash -l`, ssh).
 #
 # Login shells skip ~/.bashrc by design, so without delegation here, every

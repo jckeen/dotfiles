@@ -6,7 +6,27 @@
 # Uses symlinks so edits to ~/.claude/* automatically stay in sync
 # with this repo.
 
-set -e
+set -euo pipefail
+trap 'echo "[setup.sh] FAILED at line $LINENO" >&2; exit 1' ERR
+
+# Track total setup duration for the completion summary (M5).
+SETUP_START=$(date +%s)
+
+# DRY_RUN: when 1, destructive ops are printed instead of executed.
+# Set by the --dry-run flag in the arg-parse loop below (M6).
+DRY_RUN="${DRY_RUN:-0}"
+
+# run(): wrap destructive operations. Prints [DRY] $* when DRY_RUN=1,
+# otherwise executes "$@". Use ONLY for destructive ops (installs,
+# network downloads, writes outside the repo). Read-only checks
+# (command -v, grep, test) should remain bare to avoid noise.
+run() {
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "[DRY] $*"
+  else
+    "$@"
+  fi
+}
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="$HOME"
@@ -15,6 +35,9 @@ HOME_DIR="$HOME"
 # which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
 DEV_DIR="$(dirname "$DOTFILES_DIR")"
 BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
+
+# Bootstrap exit code surfaced in final summary (M14). 0 = not run or success.
+BOOTSTRAP_RC=0
 
 # Counters for summary
 LINKS_CREATED=0
@@ -123,6 +146,11 @@ run_health_audit() {
     echo "  (Attempted repairs on broken links)"
   fi
 
+  # Expose final tallies to the script-level summary block (M5).
+  LINKS_VERIFIED="$verified"
+  LINKS_BROKEN="$errors"
+  LINKS_CREATED="${repaired:-0}"
+
   [ "$errors" -eq 0 ] && return 0 || return 1
 }
 
@@ -180,19 +208,46 @@ audit_link() {
 }
 
 # Flags. USE_PAI may come from env; CLI flags override. We do TWO passes so
-# flag order doesn't matter: first set USE_PAI, then handle action flags
-# (--check/--repair) which exit.
+# flag order doesn't matter: first set USE_PAI / DRY_RUN, then handle action
+# flags (--check/--repair/--help) which exit.
+#
+# Supported flags:
+#   --pai / --no-pai   Force PAI integration on/off (skips interactive prompt)
+#   --dry-run          Print destructive ops via run() instead of executing them
+#   --check            Run symlink health audit and exit
+#   --repair           Run symlink audit + repair and exit
+#   --help / -h        Print this help and exit
 USE_PAI="${USE_PAI:-}"
 for arg in "$@"; do
   case "$arg" in
-    --no-pai) USE_PAI=0 ;;
-    --pai)    USE_PAI=1 ;;
+    --no-pai)  USE_PAI=0 ;;
+    --pai)     USE_PAI=1 ;;
+    --dry-run) DRY_RUN=1 ;;
   esac
 done
 for arg in "$@"; do
   case "$arg" in
-    --check)  run_health_audit "check";  exit $? ;;
-    --repair) run_health_audit "repair"; exit $? ;;
+    --help|-h)
+      cat <<'HELP'
+Usage: ./setup.sh [flags]
+
+Flags:
+  --pai          Enable PAI integration (claude-memory copy + bootstrap)
+  --no-pai       Disable PAI integration
+  --dry-run      Show destructive ops without executing (installs, downloads)
+  --check        Run symlink health audit and exit
+  --repair       Audit symlinks and recreate broken ones, then exit
+  --help, -h     Show this help
+
+Environment:
+  USE_PAI=0|1    Same as --no-pai / --pai (CLI flag overrides)
+  GIT_NAME       Pre-populate git user.name
+  GIT_EMAIL      Pre-populate git user.email
+HELP
+      exit 0
+      ;;
+    --check)  _rc=0; run_health_audit "check"  || _rc=$?; exit "$_rc" ;;
+    --repair) _rc=0; run_health_audit "repair" || _rc=$?; exit "$_rc" ;;
   esac
 done
 
@@ -230,10 +285,11 @@ echo "=== Dotfiles setup from $DOTFILES_DIR ==="
 # The claude-memory private repo integration below layers user-specific config
 # on top of PAI. Users who just want Claude Code + hooks from this dotfiles
 # repo can opt out; nothing PAI-specific runs in that mode.
-if [ -z "$USE_PAI" ]; then
+if [ -z "${USE_PAI:-}" ]; then
   echo ""
-  read -rp "Are you using (or planning to use) PAI? [Y/n] " _pai_yn
-  if [[ "$_pai_yn" =~ ^[Nn] ]]; then
+  _pai_yn=""
+  read -rp "Are you using (or planning to use) PAI? [Y/n] " _pai_yn || true
+  if [[ "${_pai_yn:-}" =~ ^[Nn] ]]; then
     USE_PAI=0
   else
     USE_PAI=1
@@ -261,13 +317,17 @@ if [ -n "$MISSING_PKGS" ]; then
       echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
       exit 1
     fi
-    read -rp "Install via brew? [Y/n] " yn
-    [[ "$yn" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
-    brew install $MISSING_PKGS || true
+    yn=""
+    read -rp "Install via brew? [Y/n] " yn || true
+    [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
+    # shellcheck disable=SC2086  # word-splitting intentional for pkg list
+    run brew install $MISSING_PKGS || true
   else
-    read -rp "Install via apt? (requires sudo) [Y/n] " yn
-    [[ "$yn" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
-    sudo apt update && sudo apt install -y $MISSING_PKGS unzip
+    yn=""
+    read -rp "Install via apt? (requires sudo) [Y/n] " yn || true
+    [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
+    # shellcheck disable=SC2086  # word-splitting intentional for pkg list
+    run sudo apt update && run sudo apt install -y $MISSING_PKGS unzip
   fi
 else
   echo "All required packages already installed."
@@ -277,11 +337,12 @@ fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
   echo "--- ALSA → PulseAudio routing (WSL, needed for /voice) ---"
-  read -rp "Set up audio routing for Claude /voice? (requires sudo) [y/N] " yn
-  if [[ "$yn" =~ ^[Yy] ]]; then
-    sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
+  yn=""
+  read -rp "Set up audio routing for Claude /voice? (requires sudo) [y/N] " yn || true
+  if [[ "${yn:-}" =~ ^[Yy] ]]; then
+    run sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
     link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
-    sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
+    run sudo cp "$DOTFILES_DIR/.asoundrc" /etc/asound.conf
     echo "  -> .asoundrc linked, /etc/asound.conf written"
   else
     echo "  -> Skipped audio setup"
@@ -293,7 +354,7 @@ if ! command -v node &>/dev/null; then
   echo ""
   echo "--- Installing Node.js ---"
   if [[ "$PLATFORM" == "macos" ]]; then
-    brew install node
+    run brew install node
   else
     echo "  Node.js not found. Install via your preferred method:"
     echo "    Option 1: curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -"
@@ -316,15 +377,77 @@ fi
 # do PATH lookups), so we always ensure a symlink at ~/.bun/bin/bun
 # pointing at whichever bun is on PATH — regardless of install method
 # (brew, npm, curl installer).
+# Pin + verify the bun installer to defend against upstream compromise (H6).
+# Rationale: piping a remote script to bash with no integrity check is the
+# classic supply-chain hole. We download to a temp file, verify the SHA-256
+# of the installer script against an expected digest, then execute. The
+# installer itself is responsible for fetching pinned bun binaries via
+# BUN_INSTALL_VERSION.
+#
+# To refresh the pin when bun's installer script changes upstream:
+#   curl -fsSL https://bun.sh/install | sha256sum
+#   # then paste the digest into EXPECTED_SHA256 below
+#
+# Escape hatch: set BUN_UNPINNED=1 in the environment to skip verification
+# and run the bare installer (matches the pre-H6 behavior). Use only if the
+# upstream installer changed and you've reviewed the new content. The
+# default path remains pinned-and-verified.
+BUN_INSTALL_VERSION="bun-v1.1.38"
+EXPECTED_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
+
+install_bun_pinned() {
+  local tmp
+  tmp="$(mktemp)" || { echo "  -> mktemp failed; skipping bun install"; return 1; }
+  # Always clean up the temp installer.
+  trap 'rm -f "$tmp"' RETURN
+
+  # Escape hatch for the case where upstream changed and we haven't refreshed
+  # EXPECTED_SHA256 yet. Loud warning, but unblocks new-machine bootstrap.
+  if [ "${BUN_UNPINNED:-0}" = "1" ]; then
+    echo "  -> WARNING: BUN_UNPINNED=1 set; running unverified bun installer"
+    echo "     (pre-H6 behavior — supply-chain risk)"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would exec unverified bun installer"
+      return 0
+    fi
+    run curl -fsSL https://bun.sh/install | bash
+    return
+  fi
+
+  echo "  -> Downloading bun installer (pinned: $BUN_INSTALL_VERSION)"
+  if ! run curl -fsSL https://bun.sh/install -o "$tmp"; then
+    echo "  -> Download failed; skipping bun install"
+    return 1
+  fi
+  # In dry-run mode, curl was skipped — there's nothing to verify or exec.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would verify SHA-256 and exec bun installer"
+    return 0
+  fi
+  local actual
+  actual="$(sha256sum "$tmp" | awk '{print $1}')"
+  if [ "$actual" != "$EXPECTED_SHA256" ]; then
+    echo "  -> SHA-256 mismatch — installer changed upstream."
+    echo "     Expected: $EXPECTED_SHA256"
+    echo "     Got:      $actual"
+    echo "     If you've reviewed the new installer, refresh the digest in"
+    echo "     setup.sh or re-run with BUN_UNPINNED=1 to override."
+    return 1
+  fi
+  echo "  -> SHA-256 verified; running installer"
+  BUN_INSTALL_VERSION="$BUN_INSTALL_VERSION" bash "$tmp"
+}
+
 if ! command -v bun &>/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
   echo ""
   echo "--- Installing Bun (JS runtime for TypeScript hooks) ---"
   if [[ "$PLATFORM" == "macos" ]] && command -v brew &>/dev/null; then
-    brew install oven-sh/bun/bun
+    run brew install oven-sh/bun/bun
   else
-    # Official installer; writes to ~/.bun and appends PATH lines to
-    # ~/.bashrc and ~/.zshrc automatically.
-    curl -fsSL https://bun.sh/install | bash
+    # Pinned + SHA-256-verified installer (see install_bun_pinned above).
+    # Falls back gracefully (warn + skip) if verification fails or the
+    # placeholder hash hasn't been filled in.
+    install_bun_pinned || echo "  -> Bun install skipped; downstream features (voice hooks) may not work."
   fi
   # Make bun usable for the remainder of this script
   if [ -x "$HOME/.bun/bin/bun" ]; then
@@ -357,7 +480,7 @@ fi
 if ! command -v claude &>/dev/null; then
   echo ""
   echo "--- Installing Claude Code CLI ---"
-  npm install -g @anthropic-ai/claude-code
+  run npm install -g @anthropic-ai/claude-code
 else
   echo "Claude Code already installed: $(claude --version 2>/dev/null || echo 'installed')"
 fi
@@ -367,19 +490,24 @@ fi
 # unauth state via `claude auth status` (exit 0 + "loggedIn": true) and
 # offer to run `claude auth login` (browser OAuth) right now.
 CLAUDE_AUTHED=0
+# Tolerant match for both `"loggedIn":true` (compact) and `"loggedIn": true`
+# (spaced). Brittle: this parses the human-readable status output. Switch to
+# `claude auth status --json` + jq once/if that flag is supported upstream.
+_loggedin_re='"loggedIn"[[:space:]]*:[[:space:]]*true'
 if command -v claude &>/dev/null; then
   echo ""
   echo "--- Checking Claude Code authentication ---"
-  if claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+  if claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
     echo "  -> Already signed in to Claude"
     CLAUDE_AUTHED=1
   else
     echo "  Claude Code is not authenticated."
     echo "  Plugin install and 'cc' both require a signed-in session."
-    read -rp "Run 'claude auth login' now (opens browser)? [Y/n] " yn
-    if [[ ! "$yn" =~ ^[Nn] ]]; then
+    yn=""
+    read -rp "Run 'claude auth login' now (opens browser)? [Y/n] " yn || true
+    if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       claude auth login || true
-      if claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+      if claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
         CLAUDE_AUTHED=1
       fi
     fi
@@ -399,8 +527,12 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
   echo ""
   echo "--- Installing Claude Code plugins ---"
 
-  # Collect marketplaces referenced by the plugin list
-  MARKETPLACES="$(awk -F'@' '/^[^#[:space:]]/ && NF==2 {print $2}' "$PLUGIN_LIST" | sort -u)"
+  # Collect marketplaces referenced by the plugin list.
+  # Trim leading/trailing whitespace per line BEFORE awk so trailing spaces
+  # on plugins.txt entries don't end up in the marketplace name (M12).
+  MARKETPLACES="$(sed 's/[[:space:]]*$//; s/^[[:space:]]*//' "$PLUGIN_LIST" \
+    | awk -F'@' '/^[^#[:space:]]/ && NF==2 {print $2}' \
+    | sort -u)"
 
   # Register each marketplace if not already known
   MARKETPLACE_LIST="$(claude plugin marketplace list 2>/dev/null || true)"
@@ -411,12 +543,12 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
     else
       case "$mp" in
         claude-plugins-official)
-          claude plugin marketplace add github:anthropics/claude-plugins-official \
+          run claude plugin marketplace add github:anthropics/claude-plugins-official \
             && echo "  -> Registered marketplace: $mp" \
             || echo "  -> Failed to register marketplace: $mp (continuing)"
           ;;
         anthropic-agent-skills)
-          claude plugin marketplace add github:anthropics/skills \
+          run claude plugin marketplace add github:anthropics/skills \
             && echo "  -> Registered marketplace: $mp" \
             || echo "  -> Failed to register marketplace: $mp (continuing)"
           ;;
@@ -443,7 +575,7 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
       echo "  -> $plugin already installed"
     else
       echo "  -> Installing $plugin"
-      claude plugin install "$plugin" || echo "     (install failed — continuing)"
+      run claude plugin install "$plugin" || echo "     (install failed — continuing)"
     fi
   done < "$PLUGIN_LIST"
 fi
@@ -456,7 +588,7 @@ CODEX_AUTHED=0
 if ! command -v codex &>/dev/null; then
   echo ""
   echo "--- Installing Codex CLI ---"
-  npm install -g @openai/codex || echo "  -> Codex install failed (continuing; install manually and re-run setup.sh)"
+  run npm install -g @openai/codex || echo "  -> Codex install failed (continuing; install manually and re-run setup.sh)"
 else
   echo "Codex CLI already installed: $(codex --version 2>/dev/null || echo 'installed')"
 fi
@@ -469,8 +601,9 @@ if command -v codex &>/dev/null; then
     CODEX_AUTHED=1
   else
     echo "  Codex is not authenticated."
-    read -rp "Run 'codex login' now? [Y/n] " yn
-    if [[ ! "$yn" =~ ^[Nn] ]]; then
+    yn=""
+    read -rp "Run 'codex login' now? [Y/n] " yn || true
+    if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       codex login || true
       if codex login status &>/dev/null; then
         CODEX_AUTHED=1
@@ -552,7 +685,8 @@ chmod 600 "$DOTFILES_DIR/.gitconfig.local"
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
-# WSL-specific: mark dev repos as safe (idempotent — skip if already present)
+# WSL-specific: mark dev repos as safe (idempotent — skip if already present).
+# DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
 if [[ "$PLATFORM" == "wsl" ]]; then
   for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
     git config --global --get-all safe.directory 2>/dev/null \
@@ -668,8 +802,8 @@ if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
   echo "  -> Claude chrome scripts linked"
 fi
 
-# Dev dir already derived at top of script — write it out so all scripts have
-# a single source of truth.
+# Dev dir already derived at top of script (C1) — write it out so all scripts
+# have a single source of truth.
 echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
 echo "  -> dev-dir set to $DEV_DIR"
 
@@ -916,8 +1050,9 @@ if [[ "$PLATFORM" == "wsl" ]]; then
     echo "    wsl-helpers.ps1  → wsl6 (agent-neutral 3×2 WSL grid)"
     echo "    cc-functions.ps1 → ccgrid, cctab, ccpane, ccprojects (Claude launchers)"
     echo "  Wires into BOTH Windows PowerShell 5.1 and PowerShell 7 profiles when present."
-    read -rp "Install into your PowerShell profile(s)? [Y/n] " yn
-    if [[ ! "$yn" =~ ^[Nn] ]]; then
+    yn=""
+    read -rp "Install into your PowerShell profile(s)? [Y/n] " yn || true
+    if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       ps_overall=0
       installed_any=0
       for host_exe in powershell.exe pwsh.exe; do
@@ -940,10 +1075,20 @@ if [[ "$PLATFORM" == "wsl" ]]; then
 fi
 
 # ─── 8. Bootstrap claude-memory (private repo) — PAI mode only ───────
+# We capture the bootstrap return code so the final summary can surface a
+# clear failure message (M14). PAI is opt-in supplementary, so we never
+# `exit 1` from here — the operator's primary dotfiles+Claude install must
+# still succeed even if the private memory layer fails to wire up.
 if [ "$USE_PAI" = "1" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
   echo ""
   echo "--- Running claude-memory bootstrap ---"
-  bash "$BOOTSTRAP_SCRIPT" || echo "  (bootstrap.sh had errors — run it manually to debug)"
+  if bash "$BOOTSTRAP_SCRIPT"; then
+    BOOTSTRAP_RC=0
+  else
+    BOOTSTRAP_RC=$?
+    echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
+    echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
+  fi
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────
@@ -995,3 +1140,22 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   echo "  3. Add project repos to git safe.directory as needed:"
   echo "     git config --global --add safe.directory $DEV_DIR/<repo>"
 fi
+
+# ─── Final completion summary (M5) ───────────────────────────────────
+# Bash-portable elapsed time (no `bc`): plain integer arithmetic on epoch seconds.
+SETUP_END=$(date +%s)
+ELAPSED=$(( SETUP_END - SETUP_START ))
+ELAPSED_MIN=$(( ELAPSED / 60 ))
+ELAPSED_SEC=$(( ELAPSED % 60 ))
+echo ""
+echo "─────────────────────────────────────────────"
+echo "  Completed in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+echo "  Symlinks: created=${LINKS_CREATED:-0}  verified=${LINKS_VERIFIED:-0}  broken=${LINKS_BROKEN:-0}"
+if [ "${BOOTSTRAP_RC:-0}" -ne 0 ]; then
+  echo "  PAI bootstrap: FAILED — re-run manually: $BOOTSTRAP_SCRIPT"
+fi
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "  Mode: DRY-RUN (no destructive ops were executed)"
+fi
+echo "  Try next: cc to launch Claude"
+echo "─────────────────────────────────────────────"

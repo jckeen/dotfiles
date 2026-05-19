@@ -9,6 +9,20 @@ claude/handoffs/
 SECURITY_FINDINGS_*.md
 *-HANDOFF.md
 
+# Defense-in-depth: personal/PAI data that should never land in a public repo,
+# in case some script accidentally writes them at the wrong path or fails to
+# interpolate a template variable.
+PAI/MEMORY/
+PAI/USER/
+USER/
+OPINIONS.md
+ratings.jsonl
+sessions/
+session-names.json
+# Literal ${HOME} from broken single-quote interpolation, e.g. `mkdir -p '${HOME}/foo'`.
+${HOME}/
+\${HOME}/
+
 # Symlink artifacts (setup.sh creates these as symlinks in ~/.claude/)
 .claude/
 

@@ -12,9 +12,17 @@ ERRORS=0
 WARNINGS=0
 FIXED=0
 
-red()    { echo -e "\033[31m$1\033[0m"; }
-yellow() { echo -e "\033[33m$1\033[0m"; }
-green()  { echo -e "\033[32m$1\033[0m"; }
+# Gate ANSI colors on a real TTY so piped/redirected output stays grep-friendly.
+if [ -t 1 ]; then
+  c_red='\033[31m'; c_yellow='\033[33m'; c_green='\033[32m'; c_reset='\033[0m'
+else
+  c_red=''; c_yellow=''; c_green=''; c_reset=''
+fi
+
+# Severity helpers prepend a plain-text tag ([OK]/[WARN]/[ERR]) for non-TTY consumers.
+red()    { echo -e "${c_red}[ERR] $1${c_reset}"; }
+yellow() { echo -e "${c_yellow}[WARN] $1${c_reset}"; }
+green()  { echo -e "${c_green}[OK] $1${c_reset}"; }
 
 check_link() {
   local src="$1" dst="$2" label="$3"

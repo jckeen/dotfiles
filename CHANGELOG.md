@@ -30,7 +30,7 @@ The 2026-05-13 PR added `PluginDriftCheck.hook.ts` and `sync-plugins.sh` to the 
 ### Why
 Before this PR, plugin drift between machines was invisible until someone noticed a slash command was missing. The hook surfaces drift at SessionStart so the user knows what to reconcile, and `sync-plugins.sh` is the one-shot remediation the warning points at. Both resolve their manifest from the dotfiles repo (where `setup.sh` actually keeps it — `plugins.txt` is in the `NOLINK` list and is not symlinked into `~/.claude/`), so they work even when run on a clean bootstrap.
 
-
+## 2026-05-13 — feat(shell): adopt `.bash_profile` for login-shell PATH + cc availability
 
 ### What changed
 - **`.bash_profile`** (new, tracked) — Adopts the standard distro convention: exports the bun PATH (so the PAI installer's `grep -q '\.bun/bin'` skip-check holds) and sources `~/.bashrc` for login shells. Single source of truth, version controlled, audit-able.
@@ -159,18 +159,6 @@ Server-side auto-hygiene (delete-branch-on-merge, GitHub Pro auto-merge) added 2
 
 ### Why
 Follow-up to the 2026-05-03 static security sweep. The report-only PR is now actionable: confirmed injection and unsafe-bypass paths are fixed while preserving the normal Claude launcher workflow.
-
-## [Unreleased]
-
-### 2026-05-03 — ADR: Auth at the Boundary
-
-- **`ADR/AUTH-AT-THE-BOUNDARY.md`** — New cross-repo Architecture Decision Record codifying auth-by-default at the entry boundary. Captures the principle behind a CWE-306 (Missing Authentication) finding pattern surfaced in a multi-repo audit. Includes drop-in code snippets per framework, anti-patterns with wrong/right diffs, per-framework checklists, and a cross-reference table for per-repo fix PRs (filled in as fixes land).
-- **`README.md`** — New top-level `## ADRs` section linking the new doc.
-
-### Why
-The findings shared no code — they shared an assumption ("auth is handled somewhere upstream") that's not enforceable through code review alone. The ADR makes auth-by-default the framework wiring, not the reviewer's job, and gives every stack a copy-paste pattern that fails closed by construction.
-
-> **Update 2026-05-05:** This ADR was later removed from this repo (it didn't belong in dotfiles). The principle was distilled to a steering rule in the personal `claude-memory` repo. See the 2026-05-05 entry above and PR #24.
 
 ## 2026-04-24 — check-claude.sh: exclude `plugins.txt` from symlink audit
 

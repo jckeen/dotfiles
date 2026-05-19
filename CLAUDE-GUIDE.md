@@ -108,6 +108,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `PRWatcherAutoLaunch.hook.ts` | PostToolUse | Detects `gh pr create` / `mcp__github__create_pull_request` and spawns `WatchPRReviews.ts` in the background so the watch→fix→re-review loop runs without manual Monitor invocation |
 | `PRWatcherSurface.hook.ts` | UserPromptSubmit | Surfaces unread PR-watcher events (Codex/human reviews, comments, CI) into `additionalContext` so the assistant proactively addresses feedback |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event for the surface hook |
+| `PromptProcessing.hook.ts` | UserPromptSubmit | Light pre-processing on user prompts (mode + tier classification, optional session-name inference) before they reach the model |
 
 > Security blocking (dangerous commands, secrets) is handled by the PAI SecurityValidator hook, not in dotfiles.
 

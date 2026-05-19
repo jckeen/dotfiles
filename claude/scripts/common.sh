@@ -11,34 +11,19 @@ set -euo pipefail
 # TIER 1: Read-only — can't change anything
 TIER_READONLY=(Read Grep Glob "Bash(git status)" "Bash(git log *)" "Bash(git diff *)")
 
-# TIER 2: Lint & test — can read + run build/test commands
-TIER_LINT=(Read Grep Glob Edit \
-  "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
-  "Bash(npx *)" "Bash(pip *)" "Bash(pytest *)" "Bash(cargo test *)" \
-  "Bash(git status)" "Bash(git log *)" "Bash(git diff *)")
-
-# TIER 3: Fix — can edit files + run tests (but not commit/push)
+# TIER 2: Fix — can edit files + run tests (but not commit/push)
 TIER_FIX=(Read Grep Glob Edit Write \
   "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
   "Bash(npx *)" "Bash(pip *)" "Bash(pytest *)" "Bash(cargo test *)" \
   "Bash(git status)" "Bash(git log *)" "Bash(git diff *)" "Bash(git stash *)")
 
-# TIER 4: Commit — can edit + commit (but not push)
+# TIER 3: Commit — can edit + commit (but not push)
 TIER_COMMIT=(Read Grep Glob Edit Write \
   "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
   "Bash(npx *)" "Bash(npm audit *)" "Bash(npm outdated *)" \
   "Bash(pip *)" "Bash(pytest *)" "Bash(cargo test *)" "Bash(cargo audit *)" \
   "Bash(git status)" "Bash(git log *)" "Bash(git diff *)" "Bash(git stash *)" \
   "Bash(git add *)" "Bash(git commit *)" "Bash(git branch *)" "Bash(git checkout *)")
-
-# TIER 5: Push — full git workflow (only used by review-and-push after validation)
-TIER_PUSH=(Read Grep Glob Edit Write \
-  "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
-  "Bash(npx *)" "Bash(pip *)" "Bash(pytest *)" "Bash(cargo test *)" \
-  "Bash(git status)" "Bash(git log *)" "Bash(git diff *)" \
-  "Bash(git add *)" "Bash(git commit *)" "Bash(git push *)" \
-  "Bash(git branch *)" "Bash(git checkout *)" \
-  "Bash(gh pr *)")
 
 # ─── Defaults ──────────────────────────────────────────────────
 
@@ -56,15 +41,6 @@ log_file() {
   timestamp=$(date +%Y-%m-%d_%H%M)
   mkdir -p "$LOG_DIR"
   echo "$LOG_DIR/${name}_${repo_name}_${timestamp}.log"
-}
-
-build_allowed_tools_args() {
-  local -n tier_ref=$1
-  local args=""
-  for tool in "${tier_ref[@]}"; do
-    args+="--allowedTools \"$tool\" "
-  done
-  echo "$args"
 }
 
 run_claude() {

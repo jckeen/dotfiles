@@ -16,7 +16,19 @@ fi
 # Extract the file path from tool_input (correct nesting)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
-if [ -z "$FILE_PATH" ] || [ ! -f "$FILE_PATH" ]; then
+# H4 + DF-4 guards: require non-empty, absolute path, and reject `..` traversal.
+# `..` in the path could let a hostile tool_input formatter-attack a file
+# outside the workspace (e.g. /etc/passwd via /tmp/work/../../etc/passwd).
+if [ -z "$FILE_PATH" ]; then
+  exit 0
+fi
+if [[ "$FILE_PATH" != /* ]]; then
+  exit 0
+fi
+if [[ "$FILE_PATH" == *".."* ]]; then
+  exit 0
+fi
+if [ ! -f "$FILE_PATH" ]; then
   exit 0
 fi
 
@@ -26,11 +38,15 @@ EXT="${FILE_PATH##*.}"
 # Format based on file type
 case "$EXT" in
   js|jsx|ts|tsx|json|css|scss|md|html|yaml|yml)
-    # Find project root by walking up from the file
+    # H4: bound the project-root walk. Unbounded `dirname` loops on `/mnt/c/...`
+    # cross the WSL→DrvFS boundary on every keystroke, costing ~hundreds of ms.
+    # Stop at $HOME or after 8 iterations, whichever comes first.
     PROJECT_DIR="$(dirname "$FILE_PATH")"
-    while [ "$PROJECT_DIR" != "/" ]; do
+    WALK_LIMIT=8
+    while [ "$PROJECT_DIR" != "/" ] && [ "$PROJECT_DIR" != "${HOME:-/}" ] && [ "$WALK_LIMIT" -gt 0 ]; do
       [ -f "$PROJECT_DIR/node_modules/.bin/prettier" ] && break
       PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+      WALK_LIMIT=$((WALK_LIMIT - 1))
     done
     # Use prettier if available in the project
     if [ -f "$PROJECT_DIR/node_modules/.bin/prettier" ]; then

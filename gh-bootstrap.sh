@@ -119,12 +119,19 @@ apply_repo() {
     args+=( -f "$f=${DESIRED[$f]}" )
   done
 
-  if ! gh api -X PATCH "repos/$repo" "${args[@]}" --silent 2>/tmp/gh-bootstrap-err.$$; then
-    fail "PATCH failed: $(cat /tmp/gh-bootstrap-err.$$ 2>/dev/null | head -1)"
-    rm -f /tmp/gh-bootstrap-err.$$
+  # Use mktemp so the filename is unpredictable (avoids /tmp/foo.$$ symlink/race attacks).
+  local err_file
+  err_file=$(mktemp -t gh-bootstrap-err.XXXXXX)
+  # Clean up the temp file on any function-level exit path (including early returns/errors).
+  trap 'rm -f "$err_file"' RETURN
+  if ! gh api -X PATCH "repos/$repo" "${args[@]}" --silent 2>"$err_file"; then
+    fail "PATCH failed: $(head -1 "$err_file" 2>/dev/null)"
+    rm -f "$err_file"
+    trap - RETURN
     return 1
   fi
-  rm -f /tmp/gh-bootstrap-err.$$
+  rm -f "$err_file"
+  trap - RETURN
 
   # Verify
   local out drift
