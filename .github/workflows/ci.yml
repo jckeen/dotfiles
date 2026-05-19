@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck (severity=error)
+        uses: ludeeus/action-shellcheck@2.0.0
+        env:
+          SHELLCHECK_OPTS: --severity=error
+        with:
+          severity: error
+          scandir: "."
+          additional_files: >-
+            setup.sh
+            check-claude.sh
+            check-codex.sh
+            gh-bootstrap.sh
+            git-hygiene.sh
+            hygiene-status.sh
+          # Restrict scan to the shell files we ship.
+          ignore_paths: >-
+            node_modules
+            .git
+          # The action discovers *.sh automatically; the additional_files entries
+          # are belt-and-suspenders for the top-level scripts that lack a shebang
+          # detection edge case.
+
+  tsc:
+    name: tsc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Type-check Claude hooks
+        working-directory: claude/hooks
+        run: bunx tsc --noEmit

@@ -1,0 +1,44 @@
+name: smoke-install
+
+# Rationale: this workflow exercises ./setup.sh --check on macOS and Linux runners
+# to catch obvious regressions in the bootstrap script. It is marked
+# continue-on-error for the FIRST SIX MONTHS (through ~2026-11-19) while we
+# shake out flakiness on fresh runners (Homebrew availability, Claude/Codex CLI
+# version drift, ad-hoc env quirks). After that, flip continue-on-error to false
+# and start gating PRs on it.
+
+on:
+  pull_request:
+    paths:
+      - "setup.sh"
+      - "check-claude.sh"
+      - "gh-bootstrap.sh"
+      - ".bash_aliases"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: setup.sh --check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # See rationale at top of file. Remove once stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check setup.sh
+        run: bash -n ./setup.sh
+
+      - name: Run read-only smoke (./setup.sh --check)
+        env:
+          # Use the runner's HOME — read-only audit, no installs.
+          PAI_DIR: ${{ runner.temp }}/pai-smoke
+        run: |
+          mkdir -p "$PAI_DIR"
+          ./setup.sh --check || {
+            echo "::warning::setup.sh --check exited non-zero on ${{ matrix.os }}; review output above"
+            exit 1
+          }

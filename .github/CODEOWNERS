@@ -1,0 +1,10 @@
+# High-blast-radius files require maintainer review.
+/setup.sh                  @jckeen
+/check-claude.sh           @jckeen
+/gh-bootstrap.sh           @jckeen
+/git-hygiene.sh            @jckeen
+/.bash_aliases             @jckeen
+/claude/hooks/             @jckeen
+/claude/scripts/           @jckeen
+/claude/systemd/           @jckeen
+/.github/                  @jckeen
