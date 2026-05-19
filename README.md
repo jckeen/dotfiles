@@ -16,7 +16,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **11 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`. Type the verb, get the workflow.
 - **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
-- **Safety hooks that can't be forgotten** — `claude/hooks/` currently contains 11 hook files. Seven are wired by default, two are documented opt-in PR-watch hooks, and two more are in-repo hook files that are not documented here as default-wired.
+- **Safety hooks that can't be forgotten** — `claude/hooks/` currently contains 10 hook files. Seven are wired by default, two are documented opt-in PR-watch hooks, and one more is an in-repo hook file that is not documented here as default-wired.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
 - **Auto-hygiene** — a daily systemd timer cleans stale branches across every repo in `~/dev/`, surfaces drift at every Claude/Codex session start, and bootstraps the canonical 8 GitHub auto-merge settings on every newly-created or cloned repo.
@@ -213,7 +213,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
 | **Agent Pack** | `AgentPack.md` | 17-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
-| **Hooks** | `hooks/*` | 11 hook files; 7 wired by default, 2 documented opt-in PR-watch hooks, 2 additional in-repo hook files |
+| **Hooks** | `hooks/*` | 10 hook files; 7 wired by default, 2 documented opt-in PR-watch hooks, 1 additional in-repo hook file |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
@@ -471,7 +471,7 @@ A team of 17 specialized subagents, each running in **its own isolated context**
 
 ## Safety Hooks
 
-Hooks run automatically and can't be forgotten like CLAUDE.md rules. `claude/hooks/` currently contains 11 hook files. Based on the repo-documented `settings.json` wiring, 7 ship enabled by default, 2 are documented opt-in PR-watch hooks, and 2 more hook files are present in the repo but not documented here as default-wired.
+Hooks run automatically and can't be forgotten like CLAUDE.md rules. `claude/hooks/` currently contains 10 hook files. Based on the repo-documented `settings.json` wiring, 7 ship enabled by default, 2 are documented opt-in PR-watch hooks, and 1 more hook file is present in the repo but not documented here as default-wired.
 
 <details>
 <summary><strong>Hook-by-hook details</strong></summary>
@@ -493,10 +493,9 @@ Hooks run automatically and can't be forgotten like CLAUDE.md rules. `claude/hoo
 - `PRWatcherAutoLaunch.hook.ts` — PostToolUse hook that detects PR creation and starts the review watcher loop
 - `PRWatcherSurface.hook.ts` — UserPromptSubmit hook that surfaces unread PR review events into prompt context
 
-**Additional in-repo hook files**
+**Additional in-repo hook file**
 
 - `PrePushStaleSHACheck.hook.ts` — PreToolUse Bash hook that warns when `git push` would obsolete an in-flight PR review
-- `PromptProcessing.hook.ts` — UserPromptSubmit hook for tab-title updates and session auto-naming. **Requires PAI installed alongside:** this file is a tracked reference copy and imports from `../PAI/TOOLS/Inference` plus an unshipped `./lib/` sibling, so it will error on startup if you symlink it from a vanilla dotfiles install. Wire it only on machines where PAI's `claude/PAI/TOOLS/` and the hook-lib modules are present (typically via a separate PAI repo or `claude-memory/pai-config`).
 
 > **Note:** Security blocking (dangerous commands, secret detection) is handled by the PAI SecurityValidator hook in `~/.claude/hooks/SecurityValidator.hook.ts`, configured via `patterns.yaml`. The old `block-dangerous.sh` and `block-secrets.sh` hooks have been replaced.
 
@@ -797,7 +796,6 @@ dotfiles/
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-    │   ├── PromptProcessing.hook.ts        # Tab-title updates and session auto-naming
     │   └── SymlinkRepair.hook.ts           # Repair missing ~/.claude symlinks on SessionStart
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
