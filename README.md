@@ -496,7 +496,7 @@ Hooks run automatically and can't be forgotten like CLAUDE.md rules. `claude/hoo
 **Additional in-repo hook files**
 
 - `PrePushStaleSHACheck.hook.ts` — PreToolUse Bash hook that warns when `git push` would obsolete an in-flight PR review
-- `PromptProcessing.hook.ts` — UserPromptSubmit hook for tab-title updates and session auto-naming
+- `PromptProcessing.hook.ts` — UserPromptSubmit hook for tab-title updates and session auto-naming. **Requires PAI installed alongside:** this file is a tracked reference copy and imports from `../PAI/TOOLS/Inference` plus an unshipped `./lib/` sibling, so it will error on startup if you symlink it from a vanilla dotfiles install. Wire it only on machines where PAI's `claude/PAI/TOOLS/` and the hook-lib modules are present (typically via a separate PAI repo or `claude-memory/pai-config`).
 
 > **Note:** Security blocking (dangerous commands, secret detection) is handled by the PAI SecurityValidator hook in `~/.claude/hooks/SecurityValidator.hook.ts`, configured via `patterns.yaml`. The old `block-dangerous.sh` and `block-secrets.sh` hooks have been replaced.
 
