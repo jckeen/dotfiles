@@ -102,6 +102,13 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `format-on-edit.sh` | PostToolUse | Auto-formats edited files (prettier, black, rustfmt, gofmt) |
 | `ntfy-awaiting-input.sh` | PreToolUse | Push notification when Claude needs input |
 | `StripProjectPermissions.hook.ts` | SessionStart | Strips project-level permission overrides that fight global settings |
+| `HygieneStatus.hook.sh` | SessionStart | Surfaces git-hygiene drift cached by the daily timer (silent when clean) |
+| `PluginDriftCheck.hook.ts` | SessionStart | Warns when installed Claude plugins drift from the manifest |
+| `SymlinkRepair.hook.ts` | SessionStart | Self-heals missing/broken dotfiles → `~/.claude/` symlinks |
+| `PRWatcherAutoLaunch.hook.ts` | SessionStart | Auto-launches Claude when a PR review is requested |
+| `PRWatcherSurface.hook.ts` | SessionStart | Surfaces pending PR reviews so they don't sit forgotten |
+| `PrePushStaleSHACheck.hook.ts` | PreToolUse | Warns before pushing a stale SHA over fresh remote work |
+| `PromptProcessing.hook.ts` | UserPromptSubmit | Light pre-processing on user prompts before they reach the model |
 
 > Security blocking (dangerous commands, secrets) is handled by the PAI SecurityValidator hook, not in dotfiles.
 

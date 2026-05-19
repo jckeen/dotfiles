@@ -1,8 +1,11 @@
 # Codex Global Guidance
 
-This file is safe to keep in the public dotfiles repo. Keep personal identity,
-private project context, tokens, client names, and machine-specific paths out of
-this file.
+This is how I run Codex day-to-day — the public-safe layer, anyway. It pairs
+with the Claude Code setup in this repo so `cx` mirrors `cc`: same skill names,
+same review rhythm, same Codex-aware guardrails. The rules below are the small
+set of working-style defaults I want every Codex session to share, regardless
+of which machine I'm on. Personal identity, project context, tokens, and
+machine paths stay out of here — they live in `~/dev/codex-memory`.
 
 ## Working Style
 

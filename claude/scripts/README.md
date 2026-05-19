@@ -61,12 +61,10 @@ Each script uses scoped `--allowedTools` to limit what Claude can do:
 | Tier | Can do | Can't do |
 |------|--------|----------|
 | **TIER_READONLY** | Read files, search, git status/log/diff | Edit, write, run arbitrary commands |
-| **TIER_LINT** | Above + edit files + run test/lint/build | Commit, push, run other commands |
-| **TIER_FIX** | Above + write new files | Commit, push |
+| **TIER_FIX** | Above + edit + write files + run tests | Commit, push |
 | **TIER_COMMIT** | Above + git add/commit/branch/checkout | Push, run arbitrary commands |
-| **TIER_PUSH** | Above + git push + gh pr | Run arbitrary commands |
 
-Only `review-and-push.sh` uses TIER_PUSH, and only after tests pass and a review clears it.
+`review-and-push.sh` itself uses `TIER_READONLY` for the AI review, then performs the `git push` directly from bash only after the review clears.
 
 ## Full Auto Mode
 

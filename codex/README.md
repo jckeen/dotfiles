@@ -1,7 +1,11 @@
 # Codex Dotfiles
 
-This directory contains only public-safe Codex defaults. The dotfiles repository
-is public, so live Codex state must stay local or in a separate private repo.
+This is how I run Codex day-to-day — the reusable, public-safe pieces. Codex
+keeps its own auth, history, sqlite state, and per-project trust local; what
+lives here is everything I'm happy to share across machines (and with you, if
+you fork this repo): the global `AGENTS.md` rules, the public skills under
+`skills/`, and example config. Live Codex runtime state stays in `~/.codex/`;
+anything personal lives in a separate private `~/dev/codex-memory` repo.
 
 ## Safe to Track Here
 
