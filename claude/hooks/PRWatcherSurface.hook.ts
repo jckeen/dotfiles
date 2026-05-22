@@ -140,9 +140,15 @@ function summarize(events: Event[]): string {
   const approvals = events.filter((e) => e.kind === "approval");
   const others = events.filter((e) => e.kind !== "approval");
 
-  const approvalLines = approvals.map(
-    (e) => `🟢 APPROVED ${e.repo}#${e.pr} — ${sanitize(e.line)}`,
-  );
+  // Approval events carry both verdicts — WatchPRReviews emits
+  // `... APPROVED via 👍 ...` and `... CHANGES_REQUESTED via 👎 ...`. Parse
+  // the actual verdict from the line so a 👎 reaction headlines as
+  // 🔴 CHANGES_REQUESTED instead of being mis-surfaced as a green ship-signal.
+  const approvalLines = approvals.map((e) => {
+    const isChanges = / CHANGES_REQUESTED /.test(e.line);
+    const marker = isChanges ? "🔴 CHANGES_REQUESTED" : "🟢 APPROVED";
+    return `${marker} ${e.repo}#${e.pr} — ${sanitize(e.line)}`;
+  });
 
   // Other events: bullet form if <=5, bucket per-PR if >5. Approvals are
   // no longer in this count, so a "1 approval, 8 comments" mix renders as
