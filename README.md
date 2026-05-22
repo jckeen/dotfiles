@@ -138,8 +138,10 @@ codex login            # Optional
 ./setup.sh             # default: prompts "Are you using PAI? [Y/n]"
 ./setup.sh --no-pai    # skip the prompt — Claude Code + hooks only
 ./setup.sh --pai       # skip the prompt — assume PAI (needs claude-memory repo)
+./setup.sh --dry-run   # print destructive ops without executing
 ./setup.sh --check     # read-only audit of all symlinks; exits non-zero if broken
 ./setup.sh --repair    # audit + recreate any broken/missing symlinks
+./setup.sh --help      # show all flags and environment variables
 ```
 
 > **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below).
@@ -372,7 +374,7 @@ foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
+  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + "'")
 }
 
 # 4. Reload
@@ -793,63 +795,64 @@ dotfiles/
 │       ├── handoff/
 │       ├── changelog/
 │       └── repo-health/
-└── claude/
-    ├── AgentPack.md            # 17-agent review orchestra
-    ├── statusline.sh           # Context bar, git branch, cost display
-    ├── hooks/
-    │   ├── conventional-commit.sh          # PreToolUse commit message validator
-    │   ├── format-on-edit.sh               # PostToolUse auto-formatter
-    │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
-    │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
-    │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
-    │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
-    │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
-    │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-    │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-    │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
-    ├── skills/
-    │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
-    │   ├── kickoff/            # /kickoff — new project bootstrap
-    │   ├── changelog/          # /changelog — session logging
-    │   ├── log-error/          # /log-error — error documentation
-    │   ├── review/             # /review — code quality check
-    │   ├── handoff/            # /handoff — session transitions
-    │   ├── fix-issue/          # /fix-issue — GitHub issue workflow
-    │   ├── simplify/           # /simplify — complexity removal
-    │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
-    │   ├── claude-server/      # /claude-server — remote worktree
-    │   ├── decompose/          # /decompose — deep task decomposition
-    │   └── max/                # /max — maximum effort parallel execution
-    ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
-    ├── scripts/                # Headless automation scripts
-    │   ├── common.sh           # Shared safety tiers + runner
-    │   ├── health-check.sh     # Read-only repo health audit
-    │   ├── hygiene-cron.sh     # Daily cron wrapper for git-hygiene across all repos
-    │   ├── full-review.sh      # 3-phase agent pack review
-    │   ├── test-coverage.sh    # Write tests for uncovered code
-    │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
-    │   ├── overnight.sh        # Orchestrate all scripts across repos
-    │   ├── review-and-push.sh  # Morning review of overnight changes
-    │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
-    ├── systemd/                # systemd units (voice server, hygiene timer)
-    └── agents/                 # 17 specialized review subagents
-        ├── product-strategist.md
-        ├── ux-reviewer.md
-        ├── frontend-architect.md
-        ├── backend-architect.md
-        ├── growth-strategist.md
-        ├── content-reviewer.md
-        ├── trust-safety.md
-        ├── qa-lead.md
-        ├── perf-accessibility.md
-        ├── launch-operator.md
-        ├── security-reviewer.md
-        ├── code-simplifier.md
-        ├── repo-scout.md
-        ├── dependency-doctor.md
-        ├── package-scout.md
-        ├── test-writer.md
-        └── schema-reviewer.md
+├── claude/
+│   ├── AgentPack.md            # 17-agent review orchestra
+│   ├── statusline.sh           # Context bar, git branch, cost display
+│   ├── hooks/
+│   │   ├── conventional-commit.sh          # PreToolUse commit message validator
+│   │   ├── format-on-edit.sh               # PostToolUse auto-formatter
+│   │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
+│   │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
+│   │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
+│   │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
+│   │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
+│   │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+│   │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
+│   │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
+│   │   └── PromptProcessing.hook.ts        # UserPromptSubmit tab title + session naming
+│   ├── skills/
+│   │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
+│   │   ├── kickoff/            # /kickoff — new project bootstrap
+│   │   ├── changelog/          # /changelog — session logging
+│   │   ├── log-error/          # /log-error — error documentation
+│   │   ├── review/             # /review — code quality check
+│   │   ├── handoff/            # /handoff — session transitions
+│   │   ├── fix-issue/          # /fix-issue — GitHub issue workflow
+│   │   ├── simplify/           # /simplify — complexity removal
+│   │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
+│   │   ├── claude-server/      # /claude-server — remote worktree
+│   │   ├── decompose/          # /decompose — deep task decomposition
+│   │   └── max/                # /max — maximum effort parallel execution
+│   ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
+│   ├── scripts/                # Headless automation scripts
+│   │   ├── common.sh           # Shared safety tiers + runner
+│   │   ├── health-check.sh     # Read-only repo health audit
+│   │   ├── hygiene-cron.sh     # Daily cron wrapper for git-hygiene across all repos
+│   │   ├── full-review.sh      # 3-phase agent pack review
+│   │   ├── test-coverage.sh    # Write tests for uncovered code
+│   │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
+│   │   ├── overnight.sh        # Orchestrate all scripts across repos
+│   │   ├── review-and-push.sh  # Morning review of overnight changes
+│   │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
+│   ├── systemd/                # systemd units (voice server, hygiene timer)
+│   └── agents/                 # 17 specialized review subagents
+│       ├── product-strategist.md
+│       ├── ux-reviewer.md
+│       ├── frontend-architect.md
+│       ├── backend-architect.md
+│       ├── growth-strategist.md
+│       ├── content-reviewer.md
+│       ├── trust-safety.md
+│       ├── qa-lead.md
+│       ├── perf-accessibility.md
+│       ├── launch-operator.md
+│       ├── security-reviewer.md
+│       ├── code-simplifier.md
+│       ├── repo-scout.md
+│       ├── dependency-doctor.md
+│       ├── package-scout.md
+│       ├── test-writer.md
+│       └── schema-reviewer.md
 └── windows/
     ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
     └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
