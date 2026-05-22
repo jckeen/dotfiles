@@ -222,6 +222,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
+| **Prompt classifier** | `hooks/PromptProcessing.hook.ts` | Sonnet-based UserPromptSubmit classifier — emits MODE (MINIMAL/NATIVE/ALGORITHM) and TIER (E1–E5) into additionalContext for the Algorithm executor |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
@@ -806,7 +807,8 @@ dotfiles/
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-    │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
+    │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
+    │   └── PromptProcessing.hook.ts        # UserPromptSubmit Sonnet classifier — emits MODE+TIER for Algorithm executor
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
