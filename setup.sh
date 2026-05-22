@@ -109,6 +109,14 @@ run_health_audit() {
     done
   fi
 
+  # Bin scripts (top-level dotfiles helpers → ~/.local/bin)
+  local bin_src
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+    bin_src="$DOTFILES_DIR/$bin"
+    [ -f "$bin_src" ] || continue
+    audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+  done
+
   # Chrome
   if [ -d "$CLAUDE_SRC/chrome" ]; then
     for f in "$CLAUDE_SRC/chrome/"*; do
@@ -348,6 +356,24 @@ if [[ "$PLATFORM" == "wsl" ]]; then
     echo "  -> Skipped audio setup"
   fi
 fi
+
+# ─── 1c. Dotfiles bin scripts → ~/.local/bin ────────────────────────
+# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh)
+# ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
+# already added to PATH by the shell config in section 7, so symlinking
+# there makes them callable as plain commands from any cwd.
+echo ""
+echo "--- Linking dotfiles bin scripts ---"
+mkdir -p "$HOME_DIR/.local/bin"
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  _src="$DOTFILES_DIR/$_bin"
+  if [ ! -f "$_src" ]; then
+    echo "  -> $_bin not found in dotfiles, skipping"
+    continue
+  fi
+  link_file "$_src" "$HOME_DIR/.local/bin/$_bin"
+  echo "  -> $_bin linked into ~/.local/bin"
+done
 
 # ─── 2. Node.js (if not present) ─────────────────────────────────────
 if ! command -v node &>/dev/null; then
