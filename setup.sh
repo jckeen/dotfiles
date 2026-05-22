@@ -109,12 +109,14 @@ run_health_audit() {
     done
   fi
 
-  # Bin scripts (top-level dotfiles helpers → ~/.local/bin)
+  # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — `executable=1`
+  # tells audit_link to also enforce the +x bit so an un-executable source
+  # script doesn't pass health checks while still failing at runtime.
   local bin_src
   for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
-    audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable" && verified=$((verified + 1)) || errors=$((errors + 1))
   done
 
   # Chrome
@@ -165,7 +167,7 @@ run_health_audit() {
 # Check a single symlink. Returns 0 if OK, 1 if broken.
 # In repair mode, recreates broken links.
 audit_link() {
-  local src="$1" dst="$2" label="$3" mode="$4"
+  local src="$1" dst="$2" label="$3" mode="$4" require="${5:-}"
   local src_real dotfiles_real
   src_real="$(realpath "$src" 2>/dev/null)" || {
     printf '  \033[31mINVALID\033[0m %s source cannot be resolved: %s\n' "$label" "$src"
@@ -183,6 +185,19 @@ audit_link() {
     local target
     target="$(readlink "$dst")"
     if [ "$target" = "$src" ] && [ -e "$dst" ]; then
+      # Symlink resolves to the right file — for executable entrypoints we
+      # also enforce the +x bit on the source so a freshly-cloned host with
+      # 644-mode bin scripts can't show all-green while `gh-bootstrap`
+      # silently returns "Permission denied" when invoked from PATH.
+      if [ "$require" = "executable" ] && [ ! -x "$src_real" ]; then
+        printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
+        if [ "$mode" = "repair" ]; then
+          chmod +x "$src_real"
+          printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
+          return 0
+        fi
+        return 1
+      fi
       return 0  # OK
     fi
     # Wrong target or broken
@@ -364,14 +379,25 @@ fi
 # there makes them callable as plain commands from any cwd.
 echo ""
 echo "--- Linking dotfiles bin scripts ---"
-mkdir -p "$HOME_DIR/.local/bin"
+# Route every filesystem mutation through `run` so --dry-run actually shows a
+# preview without creating ~/.local/bin or replacing existing entries. `chmod
+# +x` is defensive — the scripts are committed 100755 (see git log), but a
+# user whose checkout dropped the mode bit (e.g. fetched via an archive that
+# strips it) would otherwise wind up with PATH entries that fail at
+# Permission denied.
+run mkdir -p "$HOME_DIR/.local/bin"
 for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"
     continue
   fi
-  link_file "$_src" "$HOME_DIR/.local/bin/$_bin"
+  run chmod +x "$_src"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "[DRY] link_file $_src $HOME_DIR/.local/bin/$_bin"
+  else
+    link_file "$_src" "$HOME_DIR/.local/bin/$_bin"
+  fi
   echo "  -> $_bin linked into ~/.local/bin"
 done
 
