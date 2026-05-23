@@ -164,6 +164,35 @@ run_health_audit() {
   [ "$errors" -eq 0 ] && return 0 || return 1
 }
 
+# Enforce +x on a bin-script source when require=executable, regardless of
+# which audit_link branch (already-linked vs repaired-from-broken/missing)
+# detected the link state. Codex P2 on PR #53: the executable check used to
+# fire only in the already-linked branch, so `--repair` on a MISSING or
+# BROKEN bin entry recreated the link but left the source 644 — first call
+# from PATH still hit `Permission denied`.
+#
+# Returns 0 if source is +x (or was successfully repaired). Returns 1 if
+# +x is missing and either repair was skipped (check mode) or chmod failed.
+enforce_executable_bit() {
+  local src_real="$1" label="$2" mode="$3"
+  if [ -x "$src_real" ]; then
+    return 0
+  fi
+  printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
+  if [ "$mode" = "repair" ]; then
+    # Check chmod's exit status explicitly: audit_link is invoked in
+    # `audit_link ... && ... || ...` chains, which suppresses set -e
+    # for commands inside the function. A silent chmod failure (e.g.
+    # EPERM on a read-only checkout) must NOT print FIXED.
+    if chmod +x "$src_real" 2>/dev/null; then
+      printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
+    else
+      printf '  \033[31mFAILED\033[0m  %s (chmod +x failed; check ownership/permissions)\n' "$label"
+    fi
+  fi
+  return 1
+}
+
 # Check a single symlink. Returns 0 if OK, 1 if broken.
 # In repair mode, recreates broken links.
 audit_link() {
@@ -189,24 +218,8 @@ audit_link() {
       # also enforce the +x bit on the source so a freshly-cloned host with
       # 644-mode bin scripts can't show all-green while `gh-bootstrap`
       # silently returns "Permission denied" when invoked from PATH.
-      if [ "$require" = "executable" ] && [ ! -x "$src_real" ]; then
-        printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
-        if [ "$mode" = "repair" ]; then
-          # Check chmod's exit status explicitly: audit_link is invoked in
-          # `audit_link ... && ... || ...` chains, which suppresses set -e
-          # for commands inside the success branch. If chmod silently
-          # failed (e.g. EPERM on a read-only checkout), we would have
-          # printed FIXED while the bit remained dropped.
-          if chmod +x "$src_real" 2>/dev/null; then
-            printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
-          else
-            printf '  \033[31mFAILED\033[0m  %s (chmod +x failed; check ownership/permissions)\n' "$label"
-          fi
-        fi
-        # Always report nonzero — drift existed, so the audit summary must
-        # reflect a finding even after a successful repair (matches the
-        # broken / missing / not-linked branches below).
-        return 1
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || return 1
       fi
       return 0  # OK
     fi
@@ -217,6 +230,12 @@ audit_link() {
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+      # Codex P2 on PR #53: repair-path executable enforcement. Without
+      # this, a MISSING/BROKEN bin link gets recreated but the source
+      # stays 644 and `gh-bootstrap` keeps returning Permission denied.
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      fi
     fi
     return 1
   elif [ -f "$dst" ]; then
@@ -226,6 +245,9 @@ audit_link() {
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      fi
     fi
     return 1
   elif [ ! -e "$dst" ]; then
@@ -234,6 +256,9 @@ audit_link() {
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      fi
     fi
     return 1
   fi
