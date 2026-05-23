@@ -171,8 +171,16 @@ run_health_audit() {
 # BROKEN bin entry recreated the link but left the source 644 — first call
 # from PATH still hit `Permission denied`.
 #
-# Returns 0 if source is +x (or was successfully repaired). Returns 1 if
-# +x is missing and either repair was skipped (check mode) or chmod failed.
+# Returns:
+#   0 — source already +x, OR repair-mode chmod just succeeded (drift fixed)
+#   1 — drift present AND (check-mode OR chmod failed)
+#
+# Codex P2 on PR #53 (third pass): the prior revision returned 1 even after
+# a successful chmod in repair mode, so `audit_link "$require=executable"
+# || return 1` propagated failure and `setup.sh --repair` exited non-zero
+# after fixing the bit. Repair-success must read as success at the call
+# site; the chmod-failed and check-mode paths remain non-zero so the audit
+# summary still reflects unfixed drift.
 enforce_executable_bit() {
   local src_real="$1" label="$2" mode="$3"
   if [ -x "$src_real" ]; then
@@ -186,9 +194,9 @@ enforce_executable_bit() {
     # EPERM on a read-only checkout) must NOT print FIXED.
     if chmod +x "$src_real" 2>/dev/null; then
       printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
-    else
-      printf '  \033[31mFAILED\033[0m  %s (chmod +x failed; check ownership/permissions)\n' "$label"
+      return 0
     fi
+    printf '  \033[31mFAILED\033[0m  %s (chmod +x failed; check ownership/permissions)\n' "$label"
   fi
   return 1
 }
