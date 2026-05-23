@@ -172,7 +172,7 @@ Once inside Claude:
 
 | Command | What it does |
 |---------|-------------|
-| `wsl6` | Opens a Windows Terminal tab with a 3×2 grid of plain WSL shells (agent-neutral) |
+| `wsl6` | Opens a Windows Terminal tab with a 3×2 grid of plain WSL shells (no agent) |
 | `ccprojects` | Lists projects available under your WSL `~/dev/` |
 | `ccgrid dotfiles atlas stringer` | One new tab, three split panes, each running `cc <project>` inside WSL |
 | `cctab dotfiles atlas` | One tab per project, each running `cc <project>` inside WSL |
@@ -351,7 +351,7 @@ The dotfiles ship two PowerShell helper files:
 | `ccprojects` | cc-functions | List available projects (from WSL) |
 | `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
 
-**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
+**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.\<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
 
 > **Missed the prompt or installed before this split?** Just run `dotfiles-update` from WSL — it pulls the latest and re-runs setup. The PowerShell prompt fires again and both files are installed/refreshed in both PS profiles.
 
@@ -806,6 +806,7 @@ dotfiles/
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
+    │   ├── PromptProcessing.hook.ts        # TODO(docs): describe behavior — see companion issue
     │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
