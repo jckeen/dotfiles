@@ -192,10 +192,20 @@ audit_link() {
       if [ "$require" = "executable" ] && [ ! -x "$src_real" ]; then
         printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
         if [ "$mode" = "repair" ]; then
-          chmod +x "$src_real"
-          printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
-          return 0
+          # Check chmod's exit status explicitly: audit_link is invoked in
+          # `audit_link ... && ... || ...` chains, which suppresses set -e
+          # for commands inside the success branch. If chmod silently
+          # failed (e.g. EPERM on a read-only checkout), we would have
+          # printed FIXED while the bit remained dropped.
+          if chmod +x "$src_real" 2>/dev/null; then
+            printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
+          else
+            printf '  \033[31mFAILED\033[0m  %s (chmod +x failed; check ownership/permissions)\n' "$label"
+          fi
         fi
+        # Always report nonzero — drift existed, so the audit summary must
+        # reflect a finding even after a successful repair (matches the
+        # broken / missing / not-linked branches below).
         return 1
       fi
       return 0  # OK
@@ -384,7 +394,8 @@ echo "--- Linking dotfiles bin scripts ---"
 # +x` is defensive — the scripts are committed 100755 (see git log), but a
 # user whose checkout dropped the mode bit (e.g. fetched via an archive that
 # strips it) would otherwise wind up with PATH entries that fail at
-# Permission denied.
+# Permission denied. Skip chmod when the bit is already set, and tolerate
+# EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
 for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
   _src="$DOTFILES_DIR/$_bin"
@@ -392,7 +403,12 @@ for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
     echo "  -> $_bin not found in dotfiles, skipping"
     continue
   fi
-  run chmod +x "$_src"
+  if [ ! -x "$_src" ]; then
+    if ! run chmod +x "$_src" 2>/dev/null; then
+      echo "  -> $_bin: source not executable and chmod failed (read-only checkout?); skipping link"
+      continue
+    fi
+  fi
   if [ "${DRY_RUN:-0}" = "1" ]; then
     echo "[DRY] link_file $_src $HOME_DIR/.local/bin/$_bin"
   else
