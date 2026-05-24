@@ -131,37 +131,61 @@ function sanitize(line: string): string {
 }
 
 function summarize(events: Event[]): string {
-  if (events.length <= 5) {
-    return events
-      .map((e) => `• ${e.repo}#${e.pr} ${sanitize(e.line.replace(/^\[[^\]]+\]\s*/, "[" + e.kind + "] "))}`)
-      .join("\n");
-  }
-  // >5: bucket per PR. `approvals` is its own counter so v2 auto-merge
-  // can key on it without scanning the raw event line — a Codex 👍 buried
-  // in a 50-event summary stays surfacable as "1 approval".
-  const buckets = new Map<string, { reviews: number; comments: number; approvals: number; state: number; ci: number }>();
-  for (const e of events) {
-    const key = `${e.repo}#${e.pr}`;
-    const b = buckets.get(key) ?? { reviews: 0, comments: 0, approvals: 0, state: 0, ci: 0 };
-    if (e.kind === "review") b.reviews++;
-    else if (e.kind === "inline" || e.kind === "comment") b.comments++;
-    else if (e.kind === "state" || e.kind === "shutdown") b.state++;
-    else if (e.kind === "ci FINAL") b.ci++;
-    else if (e.kind === "approval") b.approvals++;
-    else if (e.kind === "reaction") b.comments++;
-    buckets.set(key, b);
-  }
-  return Array.from(buckets.entries())
-    .map(([k, b]) => {
+  // ALWAYS surface every [approval] event in full verbatim — never bucket
+  // them. Approvals are headline ship-signal; rolling them up as "1 approval"
+  // alongside CI churn / comment noise is how three Codex approvals were
+  // missed in one session (PR #13/#14/#16 on 2026-05-21 — the executor sat
+  // believing the three PRs were still pending because the >5-event bucket
+  // form hid the approval text inside `**N approvals**` strings).
+  const approvals = events.filter((e) => e.kind === "approval");
+  const others = events.filter((e) => e.kind !== "approval");
+
+  // Approval events carry both verdicts — WatchPRReviews emits
+  // `... APPROVED via 👍 ...` and `... CHANGES_REQUESTED via 👎 ...`. Parse
+  // the actual verdict from the line so a 👎 reaction headlines as
+  // 🔴 CHANGES_REQUESTED instead of being mis-surfaced as a green ship-signal.
+  const approvalLines = approvals.map((e) => {
+    const isChanges = / CHANGES_REQUESTED /.test(e.line);
+    const marker = isChanges ? "🔴 CHANGES_REQUESTED" : "🟢 APPROVED";
+    return `${marker} ${e.repo}#${e.pr} — ${sanitize(e.line)}`;
+  });
+
+  // Other events: bullet form if <=5, bucket per-PR if >5. Approvals are
+  // no longer in this count, so a "1 approval, 8 comments" mix renders as
+  // one explicit APPROVED line + one bucket line — never collapsed.
+  let otherLines: string[];
+  if (others.length <= 5) {
+    otherLines = others.map(
+      (e) =>
+        `• ${e.repo}#${e.pr} ${sanitize(e.line.replace(/^\[[^\]]+\]\s*/, "[" + e.kind + "] "))}`,
+    );
+  } else {
+    const buckets = new Map<
+      string,
+      { reviews: number; comments: number; state: number; ci: number; reactions: number }
+    >();
+    for (const e of others) {
+      const key = `${e.repo}#${e.pr}`;
+      const b = buckets.get(key) ?? { reviews: 0, comments: 0, state: 0, ci: 0, reactions: 0 };
+      if (e.kind === "review") b.reviews++;
+      else if (e.kind === "inline" || e.kind === "comment") b.comments++;
+      else if (e.kind === "state" || e.kind === "shutdown") b.state++;
+      else if (e.kind === "ci FINAL") b.ci++;
+      else if (e.kind === "reaction") b.reactions++;
+      buckets.set(key, b);
+    }
+    otherLines = Array.from(buckets.entries()).map(([k, b]) => {
       const parts: string[] = [];
-      if (b.approvals) parts.push(`**${b.approvals} approval${b.approvals > 1 ? "s" : ""}**`);
       if (b.reviews) parts.push(`${b.reviews} review${b.reviews > 1 ? "s" : ""}`);
       if (b.comments) parts.push(`${b.comments} comment${b.comments > 1 ? "s" : ""}`);
+      if (b.reactions) parts.push(`${b.reactions} reaction${b.reactions > 1 ? "s" : ""}`);
       if (b.ci) parts.push(`CI final`);
       if (b.state) parts.push(`state change`);
       return `• ${k}: ${parts.join(", ")}`;
-    })
-    .join("\n");
+    });
+  }
+
+  return [...approvalLines, ...otherLines].join("\n");
 }
 
 async function main(): Promise<void> {
