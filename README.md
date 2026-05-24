@@ -372,7 +372,7 @@ foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE ('. "' + "$env:USERPROFILE\.$f" + '"')
+  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + '"')
 }
 
 # 4. Reload
@@ -805,6 +805,7 @@ dotfiles/
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+    │   ├── PromptProcessing.hook.ts        # UserPromptSubmit prompt pre-processing
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
     │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     ├── skills/
