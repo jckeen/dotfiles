@@ -10,7 +10,7 @@ See the [README](README.md) for the full best practices guide. This is the cheat
 cd ~/dev
 git clone https://github.com/jckeen/dotfiles.git
 cd dotfiles && chmod +x setup.sh && ./setup.sh      # prompts: are you using PAI? [Y/n]
-# Flags: --no-pai (Claude Code only, no PAI) | --pai (assume yes, non-interactive)
+# Flags: --no-pai | --pai | --check | --repair | --dry-run | --help
 ```
 
 The script auto-detects your platform (macOS, WSL, or Linux) and installs everything accordingly.
@@ -108,7 +108,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `PRWatcherAutoLaunch.hook.ts` | PostToolUse | Detects `gh pr create` / `mcp__github__create_pull_request` and spawns `WatchPRReviews.ts` in the background so the watch→fix→re-review loop runs without manual Monitor invocation |
 | `PRWatcherSurface.hook.ts` | UserPromptSubmit | Surfaces unread PR-watcher events (Codex/human reviews, comments, CI) into `additionalContext` so the assistant proactively addresses feedback |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event for the surface hook |
-| `PromptProcessing.hook.ts` | UserPromptSubmit | Light pre-processing on user prompts (mode + tier classification, optional session-name inference) before they reach the model |
+| `PromptProcessing.hook.ts` | UserPromptSubmit | Tab title update + session naming — one Haiku inference call per prompt produces a tab title and session name; voice-announces the session name on first prompt |
 
 > Security blocking (dangerous commands, secrets) is handled by the PAI SecurityValidator hook, not in dotfiles.
 
