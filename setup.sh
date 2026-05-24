@@ -109,6 +109,16 @@ run_health_audit() {
     done
   fi
 
+  # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — `executable=1`
+  # tells audit_link to also enforce the +x bit so an un-executable source
+  # script doesn't pass health checks while still failing at runtime.
+  local bin_src
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+    bin_src="$DOTFILES_DIR/$bin"
+    [ -f "$bin_src" ] || continue
+    audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable" && verified=$((verified + 1)) || errors=$((errors + 1))
+  done
+
   # Chrome
   if [ -d "$CLAUDE_SRC/chrome" ]; then
     for f in "$CLAUDE_SRC/chrome/"*; do
@@ -154,10 +164,47 @@ run_health_audit() {
   [ "$errors" -eq 0 ] && return 0 || return 1
 }
 
+# Enforce +x on a bin-script source when require=executable, regardless of
+# which audit_link branch (already-linked vs repaired-from-broken/missing)
+# detected the link state. Codex P2 on PR #53: the executable check used to
+# fire only in the already-linked branch, so `--repair` on a MISSING or
+# BROKEN bin entry recreated the link but left the source 644 — first call
+# from PATH still hit `Permission denied`.
+#
+# Returns:
+#   0 — source already +x, OR repair-mode chmod just succeeded (drift fixed)
+#   1 — drift present AND (check-mode OR chmod failed)
+#
+# Codex P2 on PR #53 (third pass): the prior revision returned 1 even after
+# a successful chmod in repair mode, so `audit_link "$require=executable"
+# || return 1` propagated failure and `setup.sh --repair` exited non-zero
+# after fixing the bit. Repair-success must read as success at the call
+# site; the chmod-failed and check-mode paths remain non-zero so the audit
+# summary still reflects unfixed drift.
+enforce_executable_bit() {
+  local src_real="$1" label="$2" mode="$3"
+  if [ -x "$src_real" ]; then
+    return 0
+  fi
+  printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
+  if [ "$mode" = "repair" ]; then
+    # Check chmod's exit status explicitly: audit_link is invoked in
+    # `audit_link ... && ... || ...` chains, which suppresses set -e
+    # for commands inside the function. A silent chmod failure (e.g.
+    # EPERM on a read-only checkout) must NOT print FIXED.
+    if chmod +x "$src_real" 2>/dev/null; then
+      printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
+      return 0
+    fi
+    printf '  \033[31mFAILED\033[0m  %s (chmod +x failed; check ownership/permissions)\n' "$label"
+  fi
+  return 1
+}
+
 # Check a single symlink. Returns 0 if OK, 1 if broken.
 # In repair mode, recreates broken links.
 audit_link() {
-  local src="$1" dst="$2" label="$3" mode="$4"
+  local src="$1" dst="$2" label="$3" mode="$4" require="${5:-}"
   local src_real dotfiles_real
   src_real="$(realpath "$src" 2>/dev/null)" || {
     printf '  \033[31mINVALID\033[0m %s source cannot be resolved: %s\n' "$label" "$src"
@@ -175,6 +222,13 @@ audit_link() {
     local target
     target="$(readlink "$dst")"
     if [ "$target" = "$src" ] && [ -e "$dst" ]; then
+      # Symlink resolves to the right file — for executable entrypoints we
+      # also enforce the +x bit on the source so a freshly-cloned host with
+      # 644-mode bin scripts can't show all-green while `gh-bootstrap`
+      # silently returns "Permission denied" when invoked from PATH.
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || return 1
+      fi
       return 0  # OK
     fi
     # Wrong target or broken
@@ -184,6 +238,12 @@ audit_link() {
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+      # Codex P2 on PR #53: repair-path executable enforcement. Without
+      # this, a MISSING/BROKEN bin link gets recreated but the source
+      # stays 644 and `gh-bootstrap` keeps returning Permission denied.
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      fi
     fi
     return 1
   elif [ -f "$dst" ]; then
@@ -193,6 +253,9 @@ audit_link() {
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      fi
     fi
     return 1
   elif [ ! -e "$dst" ]; then
@@ -201,6 +264,9 @@ audit_link() {
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+      if [ "$require" = "executable" ]; then
+        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      fi
     fi
     return 1
   fi
@@ -348,6 +414,41 @@ if [[ "$PLATFORM" == "wsl" ]]; then
     echo "  -> Skipped audio setup"
   fi
 fi
+
+# ─── 1c. Dotfiles bin scripts → ~/.local/bin ────────────────────────
+# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh)
+# ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
+# already added to PATH by the shell config in section 7, so symlinking
+# there makes them callable as plain commands from any cwd.
+echo ""
+echo "--- Linking dotfiles bin scripts ---"
+# Route every filesystem mutation through `run` so --dry-run actually shows a
+# preview without creating ~/.local/bin or replacing existing entries. `chmod
+# +x` is defensive — the scripts are committed 100755 (see git log), but a
+# user whose checkout dropped the mode bit (e.g. fetched via an archive that
+# strips it) would otherwise wind up with PATH entries that fail at
+# Permission denied. Skip chmod when the bit is already set, and tolerate
+# EPERM on read-only / non-owner checkouts.
+run mkdir -p "$HOME_DIR/.local/bin"
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  _src="$DOTFILES_DIR/$_bin"
+  if [ ! -f "$_src" ]; then
+    echo "  -> $_bin not found in dotfiles, skipping"
+    continue
+  fi
+  if [ ! -x "$_src" ]; then
+    if ! run chmod +x "$_src" 2>/dev/null; then
+      echo "  -> $_bin: source not executable and chmod failed (read-only checkout?); skipping link"
+      continue
+    fi
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "[DRY] link_file $_src $HOME_DIR/.local/bin/$_bin"
+  else
+    link_file "$_src" "$HOME_DIR/.local/bin/$_bin"
+  fi
+  echo "  -> $_bin linked into ~/.local/bin"
+done
 
 # ─── 2. Node.js (if not present) ─────────────────────────────────────
 if ! command -v node &>/dev/null; then

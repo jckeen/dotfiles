@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-22 — fix(setup): symlink dotfiles bin scripts onto PATH
+
+### What changed
+- **`setup.sh`** — new install section **1c** symlinks `gh-bootstrap.sh`, `git-hygiene.sh`, and `hygiene-status.sh` from `$DOTFILES_DIR` into `~/.local/bin`. `run_health_audit` (`--check` / `--repair`) now covers these three symlinks as well.
+
+### Why
+These top-level helper scripts shipped in the repo but `setup.sh` never wired them onto PATH, so a fresh shell would fail `gh-bootstrap.sh --all ~/dev` with `command not found` even though the script existed. `~/.local/bin` is already prepended to PATH by `.bash_profile`, so symlinking there is the minimal idiomatic fix and keeps the script's existing self-contained location in `$DOTFILES_DIR`.
+
 ## 2026-05-14 — fix(windows/wsl6): pre-warm WSL distro + opt-in pane serialization
 
 ### What changed
