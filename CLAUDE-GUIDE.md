@@ -62,6 +62,9 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/simplify` | Remove over-engineering |
 | `/commit-push-pr` | Commit + push + PR in one shot |
 | `/claude-server` | Spawn worktree + remote |
+| `/decompose` | Break a complex task into subtasks |
+| `/max` | High-context deep investigation mode |
+| `/branch-hygiene` | Audit and clean up stale git branches |
 
 ---
 
