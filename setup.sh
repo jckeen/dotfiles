@@ -39,6 +39,16 @@ BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
 # Bootstrap exit code surfaced in final summary (M14). 0 = not run or success.
 BOOTSTRAP_RC=0
 
+# True (exit 0) when pai-mode.sh has switched Claude to plain mode — i.e.
+# ~/.claude/CLAUDE.md or settings.json is symlinked to the tracked plain files.
+# Setup must NOT copy over (would corrupt the plain files) or bootstrap/relink
+# (would silently restore PAI and end the user's A/B test) while this is true.
+pai_plain_active() {
+  case "$(readlink "$HOME_DIR/.claude/CLAUDE.md" 2>/dev/null)" in */claude/plain/CLAUDE.md) return 0 ;; esac
+  case "$(readlink "$HOME_DIR/.claude/settings.json" 2>/dev/null)" in */settings.plain.json) return 0 ;; esac
+  return 1
+}
+
 # Counters for summary
 LINKS_CREATED=0
 LINKS_VERIFIED=0
@@ -137,6 +147,8 @@ run_health_audit() {
   if [ -f "$BOOTSTRAP_SCRIPT" ]; then
     if bash "$BOOTSTRAP_SCRIPT" --check; then
       echo "  All claude-memory symlinks OK"
+    elif pai_plain_active; then
+      echo "  PAI is OFF (plain mode) — symlinks intentionally point at plain config; not repairing. Run pai-on to restore."
     else
       errors=$((errors + 1))
       if [ "$mode" = "repair" ]; then
@@ -865,16 +877,9 @@ fi
 if [ "$USE_PAI" = "1" ]; then
   _mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
 
-  # Skip the core PAI config copy while pai-mode.sh has switched to plain mode:
-  # ~/.claude/CLAUDE.md and settings.json are then symlinks to the tracked plain
-  # files, and a plain `cp` would write THROUGH them — corrupting claude/plain
-  # and silently re-enabling PAI. Run `pai-on` first to refresh PAI config.
-  _plain_active=0
-  case "$(readlink "$HOME_DIR/.claude/CLAUDE.md" 2>/dev/null)" in */claude/plain/CLAUDE.md) _plain_active=1 ;; esac
-  case "$(readlink "$HOME_DIR/.claude/settings.json" 2>/dev/null)" in */settings.plain.json) _plain_active=1 ;; esac
-
-  # Core PAI config (CLAUDE.md, settings.json)
-  if [ "$_plain_active" = "1" ]; then
+  # Core PAI config (CLAUDE.md, settings.json). Skipped in plain mode: a plain
+  # `cp` would write THROUGH the plain-mode symlinks, corrupting claude/plain.
+  if pai_plain_active; then
     echo "  -> PAI is OFF (plain mode) — skipping PAI config copy. Run pai-on, then re-run setup to refresh."
   elif [ -d "$_mem_repo/pai-config" ]; then
     for f in "$_mem_repo/pai-config/"*; do
@@ -1195,14 +1200,23 @@ fi
 # `exit 1` from here — the operator's primary dotfiles+Claude install must
 # still succeed even if the private memory layer fails to wire up.
 if [ "$USE_PAI" = "1" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
-  echo ""
-  echo "--- Running claude-memory bootstrap ---"
-  if bash "$BOOTSTRAP_SCRIPT"; then
+  if pai_plain_active; then
+    # Bootstrap relinks CLAUDE.md/settings.json back to PAI; skip it in plain
+    # mode so a setup/dotfiles-update run doesn't silently end an A/B test.
+    echo ""
+    echo "--- claude-memory bootstrap skipped (PAI is OFF / plain mode) ---"
+    echo "    Run 'pai-on' then re-run setup to restore and bootstrap PAI."
     BOOTSTRAP_RC=0
   else
-    BOOTSTRAP_RC=$?
-    echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
-    echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
+    echo ""
+    echo "--- Running claude-memory bootstrap ---"
+    if bash "$BOOTSTRAP_SCRIPT"; then
+      BOOTSTRAP_RC=0
+    else
+      BOOTSTRAP_RC=$?
+      echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
+      echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
+    fi
   fi
 fi
 
