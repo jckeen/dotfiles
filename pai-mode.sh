@@ -85,10 +85,15 @@ cmd_off() {
     return 0
   fi
 
-  # Never clobber a real file — we only swap symlinks.
+  # Never clobber a real file — we only swap symlinks. This toggle requires the
+  # symlink-based PAI layout that claude-memory/bootstrap.sh creates. If setup.sh
+  # copied pai-config into ~/.claude/ as regular files (the bootstrap-absent
+  # fallback), convert them to symlinks first rather than risk overwriting them.
   if [ ! -L "$CLAUDE_MD" ] || [ ! -L "$SETTINGS" ]; then
     err "Refusing: ~/.claude/CLAUDE.md or settings.json is not a symlink."
-    err "This toggle only swaps symlinks. Resolve that manually first."
+    err "This toggle requires the symlink-based PAI layout from"
+    err "claude-memory/bootstrap.sh. Run that to convert the regular-file PAI"
+    err "config into symlinks, then retry pai-off."
     return 1
   fi
   if [ ! -f "$PLAIN_CLAUDE_MD" ]; then

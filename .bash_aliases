@@ -1,8 +1,11 @@
 # shellcheck shell=bash
 # ~/.bash_aliases — sourced by .bashrc / .bash_profile. Not a standalone script.
 
-# Claude Code scripts on PATH
-export PATH="$HOME/.claude/scripts:$PATH"
+# Claude Code scripts + dotfiles bin helpers on PATH. ~/.local/bin is where
+# setup.sh symlinks the top-level helper scripts (gh-bootstrap.sh, pai-mode.sh,
+# …); prepend it here so the aliases that call them resolve even on a fresh
+# install whose login shell hasn't already added ~/.local/bin to PATH.
+export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 
 # Claude Code aliases
 alias claude-server='claude remote-control --spawn worktree'
@@ -77,6 +80,24 @@ sync-memory() {
 
 # Copy PAI config from claude-memory (private) into live ~/.claude/
 sync-pai-config() {
+  # If pai-mode.sh has switched to plain mode, ~/.claude/CLAUDE.md is a symlink
+  # to the tracked plain prompt and settings.json points at settings.plain.json.
+  # A plain `cp` over those symlinks writes THROUGH them — corrupting the tracked
+  # plain file and silently restoring PAI. Skip the sync while plain mode is
+  # active; `pai-on` restores PAI config. Both targets are checked so a
+  # partially-applied toggle (one symlink swapped, not the other) still skips.
+  case "$(readlink "$HOME/.claude/CLAUDE.md" 2>/dev/null)" in
+    */claude/plain/CLAUDE.md)
+      echo "  PAI is OFF (plain mode) — skipping pai-config sync. Run pai-on to restore."
+      return 0
+      ;;
+  esac
+  case "$(readlink "$HOME/.claude/settings.json" 2>/dev/null)" in
+    */settings.plain.json)
+      echo "  PAI is OFF (plain settings active) — skipping pai-config sync. Run pai-on to restore."
+      return 0
+      ;;
+  esac
   local dev_dir
   dev_dir="$(_dev_dir)"
   local mem_repo="$dev_dir/claude-memory"

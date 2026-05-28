@@ -289,9 +289,15 @@ the custom status line, and spinner flavor.
 Plain settings are **generated at runtime** into `~/.claude/settings.plain.json`
 (never committed — your personal MCP config stays local), and the PAI targets are
 detected and saved to `~/.claude/.pai-mode.state` so `pai-on` restores the exact
-prior state. Note: while in plain mode, `check-claude` will flag the
-`settings.json` symlink as pointing somewhere unexpected — that's expected; run
-`pai-on` to restore it.
+prior state. While plain mode is active, `cc`'s `sync-pai-config` step detects it
+and skips the PAI config copy (so a launch can't overwrite the plain files), and
+`check-claude` will flag the `settings.json` symlink as pointing somewhere
+unexpected — both are expected; run `pai-on` to restore.
+
+**Requires the symlink-based PAI layout** created by `claude-memory/bootstrap.sh`
+(the toggle swaps symlinks and refuses to touch regular files). If `setup.sh`
+copied your PAI config into `~/.claude/` as regular files because the private
+bootstrap was absent, run `bootstrap.sh` to convert them to symlinks first.
 
 ### Starting Codex
 
