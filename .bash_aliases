@@ -102,7 +102,16 @@ sync-pai-config() {
   dev_dir="$(_dev_dir)"
   local mem_repo="$dev_dir/claude-memory"
   if [ -d "$mem_repo/pai-config" ]; then
-    cp "$mem_repo/pai-config/"* "$HOME/.claude/" 2>/dev/null
+    local f dest
+    for f in "$mem_repo/pai-config/"*; do
+      [ -f "$f" ] || continue
+      dest="$HOME/.claude/$(basename "$f")"
+      # In PAI mode dest is the symlink to this same file (-ef true) so cp is a
+      # harmless no-op; skip any dest that is a symlink pointing ELSEWHERE so a
+      # basename collision can't write through it and corrupt a tracked file.
+      if [ -L "$dest" ] && [ ! "$f" -ef "$dest" ]; then continue; fi
+      cp "$f" "$dest" 2>/dev/null
+    done
   fi
   if [ -d "$mem_repo/pai-user" ]; then
     # Recursively copy preserving directory structure (PROJECTS/, TELOS/, etc.)

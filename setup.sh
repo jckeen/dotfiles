@@ -865,12 +865,26 @@ fi
 if [ "$USE_PAI" = "1" ]; then
   _mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
 
+  # Skip the core PAI config copy while pai-mode.sh has switched to plain mode:
+  # ~/.claude/CLAUDE.md and settings.json are then symlinks to the tracked plain
+  # files, and a plain `cp` would write THROUGH them — corrupting claude/plain
+  # and silently re-enabling PAI. Run `pai-on` first to refresh PAI config.
+  _plain_active=0
+  case "$(readlink "$HOME_DIR/.claude/CLAUDE.md" 2>/dev/null)" in */claude/plain/CLAUDE.md) _plain_active=1 ;; esac
+  case "$(readlink "$HOME_DIR/.claude/settings.json" 2>/dev/null)" in */settings.plain.json) _plain_active=1 ;; esac
+
   # Core PAI config (CLAUDE.md, settings.json)
-  if [ -d "$_mem_repo/pai-config" ]; then
+  if [ "$_plain_active" = "1" ]; then
+    echo "  -> PAI is OFF (plain mode) — skipping PAI config copy. Run pai-on, then re-run setup to refresh."
+  elif [ -d "$_mem_repo/pai-config" ]; then
     for f in "$_mem_repo/pai-config/"*; do
       [ -f "$f" ] || continue
       dest="$HOME_DIR/.claude/$(basename "$f")"
       [ -e "$dest" ] && [ "$f" -ef "$dest" ] && continue
+      # Collision guard: never write THROUGH a tracked symlink that points
+      # elsewhere (a claude/* helper this script linked into ~/.claude with the
+      # same basename) — that would corrupt the dotfiles source.
+      [ -L "$dest" ] && continue
       cp "$f" "$dest"
     done
     echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"

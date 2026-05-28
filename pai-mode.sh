@@ -40,6 +40,22 @@ resolve_path() {
   printf '%s/%s\n' "$dir" "$(basename "$src")"
 }
 
+# Absolute form of a symlink's IMMEDIATE target. Relative targets are resolved
+# against the symlink's own directory. Unlike resolve_path this does NOT collapse
+# the whole chain — it preserves the intended one-hop restore target so pai-on
+# relinks to exactly where PAI pointed, not to that target's final realpath.
+abs_link_target() {
+  local link="$1" t dir
+  t="$(readlink "$link" 2>/dev/null)" || return 1
+  case "$t" in
+    /*) printf '%s\n' "$t" ;;
+    *)
+      dir="$(cd -P "$(dirname "$link")" >/dev/null 2>&1 && pwd)" || return 1
+      printf '%s/%s\n' "$dir" "$t"
+      ;;
+  esac
+}
+
 # Resolve where this script really lives (it is symlinked onto PATH via
 # setup.sh, so $0 is usually ~/.local/bin/pai-mode.sh). resolve_path follows
 # the symlink chain to the real file inside the dotfiles checkout.
@@ -140,11 +156,20 @@ cmd_off() {
   # Save the current PAI targets so pai-on can restore them exactly — but ONLY
   # from a clean "pai" state. Saving from a "mixed" state (a prior interrupted
   # toggle) would record a plain target as the restore point and break pai-on.
+  # Store ABSOLUTE targets (relative symlinks would otherwise be validated /
+  # restored against the caller's cwd, not ~/.claude). Resolve both into vars,
+  # validate, then write via tmp+mv so a failed resolution can never leave a
+  # truncated or half-written state file.
   if [ "$mode" = "pai" ]; then
-    {
-      readlink "$CLAUDE_MD"
-      readlink "$SETTINGS"
-    } >"$STATE"
+    local c_target s_target
+    c_target="$(abs_link_target "$CLAUDE_MD")"
+    s_target="$(abs_link_target "$SETTINGS")"
+    if [ -z "$c_target" ] || [ -z "$s_target" ]; then
+      err "Could not resolve current PAI symlink targets — aborting (state left intact)."
+      return 1
+    fi
+    printf '%s\n%s\n' "$c_target" "$s_target" >"$STATE.tmp"
+    mv "$STATE.tmp" "$STATE"
   fi
 
   # Generate plain settings from the current settings target (resolved through
