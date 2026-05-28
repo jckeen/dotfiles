@@ -26,6 +26,7 @@ jobs:
             gh-bootstrap.sh
             git-hygiene.sh
             hygiene-status.sh
+            pai-mode.sh
           # Restrict scan to the shell files we ship.
           ignore_paths: >-
             node_modules

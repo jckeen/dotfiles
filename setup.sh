@@ -113,7 +113,7 @@ run_health_audit() {
   # tells audit_link to also enforce the +x bit so an un-executable source
   # script doesn't pass health checks while still failing at runtime.
   local bin_src
-  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh pai-mode.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable" && verified=$((verified + 1)) || errors=$((errors + 1))
@@ -430,7 +430,7 @@ echo "--- Linking dotfiles bin scripts ---"
 # Permission denied. Skip chmod when the bit is already set, and tolerate
 # EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
-for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh pai-mode.sh; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"

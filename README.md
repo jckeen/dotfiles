@@ -264,6 +264,35 @@ These are available after setup (sourced from `.bash_aliases`).
 | `claude-rc` | Start with explicit remote control flag |
 | `claude-server` | Spawn an isolated worktree + remote control session |
 
+### PAI mode toggle (test plain Claude)
+
+Switch Claude between the full PAI system and a lean **plain** baseline — useful
+for A/B testing whether heavy customization is helping or getting in the way.
+Both `~/.claude/CLAUDE.md` and `~/.claude/settings.json` are symlinks into the
+private `claude-memory/pai-config` repo; the toggle swaps **which** files those
+symlinks point at and never edits the PAI source.
+
+| Command | What it does |
+|---------|-------------|
+| `pai-off` | Switch to plain Claude: lean `CLAUDE.md` + settings with PAI hooks/context/identity stripped |
+| `pai-on` | Restore the exact PAI symlink targets (lossless round-trip) |
+| `pai-status` | Show which mode is active and the saved restore targets |
+
+**Restart Claude after either switch** — config is read at launch, so `/clear`
+won't pick it up.
+
+What plain mode **keeps** (so it stays usable): MCP servers, the permission
+allowlist, enabled plugins, and `env`. What it **strips** (what makes Claude
+behave like PAI): `hooks`, dynamic context injection, identity blocks, voice,
+the custom status line, and spinner flavor.
+
+Plain settings are **generated at runtime** into `~/.claude/settings.plain.json`
+(never committed — your personal MCP config stays local), and the PAI targets are
+detected and saved to `~/.claude/.pai-mode.state` so `pai-on` restores the exact
+prior state. Note: while in plain mode, `check-claude` will flag the
+`settings.json` symlink as pointing somewhere unexpected — that's expected; run
+`pai-on` to restore it.
+
 ### Starting Codex
 
 | Command | What it does |

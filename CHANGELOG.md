@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-05-28 — feat(claude): pai-off/pai-on toggle for testing plain Claude
+
+### What changed
+- **`pai-mode.sh`** (new, 0755) — top-level script with `off` / `on` / `status` subcommands that swaps `~/.claude/CLAUDE.md` and `~/.claude/settings.json` between the full PAI config and a lean "plain" baseline. `off` saves the current PAI symlink targets to `~/.claude/.pai-mode.state`, generates `~/.claude/settings.plain.json` from the live PAI settings via `jq` (stripping `hooks`, `dynamicContext`, `contextFiles`, `loadAtStartup`, identity blocks, `statusLine`, voice, and spinner keys while keeping `mcpServers`, `permissions`, `enabledPlugins`, and `env`), then repoints the symlinks. `on` restores the saved targets exactly. Both are idempotent and refuse to clobber a non-symlink. Generated artifacts live in `~/.claude/` and are never committed, so personal MCP config stays local.
+- **`claude/plain/CLAUDE.md`** (new) — the lean, public-safe instruction file `pai-off` points at: ~25 lines of generic working/verification/git guidance, no Algorithm/modes/hooks, no personal data.
+- **`.bash_aliases`** — added `pai-off`, `pai-on`, `pai-status` aliases.
+- **`setup.sh`** — added `pai-mode.sh` to both the bin-link section (1c) and `run_health_audit`, so it symlinks into `~/.local/bin` and is health-checked alongside the other top-level helpers.
+- **`.github/workflows/ci.yml`** — added `pai-mode.sh` to the shellcheck `additional_files` list. Verified clean at `--severity=error` (the CI gate) and at default severity.
+- **`README.md`** — new "PAI mode toggle (test plain Claude)" subsection documenting the commands, the keep/strip split, the restart requirement, and the expected `check-claude` flag while in plain mode.
+
+### Why
+The AI-tooling landscape in 2026 is converging on strategic minimalism — power users keep `CLAUDE.md` lean and invest in verification infrastructure rather than heavy prompt scaffolding, and Boris Cherny (Head of Claude Code) runs an almost-unconfigured setup. Testing that hypothesis on this machine previously meant manually moving two symlinks aside, which also killed MCP servers and the permission allowlist and made "plain Claude" annoying to use. This toggle makes the experiment one command and fully reversible: plain mode stays usable (MCP + permissions kept) and `pai-on` provably restores the exact prior state, so switching back and forth is safe.
+
 ## 2026-05-22 — fix(setup): symlink dotfiles bin scripts onto PATH
 
 ### What changed

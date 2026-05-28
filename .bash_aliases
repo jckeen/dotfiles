@@ -8,6 +8,12 @@ export PATH="$HOME/.claude/scripts:$PATH"
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
+# PAI mode toggle — switch Claude between full PAI and a lean "plain" baseline.
+# Restart Claude after either switch for it to take effect. See pai-mode.sh.
+alias pai-off='pai-mode.sh off'
+alias pai-on='pai-mode.sh on'
+alias pai-status='pai-mode.sh status'
+
 # Detect dev directory — reads from ~/.claude/dev-dir (written by setup.sh)
 _dev_dir() {
   if [ -f "$HOME/.claude/dev-dir" ]; then
