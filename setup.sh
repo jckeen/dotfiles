@@ -39,6 +39,16 @@ BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
 # Bootstrap exit code surfaced in final summary (M14). 0 = not run or success.
 BOOTSTRAP_RC=0
 
+# True (exit 0) when pai-mode.sh has switched Claude to plain mode — i.e.
+# ~/.claude/CLAUDE.md or settings.json is symlinked to the tracked plain files.
+# Setup must NOT copy over (would corrupt the plain files) or bootstrap/relink
+# (would silently restore PAI and end the user's A/B test) while this is true.
+pai_plain_active() {
+  case "$(readlink "$HOME_DIR/.claude/CLAUDE.md" 2>/dev/null)" in */claude/plain/CLAUDE.md) return 0 ;; esac
+  case "$(readlink "$HOME_DIR/.claude/settings.json" 2>/dev/null)" in */settings.plain.json) return 0 ;; esac
+  return 1
+}
+
 # Counters for summary
 LINKS_CREATED=0
 LINKS_VERIFIED=0
@@ -113,7 +123,7 @@ run_health_audit() {
   # tells audit_link to also enforce the +x bit so an un-executable source
   # script doesn't pass health checks while still failing at runtime.
   local bin_src
-  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh pai-mode.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable" && verified=$((verified + 1)) || errors=$((errors + 1))
@@ -137,6 +147,8 @@ run_health_audit() {
   if [ -f "$BOOTSTRAP_SCRIPT" ]; then
     if bash "$BOOTSTRAP_SCRIPT" --check; then
       echo "  All claude-memory symlinks OK"
+    elif pai_plain_active; then
+      echo "  PAI is OFF (plain mode) — symlinks intentionally point at plain config; not repairing. Run pai-on to restore."
     else
       errors=$((errors + 1))
       if [ "$mode" = "repair" ]; then
@@ -430,7 +442,7 @@ echo "--- Linking dotfiles bin scripts ---"
 # Permission denied. Skip chmod when the bit is already set, and tolerate
 # EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
-for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh pai-mode.sh; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"
@@ -865,12 +877,19 @@ fi
 if [ "$USE_PAI" = "1" ]; then
   _mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
 
-  # Core PAI config (CLAUDE.md, settings.json)
-  if [ -d "$_mem_repo/pai-config" ]; then
+  # Core PAI config (CLAUDE.md, settings.json). Skipped in plain mode: a plain
+  # `cp` would write THROUGH the plain-mode symlinks, corrupting claude/plain.
+  if pai_plain_active; then
+    echo "  -> PAI is OFF (plain mode) — skipping PAI config copy. Run pai-on, then re-run setup to refresh."
+  elif [ -d "$_mem_repo/pai-config" ]; then
     for f in "$_mem_repo/pai-config/"*; do
       [ -f "$f" ] || continue
       dest="$HOME_DIR/.claude/$(basename "$f")"
       [ -e "$dest" ] && [ "$f" -ef "$dest" ] && continue
+      # Collision guard: never write THROUGH a tracked symlink that points
+      # elsewhere (a claude/* helper this script linked into ~/.claude with the
+      # same basename) — that would corrupt the dotfiles source.
+      [ -L "$dest" ] && continue
       cp "$f" "$dest"
     done
     echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
@@ -1181,14 +1200,23 @@ fi
 # `exit 1` from here — the operator's primary dotfiles+Claude install must
 # still succeed even if the private memory layer fails to wire up.
 if [ "$USE_PAI" = "1" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
-  echo ""
-  echo "--- Running claude-memory bootstrap ---"
-  if bash "$BOOTSTRAP_SCRIPT"; then
+  if pai_plain_active; then
+    # Bootstrap relinks CLAUDE.md/settings.json back to PAI; skip it in plain
+    # mode so a setup/dotfiles-update run doesn't silently end an A/B test.
+    echo ""
+    echo "--- claude-memory bootstrap skipped (PAI is OFF / plain mode) ---"
+    echo "    Run 'pai-on' then re-run setup to restore and bootstrap PAI."
     BOOTSTRAP_RC=0
   else
-    BOOTSTRAP_RC=$?
-    echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
-    echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
+    echo ""
+    echo "--- Running claude-memory bootstrap ---"
+    if bash "$BOOTSTRAP_SCRIPT"; then
+      BOOTSTRAP_RC=0
+    else
+      BOOTSTRAP_RC=$?
+      echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
+      echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
+    fi
   fi
 fi
 
