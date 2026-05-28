@@ -20,10 +20,30 @@
 
 set -euo pipefail
 
+# Portable `readlink -f` — BSD/macOS readlink has no -f, and stock macOS ships
+# no realpath. Prefer those when available, else walk the symlink chain by hand
+# (POSIX). Returns the canonical absolute path of its argument.
+resolve_path() {
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$1"; return
+  fi
+  if readlink -f "$1" >/dev/null 2>&1; then
+    readlink -f "$1"; return
+  fi
+  local src="$1" dir
+  while [ -L "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+  done
+  dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$src")"
+}
+
 # Resolve where this script really lives (it is symlinked onto PATH via
-# setup.sh, so $0 is usually ~/.local/bin/pai-mode.sh). readlink -f follows
+# setup.sh, so $0 is usually ~/.local/bin/pai-mode.sh). resolve_path follows
 # the symlink chain to the real file inside the dotfiles checkout.
-SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_PATH="$(resolve_path "$0")"
 DOTFILES_DIR="$(dirname "$SCRIPT_PATH")"
 
 CLAUDE_DIR="$HOME/.claude"
@@ -49,16 +69,27 @@ restart_hint() {
   info "Restart Claude Code for this to take effect (exit and relaunch, or /clear won't do it)."
 }
 
-# Print the active mode: "plain", "pai", or "unknown".
+# Print the active mode by inspecting BOTH symlinks (raw readlink, no -f):
+#   "pai"     — both point at PAI config
+#   "plain"   — both point at the plain files
+#   "mixed"   — a partially-applied toggle (one swapped, one not)
+#   "unknown" — either is not a symlink
+# cmd_off/cmd_on treat anything other than their own target state as work to do,
+# so an interrupted toggle self-heals on the next run instead of being skipped.
 current_mode() {
-  if [ ! -L "$CLAUDE_MD" ]; then
+  if [ ! -L "$CLAUDE_MD" ] || [ ! -L "$SETTINGS" ]; then
     echo "unknown"
     return
   fi
-  if [ "$(readlink -f "$CLAUDE_MD")" = "$(readlink -f "$PLAIN_CLAUDE_MD")" ]; then
+  local c_plain=0 s_plain=0
+  case "$(readlink "$CLAUDE_MD" 2>/dev/null)" in */claude/plain/CLAUDE.md) c_plain=1 ;; esac
+  case "$(readlink "$SETTINGS" 2>/dev/null)" in */settings.plain.json) s_plain=1 ;; esac
+  if [ "$c_plain" = 1 ] && [ "$s_plain" = 1 ]; then
     echo "plain"
-  else
+  elif [ "$c_plain" = 0 ] && [ "$s_plain" = 0 ]; then
     echo "pai"
+  else
+    echo "mixed"
   fi
 }
 
@@ -106,17 +137,22 @@ cmd_off() {
     return 1
   fi
 
-  # Save the current (PAI) targets so pai-on can restore them exactly.
-  {
-    readlink "$CLAUDE_MD"
-    readlink "$SETTINGS"
-  } >"$STATE"
+  # Save the current PAI targets so pai-on can restore them exactly — but ONLY
+  # from a clean "pai" state. Saving from a "mixed" state (a prior interrupted
+  # toggle) would record a plain target as the restore point and break pai-on.
+  if [ "$mode" = "pai" ]; then
+    {
+      readlink "$CLAUDE_MD"
+      readlink "$SETTINGS"
+    } >"$STATE"
+  fi
 
-  # Generate plain settings from the live PAI settings (resolved through the
-  # symlink) into a temp file first; only swap if jq succeeds, so a failure
-  # never leaves a dangling or half-written settings symlink.
+  # Generate plain settings from the current settings target (resolved through
+  # the symlink) into a temp file first; only swap if jq succeeds, so a failure
+  # never leaves a dangling or half-written settings symlink. The STRIP filter
+  # is idempotent, so regenerating from an already-plain target is harmless.
   local pai_settings tmp
-  pai_settings="$(readlink -f "$SETTINGS")"
+  pai_settings="$(resolve_path "$SETTINGS")"
   tmp="$(mktemp "${PLAIN_SETTINGS}.XXXXXX")"
   if ! jq "$STRIP" "$pai_settings" >"$tmp"; then
     rm -f "$tmp"
@@ -139,6 +175,14 @@ cmd_on() {
     info "Already in PAI mode."
     return 0
   fi
+  # Symmetric with cmd_off: never clobber a regular file. `ln -sfn` over a real
+  # file silently destroys it, so refuse if either path exists and isn't a symlink.
+  if { [ -e "$CLAUDE_MD" ] && [ ! -L "$CLAUDE_MD" ]; } ||
+     { [ -e "$SETTINGS" ] && [ ! -L "$SETTINGS" ]; }; then
+    err "Refusing: ~/.claude/CLAUDE.md or settings.json is a regular file, not a symlink."
+    err "Restore the symlink-based PAI layout via claude-memory/bootstrap.sh first."
+    return 1
+  fi
   if [ ! -f "$STATE" ]; then
     err "No saved PAI targets at $STATE — can't auto-restore."
     err "Re-link manually, or run: bash ~/dev/claude-memory/bootstrap.sh"
@@ -150,6 +194,14 @@ cmd_on() {
   settings_target="$(sed -n '2p' "$STATE")"
   if [ -z "$claude_target" ] || [ -z "$settings_target" ]; then
     err "State file $STATE is malformed."
+    return 1
+  fi
+  # Don't relink to a target that no longer exists (e.g. the checkout moved) —
+  # that would print success while leaving dangling symlinks.
+  if [ ! -e "$claude_target" ] || [ ! -e "$settings_target" ]; then
+    err "Saved PAI target missing — checkout moved? Re-run claude-memory/bootstrap.sh."
+    err "  CLAUDE.md     <- $claude_target"
+    err "  settings.json <- $settings_target"
     return 1
   fi
 
