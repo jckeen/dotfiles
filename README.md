@@ -843,8 +843,7 @@ dotfiles/
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
     │   ├── PromptProcessing.hook.ts        # UserPromptSubmit prompt pre-processing
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-    │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
-    │   └── PromptProcessing.hook.ts        # UserPromptSubmit Sonnet classifier — emits MODE+TIER for Algorithm executor
+    │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
