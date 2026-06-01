@@ -841,7 +841,6 @@ dotfiles/
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-    │   ├── PromptProcessing.hook.ts        # UserPromptSubmit prompt pre-processing
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
     │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     │   └── PromptProcessing.hook.ts        # UserPromptSubmit Sonnet classifier — emits MODE+TIER for Algorithm executor
