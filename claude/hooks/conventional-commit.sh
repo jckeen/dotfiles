@@ -57,9 +57,9 @@ if [ -z "$MSG" ]; then
   exit 0
 fi
 
-# M1: The PAI standing-orders commit pattern uses a heredoc body that frequently
-# opens with a blank line before the actual subject (e.g. when the heredoc is
-# constructed by appending sections). Skip leading blank/whitespace-only lines
+# Heredoc-constructed commit bodies frequently open with a blank line before the
+# actual subject (e.g. when the heredoc is built by appending sections). Skip
+# leading blank/whitespace-only lines
 # so the conventional-commit regex check applies to the FIRST NON-BLANK line —
 # which is the real subject — instead of erroring on a leading blank.
 FIRST_LINE=$(printf '%s\n' "$MSG" | grep -v -m1 '^[[:space:]]*$' || true)

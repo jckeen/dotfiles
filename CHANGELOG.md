@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-06-03 — chore: decommission PAI
+
+### What changed
+- **Removed PAI entirely** from the live system and both repos. Deleted the PAI engine (`~/.claude/PAI`, 386 MB), the 45 PAI skills, the 18 PAI subagents, the ~40 PAI hooks, `~/.claude/MEMORY`, `ISA.md`, and the pulse + voice-server systemd units/daemon. The plain-mode toggle (`pai-mode.sh`, `pai-on`/`pai-off`/`pai-status`) is gone — plain is now simply the baseline.
+- **`claude/CLAUDE.md`** (relocated from `claude/plain/CLAUDE.md`) — now the standalone global instructions, symlinked into `~/.claude/CLAUDE.md` by setup.sh. Absorbed the portable identity/steering/tech-stack content and the "auth at the boundary" rule from the old PAI USER files.
+- **`setup.sh`** — dropped `--pai`/`--no-pai`, the USE_PAI prompt, the pai-config/pai-user copy block, and PAI-gated bootstrap. `bootstrap.sh` now runs unconditionally for the private settings layer. Kept dev/memory auto-memory + claude-memory safe.directory.
+- **`.bash_aliases`** — removed the pai aliases and `sync-pai-config`.
+- **`claude/systemd/install.sh`** — installs only the git-hygiene timer (voice server gone).
+- **`claude/skills/{decompose,max}`** — decoupled from the removed PAI Algorithm; now use platform-native parallelism and the skills that still exist.
+- **`README.md`, `CLAUDE-GUIDE.md`, `CONTRIBUTING.md`** — scrubbed of PAI; private-repo docs rewritten for the slimmed claude-memory.
+- Settings moved to `claude-memory/settings.json` (private, linked by bootstrap). ElevenLabs/Telegram secrets deleted.
+
+### Why
+The PAI experiment ran its course. Removing it returns the setup to a lean, model-led baseline — the direction the toggle (2026-05-28) was already testing — while keeping the genuinely reusable tooling (git-hygiene, codex, chrome bridge, review agents, personal skills) and the cross-machine `claude-memory` repo. Full record in `Plans/PAI-DECOMMISSION.md`. Rollback tarballs in `~/` for the non-git live files.
+
 ## 2026-05-28 — feat(claude): pai-off/pai-on toggle for testing plain Claude
 
 ### What changed

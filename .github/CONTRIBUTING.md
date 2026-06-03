@@ -37,7 +37,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/) — this
 matches the in-repo `claude/hooks/conventional-commit.sh` hook:
 
 ```
-feat(setup): add --no-pai flag
+feat(setup): add --repair flag
 fix(hooks): handle missing JSON input
 docs(readme): clarify WSL prerequisites
 chore: bump bun-types
