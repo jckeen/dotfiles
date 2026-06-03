@@ -53,7 +53,7 @@ jobs:
             exit 1
           }
           # Sanity: help output should mention at least one known flag.
-          grep -qE -- "--no-pai|--check|--dry-run" /tmp/help.out || {
+          grep -qE -- "--check|--dry-run|--repair" /tmp/help.out || {
             echo "::error::./setup.sh --help on ${{ matrix.os }} did not include expected flags"
             cat /tmp/help.out
             exit 1

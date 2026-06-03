@@ -9,13 +9,10 @@
 # non-login interactive shells.
 #
 # Tracked in dotfiles and symlinked into $HOME by setup.sh — single source
-# of truth, version controlled, audit-able. Safe to use whether or not
-# you use PAI: the bun-PATH line below is a no-op when bun isn't installed.
+# of truth, version controlled, audit-able. The bun-PATH line below is a
+# no-op when bun isn't installed.
 
 # Put bun on PATH if installed (harmless when ~/.bun/bin doesn't exist).
-# The literal `.bun/bin` substring also satisfies the PAI installer's
-# idempotent skip-check (`grep -q '\.bun/bin'`) so re-running that
-# installer won't append a duplicate export to this file.
 [ -d "$HOME/.bun/bin" ] && export PATH="$HOME/.bun/bin:$PATH"
 
 # Source .bashrc for login shells. This is the actual fix for the

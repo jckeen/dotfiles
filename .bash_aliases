@@ -2,20 +2,14 @@
 # ~/.bash_aliases — sourced by .bashrc / .bash_profile. Not a standalone script.
 
 # Claude Code scripts + dotfiles bin helpers on PATH. ~/.local/bin is where
-# setup.sh symlinks the top-level helper scripts (gh-bootstrap.sh, pai-mode.sh,
-# …); prepend it here so the aliases that call them resolve even on a fresh
-# install whose login shell hasn't already added ~/.local/bin to PATH.
+# setup.sh symlinks the top-level helper scripts (gh-bootstrap.sh,
+# git-hygiene.sh, …); prepend it here so the aliases that call them resolve
+# even on a fresh install whose login shell hasn't already added it to PATH.
 export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 
 # Claude Code aliases
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
-
-# PAI mode toggle — switch Claude between full PAI and a lean "plain" baseline.
-# Restart Claude after either switch for it to take effect. See pai-mode.sh.
-alias pai-off='pai-mode.sh off'
-alias pai-on='pai-mode.sh on'
-alias pai-status='pai-mode.sh status'
 
 # Detect dev directory — reads from ~/.claude/dev-dir (written by setup.sh)
 _dev_dir() {
@@ -78,47 +72,6 @@ sync-memory() {
   fi
 }
 
-# Copy PAI config from claude-memory (private) into live ~/.claude/
-sync-pai-config() {
-  # If pai-mode.sh has switched to plain mode, ~/.claude/CLAUDE.md is a symlink
-  # to the tracked plain prompt and settings.json points at settings.plain.json.
-  # A plain `cp` over those symlinks writes THROUGH them — corrupting the tracked
-  # plain file and silently restoring PAI. Skip the sync while plain mode is
-  # active; `pai-on` restores PAI config. Both targets are checked so a
-  # partially-applied toggle (one symlink swapped, not the other) still skips.
-  case "$(readlink "$HOME/.claude/CLAUDE.md" 2>/dev/null)" in
-    */claude/plain/CLAUDE.md)
-      echo "  PAI is OFF (plain mode) — skipping pai-config sync. Run pai-on to restore."
-      return 0
-      ;;
-  esac
-  case "$(readlink "$HOME/.claude/settings.json" 2>/dev/null)" in
-    */settings.plain.json)
-      echo "  PAI is OFF (plain settings active) — skipping pai-config sync. Run pai-on to restore."
-      return 0
-      ;;
-  esac
-  local dev_dir
-  dev_dir="$(_dev_dir)"
-  local mem_repo="$dev_dir/claude-memory"
-  if [ -d "$mem_repo/pai-config" ]; then
-    local f dest
-    for f in "$mem_repo/pai-config/"*; do
-      [ -f "$f" ] || continue
-      dest="$HOME/.claude/$(basename "$f")"
-      # In PAI mode dest is the symlink to this same file (-ef true) so cp is a
-      # harmless no-op; skip any dest that is a symlink pointing ELSEWHERE so a
-      # basename collision can't write through it and corrupt a tracked file.
-      if [ -L "$dest" ] && [ ! "$f" -ef "$dest" ]; then continue; fi
-      cp "$f" "$dest" 2>/dev/null
-    done
-  fi
-  if [ -d "$mem_repo/pai-user" ]; then
-    # Recursively copy preserving directory structure (PROJECTS/, TELOS/, etc.)
-    cp -r "$mem_repo/pai-user/"* "$HOME/.claude/PAI/USER/" 2>/dev/null
-  fi
-}
-
 # Validate critical claude-memory symlinks before launching Claude
 # Fast check: just tests the 4 most important symlinks exist and aren't broken
 _check_critical_symlinks() {
@@ -151,7 +104,7 @@ _check_critical_symlinks() {
 #        cc -c / --continue — continue most recent session in current dir (skips sync)
 #        cc --resume <id>   — resume a specific session id (skips sync)
 # Any --resume/-r/--continue/-c in the args triggers the quick-resume path:
-# no repo sync, no memory sync, no PAI config sync, no claude health check.
+# no repo sync, no memory sync, no claude health check.
 cc() {
   local dev_dir
   dev_dir="$(_dev_dir)"
@@ -181,7 +134,6 @@ cc() {
     pull-all
     echo ""
     sync-memory
-    sync-pai-config
     "$(_dev_dir)/dotfiles/check-claude.sh"
     echo ""
   fi
@@ -234,7 +186,7 @@ cc() {
 }
 
 # Launch Codex with the same project-selection ergonomics as cc, but without
-# touching Claude memory, PAI config, or ~/.claude health checks.
+# touching Claude memory or ~/.claude health checks.
 # Usage: cx                 — launch from current dir (defaults to ~/dev outside git)
 #        cx <project>        — cd into ~/dev/<project> first, then launch
 #        cx resume|fork ...  — resume/fork without repo sync
@@ -428,7 +380,7 @@ cc-tab() {
 }
 
 # Open multiple projects, each in its own tab
-# Usage: cc-multi dotfiles pai stringer
+# Usage: cc-multi dotfiles atlas stringer
 cc-multi() {
   if [ $# -eq 0 ]; then
     echo "Usage: cc-multi <project1> <project2> ..."

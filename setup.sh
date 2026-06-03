@@ -34,20 +34,11 @@ HOME_DIR="$HOME"
 # Defined early so it can be used throughout (was previously set mid-script,
 # which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
 DEV_DIR="$(dirname "$DOTFILES_DIR")"
+# Private companion repo (settings.json + identity + auto-memory). Optional.
 BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
 
-# Bootstrap exit code surfaced in final summary (M14). 0 = not run or success.
+# Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
-
-# True (exit 0) when pai-mode.sh has switched Claude to plain mode — i.e.
-# ~/.claude/CLAUDE.md or settings.json is symlinked to the tracked plain files.
-# Setup must NOT copy over (would corrupt the plain files) or bootstrap/relink
-# (would silently restore PAI and end the user's A/B test) while this is true.
-pai_plain_active() {
-  case "$(readlink "$HOME_DIR/.claude/CLAUDE.md" 2>/dev/null)" in */claude/plain/CLAUDE.md) return 0 ;; esac
-  case "$(readlink "$HOME_DIR/.claude/settings.json" 2>/dev/null)" in */settings.plain.json) return 0 ;; esac
-  return 1
-}
 
 # Counters for summary
 LINKS_CREATED=0
@@ -123,7 +114,7 @@ run_health_audit() {
   # tells audit_link to also enforce the +x bit so an un-executable source
   # script doesn't pass health checks while still failing at runtime.
   local bin_src
-  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh pai-mode.sh; do
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable" && verified=$((verified + 1)) || errors=$((errors + 1))
@@ -147,8 +138,6 @@ run_health_audit() {
   if [ -f "$BOOTSTRAP_SCRIPT" ]; then
     if bash "$BOOTSTRAP_SCRIPT" --check; then
       echo "  All claude-memory symlinks OK"
-    elif pai_plain_active; then
-      echo "  PAI is OFF (plain mode) — symlinks intentionally point at plain config; not repairing. Run pai-on to restore."
     else
       errors=$((errors + 1))
       if [ "$mode" = "repair" ]; then
@@ -285,21 +274,16 @@ audit_link() {
   return 0
 }
 
-# Flags. USE_PAI may come from env; CLI flags override. We do TWO passes so
-# flag order doesn't matter: first set USE_PAI / DRY_RUN, then handle action
-# flags (--check/--repair/--help) which exit.
+# Flags. We do TWO passes so flag order doesn't matter: first set DRY_RUN,
+# then handle action flags (--check/--repair/--help) which exit.
 #
 # Supported flags:
-#   --pai / --no-pai   Force PAI integration on/off (skips interactive prompt)
 #   --dry-run          Print destructive ops via run() instead of executing them
 #   --check            Run symlink health audit and exit
 #   --repair           Run symlink audit + repair and exit
 #   --help / -h        Print this help and exit
-USE_PAI="${USE_PAI:-}"
 for arg in "$@"; do
   case "$arg" in
-    --no-pai)  USE_PAI=0 ;;
-    --pai)     USE_PAI=1 ;;
     --dry-run) DRY_RUN=1 ;;
   esac
 done
@@ -310,15 +294,12 @@ for arg in "$@"; do
 Usage: ./setup.sh [flags]
 
 Flags:
-  --pai          Enable PAI integration (claude-memory copy + bootstrap)
-  --no-pai       Disable PAI integration
   --dry-run      Show destructive ops without executing (installs, downloads)
   --check        Run symlink health audit and exit
   --repair       Audit symlinks and recreate broken ones, then exit
   --help, -h     Show this help
 
 Environment:
-  USE_PAI=0|1    Same as --no-pai / --pai (CLI flag overrides)
   GIT_NAME       Pre-populate git user.name
   GIT_EMAIL      Pre-populate git user.email
 HELP
@@ -356,28 +337,6 @@ link_file() {
 detect_platform
 
 echo "=== Dotfiles setup from $DOTFILES_DIR ==="
-
-# ─── PAI opt-in prompt ───────────────────────────────────────────────
-# PAI (Personal AI Infrastructure — danielmiessler/Personal_AI_Infrastructure)
-# provides the Algorithm, skills, agents, and hooks that live in ~/.claude/PAI.
-# The claude-memory private repo integration below layers user-specific config
-# on top of PAI. Users who just want Claude Code + hooks from this dotfiles
-# repo can opt out; nothing PAI-specific runs in that mode.
-if [ -z "${USE_PAI:-}" ]; then
-  echo ""
-  _pai_yn=""
-  read -rp "Are you using (or planning to use) PAI? [Y/n] " _pai_yn || true
-  if [[ "${_pai_yn:-}" =~ ^[Nn] ]]; then
-    USE_PAI=0
-  else
-    USE_PAI=1
-  fi
-fi
-if [ "$USE_PAI" = "1" ]; then
-  echo "  -> PAI mode: ON (will copy claude-memory config + run bootstrap)"
-else
-  echo "  -> PAI mode: OFF (skipping claude-memory integration)"
-fi
 
 # ─── 1. System packages ───────────────────────────────────────────────
 echo ""
@@ -442,7 +401,7 @@ echo "--- Linking dotfiles bin scripts ---"
 # Permission denied. Skip chmod when the bit is already set, and tolerate
 # EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
-for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh pai-mode.sh; do
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"
@@ -486,9 +445,9 @@ fi
 # bun at SessionStart. Missing bun = `cc` fails on first launch with a
 # confusing "bun: not found" error.
 #
-# The systemd voice-server unit hardcodes %h/.bun/bin/bun (systemd can't
-# do PATH lookups), so we always ensure a symlink at ~/.bun/bin/bun
-# pointing at whichever bun is on PATH — regardless of install method
+# The TypeScript hooks run under bun via a hardcoded %h/.bun/bin/bun shebang
+# (no PATH lookup), so we always ensure a symlink at ~/.bun/bin/bun pointing
+# at whichever bun is on PATH — regardless of install method
 # (brew, npm, curl installer).
 # Pin + verify the bun installer to defend against upstream compromise (H6).
 # Rationale: piping a remote script to bash with no integrity check is the
@@ -586,7 +545,7 @@ if command -v bun &>/dev/null && [ ! -e "$HOME/.bun/bin/bun" ]; then
   echo "  -> bun symlinked: ~/.bun/bin/bun -> $_bun_found"
 fi
 if [ ! -e "$HOME/.bun/bin/bun" ]; then
-  echo "  -> WARNING: ~/.bun/bin/bun is missing; PAI voice server may not start until bun is installed"
+  echo "  -> WARNING: ~/.bun/bin/bun is missing; TypeScript hooks may not run until bun is installed"
 fi
 
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
@@ -817,9 +776,9 @@ mkdir -p "$HOME_DIR/.claude/skills"
 mkdir -p "$HOME_DIR/.claude/agents"
 
 # Files to keep in dotfiles but NOT symlink into ~/.claude/
-# PAI config (CLAUDE.md, settings.json) lives in claude-memory (private)
-# AgentPack.md is loaded on-demand by CLAUDE.md references
-NOLINK="AgentPack.md CLAUDE.md settings.json"
+# settings.json is private and synced via claude-memory (see bootstrap.sh).
+# AgentPack.md is loaded on-demand by CLAUDE.md references.
+NOLINK="AgentPack.md settings.json"
 
 # Link top-level files (auto-discovers, no hardcoded list)
 for f in "$DOTFILES_DIR/claude/"*; do
@@ -873,45 +832,6 @@ if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
   echo "  -> Claude scripts linked"
 fi
 
-# PAI config from claude-memory (private repo) — PAI mode only
-if [ "$USE_PAI" = "1" ]; then
-  _mem_repo="$(dirname "$DOTFILES_DIR")/claude-memory"
-
-  # Core PAI config (CLAUDE.md, settings.json). Skipped in plain mode: a plain
-  # `cp` would write THROUGH the plain-mode symlinks, corrupting claude/plain.
-  if pai_plain_active; then
-    echo "  -> PAI is OFF (plain mode) — skipping PAI config copy. Run pai-on, then re-run setup to refresh."
-  elif [ -d "$_mem_repo/pai-config" ]; then
-    for f in "$_mem_repo/pai-config/"*; do
-      [ -f "$f" ] || continue
-      dest="$HOME_DIR/.claude/$(basename "$f")"
-      [ -e "$dest" ] && [ "$f" -ef "$dest" ] && continue
-      # Collision guard: never write THROUGH a tracked symlink that points
-      # elsewhere (a claude/* helper this script linked into ~/.claude with the
-      # same basename) — that would corrupt the dotfiles source.
-      [ -L "$dest" ] && continue
-      cp "$f" "$dest"
-    done
-    echo "  -> PAI config copied (CLAUDE.md, settings.json from claude-memory)"
-  else
-    echo "  -> claude-memory/pai-config not found at $_mem_repo"
-    echo "     PAI mode needs this repo. See README 'The claude-memory private repo' for structure,"
-    echo "     or re-run with --no-pai to skip PAI integration entirely."
-  fi
-
-  # PAI USER config (identity, steering rules, DA personality)
-  if [ -d "$_mem_repo/pai-user" ]; then
-    mkdir -p "$HOME_DIR/.claude/PAI/USER"
-    for f in "$_mem_repo/pai-user/"*.md; do
-      [ -f "$f" ] || continue
-      dest="$HOME_DIR/.claude/PAI/USER/$(basename "$f")"
-      [ -e "$dest" ] && [ "$f" -ef "$dest" ] && continue
-      cp "$f" "$dest"
-    done
-    echo "  -> PAI USER config copied (from claude-memory)"
-  fi
-fi
-
 # Chrome (WSL bridge setup script)
 if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
   mkdir -p "$HOME_DIR/.claude/chrome"
@@ -948,7 +868,6 @@ else
   echo "  -> Claude memory repo not found at $MEMORY_REPO"
   echo "     For auto-memory persistence: mkdir -p ~/dev/claude-memory/dev/memory,"
   echo "     then 'gh repo create claude-memory --private --source=. --push' and re-run setup.sh."
-  echo "     For full PAI integration (pai-config, pai-user, bootstrap.sh) see README."
 fi
 
 # ─── 5b. Codex config ────────────────────────────────────────────────
@@ -1078,8 +997,8 @@ else
   # .bash_profile is symlinked from dotfiles. Login shells (wsl.exe, `bash -l`,
   # ssh, fresh Terminal.app on a bash account) skip .bashrc by design; without
   # a .bash_profile that sources .bashrc, every login pane starts without
-  # `cc`, NVM, cargo, aliases, or auto-cd. The tracked file is safe whether
-  # or not you use PAI: the bun-PATH line is a no-op when bun isn't installed.
+  # `cc`, NVM, cargo, aliases, or auto-cd. The bun-PATH line is a no-op when
+  # bun isn't installed.
   # link_file backs up any pre-existing ~/.bash_profile to ~/.bash_profile.backup.
   link_file "$DOTFILES_DIR/.bash_profile" "$HOME_DIR/.bash_profile"
   echo "  -> .bash_profile linked (login shells now source .bashrc)"
@@ -1194,29 +1113,19 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   fi
 fi
 
-# ─── 8. Bootstrap claude-memory (private repo) — PAI mode only ───────
-# We capture the bootstrap return code so the final summary can surface a
-# clear failure message (M14). PAI is opt-in supplementary, so we never
-# `exit 1` from here — the operator's primary dotfiles+Claude install must
-# still succeed even if the private memory layer fails to wire up.
-if [ "$USE_PAI" = "1" ] && [ -f "$BOOTSTRAP_SCRIPT" ]; then
-  if pai_plain_active; then
-    # Bootstrap relinks CLAUDE.md/settings.json back to PAI; skip it in plain
-    # mode so a setup/dotfiles-update run doesn't silently end an A/B test.
-    echo ""
-    echo "--- claude-memory bootstrap skipped (PAI is OFF / plain mode) ---"
-    echo "    Run 'pai-on' then re-run setup to restore and bootstrap PAI."
+# ─── 8. Bootstrap claude-memory (private repo) ───────────────────────
+# Links the private settings.json (and any identity files) into ~/.claude.
+# The private memory layer is optional, so we never `exit 1` from here — the
+# primary dotfiles+Claude install must still succeed if it fails to wire up.
+if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+  echo ""
+  echo "--- Running claude-memory bootstrap ---"
+  if bash "$BOOTSTRAP_SCRIPT"; then
     BOOTSTRAP_RC=0
   else
-    echo ""
-    echo "--- Running claude-memory bootstrap ---"
-    if bash "$BOOTSTRAP_SCRIPT"; then
-      BOOTSTRAP_RC=0
-    else
-      BOOTSTRAP_RC=$?
-      echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
-      echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
-    fi
+    BOOTSTRAP_RC=$?
+    echo "  !! WARNING: claude-memory bootstrap exited $BOOTSTRAP_RC."
+    echo "     Setup will continue; re-run '$BOOTSTRAP_SCRIPT' manually to debug."
   fi
 fi
 
@@ -1245,11 +1154,7 @@ if [ "${CLAUDE_AUTHED:-0}" -eq 0 ]; then
 else
   _launch_step=2
 fi
-if [ "$USE_PAI" = "1" ]; then
-  echo "  ${_launch_step}. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
-else
-  echo "  ${_launch_step}. Run 'claude' to launch (PAI mode was off; the 'cc' wrapper assumes PAI)"
-fi
+echo "  ${_launch_step}. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 if [ "${CODEX_AUTHED:-0}" -eq 0 ]; then
   echo "  Next Codex step: run 'codex login', then use 'cx' to launch Codex"
 else
@@ -1281,7 +1186,7 @@ echo "────────────────────────�
 echo "  Completed in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
 echo "  Symlinks: created=${LINKS_CREATED:-0}  verified=${LINKS_VERIFIED:-0}  broken=${LINKS_BROKEN:-0}"
 if [ "${BOOTSTRAP_RC:-0}" -ne 0 ]; then
-  echo "  PAI bootstrap: FAILED — re-run manually: $BOOTSTRAP_SCRIPT"
+  echo "  claude-memory bootstrap: FAILED — re-run manually: $BOOTSTRAP_SCRIPT"
 fi
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "  Mode: DRY-RUN (no destructive ops were executed)"
