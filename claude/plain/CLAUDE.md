@@ -1,25 +1,71 @@
-# Claude — Plain Mode
+# Global Claude Code Instructions
 
-PAI is currently **OFF**. This is a minimal, model-led baseline with no
-Algorithm, no modes, no hooks, and no injected context. MCP servers and
-permissions are still active.
+Personal global guidance for all projects. A project's own `CLAUDE.md` always
+takes precedence over this file.
 
-Run `pai-on` and restart Claude to restore the full PAI system.
+## About me
+
+Jonathan Keen — Co-Executive Director of The Real News Network (TRNN), owner of
+Keen Media Inc.; advisory/governance across media orgs (Movement Media Alliance,
+Automattic/Newspack AI Advisory, NPAI). Building AI-driven systems, media
+infrastructure, and capital strategies. Primary dev environment is WSL2 (Ubuntu
+on Windows). Works across many orgs, so context switching is constant. Biases
+toward action, prefers going all-in on good systems over half-measures, and
+values portability — everything should work from a fresh clone + setup.
 
 ## Working style
 
 - Plan before non-trivial work. Confirm the approach, then execute.
+- If the goal is unclear, ask before coding — don't guess at intent.
 - Prefer editing existing files over creating new ones.
 - Keep changes scoped to the request — no unrequested refactors or cleanup.
 - Default to no comments; add one only when the *why* is non-obvious.
 - Be concise. State results and decisions, not running commentary.
+- If the same error appears 3+ times, stop and explain the root cause instead of
+  retrying. Course-correct early if the approach turns out to be wrong.
+
+## Tech stack
+
+- **TypeScript** primary; **bun** as the runtime — never npm/npx.
+- In Bash, prefer `rg`, `fd`, `bat`, `eza` over `grep`/`find`/`cat`/`ls`. In
+  portable code that ships to others, use language-native fs APIs and prefer
+  `find` over `fd` (fd isn't guaranteed installed).
+- Never hardcode user paths — use `$HOME` or relative paths.
+- Explicit error handling; never silently swallow errors.
+
+## Session start
+
+- Read `CLAUDE.md` and `CHANGELOG.md` if present; run `git status` and
+  `git log --oneline -5` to orient. If a project has no `CLAUDE.md`, offer to
+  bootstrap one.
 
 ## Verification
 
 - Give yourself a way to check the work: run the tests, the types, or the app.
 - Don't claim something works without evidence from a tool.
+- Address root causes, not symptoms. When fixing a bug, write a failing test
+  that reproduces it first, then fix it.
 
 ## Git
 
 - Only commit when asked. Never push to shared branches without confirmation.
-- Never stage secrets (`.env`, credentials, tokens, keys).
+- Use conventional commit messages: `type: short description`
+  (`feat`, `fix`, `refactor`, `chore`, `docs`, `test`).
+- Stage specific files — avoid `git add -A` / `git add .` so secrets and
+  generated files don't slip in. Never stage `.env`, credentials, tokens, keys.
+
+## Auth at the boundary
+
+If a service could ever need auth, build it in from the first commit. Never
+assume "auth will be added later" or "the layer above handles it." Across six
+repos, every CWE-306 finding traced to the same *auth-by-config* pattern — a
+route that authenticates only when an env var is set, trusting some upstream
+layer to catch it. For any new entry point (HTTP route, IPC accept-loop,
+WebSocket upgrade, external-input queue consumer, mutating CLI subcommand):
+
+1. Auth-by-default, not auth-by-config — the framework wiring forces it.
+2. Refuse to start if the auth secret is unset or too short.
+3. Opt-out is explicit, named, and greppable (e.g. `@PublicRoute(reason="…")`).
+4. Never trust upstream layers — each layer rejects on its own.
+5. Failure mode is closed — if the auth check throws, reject the request.
+6. Local dev uses a real token through the same verifier — no skip-auth branch.
