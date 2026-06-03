@@ -1,18 +1,18 @@
 ---
 name: decompose
-description: Deep task decomposition into parallel workstreams with self-contained agent prompts. Run before the Algorithm to skip OBSERVE/PLAN. Use when you want to review the execution plan before committing to it.
+description: Deep task decomposition into parallel workstreams with self-contained agent prompts. Use when you want to review the execution plan before committing to it.
 user_invocable: true
 ---
 
 # Task Decomposition Skill
 
-You are an expert task architect. The user has given you an intent — your job is to decompose it into an optimized parallel execution plan that the Algorithm can pick up at BUILD phase.
-
-**This replaces the Algorithm's OBSERVE and PLAN phases.** Do them better, with more rigor, and let the user review before execution begins.
+You are an expert task architect. The user has given you an intent — your job is
+to decompose it into an optimized parallel execution plan and let the user review
+it before any work begins.
 
 ## Phase 1: Deep Analysis (parallel agents)
 
-Launch these agents simultaneously in a single message:
+Launch these agents simultaneously in a single message (Agent tool):
 
 ### Agent 1: Codebase Scout
 - Explore the codebase structure relevant to the task
@@ -22,21 +22,25 @@ Launch these agents simultaneously in a single message:
 - Report: file paths, dependency graph, risk zones
 
 ### Agent 2: Requirements Analyst
-- Reverse-engineer the user's intent (explicit wants, implicit wants, explicit not-wanted, implied not-wanted)
+- Reverse-engineer the user's intent (explicit wants, implicit wants, explicit
+  not-wanted, implied not-wanted)
 - Identify ambiguities that need clarification
-- Determine effort level based on scope
-- Report: structured requirements, open questions, effort estimate
+- Report: structured requirements, open questions, scope estimate
 
-### Agent 3: Domain Expert (custom agent)
-- Use the Agents skill to compose a custom agent with expertise relevant to the task domain (e.g., if it's a React refactor, compose a frontend architecture expert; if it's a database migration, compose a data engineering expert)
-- Have this agent analyze the task from a domain-specific lens
+### Agent 3: Domain Expert
+- Spawn a subagent with expertise relevant to the task domain (e.g. a frontend
+  architecture expert for a React refactor, a data-engineering expert for a DB
+  migration) by giving it a tailored prompt, or use a matching `agentType`.
+- Have it analyze the task from a domain-specific lens
 - Report: domain-specific risks, best practices to follow, patterns to use/avoid
 
 ## Phase 2: Synthesis & Decomposition
 
 After all agents return, synthesize their findings into workstreams:
 
-1. **Identify independent workstreams.** Two workstreams are independent if they touch different files or can be merged without conflicts. Aim for maximum parallelism.
+1. **Identify independent workstreams.** Two workstreams are independent if they
+   touch different files or can be merged without conflicts. Aim for maximum
+   parallelism.
 
 2. **For each workstream, produce:**
 
@@ -45,13 +49,14 @@ workstream: [name]
 description: [what this workstream delivers]
 files: [list of files this workstream touches]
 depends_on: [other workstream names, or "none"]
-agent_type: [Engineer, custom agent spec, or specific subagent_type]
+agent_type: [default, or a specific subagent_type]
 isolation: worktree | none  # worktree if independent, none if sequential
 estimated_minutes: [number]
 capabilities: [skills/tools this workstream needs]
 ```
 
-3. **Write a self-contained agent prompt for each workstream.** This is the critical quality gate. Each prompt must:
+3. **Write a self-contained agent prompt for each workstream.** This is the
+   critical quality gate. Each prompt must:
    - Explain what the agent is building and WHY (not just what)
    - List specific file paths and line numbers where changes go
    - Include relevant code context (function signatures, types, patterns to follow)
@@ -59,65 +64,65 @@ capabilities: [skills/tools this workstream needs]
    - Mention what NOT to change (blast radius control)
    - Be fully understandable by an agent that has zero context from this conversation
 
-   **Test each prompt mentally: could a smart engineer who just joined the team execute this with no follow-up questions?** If not, add more context.
+   **Test each prompt mentally: could a smart engineer who just joined the team
+   execute this with no follow-up questions?** If not, add more context.
 
-4. **Identify shared prerequisites** — anything that must complete before parallel work can begin (e.g., a schema migration, a new type definition, a shared utility). These run sequentially first, then parallel workstreams fan out.
+4. **Identify shared prerequisites** — anything that must complete before parallel
+   work can begin (e.g., a schema migration, a new type definition, a shared
+   utility). These run sequentially first, then parallel workstreams fan out.
 
-## Phase 3: ISC Criteria
+## Phase 3: Acceptance Criteria
 
-Generate atomic ISC criteria for the entire task. Follow the Algorithm's Splitting Test — every criterion must be independently verifiable, 8-12 words, binary pass/fail. Apply domain decomposition (UI/API/data/logic boundaries).
+Write clear acceptance criteria for the task. Each criterion should be atomic
+and independently verifiable (binary pass/fail) — not "auth works" but "POST
+/login with bad credentials returns 401". Group them by workstream so each agent
+knows exactly what its slice must satisfy.
 
-Minimum criteria counts by effort tier:
-- Standard (< 2min): 8
-- Extended (< 8min): 16
-- Advanced (< 16min): 24
-- Deep (< 32min): 40
-- Comprehensive (< 120min): 64
+## Phase 4: Write the Plan
 
-## Phase 4: Write the PRD
+Capture the plan as a markdown doc in `Plans/{kebab-task-name}.md` (or present it
+inline for small tasks) with these sections:
 
-Create the PRD at `MEMORY/WORK/{slug}/PRD.md` with:
-
-```yaml
----
-task: [8 word description]
-slug: [YYYYMMDD-HHMMSS_kebab-description]
-effort: [tier]
-phase: plan
-progress: 0/[N]
-mode: interactive
-started: [ISO timestamp]
-updated: [ISO timestamp]
----
-```
-
-Populate all sections:
 - `## Context` — What, why, requirements, risks, technical approach
-- `## Criteria` — All ISC criteria as `- [ ] ISC-N: text` checkboxes
+- `## Acceptance criteria` — All criteria as `- [ ]` checkboxes, grouped by workstream
 - `## Decisions` — Key architectural choices made during decomposition
-- `## Workstreams` — The full workstream specs with agent prompts (this section is unique to /decompose PRDs)
+- `## Workstreams` — The full workstream specs with self-contained agent prompts
 
 ## Phase 5: Present for Review
 
 Show the user:
 
 1. **Summary** — One paragraph on the approach
-2. **Workstream diagram** — Show the execution order (prerequisites → parallel fan-out → merge)
-3. **Agent prompts** — Show each workstream's prompt so the user can review/adjust
-4. **ISC criteria** — The full list
-5. **Open questions** — Anything ambiguous that the user should clarify before execution
+2. **Workstream diagram** — Execution order (prerequisites → parallel fan-out → merge)
+3. **Agent prompts** — Each workstream's prompt so the user can review/adjust
+4. **Acceptance criteria** — The full list
+5. **Open questions** — Anything ambiguous to clarify before execution
 
-Then ask: **"Ready to execute? I'll enter the Algorithm at BUILD phase."**
+Then ask: **"Ready to execute?"**
 
-When the user confirms, enter the Algorithm by reading `PAI/Algorithm/v3.7.0.md` but skip directly to BUILD phase (the PRD is already populated with context, criteria, and plan). Set the PRD's phase to `build` and proceed.
+When the user confirms, dispatch the workstreams: run shared prerequisites first,
+then fan out the independent workstreams as parallel agents (use
+`isolation: "worktree"` for any that mutate files concurrently — see the
+`superpowers:dispatching-parallel-agents` skill). Merge results and verify each
+workstream's acceptance criteria with real tool output before reporting done.
 
 ## Integration with /max
 
-If the user ran `/max` before `/decompose`, or runs `/decompose` with a time budget (e.g., `/decompose 30m`), apply the /max parallelization strategies when designing workstreams — prefer worktree isolation, agent teams, and aggressive parallelism.
+If the user ran `/max` before `/decompose`, or runs `/decompose` with a time
+budget (e.g., `/decompose 30m`), apply the /max parallelization strategies when
+designing workstreams — prefer worktree isolation and aggressive parallelism.
 
 ## Tips for Quality Prompts
 
-The #1 failure mode of parallel agent work is **vague prompts that force agents to re-explore context.** Every minute an agent spends figuring out what you meant is wasted parallelism. Front-load context:
+The #1 failure mode of parallel agent work is **vague prompts that force agents
+to re-explore context.** Every minute an agent spends figuring out what you meant
+is wasted parallelism. Front-load context:
 
 - **Bad:** "Implement the auth middleware changes discussed above"
-- **Good:** "In `src/middleware/auth.ts`, replace the session-token check on lines 45-62 with a JWT validation using the `verifyToken()` helper from `src/lib/jwt.ts`. The new check should: (1) extract the Bearer token from the Authorization header, (2) call `verifyToken(token)` which returns `{userId, role}`, (3) set `req.user = {userId, role}`, (4) call `next()`. On failure, return 401 with `{error: 'Invalid token'}`. Do not change the rate-limiting logic on lines 30-42."
+- **Good:** "In `src/middleware/auth.ts`, replace the session-token check on lines
+  45-62 with a JWT validation using the `verifyToken()` helper from
+  `src/lib/jwt.ts`. The new check should: (1) extract the Bearer token from the
+  Authorization header, (2) call `verifyToken(token)` which returns
+  `{userId, role}`, (3) set `req.user = {userId, role}`, (4) call `next()`. On
+  failure, return 401 with `{error: 'Invalid token'}`. Do not change the
+  rate-limiting logic on lines 30-42."

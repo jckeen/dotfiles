@@ -6,46 +6,74 @@ user_invocable: true
 
 # Maximum Effort Mode
 
-The user is requesting comprehensive, parallelized, no-compromise execution. Apply ALL of the following strategies that fit the task. This is not a suggestion list — use every applicable technique.
+The user is requesting comprehensive, parallelized, no-compromise execution.
+Apply ALL of the following strategies that fit the task. This is not a suggestion
+list — use every applicable technique.
 
-## Effort & Algorithm
+## Plan First
 
-- Force **Advanced+ effort tier** in the Algorithm (24+ ISC minimum). If the task is large enough, use Deep (40+) or Comprehensive (64+).
-- If an SLA/time budget is given (e.g., `/max 10m`), use it to pick the right tier. Otherwise default to Advanced.
-- Decompose ISC criteria aggressively — apply the Splitting Test to every criterion. Atomic only.
+- Decompose the task before executing. For anything with 2+ independent areas,
+  use `/decompose` to produce a reviewable parallel execution plan.
+- Write atomic, independently-verifiable acceptance criteria up front, then hold
+  the work to them.
+- If a time budget is given (e.g., `/max 10m`), use it to scope depth and how
+  wide to parallelize.
 
 ## Parallelization (Mandatory)
 
 Use ALL applicable parallelization patterns:
 
-- **Worktree isolation** — For any task touching 2+ independent areas of code, spawn agents with `isolation: "worktree"` so they work on isolated copies. Each agent gets its own branch. Merge results after.
-- **Background agents** — For research, exploration, or investigation that doesn't block other work, use `run_in_background: true`. Don't wait when you don't need to.
-- **Agent teams** — For Extended+ effort with 3+ independent workstreams, use `TeamCreate` to coordinate agents with shared task visibility.
-- **Batch operations** — For similar changes across 3+ files (refactors, renames, migrations), invoke `/batch` with clear instructions.
-- **OBSERVE parallelization** — All research/exploration agents selected in OBSERVE MUST launch in a single message. No staggering.
+- **Worktree isolation** — For any task touching 2+ independent areas of code,
+  spawn agents with `isolation: "worktree"` so they work on isolated copies. Each
+  agent gets its own branch. Merge results after. See
+  `superpowers:dispatching-parallel-agents`.
+- **Background agents** — For research, exploration, or investigation that doesn't
+  block other work, use `run_in_background: true`. Don't wait when you don't need to.
+- **Agent teams** — For 3+ independent workstreams, use `TeamCreate` to coordinate
+  agents with shared task visibility.
+- **Batch operations** — For similar changes across 3+ files (refactors, renames,
+  migrations), give one agent clear, repeatable instructions over the file list.
+- **Launch in one message** — All independent research/exploration agents MUST
+  launch in a single message. No staggering.
 
 ## Capability Selection (Go Wide)
 
-Select capabilities aggressively from both PAI skills and platform capabilities:
+Select capabilities aggressively from the available skills and platform features:
 
-- **Research** — If the task involves unknowns, launch research agents (multiple queries in parallel).
-- **Custom agents** — Use the Agents skill to compose specialized agents with relevant expertise for the domain.
-- **Council/debate** — For design decisions or architecture, spin up a council of custom agents with different perspectives.
-- **Competing hypotheses** — For debugging, spawn N agents each testing a different theory simultaneously.
-- **Writer/reviewer** — For code quality, have one agent write and a separate agent review independently.
-- **First principles** — For complex design work, invoke first principles decomposition.
-- **/simplify** — After any code changes, run the 3-agent simplify review. Near-mandatory for max effort.
-- **/security-review** — For auth, RLS, payments, or data handling, run security review before execution.
+- **Research** — If the task involves unknowns, use `/deep-research` or launch
+  parallel search agents (multiple queries at once).
+- **Specialized agents** — Spawn subagents with tailored prompts (or a matching
+  `agentType`) so each brings domain-specific expertise.
+- **Multiple perspectives** — For design or architecture decisions, spin up
+  several subagents with different viewpoints and synthesize.
+- **Competing hypotheses** — For debugging, spawn N agents each testing a
+  different theory simultaneously (see `superpowers:systematic-debugging`).
+- **Writer/reviewer split** — For code quality, have one agent write and a
+  separate fresh-context agent review independently.
+- **First-principles decomposition** — For complex design work, break the problem
+  down to fundamentals before committing to an approach.
+- **/simplify** — After any code changes, run the simplify review. Near-mandatory
+  for max effort.
+- **/code-review** — Review the diff for correctness and quality before finishing.
+- **/security-review** — For auth, RLS, payments, or data handling, run a security
+  review before shipping.
 
 ## Execution Quality
 
-- **Vertical slice first** — For greenfield work, build one end-to-end slice before parallelizing.
-- **Verify with tools** — Never claim done without evidence. Screenshots, test output, diffs.
-- **Context compaction** — At phase boundaries, self-summarize to prevent context rot in long runs.
+- **Vertical slice first** — For greenfield work, build one end-to-end slice
+  before parallelizing.
+- **Verify with tools** — Never claim done without evidence. Screenshots, test
+  output, diffs.
+- **TDD for bugs** — Reproduce with a failing test first, then fix
+  (`superpowers:test-driven-development`).
+- **Context compaction** — At phase boundaries, self-summarize to prevent context
+  rot in long runs.
 
 ## What NOT to Do
 
-- Don't ask "should I use worktrees?" — just use them if the task has independent workstreams.
+- Don't ask "should I use worktrees?" — just use them if the task has independent
+  workstreams.
 - Don't serialize work that can be parallelized.
 - Don't select capabilities you won't invoke — every selection is a binding commitment.
-- Don't skip /simplify because "the code looks fine" — the whole point of max effort is thoroughness.
+- Don't skip /simplify because "the code looks fine" — the whole point of max
+  effort is thoroughness.
