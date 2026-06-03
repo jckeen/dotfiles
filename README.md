@@ -135,16 +135,16 @@ codex login            # Optional
 ### Setup-script flags (all platforms)
 
 ```bash
-./setup.sh             # default: prompts "Are you using PAI? [Y/n]"
-./setup.sh --no-pai    # skip the prompt — Claude Code + hooks only
-./setup.sh --pai       # skip the prompt — assume PAI (needs claude-memory repo)
+./setup.sh             # default: install everything, prompting only where it matters
 ./setup.sh --check     # read-only audit of all symlinks; exits non-zero if broken
 ./setup.sh --repair    # audit + recreate any broken/missing symlinks
+./setup.sh --dry-run   # show what would change without writing anything
+./setup.sh --help      # usage and flag reference
 ```
 
 > **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below).
 
-> **PAI mode:** Default-on. Wires in [Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) — install PAI first (clone [danielmiessler/Personal_AI_Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) → `bash ~/.claude/install.sh`) and clone your private `claude-memory` repo under `~/dev/` before running `setup.sh`. **`--no-pai`** skips the claude-memory integration entirely and leaves you with hooks, skills, agents, and dotfiles only.
+> **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Without it you still get hooks, skills, agents, status line, and dotfiles — the global `claude/CLAUDE.md` is symlinked either way.
 
 > **WSL filesystem rule:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
 
@@ -201,7 +201,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `codex` | OpenAI Codex CLI | npm |
 | `bun` | Runtime for `*.hook.ts` hooks | Homebrew / npm |
 
-WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voice` support).
+WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for audio routing).
 
 </details>
 
@@ -210,19 +210,19 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for `/voi
 
 <br>
 
-Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. Private/PAI-owned Claude instructions and settings come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
+Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. The global instructions live in this repo and are symlinked into `~/.claude/`; private settings (MCP servers, permissions, plugins) come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
 
 | What | Files | Purpose |
 |------|-------|----------|
-| **Claude instructions** | `~/dev/claude-memory/pai-config/CLAUDE.md` | Private global rules Claude follows in every session |
-| **Settings** | `~/dev/claude-memory/pai-config/settings.json` | Private permissions, hooks, preferred model, remote control |
+| **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`) |
+| **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
 | **Agent Pack** | `AgentPack.md` | 17-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
-| **Prompt classifier** | `hooks/PromptProcessing.hook.ts` | Sonnet-based UserPromptSubmit classifier — emits MODE (MINIMAL/NATIVE/ALGORITHM) and TIER (E1–E5) into additionalContext for the Algorithm executor |
+| **Prompt classifier** | `hooks/PromptProcessing.hook.ts` | UserPromptSubmit hook — one Haiku inference call per prompt produces a tab title and session name |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
@@ -230,7 +230,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Codex skills** | `codex/skills/*/SKILL.md` | Public-safe Codex workflows for review, issue fixes, PRs, handoffs |
 | **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
-| **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing for voice mode |
+| **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing |
 
 </details>
 
@@ -244,7 +244,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | Package manager | Homebrew | apt | apt |
 | Shell config | `.zshrc` | `.bashrc` | `.bashrc` |
 | Credential helper | osxkeychain | Git Credential Manager (Windows) | git-credential-store |
-| Audio (for /voice) | Built-in | ALSA → PulseAudio | N/A |
+| Audio | Built-in | ALSA → PulseAudio | N/A |
 | Git safe.directory | Not needed | Auto-configured for `/mnt/c/` | Not needed |
 
 </details>
@@ -263,41 +263,6 @@ These are available after setup (sourced from `.bash_aliases`).
 | `claude` | Start Claude directly (no repo sync) |
 | `claude-rc` | Start with explicit remote control flag |
 | `claude-server` | Spawn an isolated worktree + remote control session |
-
-### PAI mode toggle (test plain Claude)
-
-Switch Claude between the full PAI system and a lean **plain** baseline — useful
-for A/B testing whether heavy customization is helping or getting in the way.
-Both `~/.claude/CLAUDE.md` and `~/.claude/settings.json` are symlinks into the
-private `claude-memory/pai-config` repo; the toggle swaps **which** files those
-symlinks point at and never edits the PAI source.
-
-| Command | What it does |
-|---------|-------------|
-| `pai-off` | Switch to plain Claude: lean `CLAUDE.md` + settings with PAI hooks/context/identity stripped |
-| `pai-on` | Restore the exact PAI symlink targets (lossless round-trip) |
-| `pai-status` | Show which mode is active and the saved restore targets |
-
-**Restart Claude after either switch** — config is read at launch, so `/clear`
-won't pick it up.
-
-What plain mode **keeps** (so it stays usable): MCP servers, the permission
-allowlist, enabled plugins, and `env`. What it **strips** (what makes Claude
-behave like PAI): `hooks`, dynamic context injection, identity blocks, voice,
-the custom status line, and spinner flavor.
-
-Plain settings are **generated at runtime** into `~/.claude/settings.plain.json`
-(never committed — your personal MCP config stays local), and the PAI targets are
-detected and saved to `~/.claude/.pai-mode.state` so `pai-on` restores the exact
-prior state. While plain mode is active, `cc`'s `sync-pai-config` step detects it
-and skips the PAI config copy (so a launch can't overwrite the plain files), and
-`check-claude` will flag the `settings.json` symlink as pointing somewhere
-unexpected — both are expected; run `pai-on` to restore.
-
-**Requires the symlink-based PAI layout** created by `claude-memory/bootstrap.sh`
-(the toggle swaps symlinks and refuses to touch regular files). If `setup.sh`
-copied your PAI config into `~/.claude/` as regular files because the private
-bootstrap was absent, run `bootstrap.sh` to convert them to symlinks first.
 
 ### Starting Codex
 
@@ -353,10 +318,10 @@ Run Claude across multiple projects simultaneously without leaving your terminal
 # ×3 for three projects
 
 # NEW: from any existing terminal (or from inside Claude with ! prefix)
-cc-multi dotfiles pai stringer     # 3 tabs, each synced and running
+cc-multi dotfiles atlas stringer   # 3 tabs, each synced and running
 
 # Or split your current view
-cc-pane pai                        # vertical split
+cc-pane atlas                      # vertical split
 cc-pane stringer -H                # horizontal split
 ```
 
@@ -449,7 +414,7 @@ $env:CC_DEV_DIR    = '~/code'         # default: ~/dev
 **Example — five repos in a split-pane grid, one command:**
 
 ```powershell
-ccgrid dotfiles atlas stringer beacon pai
+ccgrid dotfiles atlas stringer beacon trnn
 ```
 
 That opens a new Windows Terminal tab with five panes (alternating vertical/horizontal splits), each running `cc <project>` inside WSL.
@@ -518,7 +483,7 @@ A team of 17 specialized subagents, each running in **its own isolated context**
 
 ## Safety Hooks
 
-Hooks run automatically and can't be forgotten like CLAUDE.md rules. Eleven hooks ship by default — the four originals plus seven that landed across `claude/hooks/` for session hygiene, plugin drift, and PR/push safety. See `claude/hooks/` for the full set; the table below covers the originals and the most-used additions.
+Hooks run automatically and can't be forgotten like CLAUDE.md rules. Several hooks ship by default — the four originals plus additions across `claude/hooks/` for session hygiene, plugin drift, and PR/push safety. See `claude/hooks/` for the full set; the table below covers the originals and the most-used additions.
 
 <details>
 <summary><strong>Hook-by-hook details</strong></summary>
@@ -543,7 +508,7 @@ Hooks run automatically and can't be forgotten like CLAUDE.md rules. Eleven hook
 - Project-level `settings.local.json` from accumulating `permissions` blocks that override global blanket permissions
 - Reads the current project's settings.local.json, removes only the `permissions` key, preserves everything else
 
-> **Note:** Security blocking (dangerous commands, secret detection) is handled by the PAI SecurityValidator hook in `~/.claude/hooks/SecurityValidator.hook.ts`, configured via `patterns.yaml`. The old `block-dangerous.sh` and `block-secrets.sh` hooks have been replaced.
+> **Note:** Day-to-day safety is enforced through the permission allowlist in your `settings.json` (block rules for dangerous commands and secret paths) rather than a dedicated blocking hook.
 
 </details>
 
@@ -620,68 +585,55 @@ For the day-to-day commands (`cc`, `cx`, `claude --continue`, `claude --resume`,
 
 ---
 
-## The private memory repos (PAI users)
+## The private memory repos
 
-This public dotfiles repo pairs with up to two **separate private repos** — `claude-memory` and (optional) `codex-memory` — that hold things that don't belong in public: Claude auto-memory, PAI config, identity, steering rules, Codex preferences. Both are optional.
-
-> **Running `setup.sh --no-pai`?** You can skip both subsections below — non-PAI mode doesn't touch either repo. You'll get hooks, skills, agents, status line, git config, and `cc`/`cx` scaffolding — no PAI runtime dependency, no memory repo required.
+This public dotfiles repo pairs with up to two **separate private repos** — `claude-memory` and (optional) `codex-memory` — that hold things that don't belong in public: Claude Code settings, auto-memory, archived personal context, and Codex preferences. Both are optional; without them you still get hooks, skills, agents, status line, git config, and `cc`/`cx` scaffolding.
 
 <details>
 <summary><strong>📁 The <code>claude-memory</code> private repo</strong> — structure, contract, how to create your own</summary>
 
 <br>
 
-`claude-memory` holds three things:
+`claude-memory` holds:
 
-1. Your **persistent Claude memory** (`dev/memory/`) — per-machine memory files Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
-2. Your **PAI config** (`pai-config/`, `pai-user/`) — the `CLAUDE.md`, `settings.json`, identity, steering rules, and DA personality that layer on top of the upstream [PAI](https://github.com/danielmiessler/Personal_AI_Infrastructure) install. **Only needed in PAI mode.**
-3. The `bootstrap.sh` script that links it all together and (re)installs the systemd voice server.
+1. Your **Claude Code settings** (`settings.json`) — private permissions, MCP servers, and enabled plugins.
+2. Your **persistent Claude memory** (`dev/memory/`) — auto-memory files (`MEMORY.md` + `feedback_*.md`) Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
+3. **Archived personal context** (`pai-user/`) — identity and steering notes kept for reference. These are no longer live-linked into Claude; they're retained as an archive.
+4. **Project notes** (`stringer/`, `trnn/`) — durable per-project context.
+5. The `bootstrap.sh` script that symlinks `settings.json` into `~/.claude/`.
 
 **Minimum structure:**
 
 ```
 ~/dev/claude-memory/
-├── bootstrap.sh                   # idempotent; runs at end of setup.sh
+├── bootstrap.sh                   # idempotent; runs at end of setup.sh — links settings.json
+├── settings.json                  # symlinked into ~/.claude/settings.json
 ├── dev/
-│   └── memory/                    # Claude auto-memory (symlinked into ~/.claude/projects/)
-├── pai-config/
-│   ├── CLAUDE.md                  # copied to ~/.claude/CLAUDE.md
-│   └── settings.json              # copied to ~/.claude/settings.json
-└── pai-user/
-    ├── ABOUTME.md                 # who you are
-    ├── AISTEERINGRULES.md         # overrides PAI system rules
-    ├── DAIDENTITY.md              # your Digital Assistant's personality
-    ├── PROJECTS/PROJECTS.md       # project catalog (optional)
-    └── TELOS/                     # goals, frames, challenges (optional)
+│   └── memory/                    # Claude auto-memory (MEMORY.md + feedback_*.md)
+├── pai-user/                      # ARCHIVED personal identity/steering notes (not live-linked)
+├── stringer/                      # project notes
+└── trnn/                          # project notes
 ```
 
-`setup.sh` copies (not symlinks) `pai-config/*` into `~/.claude/` and `pai-user/*.md` into `~/.claude/PAI/USER/`. `bootstrap.sh` is expected to:
-
-- symlink `dev/memory` → `~/.claude/projects/-<dev-dir-encoded>/memory`
-- symlink `pai-user/*` → `~/.claude/PAI/USER/*` (so edits in either place flow back)
-- verify `~/.env` contains `ELEVENLABS_API_KEY`
-- run `~/dev/dotfiles/claude/systemd/install.sh` to install the voice server
+`bootstrap.sh` symlinks `settings.json` into `~/.claude/` (no voice server, no `.env` checks). `setup.sh` calls it automatically when the repo is present.
 
 **Creating your own** — deliberately hand-crafted, no generator:
 
 ```bash
 # Create the skeleton
-mkdir -p ~/dev/claude-memory/{pai-config,pai-user,dev/memory}
+mkdir -p ~/dev/claude-memory/dev/memory
 cd ~/dev/claude-memory
 
-# Minimum files to pass setup.sh's PAI prereq checks
-touch pai-config/CLAUDE.md pai-config/settings.json
-touch pai-user/ABOUTME.md pai-user/AISTEERINGRULES.md pai-user/DAIDENTITY.md
+# Your Claude Code settings (permissions, MCP servers, plugins)
+touch settings.json
 
-# You'll need your own bootstrap.sh — see
-# https://github.com/jckeen/dotfiles/blob/main/README.md for the contract above
+# A minimal bootstrap.sh that symlinks settings.json into ~/.claude/
+# (idempotent; re-run safe)
 
 # Publish it private
 git init && git add -A && git commit -m "init: claude memory"
 gh repo create claude-memory --private --source=. --push
 ```
-
-Populate `pai-config/CLAUDE.md` with your personal Claude Code system instructions, `pai-user/AISTEERINGRULES.md` with user-level overrides (these take precedence over PAI's system rules), and `pai-user/ABOUTME.md` with whatever identity info you want Claude to always have.
 
 `check-claude.sh` verifies the memory symlink is healthy alongside everything else.
 
@@ -736,9 +688,8 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 - `.bash_aliases` — your shell shortcuts
 
 **Keep private:**
-- `~/dev/claude-memory` — personal Claude/PAI memory, identity, and config
-- `~/dev/claude-memory/pai-config/CLAUDE.md` — private Claude instructions and PAI steering
-- `~/dev/claude-memory/pai-config/settings.json` — private Claude permissions and settings
+- `~/dev/claude-memory` — personal Claude memory, settings, and archived context
+- `~/dev/claude-memory/settings.json` — private Claude permissions, MCP servers, and plugins
 - `~/dev/codex-memory` — personal Codex memory and private instructions
 - live `~/.codex/config.toml` — machine-specific project trust and local settings
 
@@ -841,10 +792,9 @@ dotfiles/
     │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
     │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-    │   ├── PromptProcessing.hook.ts        # UserPromptSubmit prompt pre-processing
+    │   ├── PromptProcessing.hook.ts        # UserPromptSubmit — tab title + session naming
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-    │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
-    │   └── PromptProcessing.hook.ts        # UserPromptSubmit Sonnet classifier — emits MODE+TIER for Algorithm executor
+    │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     ├── skills/
     │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
     │   ├── kickoff/            # /kickoff — new project bootstrap
@@ -869,7 +819,7 @@ dotfiles/
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   ├── review-and-push.sh  # Morning review of overnight changes
     │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
-    ├── systemd/                # systemd units (voice server, hygiene timer)
+    ├── systemd/                # systemd units (git-hygiene timer)
     └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md

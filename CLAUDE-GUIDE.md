@@ -9,8 +9,8 @@ See the [README](README.md) for the full best practices guide. This is the cheat
 ```bash
 cd ~/dev
 git clone https://github.com/jckeen/dotfiles.git
-cd dotfiles && chmod +x setup.sh && ./setup.sh      # prompts: are you using PAI? [Y/n]
-# Flags: --no-pai | --pai | --check | --repair | --dry-run | --help
+cd dotfiles && chmod +x setup.sh && ./setup.sh
+# Flags: --check | --repair | --dry-run | --help
 ```
 
 The script auto-detects your platform (macOS, WSL, or Linux) and installs everything accordingly.
@@ -113,7 +113,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event for the surface hook |
 | `PromptProcessing.hook.ts` | UserPromptSubmit | Tab title update + session naming — one Haiku inference call per prompt produces a tab title and session name; voice-announces the session name on first prompt |
 
-> Security blocking (dangerous commands, secrets) is handled by the PAI SecurityValidator hook, not in dotfiles.
+> Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.
 
 ---
 
