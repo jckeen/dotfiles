@@ -134,7 +134,10 @@ cc() {
     pull-all
     echo ""
     sync-memory
-    "$(_dev_dir)/dotfiles/check-claude.sh"
+    # --heal: auto-create MISSING symlinks at launch (e.g. skills added to the
+    # dotfiles repo since the last setup.sh). Guardrail — heals only the
+    # zero-clobber MISSING case; NOT LINKED / WRONG / orphan stay report-only.
+    "$(_dev_dir)/dotfiles/check-claude.sh" --heal
     echo ""
   fi
 

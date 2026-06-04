@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-04 — feat: check-claude.sh self-heals missing symlinks at launch (`--heal`)
+
+### What changed
+- **`check-claude.sh`** — new `--heal` flag that auto-creates **MISSING** symlinks (nothing exists at the destination, so linking clobbers nothing and the source is guaranteed present). Reports each as `HEALED` and a `Self-healed N missing link(s)` summary line. **Guardrail:** heals only the zero-clobber MISSING case — `NOT LINKED` regular files, `WRONG` targets, and orphaned links stay report-only, since those can be intentional divergence. Standalone `check-claude` (no flag) remains a pure read-only reporter. Also generalized arg parsing so `--fix` and `--heal` can coexist.
+- **`.bash_aliases` `cc()`** — the launch-time health check now runs `check-claude.sh --heal`, so a skill/script added to the dotfiles repo since the last `setup.sh` gets linked automatically on the next `cc` instead of nagging the user to run `setup.sh`.
+
+### Why
+Four skills/scripts added to the repo after the last `setup.sh` (`skills/jj`, `skills/session-retro`, `scripts/check-doc-refs.sh`, `scripts/check-no-personal-data.sh`) surfaced as `MISSING` warnings at every launch with no auto-fix — the check detected drift but only told the user to run a command. `setup.sh --repair` already heals, but it's too aggressive for launch (it backs up `NOT LINKED` files and rewrites `WRONG` targets). `--heal` is the conservative middle: self-heal the safe case, report the ambiguous ones.
+
 ## 2026-06-03 — chore: coding-setup hardening (skills, ADRs, drift-guard, portable CLAUDE.md)
 
 ### What changed

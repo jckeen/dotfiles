@@ -11,6 +11,26 @@ CLAUDE_DST="$HOME/.claude"
 ERRORS=0
 WARNINGS=0
 FIXED=0
+HEALED=0
+
+# Flags:
+#   --fix    auto-clean orphaned symlinks and stale backups (existing behavior)
+#   --heal   auto-create MISSING links whose source exists. Guardrail: MISSING
+#            only — nothing exists at the destination, so creating the link
+#            clobbers nothing and the source is guaranteed present (callers only
+#            iterate existing source files). Ambiguous states (NOT LINKED regular
+#            file, WRONG target, orphan) stay report-only, since those can be
+#            intentional divergence. `cc` passes --heal at launch so startup
+#            self-heals the safe case without prompting; standalone runs stay
+#            pure reporters.
+FIX=0
+HEAL=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix)  FIX=1 ;;
+    --heal) HEAL=1 ;;
+  esac
+done
 
 # Gate ANSI colors on a real TTY so piped/redirected output stays grep-friendly.
 if [ -t 1 ]; then
@@ -39,6 +59,16 @@ check_link() {
   elif [ -f "$dst" ]; then
     yellow "NOT LINKED  $label (exists but is a regular file, not a symlink)"
     WARNINGS=$((WARNINGS + 1))
+  elif [ "$HEAL" -eq 1 ]; then
+    # Guardrail self-heal: nothing exists at $dst, so linking clobbers nothing.
+    mkdir -p "$(dirname "$dst")"
+    if ln -s "$src" "$dst" 2>/dev/null; then
+      green "HEALED  $label (created missing symlink)"
+      HEALED=$((HEALED + 1))
+    else
+      yellow "MISSING  $label (auto-link failed — run ./setup.sh)"
+      WARNINGS=$((WARNINGS + 1))
+    fi
   else
     yellow "MISSING  $label (not present in ~/.claude/)"
     WARNINGS=$((WARNINGS + 1))
@@ -124,7 +154,7 @@ while IFS= read -r link; do
   # Only check symlinks that point into our dotfiles repo
   if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
     label="${link#$CLAUDE_DST/}"
-    if [ "${1:-}" = "--fix" ]; then
+    if [ "$FIX" -eq 1 ]; then
       rm "$link"
       green "CLEANED  $label (removed orphaned link -> $target)"
       FIXED=$((FIXED + 1))
@@ -155,7 +185,7 @@ while IFS= read -r backup; do
   # Only flag if the non-backup version exists and is a working symlink
   # (meaning setup.sh already replaced it successfully)
   if [ -L "$original" ] && [ -e "$original" ]; then
-    if [ "${1:-}" = "--fix" ]; then
+    if [ "$FIX" -eq 1 ]; then
       rm "$backup"
       green "CLEANED  $backup"
       FIXED=$((FIXED + 1))
@@ -173,6 +203,7 @@ fi
 
 # Summary
 echo ""
+[ $HEALED -gt 0 ] && green "Self-healed $HEALED missing link(s)."
 if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
   green "All good. Claude config is in sync."
   [ $FIXED -gt 0 ] && green "Cleaned up $FIXED item(s)."

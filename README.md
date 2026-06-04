@@ -279,7 +279,7 @@ These are available after setup (sourced from `.bash_aliases`).
 |---------|-------------|
 | `pull-all` | Git pull (fast-forward only) on every repo in your dev directory that has a remote. Skips local-only repos |
 | `sync-memory` | Commit and push any pending memory changes (runs automatically as part of `cc`) |
-| `check-claude` | Verify all Claude config symlinks, memory, and hooks are healthy |
+| `check-claude` | Verify all Claude config symlinks, memory, and hooks are healthy (read-only). At launch `cc` runs it with `--heal`, which auto-creates any *missing* symlink whose source exists — so skills/scripts added to the repo since the last `setup.sh` link themselves on the next `cc`. Ambiguous states (a regular file where a symlink belongs, a wrong target, an orphan) are reported, never auto-fixed |
 | `check-codex` | Verify public-safe Codex symlinks and warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `codex-update` | Run `codex update` |
@@ -768,7 +768,7 @@ longer holds is superseded by a new record rather than edited away. Start with
 ```
 dotfiles/
 ├── setup.sh                    # Cross-platform bootstrap script
-├── check-claude.sh             # Health check — verifies symlinks, memory, detects orphans
+├── check-claude.sh             # Health check — verifies symlinks/memory, detects orphans; --heal self-links missing (cc uses it)
 ├── check-codex.sh              # Health check — verifies public-safe Codex symlinks
 ├── gh-bootstrap.sh             # Bootstrap GitHub auto-merge settings on new repos
 ├── git-hygiene.sh              # Stale-branch cleanup across repos in ~/dev/
