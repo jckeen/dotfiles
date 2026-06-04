@@ -98,7 +98,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `cc` | Pull repos, sync memory, health check, launch Claude |
 | `pull-all` | Fast-forward pull on every repo in dev dir |
 | `sync-memory` | Commit and push pending memory changes |
-| `check-claude` | Verify all Claude config symlinks are healthy |
+| `check-claude` | Verify all Claude config symlinks are healthy (read-only). `cc` runs `--heal` at launch to auto-create missing links; ambiguous states stay report-only |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
