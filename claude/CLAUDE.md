@@ -21,6 +21,12 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - Keep changes scoped to the request — no unrequested refactors or cleanup.
 - Default to no comments; add one only when the *why* is non-obvious.
 - Be concise. State results and decisions, not running commentary.
+- Match ceremony to the task. A clear tactical ask ("add this line", "run this
+  check") gets done and reported — no plan, no variants, no preamble. Reserve
+  heavyweight planning for genuinely complex work.
+- Lead with the state change. When a merge, approval, CI result, or deploy
+  lands, open the reply with one status line (`✅ PR #N merged`) before detail —
+  don't bury it in tool output.
 - If the same error appears 3+ times, stop and explain the root cause instead of
   retrying. Course-correct early if the approach turns out to be wrong.
 
@@ -32,6 +38,11 @@ README's "The private memory repos" section for how to set up `claude-memory`.
   `find` over `fd` (fd isn't guaranteed installed).
 - Never hardcode user paths — use `$HOME` or relative paths.
 - Explicit error handling; never silently swallow errors.
+- Use the latest stable version of any dependency — don't trust versions from
+  training data. Check the registry before adding; run `npm outdated` after.
+- Calling an external API: fetch the live reference for that exact endpoint and
+  version at code-time — verify every field, param, and scope against the live
+  page rather than extrapolating from memory.
 
 ## Session start
 
@@ -45,6 +56,39 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - Don't claim something works without evidence from a tool.
 - Address root causes, not symptoms. When fixing a bug, write a failing test
   that reproduces it first, then fix it.
+- Audit during the build, not at a final gate. The moment a risky surface (auth,
+  path/host handling, file IO, schemas, hash chains) has a complete first draft,
+  run the security/review pass then — in parallel with continuing. Auditing at
+  the discovery moment collapses rework cycles.
+- Re-run a subagent's "verified via X" claim yourself when it contradicts what
+  you can check directly — empirical beats confident assertion. The underlying
+  concern may still be real even if its verification line was hallucinated.
+- Promote a "must NOT happen" requirement from discipline into code/CI whenever
+  the fix is small (~<50 LOC) — a checklist item waiting to be remembered is the
+  failure it guards against (schema refinement on env, host allowlist, a CI gate).
+- A reviewer's finding is usually a category, not an instance. Before pushing the
+  fix, sweep the same neighborhood — sibling routes, every path resolution, every
+  shell flag — and ship the unified fix in one pass.
+
+## Definition of done
+
+- Docs are part of "done," not a follow-up. For any substantive change —
+  especially a removal, migration, or refactor — update every doc surface in the
+  same pass: READMEs, CONTRIBUTING, `docs/`, and the relevant `CLAUDE.md`. Keep
+  history accurate (changelogs and dated archives may name removed things) but
+  make active guidance reflect the present; verify with a `grep -ri <removed>`.
+- Treat `CHANGELOG.md` as living: update it every 1–2 meaningful commits,
+  appending rather than rewriting — not batched to end-of-session, which gets
+  lost when a session ends early.
+
+## Parallel agents
+
+- Never run multiple agents editing the same files at once — they make
+  conflicting assumptions about names, signatures, and imports. Parallelize
+  read-only work (review, research) and non-overlapping new files freely; for
+  shared-file edits use staged sequential rounds, verifying (lint/test/build)
+  between rounds. The same applies to two interactive sessions sharing one git
+  checkout — one owner at a time.
 
 ## Git
 
