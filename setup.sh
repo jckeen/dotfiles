@@ -759,11 +759,15 @@ link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
 # WSL-specific: mark dev repos as safe (idempotent — skip if already present).
 # DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
+# Write to .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to this
+# repo's tracked .gitconfig, so `git config --global` would commit machine paths
+# (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
+# gh credential-helper block below.
 if [[ "$PLATFORM" == "wsl" ]]; then
   for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
-    git config --global --get-all safe.directory 2>/dev/null \
+    git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
       | grep -Fxq "$_safe_dir" \
-      || git config --global --add safe.directory "$_safe_dir"
+      || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
   done
 fi
 
@@ -1171,8 +1175,10 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   echo "    File I/O on the Linux filesystem is ~10x faster than the Windows mount."
   echo "    Your shell will auto-cd to ~/dev on startup."
   echo ""
-  echo "  3. Add project repos to git safe.directory as needed:"
-  echo "     git config --global --add safe.directory $DEV_DIR/<repo>"
+  echo "  3. Add project repos to git safe.directory as needed (write to"
+  echo "     .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to the"
+  echo "     public dotfiles repo, so --global would commit your machine path):"
+  echo "     git config --file ~/.gitconfig.local --add safe.directory $DEV_DIR/<repo>"
 fi
 
 # ─── Final completion summary (M5) ───────────────────────────────────

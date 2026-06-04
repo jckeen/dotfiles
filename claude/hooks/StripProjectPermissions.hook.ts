@@ -20,7 +20,7 @@ import { homedir } from 'os';
 
 /**
  * Convert a directory path to Claude Code's project slug format.
- * e.g. /home/jckee/dev/dotfiles → -home-jckee-dev-dotfiles
+ * e.g. /home/you/dev/dotfiles → -home-you-dev-dotfiles
  */
 function toProjectSlug(dir: string): string {
   return dir.replace(/\//g, '-');
