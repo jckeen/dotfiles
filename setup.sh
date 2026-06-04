@@ -1175,8 +1175,10 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   echo "    File I/O on the Linux filesystem is ~10x faster than the Windows mount."
   echo "    Your shell will auto-cd to ~/dev on startup."
   echo ""
-  echo "  3. Add project repos to git safe.directory as needed:"
-  echo "     git config --global --add safe.directory $DEV_DIR/<repo>"
+  echo "  3. Add project repos to git safe.directory as needed (write to"
+  echo "     .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to the"
+  echo "     public dotfiles repo, so --global would commit your machine path):"
+  echo "     git config --file ~/.gitconfig.local --add safe.directory $DEV_DIR/<repo>"
 fi
 
 # ─── Final completion summary (M5) ───────────────────────────────────

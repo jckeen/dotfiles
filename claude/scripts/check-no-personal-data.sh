@@ -51,10 +51,11 @@ while IFS= read -r -d '' file; do
   # Skip binary files; grep -I excludes them from output anyway.
   while IFS=: read -r lineno line; do
     [[ -z "$lineno" ]] && continue
-    # Allow placeholder usernames.
-    if printf '%s' "$line" | grep -qE "(/home/|/Users/)(${PLACEHOLDERS})/"; then
-      continue
-    fi
+    # Blank out allowed placeholder paths, then check whether any *real* home
+    # path still remains. Stripping per-occurrence (not skipping the whole line)
+    # means a placeholder and a real path on the same line are judged separately.
+    stripped="$(printf '%s' "$line" | sed -E "s#(/home/|/Users/)(${PLACEHOLDERS})/#<placeholder>#g")"
+    printf '%s' "$stripped" | grep -qE "$HOME_PATH_RE" || continue
     if [[ $found -eq 0 ]]; then
       echo "✖ Tracked files contain machine-specific home paths (public-repo leak):"
       echo "  These embed a real local username. Move them to an untracked *.local"
