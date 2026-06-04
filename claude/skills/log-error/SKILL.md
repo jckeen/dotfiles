@@ -1,7 +1,6 @@
 ---
 name: log-error
-description: Document a persistent error pattern with failure classification and what was tried
-user_invocable: true
+description: Records a recurring failure into ERRORS.md — classifies it (hallucination, instruction-ignored, context-lost, wrong-tool, incomplete, external), captures the goal, exact error, attempts tried, root cause, and lesson, then commits it; also logs wins on request. Use when the same error keeps recurring, an approach repeatedly fails, the user says "log this error", "document this failure", "this keeps happening", or "log that as a win" after a success.
 ---
 
 When the user runs /log-error, do the following:

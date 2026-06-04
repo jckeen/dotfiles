@@ -1,7 +1,6 @@
 ---
 name: changelog
-description: Update the project changelog with what happened this session
-user_invocable: true
+description: Records what changed this session into a CHANGELOG.md at the project root — reads git log since the last entry and prepends a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user says "update the changelog", "log this session", "add a changelog entry", "record what we did", or wraps up a unit of work and wants it captured.
 ---
 
 When the user runs /changelog, do the following:

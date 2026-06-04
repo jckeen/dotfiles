@@ -1,17 +1,17 @@
 # Global Claude Code Instructions
 
-Personal global guidance for all projects. A project's own `CLAUDE.md` always
-takes precedence over this file.
+Portable global guidance for all projects — the public, anyone-can-use layer.
+A project's own `CLAUDE.md` always takes precedence over this file.
 
-## About me
+## Personal context
 
-Jonathan Keen — Co-Executive Director of The Real News Network (TRNN), owner of
-Keen Media Inc.; advisory/governance across media orgs (Movement Media Alliance,
-Automattic/Newspack AI Advisory, NPAI). Building AI-driven systems, media
-infrastructure, and capital strategies. Primary dev environment is WSL2 (Ubuntu
-on Windows). Works across many orgs, so context switching is constant. Biases
-toward action, prefers going all-in on good systems over half-measures, and
-values portability — everything should work from a fresh clone + setup.
+Identity, org context, and private preferences are **not** kept here — this repo
+is public. They live in a separate, private `claude-memory` repo and are pulled
+in via the import below. If you cloned these dotfiles, point this at your own
+`claude-memory` or delete the line; everything below works without it. See the
+README's "The private memory repos" section for how to set up `claude-memory`.
+
+@~/dev/claude-memory/CLAUDE.md
 
 ## Working style
 

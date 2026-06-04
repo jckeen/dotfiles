@@ -42,10 +42,11 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 1. **Shift+Tab (x2)** — Enter Plan Mode
 2. Go back and forth until the plan is solid
 3. Switch to Normal Mode — Claude executes
-4. `/simplify` — Remove unnecessary complexity
-5. `/review` — Check quality and security
-6. `/changelog` — Log what happened
-7. `/handoff` — If ending the session
+4. `/verify` — Confirm it actually works (run the tests, run the app, observe behavior). This is the **#1 quality multiplier** — a real feedback loop is worth 2–3× the result.
+5. `/simplify` — Remove unnecessary complexity
+6. `/review` — Check quality and security
+7. `/changelog` — Log what happened
+8. `/handoff` — If ending the session
 
 ---
 
@@ -56,6 +57,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/kickoff` | New project setup |
 | `/changelog` | Log session changes |
 | `/log-error` | Document error patterns |
+| `/verify` | Confirm a change works by running it (tests, app, behavior) |
 | `/review` | Quality/security review |
 | `/handoff` | Session transition |
 | `/fix-issue 123` | Fix a GitHub issue end-to-end |
@@ -65,6 +67,12 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/decompose` | Break a complex task into subtasks |
 | `/max` | High-context deep investigation mode |
 | `/branch-hygiene` | Audit and clean up stale git branches |
+| `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
+| `/session-retro` | Retro that proposes improvements to your skills (fires on "thanks", or run it) |
+
+> Most of these **auto-invoke** when their triggers match — you rarely need to
+> type them. The ones worth remembering by hand: `/max`, `/decompose`,
+> `/fix-issue N`, and `/handoff`.
 
 ---
 
@@ -108,10 +116,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `HygieneStatus.hook.sh` | SessionStart | Surfaces branch-hygiene drift detected by the daily systemd timer (thin wrapper around `hygiene-status.sh --reminder`) |
 | `PluginDriftCheck.hook.ts` | SessionStart | Diffs installed plugins against `claude/plugins.txt` manifest; warns and points at `sync-plugins.sh` if anything is missing |
 | `SymlinkRepair.hook.ts` | SessionStart (place FIRST) | Re-installs missing dotfiles→`~/.claude/` symlinks for hooks/scripts/agents/skills when new files land in the repo and `setup.sh` hasn't been re-run; advisory-only, never clobbers |
-| `PRWatcherAutoLaunch.hook.ts` | PostToolUse | Detects `gh pr create` / `mcp__github__create_pull_request` and spawns `WatchPRReviews.ts` in the background so the watch→fix→re-review loop runs without manual Monitor invocation |
-| `PRWatcherSurface.hook.ts` | UserPromptSubmit | Surfaces unread PR-watcher events (Codex/human reviews, comments, CI) into `additionalContext` so the assistant proactively addresses feedback |
-| `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event for the surface hook |
-| `PromptProcessing.hook.ts` | UserPromptSubmit | Tab title update + session naming — one Haiku inference call per prompt produces a tab title and session name; voice-announces the session name on first prompt |
+| `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event |
 
 > Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.
 

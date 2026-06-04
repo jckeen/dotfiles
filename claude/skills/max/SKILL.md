@@ -1,7 +1,6 @@
 ---
 name: max
 description: Maximum effort mode — worktrees, parallel agents, batches, full capability selection. Use when you want comprehensive, no-compromise execution.
-user_invocable: true
 ---
 
 # Maximum Effort Mode

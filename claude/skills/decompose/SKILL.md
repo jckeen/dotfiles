@@ -1,7 +1,6 @@
 ---
 name: decompose
 description: Deep task decomposition into parallel workstreams with self-contained agent prompts. Use when you want to review the execution plan before committing to it.
-user_invocable: true
 ---
 
 # Task Decomposition Skill

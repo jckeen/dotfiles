@@ -1,7 +1,6 @@
 ---
 name: review
-description: Review recent changes for quality, security, and correctness
-user_invocable: true
+description: Reviews recent git changes (diff since the last review/tag) for correctness, security, and quality — flags edge cases and missing boundary error handling, hardcoded secrets, injection risks (SQL/XSS/command), sensitive data in logs, over-engineering, and dead code, then returns a prioritized checklist. Use when the user asks to "review my changes", "check this before I ship", "look over the diff", "is this safe/correct", or wants a quality/security pass on recent work.
 ---
 
 When the user runs /review, do the following:
