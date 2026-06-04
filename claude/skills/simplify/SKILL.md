@@ -1,7 +1,6 @@
 ---
 name: simplify
 description: Review recently changed code for unnecessary complexity and simplify it
-user_invocable: true
 ---
 
 When the user runs /simplify, do the following:

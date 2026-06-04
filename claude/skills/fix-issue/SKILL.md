@@ -1,7 +1,6 @@
 ---
 name: fix-issue
 description: Pick up a GitHub issue, investigate, implement the fix, test, and create a PR
-user_invocable: true
 disable-model-invocation: true
 ---
 

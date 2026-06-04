@@ -1,7 +1,6 @@
 ---
 name: commit-push-pr
 description: Commit, push, and create a PR in one shot — Boris Cherny's most-used daily command
-user_invocable: true
 disable-model-invocation: true
 ---
 
@@ -18,3 +17,4 @@ Commit, push, and create a PR for the current work. $ARGUMENTS
    - Body: what changed, why, how it was tested
    - Link any related issues with "Fixes #N" or "Relates to #N"
 8. Output the PR URL
+9. Check CI status with `gh pr checks <url>` (it may still be pending — note that). If any check fails, surface the failure summary. We rely on Codex stop-gate review + **CI green** as the merge gate (see ADR-0003), so there's no need to wait on PR comments — just confirm CI is healthy or flag what's red.

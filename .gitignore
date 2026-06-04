@@ -1,6 +1,9 @@
 # Generated per-machine by setup.sh
 .gitconfig.local
 
+# Working plan docs are local-only / preserved in private claude-memory, never public
+Plans/
+
 # Session handoff notes (ephemeral, potentially sensitive)
 claude/handoffs/
 

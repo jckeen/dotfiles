@@ -54,3 +54,12 @@ jobs:
       - name: Type-check Claude hooks
         working-directory: claude/hooks
         run: bunx tsc --noEmit
+
+  doc-refs:
+    name: doc-refs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check doc references resolve (hooks + skills)
+        run: claude/scripts/check-doc-refs.sh

@@ -222,7 +222,6 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
-| **Prompt classifier** | `hooks/PromptProcessing.hook.ts` | UserPromptSubmit hook — one Haiku inference call per prompt produces a tab title and session name |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
@@ -600,7 +599,8 @@ This public dotfiles repo pairs with up to two **separate private repos** — `c
 2. Your **persistent Claude memory** (`dev/memory/`) — auto-memory files (`MEMORY.md` + `feedback_*.md`) Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
 3. **Archived personal context** (`pai-user/`) — identity and steering notes kept for reference. These are no longer live-linked into Claude; they're retained as an archive.
 4. **Project notes** (`stringer/`, `trnn/`) — durable per-project context.
-5. The `bootstrap.sh` script that symlinks `settings.json` into `~/.claude/`.
+5. Your **personal identity & preferences** (`CLAUDE.md`) — imported by the public `claude/CLAUDE.md` via `@~/dev/claude-memory/CLAUDE.md`, so identity loads globally while staying out of the public repo.
+6. The `bootstrap.sh` script that symlinks `settings.json` into `~/.claude/`.
 
 **Minimum structure:**
 
@@ -608,6 +608,7 @@ This public dotfiles repo pairs with up to two **separate private repos** — `c
 ~/dev/claude-memory/
 ├── bootstrap.sh                   # idempotent; runs at end of setup.sh — links settings.json
 ├── settings.json                  # symlinked into ~/.claude/settings.json
+├── CLAUDE.md                      # personal identity, imported by public claude/CLAUDE.md
 ├── dev/
 │   └── memory/                    # Claude auto-memory (MEMORY.md + feedback_*.md)
 ├── pai-user/                      # ARCHIVED personal identity/steering notes (not live-linked)
@@ -743,6 +744,20 @@ CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules int
 
 ---
 
+## Architecture decisions
+
+The *why* behind structural changes lives in [`docs/adr/`](docs/adr/) as
+Architecture Decision Records, and the current backlog lives in
+[`ROADMAP.md`](ROADMAP.md) + GitHub Issues. This repo uses a four-layer record
+model — Issues track what's next, CI-gated PRs are the unit of change, ADRs
+capture the reasoning, and the [CHANGELOG](CHANGELOG.md) records what shipped.
+ADRs are numbered `NNNN-kebab-title.md` and append-only: a decision that no
+longer holds is superseded by a new record rather than edited away. Start with
+[ADR-0001](docs/adr/0001-record-architecture-decisions.md), or copy
+[`0000-template.md`](docs/adr/0000-template.md) to write a new one.
+
+---
+
 ## Repo Structure
 
 <details>
@@ -789,10 +804,7 @@ dotfiles/
     │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
     │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
     │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
-    │   ├── PRWatcherAutoLaunch.hook.ts     # Auto-launch Claude on PR review requests
-    │   ├── PRWatcherSurface.hook.ts        # Surface pending PR reviews at session start
     │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-    │   ├── PromptProcessing.hook.ts        # UserPromptSubmit — tab title + session naming
     │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
     │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
     ├── skills/

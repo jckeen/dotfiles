@@ -1,7 +1,6 @@
 ---
 name: handoff
 description: Generate a handoff note for clean session transitions — preserves context across /clear or new sessions
-user_invocable: true
 ---
 
 When the user runs /handoff, do the following:

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-06-03 — chore: coding-setup hardening (skills, ADRs, drift-guard, portable CLAUDE.md)
+
+### What changed
+- **Doc drift scrubbed (Tier 1).** Removed the three phantom hooks left by the PAI decommission (`PRWatcherAutoLaunch`, `PRWatcherSurface`, `PromptProcessing`) from `CLAUDE-GUIDE.md`, `README.md`, and `claude/hooks/tsconfig.json`; reconciled the hooks tables to the 8 hooks that actually exist on disk.
+- **Skills brought to the Agent Skills authoring spec (Tier 2).** Rewrote 5 weak descriptions (`changelog`, `claude-server`, `kickoff`, `log-error`, `review`) to third-person WHAT + "Use when…" triggers so the agent auto-invokes them instead of waiting to be typed. Removed the misspelled no-op `user_invocable` field from all 11 skills (the real field is `user-invocable`, default true).
+- **Verification made first-class (Tier 3).** Added a `/verify` step to the workflow and command table in `CLAUDE-GUIDE.md` — Boris Cherny's "#1 quality multiplier."
+- **Doc-reference drift-guard (Tier 3).** New `claude/scripts/check-doc-refs.sh` fails CI when a doc references a hook/skill file that doesn't exist; wired a `doc-refs` job into `ci.yml`. Allowlists append-only history (CHANGELOG, SECURITY_FINDINGS, Plans, ADRs).
+- **`commit-push-pr`** now surfaces `gh pr checks` (CI status) after opening a PR — the gate is Codex stop-review + CI green, not PR comments (ADR-0003).
+- **Agent-native / compounding (Tier 4).** New skills: `jj` (jujutsu for single-agent work; worktrees for multi-agent) and `session-retro` (proposes improvements to your own skills on a thank-you, propose→confirm→apply).
+- **ADR practice established.** `docs/adr/` with a template + ADR-0001 (the four-layer Issues/PRs/ADRs/CHANGELOG record model), backfilled ADR-0002 (PAI decommission) and ADR-0003 (Codex stop-gate over PR-watch), and ADR-0004 (Every compound-engineering evaluation — don't install, adopt two ideas).
+- **Portable CLAUDE.md.** `claude/CLAUDE.md` is now generic and imports personal identity from the private `claude-memory/CLAUDE.md` (`@~/dev/claude-memory/CLAUDE.md`); the public repo no longer ships a personal "About me."
+- **Privacy cleanup.** Removed `SECURITY_FINDINGS_20260524.md` from the public repo (preserved privately in `claude-memory`) and untracked + gitignored `Plans/`.
+- **Roadmap.** `ROADMAP.md` indexes the milestone "Coding setup hardening — 2026-06" (issues #69–80).
+
+### Why
+An audit of the skills and workflow against Boris Cherny's practices, the Code w/ Claude 2026 guidance, and the Agent Skills authoring spec. Goals: kill doc drift, make the agent auto-invoke skills (fewer commands to memorize), make verification first-class, and adopt agent-native compounding so the toolset self-maintains. Decisions are recorded as ADRs; the backlog as GitHub Issues + `ROADMAP.md`.
+
+### Known issues
+- `PrePushStaleSHACheck.hook.ts` remains on disk but its companion PR-watcher hooks are gone — likely orphaned; flagged for review.
+- ADR-0004's `agent-native-review` subagent and the "compound/codify" + healing-skill ideas are scoped but not yet built (tracked in #77).
+
 ## 2026-06-03 — chore: decommission PAI
 
 ### What changed

@@ -1,7 +1,6 @@
 ---
 name: kickoff
-description: Bootstrap a new project with proper structure, CLAUDE.md, changelog, and git init
-user_invocable: true
+description: Scaffolds a new project in the current directory — creates CLAUDE.md, CHANGELOG.md, .gitignore, README.md, and a source dir, initializes git with a first commit, and offers to create a GitHub repo. Prompts for project name, description, and language/framework first. Use when the user wants to "start a new project", "bootstrap a repo", "set up a fresh project", "scaffold a codebase", or "kick off" a new build from scratch.
 ---
 
 When the user runs /kickoff, do the following:

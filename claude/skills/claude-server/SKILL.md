@@ -1,7 +1,6 @@
 ---
 name: claude-server
-description: Start a Claude Code remote control server in an isolated worktree for remote access from claude.ai or mobile
-user_invocable: true
+description: Starts a Claude Code remote-control server via `claude remote-control --spawn worktree`, running in an isolated git worktree so remote work doesn't touch local changes, and returns the connection info for claude.ai/code and the Claude mobile app. Use when the user wants to control this project remotely, asks to "start the remote server", "connect from my phone/mobile", "access this from claude.ai", or "spin up claude-server".
 ---
 
 When the user runs /claude-server, do the following:
