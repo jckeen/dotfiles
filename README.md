@@ -19,7 +19,7 @@ After setup, you don't have to remember much. Open a terminal and:
 
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
-- **12 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`. Type the verb, get the workflow.
+- **14 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`, `/jj` (jujutsu for single-agent work), `/session-retro` (self-improving skills). Type the verb, get the workflow.
 - **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
@@ -366,13 +366,13 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 #    "not digitally signed" error, so dot-sourcing local copies is required.)
 $base = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows'
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+  Copy-Item "$base\$f" "$env:USERPROFILE\.\$f" -Force
 }
 
 # 3. Wire both into your PowerShell profile
 if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
 foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + '"')
+  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.\$f" + '"')
 }
 
 # 4. Reload
@@ -389,10 +389,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
   if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
   $base = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows"
   foreach ($f in @("wsl-helpers.ps1", "cc-functions.ps1")) {
-    Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
+    Copy-Item "$base\$f" "$env:USERPROFILE\.\$f" -Force
     $pattern = [regex]::Escape($f)
     if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
-      Add-Content $PROFILE (". `"$env:USERPROFILE\.$f`"")
+      Add-Content $PROFILE (". `"$env:USERPROFILE\.\$f`"")
     }
   }
 '
@@ -440,6 +440,8 @@ Type these directly in Claude Code.
 | `/decompose` | Deep task decomposition into parallel workstreams |
 | `/max` | Maximum effort — worktrees, parallel agents, full capability selection |
 | `/branch-hygiene` | Inspect and clean stale branches across repos |
+| `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
+| `/session-retro` | End-of-session retro that proposes improvements to your skills |
 
 ---
 
@@ -819,7 +821,9 @@ dotfiles/
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
     │   ├── claude-server/      # /claude-server — remote worktree
     │   ├── decompose/          # /decompose — deep task decomposition
-    │   └── max/                # /max — maximum effort parallel execution
+    │   ├── max/                # /max — maximum effort parallel execution
+    │   ├── jj/                 # /jj — jujutsu version control for single-agent work
+    │   └── session-retro/      # /session-retro — self-improving skills retro
     ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
     ├── scripts/                # Headless automation scripts
     │   ├── common.sh           # Shared safety tiers + runner
