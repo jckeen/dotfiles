@@ -57,7 +57,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/kickoff` | New project setup |
 | `/changelog` | Log session changes |
 | `/log-error` | Document error patterns |
-| `/verify` | Confirm a change works by running it (tests, app, behavior) |
+| `/verify` | Confirm a change works by running it — Claude Code's built-in verification skill (tests, app, behavior) |
 | `/review` | Quality/security review |
 | `/handoff` | Session transition |
 | `/fix-issue 123` | Fix a GitHub issue end-to-end |

@@ -20,8 +20,21 @@
 
 set -euo pipefail
 
-# --- Locate repo root (works from any CWD) ---------------------
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# --- Locate repo root via the real (symlink-resolved) path -----
+# This script is symlinked into ~/.claude/scripts, so $0/BASH_SOURCE may be a
+# symlink. Resolve it before walking up to the dotfiles checkout, or REPO_ROOT
+# would point at ~/.claude and the guard would scan the wrong tree (false OK).
+# Portable loop, mirroring sync-plugins.sh (BSD readlink lacks -f).
+resolve_script_path() {
+  local target="$1" dir
+  while [[ -L "$target" ]]; do
+    dir="$(cd -P "$(dirname "$target")" && pwd)"
+    target="$(readlink "$target")"
+    [[ "$target" != /* ]] && target="$dir/$target"
+  done
+  cd -P "$(dirname "$target")" && pwd
+}
+SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 

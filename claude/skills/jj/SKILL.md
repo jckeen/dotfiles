@@ -47,7 +47,7 @@ and `gh` still work and GitHub/PRs are unchanged.
 | Edit an earlier change | `jj edit <change-id>` then make edits |
 | Undo last operation | `jj undo` (or `jj op log` → `jj op restore <id>`) |
 | Pull from remote | `jj git fetch` |
-| Rebase onto updated main | `jj rebase -d main` |
+| Rebase onto updated main | `jj rebase -d main` (confirm the flag with `jj rebase --help` — destination flag naming has varied by version) |
 
 Typical single-agent flow:
 ```
