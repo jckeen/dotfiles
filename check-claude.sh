@@ -77,7 +77,11 @@ check_link() {
     else
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst" 2>/dev/null
-      if [ -L "$dst" ] && [ -e "$dst" ]; then
+      # Assert exactly what HEALED claims: $dst is a symlink to $src that
+      # resolves. readlink==src rules out a racing run that linked elsewhere
+      # (reported as a WRONG target on the next read-only check); -e confirms
+      # it dereferences.
+      if [ "$(readlink "$dst" 2>/dev/null)" = "$src" ] && [ -e "$dst" ]; then
         green "HEALED  $label (created missing symlink)"
         HEALED=$((HEALED + 1))
       else
