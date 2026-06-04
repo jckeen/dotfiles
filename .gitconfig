@@ -1,7 +1,6 @@
-# User identity and platform-specific config are in .gitconfig.local
-# (generated per-machine by setup.sh, not committed)
+# User identity and all machine-specific config (safe.directory, excludesfile,
+# credential helpers, editor) live in .gitconfig.local — generated per-machine
+# by setup.sh and never committed. This tracked file stays free of any absolute
+# home path so it is portable and leaks no local username into the public repo.
 [include]
 	path = ~/.gitconfig.local
-[safe]
-	directory = /home/jckee/dev/dotfiles
-	directory = /home/jckee/dev/claude-memory

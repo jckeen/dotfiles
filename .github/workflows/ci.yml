@@ -63,3 +63,12 @@ jobs:
 
       - name: Check doc references resolve (hooks + skills)
         run: claude/scripts/check-doc-refs.sh
+
+  leak-scan:
+    name: leak-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tracked files for machine-specific home paths
+        run: claude/scripts/check-no-personal-data.sh

@@ -759,11 +759,15 @@ link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
 
 # WSL-specific: mark dev repos as safe (idempotent — skip if already present).
 # DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
+# Write to .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to this
+# repo's tracked .gitconfig, so `git config --global` would commit machine paths
+# (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
+# gh credential-helper block below.
 if [[ "$PLATFORM" == "wsl" ]]; then
   for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
-    git config --global --get-all safe.directory 2>/dev/null \
+    git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
       | grep -Fxq "$_safe_dir" \
-      || git config --global --add safe.directory "$_safe_dir"
+      || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
   done
 fi
 
