@@ -59,15 +59,31 @@ check_link() {
   elif [ -f "$dst" ]; then
     yellow "NOT LINKED  $label (exists but is a regular file, not a symlink)"
     WARNINGS=$((WARNINGS + 1))
+  elif [ -e "$dst" ]; then
+    # Some other path type (directory, fifo, …) sits where a symlink belongs.
+    # $dst is not a symlink (handled above) and not a regular file, yet exists.
+    # Ambiguous — report, never heal: linking here would drop the symlink
+    # *inside* a directory rather than create it at $dst.
+    yellow "NOT LINKED  $label (exists but is not a symlink)"
+    WARNINGS=$((WARNINGS + 1))
   elif [ "$HEAL" -eq 1 ]; then
     # Guardrail self-heal: nothing exists at $dst, so linking clobbers nothing.
-    mkdir -p "$(dirname "$dst")"
-    if ln -s "$src" "$dst" 2>/dev/null; then
-      green "HEALED  $label (created missing symlink)"
-      HEALED=$((HEALED + 1))
-    else
-      yellow "MISSING  $label (auto-link failed — run ./setup.sh)"
+    # Re-validate the source right before linking (it could vanish between the
+    # caller enumerating it and here) and confirm the link resolves afterward,
+    # so a disappeared source or a racing run can't yield a false HEALED.
+    if [ ! -e "$src" ]; then
+      yellow "MISSING  $label (source gone — run ./setup.sh)"
       WARNINGS=$((WARNINGS + 1))
+    else
+      mkdir -p "$(dirname "$dst")"
+      ln -s "$src" "$dst" 2>/dev/null
+      if [ -L "$dst" ] && [ -e "$dst" ]; then
+        green "HEALED  $label (created missing symlink)"
+        HEALED=$((HEALED + 1))
+      else
+        yellow "MISSING  $label (auto-link failed — run ./setup.sh)"
+        WARNINGS=$((WARNINGS + 1))
+      fi
     fi
   else
     yellow "MISSING  $label (not present in ~/.claude/)"
