@@ -440,6 +440,8 @@ Type these directly in Claude Code.
 | `/decompose` | Deep task decomposition into parallel workstreams |
 | `/max` | Maximum effort — worktrees, parallel agents, full capability selection |
 | `/branch-hygiene` | Inspect and clean stale branches across repos |
+| `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
+| `/session-retro` | Retro that proposes improvements to your skills (fires on "thanks", or run it) |
 
 ---
 
@@ -819,7 +821,9 @@ dotfiles/
     │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
     │   ├── claude-server/      # /claude-server — remote worktree
     │   ├── decompose/          # /decompose — deep task decomposition
-    │   └── max/                # /max — maximum effort parallel execution
+    │   ├── max/                # /max — maximum effort parallel execution
+    │   ├── jj/                 # /jj — jujutsu for single-agent work
+    │   └── session-retro/      # /session-retro — self-improving skills retro
     ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
     ├── scripts/                # Headless automation scripts
     │   ├── common.sh           # Shared safety tiers + runner
@@ -830,7 +834,9 @@ dotfiles/
     │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
     │   ├── overnight.sh        # Orchestrate all scripts across repos
     │   ├── review-and-push.sh  # Morning review of overnight changes
-    │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
+    │   ├── sync-plugins.sh     # Sync installed plugins against plugins.txt
+    │   ├── check-doc-refs.sh   # CI: verify all doc hook/skill references resolve
+    │   └── check-no-personal-data.sh  # CI: scan for machine-specific home paths
     ├── systemd/                # systemd units (git-hygiene timer)
     └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
