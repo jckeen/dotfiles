@@ -26,12 +26,25 @@ make a pull request.
    - `refactor: ...`
    - `test: ...`
    - `chore: ...`
-6. Push the current branch, setting upstream if needed.
-7. Create a PR with `gh pr create`:
+6. Run the Codex review gate — `~/.claude/scripts/codex-review-gate.sh` (the
+   same script `cc` uses; it shells out to `codex exec review`). Run it **after
+   the commit, before the push**, so it reviews the committed delta vs the base
+   branch — exactly the PR contents — and ignores unrelated WIP in the tree.
+   This is the ADR-0003 stop-gate made concrete:
+   - Exit 2 → STOP: critical/high/medium (P0–P2) findings. Fix them in a
+     follow-up commit (or get an explicit override), re-run the gate, and only
+     then continue. Do not push past it.
+   - Exit 0 → clean, or only low (P3+) findings (already filed as GitHub issues).
+     Proceed.
+   - Exit 3 / loud warning → Codex could not run; the gate degrades open. Note
+     it and continue, or set `CODEX_GATE_REQUIRED=1` to hard-require the review.
+7. Push the current branch, setting upstream if needed.
+8. Create a PR with `gh pr create`:
    - title under 70 characters
    - body covering what changed, why, and how it was tested
    - issue links such as `Fixes #123` when applicable
-8. Return the PR URL and verification result.
+9. Return the PR URL and verification result. The merge gate is the Codex review
+   (step 6) plus CI green (see ADR-0003).
 
 ## Safety
 

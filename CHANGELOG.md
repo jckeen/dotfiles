@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-06-09 — feat: enforcement hardening + local Codex review gate on push
+
+### What changed
+- **Secret scanning in CI (`secret-scan`).** New `gitleaks/gitleaks-action@v3`
+  job scans every tracked file (and full history on PRs) for committed
+  secrets — API keys, tokens, private keys, account IDs. Closes the gap where
+  the only leak guard (`check-no-personal-data.sh`) caught machine *home paths*
+  but nothing token-shaped, despite the README promising otherwise. A root
+  `.gitleaks.toml` extends the default ruleset and allowlists the placeholders
+  and example files we ship on purpose (`codex/config.toml.example`, append-only
+  history) so the scan stays meaningful.
+- **Local Codex review gate, actually run.** New
+  `claude/scripts/codex-review-gate.sh` makes ADR-0003 concrete: it runs
+  `codex exec review` on the change with a JSON output schema, **blocks the push
+  on any critical/high/medium finding** (exit 2), and **files a GitHub issue per
+  low/info finding** (deduped, labeled `codex-review`) so nothing falls through
+  the cracks. Degrades open (never wedges a push) when Codex can't run, unless
+  `CODEX_GATE_REQUIRED=1`. Wired into **both** `commit-push-pr` skills (Claude +
+  Codex) as a real step between staging and commit — previously the skill only
+  *referenced* a Codex review without ever invoking one.
+- **Claude/Codex rule-set parity guard (`agent-parity`).** New
+  `check-agent-parity.sh` fails CI when a canonical working-style/public-safety
+  rule is present in one of `claude/CLAUDE.md` / `codex/AGENTS.md` but not the
+  other. Caught real drift on first run: added "read the surrounding code before
+  changing behavior" and "report any test you could not run" to `claude/CLAUDE.md`
+  so the two rule sets mirror.
+- **Server-side conventional-commit lint (`commit-format`).** New
+  `check-commit-format.sh` + CI job lints the commits a PR adds, closing the
+  `git commit --no-verify` / out-of-session bypass of the local
+  `conventional-commit.sh` hook.
+- **Broadened doc-reference guard.** `check-doc-refs.sh` now also validates
+  relative Markdown links `[text](path)` resolve to real files/dirs, on top of
+  the existing hook/skill path checks. Skips external URLs, anchors, and
+  placeholders.
+- **Auto-memory now version-controlled.** Claude Code's per-project memory
+  (`~/.claude/projects/<proj>/memory/`) is symlinked into the private
+  `claude-memory` repo (`claude-code-memory/<proj>/`) — only the `memory/`
+  subdir, never the `.jsonl` transcripts — so durable facts survive a machine
+  loss and sync across machines. (Lands in `claude-memory`, not here.)
+
+### Why
+A workflow audit found the enforcement layer lagged the stated policy: the
+public-safety promise covered secrets the CI never scanned for, the "Codex
+stop-gate review" was documented but never executed, the two agents' rule files
+could silently diverge, and the commit-format hook was bypassable. Each gap is
+now promoted from discipline into a CI gate or a real workflow step.
+
+### Known issues
+- `smoke-install.yml` stays `continue-on-error` (non-gating) through ~2026-11 by
+  design — fresh runners can't run the full installer or `--check` (symlinks
+  don't exist yet). The syntax + `--help` coverage is real; the gating flip is
+  the documented follow-up.
+
 ## 2026-06-04 — feat: check-claude.sh self-heals missing symlinks at launch (`--heal`)
 
 ### What changed

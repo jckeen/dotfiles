@@ -101,7 +101,28 @@ for doc in "${docs[@]}"; do
     done < <(printf '%s\n' "$content" \
       | grep -oE '(claude|codex)/skills/[A-Za-z0-9_-]+/' || true)
 
-  done < <(grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/' "$doc" || true)
+    # 3) Relative Markdown links: [text](path) pointing at a local file/dir.
+    # Skip external URLs, in-page anchors, mailto/tel, and placeholder targets.
+    doc_dir="$(dirname "$doc")"
+    while read -r link; do
+      [[ -z "$link" ]] && continue
+      target="$(printf '%s' "$link" | sed -E 's/.*\]\(([^)]+)\)/\1/')"
+      target="${target%%#*}"                 # strip #anchor
+      target="${target%% *}"                 # strip optional "title" after a space
+      [[ -z "$target" ]] && continue          # pure in-page anchor
+      case "$target" in
+        *://*|mailto:*|tel:*|\#*) continue ;; # external / scheme / anchor
+        *'<'*|*'$'*|*'{'*) continue ;;        # placeholder or template var
+        /*) resolved="$REPO_ROOT$target" ;;   # repo-root-relative
+        *)  resolved="$doc_dir/$target" ;;    # relative to the doc
+      esac
+      if [[ ! -e "$resolved" ]]; then
+        report "$doc" "$lineno" "broken link: $target"
+      fi
+    done < <(printf '%s\n' "$content" \
+      | grep -oE '\[[^]]*\]\([^)]+\)' || true)
+
+  done < <(grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' "$doc" || true)
 done
 
 # --- Verdict ---------------------------------------------------

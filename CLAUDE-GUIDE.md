@@ -48,6 +48,13 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 7. `/changelog` — Log what happened
 8. `/handoff` — If ending the session
 
+> **Push-time Codex gate:** `commit-push-pr` runs a local Codex review
+> (`codex-review-gate.sh` → `codex exec review`) between staging and commit. It
+> **blocks the push on critical/high/medium findings** and **files a GitHub
+> issue per low/info finding** so nothing is lost. The merge gate is that Codex
+> review **+ CI green** (ADR-0003). If Codex can't run it degrades open (won't
+> wedge a push); set `CODEX_GATE_REQUIRED=1` to hard-require it.
+
 ---
 
 ## Slash Commands

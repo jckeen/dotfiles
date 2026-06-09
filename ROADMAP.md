@@ -43,5 +43,18 @@ Code w/ Claude 2026 best practices.
 
 ---
 
+## Follow-up: Enforcement hardening — 2026-06
+
+Closed the gap between stated policy and enforced policy (audit follow-up to the
+milestone above). Shipped: gitleaks `secret-scan`, a real local Codex review
+gate on push (`codex-review-gate.sh`, ADR-0003 made concrete), a Claude/Codex
+rule `agent-parity` guard, a server-side `commit-format` lint, and broadened
+`check-doc-refs.sh`. Auto-memory now syncs into the private `claude-memory` repo.
+Details in [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Open:** flip `smoke-install.yml` to gating once coverage matures (~2026-11).
+
+---
+
 _Past work lives in [`CHANGELOG.md`](CHANGELOG.md); the reasoning behind
 structural changes lives in [`docs/adr/`](docs/adr/)._

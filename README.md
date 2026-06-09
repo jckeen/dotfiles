@@ -142,7 +142,7 @@ codex login            # Optional
 ./setup.sh --help      # usage and flag reference
 ```
 
-> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below).
+> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI enforces this on every PR: a **gitleaks** `secret-scan` job (token/key/credential shapes, full-history) and a `leak-scan` job (machine-specific home paths) both have to pass before merge.
 
 > **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Without it you still get hooks, skills, agents, status line, and dotfiles — the global `claude/CLAUDE.md` is symlinked either way.
 
