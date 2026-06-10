@@ -82,9 +82,7 @@ This adds `--dangerously-skip-permissions` and removes tool restrictions. A warn
 
 ## Scheduling with Cron
 
-### Off-peak hours (doubled usage through March 28, 2026)
-
-Off-peak = weekdays outside 5-11am PT, all day weekends.
+Schedule scripts whenever makes sense for your workflow.
 
 ```bash
 # Edit your crontab
@@ -96,10 +94,6 @@ crontab -e
 # Weekend deep run at 2am PT Saturday
 0 2 * * 6 /path/to/dotfiles/claude/scripts/overnight.sh --deep >> ~/.claude/logs/overnight.log 2>&1
 ```
-
-### After the promotion ends
-
-The scripts still work — just without doubled usage. Schedule them whenever makes sense for your workflow.
 
 ## Prerequisites
 
