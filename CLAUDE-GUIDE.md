@@ -1,6 +1,6 @@
 # Working with Claude Code — Quick Reference
 
-See the [README](README.md) for the full best practices guide. This is the cheat sheet.
+See the [README](README.md) for setup and the guided tour. This is the cheat sheet — the canonical daily reference for slash commands, hooks, shortcuts, and shell commands.
 
 ---
 
@@ -102,13 +102,31 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 | Command | What it does |
 |---------|-------------|
-| `cc` | Pull repos, sync memory, health check, launch Claude |
+| `cc [project]` | Pull repos, sync memory, health check, launch Claude (optionally in `~/dev/<project>`) |
+| `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead) |
 | `pull-all` | Fast-forward pull on every repo in dev dir |
 | `sync-memory` | Commit and push pending memory changes |
 | `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |
+| `check-codex` | Verify public-safe Codex symlinks; warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
+| `projects` | List projects in the dev dir |
+| `sessions` | Show active Claude sessions and their working dirs |
+
+### Worktrees & multi-session
+
+| Command | What it does |
+|---------|-------------|
+| `za` … `ze` / `z0` | Jump to worktree `-a`…`-e` / back to the main worktree |
+| `gwl` / `gwa` / `gwr` | `git worktree` list / add / remove |
+| `cc-pane <project> [-H]` | Open project in a new Windows Terminal split pane (vertical default) |
+| `cc-tab <project>` | Open project in a new tab |
+| `cc-multi <p1> <p2> …` | One tab per project, each fully `cc`-synced |
+| `wsl6`, `ccgrid`, `cctab`, `ccpane` | PowerShell-side launchers — see [docs/WINDOWS.md](docs/WINDOWS.md) |
+
+> From inside a Claude session: `! cc-pane <project>` opens another project
+> alongside without leaving Claude.
 
 ---
 
