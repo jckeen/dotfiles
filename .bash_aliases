@@ -134,12 +134,16 @@ cc() {
     pull-all
     echo ""
     sync-memory
-    # --heal: auto-create MISSING symlinks at launch (e.g. skills added to the
-    # dotfiles repo since the last setup.sh). Guardrail — heals only the
-    # zero-clobber MISSING case; NOT LINKED / WRONG / orphan stay report-only.
-    "$(_dev_dir)/dotfiles/check-claude.sh" --heal
     echo ""
   fi
+
+  # --heal runs on EVERY launch, including resume — and AFTER the repo sync, so a
+  # fresh launch links the hook/script/skill files the pull just fetched (running
+  # it before pull would miss them). On resume there's no pull, so it just heals
+  # the current tree — the one thing resume must not skip, or scripts added
+  # between sessions stay MISSING. Fast + zero-clobber; NOT LINKED / WRONG /
+  # orphan stay report-only.
+  "$(_dev_dir)/dotfiles/check-claude.sh" --heal
 
   # Preload architecture diagrams if the project has them.
   # Treated as untrusted content: requires .ai/diagrams/.trusted opt-in marker,
