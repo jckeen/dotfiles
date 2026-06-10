@@ -113,6 +113,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
 | `projects` | List projects in the dev dir |
 | `sessions` | Show active Claude sessions and their working dirs |
+| `ledger` | Session spend by day/project (data written by the status line); `--prune` drops >90-day entries |
 
 ### Worktrees & multi-session
 
@@ -146,6 +147,7 @@ is present but not registered — the drift that once left every hook inert.
 | `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing |
 | `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
 | `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
+| `HandoffReminder.hook.sh` | SessionStart | ⬜ | Surfaces a recent handoff note for the current project into context at session start — **wire it**: add to the SessionStart block in settings.json (`check-hooks-wired` warns until you do) |
 | `ntfy-awaiting-input.sh` | PreToolUse | ⬜ | *Off* — redundant with Claude Code's built-in push notifications |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse | ⬜ | *Off* — reviewer-`reviewed_sha` tracking system not in use |
 

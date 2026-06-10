@@ -486,6 +486,7 @@ dotfiles/
 │   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
 │   ├── AgentPack.md            # 17-agent review orchestra
 │   ├── plugins.txt             # Plugin manifest (cross-machine source of truth)
+│   ├── nolink.txt              # Manifest of claude/ files deliberately NOT symlinked
 │   ├── statusline.sh           # Context bar, git branch, cost display
 │   ├── chrome/                 # WSL → Windows Chrome bridge for claude --chrome
 │   ├── hooks/
@@ -496,7 +497,8 @@ dotfiles/
 │   │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
 │   │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
 │   │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-│   │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
+│   │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
+│   │   └── HandoffReminder.hook.sh         # SessionStart: surface a recent handoff note
 │   ├── skills/
 │   │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
 │   │   ├── kickoff/            # /kickoff — new project bootstrap
@@ -528,7 +530,8 @@ dotfiles/
 │   │   ├── check-doc-refs.sh       # CI: validate doc path references and links
 │   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md and codex/AGENTS.md rules in sync
 │   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
-│   │   └── check-no-personal-data.sh # CI: block machine-specific home paths
+│   │   ├── check-no-personal-data.sh # CI: block machine-specific home paths
+│   │   └── check-skill-parity.sh     # CI: skill count + Claude/Codex artifact shapes
 │   ├── systemd/                # systemd units (git-hygiene timer)
 │   └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md

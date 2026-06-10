@@ -23,7 +23,12 @@ readarray -t _fields < <(echo "$input" | jq -r '
   (.vim.mode // ""),
   (.session_name // ""),
   (.cwd // ""),
-  (.version // "")
+  (.version // ""),
+  (.session_id // ""),
+  (.cost.total_cost_usd // 0 | tostring),
+  (.cost.total_duration_ms // 0 | tostring),
+  (.cost.total_lines_added // 0 | tostring),
+  (.cost.total_lines_removed // 0 | tostring)
 ' 2>/dev/null) || { echo "?"; exit 0; }
 
 MODEL="${_fields[0]}"
@@ -37,6 +42,11 @@ VIM_MODE="${_fields[7]}"
 SESSION="${_fields[8]}"
 CWD="${_fields[9]}"
 VERSION="${_fields[10]}"
+SESSION_ID="${_fields[11]}"
+COST_USD="${_fields[12]}"
+DUR_MS="${_fields[13]}"
+LINES_ADD="${_fields[14]}"
+LINES_DEL="${_fields[15]}"
 
 # Switch to the project CWD so git operations reflect the right repo
 if [ -n "${CWD:-}" ] && [ -d "$CWD" ]; then
@@ -218,6 +228,24 @@ L1="${L1}  ${DIM}↑${OUT_FMT} ↓${IN_FMT}${RESET}"
 
 # Session name
 [ -n "${SESSION:-}" ] && L1="${L1}  ${MAGENTA}${SESSION}${RESET}"
+
+# Lines changed this session
+if [ "${LINES_ADD:-0}" != "0" ] || [ "${LINES_DEL:-0}" != "0" ]; then
+  L1="${L1}  ${GREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET}"
+fi
+
+# Session cost (and ledger — one tiny file per session, aggregated by the
+# `ledger` shell function; ~/.claude/ledger/ is machine-local, never tracked)
+if [ -n "${COST_USD:-}" ] && [ "$COST_USD" != "0" ]; then
+  COST_FMT=$(LC_NUMERIC=C printf '%.2f' "$COST_USD" 2>/dev/null || echo "$COST_USD")
+  L1="${L1}  ${DIM}\$${COST_FMT}${RESET}"
+  if [ -n "${SESSION_ID:-}" ]; then
+    LEDGER_DIR="$HOME/.claude/ledger"
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    printf '%(%Y-%m-%d)T\t%s\t%s\t%s\n' -1 "$(basename "$PWD")" "$COST_USD" "$(( ${DUR_MS:-0} / 60000 ))" \
+      > "$LEDGER_DIR/${SESSION_ID}.tsv" 2>/dev/null || true
+  fi
+fi
 
 # Version (far right, very dim)
 [ -n "${VERSION:-}" ] && L1="${L1}  ${DIM}v${VERSION}${RESET}"

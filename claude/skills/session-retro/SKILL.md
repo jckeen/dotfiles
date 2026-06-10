@@ -1,6 +1,6 @@
 ---
 name: session-retro
-description: Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user signals satisfaction at the end of real work ("thanks", "thanks that worked", "that worked great", "nice", "perfect", "exactly what I needed"), or when they explicitly run /session-retro. Always proposes and waits for confirmation — never edits skills silently.
+description: Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user signals satisfaction at the end of real work ("thanks", "thanks that worked", "that worked great", "nice", "perfect", "exactly what I needed"), or when they explicitly run /session-retro. Always proposes and waits for confirmation — never edits skills silently. In unattended runs (/max, overnight, or /session-retro --auto), writes proposals to ~/.claude/retro-proposals/ instead of blocking.
 ---
 
 This skill practices **compound engineering**: every successful session should leave the
@@ -67,6 +67,24 @@ an ADR in `docs/adr/`.
 7. **Commit** the applied changes in this repo with a conventional message
    (e.g. `chore(skills): add <name> gotcha from session-retro`) so they sync across machines.
    Commit only the files that were changed; never `git add -A`.
+
+## Auto mode (unattended runs)
+
+When invoked as `/session-retro --auto`, or when running unattended (inside
+`/max`, `overnight.sh`, or any session where no user is present to confirm):
+
+- Do steps 1–3 (reflect, pick, write proposals) but **never apply anything**.
+- Write the proposals to `~/.claude/retro-proposals/YYYY-MM-DD-<project>.md`
+  (create the directory; append if the file exists) instead of waiting for
+  confirmation.
+- End with one line: "N retro proposal(s) written to <path> — review and apply
+  with /session-retro."
+- A later interactive `/session-retro` should check that directory first and
+  offer any pending proposals before reflecting on the current session;
+  delete the file once its proposals are applied or rejected.
+
+Auto mode changes *where proposals go*, never *whether edits need a yes* —
+skills are still never edited without explicit confirmation in some session.
 
 ## Guardrails
 

@@ -42,6 +42,18 @@ BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
 # Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
 
+# Top-level claude/ files that are deliberately NOT symlinked into ~/.claude/.
+# Single source of truth: claude/nolink.txt (also read by check-claude.sh and
+# SymlinkRepair.hook.ts). Hardcoded fallback if the manifest is missing.
+read_nolink() {
+  local manifest="$DOTFILES_DIR/claude/nolink.txt"
+  if [ -f "$manifest" ]; then
+    sed 's/#.*//' "$manifest" | awk 'NF {printf "%s ", $1}'
+  else
+    echo "AgentPack.md settings.json plugins.txt nolink.txt"
+  fi
+}
+
 # Counters for summary
 LINKS_CREATED=0
 LINKS_VERIFIED=0
@@ -62,11 +74,10 @@ run_health_audit() {
   echo "--- Dotfiles symlinks ---"
   local CLAUDE_SRC="$DOTFILES_DIR/claude"
   local CLAUDE_DST="$HOME_DIR/.claude"
-  # Keep in sync with the NOLINK lists in section 5 below and check-claude.sh.
-  # settings.json is linked from claude-memory (not dotfiles); AgentPack.md is
-  # loaded on demand; plugins.txt is read from the repo by setup.sh/sync-plugins.sh.
+  # Un-linked files come from the claude/nolink.txt manifest (see read_nolink).
   # CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so it's audited.
-  local NOLINK="AgentPack.md settings.json plugins.txt"
+  local NOLINK
+  NOLINK="$(read_nolink)"
 
   # Top-level files
   for f in "$CLAUDE_SRC/"*; do
@@ -785,13 +796,9 @@ echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
 mkdir -p "$HOME_DIR/.claude/agents"
 
-# Files to keep in dotfiles but NOT symlink into ~/.claude/
-# settings.json is private and synced via claude-memory (see bootstrap.sh).
-# AgentPack.md is loaded on-demand by CLAUDE.md references.
-# plugins.txt is consumed from $DOTFILES_DIR by setup.sh and sync-plugins.sh —
-# linking it into ~/.claude/ created a copy nothing reads.
-# Keep in sync with run_health_audit's NOLINK above and check-claude.sh.
-NOLINK="AgentPack.md settings.json plugins.txt"
+# Files to keep in dotfiles but NOT symlink into ~/.claude/ — read from the
+# claude/nolink.txt manifest (single source of truth; see read_nolink at top).
+NOLINK="$(read_nolink)"
 
 # Link top-level files (auto-discovers, no hardcoded list)
 for f in "$DOTFILES_DIR/claude/"*; do
