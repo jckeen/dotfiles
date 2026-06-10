@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-06-10 — feat: cross-tool skill parity + agents inherit the session model
+
+### What changed
+- **Paired Claude/Codex skills now produce identical artifacts.** Codex
+  `changelog` and `handoff` use the exact same section headings as their Claude
+  counterparts, and Codex `handoff` saves to the shared `~/.claude/handoffs/`
+  directory — so either tool can resume a session the other started.
+- **Codex `branch-hygiene`** gained the `claude project purge` cleanup section
+  (it's a shell command; works from any agent).
+- **Codex `review`** explicitly names the secrets/injection/sensitive-log
+  checks the Claude version flags.
+- **All 17 agents dropped their `model: opus` pins.** They inherit the session
+  model; the orchestrator picks a lighter model per-run when the task warrants
+  it. Rationale noted in AgentPack.md.
+- Audited but left alone: `commit-push-pr`, `fix-issue`, `simplify` pairs are
+  already semantically aligned — prose differs by design (Codex-idiomatic
+  format), workflow and safety rails match.
+
+### Why
+Paired skills had drifted enough that the two tools wrote differently-shaped
+changelogs and handoff notes, breaking cross-tool session resume. Model pins
+predate Fable 5; pinning every review agent to opus wasted cost on light tasks
+and would silently stale as models change.
+
 ## 2026-06-09 — fix: full-environment audit — cc arg leak, portable paths, doc drift
 
 ### What changed

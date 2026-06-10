@@ -17,6 +17,8 @@ paths and line numbers.
 3. Check for:
    - correctness bugs and edge cases
    - security issues at trust boundaries
+   - hardcoded secrets, keys, or tokens; injection risks (SQL/XSS/command);
+     sensitive data in logs or responses
    - missing validation, authorization, or error handling
    - regressions in public APIs, schemas, or user flows
    - missing or weak tests for changed behavior

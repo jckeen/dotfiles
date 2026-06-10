@@ -2,6 +2,8 @@
 
 A team of 17 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
+Agents deliberately carry no `model:` pin — they inherit the session model, and the orchestrator picks a lighter model per-run when the task warrants it (e.g. a quick `repo-scout` briefing on haiku).
+
 ## The Team
 
 ### Review agents (read-only)

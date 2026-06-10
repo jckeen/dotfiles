@@ -21,16 +21,19 @@ changed.
 
 ## Default Entry Shape
 
+Use the same headings as the Claude `/changelog` skill so entries look identical
+regardless of which tool wrote them:
+
 ```markdown
 ## YYYY-MM-DD
 
-### What Changed
+### What changed
 - ...
 
-### Decisions
+### Decisions made
 - ...
 
-### Known Issues
+### Known issues
 - ...
 ```
 
