@@ -1,0 +1,8 @@
+# Top-level files in claude/ that setup.sh deliberately does NOT symlink into
+# ~/.claude/. Single source of truth — read by setup.sh, check-claude.sh, and
+# SymlinkRepair.hook.ts (each falls back to a hardcoded copy of this list if
+# this file is missing). One filename per line; # comments and blanks ignored.
+AgentPack.md      # loaded on-demand by CLAUDE.md references
+settings.json     # private — linked from claude-memory by its bootstrap.sh
+plugins.txt       # consumed from the repo by setup.sh / sync-plugins.sh
+nolink.txt        # this manifest itself — consumed from the repo

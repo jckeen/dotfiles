@@ -421,6 +421,24 @@ sessions() {
   [ $found -eq 0 ] && echo "No active Claude sessions"
 }
 
+# Claude session spend summary. Data: one tiny TSV per session under
+# ~/.claude/ledger/ (date, project, cost USD, minutes), written by
+# statusline.sh as sessions run. `ledger` shows per-day/project totals;
+# `ledger --prune` drops entries older than 90 days.
+ledger() {
+  local dir="$HOME/.claude/ledger"
+  [ -d "$dir" ] && compgen -G "$dir/*.tsv" >/dev/null || { echo "No ledger data yet — it accrues as sessions run."; return 0; }
+  if [ "${1:-}" = "--prune" ]; then
+    find "$dir" -name '*.tsv' -mtime +90 -delete
+    echo "Pruned ledger entries older than 90 days."
+    return 0
+  fi
+  awk -F'\t' '{ key = $1 "  " $2; cost[key] += $3; mins[key] += $4 }
+    END { for (k in cost) printf "  %s  $%.2f  (%d min)\n", k, cost[k], mins[k] }' \
+    "$dir"/*.tsv | sort
+  awk -F'\t' '{ total += $3 } END { printf "  ─────\n  Total: $%.2f across %d sessions\n", total, NR }' "$dir"/*.tsv
+}
+
 # WSL: open URLs in Windows Chrome
 export BROWSER="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 # WSL: force-enable Claude in Chrome

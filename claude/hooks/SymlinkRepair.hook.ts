@@ -18,6 +18,7 @@ import {
   existsSync,
   lstatSync,
   readdirSync,
+  readFileSync,
   readlinkSync,
   realpathSync,
   symlinkSync,
@@ -35,11 +36,23 @@ const CLAUDE_SRC = join(DOTFILES_DIR, 'claude');
 const CLAUDE_DST = join(HOME, '.claude');
 
 // Top-level files in claude/ that setup.sh deliberately does NOT symlink.
-// plugins.txt is consumed from the dotfiles repo, never from ~/.claude/.
+// Single source of truth: claude/nolink.txt (also read by setup.sh and
+// check-claude.sh). Hardcoded fallback if the manifest is missing.
 // CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so a missing
 // or broken link self-heals here at SessionStart, matching setup.sh.
-// Keep in sync with the NOLINK lists in setup.sh and check-claude.sh.
-const TOP_LEVEL_NOLINK = new Set(['AgentPack.md', 'settings.json', 'plugins.txt']);
+function loadNolink(): Set<string> {
+  const fallback = new Set(['AgentPack.md', 'settings.json', 'plugins.txt', 'nolink.txt']);
+  try {
+    const names = readFileSync(join(CLAUDE_SRC, 'nolink.txt'), 'utf-8')
+      .split('\n')
+      .map((l) => l.replace(/#.*/, '').trim())
+      .filter(Boolean);
+    return names.length > 0 ? new Set(names) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+const TOP_LEVEL_NOLINK = loadNolink();
 
 type RepairAction = { kind: 'linked' | 'fixed' | 'skipped'; rel: string; reason?: string };
 

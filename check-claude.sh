@@ -99,10 +99,13 @@ echo "Checking Claude Code config..."
 echo ""
 
 # Files kept in dotfiles but NOT symlinked (loaded on-demand or consumed
-# directly from the dotfiles dir — e.g. plugins.txt is read by setup.sh
-# from $DOTFILES_DIR/claude/plugins.txt, not from ~/.claude/).
-# Keep in sync with the two NOLINK lists in setup.sh.
-NOLINK="AgentPack.md plugins.txt"
+# directly from the dotfiles dir). Single source of truth: claude/nolink.txt
+# (also read by setup.sh and SymlinkRepair.hook.ts); fallback if missing.
+if [ -f "$CLAUDE_SRC/nolink.txt" ]; then
+  NOLINK="$(sed 's/#.*//' "$CLAUDE_SRC/nolink.txt" | awk 'NF {printf "%s ", $1}')"
+else
+  NOLINK="AgentPack.md settings.json plugins.txt nolink.txt"
+fi
 
 # Memory repo check
 echo "Checking memory repo..."

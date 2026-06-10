@@ -97,6 +97,15 @@ jobs:
       - name: Check Claude/Codex rule-set parity
         run: claude/scripts/check-agent-parity.sh
 
+  skill-parity:
+    name: skill-parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check skill count + cross-tool artifact shapes
+        run: claude/scripts/check-skill-parity.sh
+
   commit-format:
     name: commit-format
     # Lint the commits a PR adds; on a direct push to main there is no range.

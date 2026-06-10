@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-06-10 — feat: drift guards, handoff surfacing, session ledger, retro auto mode
+
+### What changed
+- **`claude/nolink.txt` manifest** — the un-symlinked-files list had four
+  hardcoded copies (setup.sh ×2, check-claude.sh, SymlinkRepair.hook.ts) that
+  the audit found disagreeing. Now one manifest, read by all four consumers
+  (each keeps a hardcoded fallback).
+- **`check-skill-parity.sh` + CI `skill-parity` job** — asserts the README's
+  "N slash commands" claim matches `claude/skills/`, and that the Claude/Codex
+  changelog + handoff skills require identical artifact headings. Guards the
+  exact drift fixed this week.
+- **`HandoffReminder.hook.sh`** (SessionStart, advisory) — if a <7-day-old
+  handoff note exists for the current project in `~/.claude/handoffs/`, its
+  path is injected into context at session start. Ships unwired;
+  `check-hooks-wired` prompts until it's added to settings.json.
+- **Session ledger** — statusline now extracts `session_id`/`cost`/`duration`/
+  `lines` again (cost and ±lines display had silently dropped out of the JSON
+  parse while the docs still advertised them), restores the `$X.XX` and
+  `+N -N` segments, and writes one tiny TSV per session to `~/.claude/ledger/`
+  (machine-local). New `ledger` shell function aggregates spend by
+  day/project; `ledger --prune` drops >90-day entries.
+- **`/session-retro --auto`** — in unattended runs (`/max`, overnight),
+  proposals go to `~/.claude/retro-proposals/` instead of blocking on
+  confirmation; applying still requires an explicit yes in some session.
+
+### Why
+The audit's repeated finding was duplicated-surface drift; the manifest and the
+CI guard make two whole classes of it structurally impossible. Handoff
+surfacing and the ledger close loops where data was written but never read.
+
 ## 2026-06-10 — docs: README slimmed to a quickstart that defers to CLAUDE-GUIDE
 
 ### What changed
