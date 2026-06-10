@@ -19,7 +19,7 @@ After setup, you don't have to remember much. Open a terminal and:
 
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
-- **12 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`. Type the verb, get the workflow.
+- **14 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills). Type the verb, get the workflow.
 - **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
@@ -440,6 +440,8 @@ Type these directly in Claude Code.
 | `/decompose` | Deep task decomposition into parallel workstreams |
 | `/max` | Maximum effort — worktrees, parallel agents, full capability selection |
 | `/branch-hygiene` | Inspect and clean stale branches across repos |
+| `/jj` | Drive jujutsu (jj) version control for single-agent work |
+| `/session-retro` | End-of-session retro that proposes improvements to your skills |
 
 ---
 
@@ -482,7 +484,7 @@ A team of 17 specialized subagents, each running in **its own isolated context**
 
 ## Safety Hooks
 
-Hooks run automatically and can't be forgotten like CLAUDE.md rules. Several hooks ship by default — the four originals plus additions across `claude/hooks/` for session hygiene, plugin drift, and PR/push safety. See `claude/hooks/` for the full set; the table below covers the originals and the most-used additions.
+Hooks run automatically and can't be forgotten like CLAUDE.md rules. Several hooks ship by default — the four originals plus additions across `claude/hooks/` for session hygiene, plugin drift, and PR/push safety. See `claude/hooks/` for the full set; the table below covers the originals and the most-used additions. **For which hooks are actually wired (registered in `settings.json`) vs shipped-but-off, the [Hooks table in CLAUDE-GUIDE.md](CLAUDE-GUIDE.md#hooks) is the canonical source.**
 
 <details>
 <summary><strong>Hook-by-hook details</strong></summary>
@@ -783,6 +785,10 @@ dotfiles/
 ├── README.md                   # This file
 ├── CLAUDE-GUIDE.md             # Quick reference cheat sheet
 ├── CHANGELOG.md                # Change log
+├── ROADMAP.md                  # Backlog (paired with GitHub Issues)
+├── docs/
+│   ├── adr/                    # Architecture Decision Records (numbered, append-only)
+│   └── BRANCH_PROTECTION.md    # Branch protection setup notes
 ├── codex/
 │   ├── AGENTS.md               # Public-safe Codex global guidance
 │   ├── config.toml.example     # Public-safe Codex config example
@@ -795,44 +801,55 @@ dotfiles/
 │       ├── handoff/
 │       ├── changelog/
 │       └── repo-health/
-└── claude/
-    ├── AgentPack.md            # 17-agent review orchestra
-    ├── statusline.sh           # Context bar, git branch, cost display
-    ├── hooks/
-    │   ├── conventional-commit.sh          # PreToolUse commit message validator
-    │   ├── format-on-edit.sh               # PostToolUse auto-formatter
-    │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
-    │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
-    │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
-    │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-    │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-    │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
-    ├── skills/
-    │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
-    │   ├── kickoff/            # /kickoff — new project bootstrap
-    │   ├── changelog/          # /changelog — session logging
-    │   ├── log-error/          # /log-error — error documentation
-    │   ├── review/             # /review — code quality check
-    │   ├── handoff/            # /handoff — session transitions
-    │   ├── fix-issue/          # /fix-issue — GitHub issue workflow
-    │   ├── simplify/           # /simplify — complexity removal
-    │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
-    │   ├── claude-server/      # /claude-server — remote worktree
-    │   ├── decompose/          # /decompose — deep task decomposition
-    │   └── max/                # /max — maximum effort parallel execution
-    ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
-    ├── scripts/                # Headless automation scripts
-    │   ├── common.sh           # Shared safety tiers + runner
-    │   ├── health-check.sh     # Read-only repo health audit
-    │   ├── hygiene-cron.sh     # Daily cron wrapper for git-hygiene across all repos
-    │   ├── full-review.sh      # 3-phase agent pack review
-    │   ├── test-coverage.sh    # Write tests for uncovered code
-    │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
-    │   ├── overnight.sh        # Orchestrate all scripts across repos
-    │   ├── review-and-push.sh  # Morning review of overnight changes
-    │   └── sync-plugins.sh     # Sync installed plugins against plugins.txt
-    ├── systemd/                # systemd units (git-hygiene timer)
-    └── agents/                 # 17 specialized review subagents
+├── claude/
+│   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
+│   ├── AgentPack.md            # 17-agent review orchestra
+│   ├── plugins.txt             # Plugin manifest (cross-machine source of truth)
+│   ├── statusline.sh           # Context bar, git branch, cost display
+│   ├── chrome/                 # WSL → Windows Chrome bridge for claude --chrome
+│   ├── hooks/
+│   │   ├── conventional-commit.sh          # PreToolUse commit message validator
+│   │   ├── format-on-edit.sh               # PostToolUse auto-formatter
+│   │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
+│   │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
+│   │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
+│   │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
+│   │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
+│   │   └── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
+│   ├── skills/
+│   │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
+│   │   ├── kickoff/            # /kickoff — new project bootstrap
+│   │   ├── changelog/          # /changelog — session logging
+│   │   ├── log-error/          # /log-error — error documentation
+│   │   ├── review/             # /review — code quality check
+│   │   ├── handoff/            # /handoff — session transitions
+│   │   ├── fix-issue/          # /fix-issue — GitHub issue workflow
+│   │   ├── simplify/           # /simplify — complexity removal
+│   │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
+│   │   ├── claude-server/      # /claude-server — remote worktree
+│   │   ├── decompose/          # /decompose — deep task decomposition
+│   │   ├── max/                # /max — maximum effort parallel execution
+│   │   ├── jj/                 # /jj — jujutsu (jj) version control driver
+│   │   └── session-retro/      # /session-retro — propose improvements to your skills
+│   ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
+│   ├── scripts/                # Headless automation + validation scripts
+│   │   ├── common.sh           # Shared safety tiers + runner
+│   │   ├── health-check.sh     # Read-only repo health audit
+│   │   ├── hygiene-cron.sh     # Daily cron wrapper for git-hygiene across all repos
+│   │   ├── full-review.sh      # 3-phase agent pack review
+│   │   ├── test-coverage.sh    # Write tests for uncovered code
+│   │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
+│   │   ├── overnight.sh        # Orchestrate all scripts across repos
+│   │   ├── review-and-push.sh  # Morning review of overnight changes
+│   │   ├── sync-plugins.sh     # Sync installed plugins against plugins.txt
+│   │   ├── codex-review-gate.sh    # Local Codex review gate used by commit-push-pr
+│   │   ├── check-hooks-wired.sh    # Warn when a hook file isn't registered in settings.json
+│   │   ├── check-doc-refs.sh       # CI: validate doc path references and links
+│   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md and codex/AGENTS.md rules in sync
+│   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
+│   │   └── check-no-personal-data.sh # CI: block machine-specific home paths
+│   ├── systemd/                # systemd units (git-hygiene timer)
+│   └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md

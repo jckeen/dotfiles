@@ -70,7 +70,10 @@ function main(): void {
   delete config.permissions;
   console.error(`[StripProjectPermissions] Stripped permissions from ${slug}/settings.local.json`);
 
-  // If the config is now empty, delete the file entirely
+  // If the config is now empty, delete the file entirely.
+  // A failed delete/write means the strip did NOT land — exit 1 (non-blocking)
+  // so the failure is surfaced instead of reporting success.
+  let applied = true;
   const remainingKeys = Object.keys(config);
   if (remainingKeys.length === 0) {
     try {
@@ -78,6 +81,7 @@ function main(): void {
       console.error(`[StripProjectPermissions] File was empty after strip — deleted ${settingsPath}`);
     } catch (err) {
       console.error(`[StripProjectPermissions] Failed to delete empty file: ${err}`);
+      applied = false;
     }
   } else {
     // Write back with remaining config preserved
@@ -86,11 +90,12 @@ function main(): void {
       console.error(`[StripProjectPermissions] Preserved ${remainingKeys.length} other key(s): ${remainingKeys.join(', ')}`);
     } catch (err) {
       console.error(`[StripProjectPermissions] Failed to write ${settingsPath}: ${err}`);
+      applied = false;
     }
   }
 
   process.stdout.write('{}');
-  process.exit(0);
+  process.exit(applied ? 0 : 1);
 }
 
 main();

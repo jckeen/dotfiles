@@ -101,6 +101,7 @@ echo ""
 # Files kept in dotfiles but NOT symlinked (loaded on-demand or consumed
 # directly from the dotfiles dir — e.g. plugins.txt is read by setup.sh
 # from $DOTFILES_DIR/claude/plugins.txt, not from ~/.claude/).
+# Keep in sync with the two NOLINK lists in setup.sh.
 NOLINK="AgentPack.md plugins.txt"
 
 # Memory repo check
@@ -133,8 +134,8 @@ for f in "$CLAUDE_SRC/"*; do
   check_link "$f" "$CLAUDE_DST/$name" "$name"
 done
 
-# Hooks
-for f in "$CLAUDE_SRC/hooks/"*.sh; do
+# Hooks — both .sh and .ts (setup.sh links both; .ts hooks run via bun)
+for f in "$CLAUDE_SRC/hooks/"*.sh "$CLAUDE_SRC/hooks/"*.ts; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   check_link "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name"
