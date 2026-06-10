@@ -221,6 +221,12 @@ if [ -x "$DOTFILES_DIR/hygiene-status.sh" ]; then
   "$DOTFILES_DIR/hygiene-status.sh" --cli || true
 fi
 
+# Hook-wiring drift (silent if clean): warn when a hook file exists but isn't
+# registered in settings.json — the failure mode that left every hook inert.
+if [ -x "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" ]; then
+  "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" --quiet || true
+fi
+
 # Summary
 echo ""
 [ $HEALED -gt 0 ] && green "Self-healed $HEALED missing link(s)."

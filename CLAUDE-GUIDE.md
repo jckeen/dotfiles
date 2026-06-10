@@ -105,7 +105,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `cc` | Pull repos, sync memory, health check, launch Claude |
 | `pull-all` | Fast-forward pull on every repo in dev dir |
 | `sync-memory` | Commit and push pending memory changes |
-| `check-claude` | Verify all Claude config symlinks are healthy (read-only). `cc` runs `--heal` at launch to auto-create missing links; ambiguous states stay report-only |
+| `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
@@ -114,16 +114,22 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 ## Hooks
 
-| Hook | Trigger | What it does |
-|------|---------|-------------|
-| `conventional-commit.sh` | PreToolUse | Enforces `type: description` commit format (feat, fix, refactor, etc.) |
-| `format-on-edit.sh` | PostToolUse | Auto-formats edited files (prettier, black, rustfmt, gofmt) |
-| `ntfy-awaiting-input.sh` | PreToolUse | Push notification when Claude needs input |
-| `StripProjectPermissions.hook.ts` | SessionStart | Strips project-level permission overrides that fight global settings |
-| `HygieneStatus.hook.sh` | SessionStart | Surfaces branch-hygiene drift detected by the daily systemd timer (thin wrapper around `hygiene-status.sh --reminder`) |
-| `PluginDriftCheck.hook.ts` | SessionStart | Diffs installed plugins against `claude/plugins.txt` manifest; warns and points at `sync-plugins.sh` if anything is missing |
-| `SymlinkRepair.hook.ts` | SessionStart (place FIRST) | Re-installs missing dotfiles→`~/.claude/` symlinks for hooks/scripts/agents/skills when new files land in the repo and `setup.sh` hasn't been re-run; advisory-only, never clobbers |
-| `PrePushStaleSHACheck.hook.ts` | PreToolUse | On `git push`, warns (never blocks) when the push will obsolete an in-flight reviewer's `reviewed_sha`; logs a `[stale-push]` event |
+Hooks only run if they're **registered in `settings.json`** (the `hooks` block,
+which lives in the private `claude-memory` repo). The hook *files* below ship in
+`claude/hooks/`; the **Wired** column is the source of truth for what's actually
+active. `check-hooks-wired.sh` runs at every `cc` launch and warns if a hook file
+is present but not registered — the drift that once left every hook inert.
+
+| Hook | Trigger | Wired | What it does |
+|------|---------|:-----:|-------------|
+| `SymlinkRepair.hook.ts` | SessionStart (FIRST) | ✅ | Re-links missing dotfiles→`~/.claude/` symlinks (hooks/scripts/agents/skills) every session — incl. **resume** — when new files land and `setup.sh` hasn't re-run; advisory, never clobbers |
+| `StripProjectPermissions.hook.ts` | SessionStart | ✅ | Strips project-level permission overrides that fight global settings |
+| `HygieneStatus.hook.sh` | SessionStart | ✅ | Surfaces branch-hygiene drift from the daily systemd timer |
+| `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing |
+| `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
+| `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
+| `ntfy-awaiting-input.sh` | PreToolUse | ⬜ | *Off* — redundant with Claude Code's built-in push notifications |
+| `PrePushStaleSHACheck.hook.ts` | PreToolUse | ⬜ | *Off* — reviewer-`reviewed_sha` tracking system not in use |
 
 > Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-06-09 — fix: wire the Claude Code hooks (they were never registered)
+
+### What changed
+- **Root cause: every hook was inert.** `~/.claude/settings.json` had no `hooks`
+  key at all, so none of the 8 documented hooks ran — including
+  `SymlinkRepair.hook.ts`, the SessionStart backstop that re-links new scripts.
+  That's why newly-added scripts surfaced as `MISSING` and never self-healed.
+  Wired the recommended set in `claude-memory/settings.json`: the 4 SessionStart
+  hooks (SymlinkRepair, StripProjectPermissions, HygieneStatus, PluginDriftCheck),
+  `conventional-commit` (PreToolUse/Bash), and `format-on-edit` (PostToolUse).
+  `ntfy-awaiting-input` and `PrePushStaleSHACheck` stay intentionally off.
+- **`cc --heal` now runs on every launch, incl. resume.** It was gated behind
+  `resuming == 0`, so `cc -c` / `--continue` / `--resume` skipped self-heal —
+  the other reason new scripts stayed `MISSING`. Pull/sync still skip on resume;
+  heal (fast, zero-clobber) no longer does.
+- **`format-on-edit` is now project-gated.** It only runs a formatter where the
+  project opts in (a local prettier, or a black/rustfmt/gofmt config) — the
+  global fallback is gone, so hand-wrapped Markdown docs and repos that don't use
+  a formatter are never reformatted against their style.
+- **`check-hooks-wired.sh` drift-guard.** New local guard (run at every `cc`
+  launch via `check-claude.sh`) warns when a hook file exists but isn't
+  registered in `settings.json`, with an explicit opt-out list. Public CI can't
+  see the private settings, so this lives where the real merged settings are.
+
+### Why
+Surfaced when newly-merged scripts reported `MISSING` at session start and `cc`
+didn't self-heal. The investigation found the whole hook system was documented as
+active but never wired — the same documented-but-not-enforced gap as the prior
+entry. Now the wiring is real, drift-guarded, and reflected in CLAUDE-GUIDE's
+hooks table (with a Wired column).
+
 ## 2026-06-09 — feat: enforcement hardening + local Codex review gate on push
 
 ### What changed
