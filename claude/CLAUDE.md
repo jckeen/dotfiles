@@ -18,6 +18,8 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - Plan before non-trivial work. Confirm the approach, then execute.
 - If the goal is unclear, ask before coding — don't guess at intent.
 - Prefer editing existing files over creating new ones.
+- Read the surrounding code before changing behavior — prefer the existing
+  patterns over new abstractions.
 - Keep changes scoped to the request — no unrequested refactors or cleanup.
 - Default to no comments; add one only when the *why* is non-obvious.
 - Be concise. State results and decisions, not running commentary.
@@ -53,7 +55,8 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 ## Verification
 
 - Give yourself a way to check the work: run the tests, the types, or the app.
-- Don't claim something works without evidence from a tool.
+- Don't claim something works without evidence from a tool. Report any test you
+  could not run rather than silently skipping it.
 - Address root causes, not symptoms. When fixing a bug, write a failing test
   that reproduces it first, then fix it.
 - Audit during the build, not at a final gate. The moment a risky surface (auth,

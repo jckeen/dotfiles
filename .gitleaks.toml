@@ -1,0 +1,50 @@
+# gitleaks config for the public dotfiles repo.
+#
+# Why: the CI `leak-scan` job only catches machine-specific *home paths*
+# (check-no-personal-data.sh). The README promises this repo won't leak auth
+# tokens, account IDs, bearer tokens, or private MCP endpoints — but nothing
+# enforced that. gitleaks closes the gap by scanning every tracked file (and
+# full history on PRs) for secret *shapes*: API keys, tokens, private keys, etc.
+#
+# This extends gitleaks' built-in ruleset and only adds allowlists for the
+# placeholders and example files we ship on purpose, so the scan stays
+# meaningful instead of being muted by blanket excludes.
+
+title = "dotfiles secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public-safe placeholders and intentional example content"
+
+# We deliberately do NOT blanket-exclude any content files — not docs
+# (CHANGELOG, SECURITY_FINDINGS, ADRs) and not the example config. Those are
+# exactly where a real token could get pasted, so they must stay scanned.
+# Placeholder/example values are handled by the regexes and stopwords below.
+# The ONLY path excluded is this config itself, which necessarily contains
+# token-shaped *regex literals* (ghp_example, sk-…) that gitleaks would
+# otherwise flag as secrets.
+paths = [
+  '''\.gitleaks\.toml''',
+]
+
+# Obvious non-secrets: documented placeholder tokens, the public GitHub handle
+# (a username in URLs/CODEOWNERS, not a credential), and example/redacted values.
+regexes = [
+  '''(?i)(your|example|placeholder|dummy|sample|redacted|xxx+|<[^>]+>)[-_]?(token|key|secret|password|api)''',
+  '''(?i)(token|key|secret|password|api)[-_]?(here|goes-here|value|placeholder|example|xxx+)''',
+  '''ghp_(example|xxx+|0{8,})''',
+  '''github\.com/jckeen''',
+  '''sk-(example|xxx+|placeholder)''',
+]
+
+# Common throwaway/example stopwords that mark a match as illustrative.
+stopwords = [
+  "example",
+  "placeholder",
+  "redacted",
+  "your-token",
+  "your_token",
+  "changeme",
+]

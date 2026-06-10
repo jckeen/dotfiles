@@ -852,22 +852,53 @@ echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
 echo "  -> dev-dir set to $DEV_DIR"
 
 # Memory (optional private repo for persistent Claude memory)
+#
+# Claude Code keeps per-project auto-memory under
+# ~/.claude/projects/-<munged-cwd>/memory/ (MEMORY.md + fact files), alongside
+# the session .jsonl transcripts. That dir is machine-local and gitignored —
+# lose the machine and the facts are gone, and they never reach your other
+# machines. We fix that by symlinking each project's memory/ (and ONLY memory/,
+# never the transcripts) into the private claude-memory repo at
+# claude-memory/<project-basename>/memory, so durable facts are version-
+# controlled and synced. The source of truth lives in the repo; the symlink
+# points Claude at it.
 MEMORY_REPO="$DEV_DIR/claude-memory"
-MEMORY_SRC="$MEMORY_REPO/dev/memory"
-# Claude scopes memory by working directory, encoding the path with dashes
-MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
-MEMORY_DST="$HOME_DIR/.claude/projects/-${MEMORY_PROJECT_DIR}/memory"
-if [ -d "$MEMORY_SRC" ]; then
-  mkdir -p "$(dirname "$MEMORY_DST")"
-  if [ -L "$MEMORY_DST" ]; then
-    rm "$MEMORY_DST"
-  elif [ -d "$MEMORY_DST" ]; then
-    # Preserve any existing memory files before linking
-    cp -n "$MEMORY_DST"/*.md "$MEMORY_SRC/" 2>/dev/null || true
-    rm -r "$MEMORY_DST"
-  fi
-  ln -s "$MEMORY_SRC" "$MEMORY_DST"
-  echo "  -> Claude memory linked (private repo)"
+if [ -d "$MEMORY_REPO" ]; then
+  # Link one project's memory dir. $1 = claude-memory subdir (project basename),
+  # $2 = the dash-munged project key Claude uses under ~/.claude/projects/.
+  link_project_memory() {
+    local name="$1" munged="$2"
+    local src="$MEMORY_REPO/$name/memory"
+    local dst="$HOME_DIR/.claude/projects/-${munged}/memory"
+    # Skip projects with no memory on either side — don't create empty dirs.
+    [ -e "$src" ] || [ -d "$dst" ] || return 0
+    # Honor --dry-run: these are destructive (rm/cp/ln), so a preview must not
+    # actually move or relink anyone's memory dirs.
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "[DRY] link project memory: $dst -> $src"
+      return 0
+    fi
+    mkdir -p "$src" "$(dirname "$dst")"
+    if [ -L "$dst" ]; then
+      rm "$dst"
+    elif [ -d "$dst" ]; then
+      # Promote any local-only facts into the repo before replacing the dir.
+      # cp -n never clobbers a newer repo copy; we only move *.md memory files,
+      # never the sibling .jsonl session transcripts.
+      cp -n "$dst"/*.md "$src/" 2>/dev/null || true
+      rm -r "$dst"
+    fi
+    ln -s "$src" "$dst"
+  }
+  # The dev root itself (basename "dev"), then every immediate project under it.
+  link_project_memory "dev" "$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
+  for _proj in "$DEV_DIR"/*/; do
+    [ -d "$_proj" ] || continue
+    [ "$(basename "$_proj")" = "claude-memory" ] && continue  # the repo itself
+    link_project_memory "$(basename "$_proj")" \
+      "$(echo "${_proj%/}" | sed 's|^/||; s|/|-|g')"
+  done
+  echo "  -> Claude memory linked for dev + project dirs (private repo)"
 else
   echo "  -> Claude memory repo not found at $MEMORY_REPO"
   echo "     For auto-memory persistence: mkdir -p ~/dev/claude-memory/dev/memory,"

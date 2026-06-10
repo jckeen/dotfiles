@@ -72,3 +72,45 @@ jobs:
 
       - name: Check tracked files for machine-specific home paths
         run: claude/scripts/check-no-personal-data.sh
+
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks scans full history on PRs; depth 0 gives it the commits.
+          fetch-depth: 0
+
+      - name: Scan for committed secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Config lives at repo root (.gitleaks.toml); the action auto-detects it.
+
+  agent-parity:
+    name: agent-parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Claude/Codex rule-set parity
+        run: claude/scripts/check-agent-parity.sh
+
+  commit-format:
+    name: commit-format
+    # Lint the commits a PR adds; on a direct push to main there is no range.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint PR commit messages (conventional commits)
+        # SHAs come in via env (not interpolated into the script) per GitHub's
+        # workflow-injection guidance, even though commit SHAs aren't free text.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: claude/scripts/check-commit-format.sh "$BASE_SHA" "$HEAD_SHA"
