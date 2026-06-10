@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-06-10 — docs: README slimmed to a quickstart that defers to CLAUDE-GUIDE
+
+### What changed
+- **README: 886 → ~570 lines.** The duplicated middle (shell-command tables,
+  skills table, agent roster, hook details, status line, core workflow,
+  keyboard shortcuts, session management, best practices) collapsed into one
+  compact "Daily use" section of pointers. README now owns setup + the guided
+  tour; **CLAUDE-GUIDE.md is the single canonical daily reference**.
+- **CLAUDE-GUIDE gained the missing daily surface**: `cx`, `check-codex`,
+  `projects`, `sessions`, worktree jumps (`za`–`ze`/`z0`, `gw*`), and the
+  multi-session helpers — so deferring to it is actually complete.
+- **New `docs/WINDOWS.md`**: the PowerShell deep-dive (wsl6/ccgrid tables,
+  manual install, WSLENV bridge one-liner, distro/dev-dir overrides) moved out
+  of README intact.
+
+### Why
+Three doc surfaces (README, CLAUDE-GUIDE, trees) carried overlapping tables
+that drifted independently — the audit found count mismatches and stale hook
+states. One canonical surface per topic; README links instead of repeating.
+
 ## 2026-06-10 — feat: cross-tool skill parity + agents inherit the session model
 
 ### What changed

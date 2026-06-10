@@ -178,7 +178,7 @@ Once inside Claude:
 | `cctab dotfiles atlas` | One tab per project, each running `cc <project>` inside WSL |
 | `ccpane dotfiles` | Splits the current Windows Terminal window with `cc dotfiles` |
 
-These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerShell profile(s)? [Y/n]" — answer Y). The installer wires both PS 5.1 and PS 7 profiles, so the helpers work in whichever you prefer. **If you missed the prompt or installed before this fix, just run `dotfiles-update` from WSL.**
+These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerShell profile(s)? [Y/n]" — answer Y). The installer wires both PS 5.1 and PS 7 profiles, so the helpers work in whichever you prefer. **If you missed the prompt or installed before this fix, just run `dotfiles-update` from WSL.** Manual install, distro/dev-dir overrides, and more: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ---
 
@@ -250,339 +250,58 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 
 ---
 
-## Shell Commands & Aliases
+## Daily use
 
-These are available after setup (sourced from `.bash_aliases`).
+The day-to-day reference is **[CLAUDE-GUIDE.md](CLAUDE-GUIDE.md)** — the cheat
+sheet for slash commands, hooks (with their wired-state), keyboard shortcuts,
+shell commands, worktree/multi-session helpers, autonomous scripts, stop-hook
+templates, and the golden rules. What follows is the short version.
 
-### Starting Claude
-
-| Command | What it does |
-|---------|-------------|
-| `cc` | **Recommended way to start.** Pulls repos, syncs memory, runs health check, launches Claude |
-| `claude` | Start Claude directly (no repo sync) |
-| `claude-rc` | Start with explicit remote control flag |
-| `claude-server` | Spawn an isolated worktree + remote control session |
-
-### Starting Codex
+### The commands you'll actually type
 
 | Command | What it does |
 |---------|-------------|
-| `cx` | Pulls repos, runs `check-codex`, then launches Codex |
-| `cx <project>` | Start Codex in `~/dev/<project>` |
-| `codex` | Start Codex directly (no repo sync) |
-| `codex resume` | Resume a previous Codex session |
-| `codex review --uncommitted` | Review staged, unstaged, and untracked changes |
+| `cc [project]` | Sync repos + memory, health check, launch Claude |
+| `cx [project]` | Same ergonomics for Codex |
+| `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
+| `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
+| `/handoff` | Capture session state before `/clear` or stopping |
+| `/max` | Maximum-effort mode — worktrees, parallel agents |
+| `/fix-issue N` | GitHub issue end-to-end: investigate → test → fix → PR |
 
-### Repo management
+Most other slash commands **auto-invoke** when their triggers match — you
+rarely type them. Full table: [CLAUDE-GUIDE](CLAUDE-GUIDE.md#slash-commands).
 
-| Command | What it does |
-|---------|-------------|
-| `pull-all` | Git pull (fast-forward only) on every repo in your dev directory that has a remote. Skips local-only repos |
-| `sync-memory` | Commit and push any pending memory changes (runs automatically as part of `cc`) |
-| `check-claude` | Verify all Claude config symlinks, memory, and hooks are healthy (read-only). At launch `cc` runs it with `--heal`, which auto-creates any *missing* symlink whose source exists — so skills/scripts added to the repo since the last `setup.sh` link themselves on the next `cc`. Ambiguous states (a regular file where a symlink belongs, a wrong target, an orphan) are reported, never auto-fixed |
-| `check-codex` | Verify public-safe Codex symlinks and warn about private/generated state |
-| `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
-| `codex-update` | Run `codex update` |
-
-### Git worktree shortcuts
-
-Run multiple Claude sessions in parallel on the same project using worktrees.
-
-| Command | What it does |
-|---------|-------------|
-| `za` through `ze` | Jump to worktree `-a` through `-e` (e.g., `../myproject-a`) |
-| `z0` | Jump back to the main worktree (repo root) |
-| `gwl` | `git worktree list` |
-| `gwa` | `git worktree add` |
-| `gwr` | `git worktree remove` |
-| `wt-claude <name> [branch]` | Create a worktree and launch Claude in it |
-
-### Multi-session (WSL + Windows Terminal)
-
-Run Claude across multiple projects simultaneously without leaving your terminal. Each session gets full `cc` treatment (repo sync, tab colors, health check).
-
-| Command | What it does |
-|---------|-------------|
-| `cc-pane <project>` | Open project in a new **split pane** (vertical by default) |
-| `cc-pane <project> -H` | Open project in a **horizontal** split pane |
-| `cc-tab <project>` | Open project in a new **tab** |
-| `cc-multi <p1> <p2> ...` | Open multiple projects, each in its own **tab** |
-| `projects` | List available projects in your dev directory |
-| `sessions` | Show active Claude sessions and their working directories |
-
-**Quick start — your old workflow vs. new:**
-
-```bash
-# OLD: open PowerShell → wsl → cd ~/dev/myproject → cc
-# ×3 for three projects
-
-# NEW: from any existing terminal (or from inside Claude with ! prefix)
-cc-multi dotfiles atlas stringer   # 3 tabs, each synced and running
-
-# Or split your current view
-cc-pane atlas                      # vertical split
-cc-pane stringer -H                # horizontal split
-```
-
-> **Tip:** From inside an active Claude session, use `! cc-pane <project>` to open another project alongside without leaving Claude.
-
-<details>
-<summary><strong>🪟 PowerShell helpers (Windows users only)</strong> — multi-session from outside WSL</summary>
-
-<br>
-
-**Use PowerShell 7** (`pwsh.exe`) if at all possible — it's the modern, cross-platform PowerShell and what these helpers are designed for. Windows ships with PowerShell 5.1 (`powershell.exe`) which still works (we wire both profiles), but PS 7 is faster and is what you should default to. Install PS 7 with `winget install --id Microsoft.PowerShell` if you don't have it.
-
-The dotfiles ship two PowerShell helper files:
-
-| File | Scope | Functions |
-|------|-------|----------|
-| `windows/wsl-helpers.ps1` | **Agent-neutral** — no Claude/Codex required | `wsl6` |
-| `windows/cc-functions.ps1` | **Claude-specific** — wraps `cc <project>` inside WSL | `ccgrid`, `cctab`, `ccpane`, `ccprojects`, `ccupdate` |
-
-`setup.sh` installs **both** files into **both PowerShell hosts** (5.1 and 7) automatically on WSL — they have different `$PROFILE` paths (`Documents\WindowsPowerShell\` vs `Documents\PowerShell\`), so wiring only one would leave the other broken. If you want only the agent-neutral piece on a machine that doesn't run Claude, you can copy just `wsl-helpers.ps1` and skip `cc-functions.ps1`.
-
-| Command | File | What it does |
-|---------|------|-------------|
-| `wsl6` | wsl-helpers | New tab with a **3×2 grid of plain WSL shells** (no agent) |
-| `ccgrid <p1> <p2> ...` | cc-functions | One new tab, each project in its own **split pane** (auto-tiled grid) |
-| `ccpane <project> [-Horizontal]` | cc-functions | Split the current WT window with one project |
-| `cctab <p1> <p2> ...` | cc-functions | One **tab** per project |
-| `ccprojects` | cc-functions | List available projects (from WSL) |
-| `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
-
-**Install — `setup.sh` does this for you on WSL.** Section 7b of `setup.sh` detects WSL, calls **both** `powershell.exe` (PS 5.1) and `pwsh.exe` (PS 7) when present, copies both helper files to `$env:USERPROFILE\.<name>.ps1`, and dot-sources each from each host's `$PROFILE` — idempotent, so re-running setup just refreshes the local copies. Open a new PowerShell window (5.1 or 7 — both work) and `wsl6` / `ccgrid` are ready.
-
-> **Missed the prompt or installed before this split?** Just run `dotfiles-update` from WSL — it pulls the latest and re-runs setup. The PowerShell prompt fires again and both files are installed/refreshed in both PS profiles.
-
-**Manual install** (if you skipped the setup.sh prompt or are on a machine that didn't run setup) — run these in PowerShell, replacing `<you>` with your WSL username:
-
-```powershell
-# 1. Allow local scripts (one time, per-user)
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-
-# 2. Copy both helper files from the WSL dotfiles checkout to LOCAL Windows paths.
-#    (RemoteSigned blocks scripts loaded directly from \\wsl.localhost\... with a
-#    "not digitally signed" error, so dot-sourcing local copies is required.)
-$base = '\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\windows'
-foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
-}
-
-# 3. Wire both into your PowerShell profile
-if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force }
-foreach ($f in @('wsl-helpers.ps1', 'cc-functions.ps1')) {
-  Add-Content $PROFILE (". '" + "$env:USERPROFILE\.$f" + '"')
-}
-
-# 4. Reload
-. $PROFILE
-```
-
-**Running from bash/WSL?** Bridge into PowerShell with this one-liner — it auto-resolves your WSL username and distro via env vars, so paste it verbatim. **`WSLENV` is required**: WSL→Windows interop does *not* propagate env vars to `powershell.exe` by default.
-
-```bash
-WSL_USER="$(whoami)" WSL_DISTRO="${WSL_DISTRO_NAME:-Ubuntu}" \
-WSLENV="WSL_USER:WSL_DISTRO" \
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
-  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-  if (-not (Test-Path $PROFILE)) { New-Item -Type File -Path $PROFILE -Force | Out-Null }
-  $base = "\\wsl.localhost\$env:WSL_DISTRO\home\$env:WSL_USER\dev\dotfiles\windows"
-  foreach ($f in @("wsl-helpers.ps1", "cc-functions.ps1")) {
-    Copy-Item "$base\$f" "$env:USERPROFILE\.$f" -Force
-    $pattern = [regex]::Escape($f)
-    if (-not (Select-String -Path $PROFILE -Pattern $pattern -Quiet)) {
-      Add-Content $PROFILE (". `"$env:USERPROFILE\.$f`"")
-    }
-  }
-'
-```
-
-Then open a new PowerShell window and `wsl6` / `ccgrid` / `cctab` / etc. will be defined.
-
-After dotfiles updates, run `ccupdate` in PowerShell to refresh the local copy of `cc-functions.ps1` (then `. $PROFILE` to reload). For `wsl-helpers.ps1`, re-run `setup.sh` (or `dotfiles-update` from WSL).
-
-Override the WSL distro or dev dir in your profile **before** the dot-source line if yours differ:
-
-```powershell
-$env:CC_WSL_DISTRO = 'Ubuntu-22.04'   # default: Ubuntu
-$env:CC_DEV_DIR    = '~/code'         # default: ~/dev
-. "$env:USERPROFILE\.cc-functions.ps1"
-```
-
-**Example — five repos in a split-pane grid, one command:**
-
-```powershell
-ccgrid dotfiles atlas stringer beacon trnn
-```
-
-That opens a new Windows Terminal tab with five panes (alternating vertical/horizontal splits), each running `cc <project>` inside WSL.
-
-</details>
-
----
-
-## Skills (Slash Commands)
-
-Type these directly in Claude Code.
-
-| Command | When to use it |
-|---------|---------------|
-| `/kickoff` | Starting a new project — scaffolds structure, CLAUDE.md, changelog, git |
-| `/changelog` | End of session — logs what happened to CHANGELOG.md |
-| `/log-error` | Hit a wall — documents the error with classification and root cause |
-| `/review` | Before shipping — reviews last 3 commits for bugs, security, quality |
-| `/handoff` | Session transition — captures full state for the next session |
-| `/fix-issue 123` | Pick up a GitHub issue end-to-end: investigate → plan → test → implement → PR |
-| `/simplify` | After building — delegates to code-simplifier subagent, removes over-engineering |
-| `/commit-push-pr` | Commit, push, and create PR in one shot |
-| `/claude-server` | Spawn isolated worktree + remote control session |
-| `/decompose` | Deep task decomposition into parallel workstreams |
-| `/max` | Maximum effort — worktrees, parallel agents, full capability selection |
-| `/branch-hygiene` | Inspect and clean stale branches across repos |
-| `/jj` | Drive jujutsu (jj) version control for single-agent work |
-| `/session-retro` | End-of-session retro that proposes improvements to your skills |
-
----
-
-## Agent Pack (17-Agent Review Orchestra)
-
-A team of 17 specialized subagents, each running in **its own isolated context**. They investigate independently and report back without polluting each other's context or your main session.
-
-| Agent | Focus |
-|-------|-------|
-| `product-strategist` | User flow, feature scope, stickiness |
-| `ux-reviewer` | Layout, hierarchy, mobile, interactions |
-| `frontend-architect` | Components, state management, rendering |
-| `backend-architect` | Schema, APIs, queries, data integrity |
-| `growth-strategist` | Sharing, SEO, viral loops, engagement |
-| `content-reviewer` | Microcopy, tone, empty states, error messages |
-| `trust-safety` | Abuse prevention, moderation, legal compliance |
-| `qa-lead` | Edge cases, bad input, error states, mobile |
-| `perf-accessibility` | Performance, WCAG, keyboard nav |
-| `launch-operator` | Deploy readiness, monitoring, smoke tests |
-| `security-reviewer` | Injection, auth, secrets, insecure data |
-| `code-simplifier` | Over-engineering, dead code, premature abstractions |
-| `repo-scout` | Fast codebase orientation and status briefing |
-| `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths |
-| `package-scout` | Package discovery, alternatives, and ecosystem fit |
-| `test-writer` | Bug reproduction, feature coverage, edge case tests |
-| `schema-reviewer` | DB schema, migrations, data integrity, query patterns |
-
-**How to invoke:**
-- Single: "Use the qa-lead agent to review this feature"
-- Multiple: "Run product-strategist, ux-reviewer, and growth-strategist on this project"
-- Full review: "Run a full agent pack review" or "Run Phase 1 review"
-- Via skill: `/simplify` and `/review` use agents automatically
-
-**Orchestration** (see `AgentPack.md` for full details):
-- **Phase 1 — Product:** product-strategist + ux-reviewer + growth-strategist + trust-safety + package-scout (parallel)
-- **Phase 2 — Architecture:** frontend-architect + backend-architect + content-reviewer + security-reviewer (parallel)
-- **Phase 3 — Launch:** qa-lead + perf-accessibility + launch-operator + code-simplifier (parallel)
-
----
-
-## Safety Hooks
-
-Hooks run automatically and can't be forgotten like CLAUDE.md rules. Several hooks ship by default — the four originals plus additions across `claude/hooks/` for session hygiene, plugin drift, and PR/push safety. See `claude/hooks/` for the full set; the table below covers the originals and the most-used additions. **For which hooks are actually wired (registered in `settings.json`) vs shipped-but-off, the [Hooks table in CLAUDE-GUIDE.md](CLAUDE-GUIDE.md#hooks) is the canonical source.**
-
-<details>
-<summary><strong>Hook-by-hook details</strong></summary>
-
-<br>
-
-**`conventional-commit.sh`** (PreToolUse) enforces:
-- Commit messages must start with `type: description`
-- Valid types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `style`
-- Handles both heredoc and inline `-m` styles; skips `--amend`
-
-**`format-on-edit.sh`** (PostToolUse) auto-formats after file edits:
-- JS/TS/JSON/CSS → prettier (finds project root automatically)
-- Python → black or ruff
-- Rust → rustfmt
-- Go → gofmt
-
-**`ntfy-awaiting-input.sh`** (PreToolUse on AskUserQuestion) sends:
-- Push notification via ntfy when Claude is waiting for user input
-
-**`StripProjectPermissions.hook.ts`** (SessionStart) prevents:
-- Project-level `settings.local.json` from accumulating `permissions` blocks that override global blanket permissions
-- Reads the current project's settings.local.json, removes only the `permissions` key, preserves everything else
-
-> **Note:** Day-to-day safety is enforced through the permission allowlist in your `settings.json` (block rules for dangerous commands and secret paths) rather than a dedicated blocking hook.
-
-</details>
-
----
-
-## Status Line
-
-The custom status line shows at-a-glance session health:
+### The loop
 
 ```
-opus · [████████░░] 42% · main · +127 -34 · $0.82
+Plan → Build → Verify → Simplify → Review → Log → Handoff
 ```
 
-- **Model name** (dimmed)
-- **Context bar** — green (<50%), yellow (50-80%), red (>80%) with warning banner at 80%+
-- **Git branch** (cached 5s, works on both macOS and Linux)
-- **Worktree name** (when in a parallel session)
-- **Lines added/removed** this session
-- **Session cost** in USD
+Each step is a mode or slash command — see
+[CLAUDE-GUIDE → The Workflow](CLAUDE-GUIDE.md#the-workflow), including the
+push-time Codex review gate that blocks on critical findings.
 
----
+### Going wider
 
-## The Core Workflow
-
-```
-1. DEFINE   → Tell Claude what you want. Be specific.
-2. PLAN     → Shift+Tab twice for Plan Mode. Iterate until solid.
-3. BUILD    → Normal Mode. Claude writes code and auto-commits.
-4. VERIFY   → Tests run before committing. Failures get fixed.
-5. SIMPLIFY → /simplify to remove unnecessary complexity.
-6. REVIEW   → /review for quality/security check.
-7. LOG      → /changelog to capture what happened.
-8. HANDOFF  → /handoff if ending the session.
-```
-
----
-
-## Keyboard Shortcuts
-
-The four you'll use constantly:
-
-| Shortcut | What it does |
-|----------|--------------|
-| `Shift+Tab` (x2) | Toggle Plan Mode |
-| `Esc` | Stop Claude mid-response |
-| `/clear` | Reset context |
-| `/compact` | Compress conversation |
-
-<details>
-<summary>The full list (rewind, background, side-questions, …)</summary>
-
-<br>
-
-| Shortcut | What it does |
-|----------|--------------|
-| `Shift+Tab` (x2) | Toggle Plan Mode |
-| `Ctrl+G` | Open plan in text editor |
-| `Ctrl+B` | Send current task to background |
-| `Esc` | Stop Claude mid-response |
-| `Esc+Esc` | Rewind menu |
-| `/compact` | Compress conversation |
-| `/clear` | Reset context |
-| `/btw` | Side question (no context cost) |
-
-</details>
-
----
-
-## Session Management
-
-**Remote access** is always on — connect from `claude.ai/code` or the Claude mobile app from anywhere.
-
-For the day-to-day commands (`cc`, `cx`, `claude --continue`, `claude --resume`, multi-pane), see the [Shell Commands & Aliases](#shell-commands--aliases) section above. They're the same surface; this section just exists to anchor the "remote access" note that people search for.
+- **Worktrees & multi-session** — `za`–`ze`/`z0` jump between worktrees,
+  `wt-claude <name>` spawns Claude in a fresh one, `cc-pane`/`cc-tab`/`cc-multi`
+  fan out across Windows Terminal (from inside Claude: `! cc-pane <project>`).
+  Tables in [CLAUDE-GUIDE](CLAUDE-GUIDE.md#worktrees--multi-session); the
+  PowerShell side (`wsl6`, `ccgrid`, `cctab`, `ccpane`, manual install, distro
+  overrides) lives in [docs/WINDOWS.md](docs/WINDOWS.md).
+- **The 17-agent review orchestra** — spawn by name ("Use the qa-lead agent on
+  this feature"), in groups, or as a three-phase full review (Product →
+  Architecture → Launch). `/review` and `/simplify` use them automatically.
+  Roster and orchestration: [`claude/AgentPack.md`](claude/AgentPack.md).
+- **Safety hooks** — run automatically, can't be forgotten like CLAUDE.md
+  rules: conventional-commit enforcement, project-gated format-on-edit,
+  session-start symlink repair, permission-creep stripping, plugin drift
+  detection. The canonical wired-state table is in
+  [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks); files in
+  [`claude/hooks/`](claude/hooks/).
+- **Status line** — model, context bar (green/yellow/red), branch, lines
+  changed, session cost. If the bar runs red: `/handoff`, then `/clear`.
 
 ---
 
@@ -707,45 +426,6 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 
 ---
 
-## Best Practices
-
-<details>
-<summary><strong>Click to expand the full best practices guide</strong></summary>
-
-### Context Is Everything
-
-Claude's context window is finite, and **performance degrades as it fills**.
-
-- Run `/clear` between unrelated tasks
-- Use subagents for investigation — they report back summaries, not raw files
-- Watch the context % in your status line — `/handoff` → fresh session when it's high
-
-### Plan First, Then Execute
-
-Most sessions should start in **Plan Mode** (Shift+Tab twice). Iterate until solid, then execute. Often 1-shots the whole thing.
-
-### Always Give Claude a Way to Verify
-
-Provide tests, screenshots, or expected outputs. **The pattern:** failing test first → implement fix → verify test passes.
-
-### Prompt Like a Senior Engineer
-
-- Be specific: "add email/password login using NextAuth with Postgres" not "add auth"
-- Point to patterns: "Follow the same pattern as HotDogWidget.php"
-- Power prompts: "Grill me on these changes", "Scrap this and implement the elegant solution"
-
-### CLAUDE.md Compounds Over Time
-
-Keep it under 400 lines. When Claude makes a mistake, have it update CLAUDE.md to prevent recurrence.
-
-### Hooks > CLAUDE.md for Enforcement
-
-CLAUDE.md is advisory. Hooks are enforced. Convert frequently-violated rules into hooks.
-
-</details>
-
----
-
 ## Architecture decisions
 
 The *why* behind structural changes lives in [`docs/adr/`](docs/adr/) as
@@ -788,6 +468,7 @@ dotfiles/
 ├── ROADMAP.md                  # Backlog (paired with GitHub Issues)
 ├── docs/
 │   ├── adr/                    # Architecture Decision Records (numbered, append-only)
+│   ├── WINDOWS.md              # PowerShell helpers deep-dive (wsl6/ccgrid, manual install)
 │   └── BRANCH_PROTECTION.md    # Branch protection setup notes
 ├── codex/
 │   ├── AGENTS.md               # Public-safe Codex global guidance
