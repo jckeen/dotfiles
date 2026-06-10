@@ -87,8 +87,8 @@ _check_critical_symlinks() {
   done
   if [ "$broken" -eq 1 ]; then
     echo "Critical symlinks broken — attempting auto-repair..."
-    if [ -f "$HOME/dev/claude-memory/bootstrap.sh" ]; then
-      bash "$HOME/dev/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
+    if [ -f "$(_dev_dir)/claude-memory/bootstrap.sh" ]; then
+      bash "$(_dev_dir)/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
     elif [ -f "$(_dev_dir)/dotfiles/setup.sh" ]; then
       bash "$(_dev_dir)/dotfiles/setup.sh" --repair && echo "Repair complete." || echo "Repair failed — run setup.sh --repair manually."
     else
@@ -118,12 +118,14 @@ cc() {
     esac
   done
 
-  # If a project name was passed, cd into it (honored even when resuming)
+  # If a project name was passed, cd into it (honored even when resuming).
+  # shift it out so it doesn't reach claude as a positional prompt argument.
   if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
-    cd "$dev_dir/$1"
+    cd "$dev_dir/$1" || return 1
+    shift
   elif [ "$resuming" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
     # Not resuming and not in a git repo — default to dev directory
-    cd "$dev_dir"
+    cd "$dev_dir" || return 1
   fi
 
   # Quick critical symlink validation (fast — just 2 stat calls)
@@ -210,10 +212,10 @@ cx() {
   done
 
   if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
-    cd "$dev_dir/$1"
+    cd "$dev_dir/$1" || return 1
     shift
   elif [ "$session_cmd" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
-    cd "$dev_dir"
+    cd "$dev_dir" || return 1
   fi
 
   if [ "$session_cmd" -eq 0 ]; then
@@ -400,7 +402,10 @@ cc-multi() {
   done
 }
 
-# Show active Claude sessions and their working directories
+# Show active Claude sessions and their working directories.
+# pgrep -x matches the claude binary by exact process name — the old
+# "node.*claude" pattern matched plugin broker processes (paths containing
+# .claude/) instead of the actual sessions now that claude ships native.
 sessions() {
   local found=0
   while IFS= read -r pid; do
@@ -412,7 +417,7 @@ sessions() {
       found=1
     fi
     printf "  PID %-7s  %s\n" "$pid" "$cwd"
-  done < <(pgrep -f "node.*claude" 2>/dev/null)
+  done < <(pgrep -x claude 2>/dev/null)
   [ $found -eq 0 ] && echo "No active Claude sessions"
 }
 
@@ -420,5 +425,5 @@ sessions() {
 export BROWSER="/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 # WSL: force-enable Claude in Chrome
 export CLAUDE_CODE_ENABLE_CFC=1
-# Extend prompt cache TTL from 5m to 1h (v2.1.108+) for long Algorithm sessions
+# Extend prompt cache TTL from 5m to 1h (v2.1.108+) for long agent sessions
 export ENABLE_PROMPT_CACHING_1H=1

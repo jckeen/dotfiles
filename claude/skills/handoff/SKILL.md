@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Generate a handoff note for clean session transitions — preserves context across /clear or new sessions
+description: Generate a handoff note for clean session transitions — preserves context across /clear or new sessions. Use when ending a session, when context is getting high, or when the user says "hand off", "wrap up the session", or "save state for next time".
 ---
 
 When the user runs /handoff, do the following:

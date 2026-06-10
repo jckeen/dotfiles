@@ -21,6 +21,7 @@ import {
   readlinkSync,
   realpathSync,
   symlinkSync,
+  unlinkSync,
 } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -34,7 +35,11 @@ const CLAUDE_SRC = join(DOTFILES_DIR, 'claude');
 const CLAUDE_DST = join(HOME, '.claude');
 
 // Top-level files in claude/ that setup.sh deliberately does NOT symlink.
-const TOP_LEVEL_NOLINK = new Set(['AgentPack.md', 'CLAUDE.md', 'settings.json']);
+// plugins.txt is consumed from the dotfiles repo, never from ~/.claude/.
+// CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so a missing
+// or broken link self-heals here at SessionStart, matching setup.sh.
+// Keep in sync with the NOLINK lists in setup.sh and check-claude.sh.
+const TOP_LEVEL_NOLINK = new Set(['AgentPack.md', 'settings.json', 'plugins.txt']);
 
 type RepairAction = { kind: 'linked' | 'fixed' | 'skipped'; rel: string; reason?: string };
 
@@ -56,7 +61,7 @@ function ensureLink(src: string, dst: string, rel: string): void {
     if (!existsSync(dst)) {
       // broken symlink — safe to replace
       try {
-        require('fs').unlinkSync(dst);
+        unlinkSync(dst);
         symlinkSync(src, dst);
         actions.push({ kind: 'fixed', rel, reason: `was broken → ${cur}` });
       } catch (e) {

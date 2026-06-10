@@ -1,6 +1,6 @@
 # 0004. Adopt selected ideas from Every's compound-engineering plugin (not the plugin)
 
-- **Status:** Proposed
+- **Status:** Accepted (decision made 2026-06-03; remaining adoption tracked in #77)
 - **Date:** 2026-06-03
 
 ## Context

@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-06-09 — fix: full-environment audit — cc arg leak, portable paths, doc drift
+
+### What changed
+- **`cc <project>` no longer leaks the project name into Claude as a prompt.**
+  `cc` cd'd into the project but never `shift`ed, so `claude` received the
+  project name as its positional prompt argument — and every multi-session
+  helper (`cc-pane`, `cc-tab`, `cc-multi`, `ccgrid`, `cctab`, `ccpane`) routes
+  through that path. `cx` already shifted; `cc` now matches.
+- **`sessions` finds real Claude sessions again.** The old
+  `pgrep -f "node.*claude"` pattern matched plugin broker processes (node paths
+  containing `.claude/`) instead of the native `claude` binary. Now `pgrep -x claude`.
+- **Private-memory paths derived, not hardcoded.** `setup.sh` and the
+  `.bash_aliases` auto-repair path looked for `claude-memory` at a hardcoded
+  `~/dev/` instead of the dev dir derived from the checkout location — silently
+  skipping bootstrap for anyone cloning under `~/code` etc.
+- **NOLINK lists unified.** `setup.sh` (×2), `check-claude.sh`, and
+  `SymlinkRepair.hook.ts` each had a different idea of which files aren't
+  symlinked. Now aligned (and cross-referenced): `plugins.txt` is no longer
+  linked into `~/.claude/` (nothing reads it there), and `setup.sh --check`
+  audits the `CLAUDE.md` link it previously skipped.
+- **`check-claude.sh` now health-checks/heals `*.ts` hooks**, not just `*.sh` —
+  a missing TypeScript hook symlink was invisible to `--heal`.
+- **Removed dead PAI-era "Algorithm phase" block from `statusline.sh`** (read a
+  `~/.claude/MEMORY/WORK` dir that no longer exists) and the last stale
+  "Algorithm" comment in `.bash_aliases`.
+- **Hook robustness:** `StripProjectPermissions.hook.ts` exits non-zero
+  (non-blocking) when its strip fails to land instead of reporting success;
+  `SymlinkRepair.hook.ts` drops a stray `require()` for a proper import.
+- **Skill auto-triggering:** `/simplify` and `/handoff` descriptions gained
+  concrete "use when" trigger phrases.
+- **Doc drift fixed:** README now says 14 slash commands (was 12) and lists
+  `/jj` + `/session-retro`; repo tree includes the validation scripts,
+  `plugins.txt`, `chrome/`, `docs/`, `ROADMAP.md`; README hooks section points
+  at CLAUDE-GUIDE's table as the canonical wired-state source; ROADMAP
+  checkboxes now reflect the closed issues (#69–#80, only #77 open); ADR-0004
+  status moved Proposed → Accepted.
+
+### Why
+Full workflow audit (launch path, hooks, skills, agents, CI/leak surface, docs)
+ahead of heavier autonomous use. The recurring failure shape was drift between
+duplicated surfaces — NOLINK lists, doc tables, hardcoded paths — so fixes
+favor single sources of truth and cross-references over new machinery.
+
 ## 2026-06-09 — fix: wire the Claude Code hooks (they were never registered)
 
 ### What changed

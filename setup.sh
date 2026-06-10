@@ -35,7 +35,9 @@ HOME_DIR="$HOME"
 # which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
 DEV_DIR="$(dirname "$DOTFILES_DIR")"
 # Private companion repo (settings.json + identity + auto-memory). Optional.
-BOOTSTRAP_SCRIPT="$HOME/dev/claude-memory/bootstrap.sh"
+# Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
+# still finds its sibling claude-memory repo.
+BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
 
 # Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
@@ -60,7 +62,11 @@ run_health_audit() {
   echo "--- Dotfiles symlinks ---"
   local CLAUDE_SRC="$DOTFILES_DIR/claude"
   local CLAUDE_DST="$HOME_DIR/.claude"
-  local NOLINK="AgentPack.md CLAUDE.md settings.json plugins.txt"
+  # Keep in sync with the NOLINK lists in section 5 below and check-claude.sh.
+  # settings.json is linked from claude-memory (not dotfiles); AgentPack.md is
+  # loaded on demand; plugins.txt is read from the repo by setup.sh/sync-plugins.sh.
+  # CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so it's audited.
+  local NOLINK="AgentPack.md settings.json plugins.txt"
 
   # Top-level files
   for f in "$CLAUDE_SRC/"*; do
@@ -782,7 +788,10 @@ mkdir -p "$HOME_DIR/.claude/agents"
 # Files to keep in dotfiles but NOT symlink into ~/.claude/
 # settings.json is private and synced via claude-memory (see bootstrap.sh).
 # AgentPack.md is loaded on-demand by CLAUDE.md references.
-NOLINK="AgentPack.md settings.json"
+# plugins.txt is consumed from $DOTFILES_DIR by setup.sh and sync-plugins.sh —
+# linking it into ~/.claude/ created a copy nothing reads.
+# Keep in sync with run_health_audit's NOLINK above and check-claude.sh.
+NOLINK="AgentPack.md settings.json plugins.txt"
 
 # Link top-level files (auto-discovers, no hardcoded list)
 for f in "$DOTFILES_DIR/claude/"*; do
