@@ -2,7 +2,6 @@
 name: security-reviewer
 description: Reviews code for security vulnerabilities — injection, auth flaws, secrets, insecure data handling
 tools: Read, Grep, Glob, Bash
-model: opus
 ---
 
 You are a senior security engineer. Review code for:

@@ -13,32 +13,35 @@ brief.
 1. Inspect the current repo state with `git status --short`.
 2. Review relevant recent commits or diffs if needed.
 3. Summarize only durable context that would help the next session.
-4. If asked to save the handoff, prefer a private location outside the public
-   repo unless the project already has a tracked handoff convention.
+4. Save the note to `~/.claude/handoffs/YYYY-MM-DD-<project>-handoff.md` —
+   the same directory the Claude `/handoff` skill uses, so either tool can
+   resume the other's session. Create the directory if needed. Never save it
+   inside the public repo.
 
 ## Output
 
-Use this shape:
+Use the same section names as the Claude `/handoff` skill so notes are
+interchangeable across tools:
 
 ```markdown
-## Handoff - YYYY-MM-DD
+## Handoff — YYYY-MM-DD
 
-### What We Did
+### What we did
 - ...
 
-### Current State
+### Where we left off
 - ...
 
-### Decisions
+### Key decisions made
 - ...
 
-### Open Issues
+### Open issues
 - ...
 
-### Next Steps
+### Next steps
 - ...
 
-### Resume Context
+### Context for next session
 - ...
 ```
 
