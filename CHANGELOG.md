@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-06-11 — feat: two-way plugin drift check; workflow-efficiency fixes
+
+### What changed
+- **`PluginDriftCheck.hook.ts`** now warns in both directions: manifest entries
+  not installed (as before) AND installed plugins missing from `plugins.txt` —
+  the reverse drift that was only caught by manual audit on 2026-06-10.
+- Removed duplicate standalone `@playwright/mcp` registrations from
+  `~/.claude.json` (global + `~/dev` project) — the playwright plugin already
+  provides the same ~25 tools, so every session was loading them twice.
+  Backup at `~/.claude.json.bak-playwright-dedup`.
+- Atlas skill descriptions (`atlas-brief`, `atlas-meeting-prep`, in the atlas
+  repo) no longer claim systemd-timer automation that is disabled.
+- Standing orders (claude-memory): default branches with required status
+  checks get branch + PR + auto-merge, not direct pushes that bypass the gates.
+
 ## 2026-06-10 — fix: wire dormant hooks, declare drifted plugins (audit follow-up)
 
 ### What changed
