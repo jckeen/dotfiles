@@ -669,6 +669,13 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
   done < "$PLUGIN_LIST"
 fi
 
+# The typescript-lsp plugin (plugins.txt) shells out to this binary; without
+# it the plugin errors with "Executable not found in $PATH" every session.
+if ! command -v typescript-language-server &>/dev/null; then
+  echo "  -> Installing typescript-language-server (required by typescript-lsp plugin)"
+  run bun add -g typescript-language-server typescript || echo "     (install failed — continuing)"
+fi
+
 # ─── 3c. Codex CLI ───────────────────────────────────────────────────
 # Codex is configured in parallel with Claude. This public repo must never
 # import live ~/.codex state wholesale: auth, sessions, sqlite files, logs,
