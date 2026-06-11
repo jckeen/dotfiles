@@ -13,11 +13,9 @@
  *   3. Fetch the latest review per reviewer; pull `reviewed_sha` from each
  *      review's `Reviewed commit:` body header (Codex's convention) or
  *      `commit_id` field. Compare against local HEAD.
- *   4. If any reviewer's reviewed_sha != HEAD: emit a `[stale-push]`
- *      synthetic event to ~/.claude/PAI/MEMORY/PR_WATCH/queue.jsonl so the
- *      surface hook prepends it to my next prompt's context, AND print a
- *      one-line warning to stderr so the user sees it inline with the
- *      Bash tool's output.
+ *   4. If any reviewer's reviewed_sha != HEAD: print a one-line
+ *      `[stale-push]` warning to stderr so the user sees it inline with
+ *      the Bash tool's output.
  *   5. NEVER block. Always exit 0. The warning is informational —
  *      legitimate fix-for-Codex pushes intentionally make the prior
  *      review stale.
@@ -32,23 +30,14 @@
  *   - All errors swallowed → push always proceeds.
  *   - Skips when not in a git repo, no PR exists, no review on file,
  *     or `gh` is unavailable.
- *
- * STATE: appends to PR_WATCH/queue.jsonl using the standard event shape
- * `{ts, kind, pr, repo, line}` so the surface hook picks it up.
  */
 
 import { spawnSync } from "child_process";
-import { appendFileSync, existsSync, mkdirSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
 
 // Belt-and-suspenders: any unhandled rejection or sync exception STILL
 // exits 0 so the push is never blocked by this hook (Forge MED).
 process.on("unhandledRejection", () => process.exit(0));
 process.on("uncaughtException", () => process.exit(0));
-
-const PAI = join(homedir(), ".claude", "PAI", "MEMORY", "PR_WATCH");
-const QUEUE = join(PAI, "queue.jsonl");
 
 interface HookInput {
   tool_name?: string;
@@ -109,20 +98,6 @@ function shasMatch(a: string, b: string): boolean {
 
 function emitStale(pr: number, repoSlug: string, reviewerLogin: string, reviewedSha: string, headSha: string): void {
   const line = `[stale-push] PR #${pr} ${repoSlug} ${reviewerLogin} reviewed ${reviewedSha.slice(0, 10)} but HEAD is ${headSha.slice(0, 10)} — ping \`@codex review\` after push`;
-  // Append to surface queue so my next prompt sees it.
-  try {
-    if (!existsSync(PAI)) mkdirSync(PAI, { recursive: true });
-    const row = JSON.stringify({
-      ts: new Date().toISOString(),
-      kind: "stale-push",
-      pr,
-      repo: repoSlug,
-      line,
-    });
-    appendFileSync(QUEUE, row + "\n");
-  } catch {
-    /* best-effort */
-  }
   // stderr lands in the Bash tool's user-visible output — gives me an
   // immediate signal at push time, not just on next prompt.
   process.stderr.write(`⚠️ STALE-REVIEW: ${line}\n`);

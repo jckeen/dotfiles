@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-06-10 — fix: wire dormant hooks, declare drifted plugins (audit follow-up)
+
+### What changed
+- **`PrePushStaleSHACheck.hook.ts`** — removed the dead PAI queue emission
+  (`~/.claude/PAI/MEMORY/PR_WATCH/queue.jsonl` had no consumer anywhere); the
+  stderr warning is the whole behavior now. Registered as a `PreToolUse: Bash`
+  hook in settings.json (claude-memory).
+- **`ntfy-awaiting-input.sh`** — registered as `PreToolUse: AskUserQuestion`
+  with a fresh random `NTFY_TOPIC` in the settings env block. Test push
+  delivered successfully.
+- **`claude/plugins.txt`** — declared `codex@openai-codex` and
+  `security-guidance@claude-plugins-official`, which were installed manually
+  but missing from the manifest (fresh-clone setup would have dropped them).
+- Deleted orphaned `~/.claude/checkpoint-repos.txt` (live file; its consumer
+  was removed long ago — only mention left was a claude-memory CHANGELOG entry).
+
+### Decisions made
+- Atlas timers (atlas-brief / meeting-prep / missed) left disabled per
+  operator call — installed but intentionally off for now.
+- Audit pattern to remember: "exists + symlinked" ≠ "wired" — registration in
+  settings.json is the activation step that keeps getting skipped.
+
 ## 2026-06-10 — feat: statusline gains cwd + running-agent count, finally wired into settings
 
 ### What changed
