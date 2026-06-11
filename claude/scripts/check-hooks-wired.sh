@@ -29,8 +29,6 @@ done
 # Hooks intentionally NOT wired — keep this list in sync with the decision in
 # CLAUDE-GUIDE's hooks table. Anything here is skipped (no warning).
 OPT_OUT=(
-  "ntfy-awaiting-input.sh"        # redundant with Claude Code's built-in push notifs
-  "PrePushStaleSHACheck.hook.ts"  # reviewer-SHA tracking system not in use
 )
 
 # --- Resolve repo root via the real (symlink-resolved) path -----

@@ -147,9 +147,9 @@ is present but not registered — the drift that once left every hook inert.
 | `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing |
 | `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
 | `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
-| `HandoffReminder.hook.sh` | SessionStart | ⬜ | Surfaces a recent handoff note for the current project into context at session start — **wire it**: add to the SessionStart block in settings.json (`check-hooks-wired` warns until you do) |
-| `ntfy-awaiting-input.sh` | PreToolUse | ⬜ | *Off* — redundant with Claude Code's built-in push notifications |
-| `PrePushStaleSHACheck.hook.ts` | PreToolUse | ⬜ | *Off* — reviewer-`reviewed_sha` tracking system not in use |
+| `HandoffReminder.hook.sh` | SessionStart | ✅ | Surfaces a recent handoff note for the current project into context at session start |
+| `ntfy-awaiting-input.sh` | PreToolUse (`AskUserQuestion`) | ✅ | Pushes an ntfy.sh notification when Claude asks a question (`NTFY_TOPIC` in settings env). Overlaps Claude Code's built-in push notifs — drop whichever proves noisier |
+| `PrePushStaleSHACheck.hook.ts` | PreToolUse (`Bash`) | ✅ | Warns on `git push` when a reviewer's last-reviewed SHA ≠ HEAD (stderr only; the old PAI queue emission was removed 2026-06-10) |
 
 > Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.
 
