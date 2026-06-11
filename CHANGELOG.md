@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-06-10 — feat: statusline gains cwd + running-agent count, finally wired into settings
+
+### What changed
+- **`claude/statusline.sh`** — line 2 now opens with the ~-abbreviated working
+  directory (bold blue, PS1-style) separated from the repo link by a dim `·`;
+  line 1 shows `⚙N agents` (cyan) when subagent transcripts under
+  `<transcript>/subagents/agent-*.jsonl` were written to in the last minute.
+  Parses the new `transcript_path` field from the statusline JSON.
+
+### Decisions made
+- Discovered `statusline.sh` was never actually referenced from
+  `settings.json` — the `/statusline` command generated a throwaway minimal
+  script before the gap surfaced. Wired `statusLine` (in claude-memory
+  settings.json) to `bash $HOME/.claude/statusline.sh` and deleted the
+  duplicate.
+- "Agents running" = mtime heuristic on subagent transcripts (<1 min), since
+  subagents run in-process and leave no separate process to count.
+
 ## 2026-06-10 — feat: drift guards, handoff surfacing, session ledger, retro auto mode
 
 ### What changed

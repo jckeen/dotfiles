@@ -28,7 +28,8 @@ readarray -t _fields < <(echo "$input" | jq -r '
   (.cost.total_cost_usd // 0 | tostring),
   (.cost.total_duration_ms // 0 | tostring),
   (.cost.total_lines_added // 0 | tostring),
-  (.cost.total_lines_removed // 0 | tostring)
+  (.cost.total_lines_removed // 0 | tostring),
+  (.transcript_path // "")
 ' 2>/dev/null) || { echo "?"; exit 0; }
 
 MODEL="${_fields[0]}"
@@ -47,6 +48,7 @@ COST_USD="${_fields[12]}"
 DUR_MS="${_fields[13]}"
 LINES_ADD="${_fields[14]}"
 LINES_DEL="${_fields[15]}"
+TRANSCRIPT="${_fields[16]}"
 
 # Switch to the project CWD so git operations reflect the right repo
 if [ -n "${CWD:-}" ] && [ -d "$CWD" ]; then
@@ -207,6 +209,15 @@ if [[ "${REPO_COLOR_HEX:-}" =~ ^[0-9a-fA-F]{6}$ ]]; then
   REPO_COLOR="${ESC}[38;2;${R};${G};${B}m"
 fi
 
+# --- Running agents (subagent transcripts written to in the last minute) ---
+AGENTS=0
+if [ -n "${TRANSCRIPT:-}" ]; then
+  SUBAGENT_DIR="${TRANSCRIPT%.jsonl}/subagents"
+  if [ -d "$SUBAGENT_DIR" ]; then
+    AGENTS=$(find "$SUBAGENT_DIR" -name 'agent-*.jsonl' -mmin -1 2>/dev/null | wc -l)
+  fi
+fi
+
 # =============================================
 # LINE 1: Model | Context | Tokens | Session
 # =============================================
@@ -228,6 +239,9 @@ L1="${L1}  ${DIM}↑${OUT_FMT} ↓${IN_FMT}${RESET}"
 
 # Session name
 [ -n "${SESSION:-}" ] && L1="${L1}  ${MAGENTA}${SESSION}${RESET}"
+
+# Running agents
+[ "${AGENTS:-0}" -gt 0 ] && L1="${L1}  ${CYAN}${BOLD}⚙${AGENTS} agent$([ "$AGENTS" -gt 1 ] && echo s)${RESET}"
 
 # Lines changed this session
 if [ "${LINES_ADD:-0}" != "0" ] || [ "${LINES_DEL:-0}" != "0" ]; then
@@ -255,9 +269,20 @@ fi
 # =============================================
 L2=""
 
+# Working directory (~-abbreviated, bold blue like the bash PS1)
+if [ -n "${CWD:-}" ]; then
+  DISP_CWD="$CWD"
+  case "$DISP_CWD" in
+    "$HOME") DISP_CWD="~" ;;
+    "$HOME"/*) DISP_CWD="~${DISP_CWD#"$HOME"}" ;;
+  esac
+  L2="${ESC}[01;34m${DISP_CWD}${RESET}"
+fi
+
 # Repo name (clickable link to GitHub, colored per project)
 REPO_NAME_COLOR="${REPO_COLOR:-$BLUE}"
 if [ -n "$REPO_NAME" ]; then
+  [ -n "$L2" ] && L2="${L2}  ${DIM}·${RESET}  "
   if [ -n "$GITHUB_URL" ]; then
     REPO_LINK=$(link "$GITHUB_URL" "$REPO_NAME")
     L2="${L2}${REPO_NAME_COLOR}${BOLD}${REPO_LINK}${RESET}"
