@@ -72,6 +72,10 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - A reviewer's finding is usually a category, not an instance. Before pushing the
   fix, sweep the same neighborhood — sibling routes, every path resolution, every
   shell flag — and ship the unified fix in one pass.
+- Debugging Vercel prod errors: use `vercel logs --expand --no-branch --json`
+  (CLI ≥54) for full multi-line messages — the MCP runtime-logs tool truncates
+  to one line, and the CLI silently filters to the current git branch without
+  `--no-branch`.
 
 ## Definition of done
 
