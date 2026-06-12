@@ -14,6 +14,7 @@
 #
 # Usage: check-doc-truth.sh [contract-path]     (default: .doc-contract)
 # Exit: 0 clean, 1 on any violation or malformed contract.
+# Requires bash 4+ (mapfile).
 #
 # Canonical copy: dotfiles claude/scripts/check-doc-truth.sh. Other repos get
 # a vendored copy via /drift-sweep bootstrap. DOC_TRUTH_VERSION=1
@@ -26,7 +27,7 @@ if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   echo "✖ doc-truth: not inside a git repository" >&2
   exit 1
 fi
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 1
 
 if [[ ! -f "$CONTRACT" ]]; then
   echo "✖ doc-truth: contract '$CONTRACT' not found in $REPO_ROOT" >&2
@@ -66,6 +67,11 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
     BANNED | BANNED:*)
       if [[ -z "$rest" ]]; then
         fail "$CONTRACT:$lineno — contract — BANNED line has no regex"
+        continue
+      fi
+      printf '' | grep -qE -- "$rest" 2>/dev/null
+      if [[ "$?" -ge 2 ]]; then
+        fail "$CONTRACT:$lineno — contract — BANNED regex is invalid: /$rest/"
         continue
       fi
       scope="LIVING,GENERATED,SOURCE"
