@@ -10,7 +10,7 @@ re-apply if GitHub resets anything or you spin up a fork.
 
 1. Require a pull request before merging
 2. Require **1 approving review**
-3. Require status checks to pass: `shellcheck`, `tsc`
+3. Require status checks to pass: `shellcheck`, `tsc`, `doc-truth`
 4. Require branches to be up to date before merging
 5. Require **signed commits**
 6. Block force pushes
@@ -27,7 +27,7 @@ cat > /tmp/main-protection.json <<'JSON'
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["shellcheck", "tsc"]
+    "contexts": ["shellcheck", "tsc", "doc-truth"]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {
@@ -81,7 +81,7 @@ Expected output:
 ```json
 {
   "reviews": 1,
-  "checks": ["shellcheck", "tsc"],
+  "checks": ["shellcheck", "tsc", "doc-truth"],
   "signed": true,
   "force_push": false,
   "admins": true
@@ -90,7 +90,7 @@ Expected output:
 
 ## Notes
 
-- The status-check contexts (`shellcheck`, `tsc`) must match the **job names**
+- The status-check contexts (`shellcheck`, `tsc`, `doc-truth`) must match the **job names**
   in `.github/workflows/ci.yml`. If you rename a job, update both this doc and
   the protection rule.
 - `required_signatures: true` rejects unsigned commits at the server. Configure

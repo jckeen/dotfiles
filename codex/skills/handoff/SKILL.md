@@ -13,7 +13,18 @@ brief.
 1. Inspect the current repo state with `git status --short`.
 2. Review relevant recent commits or diffs if needed.
 3. Summarize only durable context that would help the next session.
-4. Save the note to `~/.claude/handoffs/YYYY-MM-DD-<project>-handoff.md` —
+4. Session-end hygiene (before saving the note):
+   - `git worktree list` — remove worktrees this session created and no
+     longer needs (`git worktree remove <path>`).
+   - Delete local branches fully merged into the default branch
+     (`git branch --merged "$(git rev-parse --abbrev-ref origin/HEAD)"` —
+     don't assume it's named `main`), excluding the default and current
+     branches.
+   - Push or PR every branch that has work on it — never leave work
+     stranded local-only.
+   - `gh pr list` — note each open PR's review + CI state in the
+     handoff's "Open issues" section.
+5. Save the note to `~/.claude/handoffs/YYYY-MM-DD-<project>-handoff.md` —
    the same directory the Claude `/handoff` skill uses, so either tool can
    resume the other's session. Create the directory if needed. Never save it
    inside the public repo.

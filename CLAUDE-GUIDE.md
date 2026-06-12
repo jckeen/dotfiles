@@ -76,6 +76,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/branch-hygiene` | Audit and clean up stale git branches |
 | `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
 | `/session-retro` | Retro that proposes improvements to your skills (fires on "thanks", or run it) |
+| `/drift-sweep` | Bootstrap a repo's doc contract; audit doc drift vs issues/PRs/worktrees |
 
 > Most of these **auto-invoke** when their triggers match — you rarely need to
 > type them. The ones worth remembering by hand: `/max`, `/decompose`,
