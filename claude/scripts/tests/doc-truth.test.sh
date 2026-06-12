@@ -201,6 +201,17 @@ w .doc-contract 'LIVING README.md' 'BANNED foo(bar'
 w README.md '# Hi'
 check "invalid banned regex fails contract" 1 "invalid"
 
+new_repo
+w .doc-contract 'LIVING README.md'
+w README.md 'See [guide][g].' '' '[g]: docs/guide.md'
+check "dead reference-style link fails" 1 "dead-ref"
+
+new_repo
+w .doc-contract 'LIVING README.md' 'SOURCE docs/guide.md'
+w docs/guide.md '# G'
+w README.md 'See [guide][g].' '' '[g]: docs/guide.md' '[ext]: https://example.com "Site"'
+check "live reference-style link and external def pass" 0 "doc-truth: OK"
+
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"
 [[ "$failed" -eq 0 ]] || exit 1

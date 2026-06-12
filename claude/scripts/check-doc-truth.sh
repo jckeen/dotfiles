@@ -133,7 +133,23 @@ for i in "${!FILES[@]}"; do
 done
 
 # ── Rule 4: dead relative links in LIVING + GENERATED ──────────────
+# Covers inline [text](target) and reference definitions [label]: target.
 # CHANGELOG* exempt: append-only narrative; old links rot legitimately.
+check_link_target() { # file lineno raw-target dir
+  local f="$1" ln="$2" target="$3" dir="$4"
+  target="${target%% \"*}"
+  target="${target#<}"
+  target="${target%>}"
+  case "$target" in
+    http://* | https://* | mailto:* | /* | "#"*) return 0 ;;
+  esac
+  target="${target%%#*}"
+  [[ -z "$target" ]] && return 0
+  target="${target//%20/ }"
+  [[ -e "$dir/$target" ]] \
+    || fail "$f:$ln — dead-ref — link target '$target' not found"
+}
+
 for i in "${!FILES[@]}"; do
   t="${TIERS[$i]}"
   [[ "$t" == LIVING || "$t" == GENERATED ]] || continue
@@ -146,18 +162,15 @@ for i in "${!FILES[@]}"; do
     target="${m#*:}"
     target="${target#"]("}"
     target="${target%)}"
-    target="${target%% \"*}"
-    target="${target#<}"
-    target="${target%>}"
-    case "$target" in
-      http://* | https://* | mailto:* | /* | "#"*) continue ;;
-    esac
-    target="${target%%#*}"
-    [[ -z "$target" ]] && continue
-    target="${target//%20/ }"
-    [[ -e "$dir/$target" ]] \
-      || fail "$f:$ln — dead-ref — link target '$target' not found"
+    check_link_target "$f" "$ln" "$target" "$dir"
   done < <(grep -onE '\]\([^)]+\)' -- "$f" || true)
+  while IFS= read -r m; do
+    ln="${m%%:*}"
+    rest="${m#*:}"
+    target="${rest#*]:}"
+    target="${target#"${target%%[![:space:]]*}"}"
+    check_link_target "$f" "$ln" "$target" "$dir"
+  done < <(grep -onE '^[[:space:]]{0,3}\[[^]^][^]]*\]:[[:space:]]*(<[^>]*>|[^[:space:]]+)' -- "$f" || true)
 done
 
 # ── Rule 5: BANNED patterns absent from their scoped tiers ─────────
