@@ -75,6 +75,10 @@ Each violation prints `file:line — rule — message`; any violation exits 1.
 5. **Banned patterns:** no BANNED regex may match in LIVING, GENERATED, or
    SOURCE docs. HISTORICAL docs are exempt — old audits legitimately name old
    things.
+6. **No shadow trackers (default guard):** bootstrap proposes
+   `BANNED ^\s*[-*] \[ \]` — an unchecked checkbox in an active doc fails CI,
+   forcing open work into GitHub issues. Per-repo opt-out by omitting the
+   line (e.g. a repo that legitimately ships a setup checklist).
 
 LIVING should stay ≤4 files per repo. Deleting an obsolete doc is always
 preferable to declaring it — a wrong doc is worse than no doc.
@@ -88,6 +92,11 @@ preferable to declaring it — a wrong doc is worse than no doc.
   at canonical sources). Retirement protocol: when billing a doc historical,
   also `rg -il "system of record|single source of truth|canonical tracker"`
   and repoint every doc that cites it as authoritative.
+  **Shadow trackers get migrated, not tiered:** a checkbox/TODO file
+  (TODO.md, LAUNCH_CHECKLIST.md, …) is offered no tier — bootstrap proposes
+  migrating each open item to a GitHub issue (closed items to the changelog
+  if worth keeping), then deleting the file or marking it HISTORICAL.
+  GitHub issues/milestones are the only open-work tracker.
 - **Sweep mode** (contract exists): run the checker repo-wide; diff
   `gh issue list --state closed` against open checkboxes/issue mentions in
   tracker docs; compare migration high-water marks in docs vs the migrations
