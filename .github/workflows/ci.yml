@@ -64,6 +64,18 @@ jobs:
       - name: Check doc references resolve (hooks + skills)
         run: claude/scripts/check-doc-refs.sh
 
+  doc-truth:
+    name: doc-truth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run checker self-tests
+        run: claude/scripts/tests/doc-truth.test.sh
+
+      - name: Check the dotfiles doc contract
+        run: claude/scripts/check-doc-truth.sh
+
   leak-scan:
     name: leak-scan
     runs-on: ubuntu-latest
