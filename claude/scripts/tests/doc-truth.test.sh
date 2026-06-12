@@ -212,6 +212,16 @@ w docs/guide.md '# G'
 w README.md 'See [guide][g].' '' '[g]: docs/guide.md' '[ext]: https://example.com "Site"'
 check "live reference-style link and external def pass" 0 "doc-truth: OK"
 
+new_repo
+w .doc-contract 'LIVING README.md' 'BANNED:LIVNG old-name'
+w README.md 'old-name here'
+check "unknown banned scope fails contract" 1 "unknown BANNED scope"
+
+new_repo
+w .doc-contract 'LIVING README.md' 'BANNED: old-name'
+w README.md '# Hi'
+check "empty banned scope fails contract" 1 "scope"
+
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"
 [[ "$failed" -eq 0 ]] || exit 1

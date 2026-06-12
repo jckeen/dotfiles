@@ -75,7 +75,24 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
         continue
       fi
       scope="LIVING,GENERATED,SOURCE"
-      [[ "$keyword" == BANNED:* ]] && scope="${keyword#BANNED:}"
+      if [[ "$keyword" == BANNED:* ]]; then
+        scope="${keyword#BANNED:}"
+        if [[ -z "$scope" ]]; then
+          fail "$CONTRACT:$lineno — contract — BANNED scope list is empty"
+          continue
+        fi
+        scope_ok=1
+        for s in ${scope//,/ }; do
+          case "$s" in
+            LIVING | GENERATED | SOURCE | HISTORICAL) ;;
+            *)
+              fail "$CONTRACT:$lineno — contract — unknown BANNED scope '$s'"
+              scope_ok=0
+              ;;
+          esac
+        done
+        [[ "$scope_ok" -eq 1 ]] || continue
+      fi
       BANNED_RES+=("$rest")
       BANNED_SCOPES+=("$scope")
       ;;
