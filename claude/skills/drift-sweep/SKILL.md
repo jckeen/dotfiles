@@ -30,7 +30,7 @@ wins) and `BANNED[:TIER,TIER] <regex>` guard lines.
    or mark it HISTORICAL if the user wants the record kept.
 3. Ask the user for old names, parked domains, and retired hosts; add a
    `BANNED <regex>` line per answer. Propose the checkbox guard
-   `BANNED:LIVING,GENERATED ^\s*[-*] \[ \]` by default (omit if the repo
+   `BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]` by default (omit if the repo
    legitimately ships checklists in active docs).
 4. Write `.doc-contract` at the repo root.
 5. Add the banner to each HISTORICAL file missing one, as a quote line in

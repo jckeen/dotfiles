@@ -30,4 +30,4 @@ HISTORICAL    docs/adr/*.md
 
 # Guards. Open work lives in GitHub issues, not active docs.
 # (SOURCE exempt: PR-template platform checkboxes, plan-executing skills.)
-BANNED:LIVING,GENERATED ^\s*[-*] \[ \]
+BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]

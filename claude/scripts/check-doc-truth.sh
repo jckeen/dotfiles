@@ -154,9 +154,15 @@ done
 # CHANGELOG* exempt: append-only narrative; old links rot legitimately.
 check_link_target() { # file lineno raw-target dir
   local f="$1" ln="$2" target="$3" dir="$4"
-  target="${target%% \"*}"
-  target="${target#<}"
-  target="${target%>}"
+  if [[ "$target" == \<* ]]; then
+    target="${target#<}"
+    target="${target%%>*}"
+  else
+    # strip markdown title forms: "title", 'title', (title)
+    target="${target%% \"*}"
+    target="${target%% \'*}"
+    target="${target%% (*}"
+  fi
   case "$target" in
     http://* | https://* | mailto:* | /* | "#"*) return 0 ;;
   esac

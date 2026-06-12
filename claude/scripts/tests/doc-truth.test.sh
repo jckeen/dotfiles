@@ -177,12 +177,12 @@ w s.md 'frontmatter: old-name'
 check "unscoped banned includes source" 1 "banned"
 
 new_repo
-w .doc-contract 'SOURCE s.md' 'BANNED:LIVING,GENERATED ^\s*[-*] \[ \]'
+w .doc-contract 'SOURCE s.md' 'BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]'
 w s.md '- [ ] template checkbox'
 check "scoped banned skips source" 0 "doc-truth: OK"
 
 new_repo
-w .doc-contract 'LIVING t.md' 'BANNED:LIVING,GENERATED ^\s*[-*] \[ \]'
+w .doc-contract 'LIVING t.md' 'BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]'
 w t.md '- [ ] open work item'
 check "checkbox guard catches living tracker" 1 "banned"
 
@@ -221,6 +221,17 @@ new_repo
 w .doc-contract 'LIVING README.md' 'BANNED: old-name'
 w README.md '# Hi'
 check "empty banned scope fails contract" 1 "scope"
+
+new_repo
+w .doc-contract 'LIVING README.md' 'SOURCE docs/guide.md'
+w docs/guide.md '# G'
+w README.md "See [a](docs/guide.md 'Guide') and [b](docs/guide.md (Guide))."
+check "single-quoted and paren link titles stripped" 0 "doc-truth: OK"
+
+new_repo
+w .doc-contract 'LIVING t.md' 'BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]'
+w t.md '  - [ ] indented open item'
+check "posix-class checkbox guard catches indented checkbox" 1 "banned"
 
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"
