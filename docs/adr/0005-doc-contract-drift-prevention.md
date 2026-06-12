@@ -84,7 +84,7 @@ Each violation prints `file:line — rule — message`; any violation exits 1.
    SOURCE docs. HISTORICAL docs are exempt — old audits legitimately name old
    things.
 6. **No shadow trackers (default guard):** bootstrap proposes
-   `BANNED ^\s*[-*] \[ \]` — an unchecked checkbox in an active doc fails CI,
+   `BANNED:LIVING,GENERATED ^\s*[-*] \[ \]` — an unchecked checkbox in an active doc fails CI,
    forcing open work into GitHub issues. Per-repo opt-out by omitting the
    line (e.g. a repo that legitimately ships a setup checklist).
 
