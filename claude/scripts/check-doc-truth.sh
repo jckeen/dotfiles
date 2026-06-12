@@ -17,7 +17,7 @@
 # Requires bash 4+ (mapfile).
 #
 # Canonical copy: dotfiles claude/scripts/check-doc-truth.sh. Other repos get
-# a vendored copy via /drift-sweep bootstrap. DOC_TRUTH_VERSION=1
+# a vendored copy via /drift-sweep bootstrap. DOC_TRUTH_VERSION=2
 
 set -uo pipefail
 
@@ -152,6 +152,16 @@ done
 # ── Rule 4: dead relative links in LIVING + GENERATED ──────────────
 # Covers inline [text](target) and reference definitions [label]: target.
 # CHANGELOG* exempt: append-only narrative; old links rot legitimately.
+# Fenced code blocks and inline code spans are stripped first (regexes like
+# `[a-z](?:...)` would otherwise parse as links); blanked lines keep numbering.
+# BANNED (Rule 5) intentionally still sees code spans and fences.
+strip_code() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ { infence = !infence; print ""; next }
+    infence                  { print ""; next }
+                             { gsub(/`[^`]*`/, ""); print }
+  '
+}
 check_link_target() { # file lineno raw-target dir
   local f="$1" ln="$2" target="$3" dir="$4"
   if [[ "$target" == \<* ]]; then
@@ -180,20 +190,21 @@ for i in "${!FILES[@]}"; do
   base="$(basename "$f")"
   [[ "$base" == CHANGELOG* ]] && continue
   dir="$(dirname "$f")"
+  stripped="$(strip_code < "$f")"
   while IFS= read -r m; do
     ln="${m%%:*}"
     target="${m#*:}"
     target="${target#"]("}"
     target="${target%)}"
     check_link_target "$f" "$ln" "$target" "$dir"
-  done < <(grep -onE '\]\([^)]+\)' -- "$f" || true)
+  done < <(grep -onE '\]\([^)]+\)' <<<"$stripped" || true)
   while IFS= read -r m; do
     ln="${m%%:*}"
     rest="${m#*:}"
     target="${rest#*]:}"
     target="${target#"${target%%[![:space:]]*}"}"
     check_link_target "$f" "$ln" "$target" "$dir"
-  done < <(grep -onE '^[[:space:]]{0,3}\[[^]^][^]]*\]:[[:space:]]*(<[^>]*>|[^[:space:]]+)' -- "$f" || true)
+  done < <(grep -onE '^[[:space:]]{0,3}\[[^]^][^]]*\]:[[:space:]]*(<[^>]*>|[^[:space:]]+)' <<<"$stripped" || true)
 done
 
 # ── Rule 5: BANNED patterns absent from their scoped tiers ─────────

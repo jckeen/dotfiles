@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-12 — fix: doc-truth v2 — code spans/fences exempt from dead-ref
+
+### What changed
+- **`check-doc-truth.sh` DOC_TRUTH_VERSION=2** — the dead-link rule now
+  strips fenced code blocks and inline code spans before extracting links
+  (line numbers preserved), so regexes like `[a-z0-9](?:…)` in docs no
+  longer false-positive as dead refs. BANNED (Rule 5) intentionally still
+  sees code spans — rename residue usually lives in backticks. Found during
+  the agent-pack /drift-sweep bootstrap; +4 regression tests (37 total).
+
 ## 2026-06-12 — feat: doc-contract drift prevention (ADR 0005)
 
 ### What changed
