@@ -233,6 +233,28 @@ w .doc-contract 'LIVING t.md' 'BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]'
 w t.md '  - [ ] indented open item'
 check "posix-class checkbox guard catches indented checkbox" 1 "banned"
 
+# ── Cycle 6 (v2): code spans and fences exempt from dead-ref only ──
+
+new_repo
+w .doc-contract 'LIVING README.md'
+w README.md 'slug must match `/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`.'
+check "regex in inline code span is not a link" 0 "doc-truth: OK"
+
+new_repo
+w .doc-contract 'LIVING README.md'
+w README.md '```' '[x](missing.md)' '```'
+check "dead link inside fenced block ignored" 0 "doc-truth: OK"
+
+new_repo
+w .doc-contract 'LIVING README.md'
+w README.md 'has `code span` here' 'and a real [dead](missing.md) link'
+check "real dead link still caught alongside code spans" 1 "README.md:2 — dead-ref"
+
+new_repo
+w .doc-contract 'LIVING README.md' 'BANNED workgraph install'
+w README.md 'run `workgraph install` to start'
+check "banned still sees inline code spans" 1 "banned"
+
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"
 [[ "$failed" -eq 0 ]] || exit 1
