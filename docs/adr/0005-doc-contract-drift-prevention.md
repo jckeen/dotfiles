@@ -57,6 +57,10 @@ BANNED        \b[0-9]{2,}\+? (tests|tools)\b
   surface (skill definitions, agent prompts, templates): no banner, no
   dead-ref check, but BANNED patterns still apply — rename residue hides in
   skill frontmatter.
+- `BANNED` takes an optional tier scope: `BANNED:LIVING,GENERATED <regex>`.
+  Unscoped BANNED lines apply to LIVING+GENERATED+SOURCE. The default
+  checkbox guard is proposed scoped to `LIVING,GENERATED` — PR templates and
+  plan-executing skills (SOURCE) legitimately contain checkboxes.
 
 ### Checker rules (`check-doc-truth.sh`)
 
@@ -70,8 +74,12 @@ Each violation prints `file:line — rule — message`; any violation exits 1.
    `Historical` and `point-in-time` (case-insensitive) within its first 5
    lines. Canonical banner:
    `> **Historical** — point-in-time record (YYYY-MM-DD). Do not act on this.`
+   An ADR-style header (`**Status:**` + `**Date:**` in the first 5 lines)
+   also satisfies the rule — ADRs carry their own temporal marker.
 4. **Dead refs:** every relative Markdown link target in LIVING + GENERATED
-   docs must exist on disk (anchors and external URLs ignored).
+   docs must exist on disk (anchors and external URLs ignored). Files named
+   `CHANGELOG*` are exempt: changelogs are append-only narrative whose old
+   links rot legitimately; rewriting history is worse than the rot.
 5. **Banned patterns:** no BANNED regex may match in LIVING, GENERATED, or
    SOURCE docs. HISTORICAL docs are exempt — old audits legitimately name old
    things.
@@ -97,6 +105,9 @@ preferable to declaring it — a wrong doc is worse than no doc.
   migrating each open item to a GitHub issue (closed items to the changelog
   if worth keeping), then deleting the file or marking it HISTORICAL.
   GitHub issues/milestones are the only open-work tracker.
+  **Distribution:** bootstrap vendors a copy of the checker into the target
+  repo (its scripts dir) and wires a CI step — CI stays self-contained. The
+  canonical copy lives in dotfiles `claude/scripts/check-doc-truth.sh`.
 - **Sweep mode** (contract exists): run the checker repo-wide; diff
   `gh issue list --state closed` against open checkboxes/issue mentions in
   tracker docs; compare migration high-water marks in docs vs the migrations
@@ -118,6 +129,8 @@ not done now.
 - The handoff skill adds session-end hygiene: prune own worktrees and
   0-unique-commit branches, push or PR every branch, note review state of any
   open PR in the handoff.
+- The PR template names the LIVING doc surfaces so the docs sweep is a
+  diff-able artifact, not a judgment call.
 
 ## Consequences
 
