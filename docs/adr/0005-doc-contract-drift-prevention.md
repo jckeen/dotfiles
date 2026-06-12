@@ -88,8 +88,9 @@ Each violation prints `file:line — rule — message`; any violation exits 1.
    forcing open work into GitHub issues. Per-repo opt-out by omitting the
    line (e.g. a repo that legitimately ships a setup checklist).
 
-LIVING should stay ≤4 files per repo. Deleting an obsolete doc is always
-preferable to declaring it — a wrong doc is worse than no doc.
+Keep LIVING small — every entry is a freshness promise the merge loop must
+keep. Deleting an obsolete doc is always preferable to declaring it — a
+wrong doc is worse than no doc.
 
 ### `/drift-sweep` skill
 
