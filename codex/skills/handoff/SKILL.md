@@ -17,7 +17,9 @@ brief.
    - `git worktree list` — remove worktrees this session created and no
      longer needs (`git worktree remove <path>`).
    - Delete local branches fully merged into the default branch
-     (`git branch --merged main`), excluding main and the current branch.
+     (`git branch --merged "$(git rev-parse --abbrev-ref origin/HEAD)"` —
+     don't assume it's named `main`), excluding the default and current
+     branches.
    - Push or PR every branch that has work on it — never leave work
      stranded local-only.
    - `gh pr list` — note each open PR's review + CI state in the
