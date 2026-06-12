@@ -159,6 +159,7 @@ for b in "${!BANNED_RES[@]}"; do
   re="${BANNED_RES[$b]}"
   scope=",${BANNED_SCOPES[$b]},"
   for i in "${!FILES[@]}"; do
+    [[ "${TIERS[$i]}" == HISTORICAL ]] && continue # always exempt per ADR
     [[ "$scope" == *",${TIERS[$i]},"* ]] || continue
     f="${FILES[$i]}"
     while IFS=: read -r ln _; do

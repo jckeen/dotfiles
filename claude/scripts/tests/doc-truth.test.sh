@@ -191,6 +191,11 @@ w .doc-contract 'LIVING README.md' 'BANNED'
 w README.md '# Hi'
 check "empty banned regex fails contract" 1 "no regex"
 
+new_repo
+w .doc-contract 'HISTORICAL OLD.md' 'BANNED:HISTORICAL,LIVING badword'
+w OLD.md '> **Historical** — point-in-time record (2026-01-01).' 'badword here'
+check "historical exempt even when scope names it" 0 "doc-truth: OK"
+
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"
 [[ "$failed" -eq 0 ]] || exit 1
