@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-06-12 — feat: doc-contract drift prevention (ADR 0005)
+
+### What changed
+- **`.doc-contract` + `check-doc-truth.sh`** — every tracked markdown file
+  is declared LIVING/GENERATED/SOURCE/HISTORICAL; CI (`doc-truth` job) fails
+  on undeclared docs, missing historical banners, dead relative links, and
+  BANNED patterns (rename residue, hardcoded volatile facts, unchecked
+  checkboxes in active docs). Checker is dependency-free bash, vendored into
+  other repos by the new skill.
+- **`/drift-sweep` skill** — bootstrap a repo's contract (migrating shadow
+  trackers like TODO.md into GitHub issues) or sweep out-of-band drift
+  (closed issues vs doc mentions, migration high-water marks, stale PRs,
+  ghost worktrees).
+- Global CLAUDE.md/AGENTS.md gain the doc-contract + retirement-protocol
+  rules (parity-guarded); handoff skill now prunes worktrees/branches and
+  records PR review state; PR template names the LIVING doc surfaces.
+- ROADMAP.md no longer duplicates issue state with checkboxes — issues are
+  the live tracker, the file points at them.
+
 ## 2026-06-11 — feat: two-way plugin drift check; workflow-efficiency fixes
 
 ### What changed
