@@ -19,7 +19,7 @@ After setup, you don't have to remember much. Open a terminal and:
 
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
-- **14 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills). Type the verb, get the workflow.
+- **15 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/max`, `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit). Type the verb, get the workflow.
 - **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
@@ -318,7 +318,7 @@ This public dotfiles repo pairs with up to two **separate private repos** — `c
 
 1. Your **Claude Code settings** (`settings.json`) — private permissions, MCP servers, and enabled plugins.
 2. Your **persistent Claude memory** (`dev/memory/`) — auto-memory files (`MEMORY.md` + `feedback_*.md`) Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
-3. **Archived personal context** (`pai-user/`) — identity and steering notes kept for reference. These are no longer live-linked into Claude; they're retained as an archive.
+3. **Archived personal context** (`identity/`) — identity and steering notes kept for reference. These are no longer live-linked into Claude; they're retained as an archive.
 4. **Project notes** (`stringer/`, `trnn/`) — durable per-project context.
 5. Your **personal identity & preferences** (`CLAUDE.md`) — imported by the public `claude/CLAUDE.md` via `@~/dev/claude-memory/CLAUDE.md`, so identity loads globally while staying out of the public repo.
 6. The `bootstrap.sh` script that symlinks `settings.json` into `~/.claude/`.
@@ -332,7 +332,7 @@ This public dotfiles repo pairs with up to two **separate private repos** — `c
 ├── CLAUDE.md                      # personal identity, imported by public claude/CLAUDE.md
 ├── dev/
 │   └── memory/                    # Claude auto-memory (MEMORY.md + feedback_*.md)
-├── pai-user/                      # ARCHIVED personal identity/steering notes (not live-linked)
+├── identity/                      # ARCHIVED personal identity/steering notes (not live-linked)
 ├── stringer/                      # project notes
 └── trnn/                          # project notes
 ```
@@ -513,7 +513,8 @@ dotfiles/
 │   │   ├── decompose/          # /decompose — deep task decomposition
 │   │   ├── max/                # /max — maximum effort parallel execution
 │   │   ├── jj/                 # /jj — jujutsu (jj) version control driver
-│   │   └── session-retro/      # /session-retro — propose improvements to your skills
+│   │   ├── session-retro/      # /session-retro — propose improvements to your skills
+│   │   └── drift-sweep/        # /drift-sweep — doc-contract bootstrap + drift audit
 │   ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
 │   ├── scripts/                # Headless automation + validation scripts
 │   │   ├── common.sh           # Shared safety tiers + runner

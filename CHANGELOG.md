@@ -1,5 +1,89 @@
 # Changelog
 
+## 2026-06-12 — fix: doc-truth v2 — code spans/fences exempt from dead-ref
+
+### What changed
+- **`check-doc-truth.sh` DOC_TRUTH_VERSION=2** — the dead-link rule now
+  strips fenced code blocks and inline code spans before extracting links
+  (line numbers preserved), so regexes like `[a-z0-9](?:…)` in docs no
+  longer false-positive as dead refs. BANNED (Rule 5) intentionally still
+  sees code spans — rename residue usually lives in backticks. Found during
+  the agent-pack /drift-sweep bootstrap; +4 regression tests (37 total).
+
+## 2026-06-12 — feat: doc-contract drift prevention (ADR 0005)
+
+### What changed
+- **`.doc-contract` + `check-doc-truth.sh`** — every tracked markdown file
+  is declared LIVING/GENERATED/SOURCE/HISTORICAL; CI (`doc-truth` job) fails
+  on undeclared docs, missing historical banners, dead relative links, and
+  BANNED patterns (rename residue, hardcoded volatile facts, unchecked
+  checkboxes in active docs). Checker is dependency-free bash, vendored into
+  other repos by the new skill.
+- **`/drift-sweep` skill** — bootstrap a repo's contract (migrating shadow
+  trackers like TODO.md into GitHub issues) or sweep out-of-band drift
+  (closed issues vs doc mentions, migration high-water marks, stale PRs,
+  ghost worktrees).
+- Global CLAUDE.md/AGENTS.md gain the doc-contract + retirement-protocol
+  rules (parity-guarded); handoff skill now prunes worktrees/branches and
+  records PR review state; PR template names the LIVING doc surfaces.
+- ROADMAP.md no longer duplicates issue state with checkboxes — issues are
+  the live tracker, the file points at them.
+
+## 2026-06-11 — feat: two-way plugin drift check; workflow-efficiency fixes
+
+### What changed
+- **`PluginDriftCheck.hook.ts`** now warns in both directions: manifest entries
+  not installed (as before) AND installed plugins missing from `plugins.txt` —
+  the reverse drift that was only caught by manual audit on 2026-06-10.
+- Removed duplicate standalone `@playwright/mcp` registrations from
+  `~/.claude.json` (global + `~/dev` project) — the playwright plugin already
+  provides the same ~25 tools, so every session was loading them twice.
+  Backup at `~/.claude.json.bak-playwright-dedup`.
+- Atlas skill descriptions (`atlas-brief`, `atlas-meeting-prep`, in the atlas
+  repo) no longer claim systemd-timer automation that is disabled.
+- Standing orders (claude-memory): default branches with required status
+  checks get branch + PR + auto-merge, not direct pushes that bypass the gates.
+
+## 2026-06-10 — fix: wire dormant hooks, declare drifted plugins (audit follow-up)
+
+### What changed
+- **`PrePushStaleSHACheck.hook.ts`** — removed the dead PAI queue emission
+  (`~/.claude/PAI/MEMORY/PR_WATCH/queue.jsonl` had no consumer anywhere); the
+  stderr warning is the whole behavior now. Registered as a `PreToolUse: Bash`
+  hook in settings.json (claude-memory).
+- **`ntfy-awaiting-input.sh`** — registered as `PreToolUse: AskUserQuestion`
+  with a fresh random `NTFY_TOPIC` in the settings env block. Test push
+  delivered successfully.
+- **`claude/plugins.txt`** — declared `codex@openai-codex` and
+  `security-guidance@claude-plugins-official`, which were installed manually
+  but missing from the manifest (fresh-clone setup would have dropped them).
+- Deleted orphaned `~/.claude/checkpoint-repos.txt` (live file; its consumer
+  was removed long ago — only mention left was a claude-memory CHANGELOG entry).
+
+### Decisions made
+- Atlas timers (atlas-brief / meeting-prep / missed) left disabled per
+  operator call — installed but intentionally off for now.
+- Audit pattern to remember: "exists + symlinked" ≠ "wired" — registration in
+  settings.json is the activation step that keeps getting skipped.
+
+## 2026-06-10 — feat: statusline gains cwd + running-agent count, finally wired into settings
+
+### What changed
+- **`claude/statusline.sh`** — line 2 now opens with the ~-abbreviated working
+  directory (bold blue, PS1-style) separated from the repo link by a dim `·`;
+  line 1 shows `⚙N agents` (cyan) when subagent transcripts under
+  `<transcript>/subagents/agent-*.jsonl` were written to in the last minute.
+  Parses the new `transcript_path` field from the statusline JSON.
+
+### Decisions made
+- Discovered `statusline.sh` was never actually referenced from
+  `settings.json` — the `/statusline` command generated a throwaway minimal
+  script before the gap surfaced. Wired `statusLine` (in claude-memory
+  settings.json) to `bash $HOME/.claude/statusline.sh` and deleted the
+  duplicate.
+- "Agents running" = mtime heuristic on subagent transcripts (<1 min), since
+  subagents run in-process and leave no separate process to count.
+
 ## 2026-06-10 — feat: drift guards, handoff surfacing, session ledger, retro auto mode
 
 ### What changed

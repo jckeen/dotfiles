@@ -20,6 +20,15 @@ Examples:
 - Manual smoke test on a fresh user
 -->
 
+## Docs
+
+<!--
+Per .doc-contract: if this PR changes behavior, update the LIVING surfaces
+in the same PR — README.md, CHANGELOG.md, ROADMAP.md, CLAUDE-GUIDE.md.
+New .md files need a .doc-contract entry (CI enforces this).
+If nothing applies, write "None".
+-->
+
 ## Platforms affected
 
 - [ ] macOS (Apple Silicon)

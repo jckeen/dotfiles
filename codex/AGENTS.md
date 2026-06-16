@@ -16,6 +16,19 @@ machine paths stay out of here — they live in `~/dev/codex-memory`.
 - Keep edits scoped to the requested behavior.
 - Verify meaningful changes with the smallest useful test or static check.
 - Report any test you could not run.
+- Doc contract: a repo's Markdown surfaces are declared in a root
+  `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
+  and asserted in CI by `check-doc-truth.sh`; bootstrap or audit one with
+  `/drift-sweep` (ADR 0005 in dotfiles). Keep LIVING small — a wrong doc is
+  worse than no doc; delete or mark HISTORICAL rather than let it freeze.
+- Never hardcode a count, version, SHA, or hostname in prose that CI can't
+  assert — point at the canonical source instead. GitHub issues are the only
+  open-work tracker: docs may link issues, never duplicate their state
+  (no TODO.md / checklist files).
+- Retiring a process or doc: same day, add the historical banner
+  (`> **Historical** — point-in-time record (date). Do not act on this.`),
+  then search for docs that bill the dead thing as authoritative and repoint
+  them.
 
 ## Public Safety
 

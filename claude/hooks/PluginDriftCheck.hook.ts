@@ -51,16 +51,25 @@ function main(): void {
 
   const installed = readInstalled();
   const missing = desired.filter((p) => !installed.has(p));
-  if (missing.length === 0) return;
+  const undeclared = [...installed].filter((p) => !desired.includes(p));
+  if (missing.length === 0 && undeclared.length === 0) return;
 
-  const list = missing.map((p) => `  • ${p}`).join('\n');
-  process.stdout.write(
-    `<system-reminder>\n` +
+  let warning = '';
+  if (missing.length > 0) {
+    const list = missing.map((p) => `  • ${p}`).join('\n');
+    warning +=
       `⚠️  Plugin drift: ${missing.length} of ${desired.length} plugins from ` +
       `${MANIFEST} are not installed:\n${list}\n\n` +
-      `Run \`~/.claude/scripts/sync-plugins.sh\` to install them, then restart Claude Code.\n` +
-      `</system-reminder>\n`,
-  );
+      `Run \`~/.claude/scripts/sync-plugins.sh\` to install them, then restart Claude Code.\n`;
+  }
+  if (undeclared.length > 0) {
+    const list = undeclared.map((p) => `  • ${p}`).join('\n');
+    warning +=
+      `⚠️  Plugin drift (reverse): ${undeclared.length} installed plugin(s) missing from ` +
+      `the manifest — a fresh-clone setup would drop them:\n${list}\n\n` +
+      `Add them to ${MANIFEST} (or uninstall them) to resolve.\n`;
+  }
+  process.stdout.write(`<system-reminder>\n${warning}</system-reminder>\n`);
 }
 
 main();

@@ -26,6 +26,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
 | `review-and-push.sh` | AI-reviews overnight changes, pushes if safe | Read-only review + push | Only pushes after validation |
 | `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent | Install (calls `claude plugin install`) | No file edits — updates plugin state |
+| `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`. Tests: `tests/doc-truth.test.sh` | Read-only | No |
 
 ## The Morning Workflow
 

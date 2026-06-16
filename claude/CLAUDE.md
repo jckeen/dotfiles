@@ -72,6 +72,16 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - A reviewer's finding is usually a category, not an instance. Before pushing the
   fix, sweep the same neighborhood — sibling routes, every path resolution, every
   shell flag — and ship the unified fix in one pass.
+- When an audit, review, or verification pass surfaces a real, actionable finding,
+  file a GitHub issue for it without asking — this is pre-authorized. One issue per
+  distinct finding, with repro/evidence and a suggested fix. Don't file for trivia
+  or anything already tracked. This is judgment-based, so it lives here as a
+  standing order, not as a hook (hooks fire on lifecycle events and can't judge
+  whether a finding is worth filing).
+- Debugging Vercel prod errors: use `vercel logs --expand --no-branch --json`
+  (CLI ≥54) for full multi-line messages — the MCP runtime-logs tool truncates
+  to one line, and the CLI silently filters to the current git branch without
+  `--no-branch`.
 
 ## Definition of done
 
@@ -83,6 +93,19 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - Treat `CHANGELOG.md` as living: update it every 1–2 meaningful commits,
   appending rather than rewriting — not batched to end-of-session, which gets
   lost when a session ends early.
+- Doc contract: a repo's Markdown surfaces are declared in a root
+  `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
+  and asserted in CI by `check-doc-truth.sh`; bootstrap or audit one with
+  `/drift-sweep` (ADR 0005 in dotfiles). Keep LIVING small — a wrong doc is
+  worse than no doc; delete or mark HISTORICAL rather than let it freeze.
+- Never hardcode a count, version, SHA, or hostname in prose that CI can't
+  assert — point at the canonical source instead. GitHub issues are the only
+  open-work tracker: docs may link issues, never duplicate their state
+  (no TODO.md / checklist files).
+- Retiring a process or doc: same day, add the historical banner
+  (`> **Historical** — point-in-time record (date). Do not act on this.`),
+  then `rg -il "system of record|single source of truth|canonical tracker"`
+  and repoint every doc that bills the dead thing as authoritative.
 
 ## Parallel agents
 

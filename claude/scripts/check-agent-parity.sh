@@ -50,6 +50,7 @@ RULES=(
   "report-unrun-tests|report .*(test|failure)|could not run|stop and fix"
   "no-commit-secrets|never (commit|stage) .*(auth|secret|token|credential|\.env)|skip secrets"
   "private-memory-split|claude-memory|codex-memory|private .*(repo|memory)"
+  "doc-contract|doc.?contract|drift.?sweep|check-doc-truth"
 )
 
 fail=0
