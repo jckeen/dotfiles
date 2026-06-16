@@ -17,8 +17,6 @@ superpowers@claude-plugins-official
 playwright@claude-plugins-official
 github@claude-plugins-official
 context7@claude-plugins-official
-sentry@claude-plugins-official
-posthog@claude-plugins-official
 pr-review-toolkit@claude-plugins-official
 greptile@claude-plugins-official
 codex@openai-codex
