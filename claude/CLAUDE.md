@@ -72,6 +72,12 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 - A reviewer's finding is usually a category, not an instance. Before pushing the
   fix, sweep the same neighborhood — sibling routes, every path resolution, every
   shell flag — and ship the unified fix in one pass.
+- When an audit, review, or verification pass surfaces a real, actionable finding,
+  file a GitHub issue for it without asking — this is pre-authorized. One issue per
+  distinct finding, with repro/evidence and a suggested fix. Don't file for trivia
+  or anything already tracked. This is judgment-based, so it lives here as a
+  standing order, not as a hook (hooks fire on lifecycle events and can't judge
+  whether a finding is worth filing).
 - Debugging Vercel prod errors: use `vercel logs --expand --no-branch --json`
   (CLI ≥54) for full multi-line messages — the MCP runtime-logs tool truncates
   to one line, and the CLI silently filters to the current git branch without
