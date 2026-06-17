@@ -529,6 +529,7 @@ dotfiles/
 │   │   ├── codex-review-gate.sh    # Local Codex review gate used by commit-push-pr
 │   │   ├── check-hooks-wired.sh    # Warn when a hook file isn't registered in settings.json
 │   │   ├── check-doc-refs.sh       # CI: validate doc path references and links
+│   │   ├── check-doc-truth.sh      # CI: doc-contract checker (ADR 0005) — tiers, banners, dead links
 │   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md and codex/AGENTS.md rules in sync
 │   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
 │   │   ├── check-no-personal-data.sh # CI: block machine-specific home paths
