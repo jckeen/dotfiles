@@ -30,6 +30,28 @@ machine paths stay out of here — they live in `~/dev/codex-memory`.
   then search for docs that bill the dead thing as authoritative and repoint
   them.
 
+## Multi-Agent Teamwork
+
+When Claude Code (`cc`) and Antigravity share this repo, we're one team
+coordinating through artifacts — instructions + skills (loaded identically via
+the AgentPack), GitHub issues, `handoff` notes, and git — not a shared chat.
+Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
+
+- **Lanes (defaults, not walls):** Claude Code is the conductor — plan/decompose,
+  hold the through-line, drive the main implementation, own handoffs + issues +
+  changelog. My lane as Codex is independent verifier + rescue: refute the
+  conductor's fix on a fresh checkout, reimplement to cross-check, deep
+  root-cause when it's stuck. Antigravity owns runtime/browser verification and
+  front-end surfaces. The value is independent lineages *disagreeing* — refute,
+  don't rubber-stamp.
+- **One owner of the working tree at a time** — never edit the same files as
+  another agent concurrently. Use a separate worktree, or sequence the edits.
+- **Verification is adversarial, not an echo chamber** — three agents agreeing
+  can be one blind spot voted thrice. When handed a "verify X" task, try to
+  break it; report the disagreement rather than confirming by default.
+- **Handoff payload:** a handoff to me should carry the *claim to disprove* and
+  the *exact repro command*. If it doesn't, ask for them before "reviewing."
+
 ## Public Safety
 
 - Never commit Codex auth, session logs, sqlite state, shell snapshots, caches,
