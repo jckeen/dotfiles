@@ -485,6 +485,8 @@ dotfiles/
 ├── claude/
 │   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
 │   ├── AgentPack.md            # 17-agent review orchestra
+│   ├── AGENTPACK.yaml          # AgentPack manifest (atoms, profiles, compatibility) for Claude Code, Codex, Cursor, ChatGPT
+│   ├── MULTI-AGENT.md          # Multi-agent lane contract — roles and coordination rules for Claude Code, Codex, and Antigravity
 │   ├── plugins.txt             # Plugin manifest (cross-machine source of truth)
 │   ├── nolink.txt              # Manifest of claude/ files deliberately NOT symlinked
 │   ├── statusline.sh           # Context bar, git branch, cost display
@@ -498,7 +500,8 @@ dotfiles/
 │   │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
 │   │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
 │   │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
-│   │   └── HandoffReminder.hook.sh         # SessionStart: surface a recent handoff note
+│   │   ├── HandoffReminder.hook.sh         # SessionStart: surface a recent handoff note
+│   │   └── worktree-guard.sh               # PreToolUse: block branch create/switch in primary checkout when worktrees are active
 │   ├── skills/
 │   │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
 │   │   ├── kickoff/            # /kickoff — new project bootstrap

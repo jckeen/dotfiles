@@ -151,6 +151,7 @@ is present but not registered — the drift that once left every hook inert.
 | `HandoffReminder.hook.sh` | SessionStart | ✅ | Surfaces a recent handoff note for the current project into context at session start |
 | `ntfy-awaiting-input.sh` | PreToolUse (`AskUserQuestion`) | ✅ | Pushes an ntfy.sh notification when Claude asks a question (`NTFY_TOPIC` in settings env). Overlaps Claude Code's built-in push notifs — drop whichever proves noisier |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse (`Bash`) | ✅ | Warns on `git push` when a reviewer's last-reviewed SHA ≠ HEAD (stderr only; the old PAI queue emission was removed 2026-06-10) |
+| `worktree-guard.sh` | PreToolUse (`Bash`) | ✅ | Blocks `git checkout -b`/`git switch` in the **primary** checkout when >1 worktree exists — prevents a branch switch from clobbering another active session's working tree. Always allows `git worktree` commands and ops inside linked worktrees. Fail-open (exits 0 on any error) |
 
 > Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.
 
