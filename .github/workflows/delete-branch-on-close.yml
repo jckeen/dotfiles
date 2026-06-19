@@ -1,0 +1,41 @@
+name: delete-branch-on-close
+
+# Companion to the repo's `delete_branch_on_merge` setting, which only fires on
+# MERGE. PRs that are CLOSED without merging (e.g. discarded nightly drift PRs
+# from the scheduled Claude Cloud routine) orphan their head branch on origin —
+# 11 had accumulated before this existed. This deletes the head branch the
+# instant such a PR closes unmerged. The branch stays recoverable via the closed
+# PR's "Restore branch" button.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write # delete a ref via the API
+
+jobs:
+  delete-unmerged-head:
+    name: delete head branch when PR closed unmerged
+    runs-on: ubuntu-latest
+    # Only same-repo, unmerged closes. Merged PRs are left to
+    # delete_branch_on_merge; fork branches are never ours to touch.
+    if: >-
+      github.event.pull_request.merged == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Delete the head branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD_REF" = "$DEFAULT_BRANCH" ]; then
+            echo "Refusing to delete the default branch ($HEAD_REF)."
+            exit 0
+          fi
+          echo "Deleting closed-unmerged head branch: $HEAD_REF"
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$HEAD_REF" \
+            && echo "Deleted $HEAD_REF" \
+            || echo "Branch already gone or protected; nothing to do."
