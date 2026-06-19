@@ -147,6 +147,17 @@ cc() {
   # orphan stay report-only.
   "$(_dev_dir)/dotfiles/check-claude.sh" --heal
 
+  # Heal plugin drift before the session loads its plugins — the pre-exec
+  # analogue to --heal above. Because the install runs before `claude` starts,
+  # the plugins take effect in the session we're about to launch (no restart).
+  # Skip on resume: a resumed session can't reload plugins and we don't want a
+  # network round-trip on every -r. sync-plugins.sh has a fast path that exits
+  # silently when nothing is missing, so the common (no-drift) case is free.
+  if [ "$resuming" -eq 0 ] && command -v claude >/dev/null 2>&1; then
+    "$(_dev_dir)/dotfiles/claude/scripts/sync-plugins.sh" \
+      || echo "⚠ plugin sync had failures — run claude/scripts/sync-plugins.sh" >&2
+  fi
+
   # Preload architecture diagrams if the project has them.
   # Treated as untrusted content: requires .ai/diagrams/.trusted opt-in marker,
   # capped at 16 KB, and XML-fenced so a CLAUDE.md rule can recognize it.

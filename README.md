@@ -261,7 +261,7 @@ templates, and the golden rules. What follows is the short version.
 
 | Command | What it does |
 |---------|-------------|
-| `cc [project]` | Sync repos + memory, health check, launch Claude |
+| `cc [project]` | Sync repos + memory, health check, heal plugin drift, launch Claude |
 | `cx [project]` | Same ergonomics for Codex |
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |

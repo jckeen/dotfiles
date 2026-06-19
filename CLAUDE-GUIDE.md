@@ -103,7 +103,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 | Command | What it does |
 |---------|-------------|
-| `cc [project]` | Pull repos, sync memory, health check, launch Claude (optionally in `~/dev/<project>`) |
+| `cc [project]` | Pull repos, sync memory, health check, heal plugin drift, launch Claude (optionally in `~/dev/<project>`) |
 | `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead) |
 | `pull-all` | Fast-forward pull on every repo in dev dir |
 | `sync-memory` | Commit and push pending memory changes |
@@ -171,7 +171,7 @@ Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts
 
 All scripts use safety tiers from `common.sh` — each gets the minimum permissions needed.
 
-**Also in `claude/scripts/`:** `sync-plugins.sh` — idempotently installs any plugins listed in `claude/plugins.txt` that are missing locally. Run it manually, or follow the warning from `PluginDriftCheck.hook.ts` at session start. The manifest lives in the dotfiles repo and is the cross-machine source of truth.
+**Also in `claude/scripts/`:** `sync-plugins.sh` — idempotently installs any plugins listed in `claude/plugins.txt` that are missing locally. Auto-run by `cc` on every fresh launch (pre-exec, so installs apply to the session being started); a fast path exits silently when there's no drift. Also runnable manually, or follow the warning from `PluginDriftCheck.hook.ts` at session start. The manifest lives in the dotfiles repo and is the cross-machine source of truth.
 
 ---
 
