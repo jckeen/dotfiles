@@ -17,6 +17,7 @@ LIVING        .github/SECURITY.md
 # Source — markdown-as-config: rules, skills, agents, templates
 SOURCE        claude/CLAUDE.md
 SOURCE        claude/AgentPack.md
+SOURCE        claude/MULTI-AGENT.md
 SOURCE        claude/agents/*.md
 SOURCE        claude/skills/*/SKILL.md
 SOURCE        codex/AGENTS.md

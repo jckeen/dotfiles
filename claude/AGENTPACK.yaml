@@ -1,0 +1,369 @@
+{
+  "agentpack": "1.0",
+  "metadata": {
+    "id": "keen.workstation",
+    "name": "Jonathan Keen — Claude Code config",
+    "slug": "workstation",
+    "description": "In-place AgentPack over the dotfiles Claude Code config — references files maintained in this repo (zero duplication).",
+    "version": "0.1.0",
+    "license": "MIT",
+    "publisher": "keen"
+  },
+  "compatibility": {
+    "targets": {
+      "claude-code": {
+        "status": "supported"
+      },
+      "codex": {
+        "status": "supported"
+      },
+      "cursor": {
+        "status": "supported"
+      },
+      "chatgpt": {
+        "status": "supported"
+      },
+      "generic": {
+        "status": "supported"
+      }
+    }
+  },
+  "permissions": {},
+  "security": {
+    "risk_level": "medium"
+  },
+  "profiles": {
+    "all": {
+      "description": "All atoms.",
+      "include": [
+        "*"
+      ]
+    }
+  },
+  "atoms": [
+    {
+      "id": "instruction:global-guidance",
+      "type": "instruction",
+      "name": "Global Claude Code Instructions",
+      "description": "Portable global Claude Code guidance — working style, tech stack, git, verification, definition of done.",
+      "path": "CLAUDE.md",
+      "risk_level": "low",
+      "permissions": []
+    },
+    {
+      "id": "instruction:multi-agent-lane-contract",
+      "type": "instruction",
+      "name": "Multi-agent lane contract",
+      "description": "How Claude Code, Codex, and Antigravity work as one team on the same repo — lanes (conductor / independent verifier / runtime verification), one-owner-per-worktree, adversarial verification, and the handoff payload. Operative rules are mirrored into CLAUDE.md and codex/AGENTS.md.",
+      "path": "MULTI-AGENT.md",
+      "risk_level": "low",
+      "permissions": []
+    },
+    {
+      "id": "skill:branch-hygiene",
+      "type": "skill",
+      "name": "branch-hygiene",
+      "description": "Inspect and clean stale branches across multiple repositories using the dotfiles git-hygiene + gh-bootstrap toolchain. Use when the user asks about branch state, stale local branches, or \"no ref was fetched\" errors.",
+      "path": "skills/branch-hygiene",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:changelog",
+      "type": "skill",
+      "name": "changelog",
+      "description": "Records what changed this session into a CHANGELOG.md at the project root — reads git log since the last entry and prepends a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user says \"update the changelog\", \"log this session\", \"add a changelog entry\", \"reco",
+      "path": "skills/changelog",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:claude-server",
+      "type": "skill",
+      "name": "claude-server",
+      "description": "Starts a Claude Code remote-control server via `claude remote-control --spawn worktree`, running in an isolated git worktree so remote work doesn't touch local changes, and returns the connection info for claude.ai/code and the Claude mobile app. Use when the user wants to control this project remot",
+      "path": "skills/claude-server",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:commit-push-pr",
+      "type": "skill",
+      "name": "commit-push-pr",
+      "description": "Commit, push, and create a PR in one shot — Boris Cherny's most-used daily command",
+      "path": "skills/commit-push-pr",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:decompose",
+      "type": "skill",
+      "name": "decompose",
+      "description": "Deep task decomposition into parallel workstreams with self-contained agent prompts. Use when you want to review the execution plan before committing to it.",
+      "path": "skills/decompose",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:drift-sweep",
+      "type": "skill",
+      "name": "drift-sweep",
+      "description": "Bootstrap a repo's doc contract or audit doc drift — declares every markdown surface (LIVING/GENERATED/SOURCE/HISTORICAL), wires the CI doc-truth checker, migrates shadow trackers to GitHub issues, and reconciles out-of-band drift (closed issues, migration high-water marks, stale PRs, ghost worktree",
+      "path": "skills/drift-sweep",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:fix-issue",
+      "type": "skill",
+      "name": "fix-issue",
+      "description": "Pick up a GitHub issue, investigate, implement the fix, test, and create a PR",
+      "path": "skills/fix-issue",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:handoff",
+      "type": "skill",
+      "name": "handoff",
+      "description": "Generate a handoff note for clean session transitions — preserves context across /clear or new sessions. Use when ending a session, when context is getting high, or when the user says \"hand off\", \"wrap up the session\", or \"save state for next time\".",
+      "path": "skills/handoff",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:jj",
+      "type": "skill",
+      "name": "jj",
+      "description": ">-",
+      "path": "skills/jj",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:kickoff",
+      "type": "skill",
+      "name": "kickoff",
+      "description": "Scaffolds a new project in the current directory — creates CLAUDE.md, CHANGELOG.md, .gitignore, README.md, and a source dir, initializes git with a first commit, and offers to create a GitHub repo. Prompts for project name, description, and language/framework first. Use when the user wants to \"start",
+      "path": "skills/kickoff",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:log-error",
+      "type": "skill",
+      "name": "log-error",
+      "description": "Records a recurring failure into ERRORS.md — classifies it (hallucination, instruction-ignored, context-lost, wrong-tool, incomplete, external), captures the goal, exact error, attempts tried, root cause, and lesson, then commits it; also logs wins on request. Use when the same error keeps recurring",
+      "path": "skills/log-error",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:max",
+      "type": "skill",
+      "name": "max",
+      "description": "Maximum effort mode — worktrees, parallel agents, batches, full capability selection. Use when you want comprehensive, no-compromise execution.",
+      "path": "skills/max",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:review",
+      "type": "skill",
+      "name": "review",
+      "description": "Reviews recent git changes (diff since the last review/tag) for correctness, security, and quality — flags edge cases and missing boundary error handling, hardcoded secrets, injection risks (SQL/XSS/command), sensitive data in logs, over-engineering, and dead code, then returns a prioritized checkli",
+      "path": "skills/review",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:session-retro",
+      "type": "skill",
+      "name": "session-retro",
+      "description": "Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user sign",
+      "path": "skills/session-retro",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:simplify",
+      "type": "skill",
+      "name": "simplify",
+      "description": "Review recently changed code for unnecessary complexity and simplify it — removes over-engineering, dead code, and premature abstractions while preserving behavior. Use after building a feature, or when the user says \"simplify this\", \"this feels over-engineered\", \"clean this up\", or \"de-engineer\".",
+      "path": "skills/simplify",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "subagent:backend-architect",
+      "type": "subagent",
+      "name": "backend-architect",
+      "description": "Reviews backend code — schema design, API surface, query efficiency, data integrity, anti-abuse",
+      "path": "agents/backend-architect.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:code-simplifier",
+      "type": "subagent",
+      "name": "code-simplifier",
+      "description": "Reviews code for unnecessary complexity and simplifies it — removes over-engineering, dead code, and premature abstractions",
+      "path": "agents/code-simplifier.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:content-reviewer",
+      "type": "subagent",
+      "name": "content-reviewer",
+      "description": "Reviews all written text in the product — microcopy, tone, empty states, error messages, consistency",
+      "path": "agents/content-reviewer.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:dependency-doctor",
+      "type": "subagent",
+      "name": "dependency-doctor",
+      "description": "Audits dependencies for vulnerabilities, outdated packages, and upgrade paths",
+      "path": "agents/dependency-doctor.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:frontend-architect",
+      "type": "subagent",
+      "name": "frontend-architect",
+      "description": "Reviews frontend code structure — components, state management, rendering performance, maintainability",
+      "path": "agents/frontend-architect.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:growth-strategist",
+      "type": "subagent",
+      "name": "growth-strategist",
+      "description": "Reviews sharing, distribution, SEO, and organic growth mechanics — viral loops, Open Graph, engagement",
+      "path": "agents/growth-strategist.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:launch-operator",
+      "type": "subagent",
+      "name": "launch-operator",
+      "description": "Reviews deploy readiness — pipeline, environment config, monitoring, error tracking, smoke tests",
+      "path": "agents/launch-operator.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:package-scout",
+      "type": "subagent",
+      "name": "package-scout",
+      "description": "Researches whether what you're about to build already exists as a well-maintained package — prevents reinventing the wheel",
+      "path": "agents/package-scout.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:perf-accessibility",
+      "type": "subagent",
+      "name": "perf-accessibility",
+      "description": "Reviews performance and accessibility — load times, rendering, WCAG compliance, keyboard navigation",
+      "path": "agents/perf-accessibility.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:product-strategist",
+      "type": "subagent",
+      "name": "product-strategist",
+      "description": "Reviews product logic, user flow, and feature prioritization — is this the right thing to build?",
+      "path": "agents/product-strategist.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:qa-lead",
+      "type": "subagent",
+      "name": "qa-lead",
+      "description": "Finds bugs before users do — edge cases, bad input, error states, mobile issues, flow breakages",
+      "path": "agents/qa-lead.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:repo-scout",
+      "type": "subagent",
+      "name": "repo-scout",
+      "description": "Fast codebase orientation — reads project config, git history, and structure to give a 30-second briefing",
+      "path": "agents/repo-scout.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:schema-reviewer",
+      "type": "subagent",
+      "name": "schema-reviewer",
+      "description": "Reviews database schemas and migrations for correctness, safety, performance, and data integrity risks",
+      "path": "agents/schema-reviewer.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:security-reviewer",
+      "type": "subagent",
+      "name": "security-reviewer",
+      "description": "Reviews code for security vulnerabilities — injection, auth flaws, secrets, insecure data handling",
+      "path": "agents/security-reviewer.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:test-writer",
+      "type": "subagent",
+      "name": "test-writer",
+      "description": "Writes focused tests — reproduces bugs with failing tests, adds coverage for new features and edge cases",
+      "path": "agents/test-writer.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:trust-safety",
+      "type": "subagent",
+      "name": "trust-safety",
+      "description": "Reviews abuse prevention, moderation, legal compliance — can users harm each other or the platform?",
+      "path": "agents/trust-safety.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:ux-reviewer",
+      "type": "subagent",
+      "name": "ux-reviewer",
+      "description": "Reviews visual structure, interaction design, and usability — layout, hierarchy, mobile-first, responsiveness",
+      "path": "agents/ux-reviewer.md",
+      "risk_level": "medium",
+      "permissions": []
+    }
+  ],
+  "exports": {
+    "default_profile": "all"
+  }
+}

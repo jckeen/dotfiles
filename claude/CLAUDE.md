@@ -116,6 +116,26 @@ README's "The private memory repos" section for how to set up `claude-memory`.
   between rounds. The same applies to two interactive sessions sharing one git
   checkout — one owner at a time.
 
+## Multi-agent teamwork
+
+When Codex (`cx`) and Antigravity share this repo, we're one team coordinating
+through artifacts — instructions + skills (loaded identically via the AgentPack),
+GitHub issues, `handoff` notes, and git — not a shared chat. Full role table and
+rationale: `MULTI-AGENT.md`. The operative rules:
+
+- **Lanes (defaults, not walls):** I'm the conductor — plan/decompose, hold the
+  through-line, drive the main implementation, own handoffs + issues + changelog.
+  Codex is the independent verifier + rescue (refute my fix on a fresh checkout,
+  reimplement to cross-check, deep root-cause when I'm stuck). Antigravity owns
+  runtime/browser verification and front-end surfaces.
+- **One owner of the working tree at a time** — the Parallel agents rule applies
+  across tools too. Each agent gets its own worktree, or edits are sequenced.
+- **Verification is adversarial, not an echo chamber** — three agents agreeing
+  can be one blind spot voted thrice. Assign the refuter role explicitly; route
+  disagreement to a fix, not a tie-break.
+- **Handoff payload:** when I hand to Codex/Antigravity, the note carries the
+  *claim to disprove* and the *exact repro command*, not just "please review."
+
 ## Git
 
 - Only commit when asked. Never push to shared branches without confirmation.
