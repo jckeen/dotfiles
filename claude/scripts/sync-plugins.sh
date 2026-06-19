@@ -31,6 +31,28 @@ if [[ ! -f "$MANIFEST" ]]; then
   exit 1
 fi
 
+# Fast path: if every manifest plugin is already present in the installed
+# manifest, there is nothing to do — exit silently without touching the network.
+# Keys in installed_plugins.json are the same `<plugin>@<marketplace>` strings
+# as the manifest lines (mirrors PluginDriftCheck.hook.ts). This keeps the
+# every-fresh-launch sync in cc() near-instant and quiet when there's no drift.
+INSTALLED_JSON="$HOME/.claude/plugins/installed_plugins.json"
+if [[ -f "$INSTALLED_JSON" ]]; then
+  missing=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    p="${line%%#*}"
+    p="${p//[[:space:]]/}"
+    [[ -z "$p" ]] && continue
+    if ! grep -qF "\"$p\"" "$INSTALLED_JSON"; then
+      missing=1
+      break
+    fi
+  done < "$MANIFEST"
+  if [[ "$missing" -eq 0 ]]; then
+    exit 0
+  fi
+fi
+
 if ! command -v claude >/dev/null 2>&1; then
   echo "✘ claude CLI not on PATH" >&2
   exit 1

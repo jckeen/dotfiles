@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-06-18 — chore: branch-lifecycle + plugin-drift workflow hygiene
+
+### What changed
+- **`delete-branch-on-close.yml`** — a `pull_request: closed` workflow that
+  deletes a PR's head branch when it's closed **unmerged**, scoped to same-repo
+  non-default branches. Closes the gap left by `delete_branch_on_merge` (which
+  only fires on merge): discarded nightly-drift PRs from the scheduled Claude
+  Cloud routine had been orphaning their `claude/*` branches on origin. Branch
+  remains recoverable via the closed PR's Restore button. `head.ref` is passed
+  through `env:` and quoted, never interpolated into `run:` (no injection).
+- **Plugin drift auto-heals at `cc` launch** — the `cc()` launcher now runs
+  `sync-plugins.sh` pre-exec on a fresh start (skipped on resume), so any
+  manifest plugin missing from the install gets installed *before* the session
+  loads its plugins — no manual run + restart. `PluginDriftCheck.hook.ts` stays
+  as the SessionStart detection safety net for sessions launched outside `cc`.
+- **`sync-plugins.sh` fast path** — exits silently when every manifest plugin is
+  already installed (one small file read instead of N `claude plugin install`
+  calls), keeping the every-launch sync near-instant in the no-drift case.
+- Backfill: cleaned the accumulated stale `claude/*` remote branches and merged
+  the lingering nightly-drift README fix.
+
 ## 2026-06-12 — fix: doc-truth v2 — code spans/fences exempt from dead-ref
 
 ### What changed
