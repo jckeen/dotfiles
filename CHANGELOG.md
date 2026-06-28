@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-06-18 — feat: multi-agent lane contract for cc/cx/Antigravity
+
+### What changed
+- **`claude/MULTI-AGENT.md`** — canonical lane contract defining how Claude Code (`cc`), Codex (`cx`), and Antigravity work as one team on a shared repo. Coordinates through artifacts (instructions + skills via the AgentPack, GitHub issues, `handoff` notes, git) rather than a live shared chat. Lanes: Claude Code = conductor (plan, drive implementation, own handoffs/issues/changelog); Codex = independent verifier + rescue (refute on a fresh checkout, reimplement to cross-check); Antigravity = runtime/browser verification + front-end.
+- **`claude/AGENTPACK.yaml`** — AgentPack manifest (atoms, profiles, compatibility) for Claude Code, Codex, Cursor, and ChatGPT. Registers the lane-contract as an instruction atom so all three tools inherit identical instructions and skills.
+- **`claude/CLAUDE.md` + `codex/AGENTS.md`** — mirrored operative rules so `cc`, `cx`, and Antigravity follow the lane contract at session start.
+
+## 2026-06-18 — feat: add worktree-guard PreToolUse hook
+
+### What changed
+- **`claude/hooks/worktree-guard.sh`** — PreToolUse(Bash) guard that prevents branch create/switch in the primary checkout when another session has active worktrees. Always allows `git worktree` ops and any branch op run from inside a linked worktree. Fails open (any error exits 0) to avoid wedging git. Verified with 6 pipe-tests.
+
 ## 2026-06-18 — chore: branch-lifecycle + plugin-drift workflow hygiene
 
 ### What changed
