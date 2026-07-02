@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-06-18 — feat: multi-agent lane contract for cc/cx/Antigravity
+
+### What changed
+- **`claude/MULTI-AGENT.md`** — canonical lane contract for Claude Code, Codex,
+  and Antigravity working the same repo: Claude Code conducts (plan, drive
+  implementation, own handoffs/issues/changelog); Codex is the independent
+  verifier + rescue (refute on a fresh checkout, reimplement to cross-check);
+  Antigravity owns runtime/browser verification and front-end surfaces.
+- One owner of the working tree at a time (worktree isolation or sequenced
+  edits), adversarial verification instead of echo-chamber agreement, and
+  handoff notes that carry the claim to disprove plus an exact repro command —
+  mirrored into `claude/CLAUDE.md` and `codex/AGENTS.md` so `cc`, `cx`, and
+  Antigravity (reads `AGENTS.md`) pick the rules up at session start.
+- `claude/AGENTPACK.yaml` registers the contract as an instruction atom (also
+  commits the prior untracked 0.1.0 pack draft); `.doc-contract` declares
+  `MULTI-AGENT.md` SOURCE.
+
 ## 2026-06-18 — chore: branch-lifecycle + plugin-drift workflow hygiene
 
 ### What changed
@@ -20,6 +37,21 @@
   calls), keeping the every-launch sync near-instant in the no-drift case.
 - Backfill: cleaned the accumulated stale `claude/*` remote branches and merged
   the lingering nightly-drift README fix.
+
+## 2026-06-18 — feat: add worktree-guard PreToolUse hook
+
+### What changed
+- **`claude/hooks/worktree-guard.sh`** — PreToolUse(Bash) guard against the
+  "two sessions sharing one checkout" collision (a `git checkout -b` in a
+  shared tree had stranded another session's commit on 2026-06-18). Always
+  allows `git worktree …` and any branch op run from inside a linked worktree;
+  only inspects branch create/switch (`checkout -b/-B`, any `git switch`); in
+  the primary checkout, denies only when >1 worktree exists (solo work is
+  never blocked). Fail-open: any error or unexpected state exits 0, so a
+  broken guard never wedges git.
+- Auto-linked by `setup.sh` (globs `claude/hooks/*.sh`); wired into
+  `PreToolUse(Bash)` via `claude-memory/settings.json` (private repo) with an
+  `if: "Bash(git *)"` filter.
 
 ## 2026-06-12 — fix: doc-truth v2 — code spans/fences exempt from dead-ref
 
