@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-06-19 — feat: worktree-guard hook + multi-agent lane contract
+
+### What changed
+- **`claude/hooks/worktree-guard.sh`** (#108) — PreToolUse(Bash) guard that
+  prevents the "two sessions sharing one checkout" collision (hit 2026-06-18,
+  where a `git checkout -b` in the shared tree switched another session's
+  branch out from under it and stranded a commit). Always allows
+  `git worktree …` and any branch op run from inside a linked worktree; only
+  inspects branch create/switch (`checkout -b/-B`, `git switch`); in the
+  PRIMARY checkout, denies only when **>1 worktree exists** (a parallel
+  session is likely active) — solo work is never blocked. Fail-open: any
+  error/odd state exits 0 (allow), so a broken guard never wedges git.
+  Auto-linked by `setup.sh` (globs `claude/hooks/*.sh`); wired into
+  `PreToolUse(Bash)` with an `if: "Bash(git *)"` filter in the private
+  `claude-memory/settings.json`.
+- **`claude/MULTI-AGENT.md`** (#111) — canonical lane contract for how
+  Claude Code, Codex, and Antigravity work as one team on a shared repo,
+  coordinating through artifacts (instructions + skills via the AgentPack,
+  GitHub issues, `handoff` notes, git) rather than a live shared chat.
+  Lanes: Claude Code = conductor (plan, drive implementation, own
+  handoffs/issues/changelog); Codex = independent verifier + rescue (refute
+  on a fresh checkout, reimplement to cross-check); Antigravity =
+  runtime/browser verification + front-end. Extends the existing
+  one-owner-of-the-working-tree rule across tools. Backed by
+  `claude/AGENTPACK.yaml` (the AgentPack manifest — atoms, profiles,
+  compatibility — for Claude Code, Codex, Cursor, and ChatGPT) and a new
+  `.doc-contract` SOURCE entry for `MULTI-AGENT.md`.
+- Docs: README.md and CLAUDE-GUIDE.md updated to document the
+  `worktree-guard.sh` wired-state row and the `AgentPack.md`/`MULTI-AGENT.md`
+  files.
+
 ## 2026-06-18 — chore: branch-lifecycle + plugin-drift workflow hygiene
 
 ### What changed
