@@ -13,10 +13,16 @@ name: smoke-install
 
 on:
   pull_request:
+    # Keep this list in sync with the files the "Syntax check" step below runs
+    # bash -n over — otherwise a PR touching only check-codex.sh / git-hygiene.sh
+    # / hygiene-status.sh never triggers the smoke and its coverage is illusory.
     paths:
       - "setup.sh"
       - "check-claude.sh"
+      - "check-codex.sh"
       - "gh-bootstrap.sh"
+      - "git-hygiene.sh"
+      - "hygiene-status.sh"
       - ".bash_aliases"
       - ".bash_profile"
   workflow_dispatch:

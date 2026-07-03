@@ -118,6 +118,18 @@ jobs:
       - name: Check skill count + cross-tool artifact shapes
         run: claude/scripts/check-skill-parity.sh
 
+  install-integrity:
+    name: install-integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run checker self-tests
+        run: claude/scripts/tests/install-integrity.test.sh
+
+      - name: Check fresh-clone install integrity (exec bits + marketplace arms)
+        run: claude/scripts/check-install-integrity.sh
+
   commit-format:
     name: commit-format
     # Lint the commits a PR adds; on a direct push to main there is no range.

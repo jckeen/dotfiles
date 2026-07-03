@@ -1,6 +1,45 @@
 # Changelog
 
-## 2026-06-18 — chore: branch-lifecycle + plugin-drift workflow hygiene
+## 2026-07-03 — fix: fresh-clone audit findings + install-integrity CI gate
+
+### What changed
+- **`check-codex.sh` + `claude/hooks/worktree-guard.sh` exec bits** — both were
+  tracked `100644`; a fresh clone couldn't run them. `setup.sh` guards the Codex
+  health check on `[ -x check-codex.sh ]`, so the missing bit *silently skipped*
+  it. Restored to `100755` (#120, and a second offender the new guard surfaced).
+- **`openai-codex` marketplace arm in `setup.sh`** — `plugins.txt` lists
+  `codex@openai-codex` but the marketplace `case` had no arm for it, so the codex
+  plugin fell through to "Unknown marketplace" and never installed on fresh
+  machines. Added the `github:openai/codex-plugin-cc` registration (#121).
+- **`.gitconfig.local` no longer wipes user `safe.directory` entries** —
+  `setup.sh` rewrites the file with `cat >` each run; it now captures existing
+  `safe.directory` entries first and restores them after (idempotent, `set -u`
+  safe), so hand-added project entries survive a re-run (#122).
+- **`setup.sh` degraded-host crashes** — three `set -e`/pipefail capture
+  assignments (`GIT_EMAIL`, `WIN_USER`, `cc_type`) now `|| true`, so a failed
+  probe degrades to the intended warning instead of aborting the installer (#123).
+- **AGENTPACK.yaml skill descriptions regenerated from `SKILL.md`** — `jj`'s
+  description was the literal folded-scalar indicator `">-"` and 7 others were
+  truncated mid-word; all now word-boundary truncated from source (#124).
+- **New CI gate `install-integrity`** — `check-install-integrity.sh` asserts
+  every shebanged `*.sh` is `100755` and every `plugins.txt` marketplace has a
+  `setup.sh` arm (the two regressions above, promoted from discipline into CI),
+  with a fixture self-test `tests/install-integrity.test.sh` (#125).
+- **`smoke-install.yml` path filter** aligned with the files its `bash -n` step
+  checks (added `check-codex.sh`, `git-hygiene.sh`, `hygiene-status.sh`) so PRs
+  touching only those actually trigger the smoke (#125).
+- **README** — corrected "same skill set as Claude" (Codex ships a public-safe
+  subset, not the full 15) to "the public-safe skill subset".
+
+### Decisions made
+- The new checker uses `git rev-parse --show-toplevel` (like `check-doc-truth.sh`)
+  so its self-test can drive it against a throwaway fixture repo.
+- Left `smoke-install.yml`'s `continue-on-error` grace period and MULTI-AGENT.md's
+  Antigravity framing as-is (intentional / roadmap, not defects).
+
+### Known issues
+- 6 of 7 remaining checkers still lack fixture self-tests (tracked in #125); only
+  `doc-truth` and now `install-integrity` have them.
 
 ### What changed
 - **`delete-branch-on-close.yml`** — a `pull_request: closed` workflow that

@@ -29,6 +29,12 @@ ${HOME}/
 # Symlink artifacts (setup.sh creates these as symlinks in ~/.claude/)
 .claude/
 
+# Local devDeps for the Claude-hooks type-check — CI installs these itself
+# (bun add --dev bun-types @types/node); they are not tracked.
+claude/hooks/node_modules/
+claude/hooks/bun.lock
+claude/hooks/package.json
+
 # Repo-local Codex/agent runtime state is generated and may contain private data.
 # The tracked public-safe Codex dotfiles live in codex/ (no leading dot).
 .codex/

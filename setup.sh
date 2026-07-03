@@ -641,6 +641,11 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
             && echo "  -> Registered marketplace: $mp" \
             || echo "  -> Failed to register marketplace: $mp (continuing)"
           ;;
+        openai-codex)
+          run claude plugin marketplace add github:openai/codex-plugin-cc \
+            && echo "  -> Registered marketplace: $mp" \
+            || echo "  -> Failed to register marketplace: $mp (continuing)"
+          ;;
         *)
           echo "  -> Unknown marketplace $mp — add registration logic to setup.sh or register manually"
           ;;
@@ -720,11 +725,22 @@ GIT_NAME="${GIT_NAME:-}"
 GIT_EMAIL="${GIT_EMAIL:-}"
 if git config user.name &>/dev/null; then
   GIT_NAME="$(git config user.name)"
-  GIT_EMAIL="$(git config user.email)"
+  GIT_EMAIL="$(git config user.email || true)"
   echo "  Using existing git identity: $GIT_NAME <$GIT_EMAIL>"
 else
   read -rp "Git user name: " GIT_NAME
   read -rp "Git email: " GIT_EMAIL
+fi
+
+# Preserve any safe.directory entries a prior run (or the user) added before we
+# rewrite the file from scratch below — the closing instructions tell users to
+# add project repos here by hand, and a naive `cat >` would silently wipe them
+# on the next run (issue #122).
+_preserved_safe_dirs=()
+if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
+  while IFS= read -r _sd; do
+    [ -n "$_sd" ] && _preserved_safe_dirs+=("$_sd")
+  done < <(git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null)
 fi
 
 # Generate a platform-appropriate .gitconfig.local (identity + platform config)
@@ -739,7 +755,7 @@ if [[ "$PLATFORM" == "macos" ]]; then
 	helper = osxkeychain
 GITCONF
 elif [[ "$PLATFORM" == "wsl" ]]; then
-  WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r')
+  WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r' || true)
   if [[ ! "$WIN_USER" =~ ^[A-Za-z0-9._\ -]+$ ]]; then
     echo "  Warning: Windows username contains unsupported characters; using PATH-based code lookup for editor."
     WIN_USER=""
@@ -777,6 +793,17 @@ else
 GITCONF
 fi
 chmod 600 "$DOTFILES_DIR/.gitconfig.local"
+
+# Restore preserved safe.directory entries (issue #122) — idempotent; runs on
+# every platform. The WSL block below re-adds the managed dotfiles/claude-memory
+# entries; this loop keeps the user's own project entries the rewrite dropped.
+if [ "${#_preserved_safe_dirs[@]}" -gt 0 ]; then
+  for _safe_dir in "${_preserved_safe_dirs[@]}"; do
+    git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
+      | grep -Fxq "$_safe_dir" \
+      || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
+  done
+fi
 
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
@@ -1072,7 +1099,7 @@ fi
 if [[ "$PLATFORM" != "macos" ]]; then
   echo ""
   echo "--- Verifying login-shell environment ---"
-  cc_type="$(bash -li -c 'type -t cc 2>/dev/null' 2>/dev/null | tail -1)"
+  cc_type="$(bash -li -c 'type -t cc 2>/dev/null' 2>/dev/null | tail -1 || true)"
   if [ "$cc_type" = "function" ]; then
     echo "  -> bash -li resolves cc as function (login shells healthy)"
   else
