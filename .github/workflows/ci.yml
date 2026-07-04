@@ -61,6 +61,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run checker self-tests
+        run: claude/scripts/tests/doc-refs.test.sh
+
       - name: Check doc references resolve (hooks + skills)
         run: claude/scripts/check-doc-refs.sh
 
@@ -81,6 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Run checker self-tests
+        run: claude/scripts/tests/no-personal-data.test.sh
 
       - name: Check tracked files for machine-specific home paths
         run: claude/scripts/check-no-personal-data.sh
@@ -106,6 +112,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run checker self-tests
+        run: claude/scripts/tests/agent-parity.test.sh
+
       - name: Check Claude/Codex rule-set parity
         run: claude/scripts/check-agent-parity.sh
 
@@ -114,6 +123,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Run checker self-tests
+        run: claude/scripts/tests/skill-parity.test.sh
 
       - name: Check skill count + cross-tool artifact shapes
         run: claude/scripts/check-skill-parity.sh
@@ -139,6 +151,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Run checker self-tests
+        run: claude/scripts/tests/commit-format.test.sh
 
       - name: Lint PR commit messages (conventional commits)
         # SHAs come in via env (not interpolated into the script) per GitHub's
