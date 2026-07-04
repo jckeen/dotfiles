@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-07-04 — test: fixture self-tests for the 5 remaining checkers (#125)
+
+### What changed
+- **Self-tests for every CI checker** — added fixture harnesses for
+  `check-doc-refs`, `check-no-personal-data`, `check-agent-parity`,
+  `check-skill-parity`, and `check-commit-format` (20 cases total), each wired
+  into its CI job to run before the checker (mirroring the `doc-truth` and
+  `install-integrity` pattern). All 7 gate checkers now have self-tests; a
+  checker that regresses to an unconditional `exit 0` is now caught. Closes the
+  remainder of #125.
+- Each test copies its (script-dir-resolving) checker into a throwaway repo so
+  `REPO_ROOT` points at the fixture; `commit-format`'s runs the real checker in
+  a fixture repo since it operates on cwd. Negatives assert the specific failure
+  fragment, and the harness was mutation-tested (an always-pass checker turns the
+  negatives red) to prove the tests aren't vacuous.
+- **`no-personal-data.test.sh` assembles its leak fixtures at runtime** — the
+  literal `/home/<user>/` and `C:\Users\<user>\` patterns would otherwise sit in
+  a tracked file and trip `check-no-personal-data` against the repo itself. The
+  gate caught this self-hosting bug during development.
+
+### Decisions made
+- `commit-format`'s self-test lives in the PR-only `commit-format` job (that
+  checker only runs on PRs anyway), so it's gated on every PR.
+
+### Known issues
+- None outstanding from the June 2026 audit — #120–#125 all resolved.
+
 ## 2026-07-03 — fix: fresh-clone audit findings + install-integrity CI gate
 
 ### What changed
