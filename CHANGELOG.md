@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-07-06 — feat: Fable conduct layer (FABLE.md + /fable-mode)
+
+### What changed
+- **`claude/FABLE.md`** — operating discipline distilled from Claude Fable 5
+  on its last session day: outcome-first final messages, readable-over-concise
+  prose, the reversible/destructive/assessment autonomy switch, the end-of-turn
+  self-check, evidence discipline, and a pre-send checklist. Imported by
+  `claude/CLAUDE.md` (via the `~/.claude/FABLE.md` symlink) so every future
+  model on this config — Opus included — inherits the same behavior.
+- **`/fable-mode` skill** — recalibration ritual: re-read the layer, audit the
+  last three replies against the checklist, state corrections, continue.
+- Wired everywhere the config is consumed: AgentPack atoms
+  (`instruction:fable-conduct-layer`, `skill:fable-mode`) for
+  Codex/Cursor/ChatGPT targets, a Conduct Layer section in `codex/AGENTS.md`,
+  `.doc-contract` SOURCE entry, README + CLAUDE-GUIDE skill tables (15 → 16).
+
+### Decisions made
+- The layer is a top-level `claude/` file (auto-symlinked by setup.sh) rather
+  than a hook injection — imports are simpler, and the async-hook
+  additionalContext path is a known 400-error footgun.
+- Written model-agnostic: it's a contract about how to operate, not a model
+  identity.
+
 ## 2026-07-04 — test: fixture self-tests for the 5 remaining checkers (#125)
 
 ### What changed

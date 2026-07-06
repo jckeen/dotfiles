@@ -13,6 +13,16 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 
 @~/dev/claude-memory/CLAUDE.md
 
+## Conduct layer
+
+How to communicate and calibrate autonomy — outcome-first replies, the
+reversible/destructive/assessment switch, evidence discipline, and the
+end-of-turn self-check — is distilled from Claude Fable 5 in the import below.
+It applies to every model running this config; when a session drifts from it,
+run the `fable-mode` skill to recalibrate.
+
+@~/.claude/FABLE.md
+
 ## Working style
 
 - Plan before non-trivial work. Confirm the approach, then execute.
