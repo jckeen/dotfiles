@@ -484,6 +484,7 @@ dotfiles/
 │       └── repo-health/
 ├── claude/
 │   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
+│   ├── FABLE.md                # Fable conduct layer — operating discipline imported by CLAUDE.md
 │   ├── AgentPack.md            # 17-agent review orchestra
 │   ├── AGENTPACK.yaml          # AgentPack manifest (atoms, profiles, compatibility) for Claude Code, Codex, Cursor, ChatGPT
 │   ├── MULTI-AGENT.md          # Multi-agent lane contract — roles and coordination rules for Claude Code, Codex, and Antigravity
@@ -517,7 +518,8 @@ dotfiles/
 │   │   ├── max/                # /max — maximum effort parallel execution
 │   │   ├── jj/                 # /jj — jujutsu (jj) version control driver
 │   │   ├── session-retro/      # /session-retro — propose improvements to your skills
-│   │   └── drift-sweep/        # /drift-sweep — doc-contract bootstrap + drift audit
+│   │   ├── drift-sweep/        # /drift-sweep — doc-contract bootstrap + drift audit
+│   │   └── fable-mode/         # /fable-mode — recalibrate to the Fable conduct layer
 │   ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
 │   ├── scripts/                # Headless automation + validation scripts
 │   │   ├── common.sh           # Shared safety tiers + runner

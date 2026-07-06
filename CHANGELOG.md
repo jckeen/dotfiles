@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-06 — fix: Fable-layer review findings (Codex pass on #130)
+
+### What changed
+- README repo tree now lists `claude/FABLE.md` and `claude/skills/fable-mode/`
+  (the inventory was stale after #130).
+- Reconciled the autonomy contradiction Codex flagged: CLAUDE.md's "plan
+  before non-trivial work, confirm the approach" and FABLE.md's "never ask
+  before reversible work" now state the same composed rule — state the
+  approach, confirm only when the goal is genuinely ambiguous, then execute
+  without re-asking step by step.
+
 ## 2026-07-06 — feat: Fable conduct layer (FABLE.md + /fable-mode)
 
 ### What changed
