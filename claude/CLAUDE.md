@@ -25,7 +25,10 @@ run the `fable-mode` skill to recalibrate.
 
 ## Working style
 
-- Plan before non-trivial work. Confirm the approach, then execute.
+- Plan before non-trivial work: state the approach, and confirm it only when
+  the goal or design is genuinely ambiguous. Once the scope is clear or agreed,
+  execute — the conduct layer's autonomy switch governs from there, so
+  reversible in-scope steps proceed without re-asking.
 - If the goal is unclear, ask before coding — don't guess at intent.
 - Prefer editing existing files over creating new ones.
 - Read the surrounding code before changing behavior — prefer the existing
