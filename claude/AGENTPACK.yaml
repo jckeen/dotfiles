@@ -60,6 +60,25 @@
       "permissions": []
     },
     {
+      "id": "instruction:fable-conduct-layer",
+      "type": "instruction",
+      "name": "Fable conduct layer",
+      "description": "Operating discipline distilled from Claude Fable 5 — outcome-first final messages, readable-over-concise prose, the reversible/destructive/assessment autonomy switch, end-of-turn self-check, evidence discipline, and a pre-send checklist. Imported by CLAUDE.md so every model running this config behaves the same way.",
+      "path": "FABLE.md",
+      "risk_level": "low",
+      "permissions": []
+    },
+    {
+      "id": "skill:fable-mode",
+      "type": "skill",
+      "name": "fable-mode",
+      "description": "Recalibrate to the Fable conduct layer (FABLE.md) — use at session start on any model, when output drifts (terse fragments, asking permission for reversible work, unverified claims), or when the user says \"fable mode\" or \"recalibrate\".",
+      "path": "skills/fable-mode",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
       "id": "skill:branch-hygiene",
       "type": "skill",
       "name": "branch-hygiene",

@@ -7,6 +7,15 @@ set of working-style defaults I want every Codex session to share, regardless
 of which machine I'm on. Personal identity, project context, tokens, and
 machine paths stay out of here — they live in `~/dev/codex-memory`.
 
+## Conduct Layer
+
+At session start, read `~/.claude/FABLE.md` (in this repo: `claude/FABLE.md`)
+and follow it — the operating discipline shared by every agent on this config:
+outcome-first final messages, readable-over-concise prose, the
+reversible/destructive/assessment autonomy switch, the end-of-turn self-check,
+and evidence discipline. If a session drifts from it, re-read the file and run
+its pre-send checklist.
+
 ## Working Style
 
 - Treat the worktree as shared with the user; do not revert changes you did not

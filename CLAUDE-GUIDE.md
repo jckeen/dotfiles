@@ -77,6 +77,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
 | `/session-retro` | Retro that proposes improvements to your skills (fires on "thanks", or run it) |
 | `/drift-sweep` | Bootstrap a repo's doc contract; audit doc drift vs issues/PRs/worktrees |
+| `/fable-mode` | Recalibrate any model to the Fable conduct layer (`claude/FABLE.md`) |
 
 > Most of these **auto-invoke** when their triggers match — you rarely need to
 > type them. The ones worth remembering by hand: `/max`, `/decompose`,
