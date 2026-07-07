@@ -538,7 +538,9 @@ dotfiles/
 │   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md and codex/AGENTS.md rules in sync
 │   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
 │   │   ├── check-no-personal-data.sh # CI: block machine-specific home paths
-│   │   └── check-skill-parity.sh     # CI: skill count + Claude/Codex artifact shapes
+│   │   ├── check-skill-parity.sh     # CI: skill count + Claude/Codex artifact shapes
+│   │   ├── check-install-integrity.sh # CI: fresh-clone install guard — exec bits + marketplace arms
+│   │   └── tests/               # Fixture self-tests for the 7 gate checkers
 │   ├── systemd/                # systemd units (git-hygiene timer)
 │   └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
