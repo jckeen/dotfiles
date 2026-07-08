@@ -9,19 +9,12 @@
 
 set -eo pipefail
 
-# Resolve the dotfiles repo via the real (symlink-resolved) path of this
-# script: $DOTFILES_DIR/claude/scripts/sync-plugins.sh. Uses a portable
-# resolution loop because BSD readlink (macOS) does not support `-f`.
-resolve_script_path() {
-  local target="$1"
-  local dir
-  while [[ -L "$target" ]]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
+# Resolve the dotfiles repo via the real (symlink-resolved) path of this script:
+# $DOTFILES_DIR/claude/scripts/sync-plugins.sh. resolve_script_path (from
+# checker-lib.sh, beside this script) uses a portable resolution loop because
+# BSD readlink (macOS) does not support `-f`.
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 DOTFILES_DIR="${DOTFILES_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 MANIFEST="$DOTFILES_DIR/claude/plugins.txt"

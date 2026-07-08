@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-07-08 — refactor: deferred audit refactors (#135–#141)
+
+### What changed
+Implemented via three parallel worktree-isolated agents (file-disjoint groups),
+then merged and re-verified together (tsc, all self-tests + checkers, shellcheck,
+setup.sh --check/--repair, --yes --dry-run smoke).
+- **lib-symlinks.sh** (#135) — single shared enumerator of the claude/ symlink
+  tree, sourced by both setup.sh (linking + audit) and check-claude.sh; removed
+  the triplicated tree walks and the nolink fallback duplicated across three bash
+  consumers + the TS hook (`claude/nolink.txt` is now the sole source).
+- **checker-lib.sh** (#136) — `resolve_script_path`, repo-root resolution, and
+  the colored fail-counter helpers factored out of the ~13 copies across the
+  dotfiles-local checkers and their self-tests. `check-doc-truth.sh` kept
+  deliberately standalone (vendored by /drift-sweep).
+- **non-interactive `--yes`** (#137) — setup.sh takes safe prompt defaults and
+  skips logins; smoke-install now runs `./setup.sh --yes --dry-run` against a
+  throwaway HOME.
+- **doc-refs code-strip** (#138) — check-doc-refs.sh now blanks fenced/inline
+  code before link resolution (matching check-doc-truth), so links inside code
+  blocks stop false-positiving; +3 self-test cases.
+- **git-config heredoc** (#139) — the 4 near-identical `.gitconfig.local`
+  heredocs collapsed to one parameterized by per-platform editor/helper.
+- **bun pin** (#140) — pin the bun *release version* and verify the binary
+  against the release SHASUMS, instead of hashing the mutable installer script.
+- **cc/cx preflight** (#141) — shared `_agent_preflight` helper removes the
+  duplicated resume-detection + cd + sync sequence from cc and cx.
+
 ## 2026-07-08 — fix/perf: workflow-optimization audit findings
 
 ### What changed

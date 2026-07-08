@@ -23,20 +23,13 @@
 
 set -euo pipefail
 
-# --- Locate repo root via the real (symlink-resolved) path -----
+# --- Load shared helpers, then locate repo root via the real path -----
 # Mirrors check-doc-refs.sh: this script is symlinked into ~/.claude/scripts, so
-# BASH_SOURCE may be a symlink; resolve it before walking up to the checkout.
-resolve_script_path() {
-  local target="$1" dir
-  while [[ -L "$target" ]]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
-SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# BASH_SOURCE may be a symlink; checker_repo_root (from checker-lib.sh) resolves
+# it before walking up to the checkout. The lib sits beside this script.
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
 cd "$REPO_ROOT"
 
 # Placeholder usernames that are fine to ship in docs/examples.

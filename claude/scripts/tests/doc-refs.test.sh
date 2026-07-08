@@ -6,17 +6,11 @@
 # Run directly; exit 1 on any failure. Mirrors install-integrity.test.sh.
 set -uo pipefail
 
-resolve_script_path() {
-  local target="$1" dir
-  while [[ -L "$target" ]]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../checker-lib.sh"
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 CHECKER="$SCRIPT_DIR/../check-doc-refs.sh"
+LIB="$SCRIPT_DIR/../checker-lib.sh"
 
 pass=0
 failed=0
@@ -31,6 +25,7 @@ new_repo() {
   git -C "$R" config user.name test
   mkdir -p "$R/claude/scripts" "$R/claude/hooks"
   cp "$CHECKER" "$R/claude/scripts/check-doc-refs.sh"
+  cp "$LIB" "$R/claude/scripts/checker-lib.sh"
   chmod +x "$R/claude/scripts/check-doc-refs.sh"
 }
 
@@ -93,6 +88,34 @@ check "broken relative link fails" 1 "broken link"
 new_repo
 w CHANGELOG.md '# Changelog' '' '- Removed Ghost.hook.ts in the PAI decommission.'
 check "changelog allowlisted broken ref passes" 0 "doc-refs: OK"
+
+# --- Case 6: fenced code — a link inside a ``` fence is not a live ref (#138) --
+# Before the fix this false-positived here while check-doc-truth.sh (which
+# strips code) passed it. The fenced link points nowhere; it must be ignored.
+new_repo
+w guide.md \
+  'Example usage:' \
+  '```' \
+  'See [x](./does-not-exist.md) inside a fenced block.' \
+  '```' \
+  'Prose after the fence.'
+check "link inside code fence is ignored" 0 "doc-refs: OK"
+
+# --- Case 7: a genuinely broken link OUTSIDE a fence still fails (#138) -------
+# A harmless fenced link sits nearby; the real broken link in prose must fail
+# and be the one reported.
+new_repo
+w guide.md \
+  '```' \
+  '[fenced](./nope-fenced.md)' \
+  '```' \
+  'Real broken [link](./nope-real.md) in prose.'
+check "broken link outside fence still fails" 1 "broken link: ./nope-real.md"
+
+# --- Case 8: inline `code` span link is ignored too (matches doc-truth) -------
+new_repo
+w guide.md 'Inline example: `[y](./also-missing.md)` is just documentation.'
+check "link inside inline code span is ignored" 0 "doc-refs: OK"
 
 echo "---"
 echo "$pass passed, $failed failed"

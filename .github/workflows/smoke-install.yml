@@ -65,3 +65,26 @@ jobs:
             exit 1
           }
           echo "✓ ./setup.sh --help OK on ${{ matrix.os }}"
+
+      - name: setup.sh --yes --dry-run control-flow smoke
+        run: |
+          # Exercise the whole installer control flow (arg parsing, the run()
+          # wrapper, symlink planning) with no network or sudo: --dry-run routes
+          # every destructive op through run() (printed, not executed) and --yes
+          # takes safe defaults for every prompt so nothing blocks on stdin.
+          # HOME is a throwaway dir so the symlinks setup.sh does create (into
+          # ~/.claude) land in isolation and never touch the runner's home.
+          # Job-level continue-on-error keeps this non-gating until stable.
+          smoke_home="$(mktemp -d)"
+          HOME="$smoke_home" ./setup.sh --yes --dry-run > /tmp/dryrun.out 2>&1 || {
+            echo "::error::./setup.sh --yes --dry-run failed on ${{ matrix.os }} (exit $?)"
+            cat /tmp/dryrun.out
+            exit 1
+          }
+          # Sanity: dry-run must actually have run in dry mode, not for real.
+          grep -q "Mode: DRY-RUN" /tmp/dryrun.out || {
+            echo "::error::--yes --dry-run on ${{ matrix.os }} did not report DRY-RUN mode"
+            cat /tmp/dryrun.out
+            exit 1
+          }
+          echo "✓ ./setup.sh --yes --dry-run OK on ${{ matrix.os }}"
