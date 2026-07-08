@@ -11,16 +11,24 @@ export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
-# Detect dev directory — reads from ~/.claude/dev-dir (written by setup.sh)
+# Detect dev directory — reads from ~/.claude/dev-dir (written by setup.sh).
+# Memoized: this is called on nearly every cc/cx/gh invocation, so cache the
+# value after the first read instead of forking `cat` each time.
 _dev_dir() {
-  if [ -f "$HOME/.claude/dev-dir" ]; then
-    cat "$HOME/.claude/dev-dir"
-  else
-    echo "$HOME/dev"
+  if [ -z "${_DEV_DIR_CACHE:-}" ]; then
+    if [ -f "$HOME/.claude/dev-dir" ]; then
+      _DEV_DIR_CACHE="$(cat "$HOME/.claude/dev-dir")"
+    else
+      _DEV_DIR_CACHE="$HOME/dev"
+    fi
   fi
+  printf '%s\n' "$_DEV_DIR_CACHE"
 }
 
-# Pull latest for all git repos under dev directory
+# Pull latest for all git repos under dev directory.
+# Pulls run concurrently (each in the background) and results print in listing
+# order once complete, so total wall time is the slowest single pull rather than
+# the sum — this is what every cc/cx launch waits on.
 pull-all() {
   local dev_dir
   dev_dir="$(_dev_dir)"
@@ -28,15 +36,26 @@ pull-all() {
     echo "Dev directory not found: $dev_dir"
     return 1
   fi
+  local tmp names=() outs=() pids=() i=0
+  tmp="$(mktemp -d)"
+  local repo name
   for repo in "$dev_dir"/*/; do
-    if [ -d "$repo/.git" ]; then
-      local name=$(basename "$repo")
-      if git -C "$repo" remote -v 2>/dev/null | grep -q .; then
-        printf "  %-20s" "$name"
-        git -C "$repo" pull --ff-only 2>&1 | tail -1
-      fi
-    fi
+    [ -d "$repo/.git" ] || continue
+    git -C "$repo" remote -v 2>/dev/null | grep -q . || continue
+    name="$(basename "$repo")"
+    names+=("$name")
+    outs+=("$tmp/$i.out")
+    git -C "$repo" pull --ff-only >"$tmp/$i.out" 2>&1 &
+    pids+=("$!")
+    i=$((i + 1))
   done
+  local n=0 pid
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+    printf "  %-20s%s\n" "${names[$n]}" "$(tail -1 "${outs[$n]}")"
+    n=$((n + 1))
+  done
+  rm -rf "$tmp"
 }
 
 # Check Claude config symlinks are healthy
