@@ -450,6 +450,7 @@ longer holds is superseded by a new record rather than edited away. Start with
 ```
 dotfiles/
 ├── setup.sh                    # Cross-platform bootstrap script
+├── lib-symlinks.sh             # Shared symlink-tree enumerator sourced by setup.sh + check-claude.sh
 ├── check-claude.sh             # Health check — verifies symlinks/memory, detects orphans; --heal self-links missing (cc uses it)
 ├── check-codex.sh              # Health check — verifies public-safe Codex symlinks
 ├── gh-bootstrap.sh             # Bootstrap GitHub auto-merge settings on new repos
@@ -538,7 +539,10 @@ dotfiles/
 │   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md and codex/AGENTS.md rules in sync
 │   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
 │   │   ├── check-no-personal-data.sh # CI: block machine-specific home paths
-│   │   └── check-skill-parity.sh     # CI: skill count + Claude/Codex artifact shapes
+│   │   ├── check-skill-parity.sh     # CI: skill + agent counts + Claude/Codex artifact shapes
+│   │   ├── check-install-integrity.sh # CI: fresh-clone install guard — exec bits + marketplace arms
+│   │   ├── checker-lib.sh          # Shared helpers sourced by the checkers (path resolve, fail counter)
+│   │   └── tests/                  # Fixture self-tests for the gate checkers
 │   ├── systemd/                # systemd units (git-hygiene timer)
 │   └── agents/                 # 17 specialized review subagents
         ├── product-strategist.md
