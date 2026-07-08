@@ -716,6 +716,11 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
             && echo "  -> Registered marketplace: $mp" \
             || echo "  -> Failed to register marketplace: $mp (continuing)"
           ;;
+        soundcheck)
+          run claude plugin marketplace add github:thejefflarson/soundcheck \
+            && echo "  -> Registered marketplace: $mp" \
+            || echo "  -> Failed to register marketplace: $mp (continuing)"
+          ;;
         *)
           echo "  -> Unknown marketplace $mp — add registration logic to setup.sh or register manually"
           ;;

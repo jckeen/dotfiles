@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-07-08 — feat: adopt soundcheck security plugin; thin security-reviewer
+
+### What changed
+- **`claude/plugins.txt`** — added `soundcheck@soundcheck` (third-party,
+  thejefflarson/soundcheck) for its automatic background security triage on
+  generated code — the one review capability the stack lacked (everything else
+  is diff/PR-time). Its on-demand commands overlap code-review/pr-review-toolkit
+  and collide with the built-in /security-review, so the comment says lean on the
+  background triage, not those commands.
+- **`setup.sh`** — marketplace registration arm for the `soundcheck` marketplace
+  (keeps check-install-integrity green).
+- **`security-reviewer` agent** — thinned to in-context app-logic review (broken
+  authorization/IDOR, trust boundaries, business-logic flaws) and now explicitly
+  defers the generic OWASP/CWE pattern catalog to soundcheck and CVEs to
+  dependency-doctor, so the three don't run the same pass three ways.
+
+### Known issues
+- `claude plugin install` clones github-sourced plugins over SSH; a machine
+  authenticating to GitHub via HTTPS only (no GitHub SSH key) will see the
+  install step fail (setup.sh tolerates it and continues). Marketplace + plugin
+  identifier are verified correct.
+
 ## 2026-07-08 — refactor: deferred audit refactors (#135–#141)
 
 ### What changed

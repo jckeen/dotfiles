@@ -23,3 +23,11 @@ codex@openai-codex
 security-guidance@claude-plugins-official
 sentry@claude-plugins-official
 posthog@claude-plugins-official
+
+# Third-party (not the official marketplace). soundcheck adds automatic
+# background security triage on generated code — the one review capability the
+# stack lacks (everything else is diff/PR-time). Its on-demand /security-review,
+# /pr-review, /contract-review overlap code-review + pr-review-toolkit and collide
+# by name with the built-in /security-review, so lean on the background triage,
+# not those commands. Code runs in your CC env; benchmarks are self-reported.
+soundcheck@soundcheck

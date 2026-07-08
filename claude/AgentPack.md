@@ -20,7 +20,7 @@ Agents deliberately carry no `model:` pin — they inherit the session model, an
 | `qa-lead` | Edge cases, bad input, error states, mobile | Before any release |
 | `perf-accessibility` | Load times, WCAG, keyboard nav, screen readers | Before launch, after major UI changes |
 | `launch-operator` | Deploy pipeline, monitoring, environment config | Pre-launch readiness check |
-| `security-reviewer` | Injection, auth, secrets, insecure data | After implementation, before merge |
+| `security-reviewer` | In-context app-logic flaws: broken authz/IDOR, trust boundaries, business logic (generic patterns → soundcheck plugin) | After implementation, before merge |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
 
 ### Utility agents (read-only except `test-writer`, which edits)
