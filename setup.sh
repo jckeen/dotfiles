@@ -772,55 +772,46 @@ if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
   done < <(git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null)
 fi
 
-# Generate a platform-appropriate .gitconfig.local (identity + platform config)
+# Generate a platform-appropriate .gitconfig.local (identity + platform config).
+# The four platform branches differ only in the [core] editor and [credential]
+# helper lines — everything else ([user], the safe.directory block restored
+# below) is identical, so we compute those two values per-platform and emit a
+# single heredoc (issue #139). GIT_EDITOR/GIT_HELPER hold the FINAL literal text
+# (backslashes already doubled for git-config syntax); the unquoted heredoc
+# inserts each value verbatim without re-processing it.
 if [[ "$PLATFORM" == "macos" ]]; then
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
-[user]
-	name = ${GIT_NAME}
-	email = ${GIT_EMAIL}
-[core]
-	editor = code --wait
-[credential]
-	helper = osxkeychain
-GITCONF
+  GIT_EDITOR='code --wait'
+  GIT_HELPER='osxkeychain'
 elif [[ "$PLATFORM" == "wsl" ]]; then
   WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r' || true)
   if [[ ! "$WIN_USER" =~ ^[A-Za-z0-9._\ -]+$ ]]; then
     echo "  Warning: Windows username contains unsupported characters; using PATH-based code lookup for editor."
     WIN_USER=""
   fi
+  # NOTE: this VS Code editor path only handles a PER-USER install
+  # (%LOCALAPPDATA%\Programs\Microsoft VS Code). A system-wide install under
+  # "C:\Program Files\Microsoft VS Code" yields a broken core.editor; those
+  # users should edit core.editor in ~/.gitconfig.local by hand.
   if [ -n "$WIN_USER" ]; then
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
-[user]
-	name = ${GIT_NAME}
-	email = ${GIT_EMAIL}
-[core]
-	editor = "C:\\\\Users\\\\${WIN_USER}\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code" --wait
-[credential]
-	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
-GITCONF
+    GIT_EDITOR="\"C:\\\\Users\\\\${WIN_USER}\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code\" --wait"
   else
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
-[user]
-	name = ${GIT_NAME}
-	email = ${GIT_EMAIL}
-[core]
-	editor = code --wait
-[credential]
-	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
-GITCONF
+    GIT_EDITOR='code --wait'
   fi
+  GIT_HELPER='/mnt/c/Program\\ Files/Git/mingw64/bin/git-credential-manager.exe'
 else
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+  GIT_EDITOR='code --wait'
+  GIT_HELPER='store'
+fi
+
+cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
 [user]
 	name = ${GIT_NAME}
 	email = ${GIT_EMAIL}
 [core]
-	editor = code --wait
+	editor = ${GIT_EDITOR}
 [credential]
-	helper = store
+	helper = ${GIT_HELPER}
 GITCONF
-fi
 chmod 600 "$DOTFILES_DIR/.gitconfig.local"
 
 # Restore preserved safe.directory entries (issue #122) — idempotent; runs on
