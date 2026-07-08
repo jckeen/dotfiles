@@ -1,6 +1,6 @@
 ---
 name: simplify
-description: Review recently changed code for unnecessary complexity and simplify it — removes over-engineering, dead code, and premature abstractions while preserving behavior. Use after building a feature, or when the user says "simplify this", "this feels over-engineered", "clean this up", or "de-engineer".
+description: Review recently changed code for unnecessary complexity and edit it in place to simplify — removes over-engineering, dead code, and premature abstractions while preserving behavior. Unlike review (which only reports), this applies the changes. Use after building a feature, or when the user says "simplify this", "this feels over-engineered", "clean this up", or "de-engineer".
 ---
 
 When the user runs /simplify, do the following:

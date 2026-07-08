@@ -1,6 +1,6 @@
 ---
 name: changelog
-description: Records what changed this session into a CHANGELOG.md at the project root — reads git log since the last entry and prepends a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user says "update the changelog", "log this session", "add a changelog entry", "record what we did", or wraps up a unit of work and wants it captured.
+description: Records what changed this session into a CHANGELOG.md at the project root — reads git log since the last entry and prepends a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user explicitly wants to log/record changes — "update the changelog", "log this session", "add a changelog entry", "record what we did". For preserving context across /clear or a new session use handoff instead; for improving your skills use session-retro.
 ---
 
 When the user runs /changelog, do the following:
