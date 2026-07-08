@@ -116,6 +116,54 @@ _check_critical_symlinks() {
   fi
 }
 
+# Shared cc/cx preflight: resume detection, project cd, and the "Syncing
+# repos…" sequence (pull-all + a per-tool health check). Extracted from cc/cx
+# so the two can't drift apart again.
+#   $1  — space-separated resume keywords (e.g. "--resume -r --continue -c")
+#   $2  — health-check command run inside the sync block (e.g. "sync-memory")
+#   $3… — the caller's original positional args ("$@")
+# Runs in the caller's shell, so any `cd` persists. Communicates back through
+# two globals the caller reads after the call:
+#   _agent_resuming — 1 if a resume/session arg was detected (sync was skipped)
+#   _agent_shifted  — 1 if $3 was a <project> dir the caller should `shift` out
+#                     so it never reaches the tool as a positional prompt arg
+_agent_preflight() {
+  local resume_keys="$1" health_cmd="$2"
+  shift 2
+
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+
+  # Detect resume-style invocation anywhere in the args. resume_keys is left
+  # unquoted so it word-splits into the individual keywords to match against.
+  _agent_resuming=0
+  local arg key
+  for arg in "$@"; do
+    for key in $resume_keys; do
+      if [ "$arg" = "$key" ]; then _agent_resuming=1; break 2; fi
+    done
+  done
+
+  # If a project name was passed, cd into it (honored even when resuming) and
+  # tell the caller to shift it out.
+  _agent_shifted=0
+  if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    cd "$dev_dir/$1" || return 1
+    _agent_shifted=1
+  elif [ "$_agent_resuming" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    # Not resuming and not in a git repo — default to dev directory
+    cd "$dev_dir" || return 1
+  fi
+
+  if [ "$_agent_resuming" -eq 0 ]; then
+    echo "Syncing repos..."
+    pull-all
+    echo ""
+    "$health_cmd"
+    echo ""
+  fi
+}
+
 # Launch Claude, syncing everything first
 # Usage: cc                — launch from current dir (defaults to ~/dev if outside a git repo)
 #        cc <project>       — cd into ~/dev/<project> first, then launch
@@ -125,38 +173,14 @@ _check_critical_symlinks() {
 # Any --resume/-r/--continue/-c in the args triggers the quick-resume path:
 # no repo sync, no memory sync, no claude health check.
 cc() {
-  local dev_dir
-  dev_dir="$(_dev_dir)"
-
-  # Detect resume-style invocation anywhere in the args
-  local resuming=0
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --resume|-r|--continue|-c) resuming=1; break ;;
-    esac
-  done
-
-  # If a project name was passed, cd into it (honored even when resuming).
-  # shift it out so it doesn't reach claude as a positional prompt argument.
-  if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
-    cd "$dev_dir/$1" || return 1
-    shift
-  elif [ "$resuming" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
-    # Not resuming and not in a git repo — default to dev directory
-    cd "$dev_dir" || return 1
-  fi
-
-  # Quick critical symlink validation (fast — just 2 stat calls)
+  # Quick critical symlink validation (fast — just 2 stat calls; cwd-independent,
+  # so running it before the preflight cd is equivalent to running it after).
   _check_critical_symlinks
 
-  if [ "$resuming" -eq 0 ]; then
-    echo "Syncing repos..."
-    pull-all
-    echo ""
-    sync-memory
-    echo ""
-  fi
+  # Shared preflight: resume detection, project cd, and the repo + memory sync.
+  _agent_preflight "--resume -r --continue -c" "sync-memory" "$@" || return 1
+  [ "$_agent_shifted" -eq 1 ] && shift
+  local resuming="$_agent_resuming"
 
   # --heal runs on EVERY launch, including resume — and AFTER the repo sync, so a
   # fresh launch links the hook/script/skill files the pull just fetched (running
@@ -230,31 +254,10 @@ cc() {
 #        cx <project>        — cd into ~/dev/<project> first, then launch
 #        cx resume|fork ...  — resume/fork without repo sync
 cx() {
-  local dev_dir
-  dev_dir="$(_dev_dir)"
-
-  local session_cmd=0
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      resume|fork) session_cmd=1; break ;;
-    esac
-  done
-
-  if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
-    cd "$dev_dir/$1" || return 1
-    shift
-  elif [ "$session_cmd" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
-    cd "$dev_dir" || return 1
-  fi
-
-  if [ "$session_cmd" -eq 0 ]; then
-    echo "Syncing repos..."
-    pull-all
-    echo ""
-    "$(_dev_dir)/dotfiles/check-codex.sh"
-    echo ""
-  fi
+  # Shared preflight: resume/fork detection, project cd, and the repo sync +
+  # Codex config health check (no Claude memory or ~/.claude healing).
+  _agent_preflight "resume fork" "$(_dev_dir)/dotfiles/check-codex.sh" "$@" || return 1
+  [ "$_agent_shifted" -eq 1 ] && shift
 
   codex "$@"
 }
