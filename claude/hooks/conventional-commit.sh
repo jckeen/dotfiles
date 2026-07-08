@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse hook: enforce conventional commit message format.
-# Validates that commit messages match: type: description
-# Valid types: feat, fix, refactor, chore, docs, test, style
+# Validates that commit messages match: type(scope)?!?: description
+# Types kept in sync with claude/scripts/check-commit-format.sh (the CI backstop).
 set -euo pipefail
 
 INPUT=$(cat)
@@ -64,10 +64,14 @@ fi
 # which is the real subject — instead of erroring on a leading blank.
 FIRST_LINE=$(printf '%s\n' "$MSG" | grep -v -m1 '^[[:space:]]*$' || true)
 
-# Validate: first non-blank line must match type: description
-VALID_TYPES="feat|fix|refactor|chore|docs|test|style|auto"
-if ! printf '%s' "$FIRST_LINE" | grep -qE "^($VALID_TYPES): .+"; then
-  deny "Commit message must start with a conventional type: 'feat:', 'fix:', 'refactor:', 'chore:', 'docs:', 'test:', or 'style:'. Got: '$(printf '%s' "$FIRST_LINE" | cut -c1-60)'"
+# Validate: first non-blank line must match  type(scope)?!?: description
+# Type list and subject regex are kept identical to the CI backstop
+# claude/scripts/check-commit-format.sh so a message can't pass one gate and
+# fail the other. Update both together.
+VALID_TYPES="feat|fix|refactor|chore|docs|test|style|perf|build|ci|revert"
+SUBJECT_RE="^(${VALID_TYPES})(\([a-z0-9._/-]+\))?!?: .+"
+if ! printf '%s' "$FIRST_LINE" | grep -qE "$SUBJECT_RE"; then
+  deny "Commit message must start with a conventional type: ${VALID_TYPES//|/, } (optionally with (scope) and/or ! before the colon). Got: '$(printf '%s' "$FIRST_LINE" | cut -c1-60)'"
 fi
 
 exit 0

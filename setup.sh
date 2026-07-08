@@ -29,6 +29,9 @@ run() {
 }
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolved once here; audit_link validates every source path against it, so
+# recomputing realpath per-file (once per managed link) would be pure overhead.
+DOTFILES_REAL="$(realpath "$DOTFILES_DIR" 2>/dev/null || echo "$DOTFILES_DIR")"
 HOME_DIR="$HOME"
 # Dev dir: derived from dotfiles repo location (parent of this repo).
 # Defined early so it can be used throughout (was previously set mid-script,
@@ -85,7 +88,7 @@ run_health_audit() {
     local name
     name="$(basename "$f")"
     case " $NOLINK " in *" $name "*) continue ;; esac
-    audit_link "$f" "$CLAUDE_DST/$name" "$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    alink "$f" "$CLAUDE_DST/$name" "$name" "$mode"
   done
 
   # Hooks
@@ -93,7 +96,7 @@ run_health_audit() {
     [ -f "$f" ] || continue
     local name
     name="$(basename "$f")"
-    audit_link "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    alink "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name" "$mode"
   done
 
   # Skills
@@ -105,7 +108,7 @@ run_health_audit() {
       [ -f "$skill_file" ] || continue
       local fname
       fname="$(basename "$skill_file")"
-      audit_link "$skill_file" "$CLAUDE_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+      alink "$skill_file" "$CLAUDE_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname" "$mode"
     done
   done
 
@@ -114,7 +117,7 @@ run_health_audit() {
     [ -f "$f" ] || continue
     local name
     name="$(basename "$f")"
-    audit_link "$f" "$CLAUDE_DST/agents/$name" "agents/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+    alink "$f" "$CLAUDE_DST/agents/$name" "agents/$name" "$mode"
   done
 
   # Scripts
@@ -123,7 +126,7 @@ run_health_audit() {
       [ -f "$f" ] || continue
       local name
       name="$(basename "$f")"
-      audit_link "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+      alink "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name" "$mode"
     done
   fi
 
@@ -134,7 +137,7 @@ run_health_audit() {
   for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
-    audit_link "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable" && verified=$((verified + 1)) || errors=$((errors + 1))
+    alink "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable"
   done
 
   # Chrome
@@ -144,7 +147,7 @@ run_health_audit() {
       local name
       name="$(basename "$f")"
       case "$name" in *.md) continue ;; esac
-      audit_link "$f" "$CLAUDE_DST/chrome/$name" "chrome/$name" "$mode" && verified=$((verified + 1)) || errors=$((errors + 1))
+      alink "$f" "$CLAUDE_DST/chrome/$name" "chrome/$name" "$mode"
     done
   fi
 
@@ -169,15 +172,14 @@ run_health_audit() {
   echo ""
   echo "=== Audit Summary ==="
   echo "  Verified: $verified"
+  [ "$mode" = "repair" ] && echo "  Repaired: $repaired"
   echo "  Broken:   $errors"
-  if [ "$mode" = "repair" ] && [ "$errors" -gt 0 ]; then
-    echo "  (Attempted repairs on broken links)"
-  fi
 
-  # Expose final tallies to the script-level summary block (M5).
+  # Expose the audit tallies to the script-level summary block (M5). Note:
+  # LINKS_CREATED is owned by link_file (links made during install) — the audit
+  # must NOT overwrite it, since the end-of-run audit is check-mode (repaired=0).
   LINKS_VERIFIED="$verified"
   LINKS_BROKEN="$errors"
-  LINKS_CREATED="${repaired:-0}"
 
   [ "$errors" -eq 0 ] && return 0 || return 1
 }
@@ -206,9 +208,9 @@ enforce_executable_bit() {
   fi
   printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
   if [ "$mode" = "repair" ]; then
-    # Check chmod's exit status explicitly: audit_link is invoked in
-    # `audit_link ... && ... || ...` chains, which suppresses set -e
-    # for commands inside the function. A silent chmod failure (e.g.
+    # Check chmod's exit status explicitly: audit_link runs under `|| rc=$?`
+    # in the alink wrapper, which suppresses set -e for commands inside the
+    # function. A silent chmod failure (e.g.
     # EPERM on a read-only checkout) must NOT print FIXED.
     if chmod +x "$src_real" 2>/dev/null; then
       printf '  \033[32mFIXED\033[0m   %s (chmod +x)\n' "$label"
@@ -219,18 +221,18 @@ enforce_executable_bit() {
   return 1
 }
 
-# Check a single symlink. Returns 0 if OK, 1 if broken.
-# In repair mode, recreates broken links.
+# Check a single symlink.
+# Returns: 0 = OK (already correct), 2 = repaired (repair mode, fix applied),
+#          1 = broken/unfixed (check mode, or a repair that couldn't be applied).
 audit_link() {
   local src="$1" dst="$2" label="$3" mode="$4" require="${5:-}"
-  local src_real dotfiles_real
+  local src_real
   src_real="$(realpath "$src" 2>/dev/null)" || {
     printf '  \033[31mINVALID\033[0m %s source cannot be resolved: %s\n' "$label" "$src"
     return 1
   }
-  dotfiles_real="$(realpath "$DOTFILES_DIR" 2>/dev/null)" || return 1
   case "$src_real" in
-    "$dotfiles_real"/*) ;;
+    "$DOTFILES_REAL"/*) ;;
     *)
       printf '  \033[31mINVALID\033[0m %s source outside dotfiles: %s\n' "$label" "$src_real"
       return 1
@@ -262,6 +264,7 @@ audit_link() {
       if [ "$require" = "executable" ]; then
         enforce_executable_bit "$src_real" "$label" "$mode" || true
       fi
+      return 2
     fi
     return 1
   elif [ -f "$dst" ]; then
@@ -274,6 +277,7 @@ audit_link() {
       if [ "$require" = "executable" ]; then
         enforce_executable_bit "$src_real" "$label" "$mode" || true
       fi
+      return 2
     fi
     return 1
   elif [ ! -e "$dst" ]; then
@@ -285,9 +289,25 @@ audit_link() {
       if [ "$require" = "executable" ]; then
         enforce_executable_bit "$src_real" "$label" "$mode" || true
       fi
+      return 2
     fi
     return 1
   fi
+  return 0
+}
+
+# Run audit_link and fold its result into the verified/repaired/errors tallies:
+# 0 = already OK, 2 = repaired this run, anything else = broken/unfixed. Relies
+# on bash dynamic scope — those three names are locals of run_health_audit, the
+# only caller. `|| rc=$?` keeps set -e from aborting on audit_link's non-zero.
+alink() {
+  local rc=0
+  audit_link "$@" || rc=$?
+  case "$rc" in
+    0) verified=$((verified + 1)) ;;
+    2) repaired=$((repaired + 1)) ;;
+    *) errors=$((errors + 1)) ;;
+  esac
   return 0
 }
 
@@ -339,16 +359,22 @@ detect_platform() {
   echo "Detected platform: $PLATFORM"
 }
 
-# Helper: create a symlink, backing up any existing file
+# Helper: create a symlink, backing up any existing file.
+# No-op when the link already points at the right source, so re-running setup.sh
+# doesn't needlessly rm+recreate every link (churns inodes for zero benefit).
+# Increments LINKS_CREATED only when it actually creates a link, so the summary
+# reports links made THIS run (0 on a clean re-run, not a constant).
 link_file() {
   local src="$1" dst="$2"
   if [ -L "$dst" ]; then
+    [ "$(readlink "$dst")" = "$src" ] && return 0
     rm "$dst"
   elif [ -f "$dst" ]; then
     mv "$dst" "$dst.backup"
     echo "  -> backed up existing $dst to $dst.backup"
   fi
   ln -s "$src" "$dst"
+  LINKS_CREATED=$((LINKS_CREATED + 1))
 }
 
 detect_platform
