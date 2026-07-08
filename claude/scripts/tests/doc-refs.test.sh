@@ -89,6 +89,34 @@ new_repo
 w CHANGELOG.md '# Changelog' '' '- Removed Ghost.hook.ts in the PAI decommission.'
 check "changelog allowlisted broken ref passes" 0 "doc-refs: OK"
 
+# --- Case 6: fenced code — a link inside a ``` fence is not a live ref (#138) --
+# Before the fix this false-positived here while check-doc-truth.sh (which
+# strips code) passed it. The fenced link points nowhere; it must be ignored.
+new_repo
+w guide.md \
+  'Example usage:' \
+  '```' \
+  'See [x](./does-not-exist.md) inside a fenced block.' \
+  '```' \
+  'Prose after the fence.'
+check "link inside code fence is ignored" 0 "doc-refs: OK"
+
+# --- Case 7: a genuinely broken link OUTSIDE a fence still fails (#138) -------
+# A harmless fenced link sits nearby; the real broken link in prose must fail
+# and be the one reported.
+new_repo
+w guide.md \
+  '```' \
+  '[fenced](./nope-fenced.md)' \
+  '```' \
+  'Real broken [link](./nope-real.md) in prose.'
+check "broken link outside fence still fails" 1 "broken link: ./nope-real.md"
+
+# --- Case 8: inline `code` span link is ignored too (matches doc-truth) -------
+new_repo
+w guide.md 'Inline example: `[y](./also-missing.md)` is just documentation.'
+check "link inside inline code span is ignored" 0 "doc-refs: OK"
+
 echo "---"
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]

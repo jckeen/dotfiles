@@ -68,6 +68,20 @@ report() {
   broken=$((broken + 1))
 }
 
+# --- Strip code before scanning (matches check-doc-truth.sh) ---
+# A hook/skill/link reference inside a fenced code block or an inline `code`
+# span is illustrative, not a live reference — check-doc-truth.sh strips these
+# before its link check, so a link in a fenced block passes there but used to
+# false-positive here (issue #138). Blank fenced/inline-code lines in place so
+# reported line numbers stay aligned with the source file.
+strip_code() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ { infence = !infence; print ""; next }
+    infence                  { print ""; next }
+                             { gsub(/`[^`]*`/, ""); print }
+  '
+}
+
 # --- Scan each doc ---------------------------------------------
 for doc in "${docs[@]}"; do
   is_allowlisted "$doc" && continue
@@ -75,6 +89,7 @@ for doc in "${docs[@]}"; do
 
   # Constant per doc — resolve once, not once per matched line.
   doc_dir="$(dirname "$doc")"
+  stripped="$(strip_code < "$doc")"
 
   while IFS=: read -r lineno content; do
     # 1) Hook references: <Word>.hook.ts / <Word>.hook.sh
@@ -116,7 +131,8 @@ for doc in "${docs[@]}"; do
     done < <(printf '%s\n' "$content" \
       | grep -oE '\[[^]]*\]\([^)]+\)' || true)
 
-  done < <(grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' "$doc" || true)
+  done < <(printf '%s\n' "$stripped" \
+    | grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' || true)
 done
 
 # --- Verdict ---------------------------------------------------
