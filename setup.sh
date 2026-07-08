@@ -820,6 +820,15 @@ if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
   done < <(git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null)
 fi
 
+# Fall back to the identity already in .gitconfig.local when we don't have one
+# from `git config` or env. Without this, an unattended run (--yes with no
+# GIT_NAME/GIT_EMAIL and no effective git identity — e.g. a fresh $HOME) would
+# rewrite the file with an EMPTY [user] block and wipe a real identity.
+if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
+  [ -z "$GIT_NAME" ]  && GIT_NAME="$(git config --file "$DOTFILES_DIR/.gitconfig.local" user.name 2>/dev/null || true)"
+  [ -z "$GIT_EMAIL" ] && GIT_EMAIL="$(git config --file "$DOTFILES_DIR/.gitconfig.local" user.email 2>/dev/null || true)"
+fi
+
 # Generate a platform-appropriate .gitconfig.local (identity + platform config).
 # The four platform branches differ only in the [core] editor and [credential]
 # helper lines — everything else ([user], the safe.directory block restored
@@ -851,7 +860,14 @@ else
   GIT_HELPER='store'
 fi
 
-cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+# The .gitconfig.local rewrite is a destructive op — skip it under --dry-run
+# (it overwrites the user's real identity + credential helper). The link_file
+# calls below stay outside the guard: the file already exists in dry-run, so
+# linking it is safe and keeps the audit consistent.
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "  [DRY] would write $DOTFILES_DIR/.gitconfig.local (user='${GIT_NAME} <${GIT_EMAIL}>', editor=${GIT_EDITOR}), preserving ${#_preserved_safe_dirs[@]} safe.directory entr(ies)"
+else
+  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
 [user]
 	name = ${GIT_NAME}
 	email = ${GIT_EMAIL}
@@ -860,35 +876,36 @@ cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
 [credential]
 	helper = ${GIT_HELPER}
 GITCONF
-chmod 600 "$DOTFILES_DIR/.gitconfig.local"
+  chmod 600 "$DOTFILES_DIR/.gitconfig.local"
 
-# Restore preserved safe.directory entries (issue #122) — idempotent; runs on
-# every platform. The WSL block below re-adds the managed dotfiles/claude-memory
-# entries; this loop keeps the user's own project entries the rewrite dropped.
-if [ "${#_preserved_safe_dirs[@]}" -gt 0 ]; then
-  for _safe_dir in "${_preserved_safe_dirs[@]}"; do
-    git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
-      | grep -Fxq "$_safe_dir" \
-      || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
-  done
+  # Restore preserved safe.directory entries (issue #122) — idempotent; runs on
+  # every platform. The WSL block below re-adds the managed dotfiles/claude-memory
+  # entries; this loop keeps the user's own project entries the rewrite dropped.
+  if [ "${#_preserved_safe_dirs[@]}" -gt 0 ]; then
+    for _safe_dir in "${_preserved_safe_dirs[@]}"; do
+      git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
+        | grep -Fxq "$_safe_dir" \
+        || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
+    done
+  fi
+
+  # WSL-specific: mark dev repos as safe (idempotent — skip if already present).
+  # DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
+  # Write to .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to this
+  # repo's tracked .gitconfig, so `git config --global` would commit machine paths
+  # (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
+  # gh credential-helper block below.
+  if [[ "$PLATFORM" == "wsl" ]]; then
+    for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
+      git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
+        | grep -Fxq "$_safe_dir" \
+        || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
+    done
+  fi
 fi
 
 link_file "$DOTFILES_DIR/.gitconfig" "$HOME_DIR/.gitconfig"
 link_file "$DOTFILES_DIR/.gitconfig.local" "$HOME_DIR/.gitconfig.local"
-
-# WSL-specific: mark dev repos as safe (idempotent — skip if already present).
-# DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
-# Write to .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to this
-# repo's tracked .gitconfig, so `git config --global` would commit machine paths
-# (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
-# gh credential-helper block below.
-if [[ "$PLATFORM" == "wsl" ]]; then
-  for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
-    git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
-      | grep -Fxq "$_safe_dir" \
-      || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
-  done
-fi
 
 echo "  -> .gitconfig linked"
 
