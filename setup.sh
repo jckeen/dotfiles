@@ -754,8 +754,11 @@ if git config user.name &>/dev/null; then
   GIT_EMAIL="$(git config user.email || true)"
   echo "  Using existing git identity: $GIT_NAME <$GIT_EMAIL>"
 else
-  read -rp "Git user name: " GIT_NAME
-  read -rp "Git email: " GIT_EMAIL
+  # `|| true` matches every other prompt in this script: under `set -e` a read
+  # that hits EOF (non-interactive/piped stdin) returns non-zero and would
+  # otherwise abort the whole install.
+  read -rp "Git user name: " GIT_NAME || true
+  read -rp "Git email: " GIT_EMAIL || true
 fi
 
 # Preserve any safe.directory entries a prior run (or the user) added before we

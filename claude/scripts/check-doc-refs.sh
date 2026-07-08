@@ -81,6 +81,9 @@ for doc in "${docs[@]}"; do
   is_allowlisted "$doc" && continue
   [[ -f "$doc" ]] || continue
 
+  # Constant per doc — resolve once, not once per matched line.
+  doc_dir="$(dirname "$doc")"
+
   while IFS=: read -r lineno content; do
     # 1) Hook references: <Word>.hook.ts / <Word>.hook.sh
     while read -r hook; do
@@ -103,7 +106,6 @@ for doc in "${docs[@]}"; do
 
     # 3) Relative Markdown links: [text](path) pointing at a local file/dir.
     # Skip external URLs, in-page anchors, mailto/tel, and placeholder targets.
-    doc_dir="$(dirname "$doc")"
     while read -r link; do
       [[ -z "$link" ]] && continue
       target="$(printf '%s' "$link" | sed -E 's/.*\]\(([^)]+)\)/\1/')"
