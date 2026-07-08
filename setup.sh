@@ -16,6 +16,25 @@ SETUP_START=$(date +%s)
 # Set by the --dry-run flag in the arg-parse loop below (M6).
 DRY_RUN="${DRY_RUN:-0}"
 
+# ASSUME_YES: when 1 (--yes), every interactive prompt takes a safe default
+# instead of blocking on stdin, and browser-login steps are skipped — so the
+# installer can run unattended (e.g. the CI dry-run smoke). Set by --yes below.
+ASSUME_YES="${ASSUME_YES:-0}"
+
+# ask_yn <default: Y|N> <prompt-text> — sets the global `yn`. Under --yes it
+# substitutes <default> without reading stdin; otherwise it prompts as before
+# (`|| true` so an EOF on piped stdin doesn't abort under set -e).
+ask_yn() {
+  local __def="$1" __msg="$2"
+  if [ "$ASSUME_YES" = "1" ]; then
+    yn="$__def"
+    echo "  -> [--yes] $__msg$__def"
+  else
+    yn=""
+    read -rp "$__msg" yn || true
+  fi
+}
+
 # run(): wrap destructive operations. Prints [DRY] $* when DRY_RUN=1,
 # otherwise executes "$@". Use ONLY for destructive ops (installs,
 # network downloads, writes outside the repo). Read-only checks
@@ -45,17 +64,12 @@ BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
 # Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
 
-# Top-level claude/ files that are deliberately NOT symlinked into ~/.claude/.
-# Single source of truth: claude/nolink.txt (also read by check-claude.sh and
-# SymlinkRepair.hook.ts). Hardcoded fallback if the manifest is missing.
-read_nolink() {
-  local manifest="$DOTFILES_DIR/claude/nolink.txt"
-  if [ -f "$manifest" ]; then
-    sed 's/#.*//' "$manifest" | awk 'NF {printf "%s ", $1}'
-  else
-    echo "AgentPack.md settings.json plugins.txt nolink.txt"
-  fi
-}
+# Shared symlink enumerator (issue #135): the claude/ tree walk + nolink loading
+# live in lib-symlinks.sh, sourced by both setup.sh and check-claude.sh so the
+# install linking, the health audit, and the standalone checker can't drift.
+# Resolve it from this script's own directory (DOTFILES_DIR), not the cwd.
+# shellcheck source=lib-symlinks.sh
+source "$DOTFILES_DIR/lib-symlinks.sh"
 
 # Counters for summary
 LINKS_CREATED=0
@@ -77,79 +91,33 @@ run_health_audit() {
   echo "--- Dotfiles symlinks ---"
   local CLAUDE_SRC="$DOTFILES_DIR/claude"
   local CLAUDE_DST="$HOME_DIR/.claude"
-  # Un-linked files come from the claude/nolink.txt manifest (see read_nolink).
-  # CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so it's audited.
-  local NOLINK
-  NOLINK="$(read_nolink)"
-
-  # Top-level files
-  for f in "$CLAUDE_SRC/"*; do
-    [ -f "$f" ] || continue
-    local name
-    name="$(basename "$f")"
-    case " $NOLINK " in *" $name "*) continue ;; esac
-    alink "$f" "$CLAUDE_DST/$name" "$name" "$mode"
-  done
-
-  # Hooks
-  for f in "$CLAUDE_SRC/hooks/"*.sh "$CLAUDE_SRC/hooks/"*.ts; do
-    [ -f "$f" ] || continue
-    local name
-    name="$(basename "$f")"
-    alink "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name" "$mode"
-  done
-
-  # Skills
-  for skill_dir in "$CLAUDE_SRC/skills/"*/; do
-    [ -d "$skill_dir" ] || continue
-    local skill_name
-    skill_name="$(basename "$skill_dir")"
-    for skill_file in "$skill_dir"*; do
-      [ -f "$skill_file" ] || continue
-      local fname
-      fname="$(basename "$skill_file")"
-      alink "$skill_file" "$CLAUDE_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname" "$mode"
-    done
-  done
-
-  # Agents
-  for f in "$CLAUDE_SRC/agents/"*.md; do
-    [ -f "$f" ] || continue
-    local name
-    name="$(basename "$f")"
-    alink "$f" "$CLAUDE_DST/agents/$name" "agents/$name" "$mode"
-  done
-
-  # Scripts
-  if [ -d "$CLAUDE_SRC/scripts" ]; then
-    for f in "$CLAUDE_SRC/scripts/"*.sh; do
-      [ -f "$f" ] || continue
-      local name
-      name="$(basename "$f")"
-      alink "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name" "$mode"
-    done
+  # The claude/ tree (top-level → hooks → skills → agents → scripts → chrome,
+  # nolink-filtered) comes from the shared enumerator (lib-symlinks.sh). CLAUDE.md
+  # IS linked, so it's audited. The audit ignores the enumerator's executable
+  # flag for tree entries (historical behavior: +x is only enforced on bin
+  # scripts below). Hard-fail loudly if the nolink manifest is missing rather
+  # than silently auditing nothing.
+  if ! symlink_require_manifest "$CLAUDE_SRC"; then
+    printf '  \033[31mFATAL\033[0m claude/nolink.txt missing at %s — cannot audit\n' "$CLAUDE_SRC/nolink.txt"
+    errors=$((errors + 1))
+  else
+    local _src _dst _label _flags
+    while IFS=$'\t' read -r _src _dst _label _flags; do
+      [ -n "$_src" ] || continue
+      alink "$_src" "$_dst" "$_label" "$mode"
+    done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
   fi
 
-  # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — `executable=1`
-  # tells audit_link to also enforce the +x bit so an un-executable source
-  # script doesn't pass health checks while still failing at runtime.
+  # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — kept separate from
+  # the claude/ tree (they land outside ~/.claude). `executable` tells audit_link
+  # to also enforce the +x bit so an un-executable source script doesn't pass
+  # health checks while still failing at runtime.
   local bin_src
   for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     alink "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable"
   done
-
-  # Chrome
-  if [ -d "$CLAUDE_SRC/chrome" ]; then
-    for f in "$CLAUDE_SRC/chrome/"*; do
-      [ -f "$f" ] || continue
-      local name
-      name="$(basename "$f")"
-      case "$name" in *.md) continue ;; esac
-      alink "$f" "$CLAUDE_DST/chrome/$name" "chrome/$name" "$mode"
-    done
-  fi
 
   echo ""
 
@@ -322,6 +290,7 @@ alink() {
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --yes|-y)  ASSUME_YES=1 ;;
   esac
 done
 for arg in "$@"; do
@@ -332,6 +301,8 @@ Usage: ./setup.sh [flags]
 
 Flags:
   --dry-run      Show destructive ops without executing (installs, downloads)
+  --yes, -y      Non-interactive: take safe defaults for every prompt and skip
+                 the browser-login steps (for unattended/CI runs)
   --check        Run symlink health audit and exit
   --repair       Audit symlinks and recreate broken ones, then exit
   --help, -h     Show this help
@@ -397,14 +368,12 @@ if [ -n "$MISSING_PKGS" ]; then
       echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
       exit 1
     fi
-    yn=""
-    read -rp "Install via brew? [Y/n] " yn || true
+    ask_yn "Y" "Install via brew? [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
     run brew install $MISSING_PKGS || true
   else
-    yn=""
-    read -rp "Install via apt? (requires sudo) [Y/n] " yn || true
+    ask_yn "Y" "Install via apt? (requires sudo) [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
     run sudo apt update && run sudo apt install -y $MISSING_PKGS unzip
@@ -417,8 +386,7 @@ fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
   echo "--- ALSA → PulseAudio routing (WSL, needed for /voice) ---"
-  yn=""
-  read -rp "Set up audio routing for Claude /voice? (requires sudo) [y/N] " yn || true
+  ask_yn "N" "Set up audio routing for Claude /voice? (requires sudo) [y/N] "
   if [[ "${yn:-}" =~ ^[Yy] ]]; then
     run sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
     link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
@@ -492,35 +460,70 @@ fi
 # (no PATH lookup), so we always ensure a symlink at ~/.bun/bin/bun pointing
 # at whichever bun is on PATH — regardless of install method
 # (brew, npm, curl installer).
-# Pin + verify the bun installer to defend against upstream compromise (H6).
-# Rationale: piping a remote script to bash with no integrity check is the
-# classic supply-chain hole. We download to a temp file, verify the SHA-256
-# of the installer script against an expected digest, then execute. The
-# installer itself is responsible for fetching pinned bun binaries via
-# BUN_INSTALL_VERSION.
+# Install bun by pinning the BINARY RELEASE version and verifying the download
+# against that release's own SHASUMS256.txt — NOT by pinning a SHA of the
+# mutable bun.sh/install script (issue #140). The old approach hashed the
+# installer script, which bun edits upstream independently of releases; the day
+# it changed, every fresh clone hit a SHA mismatch and fell to "warn + skip,"
+# silently disabling the TypeScript hooks. A release tag is immutable and its
+# SHASUMS256.txt is generated per-release, so the checksum never drifts under us.
 #
-# To refresh the pin when bun's installer script changes upstream:
-#   curl -fsSL https://bun.sh/install | sha256sum
-#   # then paste the digest into EXPECTED_SHA256 below
+# To bump bun: set BUN_VERSION to a newer tag from
+# https://github.com/oven-sh/bun/releases — there is NO hash to hand-maintain;
+# the checksum is fetched from the release itself and verified at install time.
 #
-# Escape hatch: set BUN_UNPINNED=1 in the environment to skip verification
-# and run the bare installer (matches the pre-H6 behavior). Use only if the
-# upstream installer changed and you've reviewed the new content. The
-# default path remains pinned-and-verified.
-BUN_INSTALL_VERSION="bun-v1.1.38"
-EXPECTED_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
+# Escape hatch: set BUN_UNPINNED=1 to skip the pinned path and run the upstream
+# bun.sh/install script unverified (supply-chain risk). The default path
+# downloads a pinned, checksum-verified binary.
+BUN_VERSION="bun-v1.3.14"
+
+# sha256 of a file, portable across Linux (sha256sum) and macOS (shasum).
+_sha256() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# Map this host to a bun release asset basename (no .zip), mirroring
+# bun.sh/install's own os/arch/variant selection: -musl for musl libc,
+# -baseline for x64 CPUs without AVX2 (avoids SIGILL on older hardware).
+bun_asset_name() {
+  local os arch target
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x64" ;;
+    arm64|aarch64) arch="aarch64" ;;
+    *) return 1 ;;
+  esac
+  target="bun-${os}-${arch}"
+  if [ "$os" = "linux" ] && ldd --version 2>&1 | grep -qi musl; then
+    target="${target}-musl"
+  fi
+  if [ "$arch" = "x64" ]; then
+    local has_avx2=1
+    if [ "$os" = "linux" ]; then
+      grep -qi avx2 /proc/cpuinfo 2>/dev/null || has_avx2=0
+    else
+      [ "$(sysctl -n hw.optional.avx2_0 2>/dev/null)" = "1" ] || has_avx2=0
+    fi
+    [ "$has_avx2" -eq 0 ] && target="${target}-baseline"
+  fi
+  echo "$target"
+}
 
 install_bun_pinned() {
-  local tmp
-  tmp="$(mktemp)" || { echo "  -> mktemp failed; skipping bun install"; return 1; }
-  # Always clean up the temp installer.
-  trap 'rm -f "$tmp"' RETURN
-
-  # Escape hatch for the case where upstream changed and we haven't refreshed
-  # EXPECTED_SHA256 yet. Loud warning, but unblocks new-machine bootstrap.
+  # Escape hatch: run the upstream installer unverified (pre-pin behavior).
   if [ "${BUN_UNPINNED:-0}" = "1" ]; then
     echo "  -> WARNING: BUN_UNPINNED=1 set; running unverified bun installer"
-    echo "     (pre-H6 behavior — supply-chain risk)"
+    echo "     (supply-chain risk — the pinned+verified path is the default)"
     if [ "${DRY_RUN:-0}" = "1" ]; then
       echo "  [DRY] would exec unverified bun installer"
       return 0
@@ -529,28 +532,69 @@ install_bun_pinned() {
     return
   fi
 
-  echo "  -> Downloading bun installer (pinned: $BUN_INSTALL_VERSION)"
-  if ! run curl -fsSL https://bun.sh/install -o "$tmp"; then
-    echo "  -> Download failed; skipping bun install"
+  local asset
+  asset="$(bun_asset_name)" || {
+    echo "  -> Unsupported platform/arch for pinned bun install; skipping"
     return 1
-  fi
-  # In dry-run mode, curl was skipped — there's nothing to verify or exec.
+  }
+  local base="https://github.com/oven-sh/bun/releases/download/${BUN_VERSION}"
+
+  echo "  -> Installing bun ${BUN_VERSION} (${asset}) from GitHub release"
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    echo "  [DRY] would verify SHA-256 and exec bun installer"
+    echo "  [DRY] would download ${base}/${asset}.zip"
+    echo "  [DRY] would verify against SHASUMS256.txt and extract to ~/.bun/bin/bun"
     return 0
   fi
-  local actual
-  actual="$(sha256sum "$tmp" | awk '{print $1}')"
-  if [ "$actual" != "$EXPECTED_SHA256" ]; then
-    echo "  -> SHA-256 mismatch — installer changed upstream."
-    echo "     Expected: $EXPECTED_SHA256"
-    echo "     Got:      $actual"
-    echo "     If you've reviewed the new installer, refresh the digest in"
-    echo "     setup.sh or re-run with BUN_UNPINNED=1 to override."
+
+  command -v unzip &>/dev/null || {
+    echo "  -> 'unzip' not found; install it and re-run (skipping bun install)"
+    return 1
+  }
+
+  local tmpdir
+  tmpdir="$(mktemp -d)" || { echo "  -> mktemp failed; skipping bun install"; return 1; }
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  if ! curl -fsSL "${base}/${asset}.zip" -o "$tmpdir/bun.zip"; then
+    echo "  -> Download failed (${base}/${asset}.zip); skipping bun install"
     return 1
   fi
-  echo "  -> SHA-256 verified; running installer"
-  BUN_INSTALL_VERSION="$BUN_INSTALL_VERSION" bash "$tmp"
+  if ! curl -fsSL "${base}/SHASUMS256.txt" -o "$tmpdir/SHASUMS256.txt"; then
+    echo "  -> Checksum manifest download failed; skipping bun install"
+    return 1
+  fi
+
+  local expected actual
+  expected="$(awk -v f="${asset}.zip" '$2 == f {print $1}' "$tmpdir/SHASUMS256.txt")"
+  if [ -z "$expected" ]; then
+    echo "  -> ${asset}.zip not listed in SHASUMS256.txt for ${BUN_VERSION}; skipping"
+    return 1
+  fi
+  actual="$(_sha256 "$tmpdir/bun.zip")" || {
+    echo "  -> No sha256 tool (sha256sum/shasum) available; skipping bun install"
+    return 1
+  }
+  if [ "$actual" != "$expected" ]; then
+    echo "  -> SHA-256 mismatch for ${asset}.zip — refusing to install."
+    echo "     Expected: $expected"
+    echo "     Got:      $actual"
+    echo "     Likely a corrupted download; retry. If it persists, verify the"
+    echo "     release at https://github.com/oven-sh/bun/releases/tag/${BUN_VERSION}"
+    return 1
+  fi
+  echo "  -> SHA-256 verified; extracting"
+
+  if ! unzip -q -o "$tmpdir/bun.zip" -d "$tmpdir"; then
+    echo "  -> unzip failed; skipping bun install"
+    return 1
+  fi
+  if [ ! -f "$tmpdir/${asset}/bun" ]; then
+    echo "  -> Extracted archive missing ${asset}/bun; skipping bun install"
+    return 1
+  fi
+  mkdir -p "$HOME/.bun/bin"
+  install -m 755 "$tmpdir/${asset}/bun" "$HOME/.bun/bin/bun"
+  echo "  -> bun installed to ~/.bun/bin/bun"
 }
 
 if ! command -v bun &>/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
@@ -618,8 +662,8 @@ if command -v claude &>/dev/null; then
   else
     echo "  Claude Code is not authenticated."
     echo "  Plugin install and 'cc' both require a signed-in session."
-    yn=""
-    read -rp "Run 'claude auth login' now (opens browser)? [Y/n] " yn || true
+    # Default N under --yes: browser OAuth can't run unattended, so skip login.
+    ask_yn "N" "Run 'claude auth login' now (opens browser)? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       claude auth login || true
       if claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
@@ -728,8 +772,8 @@ if command -v codex &>/dev/null; then
     CODEX_AUTHED=1
   else
     echo "  Codex is not authenticated."
-    yn=""
-    read -rp "Run 'codex login' now? [Y/n] " yn || true
+    # Default N under --yes: login is interactive, so skip it unattended.
+    ask_yn "N" "Run 'codex login' now? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       codex login || true
       if codex login status &>/dev/null; then
@@ -757,8 +801,12 @@ else
   # `|| true` matches every other prompt in this script: under `set -e` a read
   # that hits EOF (non-interactive/piped stdin) returns non-zero and would
   # otherwise abort the whole install.
-  read -rp "Git user name: " GIT_NAME || true
-  read -rp "Git email: " GIT_EMAIL || true
+  if [ "$ASSUME_YES" = "1" ]; then
+    echo "  -> [--yes] using git identity from GIT_NAME/GIT_EMAIL env (may be empty)"
+  else
+    read -rp "Git user name: " GIT_NAME || true
+    read -rp "Git email: " GIT_EMAIL || true
+  fi
 fi
 
 # Preserve any safe.directory entries a prior run (or the user) added before we
@@ -772,55 +820,46 @@ if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
   done < <(git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null)
 fi
 
-# Generate a platform-appropriate .gitconfig.local (identity + platform config)
+# Generate a platform-appropriate .gitconfig.local (identity + platform config).
+# The four platform branches differ only in the [core] editor and [credential]
+# helper lines — everything else ([user], the safe.directory block restored
+# below) is identical, so we compute those two values per-platform and emit a
+# single heredoc (issue #139). GIT_EDITOR/GIT_HELPER hold the FINAL literal text
+# (backslashes already doubled for git-config syntax); the unquoted heredoc
+# inserts each value verbatim without re-processing it.
 if [[ "$PLATFORM" == "macos" ]]; then
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
-[user]
-	name = ${GIT_NAME}
-	email = ${GIT_EMAIL}
-[core]
-	editor = code --wait
-[credential]
-	helper = osxkeychain
-GITCONF
+  GIT_EDITOR='code --wait'
+  GIT_HELPER='osxkeychain'
 elif [[ "$PLATFORM" == "wsl" ]]; then
   WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r' || true)
   if [[ ! "$WIN_USER" =~ ^[A-Za-z0-9._\ -]+$ ]]; then
     echo "  Warning: Windows username contains unsupported characters; using PATH-based code lookup for editor."
     WIN_USER=""
   fi
+  # NOTE: this VS Code editor path only handles a PER-USER install
+  # (%LOCALAPPDATA%\Programs\Microsoft VS Code). A system-wide install under
+  # "C:\Program Files\Microsoft VS Code" yields a broken core.editor; those
+  # users should edit core.editor in ~/.gitconfig.local by hand.
   if [ -n "$WIN_USER" ]; then
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
-[user]
-	name = ${GIT_NAME}
-	email = ${GIT_EMAIL}
-[core]
-	editor = "C:\\\\Users\\\\${WIN_USER}\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code" --wait
-[credential]
-	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
-GITCONF
+    GIT_EDITOR="\"C:\\\\Users\\\\${WIN_USER}\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code\" --wait"
   else
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
-[user]
-	name = ${GIT_NAME}
-	email = ${GIT_EMAIL}
-[core]
-	editor = code --wait
-[credential]
-	helper = /mnt/c/Program\\\\ Files/Git/mingw64/bin/git-credential-manager.exe
-GITCONF
+    GIT_EDITOR='code --wait'
   fi
+  GIT_HELPER='/mnt/c/Program\\ Files/Git/mingw64/bin/git-credential-manager.exe'
 else
-  cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
+  GIT_EDITOR='code --wait'
+  GIT_HELPER='store'
+fi
+
+cat > "$DOTFILES_DIR/.gitconfig.local" <<GITCONF
 [user]
 	name = ${GIT_NAME}
 	email = ${GIT_EMAIL}
 [core]
-	editor = code --wait
+	editor = ${GIT_EDITOR}
 [credential]
-	helper = store
+	helper = ${GIT_HELPER}
 GITCONF
-fi
 chmod 600 "$DOTFILES_DIR/.gitconfig.local"
 
 # Restore preserved safe.directory entries (issue #122) — idempotent; runs on
@@ -859,71 +898,27 @@ echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
 mkdir -p "$HOME_DIR/.claude/agents"
 
-# Files to keep in dotfiles but NOT symlink into ~/.claude/ — read from the
-# claude/nolink.txt manifest (single source of truth; see read_nolink at top).
-NOLINK="$(read_nolink)"
-
-# Link top-level files (auto-discovers, no hardcoded list)
-for f in "$DOTFILES_DIR/claude/"*; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  case " $NOLINK " in *" $name "*) continue ;; esac
-  link_file "$f" "$HOME_DIR/.claude/$name"
-done
-chmod +x "$DOTFILES_DIR/claude/statusline.sh" 2>/dev/null || true
-echo "  -> Claude config linked"
-
-# Hooks
-if [ -d "$DOTFILES_DIR/claude/hooks" ]; then
-  mkdir -p "$HOME_DIR/.claude/hooks"
-  for hook in "$DOTFILES_DIR/claude/hooks/"*.sh "$DOTFILES_DIR/claude/hooks/"*.ts; do
-    [ -f "$hook" ] || continue
-    link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
-  done
-  # chmod source files (symlinks inherit target permissions)
-  chmod +x "$DOTFILES_DIR/claude/hooks/"*.sh "$DOTFILES_DIR/claude/hooks/"*.ts 2>/dev/null || true
-  echo "  -> Claude hooks linked"
+# Link the whole claude/ tree from the shared enumerator (lib-symlinks.sh,
+# issue #135): one walk, shared with the health audit and check-claude.sh. Each
+# record is <src> \t <dst> \t <label> \t <flags>; we create the parent dir,
+# link, and chmod +x the source when flagged executable (hooks, scripts,
+# chrome/top-level *.sh) — replacing the per-category loops + bulk chmods.
+# Hard-fail if the nolink manifest is missing rather than link files we shouldn't.
+if ! symlink_require_manifest "$DOTFILES_DIR/claude"; then
+  echo "  !! FATAL: claude/nolink.txt is missing — cannot determine which files to skip." >&2
+  exit 1
 fi
-
-# Skills (slash commands) — directory-based format
-for skill_dir in "$DOTFILES_DIR/claude/skills/"*/; do
-  [ -d "$skill_dir" ] || continue
-  skill_name="$(basename "$skill_dir")"
-  mkdir -p "$HOME_DIR/.claude/skills/$skill_name"
-  for skill_file in "$skill_dir"*; do
-    [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.claude/skills/$skill_name/$(basename "$skill_file")"
-  done
-done
-echo "  -> Claude skills linked"
-
-# Agents (custom subagents)
-if [ -d "$DOTFILES_DIR/claude/agents" ]; then
-  for agent in "$DOTFILES_DIR/claude/agents/"*.md; do
-    [ -f "$agent" ] && link_file "$agent" "$HOME_DIR/.claude/agents/$(basename "$agent")"
-  done
-  echo "  -> Claude agents linked"
-fi
-
-# Scripts (headless automation)
-if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
-  mkdir -p "$HOME_DIR/.claude/scripts"
-  for script in "$DOTFILES_DIR/claude/scripts/"*.sh; do
-    [ -f "$script" ] || continue
-    link_file "$script" "$HOME_DIR/.claude/scripts/$(basename "$script")"
-  done
-  chmod +x "$DOTFILES_DIR/claude/scripts/"*.sh 2>/dev/null || true
-  echo "  -> Claude scripts linked"
-fi
-
-# Chrome (WSL bridge setup script)
-if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
-  mkdir -p "$HOME_DIR/.claude/chrome"
-  for f in "$DOTFILES_DIR/claude/chrome/"*; do
-    [ -f "$f" ] && link_file "$f" "$HOME_DIR/.claude/chrome/$(basename "$f")"
-  done
-  chmod +x "$DOTFILES_DIR/claude/chrome/"*.sh 2>/dev/null || true
-  echo "  -> Claude chrome scripts linked"
-fi
+_tree_links=0
+while IFS=$'\t' read -r _src _dst _label _flags; do
+  [ -n "$_src" ] || continue
+  mkdir -p "$(dirname "$_dst")"
+  link_file "$_src" "$_dst"
+  if [ "$_flags" = "executable" ]; then
+    chmod +x "$_src" 2>/dev/null || true
+  fi
+  _tree_links=$((_tree_links + 1))
+done < <(symlink_enumerate "$DOTFILES_DIR/claude" "$HOME_DIR/.claude")
+echo "  -> Claude tree linked ($_tree_links entries: config, hooks, skills, agents, scripts, chrome)"
 
 # Dev dir already derived at top of script (C1) — write it out so all scripts
 # have a single source of truth.
@@ -1203,8 +1198,8 @@ if [[ "$PLATFORM" == "wsl" ]]; then
     echo "    wsl-helpers.ps1  → wsl6 (agent-neutral 3×2 WSL grid)"
     echo "    cc-functions.ps1 → ccgrid, cctab, ccpane, ccprojects (Claude launchers)"
     echo "  Wires into BOTH Windows PowerShell 5.1 and PowerShell 7 profiles when present."
-    yn=""
-    read -rp "Install into your PowerShell profile(s)? [Y/n] " yn || true
+    # Default N under --yes: don't modify Windows PowerShell profiles unattended.
+    ask_yn "N" "Install into your PowerShell profile(s)? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       ps_overall=0
       installed_any=0

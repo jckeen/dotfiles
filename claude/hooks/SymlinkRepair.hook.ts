@@ -37,19 +37,20 @@ const CLAUDE_DST = join(HOME, '.claude');
 
 // Top-level files in claude/ that setup.sh deliberately does NOT symlink.
 // Single source of truth: claude/nolink.txt (also read by setup.sh and
-// check-claude.sh). Hardcoded fallback if the manifest is missing.
+// check-claude.sh via lib-symlinks.sh). No hardcoded fallback — if the manifest
+// is missing we can't tell which files to skip, so we return null and main()
+// skips ONLY the top-level file linking (the rest of the tree needs no filter).
 // CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so a missing
 // or broken link self-heals here at SessionStart, matching setup.sh.
-function loadNolink(): Set<string> {
-  const fallback = new Set(['AgentPack.md', 'settings.json', 'plugins.txt', 'nolink.txt']);
+function loadNolink(): Set<string> | null {
   try {
     const names = readFileSync(join(CLAUDE_SRC, 'nolink.txt'), 'utf-8')
       .split('\n')
       .map((l) => l.replace(/#.*/, '').trim())
       .filter(Boolean);
-    return names.length > 0 ? new Set(names) : fallback;
+    return names.length > 0 ? new Set(names) : null;
   } catch {
-    return fallback;
+    return null;
   }
 }
 const TOP_LEVEL_NOLINK = loadNolink();
@@ -110,19 +111,30 @@ function linkDir(
 }
 
 function main(): void {
-  // 1) Top-level claude/* files (plugins.txt, statusline.sh, etc.)
+  // 1) Top-level claude/* files (plugins.txt, statusline.sh, etc.). Skipped
+  //    entirely if nolink.txt is missing — without the filter we can't tell
+  //    which top-level files must NOT be linked, and guessing risks linking
+  //    private/on-demand files. The rest of the tree below needs no filter.
   if (existsSync(CLAUDE_SRC)) {
-    for (const name of readdirSync(CLAUDE_SRC)) {
-      if (TOP_LEVEL_NOLINK.has(name)) continue;
-      const src = join(CLAUDE_SRC, name);
-      let st;
-      try {
-        st = lstatSync(src);
-      } catch {
-        continue;
+    if (!TOP_LEVEL_NOLINK) {
+      actions.push({
+        kind: 'skipped',
+        rel: 'nolink.txt',
+        reason: 'manifest missing — top-level files not linked (run setup.sh)',
+      });
+    } else {
+      for (const name of readdirSync(CLAUDE_SRC)) {
+        if (TOP_LEVEL_NOLINK.has(name)) continue;
+        const src = join(CLAUDE_SRC, name);
+        let st;
+        try {
+          st = lstatSync(src);
+        } catch {
+          continue;
+        }
+        if (!st.isFile()) continue;
+        ensureLink(src, join(CLAUDE_DST, name), name);
       }
-      if (!st.isFile()) continue;
-      ensureLink(src, join(CLAUDE_DST, name), name);
     }
   }
 

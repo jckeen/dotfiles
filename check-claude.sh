@@ -8,6 +8,14 @@ set +e
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_SRC="$DOTFILES_DIR/claude"
 CLAUDE_DST="$HOME/.claude"
+
+# Shared symlink enumerator (issue #135) — the claude/ tree walk + nolink
+# loading live in lib-symlinks.sh, shared with setup.sh so this checker can't
+# drift from the installer. Resolved relative to THIS script's directory (this
+# script is invoked via its real path), not the cwd.
+# shellcheck source=lib-symlinks.sh
+source "$DOTFILES_DIR/lib-symlinks.sh"
+
 ERRORS=0
 WARNINGS=0
 FIXED=0
@@ -98,13 +106,11 @@ check_link() {
 echo "Checking Claude Code config..."
 echo ""
 
-# Files kept in dotfiles but NOT symlinked (loaded on-demand or consumed
-# directly from the dotfiles dir). Single source of truth: claude/nolink.txt
-# (also read by setup.sh and SymlinkRepair.hook.ts); fallback if missing.
-if [ -f "$CLAUDE_SRC/nolink.txt" ]; then
-  NOLINK="$(sed 's/#.*//' "$CLAUDE_SRC/nolink.txt" | awk 'NF {printf "%s ", $1}')"
-else
-  NOLINK="AgentPack.md settings.json plugins.txt nolink.txt"
+# The nolink manifest is the single source of truth (no fallback). If it's
+# missing the enumerator can't tell which files to skip, so fail loudly.
+if ! symlink_require_manifest "$CLAUDE_SRC"; then
+  red "claude/nolink.txt missing at $CLAUDE_SRC/nolink.txt — cannot audit"
+  exit 1
 fi
 
 # Memory repo check
@@ -129,45 +135,14 @@ elif [ -d "$MEMORY_REPO" ]; then
 fi
 echo ""
 
-# Top-level files (auto-discovered from dotfiles, not hardcoded)
-for f in "$CLAUDE_SRC/"*; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  case " $NOLINK " in *" $name "*) continue ;; esac
-  check_link "$f" "$CLAUDE_DST/$name" "$name"
-done
-
-# Hooks — both .sh and .ts (setup.sh links both; .ts hooks run via bun)
-for f in "$CLAUDE_SRC/hooks/"*.sh "$CLAUDE_SRC/hooks/"*.ts; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  check_link "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name"
-done
-
-# Agents
-for f in "$CLAUDE_SRC/agents/"*.md; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  check_link "$f" "$CLAUDE_DST/agents/$name" "agents/$name"
-done
-
-# Skills
-for skill_dir in "$CLAUDE_SRC/skills/"*/; do
-  [ -d "$skill_dir" ] || continue
-  skill_name="$(basename "$skill_dir")"
-  for skill_file in "$skill_dir"*; do
-    [ -f "$skill_file" ] || continue
-    fname="$(basename "$skill_file")"
-    check_link "$skill_file" "$CLAUDE_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname"
-  done
-done
-
-# Scripts
-for f in "$CLAUDE_SRC/scripts/"*.sh; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  check_link "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name"
-done
+# Walk the whole claude/ tree from the shared enumerator (lib-symlinks.sh):
+# top-level (nolink-filtered) → hooks → skills → agents → scripts → chrome.
+# One source of truth with setup.sh's installer and audit. The executable flag
+# (4th field) is unused here — this checker reports link state, not +x drift.
+while IFS=$'\t' read -r src dst label _flags; do
+  [ -n "$src" ] || continue
+  check_link "$src" "$dst" "$label"
+done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
 
 # Check for orphaned symlinks — symlinks in ~/.claude/ pointing into dotfiles
 # whose source was removed (e.g., AgentPack.md after we stopped linking it)
