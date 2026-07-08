@@ -367,6 +367,14 @@ projects() {
   done
 }
 
+# Reject project names that aren't a plain slug before they reach wt.exe/wsl.exe
+# — mirrors the PowerShell helper's Test-SafeProjectName. Blocks path traversal
+# (../) and shell-metacharacter names even though the value is passed as a
+# positional arg.
+_valid_project_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
 # Open project in a new split pane
 # Usage: cc-pane <project>        (vertical split, default)
 #        cc-pane <project> -H     (horizontal split)
@@ -381,6 +389,10 @@ cc-pane() {
     echo "Usage: cc-pane <project> [-H|-V]"
     echo ""
     projects
+    return 1
+  fi
+  if ! _valid_project_name "$project"; then
+    echo "Invalid project name: $project"
     return 1
   fi
   local dev_dir
@@ -405,6 +417,10 @@ cc-tab() {
     echo "Usage: cc-tab <project>"
     echo ""
     projects
+    return 1
+  fi
+  if ! _valid_project_name "$project"; then
+    echo "Invalid project name: $project"
     return 1
   fi
   local dev_dir
