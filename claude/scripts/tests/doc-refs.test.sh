@@ -6,17 +6,11 @@
 # Run directly; exit 1 on any failure. Mirrors install-integrity.test.sh.
 set -uo pipefail
 
-resolve_script_path() {
-  local target="$1" dir
-  while [[ -L "$target" ]]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../checker-lib.sh"
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 CHECKER="$SCRIPT_DIR/../check-doc-refs.sh"
+LIB="$SCRIPT_DIR/../checker-lib.sh"
 
 pass=0
 failed=0
@@ -31,6 +25,7 @@ new_repo() {
   git -C "$R" config user.name test
   mkdir -p "$R/claude/scripts" "$R/claude/hooks"
   cp "$CHECKER" "$R/claude/scripts/check-doc-refs.sh"
+  cp "$LIB" "$R/claude/scripts/checker-lib.sh"
   chmod +x "$R/claude/scripts/check-doc-refs.sh"
 }
 

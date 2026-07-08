@@ -20,22 +20,14 @@
 
 set -euo pipefail
 
-# --- Locate repo root via the real (symlink-resolved) path -----
+# --- Load shared helpers, then locate repo root via the real path -----
 # This script is symlinked into ~/.claude/scripts, so $0/BASH_SOURCE may be a
-# symlink. Resolve it before walking up to the dotfiles checkout, or REPO_ROOT
-# would point at ~/.claude and the guard would scan the wrong tree (false OK).
-# Portable loop, mirroring sync-plugins.sh (BSD readlink lacks -f).
-resolve_script_path() {
-  local target="$1" dir
-  while [[ -L "$target" ]]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
-SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# symlink. checker_repo_root (from checker-lib.sh) resolves it before walking up
+# to the dotfiles checkout, or REPO_ROOT would point at ~/.claude and the guard
+# would scan the wrong tree (false OK). The lib sits beside this script.
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
 cd "$REPO_ROOT"
 
 HOOKS_DIR="claude/hooks"
