@@ -56,15 +56,19 @@ is_branch_safely_merged() {
     return 0
   fi
 
-  # Subject-search: each unique commit's subject must appear in origin/<default> history
+  # Subject-search: each unique commit's subject must appear in origin/<default>
+  # history. Read the default-branch subjects ONCE — the previous version re-ran
+  # `git log origin/<default>` for every unique commit, re-walking the entire
+  # default history per commit (O(branch_commits × default_commits)).
+  local default_subjects
+  default_subjects=$(git -C "$repo" log --format='%s' "origin/$default" 2>/dev/null || true)
   local missing=0 total=0
   while IFS= read -r subject; do
     [[ -z "$subject" ]] && continue
     total=$((total + 1))
-    # Trim trailing PR-suffix " (#NN)" before searching, because squash adds it
-    local clean
-    clean=$(echo "$subject" | head -c 40 | sed 's/[][\\.*^$/]/\\&/g')
-    if ! git -C "$repo" log --format='%s' "origin/$default" 2>/dev/null | grep -qF "$(echo "$subject" | head -c 40)"; then
+    # Match on the first 40 chars: squash-merge appends " (#NN)", so a prefix
+    # match catches the commit even after the PR suffix is added.
+    if ! printf '%s\n' "$default_subjects" | grep -qF "$(printf '%s' "$subject" | head -c 40)"; then
       missing=$((missing + 1))
     fi
   done < <(git -C "$repo" log --format='%s' "origin/$default..$br" 2>/dev/null)
@@ -77,7 +81,12 @@ is_branch_safely_merged() {
   # PR check via gh
   if command -v gh >/dev/null 2>&1; then
     local pr_state
-    pr_state=$(gh -R "$(git -C "$repo" remote get-url origin | sed 's|.*[/:]\([^/]*/[^/]*\)\.git|\1|')" \
+    # Extract owner/repo from the origin URL, tolerating both SSH and HTTPS forms
+    # with or without a trailing .git (the prior single-stage sed dropped the
+    # slug when .git was absent).
+    local slug
+    slug=$(git -C "$repo" remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#')
+    pr_state=$(gh -R "$slug" \
                pr list --state all --head "$br" --json state --jq '.[0].state' 2>/dev/null || echo "")
     if [[ "$pr_state" == "MERGED" ]]; then
       REASON="PR is MERGED on GitHub"
@@ -93,7 +102,9 @@ audit_repo() {
   local d="$1"
   local repo
   repo=$(basename "$d")
-  cd "$d"
+  # Guard the cd: under set -e a failed cd would abort the entire multi-repo
+  # run instead of just skipping this one directory.
+  cd "$d" || { dim "  $repo — cannot enter directory"; return; }
   if ! git rev-parse --git-dir >/dev/null 2>&1; then
     dim "  $repo — not a git repo"
     return

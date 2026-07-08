@@ -34,7 +34,6 @@ run the `fable-mode` skill to recalibrate.
 - Read the surrounding code before changing behavior — prefer the existing
   patterns over new abstractions.
 - Keep changes scoped to the request — no unrequested refactors or cleanup.
-- Default to no comments; add one only when the *why* is non-obvious.
 - Be concise. State results and decisions, not running commentary.
 - Match ceremony to the task. A clear tactical ask ("add this line", "run this
   check") gets done and reported — no plan, no variants, no preamble. Reserve
@@ -151,9 +150,16 @@ rationale: `MULTI-AGENT.md`. The operative rules:
 
 ## Git
 
-- Only commit when asked. Never push to shared branches without confirmation.
-- Use conventional commit messages: `type: short description`
-  (`feat`, `fix`, `refactor`, `chore`, `docs`, `test`).
+- Commit/push autonomy is governed by the conduct layer (FABLE.md) and any
+  private standing orders, not flatly forbidden here: the default is don't
+  commit or push unless asked, but a standing order may grant blanket
+  authorization for ordinary commits/push. Destructive or shared-branch
+  operations (force-push, rebase, branch deletion, pushing to a protected
+  branch) always confirm first.
+- Use conventional commit messages: `type: short description` — the full type
+  set is the one enforced by `claude/scripts/check-commit-format.sh`
+  (`feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `style`, `perf`,
+  `build`, `ci`, `revert`).
 - Stage specific files — avoid `git add -A` / `git add .` so secrets and
   generated files don't slip in. Never stage `.env`, credentials, tokens, keys.
 

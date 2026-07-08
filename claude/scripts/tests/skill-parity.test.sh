@@ -53,9 +53,13 @@ write_skill() {
 }
 
 # scaffold_good — README claiming N, exactly the changelog+handoff skill dirs,
-# and both sides' SKILL.md with all required headings.
+# a matching "N-agent" claim + agent files, and both sides' SKILL.md with all
+# required headings.
 scaffold_good() {
-  printf '# Dotfiles\n\nProvides 2 slash commands for daily use.\n' > "$R/README.md"
+  printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\n' > "$R/README.md"
+  # one agent file to match the "1-agent" claim
+  mkdir -p "$R/claude/agents"
+  printf '# reviewer\n' > "$R/claude/agents/reviewer.md"
   # exactly two skill dirs under claude/skills: changelog + handoff
   write_skill claude changelog "What changed" "Decisions made" "Known issues"
   write_skill codex  changelog "What changed" "Decisions made" "Known issues"
@@ -102,6 +106,12 @@ scaffold_good
 # codex changelog loses "### Known issues"
 write_skill codex changelog "What changed" "Decisions made"
 check "bad shape: missing heading fails" 1 "missing heading"
+
+# --- Case 4: BAD (agent count) — README says 1-agent but two agent files ------
+new_repo
+scaffold_good
+printf '# scout\n' > "$R/claude/agents/scout.md"   # now 2 agents, claim still 1
+check "bad agent count: README claim mismatches agent files fails" 1 "but claude/agents/ has 2"
 
 echo "---"
 echo "$pass passed, $failed failed"

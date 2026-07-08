@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-07-08 — fix/perf: workflow-optimization audit findings
+
+### What changed
+- **Hooks reconciled with CI.** `StripProjectPermissions.hook.ts` watched
+  `~/.claude/projects/<slug>/`, a path Claude Code never writes, so it never
+  fired — repointed at the real repo-local `.claude/settings.local.json`.
+  `conventional-commit.sh` and `check-commit-format.sh` disagreed on valid
+  types/syntax (a commit could pass one gate and fail the other); the hook now
+  shares the CI checker's type list and subject regex.
+- **setup.sh link accounting.** `link_file` now no-ops when a link is already
+  correct (was rm+recreating every link each run) and counts real creations;
+  `audit_link` returns a repaired code so `--repair` reports "Repaired: N",
+  excludes fixed links from Broken, and exits 0 on success. Git identity prompts
+  gained the `|| true` guard the other prompts already had.
+- **CI streamlined.** Added a `concurrency` block (cancels superseded runs);
+  collapsed the five non-required pure-bash checker jobs into one `checks` job
+  with a single checkout (shellcheck/tsc/doc-truth stay separate — they are the
+  required status checks); dropped the dead shellcheck `additional_files`.
+- **Shell workflow.** `pull-all` now pulls repos concurrently (biggest daily
+  win — cc/cx wait on the slowest pull, not the sum); `_dev_dir` is memoized;
+  `git-hygiene` reads default-branch subjects once instead of per-commit, drops
+  dead code, guards `cd`, and fixes the origin-slug regex. `cc-pane`/`cc-tab`
+  now validate the project name like the PowerShell side.
+- **Guards + docs.** `check-skill-parity.sh` now CI-asserts the README
+  "N-agent" count (was hardcoded 8x, unguarded). CLAUDE.md's commit-authorization
+  contradiction with the standing-order/conduct layers resolved. AgentPack phase
+  gaps fixed (schema-reviewer/ux-reviewer placement); agent overlaps scoped
+  (security-reviewer defers CVEs to dependency-doctor); changelog/review/simplify
+  trigger collisions disambiguated.
+
+### Decisions made
+- The two large structural refactors surfaced by the audit — a shared symlink
+  enumerator (setup.sh × check-claude.sh triplication + the nolink fallback) and
+  a shared checker-lib for the 13 `resolve_script_path` copies — plus a
+  non-interactive `--yes` install mode and the doc-refs/doc-truth link-check
+  dedup, are deferred to their own PRs (filed as issues) rather than bundled
+  into this one, since they touch the critical install path and need
+  fresh-clone testing.
+
 ## 2026-07-06 — fix: Fable-layer review findings (Codex pass on #130)
 
 ### What changed

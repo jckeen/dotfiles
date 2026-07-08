@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs: a new push to a PR (or main) stops the previous run
+# for the same ref instead of leaving both to burn runners to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shellcheck:
     name: shellcheck
@@ -19,20 +25,12 @@ jobs:
         with:
           severity: error
           scandir: "."
-          additional_files: >-
-            setup.sh
-            check-claude.sh
-            check-codex.sh
-            gh-bootstrap.sh
-            git-hygiene.sh
-            hygiene-status.sh
-          # Restrict scan to the shell files we ship.
+          # All shipped scripts carry a .sh extension, so the action's built-in
+          # *.sh discovery already finds them (additional_files is only for
+          # extension-less scripts).
           ignore_paths: >-
             node_modules
             .git
-          # The action discovers *.sh automatically; the additional_files entries
-          # are belt-and-suspenders for the top-level scripts that lack a shebang
-          # detection edge case.
 
   tsc:
     name: tsc
@@ -55,18 +53,8 @@ jobs:
         working-directory: claude/hooks
         run: bunx tsc --noEmit
 
-  doc-refs:
-    name: doc-refs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run checker self-tests
-        run: claude/scripts/tests/doc-refs.test.sh
-
-      - name: Check doc references resolve (hooks + skills)
-        run: claude/scripts/check-doc-refs.sh
-
+  # doc-truth is a required status check (branch protection), so it stays its
+  # own job under that exact name. Keep this in sync with the required checks.
   doc-truth:
     name: doc-truth
     runs-on: ubuntu-latest
@@ -79,17 +67,47 @@ jobs:
       - name: Check the dotfiles doc contract
         run: claude/scripts/check-doc-truth.sh
 
-  leak-scan:
-    name: leak-scan
+  # The remaining pure-bash checkers (none of them required status checks) share
+  # one runner + one checkout instead of paying a spin-up each — each finishes in
+  # well under a second. `if: ${{ !cancelled() }}` runs every step even after an
+  # earlier one fails, so a single run surfaces all failures at once (as separate
+  # parallel jobs used to). Do NOT fold doc-truth/shellcheck/tsc in here — those
+  # are required checks and must report under their own names.
+  checks:
+    name: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run checker self-tests
-        run: claude/scripts/tests/no-personal-data.test.sh
+      - name: doc-refs (self-test + checker)
+        if: ${{ !cancelled() }}
+        run: |
+          claude/scripts/tests/doc-refs.test.sh
+          claude/scripts/check-doc-refs.sh
 
-      - name: Check tracked files for machine-specific home paths
-        run: claude/scripts/check-no-personal-data.sh
+      - name: no-personal-data (self-test + checker)
+        if: ${{ !cancelled() }}
+        run: |
+          claude/scripts/tests/no-personal-data.test.sh
+          claude/scripts/check-no-personal-data.sh
+
+      - name: agent-parity (self-test + checker)
+        if: ${{ !cancelled() }}
+        run: |
+          claude/scripts/tests/agent-parity.test.sh
+          claude/scripts/check-agent-parity.sh
+
+      - name: skill-parity (self-test + checker)
+        if: ${{ !cancelled() }}
+        run: |
+          claude/scripts/tests/skill-parity.test.sh
+          claude/scripts/check-skill-parity.sh
+
+      - name: install-integrity (self-test + checker)
+        if: ${{ !cancelled() }}
+        run: |
+          claude/scripts/tests/install-integrity.test.sh
+          claude/scripts/check-install-integrity.sh
 
   secret-scan:
     name: secret-scan
@@ -105,42 +123,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Config lives at repo root (.gitleaks.toml); the action auto-detects it.
-
-  agent-parity:
-    name: agent-parity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run checker self-tests
-        run: claude/scripts/tests/agent-parity.test.sh
-
-      - name: Check Claude/Codex rule-set parity
-        run: claude/scripts/check-agent-parity.sh
-
-  skill-parity:
-    name: skill-parity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run checker self-tests
-        run: claude/scripts/tests/skill-parity.test.sh
-
-      - name: Check skill count + cross-tool artifact shapes
-        run: claude/scripts/check-skill-parity.sh
-
-  install-integrity:
-    name: install-integrity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run checker self-tests
-        run: claude/scripts/tests/install-integrity.test.sh
-
-      - name: Check fresh-clone install integrity (exec bits + marketplace arms)
-        run: claude/scripts/check-install-integrity.sh
 
   commit-format:
     name: commit-format

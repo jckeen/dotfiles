@@ -26,19 +26,25 @@ function toProjectSlug(dir: string): string {
   return dir.replace(/\//g, '-');
 }
 
-function main(): void {
-  // Determine the current working directory (project root)
-  const cwd = process.cwd();
+/**
+ * Candidate locations Claude Code may persist project-level permissions to.
+ * The ACTIVE one is the repo-local file (cwd/.claude/settings.local.json) —
+ * that's where clicking "Allow" writes grants. The homedir projects/<slug>
+ * path is kept as a fallback for CLI versions that used/return to it, so the
+ * strip lands regardless of which location is in play.
+ */
+function candidatePaths(cwd: string): string[] {
+  return [
+    join(cwd, '.claude', 'settings.local.json'),
+    join(homedir(), '.claude', 'projects', toProjectSlug(cwd), 'settings.local.json'),
+  ];
+}
 
-  // Build the path to the project's settings.local.json
-  const slug = toProjectSlug(cwd);
-  const settingsPath = join(homedir(), '.claude', 'projects', slug, 'settings.local.json');
-
+/** Strip `permissions` from one settings file. Returns true if the strip landed
+ *  (or there was nothing to do); false only if a needed write/delete failed. */
+function stripOne(settingsPath: string): boolean {
   if (!existsSync(settingsPath)) {
-    // No project settings file — nothing to do
-    console.error(`[StripProjectPermissions] No settings.local.json for ${slug}`);
-    process.stdout.write('{}');
-    process.exit(0);
+    return true;
   }
 
   let raw: string;
@@ -46,8 +52,7 @@ function main(): void {
     raw = readFileSync(settingsPath, 'utf-8');
   } catch (err) {
     console.error(`[StripProjectPermissions] Failed to read ${settingsPath}: ${err}`);
-    process.stdout.write('{}');
-    process.exit(0);
+    return true;
   }
 
   let config: Record<string, unknown>;
@@ -55,25 +60,18 @@ function main(): void {
     config = JSON.parse(raw);
   } catch (err) {
     console.error(`[StripProjectPermissions] Failed to parse ${settingsPath}: ${err}`);
-    process.stdout.write('{}');
-    process.exit(0);
+    return true;
   }
 
-  // Check if permissions key exists
   if (!('permissions' in config)) {
-    console.error(`[StripProjectPermissions] No permissions key in ${slug}/settings.local.json — clean`);
-    process.stdout.write('{}');
-    process.exit(0);
+    return true;
   }
 
-  // Remove the permissions key
   delete config.permissions;
-  console.error(`[StripProjectPermissions] Stripped permissions from ${slug}/settings.local.json`);
+  console.error(`[StripProjectPermissions] Stripped permissions from ${settingsPath}`);
 
-  // If the config is now empty, delete the file entirely.
-  // A failed delete/write means the strip did NOT land — exit 1 (non-blocking)
-  // so the failure is surfaced instead of reporting success.
-  let applied = true;
+  // If the config is now empty, delete the file entirely. A failed delete/write
+  // means the strip did NOT land — return false so the caller surfaces it.
   const remainingKeys = Object.keys(config);
   if (remainingKeys.length === 0) {
     try {
@@ -81,19 +79,28 @@ function main(): void {
       console.error(`[StripProjectPermissions] File was empty after strip — deleted ${settingsPath}`);
     } catch (err) {
       console.error(`[StripProjectPermissions] Failed to delete empty file: ${err}`);
-      applied = false;
+      return false;
     }
   } else {
-    // Write back with remaining config preserved
     try {
       writeFileSync(settingsPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
       console.error(`[StripProjectPermissions] Preserved ${remainingKeys.length} other key(s): ${remainingKeys.join(', ')}`);
     } catch (err) {
       console.error(`[StripProjectPermissions] Failed to write ${settingsPath}: ${err}`);
+      return false;
+    }
+  }
+  return true;
+}
+
+function main(): void {
+  const cwd = process.cwd();
+  let applied = true;
+  for (const settingsPath of candidatePaths(cwd)) {
+    if (!stripOne(settingsPath)) {
       applied = false;
     }
   }
-
   process.stdout.write('{}');
   process.exit(applied ? 0 : 1);
 }

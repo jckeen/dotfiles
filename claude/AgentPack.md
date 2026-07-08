@@ -23,7 +23,7 @@ Agents deliberately carry no `model:` pin — they inherit the session model, an
 | `security-reviewer` | Injection, auth, secrets, insecure data | After implementation, before merge |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
 
-### Utility agents (read + write)
+### Utility agents (read-only except `test-writer`, which edits)
 
 | Agent | Focus | When to use |
 |-------|-------|-------------|
@@ -84,14 +84,18 @@ For risky parallel edits, spawn agents with `isolation: "worktree"` — each get
 
 ## Recommended Workflow
 
+The three phases below cover the code-review lifecycle. The utility agents
+(`repo-scout`, `dependency-doctor`, `test-writer`, `package-scout` — except
+where a phase names them) are invoked ad hoc rather than as part of a phase.
+
 ### Phase 1 — Product refinement
-**Agents:** product-strategist, ux-reviewer, growth-strategist, trust-safety, package-scout
+**Agents:** product-strategist, growth-strategist, trust-safety, package-scout
 **Goal:** Define the right product shape before building. Identify existing packages before writing from scratch.
 **Mode:** All parallel (read-only review).
 
 ### Phase 2 — Architecture and implementation review
-**Agents:** frontend-architect, backend-architect, content-reviewer, security-reviewer
-**Goal:** Is it built clean, secure, and simple?
+**Agents:** frontend-architect, backend-architect, schema-reviewer, ux-reviewer, content-reviewer, security-reviewer
+**Goal:** Is it built clean, secure, and simple? (`ux-reviewer` and `schema-reviewer` review built UI and migrations, so they belong here, not before the code exists.)
 **Mode:** All parallel (read-only review). Apply fixes sequentially.
 
 ### Phase 3 — Launch hardening
