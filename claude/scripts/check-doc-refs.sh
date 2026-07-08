@@ -20,22 +20,14 @@
 
 set -euo pipefail
 
-# --- Locate repo root via the real (symlink-resolved) path -----
+# --- Load shared helpers, then locate repo root via the real path -----
 # This script is symlinked into ~/.claude/scripts, so $0/BASH_SOURCE may be a
-# symlink. Resolve it before walking up to the dotfiles checkout, or REPO_ROOT
-# would point at ~/.claude and the guard would scan the wrong tree (false OK).
-# Portable loop, mirroring sync-plugins.sh (BSD readlink lacks -f).
-resolve_script_path() {
-  local target="$1" dir
-  while [[ -L "$target" ]]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    [[ "$target" != /* ]] && target="$dir/$target"
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
-SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# symlink. checker_repo_root (from checker-lib.sh) resolves it before walking up
+# to the dotfiles checkout, or REPO_ROOT would point at ~/.claude and the guard
+# would scan the wrong tree (false OK). The lib sits beside this script.
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
 cd "$REPO_ROOT"
 
 HOOKS_DIR="claude/hooks"
@@ -76,6 +68,20 @@ report() {
   broken=$((broken + 1))
 }
 
+# --- Strip code before scanning (matches check-doc-truth.sh) ---
+# A hook/skill/link reference inside a fenced code block or an inline `code`
+# span is illustrative, not a live reference — check-doc-truth.sh strips these
+# before its link check, so a link in a fenced block passes there but used to
+# false-positive here (issue #138). Blank fenced/inline-code lines in place so
+# reported line numbers stay aligned with the source file.
+strip_code() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ { infence = !infence; print ""; next }
+    infence                  { print ""; next }
+                             { gsub(/`[^`]*`/, ""); print }
+  '
+}
+
 # --- Scan each doc ---------------------------------------------
 for doc in "${docs[@]}"; do
   is_allowlisted "$doc" && continue
@@ -83,6 +89,7 @@ for doc in "${docs[@]}"; do
 
   # Constant per doc — resolve once, not once per matched line.
   doc_dir="$(dirname "$doc")"
+  stripped="$(strip_code < "$doc")"
 
   while IFS=: read -r lineno content; do
     # 1) Hook references: <Word>.hook.ts / <Word>.hook.sh
@@ -124,7 +131,8 @@ for doc in "${docs[@]}"; do
     done < <(printf '%s\n' "$content" \
       | grep -oE '\[[^]]*\]\([^)]+\)' || true)
 
-  done < <(grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' "$doc" || true)
+  done < <(printf '%s\n' "$stripped" \
+    | grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' || true)
 done
 
 # --- Verdict ---------------------------------------------------

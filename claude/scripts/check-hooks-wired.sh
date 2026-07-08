@@ -31,23 +31,15 @@ done
 OPT_OUT=(
 )
 
-# --- Resolve repo root via the real (symlink-resolved) path -----
-resolve_script_path() {
-  local target="$1" dir
-  while [ -L "$target" ]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    case "$target" in /*) ;; *) target="$dir/$target" ;; esac
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
-SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# --- Load shared helpers, then resolve repo root via the real path -----
+# checker-lib.sh (beside this script) provides checker_repo_root, which follows
+# symlinks so REPO_ROOT lands on the dotfiles checkout, plus the green()/yellow()
+# printers used below.
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
 HOOKS_DIR="$REPO_ROOT/claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
-
-yellow() { printf '\033[33m[WARN] %s\033[0m\n' "$1"; }
-green()  { printf '\033[32m[OK] %s\033[0m\n' "$1"; }
 
 [ -d "$HOOKS_DIR" ] || { green "no hooks dir — nothing to check"; exit 0; }
 if [ ! -f "$SETTINGS" ]; then

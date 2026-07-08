@@ -17,21 +17,11 @@
 
 set -euo pipefail
 
-resolve_script_path() {
-  local target="$1" dir
-  while [ -L "$target" ]; do
-    dir="$(cd -P "$(dirname "$target")" && pwd)"
-    target="$(readlink "$target")"
-    case "$target" in /*) ;; *) target="$dir/$target" ;; esac
-  done
-  cd -P "$(dirname "$target")" && pwd
-}
-SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-fail=0
-red()   { printf '\033[31m[ERR] %s\033[0m\n' "$1"; fail=1; }
-green() { printf '\033[32m[OK] %s\033[0m\n' "$1"; }
+# Shared helpers (resolve_script_path, checker_repo_root, red/green + the
+# VIOLATIONS counter that red() bumps) live beside this script in checker-lib.sh.
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
 
 # ── 1. Skill count vs README claim ─────────────────────────────────
 actual=$(find "$REPO_ROOT/claude/skills" -mindepth 1 -maxdepth 1 -type d | wc -l)
@@ -76,9 +66,9 @@ require_headings changelog "What changed" "Decisions made" "Known issues"
 require_headings handoff "What we did" "Where we left off" "Key decisions made" \
   "Open issues" "Next steps" "Context for next session"
 
-[ "$fail" -eq 0 ] && green "artifact shapes: changelog + handoff headings match across Claude/Codex"
+[ "$VIOLATIONS" -eq 0 ] && green "artifact shapes: changelog + handoff headings match across Claude/Codex"
 
-if [ "$fail" -ne 0 ]; then
+if [ "$VIOLATIONS" -ne 0 ]; then
   echo ""
   echo "skill-parity: FAILED — see [ERR] lines above."
   exit 1
