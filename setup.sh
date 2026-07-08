@@ -16,6 +16,25 @@ SETUP_START=$(date +%s)
 # Set by the --dry-run flag in the arg-parse loop below (M6).
 DRY_RUN="${DRY_RUN:-0}"
 
+# ASSUME_YES: when 1 (--yes), every interactive prompt takes a safe default
+# instead of blocking on stdin, and browser-login steps are skipped — so the
+# installer can run unattended (e.g. the CI dry-run smoke). Set by --yes below.
+ASSUME_YES="${ASSUME_YES:-0}"
+
+# ask_yn <default: Y|N> <prompt-text> — sets the global `yn`. Under --yes it
+# substitutes <default> without reading stdin; otherwise it prompts as before
+# (`|| true` so an EOF on piped stdin doesn't abort under set -e).
+ask_yn() {
+  local __def="$1" __msg="$2"
+  if [ "$ASSUME_YES" = "1" ]; then
+    yn="$__def"
+    echo "  -> [--yes] $__msg$__def"
+  else
+    yn=""
+    read -rp "$__msg" yn || true
+  fi
+}
+
 # run(): wrap destructive operations. Prints [DRY] $* when DRY_RUN=1,
 # otherwise executes "$@". Use ONLY for destructive ops (installs,
 # network downloads, writes outside the repo). Read-only checks
@@ -322,6 +341,7 @@ alink() {
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
+    --yes|-y)  ASSUME_YES=1 ;;
   esac
 done
 for arg in "$@"; do
@@ -332,6 +352,8 @@ Usage: ./setup.sh [flags]
 
 Flags:
   --dry-run      Show destructive ops without executing (installs, downloads)
+  --yes, -y      Non-interactive: take safe defaults for every prompt and skip
+                 the browser-login steps (for unattended/CI runs)
   --check        Run symlink health audit and exit
   --repair       Audit symlinks and recreate broken ones, then exit
   --help, -h     Show this help
@@ -397,14 +419,12 @@ if [ -n "$MISSING_PKGS" ]; then
       echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
       exit 1
     fi
-    yn=""
-    read -rp "Install via brew? [Y/n] " yn || true
+    ask_yn "Y" "Install via brew? [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
     run brew install $MISSING_PKGS || true
   else
-    yn=""
-    read -rp "Install via apt? (requires sudo) [Y/n] " yn || true
+    ask_yn "Y" "Install via apt? (requires sudo) [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
     run sudo apt update && run sudo apt install -y $MISSING_PKGS unzip
@@ -417,8 +437,7 @@ fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
   echo "--- ALSA → PulseAudio routing (WSL, needed for /voice) ---"
-  yn=""
-  read -rp "Set up audio routing for Claude /voice? (requires sudo) [y/N] " yn || true
+  ask_yn "N" "Set up audio routing for Claude /voice? (requires sudo) [y/N] "
   if [[ "${yn:-}" =~ ^[Yy] ]]; then
     run sudo apt install -y pulseaudio-utils libasound2-plugins alsa-utils
     link_file "$DOTFILES_DIR/.asoundrc" "$HOME_DIR/.asoundrc"
@@ -694,8 +713,8 @@ if command -v claude &>/dev/null; then
   else
     echo "  Claude Code is not authenticated."
     echo "  Plugin install and 'cc' both require a signed-in session."
-    yn=""
-    read -rp "Run 'claude auth login' now (opens browser)? [Y/n] " yn || true
+    # Default N under --yes: browser OAuth can't run unattended, so skip login.
+    ask_yn "N" "Run 'claude auth login' now (opens browser)? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       claude auth login || true
       if claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
@@ -804,8 +823,8 @@ if command -v codex &>/dev/null; then
     CODEX_AUTHED=1
   else
     echo "  Codex is not authenticated."
-    yn=""
-    read -rp "Run 'codex login' now? [Y/n] " yn || true
+    # Default N under --yes: login is interactive, so skip it unattended.
+    ask_yn "N" "Run 'codex login' now? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       codex login || true
       if codex login status &>/dev/null; then
@@ -833,8 +852,12 @@ else
   # `|| true` matches every other prompt in this script: under `set -e` a read
   # that hits EOF (non-interactive/piped stdin) returns non-zero and would
   # otherwise abort the whole install.
-  read -rp "Git user name: " GIT_NAME || true
-  read -rp "Git email: " GIT_EMAIL || true
+  if [ "$ASSUME_YES" = "1" ]; then
+    echo "  -> [--yes] using git identity from GIT_NAME/GIT_EMAIL env (may be empty)"
+  else
+    read -rp "Git user name: " GIT_NAME || true
+    read -rp "Git email: " GIT_EMAIL || true
+  fi
 fi
 
 # Preserve any safe.directory entries a prior run (or the user) added before we
@@ -1270,8 +1293,8 @@ if [[ "$PLATFORM" == "wsl" ]]; then
     echo "    wsl-helpers.ps1  → wsl6 (agent-neutral 3×2 WSL grid)"
     echo "    cc-functions.ps1 → ccgrid, cctab, ccpane, ccprojects (Claude launchers)"
     echo "  Wires into BOTH Windows PowerShell 5.1 and PowerShell 7 profiles when present."
-    yn=""
-    read -rp "Install into your PowerShell profile(s)? [Y/n] " yn || true
+    # Default N under --yes: don't modify Windows PowerShell profiles unattended.
+    ask_yn "N" "Install into your PowerShell profile(s)? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
       ps_overall=0
       installed_any=0
