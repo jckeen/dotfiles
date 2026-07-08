@@ -64,17 +64,12 @@ BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
 # Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
 
-# Top-level claude/ files that are deliberately NOT symlinked into ~/.claude/.
-# Single source of truth: claude/nolink.txt (also read by check-claude.sh and
-# SymlinkRepair.hook.ts). Hardcoded fallback if the manifest is missing.
-read_nolink() {
-  local manifest="$DOTFILES_DIR/claude/nolink.txt"
-  if [ -f "$manifest" ]; then
-    sed 's/#.*//' "$manifest" | awk 'NF {printf "%s ", $1}'
-  else
-    echo "AgentPack.md settings.json plugins.txt nolink.txt"
-  fi
-}
+# Shared symlink enumerator (issue #135): the claude/ tree walk + nolink loading
+# live in lib-symlinks.sh, sourced by both setup.sh and check-claude.sh so the
+# install linking, the health audit, and the standalone checker can't drift.
+# Resolve it from this script's own directory (DOTFILES_DIR), not the cwd.
+# shellcheck source=lib-symlinks.sh
+source "$DOTFILES_DIR/lib-symlinks.sh"
 
 # Counters for summary
 LINKS_CREATED=0
@@ -96,79 +91,33 @@ run_health_audit() {
   echo "--- Dotfiles symlinks ---"
   local CLAUDE_SRC="$DOTFILES_DIR/claude"
   local CLAUDE_DST="$HOME_DIR/.claude"
-  # Un-linked files come from the claude/nolink.txt manifest (see read_nolink).
-  # CLAUDE.md IS linked (claude/CLAUDE.md -> ~/.claude/CLAUDE.md), so it's audited.
-  local NOLINK
-  NOLINK="$(read_nolink)"
-
-  # Top-level files
-  for f in "$CLAUDE_SRC/"*; do
-    [ -f "$f" ] || continue
-    local name
-    name="$(basename "$f")"
-    case " $NOLINK " in *" $name "*) continue ;; esac
-    alink "$f" "$CLAUDE_DST/$name" "$name" "$mode"
-  done
-
-  # Hooks
-  for f in "$CLAUDE_SRC/hooks/"*.sh "$CLAUDE_SRC/hooks/"*.ts; do
-    [ -f "$f" ] || continue
-    local name
-    name="$(basename "$f")"
-    alink "$f" "$CLAUDE_DST/hooks/$name" "hooks/$name" "$mode"
-  done
-
-  # Skills
-  for skill_dir in "$CLAUDE_SRC/skills/"*/; do
-    [ -d "$skill_dir" ] || continue
-    local skill_name
-    skill_name="$(basename "$skill_dir")"
-    for skill_file in "$skill_dir"*; do
-      [ -f "$skill_file" ] || continue
-      local fname
-      fname="$(basename "$skill_file")"
-      alink "$skill_file" "$CLAUDE_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname" "$mode"
-    done
-  done
-
-  # Agents
-  for f in "$CLAUDE_SRC/agents/"*.md; do
-    [ -f "$f" ] || continue
-    local name
-    name="$(basename "$f")"
-    alink "$f" "$CLAUDE_DST/agents/$name" "agents/$name" "$mode"
-  done
-
-  # Scripts
-  if [ -d "$CLAUDE_SRC/scripts" ]; then
-    for f in "$CLAUDE_SRC/scripts/"*.sh; do
-      [ -f "$f" ] || continue
-      local name
-      name="$(basename "$f")"
-      alink "$f" "$CLAUDE_DST/scripts/$name" "scripts/$name" "$mode"
-    done
+  # The claude/ tree (top-level → hooks → skills → agents → scripts → chrome,
+  # nolink-filtered) comes from the shared enumerator (lib-symlinks.sh). CLAUDE.md
+  # IS linked, so it's audited. The audit ignores the enumerator's executable
+  # flag for tree entries (historical behavior: +x is only enforced on bin
+  # scripts below). Hard-fail loudly if the nolink manifest is missing rather
+  # than silently auditing nothing.
+  if ! symlink_require_manifest "$CLAUDE_SRC"; then
+    printf '  \033[31mFATAL\033[0m claude/nolink.txt missing at %s — cannot audit\n' "$CLAUDE_SRC/nolink.txt"
+    errors=$((errors + 1))
+  else
+    local _src _dst _label _flags
+    while IFS=$'\t' read -r _src _dst _label _flags; do
+      [ -n "$_src" ] || continue
+      alink "$_src" "$_dst" "$_label" "$mode"
+    done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
   fi
 
-  # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — `executable=1`
-  # tells audit_link to also enforce the +x bit so an un-executable source
-  # script doesn't pass health checks while still failing at runtime.
+  # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — kept separate from
+  # the claude/ tree (they land outside ~/.claude). `executable` tells audit_link
+  # to also enforce the +x bit so an un-executable source script doesn't pass
+  # health checks while still failing at runtime.
   local bin_src
   for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     alink "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable"
   done
-
-  # Chrome
-  if [ -d "$CLAUDE_SRC/chrome" ]; then
-    for f in "$CLAUDE_SRC/chrome/"*; do
-      [ -f "$f" ] || continue
-      local name
-      name="$(basename "$f")"
-      case "$name" in *.md) continue ;; esac
-      alink "$f" "$CLAUDE_DST/chrome/$name" "chrome/$name" "$mode"
-    done
-  fi
 
   echo ""
 
@@ -949,71 +898,27 @@ echo "--- Setting up Claude Code config ---"
 mkdir -p "$HOME_DIR/.claude/skills"
 mkdir -p "$HOME_DIR/.claude/agents"
 
-# Files to keep in dotfiles but NOT symlink into ~/.claude/ — read from the
-# claude/nolink.txt manifest (single source of truth; see read_nolink at top).
-NOLINK="$(read_nolink)"
-
-# Link top-level files (auto-discovers, no hardcoded list)
-for f in "$DOTFILES_DIR/claude/"*; do
-  [ -f "$f" ] || continue
-  name="$(basename "$f")"
-  case " $NOLINK " in *" $name "*) continue ;; esac
-  link_file "$f" "$HOME_DIR/.claude/$name"
-done
-chmod +x "$DOTFILES_DIR/claude/statusline.sh" 2>/dev/null || true
-echo "  -> Claude config linked"
-
-# Hooks
-if [ -d "$DOTFILES_DIR/claude/hooks" ]; then
-  mkdir -p "$HOME_DIR/.claude/hooks"
-  for hook in "$DOTFILES_DIR/claude/hooks/"*.sh "$DOTFILES_DIR/claude/hooks/"*.ts; do
-    [ -f "$hook" ] || continue
-    link_file "$hook" "$HOME_DIR/.claude/hooks/$(basename "$hook")"
-  done
-  # chmod source files (symlinks inherit target permissions)
-  chmod +x "$DOTFILES_DIR/claude/hooks/"*.sh "$DOTFILES_DIR/claude/hooks/"*.ts 2>/dev/null || true
-  echo "  -> Claude hooks linked"
+# Link the whole claude/ tree from the shared enumerator (lib-symlinks.sh,
+# issue #135): one walk, shared with the health audit and check-claude.sh. Each
+# record is <src> \t <dst> \t <label> \t <flags>; we create the parent dir,
+# link, and chmod +x the source when flagged executable (hooks, scripts,
+# chrome/top-level *.sh) — replacing the per-category loops + bulk chmods.
+# Hard-fail if the nolink manifest is missing rather than link files we shouldn't.
+if ! symlink_require_manifest "$DOTFILES_DIR/claude"; then
+  echo "  !! FATAL: claude/nolink.txt is missing — cannot determine which files to skip." >&2
+  exit 1
 fi
-
-# Skills (slash commands) — directory-based format
-for skill_dir in "$DOTFILES_DIR/claude/skills/"*/; do
-  [ -d "$skill_dir" ] || continue
-  skill_name="$(basename "$skill_dir")"
-  mkdir -p "$HOME_DIR/.claude/skills/$skill_name"
-  for skill_file in "$skill_dir"*; do
-    [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.claude/skills/$skill_name/$(basename "$skill_file")"
-  done
-done
-echo "  -> Claude skills linked"
-
-# Agents (custom subagents)
-if [ -d "$DOTFILES_DIR/claude/agents" ]; then
-  for agent in "$DOTFILES_DIR/claude/agents/"*.md; do
-    [ -f "$agent" ] && link_file "$agent" "$HOME_DIR/.claude/agents/$(basename "$agent")"
-  done
-  echo "  -> Claude agents linked"
-fi
-
-# Scripts (headless automation)
-if [ -d "$DOTFILES_DIR/claude/scripts" ]; then
-  mkdir -p "$HOME_DIR/.claude/scripts"
-  for script in "$DOTFILES_DIR/claude/scripts/"*.sh; do
-    [ -f "$script" ] || continue
-    link_file "$script" "$HOME_DIR/.claude/scripts/$(basename "$script")"
-  done
-  chmod +x "$DOTFILES_DIR/claude/scripts/"*.sh 2>/dev/null || true
-  echo "  -> Claude scripts linked"
-fi
-
-# Chrome (WSL bridge setup script)
-if [ -d "$DOTFILES_DIR/claude/chrome" ]; then
-  mkdir -p "$HOME_DIR/.claude/chrome"
-  for f in "$DOTFILES_DIR/claude/chrome/"*; do
-    [ -f "$f" ] && link_file "$f" "$HOME_DIR/.claude/chrome/$(basename "$f")"
-  done
-  chmod +x "$DOTFILES_DIR/claude/chrome/"*.sh 2>/dev/null || true
-  echo "  -> Claude chrome scripts linked"
-fi
+_tree_links=0
+while IFS=$'\t' read -r _src _dst _label _flags; do
+  [ -n "$_src" ] || continue
+  mkdir -p "$(dirname "$_dst")"
+  link_file "$_src" "$_dst"
+  if [ "$_flags" = "executable" ]; then
+    chmod +x "$_src" 2>/dev/null || true
+  fi
+  _tree_links=$((_tree_links + 1))
+done < <(symlink_enumerate "$DOTFILES_DIR/claude" "$HOME_DIR/.claude")
+echo "  -> Claude tree linked ($_tree_links entries: config, hooks, skills, agents, scripts, chrome)"
 
 # Dev dir already derived at top of script (C1) — write it out so all scripts
 # have a single source of truth.
