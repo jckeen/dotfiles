@@ -492,35 +492,70 @@ fi
 # (no PATH lookup), so we always ensure a symlink at ~/.bun/bin/bun pointing
 # at whichever bun is on PATH — regardless of install method
 # (brew, npm, curl installer).
-# Pin + verify the bun installer to defend against upstream compromise (H6).
-# Rationale: piping a remote script to bash with no integrity check is the
-# classic supply-chain hole. We download to a temp file, verify the SHA-256
-# of the installer script against an expected digest, then execute. The
-# installer itself is responsible for fetching pinned bun binaries via
-# BUN_INSTALL_VERSION.
+# Install bun by pinning the BINARY RELEASE version and verifying the download
+# against that release's own SHASUMS256.txt — NOT by pinning a SHA of the
+# mutable bun.sh/install script (issue #140). The old approach hashed the
+# installer script, which bun edits upstream independently of releases; the day
+# it changed, every fresh clone hit a SHA mismatch and fell to "warn + skip,"
+# silently disabling the TypeScript hooks. A release tag is immutable and its
+# SHASUMS256.txt is generated per-release, so the checksum never drifts under us.
 #
-# To refresh the pin when bun's installer script changes upstream:
-#   curl -fsSL https://bun.sh/install | sha256sum
-#   # then paste the digest into EXPECTED_SHA256 below
+# To bump bun: set BUN_VERSION to a newer tag from
+# https://github.com/oven-sh/bun/releases — there is NO hash to hand-maintain;
+# the checksum is fetched from the release itself and verified at install time.
 #
-# Escape hatch: set BUN_UNPINNED=1 in the environment to skip verification
-# and run the bare installer (matches the pre-H6 behavior). Use only if the
-# upstream installer changed and you've reviewed the new content. The
-# default path remains pinned-and-verified.
-BUN_INSTALL_VERSION="bun-v1.1.38"
-EXPECTED_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
+# Escape hatch: set BUN_UNPINNED=1 to skip the pinned path and run the upstream
+# bun.sh/install script unverified (supply-chain risk). The default path
+# downloads a pinned, checksum-verified binary.
+BUN_VERSION="bun-v1.3.14"
+
+# sha256 of a file, portable across Linux (sha256sum) and macOS (shasum).
+_sha256() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# Map this host to a bun release asset basename (no .zip), mirroring
+# bun.sh/install's own os/arch/variant selection: -musl for musl libc,
+# -baseline for x64 CPUs without AVX2 (avoids SIGILL on older hardware).
+bun_asset_name() {
+  local os arch target
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x64" ;;
+    arm64|aarch64) arch="aarch64" ;;
+    *) return 1 ;;
+  esac
+  target="bun-${os}-${arch}"
+  if [ "$os" = "linux" ] && ldd --version 2>&1 | grep -qi musl; then
+    target="${target}-musl"
+  fi
+  if [ "$arch" = "x64" ]; then
+    local has_avx2=1
+    if [ "$os" = "linux" ]; then
+      grep -qi avx2 /proc/cpuinfo 2>/dev/null || has_avx2=0
+    else
+      [ "$(sysctl -n hw.optional.avx2_0 2>/dev/null)" = "1" ] || has_avx2=0
+    fi
+    [ "$has_avx2" -eq 0 ] && target="${target}-baseline"
+  fi
+  echo "$target"
+}
 
 install_bun_pinned() {
-  local tmp
-  tmp="$(mktemp)" || { echo "  -> mktemp failed; skipping bun install"; return 1; }
-  # Always clean up the temp installer.
-  trap 'rm -f "$tmp"' RETURN
-
-  # Escape hatch for the case where upstream changed and we haven't refreshed
-  # EXPECTED_SHA256 yet. Loud warning, but unblocks new-machine bootstrap.
+  # Escape hatch: run the upstream installer unverified (pre-pin behavior).
   if [ "${BUN_UNPINNED:-0}" = "1" ]; then
     echo "  -> WARNING: BUN_UNPINNED=1 set; running unverified bun installer"
-    echo "     (pre-H6 behavior — supply-chain risk)"
+    echo "     (supply-chain risk — the pinned+verified path is the default)"
     if [ "${DRY_RUN:-0}" = "1" ]; then
       echo "  [DRY] would exec unverified bun installer"
       return 0
@@ -529,28 +564,69 @@ install_bun_pinned() {
     return
   fi
 
-  echo "  -> Downloading bun installer (pinned: $BUN_INSTALL_VERSION)"
-  if ! run curl -fsSL https://bun.sh/install -o "$tmp"; then
-    echo "  -> Download failed; skipping bun install"
+  local asset
+  asset="$(bun_asset_name)" || {
+    echo "  -> Unsupported platform/arch for pinned bun install; skipping"
     return 1
-  fi
-  # In dry-run mode, curl was skipped — there's nothing to verify or exec.
+  }
+  local base="https://github.com/oven-sh/bun/releases/download/${BUN_VERSION}"
+
+  echo "  -> Installing bun ${BUN_VERSION} (${asset}) from GitHub release"
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    echo "  [DRY] would verify SHA-256 and exec bun installer"
+    echo "  [DRY] would download ${base}/${asset}.zip"
+    echo "  [DRY] would verify against SHASUMS256.txt and extract to ~/.bun/bin/bun"
     return 0
   fi
-  local actual
-  actual="$(sha256sum "$tmp" | awk '{print $1}')"
-  if [ "$actual" != "$EXPECTED_SHA256" ]; then
-    echo "  -> SHA-256 mismatch — installer changed upstream."
-    echo "     Expected: $EXPECTED_SHA256"
-    echo "     Got:      $actual"
-    echo "     If you've reviewed the new installer, refresh the digest in"
-    echo "     setup.sh or re-run with BUN_UNPINNED=1 to override."
+
+  command -v unzip &>/dev/null || {
+    echo "  -> 'unzip' not found; install it and re-run (skipping bun install)"
+    return 1
+  }
+
+  local tmpdir
+  tmpdir="$(mktemp -d)" || { echo "  -> mktemp failed; skipping bun install"; return 1; }
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  if ! curl -fsSL "${base}/${asset}.zip" -o "$tmpdir/bun.zip"; then
+    echo "  -> Download failed (${base}/${asset}.zip); skipping bun install"
     return 1
   fi
-  echo "  -> SHA-256 verified; running installer"
-  BUN_INSTALL_VERSION="$BUN_INSTALL_VERSION" bash "$tmp"
+  if ! curl -fsSL "${base}/SHASUMS256.txt" -o "$tmpdir/SHASUMS256.txt"; then
+    echo "  -> Checksum manifest download failed; skipping bun install"
+    return 1
+  fi
+
+  local expected actual
+  expected="$(awk -v f="${asset}.zip" '$2 == f {print $1}' "$tmpdir/SHASUMS256.txt")"
+  if [ -z "$expected" ]; then
+    echo "  -> ${asset}.zip not listed in SHASUMS256.txt for ${BUN_VERSION}; skipping"
+    return 1
+  fi
+  actual="$(_sha256 "$tmpdir/bun.zip")" || {
+    echo "  -> No sha256 tool (sha256sum/shasum) available; skipping bun install"
+    return 1
+  }
+  if [ "$actual" != "$expected" ]; then
+    echo "  -> SHA-256 mismatch for ${asset}.zip — refusing to install."
+    echo "     Expected: $expected"
+    echo "     Got:      $actual"
+    echo "     Likely a corrupted download; retry. If it persists, verify the"
+    echo "     release at https://github.com/oven-sh/bun/releases/tag/${BUN_VERSION}"
+    return 1
+  fi
+  echo "  -> SHA-256 verified; extracting"
+
+  if ! unzip -q -o "$tmpdir/bun.zip" -d "$tmpdir"; then
+    echo "  -> unzip failed; skipping bun install"
+    return 1
+  fi
+  if [ ! -f "$tmpdir/${asset}/bun" ]; then
+    echo "  -> Extracted archive missing ${asset}/bun; skipping bun install"
+    return 1
+  fi
+  mkdir -p "$HOME/.bun/bin"
+  install -m 755 "$tmpdir/${asset}/bun" "$HOME/.bun/bin/bun"
+  echo "  -> bun installed to ~/.bun/bin/bun"
 }
 
 if ! command -v bun &>/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
