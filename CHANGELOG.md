@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-07-09 — feat: automatic review pipeline (Antigravity gate + Codex-bot comment capture)
+
+### What changed
+- **Antigravity (Gemini) review gate** hardened and wired as an advisory second
+  gate in `/commit-push-pr` (and `/orchestrate`), alongside Codex. Runs
+  `agy --mode plan --sandbox` with **no** `--dangerously-skip-permissions`; the
+  reviewed diff is fenced as untrusted data with a hash-derived boundary
+  (prompt-injection hardening). New `/antigravity-review` skill.
+- **Codex-bot comment capture** — `harvest-codex-comments.sh` files
+  `chatgpt-codex-connector[bot]` PR review comments as deduped GitHub issues
+  (marker `codex-comment-id`); a warn-only `PreMergeCodexHarvest` PreToolUse hook
+  runs it at `gh pr merge` time so bot findings aren't lost when a PR merges
+  before the bot comments. Hook wiring lives in claude-memory settings.
+- **Cloud backstop** — a `nightly-codex-comment-harvest` Claude Cloud routine
+  (daily) sweeps the fleet for comments that land after a session ends
+  (auto-merge / web merges).
+- Follow-up fixes from the bot's own review: include untracked files in
+  uncommitted Antigravity reviews; portable `timeout` (gtimeout fallback) and
+  `sha1sum`/`shasum`/`cksum` for macOS.
+- Design recorded in `docs/superpowers/specs/2026-07-09-review-automation-design.md`.
+
+### Why
+- Make review and post-PR comment capture automatic, so shipping by conversation
+  (or `/orchestrate`) needs no remembered tool calls.
+
 ## 2026-07-08 — feat: /max → /orchestrate; full-lifecycle skill orchestration
 
 ### What changed
