@@ -115,6 +115,12 @@ jobs:
       - name: antigravity-review-gate (self-test)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/antigravity-review-gate.test.sh
+      # setup.sh --dry-run must never write to $HOME (issue #133). The test
+      # runs the installer against a throwaway HOME and asserts a
+      # byte-identical before/after snapshot.
+      - name: setup-dry-run (no-writes contract)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/setup-dry-run.test.sh
 
   secret-scan:
     name: secret-scan
