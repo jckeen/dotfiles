@@ -335,10 +335,22 @@ detect_platform() {
 # doesn't needlessly rm+recreate every link (churns inodes for zero benefit).
 # Increments LINKS_CREATED only when it actually creates a link, so the summary
 # reports links made THIS run (0 on a clean re-run, not a constant).
+# DRY_RUN is honored HERE, inside the helper, so every call site is covered
+# (issue #133: call sites outside the guard used to back up and replace real
+# files under --dry-run). An already-correct link is a no-op in both modes.
 link_file() {
   local src="$1" dst="$2"
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    return 0
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    if [ ! -L "$dst" ] && [ -f "$dst" ]; then
+      echo "  [DRY] would back up $dst to $dst.backup"
+    fi
+    echo "  [DRY] would link $dst -> $src"
+    return 0
+  fi
   if [ -L "$dst" ]; then
-    [ "$(readlink "$dst")" = "$src" ] && return 0
     rm "$dst"
   elif [ -f "$dst" ]; then
     mv "$dst" "$dst.backup"
@@ -424,11 +436,8 @@ for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
       continue
     fi
   fi
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    echo "[DRY] link_file $_src $HOME_DIR/.local/bin/$_bin"
-  else
-    link_file "$_src" "$HOME_DIR/.local/bin/$_bin"
-  fi
+  # link_file honors DRY_RUN itself (prints the would-link preview).
+  link_file "$_src" "$HOME_DIR/.local/bin/$_bin"
   echo "  -> $_bin linked into ~/.local/bin"
 done
 
@@ -627,8 +636,8 @@ fi
 # symlink so hardcoded paths keep working.
 if command -v bun &>/dev/null && [ ! -e "$HOME/.bun/bin/bun" ]; then
   _bun_found="$(command -v bun)"
-  mkdir -p "$HOME/.bun/bin"
-  ln -sf "$_bun_found" "$HOME/.bun/bin/bun"
+  run mkdir -p "$HOME/.bun/bin"
+  run ln -sf "$_bun_found" "$HOME/.bun/bin/bun"
   echo "  -> bun symlinked: ~/.bun/bin/bun -> $_bun_found"
 fi
 if [ ! -e "$HOME/.bun/bin/bun" ]; then
@@ -656,7 +665,14 @@ _loggedin_re='"loggedIn"[[:space:]]*:[[:space:]]*true'
 if command -v claude &>/dev/null; then
   echo ""
   echo "--- Checking Claude Code authentication ---"
-  if claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    # The claude CLI initializes ~/.claude.json (+ .lock and .claude/backups/)
+    # on ANY invocation against a fresh $HOME — even the read-only-looking
+    # `auth status`. A dry run must write nothing (issue #133), so skip the
+    # probe and treat the session as unauthenticated for preview purposes.
+    echo "  [DRY] would check 'claude auth status' (probe skipped: it writes ~/.claude.json state)"
+    echo "  [DRY] plugin install preview unavailable without the auth probe"
+  elif claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
     echo "  -> Already signed in to Claude"
     CLAUDE_AUTHED=1
   else
@@ -665,7 +681,7 @@ if command -v claude &>/dev/null; then
     # Default N under --yes: browser OAuth can't run unattended, so skip login.
     ask_yn "N" "Run 'claude auth login' now (opens browser)? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
-      claude auth login || true
+      run claude auth login || true
       if claude auth status 2>/dev/null | grep -Eq "$_loggedin_re"; then
         CLAUDE_AUTHED=1
       fi
@@ -780,7 +796,7 @@ if command -v codex &>/dev/null; then
     # Default N under --yes: login is interactive, so skip it unattended.
     ask_yn "N" "Run 'codex login' now? [Y/n] "
     if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
-      codex login || true
+      run codex login || true
       if codex login status &>/dev/null; then
         CODEX_AUTHED=1
       fi
@@ -880,8 +896,9 @@ fi
 
 # The .gitconfig.local rewrite is a destructive op — skip it under --dry-run
 # (it overwrites the user's real identity + credential helper). The link_file
-# calls below stay outside the guard: the file already exists in dry-run, so
-# linking it is safe and keeps the audit consistent.
+# calls below honor DRY_RUN internally, so under --dry-run they only print
+# the would-link preview (issue #133: they used to back up and replace the
+# user's real ~/.gitconfig).
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "  [DRY] would write $DOTFILES_DIR/.gitconfig.local (user='${GIT_NAME} <${GIT_EMAIL}>', editor=${GIT_EDITOR}), preserving ${#_preserved_safe_dirs[@]} safe.directory entr(ies)"
 else
@@ -938,8 +955,8 @@ echo "  -> .gitconfig linked"
 # ─── 5. Claude Code config ───────────────────────────────────────────
 echo ""
 echo "--- Setting up Claude Code config ---"
-mkdir -p "$HOME_DIR/.claude/skills"
-mkdir -p "$HOME_DIR/.claude/agents"
+run mkdir -p "$HOME_DIR/.claude/skills"
+run mkdir -p "$HOME_DIR/.claude/agents"
 
 # Link the whole claude/ tree from the shared enumerator (lib-symlinks.sh,
 # issue #135): one walk, shared with the health audit and check-claude.sh. Each
@@ -954,9 +971,13 @@ fi
 _tree_links=0
 while IFS=$'\t' read -r _src _dst _label _flags; do
   [ -n "$_src" ] || continue
-  mkdir -p "$(dirname "$_dst")"
+  # mkdir/chmod are silently skipped under --dry-run (link_file prints the
+  # per-entry preview; a [DRY] line per mkdir would just triple the noise).
+  if [ "${DRY_RUN:-0}" != "1" ]; then
+    mkdir -p "$(dirname "$_dst")"
+  fi
   link_file "$_src" "$_dst"
-  if [ "$_flags" = "executable" ]; then
+  if [ "$_flags" = "executable" ] && [ "${DRY_RUN:-0}" != "1" ]; then
     chmod +x "$_src" 2>/dev/null || true
   fi
   _tree_links=$((_tree_links + 1))
@@ -965,8 +986,12 @@ echo "  -> Claude tree linked ($_tree_links entries: config, hooks, skills, agen
 
 # Dev dir already derived at top of script (C1) — write it out so all scripts
 # have a single source of truth.
-echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
-echo "  -> dev-dir set to $DEV_DIR"
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "  [DRY] would write $HOME_DIR/.claude/dev-dir ($DEV_DIR)"
+else
+  echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
+  echo "  -> dev-dir set to $DEV_DIR"
+fi
 
 # Memory (optional private repo for persistent Claude memory)
 #
@@ -1025,7 +1050,7 @@ fi
 # ─── 5b. Codex config ────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Codex config ---"
-mkdir -p "$HOME_DIR/.codex"
+run mkdir -p "$HOME_DIR/.codex"
 
 if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
   link_file "$DOTFILES_DIR/codex/AGENTS.md" "$HOME_DIR/.codex/AGENTS.md"
@@ -1033,11 +1058,11 @@ if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
 fi
 
 if [ -d "$DOTFILES_DIR/codex/skills" ]; then
-  mkdir -p "$HOME_DIR/.codex/skills"
+  run mkdir -p "$HOME_DIR/.codex/skills"
   for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
-    mkdir -p "$HOME_DIR/.codex/skills/$skill_name"
+    run mkdir -p "$HOME_DIR/.codex/skills/$skill_name"
     for skill_file in "$skill_dir"*; do
       [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.codex/skills/$skill_name/$(basename "$skill_file")"
     done
@@ -1077,7 +1102,7 @@ fi
 echo ""
 echo "--- Setting up Antigravity config ---"
 AGY_CONFIG_DIR="$HOME_DIR/.gemini/config"
-mkdir -p "$AGY_CONFIG_DIR"
+run mkdir -p "$AGY_CONFIG_DIR"
 
 if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
   link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
@@ -1089,7 +1114,7 @@ fi
 # under ~/.gemini/config/skills/; symlink each one (dir-level, unlike the
 # per-file Codex links, since agy resolves rule/skill paths through the link).
 if [ -d "$DOTFILES_DIR/codex/skills" ]; then
-  mkdir -p "$AGY_CONFIG_DIR/skills"
+  run mkdir -p "$AGY_CONFIG_DIR/skills"
   for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
@@ -1105,7 +1130,7 @@ fi
 # Antigravity-only skills (e.g. browser-verify) live in antigravity/skills;
 # same dir-level symlink treatment as the shared set.
 if [ -d "$DOTFILES_DIR/antigravity/skills" ]; then
-  mkdir -p "$AGY_CONFIG_DIR/skills"
+  run mkdir -p "$AGY_CONFIG_DIR/skills"
   for skill_dir in "$DOTFILES_DIR/antigravity/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
@@ -1130,7 +1155,7 @@ fi
 # overwrite an existing non-empty config.
 if [ -f "$DOTFILES_DIR/antigravity/mcp_config.json.example" ]; then
   if [ ! -s "$AGY_CONFIG_DIR/mcp_config.json" ]; then
-    cp "$DOTFILES_DIR/antigravity/mcp_config.json.example" "$AGY_CONFIG_DIR/mcp_config.json"
+    run cp "$DOTFILES_DIR/antigravity/mcp_config.json.example" "$AGY_CONFIG_DIR/mcp_config.json"
     echo "  -> Antigravity mcp_config.json seeded from template (playwright + github)"
   else
     echo "  -> Antigravity mcp_config.json exists; left untouched (compare with antigravity/mcp_config.json.example)"
@@ -1173,8 +1198,8 @@ else
   if [ -n "$GH_BIN" ] && ! git config --file "$LOCAL_GITCONFIG" --get-all credential.https://github.com.helper 2>/dev/null | grep -q "gh auth git-credential"; then
     echo "  -> Wiring gh as git credential helper (→ $LOCAL_GITCONFIG)..."
     for host in github.com gist.github.com; do
-      git config --file "$LOCAL_GITCONFIG" --add "credential.https://${host}.helper" ""
-      git config --file "$LOCAL_GITCONFIG" --add "credential.https://${host}.helper" "!${GH_BIN} auth git-credential"
+      run git config --file "$LOCAL_GITCONFIG" --add "credential.https://${host}.helper" ""
+      run git config --file "$LOCAL_GITCONFIG" --add "credential.https://${host}.helper" "!${GH_BIN} auth git-credential"
     done
   else
     echo "  -> git credential helper already wired to gh"
@@ -1190,27 +1215,43 @@ if [[ "$PLATFORM" == "macos" ]]; then
   SHELL_RC="$HOME_DIR/.zshrc"
   link_file "$DOTFILES_DIR/.bash_aliases" "$HOME_DIR/.bash_aliases"
   if [ -f "$SHELL_RC" ] && ! grep -q '\.bash_aliases' "$SHELL_RC"; then
-    echo '' >> "$SHELL_RC"
-    echo '# Load aliases (shared with bash)' >> "$SHELL_RC"
-    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$SHELL_RC"
-    echo "  -> Added .bash_aliases sourcing to .zshrc"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would append .bash_aliases sourcing to $SHELL_RC"
+    else
+      echo '' >> "$SHELL_RC"
+      echo '# Load aliases (shared with bash)' >> "$SHELL_RC"
+      echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$SHELL_RC"
+      echo "  -> Added .bash_aliases sourcing to .zshrc"
+    fi
   elif [ ! -f "$SHELL_RC" ]; then
-    echo '# Load aliases (shared with bash)' > "$SHELL_RC"
-    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$SHELL_RC"
-    echo "  -> Created .zshrc with .bash_aliases sourcing"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would create $SHELL_RC with .bash_aliases sourcing"
+    else
+      echo '# Load aliases (shared with bash)' > "$SHELL_RC"
+      echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$SHELL_RC"
+      echo "  -> Created .zshrc with .bash_aliases sourcing"
+    fi
   fi
   echo "  -> .bash_aliases linked (sourced from .zshrc)"
 else
   link_file "$DOTFILES_DIR/.bash_aliases" "$HOME_DIR/.bash_aliases"
   if [ -f "$HOME_DIR/.bashrc" ] && ! grep -q '\.bash_aliases' "$HOME_DIR/.bashrc"; then
-    echo '' >> "$HOME_DIR/.bashrc"
-    echo '# Load custom aliases' >> "$HOME_DIR/.bashrc"
-    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
-    echo "  -> Added .bash_aliases sourcing to .bashrc"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would append .bash_aliases sourcing to $HOME_DIR/.bashrc"
+    else
+      echo '' >> "$HOME_DIR/.bashrc"
+      echo '# Load custom aliases' >> "$HOME_DIR/.bashrc"
+      echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
+      echo "  -> Added .bash_aliases sourcing to .bashrc"
+    fi
   elif [ ! -f "$HOME_DIR/.bashrc" ]; then
-    echo '# Load custom aliases' > "$HOME_DIR/.bashrc"
-    echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
-    echo "  -> Created .bashrc with .bash_aliases sourcing"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would create $HOME_DIR/.bashrc with .bash_aliases sourcing"
+    else
+      echo '# Load custom aliases' > "$HOME_DIR/.bashrc"
+      echo '[ -f ~/.bash_aliases ] && . ~/.bash_aliases' >> "$HOME_DIR/.bashrc"
+      echo "  -> Created .bashrc with .bash_aliases sourcing"
+    fi
   fi
   echo "  -> .bash_aliases linked"
 
@@ -1218,13 +1259,17 @@ else
   if [[ "$PLATFORM" == "wsl" ]]; then
     if grep -q 'cd /mnt/c/' "$HOME_DIR/.bashrc" 2>/dev/null; then
       # Replace any existing cd to Windows mount with Linux-native path
-      sed -i "s|cd /mnt/c/.*|# Start in Linux-native dev directory for better WSL performance\ncd ~/dev|" "$HOME_DIR/.bashrc"
+      run sed -i "s|cd /mnt/c/.*|# Start in Linux-native dev directory for better WSL performance\ncd ~/dev|" "$HOME_DIR/.bashrc"
       echo "  -> Updated .bashrc: cd ~/dev (was pointing to /mnt/c/)"
     elif ! grep -q 'cd ~/dev' "$HOME_DIR/.bashrc" 2>/dev/null; then
-      echo '' >> "$HOME_DIR/.bashrc"
-      echo '# Start in Linux-native dev directory for better WSL performance' >> "$HOME_DIR/.bashrc"
-      echo 'cd ~/dev' >> "$HOME_DIR/.bashrc"
-      echo "  -> Added auto-cd to ~/dev in .bashrc"
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        echo "  [DRY] would append auto-cd to ~/dev in $HOME_DIR/.bashrc"
+      else
+        echo '' >> "$HOME_DIR/.bashrc"
+        echo '# Start in Linux-native dev directory for better WSL performance' >> "$HOME_DIR/.bashrc"
+        echo 'cd ~/dev' >> "$HOME_DIR/.bashrc"
+        echo "  -> Added auto-cd to ~/dev in .bashrc"
+      fi
     fi
   fi
 
@@ -1331,7 +1376,8 @@ if [[ "$PLATFORM" == "wsl" ]]; then
       for host_exe in powershell.exe pwsh.exe; do
         if command -v "$host_exe" &>/dev/null; then
           installed_any=1
-          install_ps_helpers_for_host "$host_exe" || ps_overall=1
+          # run-gated: writes Windows-side PowerShell profiles (issue #133).
+          run install_ps_helpers_for_host "$host_exe" || ps_overall=1
         fi
       done
       if [ "$installed_any" -eq 0 ]; then
@@ -1354,7 +1400,11 @@ fi
 if [ -f "$BOOTSTRAP_SCRIPT" ]; then
   echo ""
   echo "--- Running claude-memory bootstrap ---"
-  if bash "$BOOTSTRAP_SCRIPT"; then
+  # Gated: bootstrap.sh links private settings/identity into ~/.claude and has
+  # no dry-run mode of its own, so a preview run must not invoke it (issue #133).
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would run claude-memory bootstrap: $BOOTSTRAP_SCRIPT"
+  elif bash "$BOOTSTRAP_SCRIPT"; then
     BOOTSTRAP_RC=0
   else
     BOOTSTRAP_RC=$?
