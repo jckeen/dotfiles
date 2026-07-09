@@ -42,10 +42,22 @@ script="$HOME/.claude/scripts/harvest-codex-comments.sh"
 # resolves the current branch's PR.
 prnum="$(grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' <<<"$cmd" | grep -oE '[0-9]+$' || true)"
 
+# Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
+# without a ceiling rather than hard-fail on macOS.
+tmo() {
+  if   command -v timeout  >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  else shift; "$@"
+  fi
+}
+
+# A non-numeric `gh pr merge <url|branch>` target leaves prnum empty; the harvester
+# then resolves the current branch's PR, which is correct for the common merge but
+# may miss a cross-branch merge-by-URL. Good enough for a warn-only capture.
 if [[ -n "$prnum" ]]; then
-  timeout 30 "$script" --pr "$prnum" --quiet >&2 2>&1 || true
+  tmo 30 "$script" --pr "$prnum" --quiet >&2 2>&1 || true
 else
-  timeout 30 "$script" --quiet >&2 2>&1 || true
+  tmo 30 "$script" --quiet >&2 2>&1 || true
 fi
 
 exit 0
