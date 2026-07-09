@@ -416,7 +416,7 @@ Same pattern for Antigravity (`agy`): the public repo tracks only `antigravity/G
 - `conversations/`, `conversation_summaries.db*`, `history.jsonl`
 - `brain/`, `knowledge/`, `implicit/`, `scratch/`, `log/`, `cache/`, `crashes/`
 
-`setup.sh` links public `antigravity/GEMINI.md` into `~/.gemini/config/GEMINI.md`, dir-symlinks the shared workflow skills (`codex/skills/*`, the agent-neutral set) into `~/.gemini/config/skills/`, and links `GEMINI.local.md` and `MEMORY.md` from the private repo when it exists. `check-antigravity.sh` verifies the links and warns about local-only runtime state.
+`setup.sh` links public `antigravity/GEMINI.md` into `~/.gemini/config/GEMINI.md`, dir-symlinks the shared workflow skills (`codex/skills/*`, the agent-neutral set) plus the Antigravity-only skills (`antigravity/skills/*`, e.g. `browser-verify`) into `~/.gemini/config/skills/`, links `antigravity/hooks.json` (session-start handoff injection), seeds a local `mcp_config.json` from `antigravity/mcp_config.json.example` (Playwright + GitHub MCP; the GitHub token resolves at launch via `gh auth token`, never stored), and links `GEMINI.local.md` and `MEMORY.md` from the private repo when it exists. `check-antigravity.sh` verifies all of it and warns about local-only runtime state.
 
 </details>
 

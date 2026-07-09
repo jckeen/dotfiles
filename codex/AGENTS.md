@@ -68,6 +68,19 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
 - Keep private memory and personal preferences in `~/dev/codex-memory`, not in
   this public repository.
 
+## Team Handoffs
+
+- **At session start on a shared repo**, check `~/.claude/handoffs/` for a
+  recent `*-<project>-handoff.md` note and read it before starting — Claude
+  Code and Antigravity leave session context there, and so should I.
+- **Persist verdicts as artifacts.** When I finish a rescue, refutation, or
+  verification task, the outcome must outlive my session: write or append a
+  handoff note (same directory, same section format) or comment on the
+  relevant issue/PR. A diagnosis that only reached one terminal is lost work.
+- **Session continuity:** when a handoff note carries a Codex session id,
+  resume it (`codex resume <id>` / `--last`) instead of cold-starting; record
+  my own session id in the note's "Session continuity" section when handing off.
+
 ## Private Memory
 
 - If `~/.codex/AGENTS.local.md` exists, read it when starting work that could

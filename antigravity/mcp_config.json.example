@@ -1,0 +1,16 @@
+{
+  "_comment": "Template for ~/.gemini/config/mcp_config.json (Antigravity global MCP servers). setup.sh copies this into place when no config exists; the live file stays LOCAL (never symlinked) so machine-specific servers and any private entries never land in the public repo. The github entry resolves its token at server LAUNCH via `gh auth token` — no secret is ever stored in this file.",
+  "mcpServers": {
+    "playwright": {
+      "command": "bunx",
+      "args": ["@playwright/mcp@latest"]
+    },
+    "github": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "GITHUB_PERSONAL_ACCESS_TOKEN=\"$(gh auth token)\" exec bunx @modelcontextprotocol/server-github"
+      ]
+    }
+  }
+}

@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-07-09 — feat: the three-agent loop made real (closes the capability-audit gaps #169–#176)
+
+### What changed
+- **codex-review-gate.sh rewritten for structured output (#169)** — reviews now run
+  `codex exec --output-schema` against a vendored JSON schema
+  (`claude/scripts/codex-review-schema.json`); the ~100 lines of prose-regex and
+  format-drift heuristics are gone. The gate computes and FENCES the diff itself
+  (hash-derived boundary, untrusted-data framing, `-s read-only`) so changed-file
+  content can't re-scope the review. Strict shape validation (verdict/severity
+  enums) and a non-zero-exit-with-clean-approve guard both fail closed.
+- **Adversarial refutation mode (#170)** — `--claim "<claim>" --repro "<cmd>"`
+  injects the falsifiable handoff payload; the reviewer is instructed to refute,
+  not confirm. Wired into MULTI-AGENT.md's handoff-payload contract.
+- **Antigravity browser/runtime lane is real (#172, #173)** — global
+  `mcp_config.json` seeded from `antigravity/mcp_config.json.example`
+  (Playwright MCP + GitHub MCP, token resolved at launch via `gh auth token`,
+  never stored); new `browser-verify` skill (falsifiable payload in, verdict +
+  evidence out at `~/.claude/handoffs/evidence/`); verified live — agy lists
+  both servers, playwright browser_* tools, and the skill.
+- **agy session-start handoff injection (#174)** — `antigravity/hooks.json` +
+  `claude/scripts/agy-inject-handoff.sh` (PreInvocation): interactive agy
+  sessions get the project's latest handoff note as ephemeral context; skips
+  gate runs (`ANTIGRAVITY_GATE=1`) and repeat invocations. Verified live: agy
+  quoted the note's heading with a workspace attached.
+- **Gate canary (#175)** — on empty review output the agy gate now runs a PONG
+  canary to distinguish one failed review from a systemic `--print` stdout
+  regression, and warns loudly before degrading.
+- **Handoff loop closed (#171) + session continuity (#176)** — codex/AGENTS.md
+  and antigravity/GEMINI.md gain a Team Handoffs section (read
+  `~/.claude/handoffs/` at session start; persist verdicts as artifacts);
+  both handoff skills gain an optional "Session continuity" section carrying
+  codex session ids / agy conversation ids for resume-not-cold-start.
+
+### The loop working on itself
+The rewritten Codex gate live-blocked its own rewrite five rounds running, with
+real findings each time (prompt-obedience scoping, `readlink -f` on macOS,
+rc-ignored approve, weak enum validation, hook word-splitting, unfenced
+claim/repro payloads, and the self-review problem: a diff that edits the
+reviewer's own AGENTS.md can steer the review that judges it). All fixed —
+including a new self-review guard that fails closed toward the cross-vendor
+gate when a diff touches the Codex instruction surface. One finding
+(env-var propagation through the timeout wrapper) was empirically REFUTED and
+answered with an explicitness change rather than a behavior change. That is the
+refuter lane doing exactly what #170 asked for.
+
+
 ## 2026-07-09 — feat: Antigravity joins the shared-workflow config (agy-memory + antigravity/ layer)
 
 ### What changed
