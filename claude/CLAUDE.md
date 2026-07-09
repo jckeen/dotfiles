@@ -151,6 +151,13 @@ rationale: `MULTI-AGENT.md`. The operative rules:
   disagreement to a fix, not a tie-break.
 - **Handoff payload:** when I hand to Codex/Antigravity, the note carries the
   *claim to disprove* and the *exact repro command*, not just "please review."
+  For gate-mediated refutation, pass them directly:
+  `codex-review-gate.sh --claim "<claim>" --repro "<cmd>"`.
+- **Verdicts are artifacts:** a rescue diagnosis or verification verdict from
+  another agent must be persisted (handoff note or issue comment) before the
+  team acts on it — output that only reached one terminal is lost work. Notes
+  carry a "Session continuity" section (codex session id / agy conversation
+  id) so the next hand-back resumes instead of cold-starting.
 
 ## Git
 

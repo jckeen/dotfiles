@@ -240,8 +240,13 @@ set +e
 # --sandbox restrict the agent; stdin=/dev/null makes it non-interactive so any
 # tool-permission request fails closed. _tmo is a hard ceiling over agy's own
 # --print-timeout so a hung session can't wedge the push.
+# ANTIGRAVITY_GATE=1 marks this as a gate run so lifecycle hooks (e.g. the
+# handoff-injection PreInvocation hook) know to stay out of review sessions.
+# Passed via `env` INSIDE the wrapped command line — unambiguous propagation
+# through the _tmo function and timeout to agy and its hook subprocesses
+# (a bare prefix assignment also works in bash, verified, but reads ambiguously).
 _tmo "$PRINT_TIMEOUT_SECS" \
-  agy --mode plan --sandbox --print "$PROMPT_INSTRUCTION" </dev/null >"$SUMMARY_FILE" 2>&1
+  env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox --print "$PROMPT_INSTRUCTION" </dev/null >"$SUMMARY_FILE" 2>&1
 RC=$?
 set -e
 
@@ -250,6 +255,22 @@ if [[ $RC -eq 124 ]]; then
 fi
 if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
   [[ -s "$SUMMARY_FILE" ]] && { yellow "  agy output:"; sed 's/^/    /' "$SUMMARY_FILE" | head -20; }
+  if [[ ! -s "$SUMMARY_FILE" ]]; then
+    # Canary (#175): `agy --print` has a history of silently dropping stdout in
+    # non-TTY runs (agy issue #76 / gemini-cli #27466). It does not reproduce on
+    # the version this gate was built against, but it regressed on other
+    # platforms in later releases — and this gate degrades OPEN on empty output,
+    # so a regression would quietly pass every push. Distinguish "this one
+    # review failed" from "every --print is empty": if a trivial prompt also
+    # returns nothing, the gate is systemically broken — say so loudly.
+    CANARY="$(_tmo 60 env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox --print "Reply with exactly: PONG" </dev/null 2>/dev/null || true)"
+    if [[ -z "$CANARY" ]]; then
+      red "  CANARY FAILED: agy --print returned empty for a trivial prompt too."
+      red "  The non-TTY stdout bug has likely regressed — every gate run would degrade open."
+      red "  Fix agy (or pin a working version), or set ANTIGRAVITY_GATE_REQUIRED=1 meanwhile."
+      degrade "agy --print is systemically returning empty output (canary failed)."
+    fi
+  fi
   degrade "agy review session failed (exit $RC)."
 fi
 

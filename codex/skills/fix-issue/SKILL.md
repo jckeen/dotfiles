@@ -1,6 +1,6 @@
 ---
 name: fix-issue
-description: Pick up a GitHub issue or issue-like bug report end to end: investigate, reproduce when useful, implement, verify, commit, push, and prepare a PR when requested.
+description: "Pick up a GitHub issue or issue-like bug report end to end: investigate, reproduce when useful, implement, verify, commit, push, and prepare a PR when requested."
 ---
 
 # Fix Issue
