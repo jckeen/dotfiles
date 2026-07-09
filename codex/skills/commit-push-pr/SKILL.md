@@ -27,14 +27,17 @@ make a pull request.
    - `test: ...`
    - `chore: ...`
 6. Run the Codex review gate — `~/.claude/scripts/codex-review-gate.sh` (the
-   same script `cc` uses; it shells out to `codex exec review`). Run it **after
-   the commit, before the push**, so it reviews the committed delta vs the base
-   branch — exactly the PR contents — and ignores unrelated WIP in the tree.
-   This is the ADR-0003 stop-gate made concrete:
-   - Exit 2 → STOP: critical/high/medium (P0–P2) findings. Fix them in a
-     follow-up commit (or get an explicit override), re-run the gate, and only
-     then continue. Do not push past it.
-   - Exit 0 → clean, or only low (P3+) findings (already filed as GitHub issues).
+   same script `cc` uses; it runs `codex exec --output-schema` over a
+   gate-computed, injection-fenced diff and parses structured JSON findings).
+   Run it **after the commit, before the push**, so it reviews the committed
+   delta vs the base branch — exactly the PR contents — and ignores unrelated
+   WIP in the tree. This is the ADR-0003 stop-gate made concrete:
+   - Exit 2 → STOP: critical/high/medium findings, unreadable output, or a
+     diff touching the reviewer's own instruction files (AGENTS*.md / codex/ —
+     self-review is untrusted; use the Antigravity gate + human eyes, or
+     `CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` after reading those changes). Fix in
+     a follow-up commit, re-run the gate, then continue. Do not push past it.
+   - Exit 0 → clean, or only low findings (already filed as GitHub issues).
      Proceed.
    - Exit 3 / loud warning → Codex could not run; the gate degrades open. Note
      it and continue, or set `CODEX_GATE_REQUIRED=1` to hard-require the review.
