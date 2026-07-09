@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-07-09 — chore: full open-issue/PR sweep across the fleet (orchestrated, 10 PRs, 18 issues closed)
+
+### What changed
+- **Every open dotfiles issue and PR closed** in one orchestrated session: 8
+  parallel worktree agents (fix/build), 4 adversarial reviewers, 2 phase-2
+  agents; every code PR got an independent refutation review before merge.
+- **PR #164 merged** (harvester REST-only for the cloud-proxy sandbox), then
+  **#182**: the harvester skips obsolete bot comments (#159). Empirical
+  correction to GitHub's docs: outdated comments keep `position`, the real
+  signal is `line: null`; GraphQL resolved-thread check is strictly best-effort.
+- **Antigravity gate hardened (#185)** — whole-verdict LGTB match only (#152),
+  fail-closed on unresolved base refs (#153), prompt+diff delivered via stdin so
+  secrets never hit argv (#154, verified against agy 1.1.0), skill invokes the
+  installed gate path (#155); stray-[P#]-token guard on the P3-only pass path;
+  new 12-assertion PATH-shim test wired into CI. #148 closed with the
+  mitigation record.
+- **setup.sh --dry-run now honors its no-writes contract (#187 + #192,
+  closes #133 f.1, #189)** — link_file() and ~20 call sites guarded; repair
+  mode previews under dry-run; stateful-CLI probes (gh/codex/login-shell)
+  gated as a class (gh ≥2.9x writes `device-id` on ANY invocation — the CI-only
+  failure); byte-strict regression test + smoke-install zero-mutation assertion.
+- **Docs reconciled with live state (#183, closes #66 #52 #118; #115/#112
+  closed as false positive)** — SECURITY/CONTRIBUTING point at channels that
+  exist, BRANCH_PROTECTION documents the real required-checks set
+  (shellcheck/tsc/doc-truth), README tree/tables refreshed.
+- **Generated GitHub Pages site (#186, closes #168)** — MkDocs Material over
+  existing markdown, build-time skill/agent catalog from live frontmatter,
+  strict build, deploy workflow. Needs Settings → Pages → "GitHub Actions"
+  before first deploy.
+- **ADR-0006 (#184, closes #77)** — verified assessment of Every's
+  compound-engineering plugin; `agent-native-audit` was removed upstream;
+  verdicts: adapt the reviewer persona + memory-refresh + two-floor grounding,
+  skip the rest.
+- **Multi-agent dispatch mechanics encoded (#188, closes #177 #178 #179)** —
+  companion-direct Codex routing (forwarder is fire-and-forget only), verified
+  agy slug `claude-opus-4-6-thinking` (unknown slugs silently fall back to
+  flash-low), Teammate Contract in GEMINI.md.
+- **Autonomy Kit adoptions (#190)** — coach pass (judgment-only review),
+  "name the bar" quality self-check, effort-matched reviews; attribution to
+  Joe Amditis (MIT). Receipt tokens/caps/picker evaluated and deferred as
+  harness-only.
+- **codex/skills → agents/skills (#191, closes #166)** — the shared skill set
+  is now agent-neutral on disk; checkers/parity/docs updated; live relink
+  verified (agy discovers all 8 shared skills post-rename).
+- **claude-memory**: janitor PR #17 pending user merge; security sweep #16
+  partially remediated (token metadata redacted), disposition on the issue.
+
+### Decisions made
+- Merges go through auto-merge + required checks after an independent
+  adversarial review — never a direct unreviewed merge.
+- Discussions stays disabled (questions → Issues with `question` label);
+  private-vulnerability-reporting enablement left to the operator.
+
+### Known issues
+- Pages deploy fails until the Pages source is set to GitHub Actions.
+- claude-memory #16 remainder: settings.json findings need a foreground
+  session; operator-commons token rotation due before 2026-07-16.
+
 ## 2026-07-09 — feat: the three-agent loop made real (closes the capability-audit gaps #169–#176)
 
 ### What changed
