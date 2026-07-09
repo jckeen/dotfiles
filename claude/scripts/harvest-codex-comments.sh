@@ -78,16 +78,20 @@ fi
 note "harvest-codex-comments: $REPO#$PR — ${#COMMENTS[@]} Codex-bot comment(s)."
 filed=0 skipped=0
 
+# Pre-fetch existing issue bodies ONCE via REST for dedup. We deliberately avoid
+# `gh issue list --search` and `gh issue create`: both go through GitHub's GraphQL
+# API, which egress-restricted proxies (e.g. Claude Cloud routine sandboxes) block
+# — only plain REST under repos/{owner}/{repo}/... is served. REST works in those
+# environments AND locally, so the whole script stays portable. Dedup then greps
+# the stable per-comment marker (the GitHub comment id) in-memory.
+existing_bodies="$(gh api "repos/$REPO/issues?state=all&per_page=100" --paginate --jq '.[].body // ""' 2>/dev/null || true)"
+
 for rec in "${COMMENTS[@]}"; do
   IFS=$'\t' read -r cid path line body <<<"$rec"
   [[ -z "${cid:-}" ]] && continue
 
-  # Stable dedup marker: the GitHub comment id. Searching issue BODIES for it
-  # survives title changes and re-runs (in-session hook + nightly backstop both
-  # run this; neither should double-file).
   marker="codex-comment-id:${REPO}#${PR}:${cid}"
-  if gh issue list --repo "$REPO" --state all --search "$marker in:body" \
-       --json number --jq 'length' 2>/dev/null | grep -qvx '0'; then
+  if grep -qF "$marker" <<<"$existing_bodies"; then
     skipped=$((skipped+1))
     continue
   fi
@@ -110,8 +114,10 @@ for rec in "${COMMENTS[@]}"; do
     continue
   fi
 
-  if url="$(gh issue create --repo "$REPO" --title "$title" --body "$ibody" --label "codex-bot-review" 2>/dev/null)" \
-     || url="$(gh issue create --repo "$REPO" --title "$title" --body "$ibody" 2>/dev/null)"; then
+  # File via REST (POST /repos/{owner}/{repo}/issues), not `gh issue create`
+  # (GraphQL). No label: a REST create with a non-existent label 422s, and the
+  # body marker is what dedup relies on. --jq pulls the new issue URL.
+  if url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" --jq '.html_url' 2>/dev/null)"; then
     echo "  ✓ filed: $url"
     filed=$((filed+1))
   else
