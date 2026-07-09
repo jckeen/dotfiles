@@ -1,0 +1,60 @@
+# pages.yml — build + deploy the GitHub Pages project site (issue #168).
+#
+# The site is GENERATED, NOT WRITTEN: claude/scripts/build-site.sh copies the
+# existing top-level docs and generates the skill/agent catalogs from live
+# frontmatter into the gitignored site-src/, then mkdocs builds site/.
+#
+# One-time repo setting before the first deploy: Settings → Pages →
+# Source: "GitHub Actions".
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; don't cancel a deploy already in flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install mkdocs-material (pinned)
+        run: pip install mkdocs-material==9.7.6
+
+      - name: Generate site sources
+        run: claude/scripts/build-site.sh
+
+      - name: Build site (strict — broken nav/links fail)
+        run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
