@@ -130,6 +130,11 @@ claude
 codex login            # Optional
 ```
 
+> **Node.js first:** unlike macOS, `setup.sh` does not auto-install Node on
+> Linux — if `node` is missing it prints install options and exits. Install it
+> before running setup, e.g.
+> `curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt install -y nodejs`.
+
 </details>
 
 ### Setup-script flags (all platforms)
@@ -142,7 +147,7 @@ codex login            # Optional
 ./setup.sh --help      # usage and flag reference
 ```
 
-> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI enforces this on every PR: a **gitleaks** `secret-scan` job (token/key/credential shapes, full-history) and a `leak-scan` job (machine-specific home paths) both have to pass before merge.
+> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI runs a **gitleaks** `secret-scan` job (token/key/credential shapes, full-history) and a `no-personal-data` leak check (machine-specific home paths) on every PR; branch protection requires the `shellcheck`, `tsc`, and `doc-truth` checks to pass before merge (see [docs/BRANCH_PROTECTION.md](docs/BRANCH_PROTECTION.md)).
 
 > **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Without it you still get hooks, skills, agents, status line, and dotfiles — the global `claude/CLAUDE.md` is symlinked either way.
 
@@ -199,7 +204,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `jq` | JSON processing (used by hooks) | Homebrew / apt |
 | `claude` | Claude Code CLI | npm |
 | `codex` | OpenAI Codex CLI | npm |
-| `bun` | Runtime for `*.hook.ts` hooks | Homebrew / npm |
+| `bun` | Runtime for `*.hook.ts` hooks | Pinned GitHub release (`BUN_VERSION` in `setup.sh`), SHA-256-verified against the release's `SHASUMS256.txt` |
 
 WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for audio routing).
 
@@ -222,6 +227,8 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
 | **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
+| **Other hooks** | `hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
+| **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line); deliberately not symlinked (listed in `claude/nolink.txt`) |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
@@ -483,6 +490,7 @@ dotfiles/
 ├── lib-symlinks.sh             # Shared symlink-tree enumerator sourced by setup.sh + check-claude.sh
 ├── check-claude.sh             # Health check — verifies symlinks/memory, detects orphans; --heal self-links missing (cc uses it)
 ├── check-codex.sh              # Health check — verifies public-safe Codex symlinks
+├── check-antigravity.sh        # Health check — verifies Antigravity (~/.gemini) symlinks
 ├── gh-bootstrap.sh             # Bootstrap GitHub auto-merge settings on new repos
 ├── git-hygiene.sh              # Stale-branch cleanup across repos in ~/dev/
 ├── hygiene-status.sh           # Surface hygiene drift at session start
@@ -513,6 +521,11 @@ dotfiles/
 │       ├── handoff/
 │       ├── changelog/
 │       └── repo-health/
+├── antigravity/
+│   ├── GEMINI.md               # Public-safe Antigravity (agy) global guidance
+│   ├── hooks.json              # Session-start handoff injection
+│   ├── mcp_config.json.example # MCP config template (Playwright + GitHub)
+│   └── skills/                 # Antigravity-only skills (e.g. browser-verify)
 ├── claude/
 │   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
 │   ├── FABLE.md                # Fable conduct layer — operating discipline imported by CLAUDE.md
@@ -533,6 +546,7 @@ dotfiles/
 │   │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
 │   │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
 │   │   ├── HandoffReminder.hook.sh         # SessionStart: surface a recent handoff note
+│   │   ├── PreMergeCodexHarvest.hook.sh    # PreToolUse: harvest Codex-bot PR comments into issues before merge
 │   │   └── worktree-guard.sh               # PreToolUse: block branch create/switch in primary checkout when worktrees are active
 │   ├── skills/
 │   │   ├── antigravity-review/ # /antigravity-review — Gemini second-opinion review gate
@@ -552,7 +566,7 @@ dotfiles/
 │   │   ├── session-retro/      # /session-retro — propose improvements to your skills
 │   │   ├── drift-sweep/        # /drift-sweep — doc-contract bootstrap + drift audit
 │   │   └── fable-mode/         # /fable-mode — recalibrate to the Fable conduct layer
-│   ├── handoffs/               # Session handoff notes (gitignored — ephemeral)
+│   ├── handoffs/               # Session handoff notes (created at runtime, gitignored)
 │   ├── scripts/                # Headless automation + validation scripts
 │   │   ├── common.sh           # Shared safety tiers + runner
 │   │   ├── health-check.sh     # Read-only repo health audit

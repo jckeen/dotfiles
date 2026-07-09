@@ -93,6 +93,12 @@ Expected output:
 - The status-check contexts (`shellcheck`, `tsc`, `doc-truth`) must match the **job names**
   in `.github/workflows/ci.yml`. If you rename a job, update both this doc and
   the protection rule.
+- These three are deliberately the **only** protection-required checks. The
+  remaining CI jobs — `checks` (which bundles the doc-refs, no-personal-data,
+  agent-parity, skill-parity, and install-integrity steps), `secret-scan`, and
+  `commit-format`, plus the `smoke-install` workflow — run on every PR but are
+  **advisory**: a failure shows red on the PR and should be fixed, but branch
+  protection does not block the merge on them.
 - `required_signatures: true` rejects unsigned commits at the server. Configure
   `git config --global commit.gpgsign true` and `gpg.format ssh` (or GPG) on
   every machine that pushes to `main`.
