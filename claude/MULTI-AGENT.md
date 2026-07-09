@@ -59,3 +59,46 @@ Mechanically:
 - **Resume, don't cold-start:** handoff notes carry a "Session continuity"
   section (codex session id, agy conversation id); the receiving agent resumes
   that session when one is listed (`codex resume <id>`, `agy --conversation <id>`).
+
+## Dispatch mechanics
+
+**Codex: route through the companion script, never the forwarder agent (#179).**
+The `codex:codex-rescue` plugin agent is fire-and-forget only — it is Bash-only
+(no channel to return results), makes exactly one companion call, prefers
+`--background` for anything substantial (detaching the job into a handle it is
+forbidden to poll), and prompting it to "analyze" makes its wrapper model do the
+work instead of Codex. Anything that needs a result back MUST call the companion
+directly:
+
+```sh
+node "$(fd codex-companion.mjs ~/.claude/plugins/cache | head -1)" \
+  task|adversarial-review [--wait|--background] [--base <ref>]
+# background jobs: ... status | result | cancel
+```
+
+Version-pin gotcha: the plugin cache path embeds the plugin version and moves on
+every plugin update — always resolve it via `fd` (or `find -name` where fd isn't
+installed), never hardcode the versioned path. Squash-merge gotcha: after a
+squash merge, `git merge-base --is-ancestor` is always false for the source
+branch — verify a change landed with `git grep <symbol> origin/main`, not commit
+ancestry.
+
+**Antigravity: dispatch non-interactively with a verified model slug (#177).**
+The verified high-tier dispatch is:
+
+```sh
+timeout 300 agy -p "<prompt>" --model claude-opus-4-6-thinking
+```
+
+Two `--model` failure modes, neither of which errors:
+
+- A display-name string from `agy models` (e.g. `--model "Gemini 3.1 Pro
+  (High)"`) hangs print mode forever behind an interactive picker — always wrap
+  `agy` in `timeout`.
+- An unrecognized lowercase slug silently falls back to the default flash-low
+  tier (as of 2026-07-09, every `gemini-3.1-pro*` variant and
+  `claude-sonnet-4-6-thinking` fell back; only `claude-opus-4-6-thinking` was
+  honored). When the tier matters, confirm the recorded model in the newest
+  `~/.gemini/antigravity-cli/conversations/*.db` (`strings <db> | grep -E
+  'gemini-|claude-'`) rather than trusting the flag — `gemini-default` /
+  `gemini-3.5-flash-low` there means the slug was ignored.

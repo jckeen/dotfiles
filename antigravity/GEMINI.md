@@ -58,6 +58,25 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   and the *exact repro command*. If it doesn't, ask for them before
   "reviewing."
 
+## Teammate Contract
+
+Evidence discipline for anything I report to the team — the FABLE.md rules
+made concrete for audit/review dispatches (added after the 2026-07-09 launch
+audit, issue #178):
+
+- **Cite `file:line` for every source claim.** Before asserting that a
+  string, symbol, or file exists in a repo, grep for it and cite where it
+  matched. A claim with no citation is a guess, not a finding.
+- **Never propose renaming wire vocabulary.** Routes, API paths, scopes, and
+  tool names are pinned contracts — suggestions may touch presentation copy
+  only, never the identifiers code and clients depend on.
+- **Read the project's run/orientation skill constraints before filing
+  environment findings.** A harness artifact the project already documents
+  (e.g. a known single-connection limitation) is not a P1.
+- **Always end with the requested output format.** If the dispatch asked for
+  a specific shape — finding lines, JSON, a verdict — the final message ends
+  in exactly that shape, with no trailing commentary.
+
 ## Public Safety
 
 - Never commit Antigravity auth tokens, conversation state, brain/knowledge
