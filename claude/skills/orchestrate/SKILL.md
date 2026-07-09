@@ -64,6 +64,11 @@ Select capabilities aggressively from the available skills and platform features
 
 ## Execution Quality
 
+- **Name the bar, then clear it** — before starting, state the single most useful
+  thing that would make this better than a rote pass (a fact to verify instead of
+  assert, an earlier artifact to build on, an approach worth trying). Do that
+  thing. Before finishing, re-read what you produced and confirm you did. If the
+  task is genuinely trivial, say so and skip — don't manufacture busywork.
 - **Vertical slice first** — For greenfield work, build one end-to-end slice
   before parallelizing.
 - **Verify with tools** — Never claim done without evidence. Screenshots, test
@@ -86,7 +91,8 @@ that the user has to remember each skill:
 
 1. `/verify` — drive the real change end-to-end (the app/flow, not just tests).
 2. `/code-review` (and `/security-review` for auth, RLS, payments, or data
-   handling), then `/simplify`.
+   handling), then `/simplify`; then a **coach pass** (see the `review` skill) —
+   the single highest-leverage quality lift, not more bug-hunting.
 3. If anything changed: `/changelog`; then `/handoff` if the session is ending.
 4. On success: `/session-retro` — leave the toolset better than you found it.
 
