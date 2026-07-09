@@ -29,6 +29,7 @@ SOURCE        .github/PULL_REQUEST_TEMPLATE.md
 # Historical — point-in-time records (banner or ADR Status/Date header)
 # (Plans/ is gitignored — untracked files are invisible to the checker.)
 HISTORICAL    docs/adr/*.md
+HISTORICAL    docs/superpowers/specs/*.md
 
 # Guards. Open work lives in GitHub issues, not active docs.
 # (SOURCE exempt: PR-template platform checkboxes, plan-executing skills.)

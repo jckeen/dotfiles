@@ -1,5 +1,8 @@
 # Review-automation pipeline — design
 
+> **Historical** — point-in-time design record (2026-07-09). Captures the design as
+> agreed; once implemented, the code and hooks are the source of truth.
+
 **Date:** 2026-07-09
 **Goal:** Make code review and post-PR comment capture *automatic* so the operator
 talks naturally and `/orchestrate` is the main verb. No step should depend on the
