@@ -110,6 +110,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `sync-memory` | Commit and push pending memory changes |
 | `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |
 | `check-codex` | Verify public-safe Codex symlinks; warn about private/generated state |
+| `check-antigravity` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |

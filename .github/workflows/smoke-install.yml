@@ -20,6 +20,7 @@ on:
       - "setup.sh"
       - "check-claude.sh"
       - "check-codex.sh"
+      - "check-antigravity.sh"
       - "gh-bootstrap.sh"
       - "git-hygiene.sh"
       - "hygiene-status.sh"
@@ -43,7 +44,7 @@ jobs:
       - name: Syntax check shell scripts
         run: |
           set -euo pipefail
-          for f in setup.sh check-claude.sh check-codex.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh .bash_aliases .bash_profile; do
+          for f in setup.sh check-claude.sh check-codex.sh check-antigravity.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh .bash_aliases .bash_profile; do
             if [ -f "$f" ]; then
               echo "==> bash -n $f"
               bash -n "$f"

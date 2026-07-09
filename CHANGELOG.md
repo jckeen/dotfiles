@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-07-09 — feat: Antigravity joins the shared-workflow config (agy-memory + antigravity/ layer)
+
+### What changed
+- **`antigravity/GEMINI.md`** — public-safe global rules for Antigravity (`agy`),
+  the Gemini sibling of `codex/AGENTS.md`: Fable conduct layer, working style,
+  multi-agent lanes (Antigravity = runtime/browser verifier + front-end),
+  public safety, private-memory pointers. Symlinked to `~/.gemini/config/GEMINI.md`
+  by `setup.sh` (new section 5c) — verified live: `agy` loads it and quotes its lane.
+- **Shared workflow skills across agents** — the agent-neutral skill set in
+  `codex/skills/` (review, simplify, fix-issue, commit-push-pr, handoff,
+  changelog, branch-hygiene, repo-health) is now dir-symlinked into
+  `~/.gemini/config/skills/`, so Codex and Antigravity run the same workflows
+  from one source. Verified live: all 8 discovered by `agy`.
+- **`agy-memory` private repo** (github.com/jckeen/agy-memory) — third member of
+  the memory trio: `GEMINI.local.md` + `MEMORY.md`, linked into
+  `~/.gemini/config/` by setup.sh, mirroring codex-memory.
+- **`check-antigravity.sh`** — drift check mirroring `check-codex.sh` (link
+  verification, local-state warnings, orphan cleanup with `--fix`); wired into
+  the smoke-install CI workflow.
+- **`check-agent-parity.sh` now checks three files** — every canonical
+  cross-agent rule must appear in `claude/CLAUDE.md`, `codex/AGENTS.md`, AND
+  `antigravity/GEMINI.md`; self-test fixtures extended (4 cases).
+- **fix: `fix-issue` skill YAML** — unquoted `: ` in the description made the
+  frontmatter invalid YAML; Antigravity's strict parser silently dropped the
+  skill from discovery (Codex tolerated it). Description now quoted.
+
+### Decisions made
+- Antigravity global rules live at `~/.gemini/config/GEMINI.md` — verified
+  empirically (marker probe): the `rules/` subdir is NOT loaded there, and
+  `skills.json` entries need absolute paths (`~/` is not expanded).
+- `codex/skills/` stays the single source for the shared set rather than
+  renaming to a neutral `agents/skills/` now — the rename touches 6+ surfaces
+  (CI tests, README, doc-contract); proposed as a follow-up issue instead.
+
+
 ## 2026-07-09 — chore: Claude Cloud routine fleet moved to Opus 4.8
 
 ### What changed

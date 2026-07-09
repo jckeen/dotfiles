@@ -1070,6 +1070,53 @@ else
   echo "     Create it only if you want portable private Codex memory."
 fi
 
+# ─── 5c. Antigravity (agy) config ────────────────────────────────────
+# Global customization root is ~/.gemini/config/ (rules load from GEMINI.md
+# there; skills from skills/). Live runtime state stays untouched under
+# ~/.gemini/antigravity-cli/.
+echo ""
+echo "--- Setting up Antigravity config ---"
+AGY_CONFIG_DIR="$HOME_DIR/.gemini/config"
+mkdir -p "$AGY_CONFIG_DIR"
+
+if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
+  link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
+  echo "  -> Antigravity global GEMINI.md linked"
+fi
+
+# Shared workflow skills: the agent-neutral set in codex/skills is the single
+# source for both Codex and Antigravity. Antigravity discovers per-skill dirs
+# under ~/.gemini/config/skills/; symlink each one (dir-level, unlike the
+# per-file Codex links, since agy resolves rule/skill paths through the link).
+if [ -d "$DOTFILES_DIR/codex/skills" ]; then
+  mkdir -p "$AGY_CONFIG_DIR/skills"
+  for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
+      echo "  -> WARNING: $AGY_CONFIG_DIR/skills/$skill_name is a real directory; not replacing it"
+      continue
+    fi
+    link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
+  done
+  echo "  -> Antigravity shared skills linked (source: codex/skills)"
+fi
+
+AGY_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/agy-memory"
+if [ -d "$AGY_MEMORY_REPO" ]; then
+  echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
+  for f in GEMINI.local.md MEMORY.md; do
+    if [ -f "$AGY_MEMORY_REPO/$f" ]; then
+      link_file "$AGY_MEMORY_REPO/$f" "$AGY_CONFIG_DIR/$f"
+      echo "  -> Antigravity private $f linked"
+    fi
+  done
+  echo "     Keep personal Antigravity memory there, not in public dotfiles."
+else
+  echo "  -> Optional private Antigravity memory repo not found at $AGY_MEMORY_REPO"
+  echo "     Create it only if you want portable private Antigravity memory."
+fi
+
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
 if ! gh auth status &>/dev/null; then
   echo ""
