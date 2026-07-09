@@ -812,7 +812,11 @@ fi
 if command -v codex &>/dev/null; then
   echo ""
   echo "--- Checking Codex authentication ---"
-  if codex login status &>/dev/null; then
+  # Same state-writing-probe class as `claude auth status` / `gh auth status`
+  # (issue #189): don't let a stateful CLI initialize $HOME during a dry run.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would check 'codex login status' (probe skipped: stateful-CLI probes can initialize \$HOME)"
+  elif codex login status &>/dev/null; then
     echo "  -> Already signed in to Codex"
     CODEX_AUTHED=1
   else
@@ -1202,7 +1206,14 @@ else
 fi
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
-if ! gh auth status &>/dev/null; then
+# The gh CLI (≥ ~2.5x) writes ~/.local/state/gh/device-id on ANY invocation —
+# even `gh auth status` — so a dry run must not probe it (same class as the
+# gated `claude auth status` probe; broke the CI no-writes assertion on a
+# pristine runner HOME, issue #189).
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo ""
+  echo "  [DRY] would check 'gh auth status' (probe skipped: gh writes ~/.local/state/gh/device-id)"
+elif ! gh auth status &>/dev/null; then
   echo ""
   echo "--- GitHub CLI not authenticated ---"
   echo "Run: gh auth login"
@@ -1317,13 +1328,20 @@ fi
 if [[ "$PLATFORM" != "macos" ]]; then
   echo ""
   echo "--- Verifying login-shell environment ---"
-  cc_type="$(bash -li -c 'type -t cc 2>/dev/null' 2>/dev/null | tail -1 || true)"
-  if [ "$cc_type" = "function" ]; then
-    echo "  -> bash -li resolves cc as function (login shells healthy)"
+  # Skip the probe under --dry-run (issue #189): login-shell startup hooks
+  # (mise, pyenv, nvm, …) write their own state into $HOME, and dry-run
+  # hasn't linked anything for the probe to verify anyway.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would verify 'bash -li' resolves cc (probe skipped: login startup hooks may write into \$HOME)"
   else
-    echo "  !! WARNING: bash -li does not see cc (got: '$cc_type')"
-    echo "     Login shells will need 'source ~/.bashrc' before cc works."
-    echo "     Check ~/.bash_profile, ~/.bashrc, ~/.bash_aliases symlinks."
+    cc_type="$(bash -li -c 'type -t cc 2>/dev/null' 2>/dev/null | tail -1 || true)"
+    if [ "$cc_type" = "function" ]; then
+      echo "  -> bash -li resolves cc as function (login shells healthy)"
+    else
+      echo "  !! WARNING: bash -li does not see cc (got: '$cc_type')"
+      echo "     Login shells will need 'source ~/.bashrc' before cc works."
+      echo "     Check ~/.bash_profile, ~/.bashrc, ~/.bash_aliases symlinks."
+    fi
   fi
 fi
 

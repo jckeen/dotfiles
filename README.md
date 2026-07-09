@@ -622,5 +622,6 @@ dotfiles/
 - [Official Best Practices](https://code.claude.com/docs/en/best-practices) — Anthropic's documentation
 - [Claude Code Hooks Guide](https://code.claude.com/docs/en/hooks-guide) — Hook documentation
 - [Trail of Bits Config](https://github.com/trailofbits/claude-code-config) — Security-focused config reference
+- [Autonomy Kit](https://skills.amditis.tech/autonomy) by Joe Amditis (MIT) — the quality-bar / coach-pass / effort-matched-review discipline distilled into our review + orchestrate skills
 
 Want to understand the reasoning behind these choices? Read the [CHANGELOG](CHANGELOG.md).

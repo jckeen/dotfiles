@@ -40,6 +40,12 @@ Lanes are defaults, not walls — whoever holds the working tree does the edit.
    tie-break. Re-run any "verified via X" claim that contradicts what you can
    check directly; empirical beats confident assertion.
 
+   Match reasoning effort to the job: run the correctness review at **low**
+   effort on purpose — a fast, literal read of the diff, not a high-effort pass
+   that invents problems or rewrites the design. Reserve high effort for the
+   work itself and for the judgment (coach) pass. A correctness reviewer
+   straining for findings is as costly as one that skims.
+
 ## Handoff payload
 
 When the conductor hands work to Codex or Antigravity, the handoff (a `handoff`
