@@ -21,7 +21,7 @@ R=""
 new_repo() {
   R="$(mktemp -d)"
   git -C "$R" init -q
-  mkdir -p "$R/claude/scripts" "$R/codex"
+  mkdir -p "$R/claude/scripts" "$R/codex" "$R/antigravity"
   cp "$REAL_CHECKER" "$R/claude/scripts/check-agent-parity.sh"
   cp "$LIB" "$R/claude/scripts/checker-lib.sh"
   chmod +x "$R/claude/scripts/check-agent-parity.sh"
@@ -75,6 +75,19 @@ claude_full() {
     '- A doc-contract is asserted in CI by check-doc-truth.'
 }
 
+# Antigravity side, same seven concepts in a different voice.
+gemini_full() {
+  w antigravity/GEMINI.md \
+    '# Antigravity global rules' \
+    '- Keep edits scoped to the requested behavior.' \
+    '- Read the surrounding code before changing it.' \
+    '- Verify with the smallest useful check.' \
+    '- Report any test you could not run.' \
+    '- Never commit secrets, auth tokens, or credentials.' \
+    '- Private notes live in the agy-memory and claude-memory repos.' \
+    '- Respect the doc-contract enforced by check-doc-truth.'
+}
+
 # Codex side, same seven concepts in a different voice.
 agents_full() {
   w codex/AGENTS.md \
@@ -88,16 +101,18 @@ agents_full() {
     '- Respect the doc-contract enforced by check-doc-truth.'
 }
 
-# --- Case 1: both files complete → pass -------------------------------------
+# --- Case 1: all files complete → pass ---------------------------------------
 new_repo
 claude_full
 agents_full
-check "both files carry all 7 concepts passes" 0 "agent-parity"
+gemini_full
+check "all files carry all 7 concepts passes" 0 "agent-parity"
 
 # --- Case 2: one concept dropped from AGENTS.md → drift fail ----------------
 # Same as the good case but the codex side omits the doc-contract line.
 new_repo
 claude_full
+gemini_full
 w codex/AGENTS.md \
   '# Codex global rules' \
   '- Keep the change scope tight and focused.' \
@@ -111,7 +126,14 @@ check "concept missing from one side fails as drift" 1 "missing from"
 # --- Case 3: AGENTS.md absent entirely → missing-file fail ------------------
 new_repo
 claude_full
+gemini_full
 check "absent codex/AGENTS.md fails as missing" 1 "missing"
+
+# --- Case 4: GEMINI.md absent entirely → missing-file fail -------------------
+new_repo
+claude_full
+agents_full
+check "absent antigravity/GEMINI.md fails as missing" 1 "missing"
 
 echo "---"
 echo "$pass passed, $failed failed"

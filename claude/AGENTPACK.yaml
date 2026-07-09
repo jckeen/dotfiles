@@ -54,7 +54,7 @@
       "id": "instruction:multi-agent-lane-contract",
       "type": "instruction",
       "name": "Multi-agent lane contract",
-      "description": "How Claude Code, Codex, and Antigravity work as one team on the same repo — lanes (conductor / independent verifier / runtime verification), one-owner-per-worktree, adversarial verification, and the handoff payload. Operative rules are mirrored into CLAUDE.md and codex/AGENTS.md.",
+      "description": "How Claude Code, Codex, and Antigravity work as one team on the same repo — lanes (conductor / independent verifier / runtime verification), one-owner-per-worktree, adversarial verification, and the handoff payload. Operative rules are mirrored into CLAUDE.md, codex/AGENTS.md, and antigravity/GEMINI.md.",
       "path": "MULTI-AGENT.md",
       "risk_level": "low",
       "permissions": []

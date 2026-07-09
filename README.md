@@ -25,7 +25,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
 - **Auto-hygiene** — a daily systemd timer cleans stale branches across every repo in `~/dev/`, surfaces drift at every Claude/Codex session start, and bootstraps the canonical 8 GitHub auto-merge settings on every newly-created or cloned repo.
-- **Public-safe Codex parity** — the public-safe skill subset (review, simplify, fix-issue, commit-push-pr, handoff, changelog, branch-hygiene) is wired so `cx` mirrors `cc` on those shared workflows, plus a Codex-only `repo-health` skill (its Claude-side analogue is the `repo-scout` agent, not a skill). Codex auth, sessions, sqlite state, and live `config.toml` stay local; only public-safe guidance and skills are shared.
+- **Public-safe Codex parity** — the public-safe skill subset (review, simplify, fix-issue, commit-push-pr, handoff, changelog, branch-hygiene) is wired so `cx` mirrors `cc` on those shared workflows, plus a Codex-only `repo-health` skill (its Claude-side analogue is the `repo-scout` agent, not a skill). The same skill set is dir-symlinked into Antigravity's global config (`~/.gemini/config/skills/`), so `agy` shares the workflow too. Codex auth, sessions, sqlite state, and live `config.toml` stay local; only public-safe guidance and skills are shared.
 - **Cross-platform symlink hygiene** — `setup.sh` is idempotent and runs the same on macOS and WSL. Edit `~/.claude/agents/foo.md` and the change is in your repo automatically (it's a symlink). `dotfiles-update` keeps everything in sync with one command.
 
 > **Why this exists:** Claude Code and Codex are powerful but the defaults aren't tuned for serious daily work — context bloats, sessions vanish without handoffs, branches pile up, agent reviews are ad-hoc, and you re-discover the same gotchas every project. This repo encodes the "second-day knowledge" that makes the tools actually compound. If you're going to spend hundreds of hours in these CLIs, spend the first 10 minutes setting up properly.
@@ -228,6 +228,8 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
 | **Codex skills** | `codex/skills/*/SKILL.md` | Public-safe Codex workflows for review, issue fixes, PRs, handoffs |
 | **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
+| **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`) |
+| **Antigravity skills** | `codex/skills/*/` (shared) | The same agent-neutral workflow set, dir-symlinked into `~/.gemini/config/skills/` |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing |
 
@@ -307,7 +309,7 @@ push-time Codex review gate that blocks on critical findings.
 
 ## The private memory repos
 
-This public dotfiles repo pairs with up to two **separate private repos** — `claude-memory` and (optional) `codex-memory` — that hold things that don't belong in public: Claude Code settings, auto-memory, archived personal context, and Codex preferences. Both are optional; without them you still get hooks, skills, agents, status line, git config, and `cc`/`cx` scaffolding.
+This public dotfiles repo pairs with up to three **separate private repos** — `claude-memory`, plus optional `codex-memory` and `agy-memory` — that hold things that don't belong in public: Claude Code settings, auto-memory, archived personal context, and Codex/Antigravity preferences. All are optional; without them you still get hooks, skills, agents, status line, git config, and `cc`/`cx` scaffolding.
 
 <details>
 <summary><strong>📁 The <code>claude-memory</code> private repo</strong> — structure, contract, how to create your own</summary>
@@ -391,6 +393,33 @@ This public dotfiles repo only tracks reusable Codex guidance, skills, and examp
 
 </details>
 
+<details>
+<summary><strong>📁 The <code>agy-memory</code> private repo</strong> — structure, what never to commit</summary>
+
+<br>
+
+Same pattern for Antigravity (`agy`): the public repo tracks only `antigravity/GEMINI.md` (global rules); anything personal belongs in an optional private repo at `~/dev/agy-memory`.
+
+**Minimum structure:**
+
+```
+~/dev/agy-memory/
+├── GEMINI.local.md              # private Antigravity preferences
+├── MEMORY.md                    # durable private notes
+├── README.md
+└── .gitignore
+```
+
+**Never commit these from `~/.gemini/antigravity-cli/`:**
+
+- `antigravity-oauth-token`
+- `conversations/`, `conversation_summaries.db*`, `history.jsonl`
+- `brain/`, `knowledge/`, `implicit/`, `scratch/`, `log/`, `cache/`, `crashes/`
+
+`setup.sh` links public `antigravity/GEMINI.md` into `~/.gemini/config/GEMINI.md`, dir-symlinks the shared workflow skills (`codex/skills/*`, the agent-neutral set) into `~/.gemini/config/skills/`, and links `GEMINI.local.md` and `MEMORY.md` from the private repo when it exists. `check-antigravity.sh` verifies the links and warns about local-only runtime state.
+
+</details>
+
 ---
 
 ## Customizing (forking this repo)
@@ -407,6 +436,7 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 - `codex/AGENTS.md` — reusable Codex working rules
 - `codex/skills/*/SKILL.md` — reusable Codex workflows
 - `codex/config.toml.example` — example Codex config only
+- `antigravity/GEMINI.md` — reusable Antigravity working rules
 - `.bash_aliases` — your shell shortcuts
 
 **Keep private:**
@@ -537,7 +567,7 @@ dotfiles/
 │   │   ├── check-hooks-wired.sh    # Warn when a hook file isn't registered in settings.json
 │   │   ├── check-doc-refs.sh       # CI: validate doc path references and links
 │   │   ├── check-doc-truth.sh      # CI: doc-contract checker (ADR 0005) — tiers, banners, dead links
-│   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md and codex/AGENTS.md rules in sync
+│   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md, codex/AGENTS.md, and antigravity/GEMINI.md rules in sync
 │   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
 │   │   ├── check-no-personal-data.sh # CI: block machine-specific home paths
 │   │   ├── check-skill-parity.sh     # CI: skill + agent counts + Claude/Codex artifact shapes
