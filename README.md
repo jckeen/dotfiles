@@ -233,10 +233,10 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Subagents** | `agents/*.md` | 17 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
-| **Codex skills** | `codex/skills/*/SKILL.md` | Public-safe Codex workflows for review, issue fixes, PRs, handoffs |
+| **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows (review, issue fixes, PRs, handoffs), per-file-linked into `~/.codex/skills/` |
 | **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
 | **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`) |
-| **Antigravity skills** | `codex/skills/*/` (shared) | The same agent-neutral workflow set, dir-symlinked into `~/.gemini/config/skills/` |
+| **Antigravity skills** | `agents/skills/*/` (shared) | The same agent-neutral workflow set, dir-symlinked into `~/.gemini/config/skills/` |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing |
 
@@ -396,7 +396,7 @@ This public dotfiles repo only tracks reusable Codex guidance, skills, and examp
 - live `config.toml` project trust entries
 - private MCP endpoints, token env values, account IDs, client names, or private project details
 
-`setup.sh` links public `codex/AGENTS.md` and `codex/skills/*/SKILL.md` into `~/.codex/`. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
+`setup.sh` links public `codex/AGENTS.md` and the shared `agents/skills/*/SKILL.md` into `~/.codex/`. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
 
 </details>
 
@@ -423,7 +423,7 @@ Same pattern for Antigravity (`agy`): the public repo tracks only `antigravity/G
 - `conversations/`, `conversation_summaries.db*`, `history.jsonl`
 - `brain/`, `knowledge/`, `implicit/`, `scratch/`, `log/`, `cache/`, `crashes/`
 
-`setup.sh` links public `antigravity/GEMINI.md` into `~/.gemini/config/GEMINI.md`, dir-symlinks the shared workflow skills (`codex/skills/*`, the agent-neutral set) plus the Antigravity-only skills (`antigravity/skills/*`, e.g. `browser-verify`) into `~/.gemini/config/skills/`, links `antigravity/hooks.json` (session-start handoff injection), seeds a local `mcp_config.json` from `antigravity/mcp_config.json.example` (Playwright + GitHub MCP; the GitHub token resolves at launch via `gh auth token`, never stored), and links `GEMINI.local.md` and `MEMORY.md` from the private repo when it exists. `check-antigravity.sh` verifies all of it and warns about local-only runtime state.
+`setup.sh` links public `antigravity/GEMINI.md` into `~/.gemini/config/GEMINI.md`, dir-symlinks the shared workflow skills (`agents/skills/*`, the agent-neutral set) plus the Antigravity-only skills (`antigravity/skills/*`, e.g. `browser-verify`) into `~/.gemini/config/skills/`, links `antigravity/hooks.json` (session-start handoff injection), seeds a local `mcp_config.json` from `antigravity/mcp_config.json.example` (Playwright + GitHub MCP; the GitHub token resolves at launch via `gh auth token`, never stored), and links `GEMINI.local.md` and `MEMORY.md` from the private repo when it exists. `check-antigravity.sh` verifies all of it and warns about local-only runtime state.
 
 </details>
 
@@ -441,7 +441,7 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 **Edit these only with public-safe content:**
 - `claude/AgentPack.md` — add, remove, or modify review agents
 - `codex/AGENTS.md` — reusable Codex working rules
-- `codex/skills/*/SKILL.md` — reusable Codex workflows
+- `agents/skills/*/SKILL.md` — reusable agent-neutral workflows (Codex + Antigravity)
 - `codex/config.toml.example` — example Codex config only
 - `antigravity/GEMINI.md` — reusable Antigravity working rules
 - `.bash_aliases` — your shell shortcuts

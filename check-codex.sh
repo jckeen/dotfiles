@@ -6,6 +6,9 @@ set +e
 
 DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 CODEX_SRC="$DOTFILES_DIR/codex"
+# Shared workflow skills live in the agent-neutral agents/skills (single
+# source for Codex and Antigravity), not under codex/.
+SKILLS_SRC="$DOTFILES_DIR/agents/skills"
 CODEX_DST="$HOME/.codex"
 CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
 ERRORS=0
@@ -52,8 +55,8 @@ if [ ! -d "$CODEX_DST" ]; then
 else
   check_link "$CODEX_SRC/AGENTS.md" "$CODEX_DST/AGENTS.md" "AGENTS.md"
 
-  if [ -d "$CODEX_SRC/skills" ]; then
-    for skill_dir in "$CODEX_SRC/skills/"*/; do
+  if [ -d "$SKILLS_SRC" ]; then
+    for skill_dir in "$SKILLS_SRC/"*/; do
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
       for skill_file in "$skill_dir"*; do

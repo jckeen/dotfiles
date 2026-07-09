@@ -1085,9 +1085,9 @@ if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
   echo "  -> Codex AGENTS.md linked"
 fi
 
-if [ -d "$DOTFILES_DIR/codex/skills" ]; then
+if [ -d "$DOTFILES_DIR/agents/skills" ]; then
   run mkdir -p "$HOME_DIR/.codex/skills"
-  for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
+  for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
     run mkdir -p "$HOME_DIR/.codex/skills/$skill_name"
@@ -1095,7 +1095,7 @@ if [ -d "$DOTFILES_DIR/codex/skills" ]; then
       [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.codex/skills/$skill_name/$(basename "$skill_file")"
     done
   done
-  echo "  -> Codex skills linked"
+  echo "  -> Codex skills linked (source: agents/skills)"
 fi
 
 if [ -L "$HOME_DIR/.codex/config.toml" ]; then
@@ -1137,13 +1137,13 @@ if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
   echo "  -> Antigravity global GEMINI.md linked"
 fi
 
-# Shared workflow skills: the agent-neutral set in codex/skills is the single
+# Shared workflow skills: the agent-neutral set in agents/skills is the single
 # source for both Codex and Antigravity. Antigravity discovers per-skill dirs
 # under ~/.gemini/config/skills/; symlink each one (dir-level, unlike the
 # per-file Codex links, since agy resolves rule/skill paths through the link).
-if [ -d "$DOTFILES_DIR/codex/skills" ]; then
+if [ -d "$DOTFILES_DIR/agents/skills" ]; then
   run mkdir -p "$AGY_CONFIG_DIR/skills"
-  for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
+  for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
     if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
@@ -1152,7 +1152,7 @@ if [ -d "$DOTFILES_DIR/codex/skills" ]; then
     fi
     link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
   done
-  echo "  -> Antigravity shared skills linked (source: codex/skills)"
+  echo "  -> Antigravity shared skills linked (source: agents/skills)"
 fi
 
 # Antigravity-only skills (e.g. browser-verify) live in antigravity/skills;
