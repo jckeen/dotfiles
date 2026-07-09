@@ -28,7 +28,12 @@ cwd="$(jq -r '.cwd // ""' <<<"$raw" 2>/dev/null || true)"
 # Only act on `gh pr merge`.
 [[ "$cmd" =~ gh[[:space:]]+pr[[:space:]]+merge ]] || exit 0
 
-[[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null || true
+# cwd is harness-supplied (the session's working dir), not prompt content — but
+# only enter it if it's a real directory, and bail (no-op) rather than run the
+# harvester from the wrong place if it isn't.
+if [[ -n "$cwd" ]]; then
+  [[ -d "$cwd" ]] && cd "$cwd" 2>/dev/null || exit 0
+fi
 
 script="$HOME/.claude/scripts/harvest-codex-comments.sh"
 [[ -x "$script" ]] || exit 0
