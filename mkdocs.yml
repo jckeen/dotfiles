@@ -1,0 +1,65 @@
+# mkdocs.yml — GitHub Pages project site (issue #168).
+#
+# The docs_dir (site-src/) is gitignored and populated at build time by
+# claude/scripts/build-site.sh — the site is generated from existing repo
+# markdown and live skill/agent frontmatter, never hand-written.
+# Build: claude/scripts/build-site.sh && mkdocs build --strict
+# Deployed by .github/workflows/pages.yml on push to main.
+
+site_name: jckeen/dotfiles
+site_description: >-
+  Portable multi-agent dev environment — Claude Code, Codex, and Antigravity
+  sharing one workflow layer.
+site_url: https://jckeen.github.io/dotfiles/
+repo_url: https://github.com/jckeen/dotfiles
+repo_name: jckeen/dotfiles
+edit_uri: ""
+
+docs_dir: site-src
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  # GitHub-style slugs so anchors copied from repo markdown (e.g.
+  # #worktrees--multi-session) resolve identically on the site.
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.superfences
+  - pymdownx.highlight
+
+nav:
+  - Overview: index.md
+  - The Guide: guide.md
+  - Multi-agent teamwork: multi-agent.md
+  - Catalog:
+      - Skills: skills.md
+      - Agents: agents.md
+  - Platform:
+      - Windows / WSL2: windows.md
+      - Branch protection: branch-protection.md
