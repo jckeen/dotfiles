@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-09 — chore: Claude Cloud routine fleet moved to Opus 4.8
+
+### What changed
+- The 12-routine Claude Cloud fleet (nightly/weekly automation across the owned
+  repos) now runs on **`claude-opus-4-8`** (Opus 4.8), up from a Sonnet mix
+  (`claude-sonnet-4-6`, plus `claude-sonnet-5` on docs-steward + codex-harvest).
+  These routines do real unattended code work — dep upgrades, security triage,
+  docs edits, PR merges — so the reasoning headroom is worth the higher per-token
+  cost. Individual routines can be dialed back to Sonnet for cost per-routine.
+- Source of truth is the **`jw-routines`** repo (private, `jckeen/jw-routines`),
+  not this one: the model is set per-routine in `routines/<slug>/meta.json` and
+  pushed to the live triggers via `push-routines.mjs` + the in-session
+  `RemoteTrigger` tool. See that repo's README ("Model") for the policy. Recorded
+  here because dotfiles is the hub that references the fleet (review-automation
+  spec, `commit-push-pr` skill); the per-routine model state is not duplicated.
+
 ## 2026-07-09 — feat: automatic review pipeline (Antigravity gate + Codex-bot comment capture)
 
 ### What changed
