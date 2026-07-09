@@ -129,8 +129,12 @@ run_health_audit() {
     else
       errors=$((errors + 1))
       if [ "$mode" = "repair" ]; then
-        echo "  Repairing claude-memory symlinks..."
-        bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          echo "  [DRY] would repair claude-memory symlinks via $BOOTSTRAP_SCRIPT"
+        else
+          echo "  Repairing claude-memory symlinks..."
+          bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+        fi
       fi
     fi
   else
@@ -176,6 +180,11 @@ enforce_executable_bit() {
   fi
   printf '  \033[31mNOT EXECUTABLE\033[0m  %s (source lacks +x: %s)\n' "$label" "$src_real"
   if [ "$mode" = "repair" ]; then
+    # --dry-run --repair: preview only; the bit stays unfixed (#133).
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      printf '  [DRY] would chmod +x %s\n' "$src_real"
+      return 1
+    fi
     # Check chmod's exit status explicitly: audit_link runs under `|| rc=$?`
     # in the alink wrapper, which suppresses set -e for commands inside the
     # function. A silent chmod failure (e.g.
@@ -222,6 +231,12 @@ audit_link() {
     # Wrong target or broken
     printf '  \033[31mBROKEN\033[0m  %s -> %s (expected %s)\n' "$label" "$target" "$src"
     if [ "$mode" = "repair" ]; then
+      # --dry-run --repair previews fixes without applying them (#133):
+      # print the would-fix line and report the entry as still broken.
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        printf '  [DRY] would fix %s (rm + relink to %s)\n' "$label" "$src"
+        return 1
+      fi
       rm "$dst"
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
@@ -238,6 +253,10 @@ audit_link() {
   elif [ -f "$dst" ]; then
     printf '  \033[33mNOT LINKED\033[0m  %s (regular file, not symlink)\n' "$label"
     if [ "$mode" = "repair" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        printf '  [DRY] would fix %s (back up %s to %s.backup + link to %s)\n' "$label" "$dst" "$dst" "$src"
+        return 1
+      fi
       mv "$dst" "$dst.backup"
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
@@ -251,6 +270,10 @@ audit_link() {
   elif [ ! -e "$dst" ]; then
     printf '  \033[33mMISSING\033[0m  %s\n' "$label"
     if [ "$mode" = "repair" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        printf '  [DRY] would fix %s (link to %s)\n' "$label" "$src"
+        return 1
+      fi
       mkdir -p "$(dirname "$dst")"
       ln -s "$src" "$dst"
       printf '  \033[32mFIXED\033[0m   %s\n' "$label"
@@ -305,6 +328,7 @@ Flags:
                  the browser-login steps (for unattended/CI runs)
   --check        Run symlink health audit and exit
   --repair       Audit symlinks and recreate broken ones, then exit
+                 (combine with --dry-run to preview fixes without applying)
   --help, -h     Show this help
 
 Environment:

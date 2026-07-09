@@ -4,8 +4,10 @@
 # files that tempt every mutation path (a real .gitconfig for the backup path,
 # a .bashrc with a /mnt/c cd for the sed path, a real .bash_profile), snapshots
 # it, runs `setup.sh --yes --dry-run` against it, and asserts the snapshot is
-# unchanged — paths, contents, and symlink targets. Run directly; exit 1 on
-# any failure. Mirrors install-integrity.test.sh conventions.
+# unchanged — paths, contents, and symlink targets. Also asserts the
+# `--dry-run --repair` combo previews fixes without applying them. Run
+# directly; exit 1 on any failure. Mirrors install-integrity.test.sh
+# conventions.
 set -uo pipefail
 
 resolve_script_path() {
@@ -80,6 +82,28 @@ if grep -q '\[DRY\] would link' "$OUT"; then
   ok "link_file dry-run guard engaged (would-link preview printed)"
 else
   fail "no '[DRY] would link' lines — link_file guard not exercised"
+fi
+
+# --dry-run --repair must preview fixes without applying them (reviewer P3 on
+# PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).
+# Non-zero exit is expected — the entries are still broken after a preview.
+before="$(snapshot "$TESTHOME")"
+HOME="$TESTHOME" "$SETUP" --dry-run --repair > "$OUT" 2>&1
+repair_rc=$?
+after="$(snapshot "$TESTHOME")"
+
+if [ "$before" = "$after" ]; then
+  ok "--dry-run --repair made zero mutations in \$HOME (rc=$repair_rc, non-zero expected)"
+else
+  fail "--dry-run --repair mutated \$HOME:"
+  diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed 's/^/      | /'
+fi
+
+if grep -q '\[DRY\] would fix' "$OUT"; then
+  ok "repair dry-run guard engaged (would-fix preview printed)"
+else
+  fail "no '[DRY] would fix' lines — repair guard not exercised"
+  sed 's/^/      | /' "$OUT"
 fi
 
 echo ""

@@ -109,6 +109,13 @@ jobs:
           claude/scripts/tests/install-integrity.test.sh
           claude/scripts/check-install-integrity.sh
 
+      # setup.sh --dry-run must never write to $HOME (issue #133). The test
+      # runs the installer against a throwaway HOME and asserts a
+      # byte-identical before/after snapshot.
+      - name: setup-dry-run (no-writes contract)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/setup-dry-run.test.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest
