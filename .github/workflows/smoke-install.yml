@@ -73,10 +73,12 @@ jobs:
           # wrapper, symlink planning) with no network or sudo: --dry-run routes
           # every destructive op through run() (printed, not executed) and --yes
           # takes safe defaults for every prompt so nothing blocks on stdin.
-          # HOME is a throwaway dir so the symlinks setup.sh does create (into
-          # ~/.claude) land in isolation and never touch the runner's home.
+          # HOME is a throwaway dir so the zero-mutation assertion below can
+          # prove --dry-run writes NOTHING there (issue #133) without risking
+          # the runner's real home.
           # Job-level continue-on-error keeps this non-gating until stable.
           smoke_home="$(mktemp -d)"
+          find "$smoke_home" | sort > /tmp/home-before.txt
           HOME="$smoke_home" ./setup.sh --yes --dry-run > /tmp/dryrun.out 2>&1 || {
             echo "::error::./setup.sh --yes --dry-run failed on ${{ matrix.os }} (exit $?)"
             cat /tmp/dryrun.out
@@ -88,4 +90,13 @@ jobs:
             cat /tmp/dryrun.out
             exit 1
           }
-          echo "✓ ./setup.sh --yes --dry-run OK on ${{ matrix.os }}"
+          # No-writes contract (issue #133): --dry-run must not create, remove,
+          # or replace anything under $HOME. Backstops the CI regression test
+          # (claude/scripts/tests/setup-dry-run.test.sh) on both matrix OSes.
+          find "$smoke_home" | sort > /tmp/home-after.txt
+          diff /tmp/home-before.txt /tmp/home-after.txt || {
+            echo "::error::--yes --dry-run on ${{ matrix.os }} mutated the throwaway HOME (dry-run must be zero-write)"
+            cat /tmp/dryrun.out
+            exit 1
+          }
+          echo "✓ ./setup.sh --yes --dry-run OK on ${{ matrix.os }} (zero writes to \$HOME)"
