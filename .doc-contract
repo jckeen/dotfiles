@@ -28,6 +28,11 @@ SOURCE        antigravity/skills/*/SKILL.md
 SOURCE        .github/ISSUE_TEMPLATE/*.md
 SOURCE        .github/PULL_REQUEST_TEMPLATE.md
 
+# Generated — Pages site sources built by claude/scripts/build-site.sh
+# (site-src/ and site/ are gitignored, so untracked output is invisible to
+# the checker; the glob documents the tier and guards accidental tracking.)
+GENERATED     site-src/*.md
+
 # Historical — point-in-time records (banner or ADR Status/Date header)
 # (Plans/ is gitignored — untracked files are invisible to the checker.)
 HISTORICAL    docs/adr/*.md
