@@ -162,6 +162,21 @@ DIFF_CONTENT="$(git diff "${DIFF_TARGET[@]}" -- \
   ':!*.min.js' ':!*.min.css' ':!*.map' \
   2>/dev/null)"
 
+# `git diff HEAD` omits untracked files, so a brand-new file would go unreviewed
+# in an uncommitted review (#150). Append them as added-file diffs, respecting
+# .gitignore and the same asset/lockfile exclusions as the tracked diff above.
+if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
+  while IFS= read -r -d '' f; do
+    case "$f" in
+      *-lock.yaml|*-lock.json|*.lock|bun.lockb|\
+      *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.pdf|*.min.js|*.min.css|*.map) continue ;;
+    esac
+    # --no-index exits 1 when files differ (always, for a new file) — swallow it.
+    ut="$(git diff --no-index --no-color -- /dev/null "$f" 2>/dev/null || true)"
+    [[ -n "$ut" ]] && DIFF_CONTENT+="${DIFF_CONTENT:+$'\n'}$ut"
+  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
+fi
+
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
   exit 0
@@ -210,12 +225,22 @@ ${FENCE}"
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
 trap 'rm -f "$SUMMARY_FILE"' EXIT
 
+# Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
+# without a ceiling rather than hard-fail on macOS (#151). Exit 124 (timed out) is
+# only produced by the first two — handled below.
+_tmo() {
+  if   command -v timeout  >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  else shift; "$@"
+  fi
+}
+
 set +e
 # NO --dangerously-skip-permissions (see the Security note above). --mode plan and
 # --sandbox restrict the agent; stdin=/dev/null makes it non-interactive so any
-# tool-permission request fails closed. `timeout` is a hard ceiling over agy's own
+# tool-permission request fails closed. _tmo is a hard ceiling over agy's own
 # --print-timeout so a hung session can't wedge the push.
-timeout "$PRINT_TIMEOUT_SECS" \
+_tmo "$PRINT_TIMEOUT_SECS" \
   agy --mode plan --sandbox --print "$PROMPT_INSTRUCTION" </dev/null >"$SUMMARY_FILE" 2>&1
 RC=$?
 set -e
