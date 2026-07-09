@@ -69,8 +69,8 @@ fi
 # for it would track a fixed problem (#159). REST signals for that: the docs say
 # `position` goes null, but empirically GitHub may instead re-anchor `commit_id`
 # to the new head and null out `line` (keeping `original_line`), so we treat
-# either as outdated. `line` is legitimately null on file-level comments
-# (subject_type "file"), which are never outdated by this test.
+# either as outdated. `position` and `line` are legitimately null on file-level
+# comments (subject_type "file"), so those are exempt from both signals.
 mapfile -t COMMENTS < <(
   gh api "repos/$REPO/pulls/$PR/comments" --paginate 2>/dev/null \
     | jq -r --arg bot "$BOT" '
@@ -78,9 +78,9 @@ mapfile -t COMMENTS < <(
         | [ (.id|tostring),
             (.path // "?"),
             ((.line // .original_line // 0)|tostring),
-            (if (.position == null)
-                or ((.subject_type // "line") != "file" and .line == null)
-             then "outdated" else "current" end),
+            (if (.subject_type // "line") == "file" then "current"
+             elif (.position == null) or (.line == null) then "outdated"
+             else "current" end),
             (.body | gsub("[\r\n]+"; " ") | .[0:280])
           ] | @tsv' 2>/dev/null
 )
