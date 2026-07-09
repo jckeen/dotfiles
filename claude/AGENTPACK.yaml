@@ -79,6 +79,16 @@
       "skill_format": "agent-skills"
     },
     {
+      "id": "skill:antigravity-review",
+      "type": "skill",
+      "name": "antigravity-review",
+      "description": "Run an automated code review using your regular Antigravity subscription plan. Use when the user asks for a Gemini/Antigravity review, a second opinion on recent changes, or /antigravity-review. The Gemini sibling of the Codex review gate.",
+      "path": "skills/antigravity-review",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
       "id": "skill:branch-hygiene",
       "type": "skill",
       "name": "branch-hygiene",
