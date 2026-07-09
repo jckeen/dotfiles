@@ -48,5 +48,6 @@ Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
 
 ## Questions
 
-Use the **Discussions** tab, not Issues. Issues are for confirmed bugs and
-concrete feature requests.
+Open a GitHub issue and label it `question` (Discussions is not enabled on
+this repo). Keep questions separate from bug reports and feature requests —
+one issue per topic.

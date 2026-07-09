@@ -1,6 +1,6 @@
 # 0004. Adopt selected ideas from Every's compound-engineering plugin (not the plugin)
 
-- **Status:** Accepted (decision made 2026-06-03; remaining adoption tracked in #77)
+- **Status:** Accepted, amended by [ADR-0006](0006-compound-engineering-verified-assessment.md) (the upstream `agent-native-audit` skill was later removed; 0006 is the verified per-component assessment that closed #77)
 - **Date:** 2026-06-03
 
 ## Context

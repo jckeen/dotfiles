@@ -109,6 +109,13 @@ jobs:
           claude/scripts/tests/install-integrity.test.sh
           claude/scripts/check-install-integrity.sh
 
+      # Self-test only: the gate itself needs an authenticated `agy`, so the
+      # fixtures stub it with a PATH shim and assert the gate's parsing/fail-
+      # closed behavior (#152/#153/#154).
+      - name: antigravity-review-gate (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/antigravity-review-gate.test.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest

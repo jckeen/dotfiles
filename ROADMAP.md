@@ -37,7 +37,7 @@ Code w/ Claude 2026 best practices.
 ### Tier 4 — Agent-native / compounding
 - [x] [#75](https://github.com/jckeen/dotfiles/issues/75) `session-retro` self-improving-skills skill
 - [x] [#76](https://github.com/jckeen/dotfiles/issues/76) `jujutsu` (jj) skill
-- Still open: [#77](https://github.com/jckeen/dotfiles/issues/77) — agent-native-review adoption (decision recorded in [ADR-0004](docs/adr/0004-compound-engineering-evaluation.md)); the issue is the live status
+- [x] [#77](https://github.com/jckeen/dotfiles/issues/77) Evaluate Every's compound-engineering plugin — verified verdict in [ADR-0006](docs/adr/0006-compound-engineering-verified-assessment.md) (amends [ADR-0004](docs/adr/0004-compound-engineering-evaluation.md)); follow-up adoption items are their own issues
 - [x] [#78](https://github.com/jckeen/dotfiles/issues/78) Establish ADR practice (`docs/adr/` + template + backfill)
 - [x] [#79](https://github.com/jckeen/dotfiles/issues/79) ROADMAP.md index linking the milestone
 
