@@ -28,6 +28,11 @@ When the user runs /handoff, do the following:
 
 ### Context for next session
 - Anything the next session needs to know that isn't in the code or git history
+
+### Session continuity
+- (optional) Resumable teammate-agent sessions relevant to this work:
+  codex session id (`codex resume <id>`), agy conversation id
+  (`agy --conversation <id>`). Omit the section if there are none.
 ```
 
 2. Save the note to `~/.claude/handoffs/[date]-[project-name]-handoff.md` (the global Claude config directory, NOT inside the project repo). Create the directory if needed. **If the file already exists, Read it first before Writing** — this prevents the overwrite confirmation prompt.

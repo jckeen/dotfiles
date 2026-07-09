@@ -54,6 +54,10 @@ interchangeable across tools:
 
 ### Context for next session
 - ...
+
+### Session continuity
+- (optional) Resumable agent sessions: my Codex session id (`codex resume <id>`),
+  or an agy conversation id (`agy --conversation <id>`). Omit if none.
 ```
 
 Keep it concise. Do not include secrets, private project details, tokens, or

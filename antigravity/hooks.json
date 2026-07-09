@@ -1,0 +1,11 @@
+{
+  "handoff-context": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "~/.claude/scripts/agy-inject-handoff.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}

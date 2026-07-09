@@ -46,3 +46,16 @@ When the conductor hands work to Codex or Antigravity, the handoff (a `handoff`
 note or an issue) carries the **claim to disprove** and the **exact command to
 reproduce** — not just "please review." A verifier with a falsifiable target and
 a repro is worth three that were asked to nod.
+
+Mechanically:
+
+- **Gate-mediated refutation:** `codex-review-gate.sh --claim "<claim>"
+  --repro "<cmd>"` injects the falsifiable payload into the structured Codex
+  review; browser/runtime claims go to Antigravity via the `browser-verify`
+  skill (target, flow, expected observable, claim to disprove).
+- **Verdicts are artifacts:** the verifier persists its verdict (handoff note
+  or issue comment; browser evidence under `~/.claude/handoffs/evidence/`)
+  before the team acts on it. Output that only reached one terminal is lost.
+- **Resume, don't cold-start:** handoff notes carry a "Session continuity"
+  section (codex session id, agy conversation id); the receiving agent resumes
+  that session when one is listed (`codex resume <id>`, `agy --conversation <id>`).

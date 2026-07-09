@@ -55,6 +55,7 @@ if [ ! -d "$AGY_DST" ]; then
   WARNINGS=$((WARNINGS + 1))
 else
   check_link "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" "GEMINI.md"
+  check_link "$AGY_SRC/hooks.json" "$AGY_DST/hooks.json" "hooks.json"
 
   # Shared workflow skills: dir-level symlinks into the agent-neutral set
   # maintained at codex/skills (single source for Codex and Antigravity).
@@ -64,6 +65,24 @@ else
       skill_name="$(basename "$skill_dir")"
       check_link "${skill_dir%/}" "$AGY_DST/skills/$skill_name" "skills/$skill_name"
     done
+  fi
+
+  # Antigravity-only skills (browser-verify, ...).
+  if [ -d "$AGY_SRC/skills" ]; then
+    for skill_dir in "$AGY_SRC/skills/"*/; do
+      [ -d "$skill_dir" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      check_link "${skill_dir%/}" "$AGY_DST/skills/$skill_name" "skills/$skill_name"
+    done
+  fi
+
+  # MCP servers: the live config is LOCAL by design (seeded from the template
+  # by setup.sh); empty/missing means the runtime/browser lane has no tooling.
+  if [ ! -s "$AGY_DST/mcp_config.json" ]; then
+    yellow "MISSING  mcp_config.json is absent or empty — the browser/runtime lane has no MCP tooling (re-run setup.sh to seed from antigravity/mcp_config.json.example)"
+    WARNINGS=$((WARNINGS + 1))
+  else
+    echo "LOCAL   mcp_config.json present (local by design; template: antigravity/mcp_config.json.example)"
   fi
 
   if [ -d "$AGY_MEMORY_REPO" ]; then

@@ -1102,6 +1102,41 @@ if [ -d "$DOTFILES_DIR/codex/skills" ]; then
   echo "  -> Antigravity shared skills linked (source: codex/skills)"
 fi
 
+# Antigravity-only skills (e.g. browser-verify) live in antigravity/skills;
+# same dir-level symlink treatment as the shared set.
+if [ -d "$DOTFILES_DIR/antigravity/skills" ]; then
+  mkdir -p "$AGY_CONFIG_DIR/skills"
+  for skill_dir in "$DOTFILES_DIR/antigravity/skills/"*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
+      echo "  -> WARNING: $AGY_CONFIG_DIR/skills/$skill_name is a real directory; not replacing it"
+      continue
+    fi
+    link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
+  done
+  echo "  -> Antigravity-only skills linked"
+fi
+
+# Lifecycle hooks: hooks.json is small and public-safe — symlink it. The hook
+# script itself ships in claude/scripts (already linked into ~/.claude/scripts).
+if [ -f "$DOTFILES_DIR/antigravity/hooks.json" ]; then
+  link_file "$DOTFILES_DIR/antigravity/hooks.json" "$AGY_CONFIG_DIR/hooks.json"
+  echo "  -> Antigravity hooks.json linked"
+fi
+
+# MCP servers: the live mcp_config.json stays LOCAL (machines add private
+# servers), so seed it from the template only when absent or empty — never
+# overwrite an existing non-empty config.
+if [ -f "$DOTFILES_DIR/antigravity/mcp_config.json.example" ]; then
+  if [ ! -s "$AGY_CONFIG_DIR/mcp_config.json" ]; then
+    cp "$DOTFILES_DIR/antigravity/mcp_config.json.example" "$AGY_CONFIG_DIR/mcp_config.json"
+    echo "  -> Antigravity mcp_config.json seeded from template (playwright + github)"
+  else
+    echo "  -> Antigravity mcp_config.json exists; left untouched (compare with antigravity/mcp_config.json.example)"
+  fi
+fi
+
 AGY_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/agy-memory"
 if [ -d "$AGY_MEMORY_REPO" ]; then
   echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"

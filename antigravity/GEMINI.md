@@ -66,6 +66,22 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
 - Keep private memory and personal preferences in `~/dev/agy-memory`, not in
   this public repository.
 
+## Team Handoffs
+
+- **At session start on a shared repo**, check `~/.claude/handoffs/` for a
+  recent `*-<project>-handoff.md` note (interactive sessions get the latest
+  one injected automatically by the handoff-context hook) — Claude Code and
+  Codex leave session context there, and so should I.
+- **Persist verdicts as artifacts.** A browser/runtime verification is only
+  done when its verdict AND evidence (screenshots, console excerpts, under
+  `~/.claude/handoffs/evidence/`) are written where the team can audit them —
+  see the browser-verify skill. A verdict that only reached one terminal is
+  lost work.
+- **Session continuity:** when a handoff note carries an Antigravity
+  conversation id, resume it (`agy --conversation <id>` / `-c`) instead of
+  cold-starting; record my own conversation id in the note's "Session
+  continuity" section when handing off.
+
 ## Private Memory
 
 - If `~/.gemini/config/GEMINI.local.md` exists, read it when starting work
