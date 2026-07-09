@@ -81,6 +81,10 @@ run the `fable-mode` skill to recalibrate.
 - Promote a "must NOT happen" requirement from discipline into code/CI whenever
   the fix is small (~<50 LOC) — a checklist item waiting to be remembered is the
   failure it guards against (schema refinement on env, host allowlist, a CI gate).
+- A `--dry-run` or non-interactive (`--yes`) flag is only correct when *every*
+  destructive write sits behind the guard AND no default overwrites existing
+  state with empty. Verify by running it against a throwaway `HOME` and diffing
+  the target — a dry-run that mutates real config is worse than none.
 - A reviewer's finding is usually a category, not an instance. Before pushing the
   fix, sweep the same neighborhood — sibling routes, every path resolution, every
   shell flag — and ship the unified fix in one pass.

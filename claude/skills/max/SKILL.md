@@ -63,6 +63,11 @@ Select capabilities aggressively from the available skills and platform features
   before parallelizing.
 - **Verify with tools** — Never claim done without evidence. Screenshots, test
   output, diffs.
+- **Name the failure mode when delegating** — a subagent's verification
+  instruction must name the *specific destructive failure* to check (e.g. "run
+  `--dry-run` against a throwaway HOME and diff the target"), not just "verify it
+  works." A subagent verifies what you name; unnamed side-effects slip through to
+  integration.
 - **TDD for bugs** — Reproduce with a failing test first, then fix
   (`superpowers:test-driven-development`).
 - **Context compaction** — At phase boundaries, self-summarize to prevent context
