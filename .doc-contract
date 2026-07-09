@@ -11,6 +11,7 @@ LIVING        docs/WINDOWS.md
 LIVING        claude/scripts/README.md
 LIVING        claude/chrome/WSL-CHROME-FOR-BORIS.md
 LIVING        codex/README.md
+LIVING        agents/README.md
 LIVING        .github/CONTRIBUTING.md
 LIVING        .github/SECURITY.md
 
@@ -22,7 +23,7 @@ SOURCE        claude/MULTI-AGENT.md
 SOURCE        claude/agents/*.md
 SOURCE        claude/skills/*/SKILL.md
 SOURCE        codex/AGENTS.md
-SOURCE        codex/skills/*/SKILL.md
+SOURCE        agents/skills/*/SKILL.md
 SOURCE        antigravity/GEMINI.md
 SOURCE        antigravity/skills/*/SKILL.md
 SOURCE        .github/ISSUE_TEMPLATE/*.md

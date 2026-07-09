@@ -58,9 +58,9 @@ else
   check_link "$AGY_SRC/hooks.json" "$AGY_DST/hooks.json" "hooks.json"
 
   # Shared workflow skills: dir-level symlinks into the agent-neutral set
-  # maintained at codex/skills (single source for Codex and Antigravity).
-  if [ -d "$DOTFILES_DIR/codex/skills" ]; then
-    for skill_dir in "$DOTFILES_DIR/codex/skills/"*/; do
+  # maintained at agents/skills (single source for Codex and Antigravity).
+  if [ -d "$DOTFILES_DIR/agents/skills" ]; then
+    for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
       check_link "${skill_dir%/}" "$AGY_DST/skills/$skill_name" "skills/$skill_name"

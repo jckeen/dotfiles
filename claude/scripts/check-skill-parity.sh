@@ -8,10 +8,11 @@
 #    files under claude/agents/. (README said 12 while 14 skills shipped;
 #    nothing caught it. The agent count was hardcoded 8x with no guard at all.)
 #
-# 2. ARTIFACT SHAPE: the Claude and Codex changelog/handoff skills must emit
-#    identically-shaped artifacts (same section headings), or cross-tool
-#    session resume breaks. Assert the required headings appear in BOTH sides
-#    of each pair. (The pairs had drifted to different heading sets.)
+# 2. ARTIFACT SHAPE: the Claude and shared-agent (agents/skills, consumed by
+#    Codex + Antigravity) changelog/handoff skills must emit identically-shaped
+#    artifacts (same section headings), or cross-tool session resume breaks.
+#    Assert the required headings appear in BOTH sides of each pair. (The
+#    pairs had drifted to different heading sets.)
 #
 # Usage: check-skill-parity.sh        exit 1 on any drift
 
@@ -49,7 +50,7 @@ fi
 require_headings() {
   local skill="$1"; shift
   local side file h
-  for side in claude codex; do
+  for side in claude agents; do
     file="$REPO_ROOT/$side/skills/$skill/SKILL.md"
     if [ ! -f "$file" ]; then
       red "$side/skills/$skill/SKILL.md missing"
@@ -57,7 +58,7 @@ require_headings() {
     fi
     for h in "$@"; do
       grep -qF "### $h" "$file" \
-        || red "$side/skills/$skill/SKILL.md missing heading '### $h' — Claude/Codex artifacts must match"
+        || red "$side/skills/$skill/SKILL.md missing heading '### $h' — Claude and shared-agent artifacts must match"
     done
   done
 }
@@ -66,7 +67,7 @@ require_headings changelog "What changed" "Decisions made" "Known issues"
 require_headings handoff "What we did" "Where we left off" "Key decisions made" \
   "Open issues" "Next steps" "Context for next session"
 
-[ "$VIOLATIONS" -eq 0 ] && green "artifact shapes: changelog + handoff headings match across Claude/Codex"
+[ "$VIOLATIONS" -eq 0 ] && green "artifact shapes: changelog + handoff headings match across Claude/shared agents"
 
 if [ "$VIOLATIONS" -ne 0 ]; then
   echo ""

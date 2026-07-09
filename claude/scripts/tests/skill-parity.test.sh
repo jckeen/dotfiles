@@ -23,7 +23,7 @@ new_repo() {
   git -C "$R" init -q
   git -C "$R" config user.email t@t.test
   git -C "$R" config user.name test
-  mkdir -p "$R/claude/scripts" "$R/claude/skills" "$R/codex/skills"
+  mkdir -p "$R/claude/scripts" "$R/claude/skills" "$R/agents/skills"
   cp "$CHECKER" "$R/claude/scripts/check-skill-parity.sh"
   cp "$LIB" "$R/claude/scripts/checker-lib.sh"
   chmod +x "$R/claude/scripts/check-skill-parity.sh"
@@ -57,10 +57,10 @@ scaffold_good() {
   printf '# reviewer\n' > "$R/claude/agents/reviewer.md"
   # exactly two skill dirs under claude/skills: changelog + handoff
   write_skill claude changelog "What changed" "Decisions made" "Known issues"
-  write_skill codex  changelog "What changed" "Decisions made" "Known issues"
+  write_skill agents changelog "What changed" "Decisions made" "Known issues"
   write_skill claude handoff "What we did" "Where we left off" "Key decisions made" \
     "Open issues" "Next steps" "Context for next session"
-  write_skill codex  handoff "What we did" "Where we left off" "Key decisions made" \
+  write_skill agents handoff "What we did" "Where we left off" "Key decisions made" \
     "Open issues" "Next steps" "Context for next session"
 }
 
@@ -98,8 +98,8 @@ check "bad count: README claim mismatches skill dirs fails" 1 "README claims"
 # --- Case 3: BAD (missing heading) — drop a required heading from a pair -----
 new_repo
 scaffold_good
-# codex changelog loses "### Known issues"
-write_skill codex changelog "What changed" "Decisions made"
+# shared-agent changelog loses "### Known issues"
+write_skill agents changelog "What changed" "Decisions made"
 check "bad shape: missing heading fails" 1 "missing heading"
 
 # --- Case 4: BAD (agent count) — README says 1-agent but two agent files ------

@@ -7,7 +7,7 @@
 #
 # Scope is deliberately narrow to avoid false positives on every PR:
 #   - Hook refs:  <Word>.hook.ts / <Word>.hook.sh  → must exist in claude/hooks/
-#   - Skill refs: (claude|codex)/skills/<name>/     → that dir must exist
+#   - Skill refs: (claude|codex|agents|antigravity)/skills/<name>/ → dir must exist
 # Bare slash-commands like /clear, /review are NOT treated as skill paths —
 # many are built-in Claude commands, not repo dirs. Only explicit
 # `skills/<name>/` path forms are checked.
@@ -101,7 +101,7 @@ for doc in "${docs[@]}"; do
     done < <(printf '%s\n' "$content" \
       | grep -oE '[A-Za-z0-9_-]+\.hook\.(ts|sh)' || true)
 
-    # 2) Skill references: (claude|codex)/skills/<name>/
+    # 2) Skill references: (claude|codex|agents|antigravity)/skills/<name>/
     while read -r ref; do
       [[ -z "$ref" ]] && continue
       # ref looks like "claude/skills/<name>/"; strip trailing slash for -d test.
@@ -109,7 +109,7 @@ for doc in "${docs[@]}"; do
         report "$doc" "$lineno" "missing skill dir: ${ref%/}"
       fi
     done < <(printf '%s\n' "$content" \
-      | grep -oE '(claude|codex)/skills/[A-Za-z0-9_-]+/' || true)
+      | grep -oE '(claude|codex|agents|antigravity)/skills/[A-Za-z0-9_-]+/' || true)
 
     # 3) Relative Markdown links: [text](path) pointing at a local file/dir.
     # Skip external URLs, in-page anchors, mailto/tel, and placeholder targets.
@@ -132,7 +132,7 @@ for doc in "${docs[@]}"; do
       | grep -oE '\[[^]]*\]\([^)]+\)' || true)
 
   done < <(printf '%s\n' "$stripped" \
-    | grep -nE '\.hook\.(ts|sh)|(claude|codex)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' || true)
+    | grep -nE '\.hook\.(ts|sh)|(claude|codex|agents|antigravity)/skills/[A-Za-z0-9_-]+/|\]\([^)]+\)' || true)
 done
 
 # --- Verdict ---------------------------------------------------
