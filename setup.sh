@@ -825,6 +825,19 @@ if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
   done < <(git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null)
 fi
 
+# Preserve any url.<base>.insteadOf rewrites the user added — same rationale as
+# safe.directory: the rewrite below wipes the file, and we must NOT force these
+# on anyone (only keep what's already present). The known use case: an SSH->HTTPS
+# rewrite (url."https://github.com/".insteadOf git@github.com:) so `claude plugin
+# install` can clone github-sourced plugins over HTTPS on a machine with no
+# GitHub SSH key. Each line is "url.<base>.insteadof <value>".
+_preserved_url_rewrites=()
+if [ -f "$DOTFILES_DIR/.gitconfig.local" ]; then
+  while IFS= read -r _ur; do
+    [ -n "$_ur" ] && _preserved_url_rewrites+=("$_ur")
+  done < <(git config --file "$DOTFILES_DIR/.gitconfig.local" --get-regexp '^url\..*\.insteadof$' 2>/dev/null)
+fi
+
 # Fall back to the identity already in .gitconfig.local when we don't have one
 # from `git config` or env. Without this, an unattended run (--yes with no
 # GIT_NAME/GIT_EMAIL and no effective git identity — e.g. a fresh $HOME) would
@@ -905,6 +918,14 @@ GITCONF
       git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
         | grep -Fxq "$_safe_dir" \
         || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
+    done
+  fi
+
+  # Restore preserved url.*.insteadOf rewrites (see capture above). Each entry is
+  # "url.<base>.insteadof <value>": split on the first space into key and value.
+  if [ "${#_preserved_url_rewrites[@]}" -gt 0 ]; then
+    for _ur in "${_preserved_url_rewrites[@]}"; do
+      git config --file "$DOTFILES_DIR/.gitconfig.local" "${_ur%% *}" "${_ur#* }"
     done
   fi
 fi

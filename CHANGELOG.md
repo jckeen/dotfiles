@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-08 — fix: preserve url.*.insteadOf rewrites across setup.sh runs
+
+### What changed
+- **`setup.sh`** — the `.gitconfig.local` regeneration now preserves any
+  `url.<base>.insteadOf` rewrites the user added, the same way it preserves
+  `safe.directory` entries. Without this, the SSH→HTTPS rewrite that lets
+  `claude plugin install` clone github-sourced plugins (e.g. soundcheck) on an
+  HTTPS-only machine was silently wiped on the next setup run. It's preserved,
+  not forced — a fresh clone with no such entry gets none. Verified with a
+  capture→wipe→restore round-trip.
+
 ## 2026-07-08 — feat: adopt soundcheck security plugin; thin security-reviewer
 
 ### What changed
