@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-08 — feat: /max → /orchestrate; full-lifecycle skill orchestration
+
+### What changed
+- Renamed the `max` skill to **`orchestrate`** (dir, frontmatter, and all
+  references: README, CLAUDE-GUIDE, session-retro, decompose, AGENTPACK.yaml).
+  The name now describes what it does rather than just "effort."
+- **Roll-call the skills first** (Plan First) — before executing it now scans the
+  available-skills list and invokes the matching process skills (brainstorming /
+  systematic-debugging / TDD) without being asked.
+- **Close the Loop** (new section) — when work is done it fires the wrap-up
+  skills in order automatically: `/verify` → `/code-review`(+`/security-review`)
+  → `/simplify` → `/changelog`/`/handoff` → `/session-retro`. Closes the gap
+  where session-retro had to be requested manually.
+- Description keeps "maximum effort / go all-in" trigger phrasing so habitual
+  wording still routes here.
+
 ## 2026-07-08 — fix: preserve url.*.insteadOf rewrites across setup.sh runs
 
 ### What changed

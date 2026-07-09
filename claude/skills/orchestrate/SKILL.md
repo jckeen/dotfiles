@@ -1,9 +1,9 @@
 ---
-name: max
-description: Maximum effort mode — worktrees, parallel agents, batches, full capability selection. Use when you want comprehensive, no-compromise execution.
+name: orchestrate
+description: Full-lifecycle orchestration for comprehensive, no-compromise execution — roll-calls the right skills, fans out parallel/worktree agents, then closes the loop (verify, review, simplify, changelog, handoff, retro). Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.
 ---
 
-# Maximum Effort Mode
+# Orchestrate (Maximum-Effort Mode)
 
 The user is requesting comprehensive, parallelized, no-compromise execution.
 Apply ALL of the following strategies that fit the task. This is not a suggestion
@@ -11,12 +11,17 @@ list — use every applicable technique.
 
 ## Plan First
 
+- **Roll-call the skills first.** Before executing, scan the available-skills
+  list and invoke the matching *process* skills without being asked:
+  `brainstorming` for new features, `systematic-debugging` for bugs,
+  `test-driven-development` before implementation. Match the task to the
+  toolset — don't rely on the user (or yourself) to remember to name them.
 - Decompose the task before executing. For anything with 2+ independent areas,
   use `/decompose` to produce a reviewable parallel execution plan.
 - Write atomic, independently-verifiable acceptance criteria up front, then hold
   the work to them.
-- If a time budget is given (e.g., `/max 10m`), use it to scope depth and how
-  wide to parallelize.
+- If a time budget is given (e.g., `/orchestrate 10m`), use it to scope depth
+  and how wide to parallelize.
 
 ## Parallelization (Mandatory)
 
@@ -72,6 +77,18 @@ Select capabilities aggressively from the available skills and platform features
   (`superpowers:test-driven-development`).
 - **Context compaction** — At phase boundaries, self-summarize to prevent context
   rot in long runs.
+
+## Close the Loop (fire these; don't wait to be told)
+
+When the work is done, run these in order — skip only what genuinely doesn't
+apply. The point of max effort is that the wrap-up happens automatically, not
+that the user has to remember each skill:
+
+1. `/verify` — drive the real change end-to-end (the app/flow, not just tests).
+2. `/code-review` (and `/security-review` for auth, RLS, payments, or data
+   handling), then `/simplify`.
+3. If anything changed: `/changelog`; then `/handoff` if the session is ending.
+4. On success: `/session-retro` — leave the toolset better than you found it.
 
 ## What NOT to Do
 

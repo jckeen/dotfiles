@@ -72,7 +72,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/commit-push-pr` | Commit + push + PR in one shot |
 | `/claude-server` | Spawn worktree + remote |
 | `/decompose` | Break a complex task into subtasks |
-| `/max` | High-context deep investigation mode |
+| `/orchestrate` | Full-lifecycle max-effort mode — roll-call skills, fan out parallel agents, close the loop |
 | `/branch-hygiene` | Audit and clean up stale git branches |
 | `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
 | `/session-retro` | Retro that proposes improvements to your skills (fires on "thanks", or run it) |
@@ -80,7 +80,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/fable-mode` | Recalibrate any model to the Fable conduct layer (`claude/FABLE.md`) |
 
 > Most of these **auto-invoke** when their triggers match — you rarely need to
-> type them. The ones worth remembering by hand: `/max`, `/decompose`,
+> type them. The ones worth remembering by hand: `/orchestrate`, `/decompose`,
 > `/fix-issue N`, and `/handoff`.
 
 ---

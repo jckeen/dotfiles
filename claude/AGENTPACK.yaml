@@ -189,11 +189,11 @@
       "skill_format": "agent-skills"
     },
     {
-      "id": "skill:max",
+      "id": "skill:orchestrate",
       "type": "skill",
-      "name": "max",
-      "description": "Maximum effort mode — worktrees, parallel agents, batches, full capability selection. Use when you want comprehensive, no-compromise execution.",
-      "path": "skills/max",
+      "name": "orchestrate",
+      "description": "Full-lifecycle orchestration for comprehensive, no-compromise execution — roll-calls the right skills, fans out parallel/worktree agents, then closes the loop (verify, review, simplify, changelog, handoff, retro). Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.",
+      "path": "skills/orchestrate",
       "risk_level": "low",
       "permissions": [],
       "skill_format": "agent-skills"

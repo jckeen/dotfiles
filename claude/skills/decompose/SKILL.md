@@ -105,11 +105,12 @@ then fan out the independent workstreams as parallel agents (use
 `superpowers:dispatching-parallel-agents` skill). Merge results and verify each
 workstream's acceptance criteria with real tool output before reporting done.
 
-## Integration with /max
+## Integration with /orchestrate
 
-If the user ran `/max` before `/decompose`, or runs `/decompose` with a time
-budget (e.g., `/decompose 30m`), apply the /max parallelization strategies when
-designing workstreams — prefer worktree isolation and aggressive parallelism.
+If the user ran `/orchestrate` before `/decompose`, or runs `/decompose` with a
+time budget (e.g., `/decompose 30m`), apply the /orchestrate parallelization
+strategies when designing workstreams — prefer worktree isolation and aggressive
+parallelism.
 
 ## Tips for Quality Prompts
 
