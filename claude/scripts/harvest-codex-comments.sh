@@ -8,6 +8,10 @@
 # gate doesn't — but it comments server-side, ~1-2 min after the PR opens, which is
 # easy to merge past. This turns those comments into issues (the fleet's tracker).
 #
+# Obsolete comments are skipped (#159): outdated anchors are detected via REST;
+# resolved threads via a best-effort GraphQL call that degrades to "keep" when
+# GraphQL is blocked (REST is the only hard dependency — see dedup note below).
+#
 # Two callers, one logic:
 #   - PreMergeCodexHarvest.hook.ts  — in-session, warn-only, at `gh pr merge` time.
 #   - nightly-docs-steward routine  — cloud backstop for comments that land later.
@@ -36,7 +40,7 @@ while [[ $# -gt 0 ]]; do
     --repo)    REPO="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --quiet)   QUIET=true; shift ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *)         echo "harvest-codex-comments: unknown arg: $1" >&2; exit 0 ;;  # never hard-fail a caller
   esac
 done
@@ -58,7 +62,15 @@ fi
 [[ -z "$PR" ]] && { note "harvest-codex-comments: no PR for current branch — nothing to harvest."; exit 0; }
 
 # Fetch the bot's inline review comments. jq selects only the bot's, emitting one
-# TSV record per comment: id, path, line, then the body with newlines flattened.
+# TSV record per comment: id, path, line, freshness, then the body flattened.
+#
+# Freshness: an "outdated" comment is one whose anchor no longer exists in the
+# current head diff — the code it flagged was already changed, so filing an issue
+# for it would track a fixed problem (#159). REST signals for that: the docs say
+# `position` goes null, but empirically GitHub may instead re-anchor `commit_id`
+# to the new head and null out `line` (keeping `original_line`), so we treat
+# either as outdated. `line` is legitimately null on file-level comments
+# (subject_type "file"), which are never outdated by this test.
 mapfile -t COMMENTS < <(
   gh api "repos/$REPO/pulls/$PR/comments" --paginate 2>/dev/null \
     | jq -r --arg bot "$BOT" '
@@ -66,6 +78,9 @@ mapfile -t COMMENTS < <(
         | [ (.id|tostring),
             (.path // "?"),
             ((.line // .original_line // 0)|tostring),
+            (if (.position == null)
+                or ((.subject_type // "line") != "file" and .line == null)
+             then "outdated" else "current" end),
             (.body | gsub("[\r\n]+"; " ") | .[0:280])
           ] | @tsv' 2>/dev/null
 )
@@ -76,7 +91,7 @@ if [[ "${#COMMENTS[@]}" -eq 0 ]]; then
 fi
 
 note "harvest-codex-comments: $REPO#$PR — ${#COMMENTS[@]} Codex-bot comment(s)."
-filed=0 skipped=0
+filed=0 skipped=0 obsolete=0
 
 # Pre-fetch existing issue bodies ONCE via REST for dedup. We deliberately avoid
 # `gh issue list --search` and `gh issue create`: both go through GitHub's GraphQL
@@ -86,9 +101,39 @@ filed=0 skipped=0
 # the stable per-comment marker (the GitHub comment id) in-memory.
 existing_bodies="$(gh api "repos/$REPO/issues?state=all&per_page=100" --paginate --jq '.[].body // ""' 2>/dev/null || true)"
 
+# Best-effort resolved-thread check (#159). Thread resolution (isResolved) is
+# NOT exposed by REST — only by GraphQL, which egress-restricted proxies (the
+# Claude Cloud routine sandbox) block. So this is strictly optional: when the
+# call fails or returns nothing, resolved_ids stays empty and every comment is
+# treated as unresolved, exactly as before. Never make this path required.
+# shellcheck disable=SC2016  # $owner/$name/$pr are GraphQL variables, not shell
+resolved_ids="$(gh api graphql \
+  -f query='query($owner:String!,$name:String!,$pr:Int!){
+      repository(owner:$owner,name:$name){
+        pullRequest(number:$pr){
+          reviewThreads(first:100){
+            nodes{ isResolved comments(first:50){ nodes{ databaseId } } } } } } }' \
+  -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR" \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.isResolved) | .comments.nodes[].databaseId' 2>/dev/null || true)"
+
 for rec in "${COMMENTS[@]}"; do
-  IFS=$'\t' read -r cid path line body <<<"$rec"
+  IFS=$'\t' read -r cid path line fresh body <<<"$rec"
   [[ -z "${cid:-}" ]] && continue
+
+  # Skip obsolete comments: outdated anchors (REST signal, computed above) and
+  # resolved threads (optional GraphQL signal). The flagged code was already
+  # fixed or the thread was closed out — filing an issue would track a non-problem.
+  if [[ "$fresh" == "outdated" ]]; then
+    note "  ∅ skipping outdated comment $cid ($path:$line — anchor gone from head diff)"
+    obsolete=$((obsolete+1))
+    continue
+  fi
+  if [[ -n "$resolved_ids" ]] && grep -qxF "$cid" <<<"$resolved_ids"; then
+    note "  ∅ skipping resolved comment $cid ($path:$line — thread marked resolved)"
+    obsolete=$((obsolete+1))
+    continue
+  fi
 
   marker="codex-comment-id:${REPO}#${PR}:${cid}"
   if grep -qF "$marker" <<<"$existing_bodies"; then
@@ -125,5 +170,5 @@ for rec in "${COMMENTS[@]}"; do
   fi
 done
 
-note "harvest-codex-comments: filed $filed, skipped $skipped (already tracked)."
+note "harvest-codex-comments: filed $filed, skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
 exit 0
