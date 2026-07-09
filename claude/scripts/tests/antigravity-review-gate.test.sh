@@ -123,6 +123,12 @@ printf -- '- [P3] Nit — code.txt:1\n' > "$AGY_FAKE_DIR/output"
 check "P3-only does not block" 0 "clean of blocking findings" --uncommitted
 rm -rf "$R"
 
+new_repo
+echo "change" >> "$R/code.txt"
+printf -- '- [P3] minor nit — code.txt:1\nthis is really a [P1] in disguise\n' > "$AGY_FAKE_DIR/output"
+check "prose [P1] alongside a valid P3 line blocks" 2 "Stray [P#] token" --uncommitted
+rm -rf "$R"
+
 # ── #153: unresolvable base fails closed, without invoking agy ────────
 new_repo
 git -C "$R" checkout -qb feature

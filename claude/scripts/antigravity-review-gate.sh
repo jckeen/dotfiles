@@ -261,7 +261,9 @@ set +e
 # The prompt goes in on STDIN, not argv (#154): the reviewed diff can contain
 # secrets, and an argv prompt is visible in `ps` for the whole review. agy's
 # --print flag requires a value; an EMPTY value makes agy read the prompt from
-# stdin (verified against the installed agy). Once the here-string is consumed,
+# stdin (verified against agy 1.1.0 — re-verify if agy is upgraded, since the
+# shim-based tests prove the gate WRITES stdin, not that real agy READS it).
+# Once the here-string is consumed,
 # stdin is at EOF, so the run stays non-interactive and any tool-permission
 # request fails closed — same property the old </dev/null redirect provided.
 # ANTIGRAVITY_GATE=1 marks this as a gate run so lifecycle hooks (e.g. the
@@ -345,6 +347,17 @@ if [[ "$N_BLOCK" -gt 0 ]]; then
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
   echo ""
   red "Push blocked by antigravity-review-gate ($N_BLOCK P0–P2 finding(s))."
+  exit 2
+fi
+
+# Same stray-token guard the clean-verdict path applies: a [P0]/[P1] phrased as
+# prose alongside a valid `- [P3]` line must not ride the P3-only pass path.
+# Strip the recognized finding lines first (they legitimately carry [P#]), then
+# any remaining [P#] token is format drift — fail closed.
+if grep -vE "$BLOCK_RE|$LOW_RE" "$SUMMARY_FILE" | grep -qE '\[P[0-9]\]'; then
+  red "✖ Stray [P#] token outside recognized finding lines:"
+  sed 's/^/  /' "$SUMMARY_FILE"
+  red "Push blocked: cannot confirm the review is clean (possible format drift)."
   exit 2
 fi
 
