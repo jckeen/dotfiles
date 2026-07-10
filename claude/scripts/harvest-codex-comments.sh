@@ -117,14 +117,6 @@ resolved_ids="$(gh api graphql \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
         | select(.isResolved) | .comments.nodes[].databaseId' 2>/dev/null || true)"
 
-# Pre-fetch existing issue bodies ONCE via REST for dedup. We deliberately avoid
-# `gh issue list --search` and `gh issue create`: both go through GitHub's GraphQL
-# API, which egress-restricted proxies (e.g. Claude Cloud routine sandboxes) block
-# — only plain REST under repos/{owner}/{repo}/... is served. REST works in those
-# environments AND locally, so the whole script stays portable. Dedup then greps
-# the stable per-comment marker (the GitHub comment id) in-memory.
-existing_bodies="$(gh api "repos/$REPO/issues?state=all&per_page=100" --paginate --jq '.[].body // ""' 2>/dev/null || true)"
-
 for rec in "${COMMENTS[@]}"; do
   IFS=$'\t' read -r cid path line fresh body <<<"$rec"
   [[ -z "${cid:-}" ]] && continue
