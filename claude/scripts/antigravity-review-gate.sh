@@ -14,7 +14,8 @@
 #      working tree when --uncommitted / no committed delta.
 #   3. Filter out lockfiles and binary/minified assets via git pathspecs, and skip
 #      (degrade open) when the diff exceeds MAX_DIFF_LINES to conserve plan quota.
-#   4. Run `agy --print` NON-interactively and gate on the findings.
+#   4. Run agy print mode NON-interactively (prompt piped to stdin, no prompt
+#      flag — the agy ≥1.1.1 stdin form, #227) and gate on the findings.
 #        - [P0]/[P1]/[P2] → BLOCK (exit 2).
 #        - [P3]+ → print as low/nit, do not block.
 #        - LGTB as the ENTIRE verdict → exit 0. Anything else → BLOCK (exit 2):
@@ -191,7 +192,7 @@ if [[ "$GATE_TIER" -eq 1 ]]; then
   exit 0
 fi
 
-# ─── Step 4: run agy --print, non-interactively and tool-locked ─
+# ─── Step 4: run agy print mode, non-interactively and tool-locked ─
 command -v agy >/dev/null 2>&1 || degrade "agy CLI not found on PATH."
 
 bold "→ Antigravity (Gemini) review gate"
@@ -232,12 +233,15 @@ set +e
 # --sandbox restrict the agent. _tmo is a hard ceiling over agy's own
 # --print-timeout so a hung session can't wedge the push.
 # The prompt goes in on STDIN, not argv (#154): the reviewed diff can contain
-# secrets, and an argv prompt is visible in `ps` for the whole review. agy's
-# --print flag requires a value; an EMPTY value made agy read the prompt from
-# stdin on agy 1.1.0 — but agy 1.1.1 REJECTS it ("empty prompt", issue #227),
-# so on 1.1.1 real runs fail dispatch and degrade open via the canary below.
-# The stdin channel stays (argv is not an acceptable fallback for secret
-# diffs) until #227 lands a replacement.
+# secrets, and an argv prompt is visible in `ps` for the whole review. The
+# invocation carries NO prompt flag at all: agy 1.1.1 reads stdin ONLY when no
+# prompt is provided via a flag (its changelog; the older `--print ""` form now
+# errors "empty prompt" — issue #227). Piped/here-string stdin is non-TTY, which
+# selects print mode; verified live on 1.1.1 (2026-07-10) including --model
+# label propagation in the log. This channel is undocumented-but-acknowledged
+# upstream (no --prompt-file or stdin sentinel exists as of 1.1.1), so the
+# self-test asserts no prompt flag ever reappears on argv, and the canary below
+# catches a runtime regression loudly.
 # Once the here-string is consumed,
 # stdin is at EOF, so the run stays non-interactive and any tool-permission
 # request fails closed — same property the old </dev/null redirect provided.
@@ -251,7 +255,7 @@ set +e
 AGY_ARGS=(--mode plan --sandbox)
 [[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")
 _tmo "$PRINT_TIMEOUT_SECS" \
-  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" --print "" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
+  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
 RC=$?
 set -e
 
@@ -261,19 +265,20 @@ fi
 if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
   [[ -s "$SUMMARY_FILE" ]] && { yellow "  agy output:"; sed 's/^/    /' "$SUMMARY_FILE" | head -20; }
   if [[ ! -s "$SUMMARY_FILE" ]]; then
-    # Canary (#175): `agy --print` has a history of silently dropping stdout in
-    # non-TTY runs (agy issue #76 / gemini-cli #27466). It does not reproduce on
-    # the version this gate was built against, but it regressed on other
-    # platforms in later releases — and this gate degrades OPEN on empty output,
-    # so a regression would quietly pass every push. Distinguish "this one
-    # review failed" from "every --print is empty": if a trivial prompt also
-    # returns nothing, the gate is systemically broken — say so loudly.
-    CANARY="$(_tmo 60 env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox --print "" <<<"Reply with exactly: PONG" 2>/dev/null || true)"
+    # Canary (#175): agy print mode has a history of silently dropping stdout
+    # in non-TTY runs (agy issue #76 / gemini-cli #27466), and the stdin prompt
+    # channel itself regressed once already (1.1.1, #227) — and this gate
+    # degrades OPEN on empty output, so a regression would quietly pass every
+    # push. Distinguish "this one review failed" from "every stdin-prompt run
+    # is empty": if a trivial prompt also returns nothing, the gate is
+    # systemically broken — say so loudly. Same no-prompt-flag form as the
+    # real run so the canary exercises the same channel.
+    CANARY="$(_tmo 60 env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox <<<"Reply with exactly: PONG" 2>/dev/null || true)"
     if [[ -z "$CANARY" ]]; then
-      red "  CANARY FAILED: agy --print returned empty for a trivial prompt too."
-      red "  The non-TTY stdout bug has likely regressed — every gate run would degrade open."
+      red "  CANARY FAILED: agy returned empty for a trivial stdin prompt too."
+      red "  The stdin prompt channel or non-TTY stdout has likely regressed (see #227)."
       red "  Fix agy (or pin a working version), or set ANTIGRAVITY_GATE_REQUIRED=1 meanwhile."
-      degrade "agy --print is systemically returning empty output (canary failed)."
+      degrade "agy print mode is systemically returning empty output (canary failed)."
     fi
   fi
   degrade "agy review session failed (exit $RC)."
