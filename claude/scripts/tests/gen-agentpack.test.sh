@@ -126,6 +126,28 @@ write_skill_fm demo "name: demo" "description: 'quoted value'"
 check "bad: single-quoted scalar fails loudly" 1 \
   "quoted scalar for key 'description'"
 
+# --- Case 6: BAD — literal block scalar → loud failure ------------------------
+# Newlines are semantic in literal YAML; the reader would space-join them.
+new_repo
+write_skill_fm demo "name: demo" "description: |-" "  line one" "  line two"
+check "bad: literal block scalar fails loudly" 1 \
+  "literal block scalar (|) for key 'description'"
+
+# --- Case 7: BAD — multi-line plain scalar → loud failure ---------------------
+# Valid YAML folds the indented continuation in; the reader would drop it.
+new_repo
+write_skill_fm demo "name: demo" "description: first part" "  continuation part"
+check "bad: multi-line plain scalar fails loudly" 1 \
+  "multi-line plain scalar for key 'description'"
+
+# --- Case 8: GOOD — plain `key: value` then the next key ----------------------
+# (the plain-scalar guard must not false-positive on ordinary frontmatter)
+new_repo
+write_skill_fm demo "name: demo" "description: a plain value" \
+  "disable-model-invocation: true"
+check "good: plain value followed by next key is not an error" 0 \
+  "gen-agentpack: wrote"
+
 echo ""
 echo "gen-agentpack tests: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

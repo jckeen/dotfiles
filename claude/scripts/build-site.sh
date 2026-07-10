@@ -111,11 +111,14 @@ copy_page "docs/BRANCH_PROTECTION.md"
 
 # ── 2. Generate the catalogs from live frontmatter ─────────────────
 # Emits KEY<TAB>VALUE lines for the frontmatter block of one file.
-# Handles `key: value` and folded/literal block scalars (`key: >-` etc.).
-# Two YAML forms this reader cannot represent fail loudly instead of
-# silently mangling (issue #235): a blank line inside a block scalar (true
-# YAML keeps the paragraph after it; this reader would drop it), and quoted
-# scalar values (quotes/escapes would leak into the output literally).
+# Handles `key: value` and folded block scalars (`key: >-`). YAML forms
+# this reader cannot represent fail loudly instead of silently mangling
+# (issue #235): a blank line inside a block scalar (true YAML keeps the
+# paragraph after it; this reader would drop it), quoted scalar values
+# (quotes/escapes would leak into the output literally), literal block
+# scalars (`key: |-`; their newlines are semantic and would be
+# space-joined), and multi-line plain scalars (the indented continuation
+# would be dropped).
 read_frontmatter() { # file
   awk '
     function die(msg) {
@@ -129,10 +132,13 @@ read_frontmatter() { # file
     /^[A-Za-z][A-Za-z0-9_-]*:/ {
       key = $0; sub(/:.*$/, "", key)
       val = $0; sub(/^[A-Za-z][A-Za-z0-9_-]*:[[:space:]]*/, "", val)
-      if (val ~ /^[>|][+-]?[[:space:]]*$/) { block = 1; blank = 0; curkey = key; vals[key] = "" }
+      if (val ~ /^[>|][+-]?[[:space:]]*$/) {
+        if (val ~ /^\|/) die("literal block scalar (|) for key \"" key "\" in " FILENAME " frontmatter — its newlines are semantic and this reader would space-join them; use a folded (>-) scalar")
+        block = 1; blank = 0; curkey = key; vals[key] = ""; plainkey = ""
+      }
       else {
         if (val ~ /^["'\'']/) die("quoted scalar for key \"" key "\" in " FILENAME " frontmatter — this reader would leak the quotes/escapes as literal content; use a plain or folded (>-) scalar")
-        block = 0; vals[key] = val
+        block = 0; vals[key] = val; plainkey = (val == "" ? "" : key)
       }
       next
     }
@@ -144,6 +150,9 @@ read_frontmatter() { # file
       next
     }
     block && /^[[:space:]]*$/ { blank = 1; next }
+    /^[[:space:]]+[^[:space:]]/ && plainkey != "" {
+      die("multi-line plain scalar for key \"" plainkey "\" in " FILENAME " frontmatter — this reader would silently drop the indented continuation; use a folded (>-) scalar")
+    }
     { block = 0 }
     END { if (died) exit 1; for (k in vals) printf "%s\t%s\n", k, vals[k] }
   ' "$1"
