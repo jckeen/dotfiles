@@ -44,14 +44,23 @@
 # wedge every push. Set ANTIGRAVITY_GATE_REQUIRED=1 (or --require) to turn those
 # degraded cases into hard failures (exit 3).
 #
+# Model verification (#205): agy accepts unrecognized --model slugs without
+# error and silently falls back to the default flash-low tier. When a slug is
+# requested (--model or ANTIGRAVITY_GATE_MODEL), the gate passes it to agy and
+# afterwards verifies the recorded model in the newest conversations DB
+# (gate_verify_agy_model). A fallback warns loudly; with --require it fails
+# hard (exit 3). An absent/unreadable DB degrades to a warning only.
+#
 # Usage:
 #   antigravity-review-gate.sh [--base <branch>] [--uncommitted] [--require]
+#                              [--model <slug>]
 #
 # Exit codes:
 #   0  clean, or only P3+ nits
 #   2  local validation failed, blocking findings present (P0/P1/P2),
 #      unresolvable base, OR unrecognizable review output
-#   3  agy could not run AND the gate was REQUIRED
+#   3  agy could not run AND the gate was REQUIRED, or the recorded model
+#      did not match the requested slug in a REQUIRED run
 
 set -euo pipefail
 
@@ -72,13 +81,15 @@ REQUIRED="${ANTIGRAVITY_GATE_REQUIRED:-0}"
 # ─── Args ──────────────────────────────────────────────────────
 BASE=""
 FORCE_UNCOMMITTED=false
+MODEL="${ANTIGRAVITY_GATE_MODEL:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)        BASE="${2:-}"; shift 2 ;;
     --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
     --require)     REQUIRED=1; shift ;;
-    -h|--help)     sed -n '2,54p' "$0"; exit 0 ;;
+    --model)       MODEL="${2:-}"; shift 2 ;;
+    -h|--help)     sed -n '2,63p' "$0"; exit 0 ;;
     *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
@@ -211,8 +222,12 @@ set +e
 # Passed via `env` INSIDE the wrapped command line — unambiguous propagation
 # through the _tmo function and timeout to agy and its hook subprocesses
 # (a bare prefix assignment also works in bash, verified, but reads ambiguously).
+# A requested model slug (#205) rides along; its honoring is verified after
+# the run — agy accepts unknown slugs without error.
+AGY_ARGS=(--mode plan --sandbox)
+[[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL")
 _tmo "$PRINT_TIMEOUT_SECS" \
-  env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox --print "" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
+  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" --print "" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
 RC=$?
 set -e
 
@@ -238,6 +253,20 @@ if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
     fi
   fi
   degrade "agy review session failed (exit $RC)."
+fi
+
+# ─── #205: verify the recorded model when a slug was requested ──
+# The run succeeded — but agy silently falls back to the default flash-low
+# tier on unrecognized slugs, so confirm the conversations DB recorded the
+# model we asked for before trusting this verdict as that lineage. A fallback
+# warns loudly; strict (--require) runs fail hard — a flash-tier verdict must
+# not silently stand in for the requested model.
+if [[ -n "$MODEL" ]] && ! gate_verify_agy_model "$MODEL"; then
+  if [[ "$REQUIRED" == "1" ]]; then
+    red "  ANTIGRAVITY_GATE_REQUIRED is set — treating the model fallback as a hard failure."
+    exit 3
+  fi
+  yellow "  Continuing (gate not strict) — treat this verdict as default-tier evidence, not '$MODEL'."
 fi
 
 # ─── Step 5: parse findings + gate ─────────────────────────────

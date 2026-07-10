@@ -13,15 +13,25 @@ those honest and the team works even though the agents never talk to each other.
 
 ## Lanes
 
-The value is not three workers — it's **three independent model lineages
-disagreeing**. Codex (GPT-5.x) and Antigravity (Gemini) earn their keep when they
+The value is not three workers — it's **independent model lineages
+disagreeing**. Codex (GPT-5.x) and Antigravity earn their keep when they
 *refute*, not when they rubber-stamp. Assign the refuter role explicitly.
+
+Lineage honesty (#205): the Antigravity lane counts as an independent *lineage*
+only when a Gemini-tier slug is verifiably honored — and as of 2026-07-09 none
+was (every `gemini-3.1-pro*` slug silently fell back; see Dispatch mechanics).
+Until one is, treat that lane as **runtime/browser evidence, model-agnostic**,
+not as a third lineage. The check is automated now: request a slug via
+`antigravity-review-gate.sh --model <slug>` (or `ANTIGRAVITY_GATE_MODEL`) and
+the gate verifies the recorded model after dispatch (`gate_verify_agy_model` in
+`claude/scripts/gate-lib.sh`) — loud warning on fallback, hard failure with
+`--require`.
 
 | Agent | Lane | Owns |
 |-------|------|------|
 | **Claude Code** (Opus, 1M ctx) | **Conductor** | Plan/decompose, hold the through-line, drive the main implementation, write the failing test first, own handoffs + issues + changelog |
 | **Codex** (GPT-5.x) | **Independent verifier + rescue** | Adversarial refutation of the conductor's fix, from-scratch reimplementation to cross-check, deep root-cause when the conductor is stuck |
-| **Antigravity** (Gemini) | **Runtime/browser verification + front-end** | Prove it actually runs end-to-end, own UI-heavy surfaces and in-browser verification artifacts |
+| **Antigravity** (model verified per run — see above) | **Runtime/browser verification + front-end** | Prove it actually runs end-to-end, own UI-heavy surfaces and in-browser verification artifacts |
 
 Lanes are defaults, not walls — whoever holds the working tree does the edit.
 
@@ -104,7 +114,11 @@ Two `--model` failure modes, neither of which errors:
 - An unrecognized lowercase slug silently falls back to the default flash-low
   tier (as of 2026-07-09, every `gemini-3.1-pro*` variant and
   `claude-sonnet-4-6-thinking` fell back; only `claude-opus-4-6-thinking` was
-  honored). When the tier matters, confirm the recorded model in the newest
-  `~/.gemini/antigravity-cli/conversations/*.db` (`strings <db> | grep -E
-  'gemini-|claude-'`) rather than trusting the flag — `gemini-default` /
+  honored). Post-dispatch verification is automated (#205): gate runs that
+  request a slug (`antigravity-review-gate.sh --model <slug>` /
+  `ANTIGRAVITY_GATE_MODEL`) check the newest
+  `~/.gemini/antigravity-cli/conversations/*.db` afterwards via
+  `gate_verify_agy_model` and warn loudly on fallback (hard failure under
+  `--require`). For manual `agy -p` dispatches, run the same check by hand:
+  `strings <db> | grep -E 'gemini-|claude-'` — `gemini-default` /
   `gemini-3.5-flash-low` there means the slug was ignored.

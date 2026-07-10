@@ -129,6 +129,38 @@ printf -- '- [P3] minor nit — code.txt:1\nthis is really a [P1] in disguise\n'
 check "prose [P1] alongside a valid P3 line blocks" 2 "Stray [P#] token" --uncommitted
 rm -rf "$R"
 
+# ── #205: post-dispatch model verification ────────────────────────────
+# The fake conversations DB is a plain text file — `strings` reads it fine.
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+AGY_DB_DIR="$(mktemp -d)"
+printf 'model: claude-opus-4-6-thinking\n' > "$AGY_DB_DIR/conv.db"
+export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
+check "recorded model matches requested slug" 0 "records the requested slug" --uncommitted --model claude-opus-4-6-thinking
+assert "requested slug forwarded on agy argv" "grep -q 'claude-opus-4-6-thinking' '$AGY_FAKE_DIR/argv'"
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R" "$AGY_DB_DIR"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+AGY_DB_DIR="$(mktemp -d)"
+printf 'model: gemini-default gemini-3.5-flash-low\n' > "$AGY_DB_DIR/conv.db"
+export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
+check "model fallback warns loudly, non-strict continues" 0 "MODEL FALLBACK DETECTED" --uncommitted --model gemini-3.1-pro-high
+check "model fallback fails hard with --require" 3 "MODEL FALLBACK DETECTED" --uncommitted --model gemini-3.1-pro-high --require
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R" "$AGY_DB_DIR"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
+check "absent conversations DB degrades to a warning" 0 "cannot confirm the recorded model" --uncommitted --model claude-opus-4-6-thinking
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R"
+
 # ── #153: unresolvable base fails closed, without invoking agy ────────
 new_repo
 git -C "$R" checkout -qb feature

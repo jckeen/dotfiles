@@ -154,6 +154,53 @@ gate_fence() {
   printf '%s_%s' "$prefix" "$(printf '%s' "$*" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
 }
 
+# ─── #205: post-dispatch model verification (agy lane) ─────────
+# agy accepts unrecognized --model slugs without error and silently falls back
+# to the default flash-low tier, which quietly collapses the "independent
+# lineage" premise of the Antigravity lane (MULTI-AGENT.md). After a dispatch
+# that requested a specific slug, confirm the newest conversations DB actually
+# records it.
+#
+# gate_verify_agy_model <requested-slug>
+#   returns 0 — recorded model matches, or verification is impossible (DB
+#               missing, `strings` absent, no model strings): those degrade to
+#               a loud warning rather than a false fallback verdict.
+#   returns 1 — a DB is present and the requested slug is NOT recorded:
+#               fallback detected. The caller decides whether that fails the
+#               run (strict) or continues with a warning.
+# Tests override the DB location via AGY_CONVERSATIONS_DIR.
+gate_verify_agy_model() {
+  local want="$1"
+  local dir="${AGY_CONVERSATIONS_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
+  local db
+  # Newest-first ordering is what we need; the glob only ever matches agy's
+  # own .db files, so ls-parsing caveats don't apply.
+  # shellcheck disable=SC2012
+  db="$(ls -t "$dir"/*.db 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$db" ]]; then
+    yellow "⚠ model verification: no conversations DB under $dir — cannot confirm the recorded model (warning only)."
+    return 0
+  fi
+  if ! command -v strings >/dev/null 2>&1; then
+    yellow "⚠ model verification: 'strings' not found — cannot inspect $db (warning only)."
+    return 0
+  fi
+  if strings "$db" 2>/dev/null | grep -qF "$want"; then
+    green "✓ model verification: $(basename "$db") records the requested slug '$want'."
+    return 0
+  fi
+  local recorded
+  recorded="$(strings "$db" 2>/dev/null | grep -Eo '(gemini|claude)-[A-Za-z0-9.-]+' | sort -u | head -n 10 || true)"
+  red "✖ MODEL FALLBACK DETECTED: requested '$want' but $(basename "$db") records:"
+  if [[ -n "$recorded" ]]; then
+    printf '%s\n' "$recorded" | sed 's/^/    /'
+  else
+    echo "    (no model strings found in the DB)"
+  fi
+  red "  agy silently ignores unrecognized slugs (see MULTI-AGENT.md) — this run did NOT verifiably use '$want'."
+  return 1
+}
+
 # ─── Portable timeout ──────────────────────────────────────────
 # _tmo — GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run without
 # a ceiling rather than hard-fail on macOS (#151). Exit 124 (timed out) is only
