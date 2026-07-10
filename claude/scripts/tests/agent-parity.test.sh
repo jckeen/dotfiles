@@ -242,8 +242,7 @@ new_repo
 all_frags
 printf '%s\n' '<!-- include:no-such-block -->' \
   >> "$R/agents/canon/fragments/codex.md"
-gen
-[[ $? -ne 0 ]]
+! gen
 assert "unknown canon block id fails generation" $?
 
 # --- Case 14: canon block included by no fragment → generator fails ----------
@@ -254,8 +253,7 @@ w agents/canon/CANON.md \
   '- Orphaned shared rule reaching no agent.' \
   '<!-- /canon:orphan -->'
 all_frags
-gen
-[[ $? -ne 0 ]]
+! gen
 assert "orphaned canon block fails generation" $?
 
 # --- Case 15: malformed marker (trailing space) → generator fails loudly -----
