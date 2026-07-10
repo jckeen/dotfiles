@@ -15,6 +15,9 @@
  * reported as a warning alongside install drift. Everything here is
  * warn-only: the migration window has live settings still carrying the old
  * fully-global set, and a session must never be blocked over plugin scoping.
+ * A marker-less (pre-#214) manifest PARSES as before — all lines global —
+ * but the scoping checks are new, so advisory warnings can appear where the
+ * old hook was silent.
  *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
@@ -45,10 +48,10 @@ function readManifest(): Manifest {
   const manifest: Manifest = { global: [], perProject: [] };
   if (!existsSync(MANIFEST)) return manifest;
   // Lines before any section marker count as global, so a manifest without
-  // markers (the pre-#214 format) behaves exactly as before.
+  // markers (the pre-#214 format) parses identically to the old hook.
   let section: keyof Manifest = 'global';
   for (const raw of readFileSync(MANIFEST, 'utf-8').split('\n')) {
-    const marker = raw.match(/^#\s*\[(global|per-project)\]/i);
+    const marker = raw.match(/^\s*#\s*\[(global|per-project)\]/i);
     if (marker) {
       section = marker[1].toLowerCase() === 'global' ? 'global' : 'perProject';
       continue;
@@ -84,10 +87,25 @@ function readGloballyEnabled(): Record<string, unknown> | null {
 
 function main(): void {
   const manifest = readManifest();
-  const desired = [...manifest.global, ...manifest.perProject];
+  // Dedupe so a plugin duplicated across sections (warned below) doesn't
+  // skew the install-drift counts.
+  const desired = [...new Set([...manifest.global, ...manifest.perProject])];
   if (desired.length === 0) return;
 
   let warning = '';
+
+  // A plugin in BOTH sections is unsatisfiable: the scoping checks below
+  // would demand it be globally enabled and not globally enabled at once.
+  const duplicated = manifest.global.filter((p) =>
+    manifest.perProject.includes(p),
+  );
+  if (duplicated.length > 0) {
+    const list = [...new Set(duplicated)].map((p) => `  • ${p}`).join('\n');
+    warning +=
+      `⚠️  Plugin manifest: ${new Set(duplicated).size} plugin(s) listed in BOTH the ` +
+      `[global] and [per-project] sections of ${MANIFEST} — unsatisfiable scoping; ` +
+      `keep each plugin in exactly one section:\n${list}\n\n`;
+  }
 
   const installed = readInstalled();
   const missing = desired.filter((p) => !installed.has(p));

@@ -16,9 +16,16 @@
   `[per-project]` plugin is enabled globally. Warn-only by design (exit 0
   always): live settings still carry the old fully-global set during the
   migration window, and a session must never be blocked over plugin scoping.
-  A marker-less manifest behaves exactly as before (all lines = global).
+  A marker-less manifest parses as before (all lines = global), though the
+  scoping checks are new, so advisory warnings can appear where the old hook
+  was silent.
 - **`sync-plugins.sh` / `claude/scripts/README.md`** — documented that
   installation covers both sections; scoping governs enablement only.
+- **Adversarial-review round** — playwright's targets gained clarity-engine
+  (`@playwright/test` + `playwright.config.ts` in the nested `app/`
+  package.json, missed by the top-level-only sweep); hook hardened: warns on
+  a plugin listed in both sections (unsatisfiable scoping), tolerates leading
+  whitespace before section markers, dedupes install-drift counts.
 
 ### Decisions made
 - The actual `enabledPlugins` migration (global settings live in
