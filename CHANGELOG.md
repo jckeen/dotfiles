@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-07-10 — fix: antigravity gate re-plumbed for agy 1.1.1 + PAI strict orphans + agentpack required-check job (#227, #232, #237)
+
+### What changed
+- **Antigravity gate stdin channel restored (#227, PR #243)** — agy 1.1.1
+  intentionally stopped reading stdin when a prompt flag is present, so the
+  gate's `--print ""` form failed every dispatch and degraded open. The gate
+  now pipes the prompt with NO prompt flag (non-TTY stdin selects print mode) —
+  verified live: PONG canary, model-label log propagation, and a full gate run
+  over the fix's own diff. The self-test shim emulates 1.1.1 semantics across
+  all Go-flag spellings (`--print=`, `-print`, `-p=`), so a regression to any
+  prompt-flag form fails CI instead of silently no-opping the review lane.
+- **Known PAI leftovers strict-fail (#232, PR #242)** — exact top-level names
+  (`PAI`, `MEMORY`, `ISA.md`, `settings.plain.json`) report as PAI-LEFTOVER
+  and fail `--strict`; arbitrary debris stays advisory UNKNOWN (PR #225's
+  no-loose-attribution finding preserved). Follow-ups from its codex-bot
+  review land here too: CLAUDE_DIR trailing-slash normalization (#247 — a
+  trailing slash made the checker silently pass a dirty tree) and
+  `.pai-mode.state` added to the leftover list (#248).
+- **agentpack-generated is its own CI job (#237, PR #245)** — a step inside
+  the shared `checks` job has no status context, so the queued operator PATCH
+  would have required a context that never reports. The job now exists (with
+  the #235 frontmatter self-test folded in by PR #244's resolution); the
+  six-context PATCH in docs/BRANCH_PROTECTION.md is the remaining
+  operator-only action.
+
+### Decisions made
+- agy prompt delivery: stdin-with-no-prompt-flag is the pinned secret-safe
+  channel (undocumented upstream but changelog-acknowledged); canary +
+  argv-spelling self-test are the load-bearing guards. Upstream feature
+  request (stdin sentinel / --prompt-file, codex `exec [PROMPT | -]` prior
+  art) queued for the operator.
+- Every PR in this pass went through find → adversarial-refute → fix: the
+  refuters produced one real P1 (PR #245 conflicting, context never reported),
+  one real P2 (Go-flag spellings bypassing the #243 shim), and two P2 guard
+  gaps folded into #244. Issue #246 (symlink blind spot) filed from review.
+
 ## 2026-07-10 — ci: shellcheck at warning severity + bot-P2 hardening + plugin migration applied (#202, #230, #231, #236)
 
 ### What changed

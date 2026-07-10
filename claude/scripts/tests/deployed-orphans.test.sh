@@ -123,6 +123,30 @@ else
 fi
 rm -rf "$(dirname "$F")"
 
+# --- .pai-mode.state is a known PAI leftover (issue #248) ---------------------
+new_fixture
+printf '/old/target\n' > "$F/.pai-mode.state"
+check "pai: .pai-mode.state flagged as PAI-LEFTOVER" 0 "PAI-LEFTOVER .pai-mode.state"
+check "pai: .pai-mode.state fails --strict" 1 "PAI-LEFTOVER .pai-mode.state" "--strict"
+rm -rf "$(dirname "$F")"
+
+# --- trailing slash on CLAUDE_DIR is normalized (issue #247) ------------------
+# Without normalization the "$CLAUDE_DIR/" prefix strip misses, names stay full
+# paths, nothing matches any list, and --strict silently passes a dirty tree.
+new_fixture
+mkdir -p "$F/PAI"
+out="$(CLAUDE_DIR="$F/" "$CHECKER" --strict 2>&1)"
+rc=$?
+if [ "$rc" -eq 1 ] && grep -qF "PAI-LEFTOVER PAI" <<<"$out"; then
+  pass=$((pass + 1))
+  echo "ok   - trailing-slash CLAUDE_DIR still strict-fails on PAI"
+else
+  failed=$((failed + 1))
+  echo "FAIL - trailing-slash CLAUDE_DIR must normalize (got rc=$rc)"
+  echo "$out" | sed 's/^/      | /'
+fi
+rm -rf "$(dirname "$F")"
+
 # --- stray file alone: advisory UNKNOWN, --strict still passes ----------------
 new_fixture
 printf 'not pai\n' > "$F/stray-debug.log"
