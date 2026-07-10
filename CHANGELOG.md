@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-07-10 — feat: instruction canon — generate the three instruction files from one source (#216, #206, #219)
+
+### What changed
+- **ADR-0007** — investigated #216's thin-shim proposal empirically: only
+  Claude Code resolves `@` imports; Codex CLI 0.141.0 (docs + live test) and
+  Antigravity CLI 1.1.1 (live test, tools forbidden, out-of-workspace file)
+  resolve none. Accepted the intent via **generation**: `agents/canon/CANON.md`
+  (shared rule blocks) + `agents/canon/fragments/{claude,codex,antigravity}.md`
+  (per-tool voice) compiled by `claude/scripts/gen-instruction-files.sh` into
+  `claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md` — now
+  committed GENERATED artifacts with a do-not-edit banner. Migration is
+  semantics-preserving: zero removed words; only the banner, two GEMINI.md
+  re-wraps, and the new two-floor block.
+- **check-agent-parity.sh (#206)** — concept RULES extended with the lane
+  contract (`one-owner-worktree`, `adversarial-verification`,
+  `handoff-claim-repro`) and `two-floor-grounding`; weak keyword regexes
+  (`scope|scoped|unrelated` etc.) tightened to rule-phrase matching over
+  unwrapped markdown; new byte-currency check (`gen-instruction-files.sh
+  --check`) fails CI on hand-edits or stale artifacts. Test suite rebuilt:
+  15 fixture cases including per-rule drift, tightened-regex, hand-edit,
+  orphaned/unknown canon block, and idempotency.
+- **Two-floor grounding (#219, ADR-0006)** — encoded once in canon and emitted
+  into all three instruction files: an adopt/skip verdict on an external
+  technology must clear a project floor (verified local fact) and an external
+  floor (verified source), neither compensating for the other.
+- **`.doc-contract`** — the three instruction files moved SOURCE → GENERATED;
+  `agents/canon/**` added as SOURCE. README, agents/README, scripts README,
+  and MULTI-AGENT.md repointed at the canon.
+
+### Decisions made
+- Rejected literal root-AGENTS.md shims (would load empty in 2 of 3 tools) and
+  symlinking (kills per-tool voice); generation keeps per-tool divergence real
+  while making shared rules single-source. Evidence in ADR-0007.
+
 ## 2026-07-10 — chore: split plugin enablement into global vs per-project scope (#214)
 
 ### What changed

@@ -16,22 +16,27 @@ LIVING        .github/CONTRIBUTING.md
 LIVING        .github/SECURITY.md
 
 # Source — markdown-as-config: rules, skills, agents, templates
-SOURCE        claude/CLAUDE.md
+SOURCE        agents/canon/CANON.md
+SOURCE        agents/canon/fragments/*.md
 SOURCE        claude/FABLE.md
 SOURCE        claude/AgentPack.md
 SOURCE        claude/MULTI-AGENT.md
 SOURCE        claude/agents/*.md
 SOURCE        claude/skills/*/SKILL.md
-SOURCE        codex/AGENTS.md
 SOURCE        agents/skills/*/SKILL.md
-SOURCE        antigravity/GEMINI.md
 SOURCE        antigravity/skills/*/SKILL.md
 SOURCE        .github/ISSUE_TEMPLATE/*.md
 SOURCE        .github/PULL_REQUEST_TEMPLATE.md
 
-# Generated — Pages site sources built by claude/scripts/build-site.sh
-# (site-src/ and site/ are gitignored, so untracked output is invisible to
-# the checker; the glob documents the tier and guards accidental tracking.)
+# Generated — build artifacts. The three instruction files are built from
+# agents/canon/ by claude/scripts/gen-instruction-files.sh (ADR-0007);
+# check-agent-parity.sh asserts byte-currency in CI. Site sources are built
+# by claude/scripts/build-site.sh (site-src/ and site/ are gitignored, so
+# untracked output is invisible to the checker; the glob documents the tier
+# and guards accidental tracking.)
+GENERATED     claude/CLAUDE.md
+GENERATED     codex/AGENTS.md
+GENERATED     antigravity/GEMINI.md
 GENERATED     site-src/*.md
 
 # Historical — point-in-time records (banner or ADR Status/Date header)
