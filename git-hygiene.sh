@@ -23,10 +23,34 @@
 
 set -euo pipefail
 
-ROOT="${2:-$HOME/dev}"
-MODE="${1:-audit}"
+MODE=""
+ROOT=""
 ASSUME_YES=false
-[[ "${3:-}" == "--yes" || "${2:-}" == "--yes" ]] && ASSUME_YES=true
+
+usage() { echo "Usage: $(basename "$0") [audit|clean] [DIR] [--yes]"; }
+
+# Duplicate positionals are rejected rather than last-wins: a second mode token
+# must not silently escalate audit→clean, and a second DIR must not silently
+# replace the first. A dir literally named audit/clean stays reachable as ./audit.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    audit|clean)
+      [[ -n "$MODE" ]] && { echo "error: mode already set to '$MODE': $1" >&2; usage >&2; exit 1; }
+      MODE="$1" ;;
+    --yes)       ASSUME_YES=true ;;
+    -h|--help)   usage; exit 0 ;;
+    -*)          echo "unknown flag: $1" >&2; usage >&2; exit 1 ;;
+    *)
+      [[ -n "$ROOT" ]] && { echo "error: DIR already set to '$ROOT': $1" >&2; usage >&2; exit 1; }
+      ROOT="$1" ;;
+  esac
+  shift
+done
+MODE="${MODE:-audit}"
+ROOT="${ROOT:-$HOME/dev}"
+
+# A ROOT that doesn't exist would silently scan zero repos (#196) — fail loudly.
+[[ -d "$ROOT" ]] || { echo "error: no such directory: $ROOT" >&2; usage >&2; exit 1; }
 
 c_red=$'\033[31m'; c_green=$'\033[32m'; c_yellow=$'\033[33m'
 c_blue=$'\033[34m'; c_dim=$'\033[2m'; c_reset=$'\033[0m'
@@ -194,7 +218,4 @@ main() {
   echo "${c_blue}━━━ scanned $repo_count repos ━━━${c_reset}"
 }
 
-case "$MODE" in
-  audit|clean) main ;;
-  *) echo "Usage: $(basename "$0") [audit|clean] [DIR] [--yes]"; exit 1 ;;
-esac
+main
