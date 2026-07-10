@@ -2,7 +2,7 @@
 
 [![Docs site](https://img.shields.io/badge/docs-jckeen.github.io%2Fdotfiles-blue)](https://jckeen.github.io/dotfiles/)
 
-**📖 Browsable docs:** everything in this repo is also published as a searchable site at **[jckeen.github.io/dotfiles](https://jckeen.github.io/dotfiles/)** — rebuilt on every push.
+**📖 Browsable docs:** everything in this repo is also published as a searchable site at **[jckeen.github.io/dotfiles](https://jckeen.github.io/dotfiles/)** — rebuilt on every push to `main`.
 
 A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 17-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
@@ -483,19 +483,20 @@ longer holds is superseded by a new record rather than edited away. Start with
 
 ## Repo Structure
 
-Deliberately coarse — top-level entries only, with one-line purposes, so a
-rename inside a directory can't silently rot this diagram. `ls` any directory
-(or browse the [docs site](https://jckeen.github.io/dotfiles/)) for the real
-inventory.
+Deliberately coarse — visible top-level entries only, with one-line purposes,
+so a rename inside a directory can't silently rot this diagram. Hidden root
+files are omitted as policy, not oversight: `.github/` holds the CI gates,
+`.doc-contract` declares the doc tiers (ADR 0005), and the rest are shell,
+git, and audio config wired by `setup.sh`. Run `ls -A` (or browse the
+[docs site](https://jckeen.github.io/dotfiles/)) for the real inventory.
 
 ```
 dotfiles/
 ├── setup.sh                # Cross-platform bootstrap — installs tools, wires every symlink
 ├── check-claude.sh         # Health checks (also check-codex.sh, check-antigravity.sh)
 ├── git-hygiene.sh          # Repo/branch hygiene (also gh-bootstrap.sh, hygiene-status.sh, lib-symlinks.sh)
-├── .bash_aliases           # Shell layer — cc/cx launchers, worktree shortcuts (also .gitconfig, .asoundrc)
 ├── README.md               # This file (also CLAUDE-GUIDE.md, CHANGELOG.md, ROADMAP.md, LICENSE)
-├── mkdocs.yml              # Docs-site config; .doc-contract declares the doc tiers (ADR 0005)
+├── mkdocs.yml              # Docs-site config for the published Pages site
 ├── docs/                   # ADRs, Windows deep-dive, branch-protection notes
 ├── claude/                 # Claude Code layer — CLAUDE.md, hooks, skills, agents, scripts, statusline
 ├── codex/                  # Public-safe Codex layer — AGENTS.md, config example, Codex-only skills

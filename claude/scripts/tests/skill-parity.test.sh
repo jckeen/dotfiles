@@ -142,6 +142,40 @@ scaffold_good
 rm "$R/CLAUDE-GUIDE.md"
 check "bad guide: missing CLAUDE-GUIDE.md fails" 1 "CLAUDE-GUIDE.md missing"
 
+# --- Case 8: BAD (guide present, section missing) — the pipefail regression ---
+# A guide with no parseable table must produce the [ERR] guard, not silently
+# kill the whole script with zero output (grep under set -euo pipefail).
+new_repo
+scaffold_good
+printf '# Guide\n\n## Shell Commands\n\n| Command | Use |\n|---------|-----|\n| `cc` | launch |\n' \
+  > "$R/CLAUDE-GUIDE.md"
+check "bad guide: no Slash Commands section fails loudly, not silently" 1 \
+  "no parseable '## Slash Commands' table"
+
+# --- Case 9: GOOD (commented-out row ignored) — HTML comments are stripped ----
+new_repo
+scaffold_good
+printf '\n<!--\n| `/retired-skill` | gone |\n-->\n<!-- | `/also-gone` | inline comment | -->\n' \
+  >> "$R/CLAUDE-GUIDE.md"
+check "good guide: commented-out table rows are ignored" 0 "skill-parity: OK"
+
+# --- Case 10: BAD (partial count bump) — a non-first stale claim still fails --
+# One agent file; README's "N-agent" claim agrees but a later "N specialized"
+# mention is stale. A first-match-only checker would pass this.
+new_repo
+scaffold_good
+printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\nAlso ships 2 specialized review agents.\n' \
+  > "$R/README.md"
+check "bad partial bump: stale 'N specialized' claim fails" 1 "but claude/agents/ has 1"
+
+# --- Case 11: BAD (partial count bump, skills) — second claim stale -----------
+new_repo
+scaffold_good
+printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\nElsewhere: 3 slash commands.\n' \
+  > "$R/README.md"
+check "bad partial bump: stale second 'N slash commands' claim fails" 1 \
+  "README claims '3 slash commands'"
+
 echo "---"
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]
