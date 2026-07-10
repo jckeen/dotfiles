@@ -79,6 +79,11 @@ Select capabilities aggressively from the available skills and platform features
   before parallelizing.
 - **Verify with tools** — Never claim done without evidence. Screenshots, test
   output, diffs.
+- **Check every result in a parallel batch** — when independent tool calls go
+  out together, one error among successes is easy to skim past. A failed Edit
+  ("File has not been read yet") or a rejected call that goes unnoticed only
+  surfaces later as a mysterious CI/verify failure that needs re-diagnosis.
+  Scan the batch for errors before moving on.
 - **Name the failure mode when delegating** — a subagent's verification
   instruction must name the *specific destructive failure* to check (e.g. "run
   `--dry-run` against a throwaway HOME and diff the target"), not just "verify it

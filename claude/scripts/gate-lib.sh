@@ -83,6 +83,7 @@ gate_select_diff_target() {
     TARGET_DESC="committed changes vs $BASE_REF"
   elif [[ "$has_uncommitted" == "true" ]]; then
     DIFF_TARGET=("HEAD")
+    # shellcheck disable=SC2034  # TARGET_DESC is read by the gate scripts that source this lib
     TARGET_DESC="uncommitted changes (no committed delta vs ${BASE_REF:-base})"
   else
     # Reached only with no uncommitted changes and no committed delta. That is
@@ -192,7 +193,8 @@ gate_path_is_risk() {
     *schema*|*.sql|*migration*) return 0 ;;
   esac
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    *auth*|*token*|*secret*|*credential*|*password*|*session*|*oauth*|*sso*|*crypt*|*hash*|*host*) return 0 ;;
+    # oauth is covered by *auth* (SC2221/SC2222), so it is not listed separately.
+    *auth*|*token*|*secret*|*credential*|*password*|*session*|*sso*|*crypt*|*hash*|*host*) return 0 ;;
   esac
   return 1
 }
@@ -247,7 +249,9 @@ gate_classify_tier() {
       return 0
     fi
   done <<<"$paths"
+  # shellcheck disable=SC2034  # GATE_TIER/GATE_TIER_REASON are read by the sourcing gate scripts
   GATE_TIER=1
+  # shellcheck disable=SC2034
   GATE_TIER_REASON="docs-only diff, $n lines ≤ $max"
   return 0
 }

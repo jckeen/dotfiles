@@ -196,3 +196,13 @@ WebSocket upgrade, external-input queue consumer, mutating CLI subcommand):
 4. Never trust upstream layers — each layer rejects on its own.
 5. Failure mode is closed — if the auth check throws, reject the request.
 6. Local dev uses a real token through the same verifier — no skip-auth branch.
+7. Credentials bind to the host they were issued for. Never attach an ambient
+   token (env fallback, "current login") to a URL or path read from persisted
+   or attacker-influenced state — a lockfile, install manifest, or any config
+   committed to a repo and cloned onto another machine. Resolve the token by
+   exact host/URL match only, require https (loopback aside), set
+   `redirect: "error"` on any fetch carrying a bearer, and confine a stored
+   path (backup/restore target) with a `..`-rejecting, realpath-contained
+   check before reading it. Twice now the same shape — a manifest field fed to
+   the network or filesystem with an ambient credential attached — was a
+   supply-chain exfiltration primitive.

@@ -61,6 +61,7 @@ check() {
 
 # --- Case 1: portable / placeholder forms only → pass ------------------------
 new_repo
+# shellcheck disable=SC2088  # fixture asserts the literal ~/ form passes the checker
 w notes.md '$HOME/dev/x' '/home/you/dev/x' '~/foo'
 check "portable+placeholder forms pass" 0 "No machine-specific home paths"
 
