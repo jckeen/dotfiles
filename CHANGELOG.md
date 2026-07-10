@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-07-10 — feat: agent-native-review subagent + deployed-orphan checker (#217, #215)
+
+### What changed
+- **`claude/agents/agent-native-review.md`** — ADR-0006 next action 1: the
+  `agent-native-reviewer` persona from Every's compound-engineering-plugin
+  (MIT, attributed) vendored as an in-house review subagent, rescoped for a
+  config/tooling repo: UI action-parity dropped; verification affordances,
+  context parity for subagents, primitives-over-workflows, governed execution,
+  instruction-surface drift, and the anchored confidence rubric kept. Scoped to
+  correctness-and-requirements findings — the lens is not a license for bloat.
+- **`claude/scripts/check-deployed-orphans.sh`** — sweeps the *deployed*
+  `~/.claude` for decommissioned artifacts the symlink checker never sees:
+  non-symlink debris in `hooks/` (the PAI-era framework, ADR-0002),
+  `settings.json.doctor-bak`, an empty `commands/` dir, plus an informational
+  UNKNOWN triage list for unrecognized top-level entries. WARN-only by default
+  (exit 0); `--strict` exits 1 on orphans. 13-case fixture self-test in
+  `tests/deployed-orphans.test.sh`.
+- **One-time live cleanup** — the PAI leftovers the checker flagged
+  (`hooks/{handlers,lib,security}`, 25KB `hooks/README.md`,
+  `settings.json.doctor-bak`, empty `commands/`) were backed up to
+  `~/.claude/backups/pai-decommission-2026-07-10.tar.gz` (tar-verified, 36
+  entries), then deleted; checker and `check-claude.sh` both report clean.
+
 ## 2026-07-09 — chore: full open-issue/PR sweep across the fleet (orchestrated, 10 PRs, 18 issues closed)
 
 ### What changed
