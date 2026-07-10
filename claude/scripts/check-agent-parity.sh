@@ -22,6 +22,13 @@
 #     gen-instruction-files.sh produces from agents/canon/. A hand-edit to a
 #     generated file, or a canon edit without regeneration, fails CI.
 #
+# Known limit: phrase matching asserts a rule's phrase is PRESENT, not that it
+# is affirmed — a negated rewrite ("do NOT verify adversarially") would still
+# match. Mitigation chain: check 2 byte-locks the generated files to the
+# reviewed agents/canon/ sources, so the only path for such an inversion is a
+# canon edit that lands through normal review. This checker guards against
+# drift and omission; review guards against subversion.
+#
 # Usage:  claude/scripts/check-agent-parity.sh
 # Run from anywhere; resolves its own repo root (it is symlinked into ~/.claude).
 

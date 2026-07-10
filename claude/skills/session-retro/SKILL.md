@@ -45,6 +45,10 @@ an ADR in `docs/adr/`.
    - the change as a short before/after or a few-line diff sketch — not a full rewrite
    - one sentence on *why* (what in this session justifies it)
    Keep the whole proposal short enough to read in one glance.
+   Global instruction files (`claude/CLAUDE.md`, `codex/AGENTS.md`,
+   `antigravity/GEMINI.md`) are GENERATED (ADR-0007): target the sources in
+   `agents/canon/` instead and regenerate with
+   `claude/scripts/gen-instruction-files.sh` — a direct edit fails CI.
 
 4. **CONFIRM.** Ask the user which proposals to apply ("all / 1 and 3 / none / edit"). Default
    to applying nothing until they choose. Never edit a skill, CLAUDE.md, or ADR without an

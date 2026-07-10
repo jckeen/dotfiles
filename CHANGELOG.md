@@ -34,6 +34,17 @@
   symlinking (kills per-tool voice); generation keeps per-tool divergence real
   while making shared rules single-source. Evidence in ADR-0007.
 
+### Post-review hardening (Codex adversarial pass on PR #234)
+- **Leak guard (P1):** a malformed marker (trailing space, or an include line
+  inside a canon block) previously shipped literally with rc=0 — the generator
+  now fails loudly if any rendered line still matches `<!-- (include|canon):`.
+  Two new fixture cases (17 total).
+- **Negation limit documented** in check-agent-parity.sh's header: phrase
+  matching asserts presence, not affirmation; the byte-lock to reviewed canon
+  sources is the mitigation.
+- **session-retro** now routes instruction-file proposals at `agents/canon/`
+  + regeneration instead of the generated artifacts.
+
 ## 2026-07-10 — chore: split plugin enablement into global vs per-project scope (#214)
 
 ### What changed

@@ -43,9 +43,10 @@ w() {
   printf '%s\n' "$@" > "$p"
 }
 
-# gen — run the generator inside the fixture; returns its exit code.
+# gen — run the generator inside the fixture; returns its exit code and
+# leaves stderr in $R/gen.err for message assertions.
 gen() {
-  (cd "$R" && ./claude/scripts/gen-instruction-files.sh > /dev/null 2>&1)
+  (cd "$R" && ./claude/scripts/gen-instruction-files.sh > /dev/null 2> "$R/gen.err")
 }
 
 # check <name> <expected-exit> [<required output fragment>]
@@ -257,7 +258,40 @@ gen
 [[ $? -ne 0 ]]
 assert "orphaned canon block fails generation" $?
 
-# --- Case 15: generator is idempotent -----------------------------------------
+# --- Case 15: malformed marker (trailing space) → generator fails loudly -----
+# `<!-- include:canary -->␠` doesn't parse as a marker; without the leak guard
+# it would ship literally in the instruction file with rc=0 — a shared rule
+# silently reaching no agent (ADR-0007's named worst failure mode).
+new_repo
+w agents/canon/CANON.md \
+  '# Canon (fixture)' \
+  '<!-- canon:canary -->' \
+  '- Canary rule from the canon block.' \
+  '<!-- /canon:canary -->'
+all_frags
+printf '%s\n' '<!-- include:canary -->' >> "$R/agents/canon/fragments/codex.md"
+printf '%s\n' '<!-- include:canary --> ' >> "$R/agents/canon/fragments/claude.md"
+gen
+[[ $? -ne 0 ]] && grep -q 'unexpanded' "$R/gen.err"
+assert "trailing-space include marker fails generation loudly" $?
+
+# --- Case 16: include marker inside a canon block → generator fails ----------
+# Only fragment lines are expanded; a marker inside a block's content would
+# otherwise be emitted literally into the shipped file.
+new_repo
+w agents/canon/CANON.md \
+  '# Canon (fixture)' \
+  '<!-- canon:canary -->' \
+  '- Canary rule from the canon block.' \
+  '<!-- include:smuggled -->' \
+  '<!-- /canon:canary -->'
+all_frags
+printf '%s\n' '<!-- include:canary -->' >> "$R/agents/canon/fragments/codex.md"
+gen
+[[ $? -ne 0 ]] && grep -q 'unexpanded' "$R/gen.err"
+assert "include marker inside a canon block fails generation loudly" $?
+
+# --- Case 17: generator is idempotent -----------------------------------------
 new_repo
 all_frags
 gen

@@ -115,6 +115,16 @@ for tool in "${TOOLS[@]}"; do
   out="$tmp/$tool.md"
   render "$tool" > "$out"
   target="${TARGET[$tool]}"
+  # A marker that didn't parse — trailing space, wrong case, or an include
+  # line sitting inside a canon block — would otherwise ship LITERALLY in the
+  # instruction file with rc=0: a shared rule silently reaching no agent,
+  # ADR-0007's named worst failure mode. Fail loudly instead.
+  if grep -nE '<!-- (include|canon):' "$out" > "$tmp/$tool.leak"; then
+    echo "✖ gen: unexpanded canon/include marker would ship in $target:" >&2
+    sed 's/^/    /' "$tmp/$tool.leak" >&2
+    echo "  A marker must be a full line of exactly '<!-- include:ID -->' in a fragment." >&2
+    exit 1
+  fi
   if [[ "$CHECK" -eq 1 ]]; then
     if ! diff -u "$target" "$out" > "$tmp/$tool.diff" 2>&1; then
       stale+=("$target")
