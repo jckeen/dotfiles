@@ -45,6 +45,64 @@
 - **session-retro** now routes instruction-file proposals at `agents/canon/`
   + regeneration instead of the generated artifacts.
 
+## 2026-07-10 — chore: AGENTPACK.yaml is now GENERATED from frontmatter (#207)
+
+### What changed
+- **`claude/scripts/gen-agentpack.sh`** (new) — generates `claude/AGENTPACK.yaml`
+  from the live frontmatter of `claude/skills/*/SKILL.md` and
+  `claude/agents/*.md` (same source of truth as build-site.sh) plus the new
+  hand-maintained fragment `claude/agentpack-meta.json` (pack metadata,
+  compatibility, profiles, the three instruction atoms, per-type atom
+  defaults, pinned skill ordering). `--check` mode exits 1 when the committed
+  manifest is stale; wired into ci.yml's shared checker block.
+- **`claude/AGENTPACK.yaml`** — regenerated: gains a `# GENERATED … do not
+  edit` banner and 12 descriptions (11 skills + security-reviewer agent)
+  resync to current frontmatter. The old hand-applied ~296-char truncation is
+  gone — it was lossy, schema-unrequired, and internally inconsistent
+  (orchestrate sat untruncated at 302 chars), so no deterministic rule could
+  reproduce it.
+- **`.doc-contract`** — `claude/AGENTPACK.yaml` declared GENERATED,
+  `claude/agentpack-meta.json` declared SOURCE (non-md, documentation-only
+  entries).
+- **`claude/MULTI-AGENT.md` / `claude/scripts/README.md`** — note the manifest
+  is generated, never hand-edited.
+
+### Decisions made
+- **GENERATED, not HISTORICAL**: nothing consumes the manifest *today* (no
+  Operator Commons pack published, `~/.agentpack` absent), but the agent-pack
+  CLI's shipped git-source install (`agentpack install
+  github:owner/repo@ref#subpath`) targets exactly this file, and four
+  instruction surfaces (MULTI-AGENT.md, CLAUDE.md, codex/AGENTS.md,
+  antigravity/GEMINI.md) bill the AgentPack as the cross-tool loading
+  mechanism. Marking it HISTORICAL would have meant rewriting the declared
+  team architecture; generating it removes the drift class at near-zero cost.
+- Meta fragment is JSON (`agentpack-meta.json`), not YAML: parsed with
+  python3 stdlib only — no PyYAML dependency in CI; AGENTPACK.yaml itself is
+  already a JSON-bodied YAML document.
+
+## 2026-07-10 — feat: agent-native-review subagent + deployed-orphan checker (#217, #215)
+
+### What changed
+- **`claude/agents/agent-native-review.md`** — ADR-0006 next action 1: the
+  `agent-native-reviewer` persona from Every's compound-engineering-plugin
+  (MIT, attributed) vendored as an in-house review subagent, rescoped for a
+  config/tooling repo: UI action-parity dropped; verification affordances,
+  context parity for subagents, primitives-over-workflows, governed execution,
+  instruction-surface drift, and the anchored confidence rubric kept. Scoped to
+  correctness-and-requirements findings — the lens is not a license for bloat.
+- **`claude/scripts/check-deployed-orphans.sh`** — sweeps the *deployed*
+  `~/.claude` for decommissioned artifacts the symlink checker never sees:
+  non-symlink debris in `hooks/` (the PAI-era framework, ADR-0002),
+  `settings.json.doctor-bak`, an empty `commands/` dir, plus an informational
+  UNKNOWN triage list for unrecognized top-level entries. WARN-only by default
+  (exit 0); `--strict` exits 1 on orphans. 13-case fixture self-test in
+  `tests/deployed-orphans.test.sh`.
+- **One-time live cleanup** — the PAI leftovers the checker flagged
+  (`hooks/{handlers,lib,security}`, 25KB `hooks/README.md`,
+  `settings.json.doctor-bak`, empty `commands/`) were backed up to
+  `~/.claude/backups/pai-decommission-2026-07-10.tar.gz` (tar-verified, 36
+  entries), then deleted; checker and `check-claude.sh` both report clean.
+
 ## 2026-07-10 — chore: split plugin enablement into global vs per-project scope (#214)
 
 ### What changed
