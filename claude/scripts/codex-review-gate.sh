@@ -71,6 +71,7 @@ MAX_DIFF_LINES="${CODEX_GATE_MAX_LINES:-5000}"
 CLAIM=""
 REPRO=""
 
+# shellcheck disable=SC2034  # FORCE_UNCOMMITTED is read by gate-lib.sh (sourced above)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)        BASE="$2"; shift 2 ;;

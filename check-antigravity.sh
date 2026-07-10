@@ -26,6 +26,7 @@ if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
 fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+# shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.gemini/config/"
 
 echo "Checking Antigravity public-safe config..."

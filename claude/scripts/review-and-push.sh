@@ -21,7 +21,6 @@ source "$(dirname "$0")/common.sh"
 AUTO_PUSH=false
 
 # Extended parse_args to handle --auto-push
-ORIG_ARGS=("$@")
 FILTERED_ARGS=()
 for arg in "$@"; do
   case "$arg" in
@@ -31,7 +30,7 @@ for arg in "$@"; do
 done
 parse_args "${FILTERED_ARGS[@]}"
 
-cd "$REPO_DIR"
+cd "$REPO_DIR" || exit 1
 REPO_NAME=$(basename "$REPO_DIR")
 
 echo "╔══════════════════════════════════════════════════════╗"
@@ -42,7 +41,7 @@ echo ""
 # ─── Step 1: What changed? ────────────────────────────────────
 
 # Check if there's anything to review
-UNPUSHED=$(git log @{u}..HEAD --oneline 2>/dev/null || echo "")
+UNPUSHED=$(git log "@{u}..HEAD" --oneline 2>/dev/null || echo "")
 UNSTAGED=$(git status --porcelain 2>/dev/null || echo "")
 
 if [[ -z "$UNPUSHED" && -z "$UNSTAGED" ]]; then
@@ -100,9 +99,9 @@ echo ""
 
 echo "═══ AI Review ═══"
 
-DIFF_STAT=$(git diff @{u}..HEAD --stat 2>/dev/null || echo "no upstream to compare")
-DIFF_FULL=$(git diff @{u}..HEAD 2>/dev/null || echo "")
-COMMIT_LOG=$(git log @{u}..HEAD --format="%h %s" 2>/dev/null || echo "")
+DIFF_STAT=$(git diff "@{u}..HEAD" --stat 2>/dev/null || echo "no upstream to compare")
+DIFF_FULL=$(git diff "@{u}..HEAD" 2>/dev/null || echo "")
+COMMIT_LOG=$(git log "@{u}..HEAD" --format="%h %s" 2>/dev/null || echo "")
 
 REVIEW_LOG=$(log_file "review")
 

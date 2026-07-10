@@ -36,8 +36,10 @@ MODEL="${_fields[0]}"
 PCT="${_fields[1]}"
 IN_TOK="${_fields[2]}"
 OUT_TOK="${_fields[3]}"
+# shellcheck disable=SC2034  # unused, kept so the _fields index map stays complete
 WIN_SIZE="${_fields[4]}"
 WORKTREE="${_fields[5]}"
+# shellcheck disable=SC2034  # unused, kept so the _fields index map stays complete
 WT_BRANCH="${_fields[6]}"
 VIM_MODE="${_fields[7]}"
 SESSION="${_fields[8]}"
@@ -52,7 +54,8 @@ TRANSCRIPT="${_fields[16]}"
 
 # Switch to the project CWD so git operations reflect the right repo
 if [ -n "${CWD:-}" ] && [ -d "$CWD" ]; then
-  cd "$CWD"
+  # || true: statusline must never die — on cd failure keep rendering from the current dir
+  cd "$CWD" || true
 fi
 
 # Ensure PCT is numeric
