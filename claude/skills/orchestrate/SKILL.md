@@ -39,6 +39,10 @@ Use ALL applicable parallelization patterns:
   migrations), give one agent clear, repeatable instructions over the file list.
 - **Launch in one message** — All independent research/exploration agents MUST
   launch in a single message. No staggering.
+- **Named agents must report via SendMessage** — a named agent (`Agent` with
+  `name:`) ends with a bare idle notification; its final text does NOT reach
+  you. Instruct every named agent to `SendMessage(to: "main")` its completion
+  report as its last act, and expect to nudge idle agents that skipped it.
 
 ## Capability Selection (Go Wide)
 
