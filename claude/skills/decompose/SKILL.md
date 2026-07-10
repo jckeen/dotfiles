@@ -29,7 +29,7 @@ Launch these agents simultaneously in a single message (Agent tool):
 ### Agent 3: Domain Expert
 - Spawn a subagent with expertise relevant to the task domain (e.g. a frontend
   architecture expert for a React refactor, a data-engineering expert for a DB
-  migration) by giving it a tailored prompt, or use a matching `agentType`.
+  migration) by giving it a tailored prompt, or use a matching `subagent_type`.
 - Have it analyze the task from a domain-specific lens
 - Report: domain-specific risks, best practices to follow, patterns to use/avoid
 
@@ -48,7 +48,7 @@ workstream: [name]
 description: [what this workstream delivers]
 files: [list of files this workstream touches]
 depends_on: [other workstream names, or "none"]
-agent_type: [default, or a specific subagent_type]
+subagent_type: [omit for the default agent, or a specific agent type]
 isolation: worktree | none  # worktree if independent, none if sequential
 estimated_minutes: [number]
 capabilities: [skills/tools this workstream needs]

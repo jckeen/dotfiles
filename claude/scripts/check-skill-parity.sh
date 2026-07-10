@@ -64,8 +64,10 @@ require_headings() {
 }
 
 require_headings changelog "What changed" "Decisions made" "Known issues"
+# "Operator-action queue" is a skill-body section, not an artifact heading, but
+# both sides must carry it so the queue contract can't drift one-sided (#213).
 require_headings handoff "What we did" "Where we left off" "Key decisions made" \
-  "Open issues" "Next steps" "Context for next session"
+  "Open issues" "Next steps" "Context for next session" "Operator-action queue"
 
 [ "$VIOLATIONS" -eq 0 ] && green "artifact shapes: changelog + handoff headings match across Claude/shared agents"
 
