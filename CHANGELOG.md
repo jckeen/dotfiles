@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-07-10 — chore: split plugin enablement into global vs per-project scope (#214)
+
+### What changed
+- **`claude/plugins.txt`** — restructured into `# [global]` (16 plugins,
+  enabled in `~/.claude/settings.json`) and `# [per-project]` (vercel,
+  playwright, sentry, posthog, soundcheck — enabled only via each target
+  project's `.claude/settings.json`) sections. Markers are comments, so
+  setup.sh / sync-plugins.sh install both sections unchanged. Target projects
+  documented per plugin on their own comment lines — NOT inline, because
+  setup.sh's and check-install-integrity.sh's marketplace awk does not strip
+  trailing inline comments.
+- **`PluginDriftCheck.hook.ts`** — now parses the sections and additionally
+  warns when a `[global]` plugin is missing from global `enabledPlugins` or a
+  `[per-project]` plugin is enabled globally. Warn-only by design (exit 0
+  always): live settings still carry the old fully-global set during the
+  migration window, and a session must never be blocked over plugin scoping.
+  A marker-less manifest parses as before (all lines = global), though the
+  scoping checks are new, so advisory warnings can appear where the old hook
+  was silent.
+- **`sync-plugins.sh` / `claude/scripts/README.md`** — documented that
+  installation covers both sections; scoping governs enablement only.
+- **Adversarial-review round** — playwright's targets gained clarity-engine
+  (`@playwright/test` + `playwright.config.ts` in the nested `app/`
+  package.json, missed by the top-level-only sweep); hook hardened: warns on
+  a plugin listed in both sections (unsatisfiable scoping), tolerates leading
+  whitespace before section markers, dedupes install-drift counts.
+
+### Decisions made
+- The actual `enabledPlugins` migration (global settings live in
+  claude-memory; per-project snippets for operator-commons, stringer, smss,
+  clarity-engine, agent-pack, allora-engine, vlcek-built) is applied
+  separately — this PR delivers the manifest/hook/doc layer plus the exact
+  JSON in the PR body.
+
 ## 2026-07-09 — chore: full open-issue/PR sweep across the fleet (orchestrated, 10 PRs, 18 issues closed)
 
 ### What changed

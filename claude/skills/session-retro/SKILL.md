@@ -68,6 +68,31 @@ an ADR in `docs/adr/`.
    (e.g. `chore(skills): add <name> gotcha from session-retro`) so they sync across machines.
    Commit only the files that were changed; never `git add -A`.
 
+## Memory refresh pass (ADR-0006)
+
+Retro and auto-memory only *add* knowledge; nothing prunes it when reality
+moves on. So alongside step 1, re-verify the project's recalled memories —
+the auto-memory index (`MEMORY.md` and its topic files) and `ERRORS.md` if
+present — against the current codebase:
+
+- **Verify before flagging.** A memory that cites a file, function, flag,
+  script, or path gets checked with tools (`rg`, `ls`, `git log`) — it is
+  stale only when the evidence says the referent no longer exists or no
+  longer behaves as described, not merely because the entry is old.
+- **Every aging entry gets one of five explicit outcomes** (the
+  `ce-compound-refresh` lifecycle ADR-0006 adopted): **Keep** (still true,
+  untouched), **Update** (referent moved/renamed but the lesson holds),
+  **Consolidate** (merge near-duplicates), **Replace** (lesson superseded by
+  a better one), or **Delete** (referent gone and the lesson with it).
+- Memories citing files/functions/flags that no longer exist are flagged for
+  **Update** or **Delete** — never silently rewritten.
+
+Refresh findings are proposals like any other: they join the step-2 cut
+(still at most 1–3 total, quality over quantity) and go through the same
+propose → confirm → apply flow. In auto mode they are written to
+`~/.claude/retro-proposals/` like everything else — memory files are never
+edited without an explicit yes in some session.
+
 ## Auto mode (unattended runs)
 
 When invoked as `/session-retro --auto`, or when running unattended (inside
