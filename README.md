@@ -1,6 +1,6 @@
 # Dotfiles — A Jumpstart for Claude Code + Codex
 
-A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 17-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
+A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and a 18-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
 This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
@@ -20,7 +20,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **17 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/fable-mode` (recalibrate to the conduct layer), `/antigravity-review` (Gemini second-opinion review gate). Type the verb, get the workflow.
-- **A 17-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **A 18-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
@@ -221,7 +221,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 |------|-------|----------|
 | **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`) |
 | **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
-| **Agent Pack** | `AgentPack.md` | 17-agent review orchestra (loaded on-demand, not symlinked) |
+| **Agent Pack** | `AgentPack.md` | 18-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
 | **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
@@ -230,7 +230,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Other hooks** | `hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
 | **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line); deliberately not symlinked (listed in `claude/nolink.txt`) |
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
-| **Subagents** | `agents/*.md` | 17 specialized review agents |
+| **Subagents** | `agents/*.md` | 18 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows (review, issue fixes, PRs, handoffs), per-file-linked into `~/.codex/skills/` |
@@ -299,7 +299,7 @@ push-time Codex review gate that blocks on critical findings.
   Tables in [CLAUDE-GUIDE](CLAUDE-GUIDE.md#worktrees--multi-session); the
   PowerShell side (`wsl6`, `ccgrid`, `cctab`, `ccpane`, manual install, distro
   overrides) lives in [docs/WINDOWS.md](docs/WINDOWS.md).
-- **The 17-agent review orchestra** — spawn by name ("Use the qa-lead agent on
+- **The 18-agent review orchestra** — spawn by name ("Use the qa-lead agent on
   this feature"), in groups, or as a three-phase full review (Product →
   Architecture → Launch). `/review` and `/simplify` use them automatically.
   Roster and orchestration: [`claude/AgentPack.md`](claude/AgentPack.md).
@@ -529,7 +529,7 @@ dotfiles/
 ├── claude/
 │   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
 │   ├── FABLE.md                # Fable conduct layer — operating discipline imported by CLAUDE.md
-│   ├── AgentPack.md            # 17-agent review orchestra
+│   ├── AgentPack.md            # 18-agent review orchestra
 │   ├── AGENTPACK.yaml          # AgentPack manifest (atoms, profiles, compatibility) for Claude Code, Codex, Cursor, ChatGPT
 │   ├── MULTI-AGENT.md          # Multi-agent lane contract — roles and coordination rules for Claude Code, Codex, and Antigravity
 │   ├── plugins.txt             # Plugin manifest (cross-machine source of truth)
@@ -589,7 +589,7 @@ dotfiles/
 │   │   ├── checker-lib.sh          # Shared helpers sourced by the checkers (path resolve, fail counter)
 │   │   └── tests/                  # Fixture self-tests for the gate checkers
 │   ├── systemd/                # systemd units (git-hygiene timer)
-│   └── agents/                 # 17 specialized review subagents
+│   └── agents/                 # 18 specialized review subagents
         ├── product-strategist.md
         ├── ux-reviewer.md
         ├── frontend-architect.md
