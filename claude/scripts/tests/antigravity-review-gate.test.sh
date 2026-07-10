@@ -36,11 +36,15 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 touch "$AGY_FAKE_DIR/invoked"
+# Go's flag package treats -print/--print/-p and the =value forms as the same
+# flag, so the emulation must too (adversarial review of PR #243: an equals or
+# single-dash spelling regression must not pass the suite).
 have_prompt_flag=0 prompt_value="" expect_value=0
 for a in "$@"; do
   if [ "$expect_value" = 1 ]; then prompt_value="$a"; expect_value=0; continue; fi
   case "$a" in
-    --print|-p|--prompt) have_prompt_flag=1; expect_value=1 ;;
+    --print|--prompt|-print|-prompt|-p) have_prompt_flag=1; expect_value=1 ;;
+    --print=*|--prompt=*|-print=*|-prompt=*|-p=*) have_prompt_flag=1; prompt_value="${a#*=}" ;;
   esac
 done
 if [ "$have_prompt_flag" = 1 ] && [ -z "$prompt_value" ]; then
@@ -128,7 +132,8 @@ assert "diff absent from agy argv" "! grep -q 'change' '$AGY_FAKE_DIR/argv'"
 assert "fence preamble absent from agy argv" "! grep -q 'UNTRUSTED' '$AGY_FAKE_DIR/argv'"
 # ── #227: no prompt flag at all — agy ≥1.1.1 reads stdin only then, and a
 # prompt flag reappearing on argv is one release away from an argv secret leak.
-assert "no prompt flag on agy argv" "! grep -qE -- '^(--print|-p|--prompt)$' '$AGY_FAKE_DIR/argv'"
+# Covers every Go-flag spelling: single/double dash, with or without =value.
+assert "no prompt flag on agy argv" "! grep -qE -- '^-{1,2}(print|prompt|p)(=.*)?$' '$AGY_FAKE_DIR/argv'"
 rm -rf "$R"
 
 new_repo
