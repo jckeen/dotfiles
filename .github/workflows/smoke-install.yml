@@ -7,9 +7,10 @@ name: smoke-install
 # we CAN cheaply verify on every PR is that the scripts parse cleanly and the
 # argument plumbing (--help) responds.
 #
-# Marked continue-on-error: true for the FIRST SIX MONTHS (through ~2026-11-19)
-# while we extend coverage. After that, flip continue-on-error to false and
-# start gating PRs on it.
+# Gating since 2026-07 (#203): run history showed every failure was a real
+# regression on an in-flight PR (deterministic on both OSes, green once fixed),
+# not runner flakiness, so the six-month continue-on-error grace period was
+# ended early.
 
 on:
   pull_request:
@@ -24,6 +25,8 @@ on:
       - "gh-bootstrap.sh"
       - "git-hygiene.sh"
       - "hygiene-status.sh"
+      # Glob so future lib files (lib-checks.sh, ...) are covered automatically.
+      - "lib-*.sh"
       - ".bash_aliases"
       - ".bash_profile"
   workflow_dispatch:
@@ -36,15 +39,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # See rationale at top of file. Remove once stable.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Syntax check shell scripts
         run: |
           set -euo pipefail
-          for f in setup.sh check-claude.sh check-codex.sh check-antigravity.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh .bash_aliases .bash_profile; do
+          # lib-*.sh is a glob so future lib files are covered automatically;
+          # the -f guard skips the unexpanded literal if no lib file exists.
+          for f in setup.sh check-claude.sh check-codex.sh check-antigravity.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh lib-*.sh .bash_aliases .bash_profile; do
             if [ -f "$f" ]; then
               echo "==> bash -n $f"
               bash -n "$f"
@@ -76,7 +79,6 @@ jobs:
           # HOME is a throwaway dir so the zero-mutation assertion below can
           # prove --dry-run writes NOTHING there (issue #133) without risking
           # the runner's real home.
-          # Job-level continue-on-error keeps this non-gating until stable.
           smoke_home="$(mktemp -d)"
           find "$smoke_home" | sort > /tmp/home-before.txt
           HOME="$smoke_home" ./setup.sh --yes --dry-run > /tmp/dryrun.out 2>&1 || {
