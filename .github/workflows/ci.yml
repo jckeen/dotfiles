@@ -122,9 +122,19 @@ jobs:
 
       # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
       # fragment (issue #207) — assert the committed manifest is current.
-      - name: agentpack-generated (manifest matches frontmatter)
+      # The self-test asserts the frontmatter reader fails loudly on the YAML
+      # forms it cannot represent (issue #235).
+      - name: agentpack-generated (self-test + manifest matches frontmatter)
         if: ${{ !cancelled() }}
-        run: claude/scripts/gen-agentpack.sh --check
+        run: |
+          claude/scripts/tests/gen-agentpack.test.sh
+          claude/scripts/gen-agentpack.sh --check
+
+      # build-site's awk frontmatter reader shares the same loud-failure
+      # contract (issue #235); the site build itself runs in pages.yml.
+      - name: build-site (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/build-site.test.sh
 
       # Self-test only: the gate itself needs an authenticated `agy`, so the
       # fixtures stub it with a PATH shim and assert the gate's parsing/fail-

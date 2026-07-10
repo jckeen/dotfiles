@@ -112,26 +112,40 @@ copy_page "docs/BRANCH_PROTECTION.md"
 # ── 2. Generate the catalogs from live frontmatter ─────────────────
 # Emits KEY<TAB>VALUE lines for the frontmatter block of one file.
 # Handles `key: value` and folded/literal block scalars (`key: >-` etc.).
+# Two YAML forms this reader cannot represent fail loudly instead of
+# silently mangling (issue #235): a blank line inside a block scalar (true
+# YAML keeps the paragraph after it; this reader would drop it), and quoted
+# scalar values (quotes/escapes would leak into the output literally).
 read_frontmatter() { # file
   awk '
+    function die(msg) {
+      printf "✖ build-site: %s\n", msg > "/dev/stderr"
+      died = 1
+      exit 1
+    }
     NR == 1 { if ($0 ~ /^---[[:space:]]*$/) { fm = 1; next } else exit }
     !fm { exit }
     /^---[[:space:]]*$/ { exit }
     /^[A-Za-z][A-Za-z0-9_-]*:/ {
       key = $0; sub(/:.*$/, "", key)
       val = $0; sub(/^[A-Za-z][A-Za-z0-9_-]*:[[:space:]]*/, "", val)
-      if (val ~ /^[>|][+-]?[[:space:]]*$/) { block = 1; curkey = key; vals[key] = "" }
-      else { block = 0; vals[key] = val }
+      if (val ~ /^[>|][+-]?[[:space:]]*$/) { block = 1; blank = 0; curkey = key; vals[key] = "" }
+      else {
+        if (val ~ /^["'\'']/) die("quoted scalar for key \"" key "\" in " FILENAME " frontmatter — this reader would leak the quotes/escapes as literal content; use a plain or folded (>-) scalar")
+        block = 0; vals[key] = val
+      }
       next
     }
     block && /^[[:space:]]+[^[:space:]]/ {
+      if (blank) die("blank line inside block scalar for key \"" curkey "\" in " FILENAME " frontmatter — this reader would silently drop the text after it; rewrap as one paragraph")
       line = $0
       sub(/^[[:space:]]+/, "", line)
       vals[curkey] = vals[curkey] (vals[curkey] == "" ? "" : " ") line
       next
     }
+    block && /^[[:space:]]*$/ { blank = 1; next }
     { block = 0 }
-    END { for (k in vals) printf "%s\t%s\n", k, vals[k] }
+    END { if (died) exit 1; for (k in vals) printf "%s\t%s\n", k, vals[k] }
   ' "$1"
 }
 
