@@ -23,6 +23,32 @@
   writes only (loops and read+write chains are denied); serial
   `update-branch` per merge against strict protection.
 
+## 2026-07-10 — fix: frontmatter readers fail loudly on YAML forms they can't represent (#235)
+
+### What changed
+- **`gen-agentpack.sh` + `build-site.sh`** — the two hand-rolled frontmatter
+  readers shared a silent-mangling bug class (found by the PR #233 adversarial
+  review, extended by the adversarial pass on PR #244): a blank line inside a
+  folded block scalar (`description: >-`) silently dropped everything after
+  it; quoted scalars leaked their quotes and backslash escapes as literal
+  content; literal block scalars (`|-`) had their semantic newlines
+  space-joined; and the indented continuation of a multi-line plain scalar
+  was silently dropped. Both readers now fail loudly (non-zero exit, message
+  naming the file and key) on all four forms instead of emitting mangled
+  output. Byte-identical for the current corpus, which uses none of them.
+- **Tests** — new `gen-agentpack.test.sh` and `build-site.test.sh` fixture
+  suites (folded-block happy paths, no-false-positive cases, and a loud-fail
+  assertion per rejected form), wired into CI.
+
+### Decisions made
+- Loud-fail guards over a real YAML parse in both files: the issue's premise
+  that PyYAML is already a CI dependency is false — `gen-agentpack.sh` is
+  documented "python3 (stdlib only)" and ci.yml installs nothing, and
+  `build-site.sh` is awk-only by contract and also runs on user machines via
+  setup.sh symlinks. A PyYAML parse would add a new dependency or diverge by
+  environment; the guards are deterministic and portable, and silence was the
+  only unacceptable outcome.
+
 ## 2026-07-10 — feat: instruction canon — generate the three instruction files from one source (#216, #206, #219)
 
 ### What changed

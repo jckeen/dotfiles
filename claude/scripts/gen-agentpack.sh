@@ -74,8 +74,14 @@ def die(msg):
 
 def read_frontmatter(path):
     """Raw frontmatter extraction, matching build-site.sh semantics:
-    top-level `key: value` pairs, with folded/literal block scalars
-    (`key: >-` etc.) joined by single spaces."""
+    top-level `key: value` pairs, with folded block scalars (`key: >-`)
+    joined by single spaces. YAML forms this reader cannot represent fail
+    loudly instead of silently mangling (issue #235): a blank line inside a
+    block scalar (true YAML keeps the paragraph after it; this reader would
+    drop it), quoted scalar values (the quotes and backslash escapes would
+    leak into the output as literal content), literal block scalars
+    (`key: |-`; their newlines are semantic and would be space-joined), and
+    multi-line plain scalars (the indented continuation would be dropped)."""
     with open(path, encoding="utf-8") as f:
         lines = f.read().split("\n")
     if not lines or not re.match(r"^---\s*$", lines[0]):
@@ -83,6 +89,8 @@ def read_frontmatter(path):
     fm = {}
     key = None
     block = False
+    blank_in_block = False
+    plain_key = None
     for line in lines[1:]:
         if re.match(r"^---\s*$", line):
             break
@@ -91,14 +99,43 @@ def read_frontmatter(path):
             key = m.group(1)
             val = m.group(2).strip()
             if re.match(r"^[>|][+-]?\s*$", val):
+                if val.startswith("|"):
+                    die(
+                        f"literal block scalar (|) for key '{key}' in {path} "
+                        "frontmatter — its newlines are semantic and this "
+                        "reader would space-join them; use a folded (>-) scalar"
+                    )
                 block = True
+                blank_in_block = False
+                plain_key = None
                 fm[key] = ""
             else:
+                if val[:1] in ('"', "'"):
+                    die(
+                        f"quoted scalar for key '{key}' in {path} frontmatter — "
+                        "this reader would leak the quotes/escapes as literal "
+                        "content; use a plain or folded (>-) scalar"
+                    )
                 block = False
+                plain_key = key if val else None
                 fm[key] = val
         elif block and re.match(r"^\s+\S", line):
+            if blank_in_block:
+                die(
+                    f"blank line inside block scalar for key '{key}' in {path} "
+                    "frontmatter — this reader would silently drop the text "
+                    "after it; rewrap as one paragraph"
+                )
             fm[key] = (fm[key] + " " if fm[key] else "") + line.strip()
+        elif block and not line.strip():
+            blank_in_block = True
         else:
+            if plain_key and re.match(r"^\s+\S", line):
+                die(
+                    f"multi-line plain scalar for key '{plain_key}' in {path} "
+                    "frontmatter — this reader would silently drop the "
+                    "indented continuation; use a folded (>-) scalar"
+                )
             block = False
     return fm
 
