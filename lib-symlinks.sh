@@ -83,11 +83,19 @@ symlink_enumerate() {
     printf '%s\t%s\t%s\t\n' "$f" "$claude_dst/agents/$name" "agents/$name"
   done
 
-  # 5. Scripts (*.sh, executable).
+  # 5. Scripts (*.sh, executable) + their data files (*.json, plain). Gate
+  # scripts resolve sibling files via plain dirname (no readlink -f), so a
+  # schema not linked beside the script symlink is invisible to it —
+  # codex-review-gate.sh degraded open for exactly this reason.
   for f in "$claude_src/scripts/"*.sh; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     printf '%s\t%s\t%s\texecutable\n' "$f" "$claude_dst/scripts/$name" "scripts/$name"
+  done
+  for f in "$claude_src/scripts/"*.json; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    printf '%s\t%s\t%s\t\n' "$f" "$claude_dst/scripts/$name" "scripts/$name"
   done
 
   # 6. Chrome — all files except docs (*.md); *.sh sources +x.
