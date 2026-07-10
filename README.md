@@ -223,7 +223,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 
 | What | Files | Purpose |
 |------|-------|----------|
-| **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`) |
+| **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`; generated from `agents/canon/` per ADR-0007 — edit the sources, not the file) |
 | **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
 | **Agent Pack** | `AgentPack.md` | 18-agent review orchestra (loaded on-demand, not symlinked) |
 | **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
@@ -236,10 +236,10 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `agents/*.md` | 18 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
-| **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules |
+| **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows (review, issue fixes, PRs, handoffs), per-file-linked into `~/.codex/skills/` |
 | **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
-| **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`) |
+| **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`; generated from `agents/canon/` per ADR-0007) |
 | **Antigravity skills** | `agents/skills/*/` (shared) | The same agent-neutral workflow set, dir-symlinked into `~/.gemini/config/skills/` |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
 | **Audio** | `.asoundrc` (WSL only) | ALSA → PulseAudio routing |
@@ -444,10 +444,9 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 
 **Edit these only with public-safe content:**
 - `claude/AgentPack.md` — add, remove, or modify review agents
-- `codex/AGENTS.md` — reusable Codex working rules
+- `agents/canon/` — the instruction sources (ADR-0007): shared cross-agent rules in `CANON.md`, per-tool voice in `fragments/`. `claude/CLAUDE.md`, `codex/AGENTS.md`, and `antigravity/GEMINI.md` are generated from here by `claude/scripts/gen-instruction-files.sh` — never edit them directly
 - `agents/skills/*/SKILL.md` — reusable agent-neutral workflows (Codex + Antigravity)
 - `codex/config.toml.example` — example Codex config only
-- `antigravity/GEMINI.md` — reusable Antigravity working rules
 - `.bash_aliases` — your shell shortcuts
 
 **Keep private:**
