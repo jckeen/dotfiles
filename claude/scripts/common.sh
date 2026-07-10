@@ -9,15 +9,18 @@ set -euo pipefail
 # Scripts pick the minimum tier needed for their job.
 
 # TIER 1: Read-only — can't change anything
+# shellcheck disable=SC2034  # consumed via nameref (local -n) in run_claude
 TIER_READONLY=(Read Grep Glob "Bash(git status)" "Bash(git log *)" "Bash(git diff *)")
 
 # TIER 2: Fix — can edit files + run tests (but not commit/push)
+# shellcheck disable=SC2034  # consumed via nameref (local -n) in run_claude
 TIER_FIX=(Read Grep Glob Edit Write \
   "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
   "Bash(npx *)" "Bash(pip *)" "Bash(pytest *)" "Bash(cargo test *)" \
   "Bash(git status)" "Bash(git log *)" "Bash(git diff *)" "Bash(git stash *)")
 
 # TIER 3: Commit — can edit + commit (but not push)
+# shellcheck disable=SC2034  # consumed via nameref (local -n) in run_claude
 TIER_COMMIT=(Read Grep Glob Edit Write \
   "Bash(npm test *)" "Bash(npm run lint *)" "Bash(npm run build *)" \
   "Bash(npx *)" "Bash(npm audit *)" "Bash(npm outdated *)" \
