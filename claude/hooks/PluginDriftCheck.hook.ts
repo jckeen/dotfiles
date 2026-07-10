@@ -8,6 +8,14 @@
  * ~/.claude/plugins/installed_plugins.json. If anything is missing, emits a
  * <system-reminder> warning at SessionStart pointing at sync-plugins.sh.
  *
+ * The manifest is split into `# [global]` and `# [per-project]` sections
+ * (issue #214). Both sections must be INSTALLED; only [global] plugins should
+ * be ENABLED in ~/.claude/settings.json `enabledPlugins` — [per-project]
+ * plugins belong in each project's .claude/settings.json. Scoping drift is
+ * reported as a warning alongside install drift. Everything here is
+ * warn-only: the migration window has live settings still carrying the old
+ * fully-global set, and a session must never be blocked over plugin scoping.
+ *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
  */
@@ -26,13 +34,29 @@ const DOTFILES_DIR =
   process.env.DOTFILES_DIR ?? join(dirname(HOOK_PATH), '..', '..');
 const MANIFEST = join(DOTFILES_DIR, 'claude', 'plugins.txt');
 const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
+const SETTINGS = join(HOME, '.claude', 'settings.json');
 
-function readManifest(): string[] {
-  if (!existsSync(MANIFEST)) return [];
-  return readFileSync(MANIFEST, 'utf-8')
-    .split('\n')
-    .map((l) => l.replace(/#.*$/, '').trim())
-    .filter((l) => l.length > 0);
+interface Manifest {
+  global: string[];
+  perProject: string[];
+}
+
+function readManifest(): Manifest {
+  const manifest: Manifest = { global: [], perProject: [] };
+  if (!existsSync(MANIFEST)) return manifest;
+  // Lines before any section marker count as global, so a manifest without
+  // markers (the pre-#214 format) behaves exactly as before.
+  let section: keyof Manifest = 'global';
+  for (const raw of readFileSync(MANIFEST, 'utf-8').split('\n')) {
+    const marker = raw.match(/^#\s*\[(global|per-project)\]/i);
+    if (marker) {
+      section = marker[1].toLowerCase() === 'global' ? 'global' : 'perProject';
+      continue;
+    }
+    const line = raw.replace(/#.*$/, '').trim();
+    if (line.length > 0) manifest[section].push(line);
+  }
+  return manifest;
 }
 
 function readInstalled(): Set<string> {
@@ -45,16 +69,29 @@ function readInstalled(): Set<string> {
   }
 }
 
+// Globally-enabled plugin map, or null when settings can't be read — in that
+// case the scoping checks are skipped (warn-only philosophy: never guess).
+function readGloballyEnabled(): Record<string, unknown> | null {
+  if (!existsSync(SETTINGS)) return null;
+  try {
+    const data = JSON.parse(readFileSync(SETTINGS, 'utf-8'));
+    const enabled = data.enabledPlugins;
+    return typeof enabled === 'object' && enabled !== null ? enabled : {};
+  } catch {
+    return null;
+  }
+}
+
 function main(): void {
-  const desired = readManifest();
+  const manifest = readManifest();
+  const desired = [...manifest.global, ...manifest.perProject];
   if (desired.length === 0) return;
+
+  let warning = '';
 
   const installed = readInstalled();
   const missing = desired.filter((p) => !installed.has(p));
   const undeclared = [...installed].filter((p) => !desired.includes(p));
-  if (missing.length === 0 && undeclared.length === 0) return;
-
-  let warning = '';
   if (missing.length > 0) {
     const list = missing.map((p) => `  • ${p}`).join('\n');
     warning +=
@@ -69,6 +106,31 @@ function main(): void {
       `the manifest — a fresh-clone setup would drop them:\n${list}\n\n` +
       `Add them to ${MANIFEST} (or uninstall them) to resolve.\n`;
   }
+
+  const enabled = readGloballyEnabled();
+  if (enabled !== null) {
+    const notEnabled = manifest.global.filter((p) => enabled[p] !== true);
+    const overScoped = manifest.perProject.filter((p) => enabled[p] === true);
+    if (notEnabled.length > 0) {
+      const list = notEnabled.map((p) => `  • ${p}`).join('\n');
+      warning +=
+        `⚠️  Plugin scoping: ${notEnabled.length} [global] plugin(s) from the manifest ` +
+        `are not enabled in ~/.claude/settings.json \`enabledPlugins\`:\n${list}\n\n` +
+        `Add them there (value \`true\`) so they load in every session.\n`;
+    }
+    if (overScoped.length > 0) {
+      const list = overScoped.map((p) => `  • ${p}`).join('\n');
+      warning +=
+        `⚠️  Plugin scoping: ${overScoped.length} [per-project] plugin(s) are enabled ` +
+        `globally in ~/.claude/settings.json — their skills dilute every session's ` +
+        `skill list (issue #214):\n${list}\n\n` +
+        `Move each to the target project's .claude/settings.json \`enabledPlugins\` ` +
+        `(targets are noted in ${MANIFEST}) and remove it from the global map. ` +
+        `Warning only — nothing is blocked.\n`;
+    }
+  }
+
+  if (warning.length === 0) return;
   process.stdout.write(`<system-reminder>\n${warning}</system-reminder>\n`);
 }
 

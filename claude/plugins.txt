@@ -2,7 +2,18 @@
 # Format: <plugin>@<marketplace>   (one per line; # starts a comment)
 # Installed via `claude plugin install <plugin>@<marketplace>` in setup.sh.
 # Marketplace is registered automatically if missing.
+#
+# Scoping (issue #214): every plugin here is INSTALLED on every machine, but
+# only the [global] section is ENABLED in ~/.claude/settings.json
+# `enabledPlugins`. [per-project] plugins are stack-specific skill farms
+# (posthog ~150 skills, soundcheck ~60, vercel ~30) that drown the curated
+# repo skills when enabled globally — they're enabled per-project via each
+# project's committed `.claude/settings.json` instead. The section markers
+# are plain comments, so setup.sh / sync-plugins.sh install both sections
+# unchanged; PluginDriftCheck.hook.ts parses them to warn (never block) when
+# live enablement drifts from this layout.
 
+# [global] — enabled in ~/.claude/settings.json `enabledPlugins`
 typescript-lsp@claude-plugins-official
 playground@claude-plugins-official
 claude-code-setup@claude-plugins-official
@@ -12,16 +23,28 @@ code-simplifier@claude-plugins-official
 commit-commands@claude-plugins-official
 frontend-design@claude-plugins-official
 feature-dev@claude-plugins-official
-vercel@claude-plugins-official
 superpowers@claude-plugins-official
-playwright@claude-plugins-official
 github@claude-plugins-official
 context7@claude-plugins-official
 pr-review-toolkit@claude-plugins-official
 greptile@claude-plugins-official
 codex@openai-codex
 security-guidance@claude-plugins-official
+
+# [per-project] — installed everywhere, enabled only via a project's
+# .claude/settings.json `enabledPlugins`. Target projects (from dependency/
+# deploy evidence, issue #214) are noted in the comment above each plugin —
+# NOT as trailing inline comments: setup.sh and check-install-integrity.sh
+# extract marketplace names with an awk that does not strip inline comments.
+
+# vercel → stringer, smss, operator-commons, clarity-engine, agent-pack,
+#          allora-engine, vlcek-built (each has .vercel/ or vercel.json)
+vercel@claude-plugins-official
+# playwright → operator-commons, stringer (playwright test suites)
+playwright@claude-plugins-official
+# sentry → operator-commons, stringer, smss (@sentry/nextjs dependency)
 sentry@claude-plugins-official
+# posthog → clarity-engine (posthog-js + posthog-node dependencies)
 posthog@claude-plugins-official
 
 # Third-party (not the official marketplace). soundcheck adds automatic
@@ -30,4 +53,5 @@ posthog@claude-plugins-official
 # /pr-review, /contract-review overlap code-review + pr-review-toolkit and collide
 # by name with the built-in /security-review, so lean on the background triage,
 # not those commands. Code runs in your CC env; benchmarks are self-reported.
+# soundcheck → operator-commons, stringer, smss (deployed app surfaces)
 soundcheck@soundcheck
