@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-07-10 — fix: link scripts/*.json data files so gate schemas resolve through the symlink farm
+
+### What changed
+- **`lib-symlinks.sh` enumerates `scripts/*.json`** (plain, non-executable)
+  alongside `scripts/*.sh`. Gate scripts resolve sibling files via plain
+  `dirname` (no `readlink -f`), so `codex-review-schema.json` was invisible
+  through `~/.claude/scripts/` and `codex-review-gate.sh` **degraded open** —
+  the Codex refuter lane silently reviewed nothing. Found live while gating
+  agent-pack PR #121.
+- New `symlink-enumerate.test.sh` self-test (verified failing on the old
+  enumerator) + CI entry; `check-claude.sh` now audits the schema link via the
+  shared enumerator for free.
+
+### Decisions made
+- `scripts/README.md` and `scripts/tests/` stay unlinked — only runtime data
+  files (`*.json`) ride beside the scripts.
+
 ## 2026-07-10 — fix: antigravity gate re-plumbed for agy 1.1.1 + PAI strict orphans + agentpack required-check job (#227, #232, #237)
 
 ### What changed

@@ -135,6 +135,13 @@ jobs:
           claude/scripts/tests/install-integrity.test.sh
           claude/scripts/check-install-integrity.sh
 
+      # Self-test only: enumeration is pure (fixture tree in), no live
+      # ~/.claude needed. Guards the scripts/*.json category — gate schemas
+      # must be linked beside their gate scripts or the gates degrade open.
+      - name: symlink-enumerate (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/symlink-enumerate.test.sh
+
       # Self-test only: the checker sweeps a live ~/.claude, which the CI
       # runner doesn't have; the fixtures point it at throwaway CLAUDE_DIRs
       # via CLAUDE_DIR (issue #231).
