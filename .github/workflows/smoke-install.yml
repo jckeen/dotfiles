@@ -11,24 +11,16 @@ name: smoke-install
 # regression on an in-flight PR (deterministic on both OSes, green once fixed),
 # not runner flakiness, so the six-month continue-on-error grace period was
 # ended early.
+#
+# No `paths:` filter, deliberately: a paths-filtered workflow cannot be a
+# protection-required check — non-matching PRs would hang forever on
+# "Expected". Instead the job always runs; the first step decides whether any
+# smoke-relevant file changed (including this workflow file itself) and the
+# real steps skip cleanly otherwise, so the job reports success either way
+# and CAN be required.
 
 on:
   pull_request:
-    # Keep this list in sync with the files the "Syntax check" step below runs
-    # bash -n over — otherwise a PR touching only check-codex.sh / git-hygiene.sh
-    # / hygiene-status.sh never triggers the smoke and its coverage is illusory.
-    paths:
-      - "setup.sh"
-      - "check-claude.sh"
-      - "check-codex.sh"
-      - "check-antigravity.sh"
-      - "gh-bootstrap.sh"
-      - "git-hygiene.sh"
-      - "hygiene-status.sh"
-      # Glob so future lib files (lib-checks.sh, ...) are covered automatically.
-      - "lib-*.sh"
-      - ".bash_aliases"
-      - ".bash_profile"
   workflow_dispatch:
 
 jobs:
@@ -41,8 +33,41 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the relevance step can diff against the merge-base.
+          fetch-depth: 0
+
+      - name: Detect smoke-relevant changes
+        id: changes
+        run: |
+          set -euo pipefail
+          # Keep the case patterns in sync with the files the "Syntax check"
+          # step below runs bash -n over, plus this workflow file itself —
+          # otherwise a PR touching only one of them skips the smoke and its
+          # coverage is illusory. lib-*.sh is a glob so future lib files
+          # (lib-checks.sh, ...) are covered automatically.
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "Not a pull_request event — running the full smoke."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          merge_base="$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)"
+          relevant=false
+          while IFS= read -r f; do
+            case "$f" in
+              setup.sh|check-claude.sh|check-codex.sh|check-antigravity.sh|gh-bootstrap.sh|git-hygiene.sh|hygiene-status.sh|lib-*.sh|.bash_aliases|.bash_profile|.github/workflows/smoke-install.yml)
+                echo "smoke-relevant change: $f"
+                relevant=true
+                ;;
+            esac
+          done < <(git diff --name-only "$merge_base" HEAD)
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          if [ "$relevant" = false ]; then
+            echo "No smoke-relevant files changed — remaining steps skip, job reports success."
+          fi
 
       - name: Syntax check shell scripts
+        if: steps.changes.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           # lib-*.sh is a glob so future lib files are covered automatically;
@@ -55,6 +80,7 @@ jobs:
           done
 
       - name: setup.sh --help responds
+        if: steps.changes.outputs.relevant == 'true'
         run: |
           # --help should print usage and exit 0 without doing any real work.
           ./setup.sh --help > /tmp/help.out 2>&1 || {
@@ -71,6 +97,7 @@ jobs:
           echo "✓ ./setup.sh --help OK on ${{ matrix.os }}"
 
       - name: setup.sh --yes --dry-run control-flow smoke
+        if: steps.changes.outputs.relevant == 'true'
         run: |
           # Exercise the whole installer control flow (arg parsing, the run()
           # wrapper, symlink planning) with no network or sudo: --dry-run routes
