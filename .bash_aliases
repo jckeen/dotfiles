@@ -172,6 +172,7 @@ _agent_preflight() {
 #        cc --resume <id>   — resume a specific session id (skips sync)
 # Any --resume/-r/--continue/-c in the args triggers the quick-resume path:
 # no repo sync, no memory sync, no claude health check.
+# shellcheck disable=SC2120  # args come from interactive use, not in-file callers
 cc() {
   # Quick critical symlink validation (fast — just 2 stat calls; cwd-independent,
   # so running it before the preflight cd is equivalent to running it after).
@@ -286,7 +287,8 @@ dotfiles-update() {
 # applied the moment a new repo touches your filesystem. Pass-through for all
 # other gh subcommands.
 gh() {
-  local bootstrap="$(_dev_dir)/dotfiles/gh-bootstrap.sh"
+  local bootstrap
+  bootstrap="$(_dev_dir)/dotfiles/gh-bootstrap.sh"
   case "${1:-}" in
     repo)
       case "${2:-}" in

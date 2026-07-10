@@ -27,7 +27,7 @@ source "$DOTFILES_DIR/lib-symlinks.sh"
 # with check-codex.sh, check-antigravity.sh, and setup.sh's audit path.
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
-# shellcheck disable=SC2088  # display hint for MISSING messages — literal ~ intended
+# shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.claude/"
 
 ERRORS=0
@@ -47,6 +47,7 @@ HEALED=0
 #            pure reporters.
 FIX=0
 HEAL=0
+# shellcheck disable=SC2034  # HEAL consumed by sourced lib-checks.sh check_link()
 for arg in "$@"; do
   case "$arg" in
     --fix)  FIX=1 ;;
