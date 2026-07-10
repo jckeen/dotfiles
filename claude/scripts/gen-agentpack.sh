@@ -19,15 +19,18 @@
 #   claude/scripts/gen-agentpack.sh           # regenerate claude/AGENTPACK.yaml
 #   claude/scripts/gen-agentpack.sh --check   # exit 1 if the committed file is stale (CI)
 #
-# Deps: bash + git + python3 (stdlib only) — no network, no package installs.
+# Deps: bash + python3 (stdlib only) — no network, no package installs.
 
 set -euo pipefail
 
-if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-  echo "✖ gen-agentpack: not inside a git repository" >&2
-  exit 1
-fi
-cd "$REPO_ROOT" || exit 1
+# Resolve the repo root from this script's REAL path, not the caller's cwd:
+# setup.sh symlinks this into ~/.claude/scripts, where `git rev-parse` would
+# find the wrong repo (or none) — issue #236. checker-lib.sh sits beside this
+# script in both locations (setup.sh links them side-by-side).
+# shellcheck source=claude/scripts/checker-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
+cd "$REPO_ROOT"
 
 MANIFEST="claude/AGENTPACK.yaml"
 META="claude/agentpack-meta.json"

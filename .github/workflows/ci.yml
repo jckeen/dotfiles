@@ -113,6 +113,13 @@ jobs:
           claude/scripts/tests/install-integrity.test.sh
           claude/scripts/check-install-integrity.sh
 
+      # Self-test only: the checker sweeps a live ~/.claude, which the CI
+      # runner doesn't have; the fixtures point it at throwaway CLAUDE_DIRs
+      # via CLAUDE_DIR (issue #231).
+      - name: deployed-orphans (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/deployed-orphans.test.sh
+
       # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
       # fragment (issue #207) — assert the committed manifest is current.
       - name: agentpack-generated (manifest matches frontmatter)
