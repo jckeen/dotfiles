@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# pre-push — gitleaks secret scan on outgoing commits (issue #204).
+#
+# Installed by setup.sh as a symlink at <git-dir>/hooks/pre-push for this
+# repo. CI runs gitleaks too, but a secret is public the moment it's pushed —
+# this hook blocks it BEFORE it leaves the machine.
+#
+# Scans only the commits being pushed (pre-push stdin gives the ref ranges).
+# The repo's .gitleaks.toml allowlist applies automatically.
+#
+# Escape hatch (use sparingly, e.g. for a known false positive you're about
+# to allowlist):
+#   GITLEAKS_SKIP=1 git push
+set -uo pipefail
+
+if [ "${GITLEAKS_SKIP:-0}" = "1" ]; then
+  echo "[pre-push] GITLEAKS_SKIP=1 — gitleaks scan skipped for this push" >&2
+  exit 0
+fi
+
+# Missing scanner ≠ blocked push: this hook only exists on machines that ran
+# setup.sh (which installs gitleaks), and CI remains the backstop. Warn loudly
+# instead of bricking every push on a machine where the install failed.
+if ! command -v gitleaks &>/dev/null; then
+  echo "[pre-push] WARNING: gitleaks not found — secret scan skipped (./setup.sh installs it)" >&2
+  exit 0
+fi
+
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  # Deleting a remote ref pushes no commits.
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then
+    # New remote ref: scan everything not already on a remote-tracking ref.
+    range="$local_sha --not --remotes"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  if ! gitleaks git --redact --exit-code 1 --log-opts="$range" .; then
+    status=1
+  fi
+done
+
+if [ "$status" -ne 0 ]; then
+  cat >&2 <<'EOF'
+
+[pre-push] BLOCKED: gitleaks found potential secret(s) in the commits above.
+  - Remove the secret and rewrite the unpushed commit(s), or
+  - allowlist a confirmed false positive in .gitleaks.toml, or
+  - bypass ONCE with: GITLEAKS_SKIP=1 git push
+EOF
+fi
+exit "$status"
