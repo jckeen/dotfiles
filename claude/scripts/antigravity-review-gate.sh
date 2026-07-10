@@ -293,12 +293,18 @@ if [[ -n "$MODEL" ]]; then
     red "  Use the exact display label from \`agy models\` (slugs are silently ignored; see MULTI-AGENT.md)."
     exit 2
   elif [[ "$label_rc" -ne 0 ]]; then
-    yellow "⚠ model pin: no propagation line in the agy log — cannot verify the pin held."
+    # Failing open here (outside --require) is by design — a log-format drift
+    # must not wedge every push — so the warning has to be unmissable.
+    yellow "⚠ ═══════════════════════════════════════════════════════════════════"
+    yellow "⚠ MODEL PIN UNVERIFIED: no propagation line found in the agy log."
+    yellow "⚠ This verdict may have come from the DEFAULT FLASH TIER, not \"$MODEL\"."
+    yellow "⚠ Do NOT count this run as Gemini-lineage refutation (MULTI-AGENT.md)."
+    yellow "⚠ Set ANTIGRAVITY_GATE_REQUIRED=1 (or pass --require) to make this block."
+    yellow "⚠ ═══════════════════════════════════════════════════════════════════"
     if [[ "$REQUIRED" == "1" ]]; then
       red "  ANTIGRAVITY_GATE_REQUIRED is set — treating the unverifiable model pin as a hard failure."
       exit 3
     fi
-    yellow "  Continuing (gate not strict) — treat this verdict as default-tier evidence, not \"$MODEL\"."
   fi
   # Secondary, best-effort ground truth: the conversation records. Warning
   # only — the log-line check above is authoritative for this run.

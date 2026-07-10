@@ -104,8 +104,13 @@ gate_select_diff_target() {
 # files, so a brand-new file would go unreviewed in an uncommitted review
 # (#150) — append them as added-file diffs, respecting .gitignore and the same
 # asset/lockfile exclusions as the tracked diff.
+# --no-renames: rename detection would collapse `git mv risk-surface.sh
+# notes.md` into a near-empty R100 hunk listed only under the DESTINATION
+# path, letting a rename launder a risk surface past the tier valve and the
+# self-review guard while shrinking its content out of the review. Renames
+# are reviewed as full delete+add instead.
 gate_extract_diff() {
-  DIFF_CONTENT="$(git diff "${DIFF_TARGET[@]}" -- \
+  DIFF_CONTENT="$(git diff --no-renames "${DIFF_TARGET[@]}" -- \
     ':!*-lock.yaml' ':!*-lock.json' ':!package-lock.json' ':!*.lock' ':!bun.lockb' \
     ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.svg' ':!*.ico' ':!*.pdf' \
     ':!*.min.js' ':!*.min.css' ':!*.map' \
@@ -127,10 +132,12 @@ gate_extract_diff() {
 
 # gate_changed_paths — print the changed paths of "${DIFF_TARGET[@]}", one per
 # line, including untracked files when reviewing the working tree. Used by the
-# codex self-review guard.
+# codex self-review guard and the tier valve. --no-renames so BOTH sides of a
+# rename are listed and classified — otherwise `git mv` shows only the
+# destination path and can launder a risk surface into a docs-only diff.
 gate_changed_paths() {
   local p
-  p="$(git diff --name-only "${DIFF_TARGET[@]}" 2>/dev/null || true)"
+  p="$(git diff --no-renames --name-only "${DIFF_TARGET[@]}" 2>/dev/null || true)"
   if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
     p+="${p:+$'\n'}$(git ls-files --others --exclude-standard 2>/dev/null || true)"
   fi
@@ -273,10 +280,14 @@ gate_verify_agy_label() {
   [[ -s "$log" ]] || return 2
   line="$(grep -F 'Propagating selected model override to backend: label=' "$log" | tail -n 1 || true)"
   [[ -n "$line" ]] || return 2
-  got="${line#*label=}"
-  # Strip the Go %q quoting around the label.
-  got="${got#\"}"
-  got="${got%\"}"
+  # Extract the Go %q-quoted label, tolerating trailing fields after the
+  # closing quote (e.g. `label="…" session=42`) — anything unextractable is
+  # unverifiable (return 2), never a false mismatch.
+  if [[ "$line" =~ label=\"([^\"]*)\" ]]; then
+    got="${BASH_REMATCH[1]}"
+  else
+    return 2
+  fi
   if [[ "$got" == "$want" ]]; then
     green "✓ model pin verified: agy propagated label \"$got\" to the backend."
     return 0

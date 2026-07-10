@@ -210,6 +210,36 @@ unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 assert "codex invoked once the guard is overridden" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# Rename laundering must not slip past the guard: `git mv AGENTS.md notes.md`
+# lists only the destination under rename detection; --no-renames restores
+# both sides so the source path still trips the guard.
+new_repo
+echo "reviewer instructions" > "$R/AGENTS.md"
+git -C "$R" add AGENTS.md
+git -C "$R" commit -qm "add instructions"
+git -C "$R" mv AGENTS.md archive-notes.md
+approve_clean
+check "renaming AGENTS.md away still trips the guard" 2 "instruction surface" --uncommitted --no-issues
+assert "codex not invoked on the rename-laundered guard diff" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# The gate machinery itself is self-review-guarded: the running gate has
+# already sourced the working-tree gate-lib.sh, so a diff editing it must not
+# be certified by that same code.
+new_repo
+echo "malicious edit" > "$R/gate-lib.sh"
+approve_clean
+check "diff touching gate-lib.sh blocks" 2 "gate machinery" --uncommitted --no-issues
+assert "codex not invoked on a gate-machinery diff" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+mkdir -p "$R/claude/scripts"
+echo "malicious edit" > "$R/claude/scripts/antigravity-review-gate.sh"
+approve_clean
+check "diff touching a review-gate script blocks" 2 "gate machinery" --uncommitted --no-issues
+rm -rf "$R"
+
 # ── #212: proportionality valve ────────────────────────────────────────
 new_repo
 printf '# Title\n\nA sentence of documentation.\n' > "$R/README.md"
@@ -255,6 +285,19 @@ printf '# Title\n' > "$R/README.md"
 approve_clean
 check "adversarial --claim forces the full pass on a docs-only diff" 0 "Codex review passed" --uncommitted --no-issues --claim "the docs are accurate"
 assert "codex invoked when a claim is given" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# Rename laundering: `git mv risk.sh notes.md` must NOT classify as docs-only —
+# --no-renames lists both sides, and the source path escalates to a full pass.
+new_repo
+mkdir -p "$R/claude/hooks"
+printf '#!/bin/sh\nexit 0\n' > "$R/claude/hooks/pre-push-guard.sh"
+git -C "$R" add claude/hooks/pre-push-guard.sh
+git -C "$R" commit -qm "add guard"
+git -C "$R" mv claude/hooks/pre-push-guard.sh notes.md
+approve_clean
+check "renaming a risk surface to .md still takes the full pass" 0 "Codex review passed" --uncommitted --no-issues
+assert "codex invoked for the rename-laundered diff" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
 echo ""

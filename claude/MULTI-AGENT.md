@@ -77,7 +77,9 @@ changed-path match against risk surfaces — before dispatching any reviewer:
 
 Named failure mode: **the valve fails toward the full pass.** A classification
 error, an unmeasurable diff, or an unknown file class escalates to tier 2 —
-nothing ever falls back to the skip.
+nothing ever falls back to the skip. Renames can't launder either: diffs and
+changed-path lists are computed with `--no-renames`, so `git mv guard.sh
+notes.md` is classified under both paths and reviewed as a full delete+add.
 
 ## Handoff payload
 
@@ -146,3 +148,9 @@ timeout 300 agy -p "<prompt>" --model "Gemini 3.1 Pro (High)" --log-file /tmp/ag
   errors, but it also stopped reading the prompt from stdin with `--print ""`
   (empty-prompt error), which breaks the review gate's secret-safe prompt
   channel — the gate degrades open until re-plumbed (#227).
+- Evidence status: the label pin + propagation-line verification was proven
+  live (2026-07-10) with the argv form above — acceptable only for
+  secret-free prompts. The gate dispatches over stdin, which #227 currently
+  blocks on 1.1.1, so the gate's own dispatch→log→verify pipeline is
+  shim-verified (self-test), not yet live-verified end-to-end; re-verify live
+  when #227 lands.

@@ -168,9 +168,16 @@ rm -rf "$R"
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s session=42 retry=false\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "trailing fields after the quoted label still verify" 0 "model pin verified" --uncommitted
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
-check "missing propagation line degrades to a warning" 0 "cannot verify the pin held" --uncommitted
-check "missing propagation line fails hard with --require" 3 "cannot verify the pin held" --uncommitted --require
+check "missing propagation line degrades to a warning" 0 "MODEL PIN UNVERIFIED" --uncommitted
+check "missing propagation line fails hard with --require" 3 "MODEL PIN UNVERIFIED" --uncommitted --require
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R"
 
@@ -240,6 +247,19 @@ printf 'small change\n' > "$R/widget.xyz"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 check "unclassified file escalates to the full pass" 0 "LGTB verdict" --uncommitted
 assert "agy invoked for the unclassified diff" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# Rename laundering: `git mv risk.sh notes.md` must NOT classify as docs-only —
+# --no-renames lists both sides, and the source path escalates.
+new_repo
+mkdir -p "$R/claude/hooks"
+printf '#!/bin/sh\nexit 0\n' > "$R/claude/hooks/pre-push-guard.sh"
+git -C "$R" add claude/hooks/pre-push-guard.sh
+git -C "$R" commit -qm "add guard"
+git -C "$R" mv claude/hooks/pre-push-guard.sh notes.md
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "renaming a risk surface to .md still takes the full pass" 0 "LGTB verdict" --uncommitted
+assert "agy invoked for the rename-laundered diff" "[ -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
 echo ""
