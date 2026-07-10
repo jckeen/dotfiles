@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-07-10 — ci: shellcheck at warning severity + bot-P2 hardening + plugin migration applied (#202, #230, #231, #236)
+
+### What changed
+- **shellcheck raised to `--severity=warning` in CI (#202, PR #238)** — tree-wide
+  pass: real fixes plus 14 per-line justified suppressions; adversarially
+  reviewed (every quoting change proven a behavioral no-op). CI-vs-local drift
+  bit twice: CI discovers `.bash_aliases` (no `.sh` extension) and runs a newer
+  shellcheck than local 0.11.0 — replicate CI's discovery AND version locally.
+- **Bot-P2 hardening (PR #239, closes #230 #231 #236)** — deployed-orphans
+  checker hard-fails on a missing checker-lib; its self-test wired into CI;
+  gen-agentpack.sh resolves the repo root from its own path (works through the
+  `~/.claude/scripts/` symlink from any cwd). #229 closed as already-done;
+  #232/#237 triaged (design decision / operator-only required-checks PATCH).
+- **Plugin scoping migration APPLIED** (the settings half #214's entry deferred):
+  claude-memory settings.json trimmed to 16 global plugins (commit 14dc1ea),
+  per-project `.claude/settings.json` created in 7 target repos (uncommitted —
+  each repo's own session commits). Operator-action queue seeded and live.
+
+### Decisions made
+- Merge-queue discipline under the permission classifier: single-purpose gh
+  writes only (loops and read+write chains are denied); serial
+  `update-branch` per merge against strict protection.
+
 ## 2026-07-10 — feat: instruction canon — generate the three instruction files from one source (#216, #206, #219)
 
 ### What changed
