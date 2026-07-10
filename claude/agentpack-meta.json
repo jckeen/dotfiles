@@ -1,0 +1,90 @@
+{
+  "_comment": "Hand-maintained fragment for claude/scripts/gen-agentpack.sh — everything in claude/AGENTPACK.yaml that is NOT derivable from skill/agent frontmatter. Edit this (or the frontmatter), then run the generator; never edit AGENTPACK.yaml directly.",
+  "agentpack": "1.0",
+  "metadata": {
+    "id": "keen.workstation",
+    "name": "Jonathan Keen — Claude Code config",
+    "slug": "workstation",
+    "description": "In-place AgentPack over the dotfiles Claude Code config — references files maintained in this repo (zero duplication).",
+    "version": "0.1.0",
+    "license": "MIT",
+    "publisher": "keen"
+  },
+  "compatibility": {
+    "targets": {
+      "claude-code": {
+        "status": "supported"
+      },
+      "codex": {
+        "status": "supported"
+      },
+      "cursor": {
+        "status": "supported"
+      },
+      "chatgpt": {
+        "status": "supported"
+      },
+      "generic": {
+        "status": "supported"
+      }
+    }
+  },
+  "permissions": {},
+  "security": {
+    "risk_level": "medium"
+  },
+  "profiles": {
+    "all": {
+      "description": "All atoms.",
+      "include": [
+        "*"
+      ]
+    }
+  },
+  "exports": {
+    "default_profile": "all"
+  },
+  "instruction_atoms": [
+    {
+      "id": "instruction:global-guidance",
+      "type": "instruction",
+      "name": "Global Claude Code Instructions",
+      "description": "Portable global Claude Code guidance — working style, tech stack, git, verification, definition of done.",
+      "path": "CLAUDE.md",
+      "risk_level": "low",
+      "permissions": []
+    },
+    {
+      "id": "instruction:multi-agent-lane-contract",
+      "type": "instruction",
+      "name": "Multi-agent lane contract",
+      "description": "How Claude Code, Codex, and Antigravity work as one team on the same repo — lanes (conductor / independent verifier / runtime verification), one-owner-per-worktree, adversarial verification, and the handoff payload. Operative rules are mirrored into CLAUDE.md, codex/AGENTS.md, and antigravity/GEMINI.md.",
+      "path": "MULTI-AGENT.md",
+      "risk_level": "low",
+      "permissions": []
+    },
+    {
+      "id": "instruction:fable-conduct-layer",
+      "type": "instruction",
+      "name": "Fable conduct layer",
+      "description": "Operating discipline distilled from Claude Fable 5 — outcome-first final messages, readable-over-concise prose, the reversible/destructive/assessment autonomy switch, end-of-turn self-check, evidence discipline, and a pre-send checklist. Imported by CLAUDE.md so every model running this config behaves the same way.",
+      "path": "FABLE.md",
+      "risk_level": "low",
+      "permissions": []
+    }
+  ],
+  "atom_defaults": {
+    "skill": {
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    "subagent": {
+      "risk_level": "medium",
+      "permissions": []
+    }
+  },
+  "skill_order_first": [
+    "fable-mode"
+  ]
+}
