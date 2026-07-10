@@ -1,4 +1,16 @@
-# Shared agent skills
+# Shared agent sources
+
+## Instruction canon (`agents/canon/`)
+
+`agents/canon/` is the canonical source for the three global instruction
+files (ADR-0007): shared cross-agent rules live once in `CANON.md`, per-tool
+voice and tool-specific guidance in `fragments/{claude,codex,antigravity}.md`.
+`claude/scripts/gen-instruction-files.sh` compiles them into
+`claude/CLAUDE.md`, `codex/AGENTS.md`, and `antigravity/GEMINI.md` — those
+three are committed build artifacts; edit the sources here and regenerate
+(CI's `check-agent-parity.sh` fails on hand-edits or stale artifacts).
+
+## Shared agent skills (`agents/skills/`)
 
 `agents/skills/` is the agent-neutral workflow skill set — the single source
 consumed by every non-Claude agent in this setup:

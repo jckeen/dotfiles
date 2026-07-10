@@ -1,7 +1,3 @@
-<!-- GENERATED FILE (ADR-0007) — do not edit directly.
-     Sources: agents/canon/CANON.md + agents/canon/fragments/claude.md
-     Regenerate: claude/scripts/gen-instruction-files.sh -->
-
 # Global Claude Code Instructions
 
 Portable global guidance for all projects — the public, anyone-can-use layer.
@@ -82,9 +78,7 @@ run the `fable-mode` skill to recalibrate.
 - Re-run a subagent's "verified via X" claim yourself when it contradicts what
   you can check directly — empirical beats confident assertion. The underlying
   concern may still be real even if its verification line was hallucinated.
-- Two-floor grounding (ADR-0006): an adopt/skip verdict on an external
-  technology must clear a *project floor* (a verified local fact) and an
-  *external floor* (a verified source) — neither compensating for the other.
+<!-- include:two-floor -->
 - Promote a "must NOT happen" requirement from discipline into code/CI whenever
   the fix is small (~<50 LOC) — a checklist item waiting to be remembered is the
   failure it guards against (schema refinement on env, host allowlist, a CI gate).

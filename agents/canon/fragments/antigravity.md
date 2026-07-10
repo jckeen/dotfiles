@@ -1,7 +1,3 @@
-<!-- GENERATED FILE (ADR-0007) — do not edit directly.
-     Sources: agents/canon/CANON.md + agents/canon/fragments/antigravity.md
-     Regenerate: claude/scripts/gen-instruction-files.sh -->
-
 # Antigravity Global Guidance
 
 This is how I run Antigravity (`agy`) day-to-day — the public-safe layer,
@@ -14,25 +10,12 @@ context, tokens, and machine paths stay out of here — they live in
 
 ## Conduct Layer
 
-At session start, read `~/.claude/FABLE.md` (in this repo: `claude/FABLE.md`)
-and follow it — the operating discipline shared by every agent on this config:
-outcome-first final messages, readable-over-concise prose, the
-reversible/destructive/assessment autonomy switch, the end-of-turn self-check,
-and evidence discipline. If a session drifts from it, re-read the file and run
-its pre-send checklist.
+<!-- include:conduct-layer -->
 
 ## Working Style
 
-- Treat the worktree as shared with the user; do not revert changes you did not
-  make unless explicitly asked.
-- Read the surrounding code before changing behavior.
-- Prefer the repository's existing patterns over new abstractions.
-- Keep edits scoped to the requested behavior.
-- Verify meaningful changes with the smallest useful test or static check.
-- Report any test you could not run.
-- Two-floor grounding (ADR-0006): an adopt/skip verdict on an external
-  technology must clear a *project floor* (a verified local fact) and an
-  *external floor* (a verified source) — neither compensating for the other.
+<!-- include:working-style-core -->
+<!-- include:two-floor -->
 - Doc contract: a repo's Markdown surfaces are declared in a root
   `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
   and asserted in CI by `check-doc-truth.sh`. Keep LIVING small — a wrong doc
@@ -56,13 +39,7 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   surfaces**: prove the change actually runs end-to-end, own UI-heavy work and
   in-browser verification artifacts. The value is independent model lineages
   *disagreeing* — refute, don't rubber-stamp.
-- **One owner of the working tree at a time** — never edit the same files as
-  another agent concurrently. Use a separate worktree, or sequence the edits.
-- **Verification is adversarial, not an echo chamber** — three agents agreeing
-  can be one blind spot voted thrice. When handed a "verify X" task, try to
-  break it; report the disagreement rather than confirming by default.
-- **Handoff payload:** a handoff to me should carry the *claim to disprove* and
-  the *exact repro command*. If it doesn't, ask for them before "reviewing."
+<!-- include:team-hard-rules -->
 
 ## Teammate Contract
 
