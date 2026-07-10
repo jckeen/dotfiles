@@ -240,6 +240,15 @@
       "skill_format": "agent-skills"
     },
     {
+      "id": "subagent:agent-native-review",
+      "type": "subagent",
+      "name": "agent-native-review",
+      "description": "Reviews skills, hooks, agent definitions, and instruction surfaces for agent-native quality — verification affordances, context parity for subagents, primitives-over-workflows tool design, governed execution, and instruction-surface drift risks",
+      "path": "agents/agent-native-review.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
       "id": "subagent:backend-architect",
       "type": "subagent",
       "name": "backend-architect",

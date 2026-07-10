@@ -1,6 +1,6 @@
 # Agent Pack — Multi-Agent Orchestra
 
-A team of 17 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
+A team of 18 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
 Agents deliberately carry no `model:` pin — they inherit the session model, and the orchestrator picks a lighter model per-run when the task warrants it (e.g. a quick `repo-scout` briefing on haiku).
 
@@ -22,6 +22,7 @@ Agents deliberately carry no `model:` pin — they inherit the session model, an
 | `launch-operator` | Deploy pipeline, monitoring, environment config | Pre-launch readiness check |
 | `security-reviewer` | In-context app-logic flaws: broken authz/IDOR, trust boundaries, business logic (generic patterns → soundcheck plugin) | After implementation, before merge |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
+| `agent-native-review` | Agent-consumed surfaces: verification affordances, subagent context parity, primitive tool design, instruction drift | After changing skills, hooks, agent definitions, or instruction files |
 
 ### Utility agents (read-only except `test-writer`, which edits)
 
