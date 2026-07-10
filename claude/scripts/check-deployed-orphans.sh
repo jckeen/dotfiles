@@ -91,9 +91,9 @@ RUNTIME_FILES=(
 # EXACT name matches only — the adversarial review of PR #225 rejected loose
 # PAI attribution for arbitrary regular files (a future hooks/debug.log must
 # not be blamed on PAI), so anything not on this list stays advisory UNKNOWN.
-# Names come from the decommission record (Plans/PAI-DECOMMISSION.md): the
-# engine dir, the PAI-era MEMORY/ tree, ISA.md, and the pai-mode settings
-# variant.
+# Names come from the decommission record (claude-memory repo,
+# dotfiles-plans/PAI-DECOMMISSION.md): the engine dir, the PAI-era MEMORY/
+# tree, ISA.md, and the pai-mode settings variant.
 PAI_PATHS=(
   PAI MEMORY ISA.md settings.plain.json
 )
