@@ -1,20 +1,44 @@
 # Changelog
 
-## 2026-07-10 — fix: frontmatter readers fail loudly on folded blocks with blank lines and quoted scalars (#235)
+## 2026-07-10 — ci: shellcheck at warning severity + bot-P2 hardening + plugin migration applied (#202, #230, #231, #236)
+
+### What changed
+- **shellcheck raised to `--severity=warning` in CI (#202, PR #238)** — tree-wide
+  pass: real fixes plus 14 per-line justified suppressions; adversarially
+  reviewed (every quoting change proven a behavioral no-op). CI-vs-local drift
+  bit twice: CI discovers `.bash_aliases` (no `.sh` extension) and runs a newer
+  shellcheck than local 0.11.0 — replicate CI's discovery AND version locally.
+- **Bot-P2 hardening (PR #239, closes #230 #231 #236)** — deployed-orphans
+  checker hard-fails on a missing checker-lib; its self-test wired into CI;
+  gen-agentpack.sh resolves the repo root from its own path (works through the
+  `~/.claude/scripts/` symlink from any cwd). #229 closed as already-done;
+  #232/#237 triaged (design decision / operator-only required-checks PATCH).
+- **Plugin scoping migration APPLIED** (the settings half #214's entry deferred):
+  claude-memory settings.json trimmed to 16 global plugins (commit 14dc1ea),
+  per-project `.claude/settings.json` created in 7 target repos (uncommitted —
+  each repo's own session commits). Operator-action queue seeded and live.
+
+### Decisions made
+- Merge-queue discipline under the permission classifier: single-purpose gh
+  writes only (loops and read+write chains are denied); serial
+  `update-branch` per merge against strict protection.
+
+## 2026-07-10 — fix: frontmatter readers fail loudly on YAML forms they can't represent (#235)
 
 ### What changed
 - **`gen-agentpack.sh` + `build-site.sh`** — the two hand-rolled frontmatter
   readers shared a silent-mangling bug class (found by the PR #233 adversarial
-  review): a blank line inside a folded block scalar (`description: >-`)
-  silently dropped everything after it, and quoted scalars leaked their quotes
-  and backslash escapes as literal content. Both readers now fail loudly
-  (non-zero exit, message naming the file and key) on both forms instead of
-  emitting mangled output. Byte-identical for the current corpus, which uses
-  neither form.
+  review, extended by the adversarial pass on PR #244): a blank line inside a
+  folded block scalar (`description: >-`) silently dropped everything after
+  it; quoted scalars leaked their quotes and backslash escapes as literal
+  content; literal block scalars (`|-`) had their semantic newlines
+  space-joined; and the indented continuation of a multi-line plain scalar
+  was silently dropped. Both readers now fail loudly (non-zero exit, message
+  naming the file and key) on all four forms instead of emitting mangled
+  output. Byte-identical for the current corpus, which uses none of them.
 - **Tests** — new `gen-agentpack.test.sh` and `build-site.test.sh` fixture
-  suites (6 cases each: folded-block happy path, space-joined output, blank
-  line legitimately ending a block, and loud failure on blank-in-block plus
-  double- and single-quoted scalars), wired into the CI `checks` job.
+  suites (folded-block happy paths, no-false-positive cases, and a loud-fail
+  assertion per rejected form), wired into CI.
 
 ### Decisions made
 - Loud-fail guards over a real YAML parse in both files: the issue's premise
