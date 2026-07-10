@@ -69,8 +69,8 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/kickoff` | New project setup |
 | `/changelog` | Log session changes |
 | `/log-error` | Document error patterns |
-| `/verify` | Confirm a change works by running it — Claude Code's built-in verification skill (tests, app, behavior) |
 | `/review` | Quality/security review |
+| `/antigravity-review` | Gemini second-opinion review gate (Antigravity) |
 | `/handoff` | Session transition |
 | `/fix-issue 123` | Fix a GitHub issue end-to-end |
 | `/simplify` | Remove over-engineering |
@@ -87,6 +87,10 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 > Most of these **auto-invoke** when their triggers match — you rarely need to
 > type them. The ones worth remembering by hand: `/orchestrate`, `/decompose`,
 > `/fix-issue N`, and `/handoff`.
+>
+> This table mirrors `claude/skills/` exactly and is asserted in CI by
+> `check-skill-parity.sh`. `/verify` (step 4 of The Workflow above) is Claude
+> Code's **built-in** verification skill, not a repo skill, so it isn't listed.
 
 ---
 
