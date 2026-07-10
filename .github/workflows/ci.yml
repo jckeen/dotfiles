@@ -71,12 +71,34 @@ jobs:
       - name: Check the dotfiles doc contract
         run: claude/scripts/check-doc-truth.sh
 
+  # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
+  # fragment (issue #207). This is intended as a required status check (#237),
+  # so like doc-truth it stays its own job under this exact name — a step
+  # inside `checks` has no status context branch protection can point at.
+  # No paths: filter, so it reports on every PR and can be protection-required
+  # without non-matching PRs hanging on "Expected". Keep the job name in sync
+  # with docs/BRANCH_PROTECTION.md and the live rule.
+  agentpack-generated:
+    name: agentpack-generated
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The self-test asserts the frontmatter reader fails loudly on the YAML
+      # forms it cannot represent (issue #235).
+      - name: Run frontmatter-reader self-tests
+        run: claude/scripts/tests/gen-agentpack.test.sh
+
+      - name: AGENTPACK.yaml matches skill/agent frontmatter
+        run: claude/scripts/gen-agentpack.sh --check
+
   # The remaining pure-bash checkers (none of them required status checks) share
   # one runner + one checkout instead of paying a spin-up each — each finishes in
   # well under a second. `if: ${{ !cancelled() }}` runs every step even after an
   # earlier one fails, so a single run surfaces all failures at once (as separate
-  # parallel jobs used to). Do NOT fold doc-truth/shellcheck/tsc in here — those
-  # are required checks and must report under their own names.
+  # parallel jobs used to). Do NOT fold doc-truth/shellcheck/tsc/
+  # agentpack-generated in here — those are (or are slated to become) required
+  # checks and must report under their own names.
   checks:
     name: checks
     runs-on: ubuntu-latest
@@ -120,17 +142,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/deployed-orphans.test.sh
 
-      # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
-      # fragment (issue #207) — assert the committed manifest is current.
-      # The self-test asserts the frontmatter reader fails loudly on the YAML
-      # forms it cannot represent (issue #235).
-      - name: agentpack-generated (self-test + manifest matches frontmatter)
-        if: ${{ !cancelled() }}
-        run: |
-          claude/scripts/tests/gen-agentpack.test.sh
-          claude/scripts/gen-agentpack.sh --check
-
-      # build-site's awk frontmatter reader shares the same loud-failure
+      # build-site's awk frontmatter reader shares gen-agentpack's loud-failure
       # contract (issue #235); the site build itself runs in pages.yml.
       - name: build-site (self-test)
         if: ${{ !cancelled() }}
