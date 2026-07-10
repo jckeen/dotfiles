@@ -148,12 +148,25 @@ timeout 300 agy -p "<prompt>" --model "Gemini 3.1 Pro (High)" --log-file /tmp/ag
   checkpoints).
 - Always wrap `agy` in `timeout` — print mode has a history of hangs and
   silent failures. agy 1.1.1 fixes print-mode silent success on server
-  errors, but it also stopped reading the prompt from stdin with `--print ""`
-  (empty-prompt error), which breaks the review gate's secret-safe prompt
-  channel — the gate degrades open until re-plumbed (#227).
+  errors, but it also stopped reading stdin *when a prompt flag is present*
+  (`--print ""` now errors "empty prompt"), which broke the review gate's
+  original secret-safe channel (#227).
+- **Secret-safe stdin dispatch (agy ≥1.1.1):** pipe the prompt to stdin with
+  NO prompt flag at all — non-TTY stdin selects print mode and agy reads the
+  prompt from it. Verified live on 1.1.1 (2026-07-10), including `--model`
+  label propagation in the log:
+
+  ```sh
+  timeout 300 agy --mode plan --sandbox --model "Gemini 3.1 Pro (High)" \
+    --log-file /tmp/agy-run.log <<<"<prompt>"
+  ```
+
+  The channel is undocumented upstream (no `--prompt-file` or `-` sentinel
+  exists as of 1.1.1; codex's `exec [PROMPT | -]` is the prior art to cite in
+  a feature request), so treat any empty-output run as a possible regression —
+  the gate's canary and self-test guard it. The argv `-p "<prompt>"` form
+  stays acceptable only for secret-free prompts.
 - Evidence status: the label pin + propagation-line verification was proven
-  live (2026-07-10) with the argv form above — acceptable only for
-  secret-free prompts. The gate dispatches over stdin, which #227 currently
-  blocks on 1.1.1, so the gate's own dispatch→log→verify pipeline is
-  shim-verified (self-test), not yet live-verified end-to-end; re-verify live
-  when #227 lands.
+  live (2026-07-10) on both the argv form and the no-prompt-flag stdin form
+  the gate now uses (#227 fix), so the gate's dispatch→log→verify pipeline
+  matches a live-verified invocation shape.
