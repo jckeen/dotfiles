@@ -52,7 +52,10 @@ rule `agent-parity` guard, a server-side `commit-format` lint, and broadened
 `check-doc-refs.sh`. Auto-memory now syncs into the private `claude-memory` repo.
 Details in [`CHANGELOG.md`](CHANGELOG.md).
 
-- **Open:** flip `smoke-install.yml` to gating once coverage matures (~2026-11).
+- **Done 2026-07 (#203):** `smoke-install.yml` flipped to gating early —
+  `continue-on-error` removed and the workflow made always-run so it can be a
+  required check. **Open:** adding its two contexts to the protection rule is a
+  one-command operator action (see `docs/BRANCH_PROTECTION.md`).
 
 ---
 

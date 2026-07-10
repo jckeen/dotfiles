@@ -16,36 +16,17 @@ ERRORS=0
 WARNINGS=0
 FIXED=0
 
-red()    { echo -e "\033[31m$1\033[0m"; }
-yellow() { echo -e "\033[33m$1\033[0m"; }
-green()  { echo -e "\033[32m$1\033[0m"; }
-
-check_link() {
-  local src="$1" dst="$2" label="$3"
-  if [ -L "$dst" ]; then
-    local target
-    target="$(readlink "$dst")"
-    if [ "$target" != "$src" ]; then
-      red "WRONG  $label -> $target (expected $src)"
-      ERRORS=$((ERRORS + 1))
-    elif [ ! -e "$dst" ]; then
-      red "BROKEN $label -> $target (target missing)"
-      ERRORS=$((ERRORS + 1))
-    fi
-  elif [ -e "$dst" ]; then
-    yellow "NOT LINKED  $label (exists but is not a symlink)"
-    WARNINGS=$((WARNINGS + 1))
-  else
-    yellow "MISSING  $label (not present in ~/.gemini/config/)"
-    WARNINGS=$((WARNINGS + 1))
-  fi
-}
-
-warn_if_present() {
-  local path="$1" label="$2"
-  [ -e "$path" ] || return 0
-  echo "LOCAL   $label exists; keep it private and out of public dotfiles"
-}
+# Shared check_link + report helpers (issue #199) — single source of truth
+# with check-claude.sh, check-codex.sh, and setup.sh's audit path. Resolved
+# relative to THIS script's directory; hard-fail if missing (under `set +e`
+# a failed source would otherwise keep going and "pass" with no checks run).
+if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
+  echo "FATAL: $DOTFILES_DIR/lib-checks.sh is missing (broken checkout — restore it with 'git checkout lib-checks.sh')" >&2
+  exit 1
+fi
+# shellcheck source=lib-checks.sh
+source "$DOTFILES_DIR/lib-checks.sh"
+CHECK_MISSING_HINT="~/.gemini/config/"
 
 echo "Checking Antigravity public-safe config..."
 echo ""

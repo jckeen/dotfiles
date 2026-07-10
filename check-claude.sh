@@ -12,9 +12,22 @@ CLAUDE_DST="$HOME/.claude"
 # Shared symlink enumerator (issue #135) — the claude/ tree walk + nolink
 # loading live in lib-symlinks.sh, shared with setup.sh so this checker can't
 # drift from the installer. Resolved relative to THIS script's directory (this
-# script is invoked via its real path), not the cwd.
+# script is invoked via its real path), not the cwd. Hard-fail if a lib is
+# missing: under `set +e` a failed source would otherwise keep going and
+# "pass" with no checks run.
+for _lib in lib-symlinks.sh lib-checks.sh; do
+  if [ ! -f "$DOTFILES_DIR/$_lib" ]; then
+    echo "FATAL: $DOTFILES_DIR/$_lib is missing (broken checkout — restore it with 'git checkout $_lib')" >&2
+    exit 1
+  fi
+done
 # shellcheck source=lib-symlinks.sh
 source "$DOTFILES_DIR/lib-symlinks.sh"
+# Shared check_link + report helpers (issue #199) — single source of truth
+# with check-codex.sh, check-antigravity.sh, and setup.sh's audit path.
+# shellcheck source=lib-checks.sh
+source "$DOTFILES_DIR/lib-checks.sh"
+CHECK_MISSING_HINT="~/.claude/"
 
 ERRORS=0
 WARNINGS=0
@@ -40,68 +53,7 @@ for arg in "$@"; do
   esac
 done
 
-# Gate ANSI colors on a real TTY so piped/redirected output stays grep-friendly.
-if [ -t 1 ]; then
-  c_red='\033[31m'; c_yellow='\033[33m'; c_green='\033[32m'; c_reset='\033[0m'
-else
-  c_red=''; c_yellow=''; c_green=''; c_reset=''
-fi
-
-# Severity helpers prepend a plain-text tag ([OK]/[WARN]/[ERR]) for non-TTY consumers.
-red()    { echo -e "${c_red}[ERR] $1${c_reset}"; }
-yellow() { echo -e "${c_yellow}[WARN] $1${c_reset}"; }
-green()  { echo -e "${c_green}[OK] $1${c_reset}"; }
-
-check_link() {
-  local src="$1" dst="$2" label="$3"
-  if [ -L "$dst" ]; then
-    local target
-    target="$(readlink "$dst")"
-    if [ "$target" != "$src" ]; then
-      red "WRONG  $label -> $target (expected $src)"
-      ERRORS=$((ERRORS + 1))
-    elif [ ! -e "$dst" ]; then
-      red "BROKEN $label -> $target (target missing)"
-      ERRORS=$((ERRORS + 1))
-    fi
-  elif [ -f "$dst" ]; then
-    yellow "NOT LINKED  $label (exists but is a regular file, not a symlink)"
-    WARNINGS=$((WARNINGS + 1))
-  elif [ -e "$dst" ]; then
-    # Some other path type (directory, fifo, …) sits where a symlink belongs.
-    # $dst is not a symlink (handled above) and not a regular file, yet exists.
-    # Ambiguous — report, never heal: linking here would drop the symlink
-    # *inside* a directory rather than create it at $dst.
-    yellow "NOT LINKED  $label (exists but is not a symlink)"
-    WARNINGS=$((WARNINGS + 1))
-  elif [ "$HEAL" -eq 1 ]; then
-    # Guardrail self-heal: nothing exists at $dst, so linking clobbers nothing.
-    # Re-validate the source right before linking (it could vanish between the
-    # caller enumerating it and here) and confirm the link resolves afterward,
-    # so a disappeared source or a racing run can't yield a false HEALED.
-    if [ ! -e "$src" ]; then
-      yellow "MISSING  $label (source gone — run ./setup.sh)"
-      WARNINGS=$((WARNINGS + 1))
-    else
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst" 2>/dev/null
-      # Assert exactly what HEALED claims: $dst is a symlink to $src that
-      # resolves. readlink==src rules out a racing run that linked elsewhere
-      # (reported as a WRONG target on the next read-only check); -e confirms
-      # it dereferences.
-      if [ "$(readlink "$dst" 2>/dev/null)" = "$src" ] && [ -e "$dst" ]; then
-        green "HEALED  $label (created missing symlink)"
-        HEALED=$((HEALED + 1))
-      else
-        yellow "MISSING  $label (auto-link failed — run ./setup.sh)"
-        WARNINGS=$((WARNINGS + 1))
-      fi
-    fi
-  else
-    yellow "MISSING  $label (not present in ~/.claude/)"
-    WARNINGS=$((WARNINGS + 1))
-  fi
-}
+# Report helpers (red/yellow/green) and check_link come from lib-checks.sh.
 
 echo "Checking Claude Code config..."
 echo ""

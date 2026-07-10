@@ -7,25 +7,20 @@ name: smoke-install
 # we CAN cheaply verify on every PR is that the scripts parse cleanly and the
 # argument plumbing (--help) responds.
 #
-# Marked continue-on-error: true for the FIRST SIX MONTHS (through ~2026-11-19)
-# while we extend coverage. After that, flip continue-on-error to false and
-# start gating PRs on it.
+# Gating since 2026-07 (#203): run history showed every failure was a real
+# regression on an in-flight PR (deterministic on both OSes, green once fixed),
+# not runner flakiness, so the six-month continue-on-error grace period was
+# ended early.
+#
+# No `paths:` filter, deliberately: a paths-filtered workflow cannot be a
+# protection-required check — non-matching PRs would hang forever on
+# "Expected". Instead the job always runs; the first step decides whether any
+# smoke-relevant file changed (including this workflow file itself) and the
+# real steps skip cleanly otherwise, so the job reports success either way
+# and CAN be required.
 
 on:
   pull_request:
-    # Keep this list in sync with the files the "Syntax check" step below runs
-    # bash -n over — otherwise a PR touching only check-codex.sh / git-hygiene.sh
-    # / hygiene-status.sh never triggers the smoke and its coverage is illusory.
-    paths:
-      - "setup.sh"
-      - "check-claude.sh"
-      - "check-codex.sh"
-      - "check-antigravity.sh"
-      - "gh-bootstrap.sh"
-      - "git-hygiene.sh"
-      - "hygiene-status.sh"
-      - ".bash_aliases"
-      - ".bash_profile"
   workflow_dispatch:
 
 jobs:
@@ -36,15 +31,48 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # See rationale at top of file. Remove once stable.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the relevance step can diff against the merge-base.
+          fetch-depth: 0
 
-      - name: Syntax check shell scripts
+      - name: Detect smoke-relevant changes
+        id: changes
         run: |
           set -euo pipefail
-          for f in setup.sh check-claude.sh check-codex.sh check-antigravity.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh .bash_aliases .bash_profile; do
+          # Keep the case patterns in sync with the files the "Syntax check"
+          # step below runs bash -n over, plus this workflow file itself —
+          # otherwise a PR touching only one of them skips the smoke and its
+          # coverage is illusory. lib-*.sh is a glob so future lib files
+          # (lib-checks.sh, ...) are covered automatically.
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "Not a pull_request event — running the full smoke."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          merge_base="$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)"
+          relevant=false
+          while IFS= read -r f; do
+            case "$f" in
+              setup.sh|check-claude.sh|check-codex.sh|check-antigravity.sh|gh-bootstrap.sh|git-hygiene.sh|hygiene-status.sh|lib-*.sh|.bash_aliases|.bash_profile|.github/workflows/smoke-install.yml)
+                echo "smoke-relevant change: $f"
+                relevant=true
+                ;;
+            esac
+          done < <(git diff --name-only "$merge_base" HEAD)
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          if [ "$relevant" = false ]; then
+            echo "No smoke-relevant files changed — remaining steps skip, job reports success."
+          fi
+
+      - name: Syntax check shell scripts
+        if: steps.changes.outputs.relevant == 'true'
+        run: |
+          set -euo pipefail
+          # lib-*.sh is a glob so future lib files are covered automatically;
+          # the -f guard skips the unexpanded literal if no lib file exists.
+          for f in setup.sh check-claude.sh check-codex.sh check-antigravity.sh gh-bootstrap.sh git-hygiene.sh hygiene-status.sh lib-*.sh .bash_aliases .bash_profile; do
             if [ -f "$f" ]; then
               echo "==> bash -n $f"
               bash -n "$f"
@@ -52,6 +80,7 @@ jobs:
           done
 
       - name: setup.sh --help responds
+        if: steps.changes.outputs.relevant == 'true'
         run: |
           # --help should print usage and exit 0 without doing any real work.
           ./setup.sh --help > /tmp/help.out 2>&1 || {
@@ -68,6 +97,7 @@ jobs:
           echo "✓ ./setup.sh --help OK on ${{ matrix.os }}"
 
       - name: setup.sh --yes --dry-run control-flow smoke
+        if: steps.changes.outputs.relevant == 'true'
         run: |
           # Exercise the whole installer control flow (arg parsing, the run()
           # wrapper, symlink planning) with no network or sudo: --dry-run routes
@@ -76,7 +106,6 @@ jobs:
           # HOME is a throwaway dir so the zero-mutation assertion below can
           # prove --dry-run writes NOTHING there (issue #133) without risking
           # the runner's real home.
-          # Job-level continue-on-error keeps this non-gating until stable.
           smoke_home="$(mktemp -d)"
           find "$smoke_home" | sort > /tmp/home-before.txt
           HOME="$smoke_home" ./setup.sh --yes --dry-run > /tmp/dryrun.out 2>&1 || {

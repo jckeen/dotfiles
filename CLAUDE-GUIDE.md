@@ -69,8 +69,8 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/kickoff` | New project setup |
 | `/changelog` | Log session changes |
 | `/log-error` | Document error patterns |
-| `/verify` | Confirm a change works by running it — Claude Code's built-in verification skill (tests, app, behavior) |
 | `/review` | Quality/security review |
+| `/antigravity-review` | Gemini second-opinion review gate (Antigravity) |
 | `/handoff` | Session transition |
 | `/fix-issue 123` | Fix a GitHub issue end-to-end |
 | `/simplify` | Remove over-engineering |
@@ -87,6 +87,10 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 > Most of these **auto-invoke** when their triggers match — you rarely need to
 > type them. The ones worth remembering by hand: `/orchestrate`, `/decompose`,
 > `/fix-issue N`, and `/handoff`.
+>
+> This table mirrors `claude/skills/` exactly and is asserted in CI by
+> `check-skill-parity.sh`. `/verify` (step 4 of The Workflow above) is Claude
+> Code's **built-in** verification skill, not a repo skill, so it isn't listed.
 
 ---
 
@@ -156,6 +160,7 @@ is present but not registered — the drift that once left every hook inert.
 | `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
 | `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
 | `HandoffReminder.hook.sh` | SessionStart | ✅ | Surfaces a recent handoff note for the current project into context at session start |
+| `OperatorQueueReminder.hook.sh` | SessionStart | ✅ | Prints open items from `~/.claude/operator-queue.md` (USER ACTION queue appended by the handoff skills) with age, deadline-first, past-due flagged; capped at 20 items / 64KB queue; silent when empty or absent |
 | `ntfy-awaiting-input.sh` | PreToolUse (`AskUserQuestion`) | ✅ | Pushes an ntfy.sh notification when Claude asks a question (`NTFY_TOPIC` in settings env). Overlaps Claude Code's built-in push notifs — drop whichever proves noisier |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse (`Bash`) | ✅ | Warns on `git push` when a reviewer's last-reviewed SHA ≠ HEAD (stderr only; the old PAI queue emission was removed 2026-06-10) |
 | `worktree-guard.sh` | PreToolUse (`Bash`) | ✅ | Blocks `git checkout -b`/`git switch` in the **primary** checkout when >1 worktree exists — prevents a branch switch from clobbering another active session's working tree. Always allows `git worktree` commands and ops inside linked worktrees. Fail-open (exits 0 on any error) |

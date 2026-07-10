@@ -1,5 +1,9 @@
 # Dotfiles — A Jumpstart for Claude Code + Codex
 
+[![Docs site](https://img.shields.io/badge/docs-jckeen.github.io%2Fdotfiles-blue)](https://jckeen.github.io/dotfiles/)
+
+**📖 Browsable docs:** everything in this repo is also published as a searchable site at **[jckeen.github.io/dotfiles](https://jckeen.github.io/dotfiles/)** — rebuilt on every push to `main`.
+
 A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and an 18-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
 This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
@@ -20,7 +24,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **17 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/fable-mode` (recalibrate to the conduct layer), `/antigravity-review` (Gemini second-opinion review gate). Type the verb, get the workflow.
-- **An 18-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 9 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **An 18-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 10 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
@@ -275,7 +279,7 @@ templates, and the golden rules. What follows is the short version.
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
 | `/handoff` | Capture session state before `/clear` or stopping |
-| `/max` | Maximum-effort mode — worktrees, parallel agents |
+| `/orchestrate` | Full-lifecycle max-effort mode — worktrees, parallel agents |
 | `/fix-issue N` | GitHub issue end-to-end: investigate → test → fix → PR |
 
 Most other slash commands **auto-invoke** when their triggers match — you
@@ -479,140 +483,27 @@ longer holds is superseded by a new record rather than edited away. Start with
 
 ## Repo Structure
 
-<details>
-<summary><strong>Full file tree</strong></summary>
-
-<br>
+Deliberately coarse — visible top-level entries only, with one-line purposes,
+so a rename inside a directory can't silently rot this diagram. Hidden root
+files are omitted as policy, not oversight: `.github/` holds the CI gates,
+`.doc-contract` declares the doc tiers (ADR 0005), and the rest are shell,
+git, and audio config wired by `setup.sh`. Run `ls -A` (or browse the
+[docs site](https://jckeen.github.io/dotfiles/)) for the real inventory.
 
 ```
 dotfiles/
-├── setup.sh                    # Cross-platform bootstrap script
-├── lib-symlinks.sh             # Shared symlink-tree enumerator sourced by setup.sh + check-claude.sh
-├── check-claude.sh             # Health check — verifies symlinks/memory, detects orphans; --heal self-links missing (cc uses it)
-├── check-codex.sh              # Health check — verifies public-safe Codex symlinks
-├── check-antigravity.sh        # Health check — verifies Antigravity (~/.gemini) symlinks
-├── gh-bootstrap.sh             # Bootstrap GitHub auto-merge settings on new repos
-├── git-hygiene.sh              # Stale-branch cleanup across repos in ~/dev/
-├── hygiene-status.sh           # Surface hygiene drift at session start
-├── .bash_aliases               # Shell aliases, functions, worktree shortcuts
-├── .bash_profile               # Login-shell bootstrap (sources .bashrc for wsl6/ssh)
-├── .gitconfig                  # Base git config (includes .gitconfig.local)
-├── .gitignore                  # Ignores generated files
-├── .gitattributes              # Line ending normalization (LF for scripts)
-├── .asoundrc                   # WSL audio routing
-├── LICENSE                     # MIT
-├── README.md                   # This file
-├── CLAUDE-GUIDE.md             # Quick reference cheat sheet
-├── CHANGELOG.md                # Change log
-├── ROADMAP.md                  # Backlog (paired with GitHub Issues)
-├── docs/
-│   ├── adr/                    # Architecture Decision Records (numbered, append-only)
-│   ├── WINDOWS.md              # PowerShell helpers deep-dive (wsl6/ccgrid, manual install)
-│   └── BRANCH_PROTECTION.md    # Branch protection setup notes
-├── codex/
-│   ├── AGENTS.md               # Public-safe Codex global guidance
-│   ├── config.toml.example     # Public-safe Codex config example
-│   └── skills/                 # Public-safe Codex workflows
-│       ├── branch-hygiene/
-│       ├── review/
-│       ├── simplify/
-│       ├── fix-issue/
-│       ├── commit-push-pr/
-│       ├── handoff/
-│       ├── changelog/
-│       └── repo-health/
-├── antigravity/
-│   ├── GEMINI.md               # Public-safe Antigravity (agy) global guidance
-│   ├── hooks.json              # Session-start handoff injection
-│   ├── mcp_config.json.example # MCP config template (Playwright + GitHub)
-│   └── skills/                 # Antigravity-only skills (e.g. browser-verify)
-├── claude/
-│   ├── CLAUDE.md               # Global Claude instructions (symlinked to ~/.claude/CLAUDE.md)
-│   ├── FABLE.md                # Fable conduct layer — operating discipline imported by CLAUDE.md
-│   ├── AgentPack.md            # 18-agent review orchestra
-│   ├── AGENTPACK.yaml          # AgentPack manifest (atoms, profiles, compatibility) for Claude Code, Codex, Cursor, ChatGPT
-│   ├── MULTI-AGENT.md          # Multi-agent lane contract — roles and coordination rules for Claude Code, Codex, and Antigravity
-│   ├── plugins.txt             # Plugin manifest (cross-machine source of truth)
-│   ├── nolink.txt              # Manifest of claude/ files deliberately NOT symlinked
-│   ├── statusline.sh           # Context bar, git branch, cost display
-│   ├── chrome/                 # WSL → Windows Chrome bridge for claude --chrome
-│   ├── hooks/
-│   │   ├── conventional-commit.sh          # PreToolUse commit message validator
-│   │   ├── format-on-edit.sh               # PostToolUse auto-formatter
-│   │   ├── ntfy-awaiting-input.sh          # PreToolUse push notification
-│   │   ├── StripProjectPermissions.hook.ts # SessionStart permission guard
-│   │   ├── HygieneStatus.hook.sh           # SessionStart hygiene drift surface
-│   │   ├── PrePushStaleSHACheck.hook.ts    # Warn on stale SHA before push
-│   │   ├── PluginDriftCheck.hook.ts        # SessionStart plugin drift detection
-│   │   ├── SymlinkRepair.hook.ts           # SessionStart symlink health and auto-repair
-│   │   ├── HandoffReminder.hook.sh         # SessionStart: surface a recent handoff note
-│   │   ├── PreMergeCodexHarvest.hook.sh    # PreToolUse: harvest Codex-bot PR comments into issues before merge
-│   │   └── worktree-guard.sh               # PreToolUse: block branch create/switch in primary checkout when worktrees are active
-│   ├── skills/
-│   │   ├── antigravity-review/ # /antigravity-review — Gemini second-opinion review gate
-│   │   ├── branch-hygiene/     # /branch-hygiene — stale branch cleanup
-│   │   ├── kickoff/            # /kickoff — new project bootstrap
-│   │   ├── changelog/          # /changelog — session logging
-│   │   ├── log-error/          # /log-error — error documentation
-│   │   ├── review/             # /review — code quality check
-│   │   ├── handoff/            # /handoff — session transitions
-│   │   ├── fix-issue/          # /fix-issue — GitHub issue workflow
-│   │   ├── simplify/           # /simplify — complexity removal
-│   │   ├── commit-push-pr/     # /commit-push-pr — one-shot shipping
-│   │   ├── claude-server/      # /claude-server — remote worktree
-│   │   ├── decompose/          # /decompose — deep task decomposition
-│   │   ├── max/                # /max — maximum effort parallel execution
-│   │   ├── jj/                 # /jj — jujutsu (jj) version control driver
-│   │   ├── session-retro/      # /session-retro — propose improvements to your skills
-│   │   ├── drift-sweep/        # /drift-sweep — doc-contract bootstrap + drift audit
-│   │   └── fable-mode/         # /fable-mode — recalibrate to the Fable conduct layer
-│   ├── handoffs/               # Session handoff notes (created at runtime, gitignored)
-│   ├── scripts/                # Headless automation + validation scripts
-│   │   ├── common.sh           # Shared safety tiers + runner
-│   │   ├── health-check.sh     # Read-only repo health audit
-│   │   ├── hygiene-cron.sh     # Daily cron wrapper for git-hygiene across all repos
-│   │   ├── full-review.sh      # 3-phase agent pack review
-│   │   ├── test-coverage.sh    # Write tests for uncovered code
-│   │   ├── fix-issues.sh       # Auto-pick and fix GitHub issues
-│   │   ├── overnight.sh        # Orchestrate all scripts across repos
-│   │   ├── review-and-push.sh  # Morning review of overnight changes
-│   │   ├── sync-plugins.sh     # Sync installed plugins against plugins.txt
-│   │   ├── codex-review-gate.sh    # Local Codex review gate used by commit-push-pr
-│   │   ├── check-hooks-wired.sh    # Warn when a hook file isn't registered in settings.json
-│   │   ├── check-doc-refs.sh       # CI: validate doc path references and links
-│   │   ├── check-doc-truth.sh      # CI: doc-contract checker (ADR 0005) — tiers, banners, dead links
-│   │   ├── check-agent-parity.sh   # CI: keep CLAUDE.md, codex/AGENTS.md, and antigravity/GEMINI.md rules in sync
-│   │   ├── check-commit-format.sh  # CI: conventional-commit enforcement on PRs
-│   │   ├── check-no-personal-data.sh # CI: block machine-specific home paths
-│   │   ├── check-skill-parity.sh     # CI: skill + agent counts + Claude/Codex artifact shapes
-│   │   ├── check-install-integrity.sh # CI: fresh-clone install guard — exec bits + marketplace arms
-│   │   ├── checker-lib.sh          # Shared helpers sourced by the checkers (path resolve, fail counter)
-│   │   └── tests/                  # Fixture self-tests for the gate checkers
-│   ├── systemd/                # systemd units (git-hygiene timer)
-│   └── agents/                 # 18 specialized review subagents
-        ├── product-strategist.md
-        ├── ux-reviewer.md
-        ├── frontend-architect.md
-        ├── backend-architect.md
-        ├── growth-strategist.md
-        ├── content-reviewer.md
-        ├── trust-safety.md
-        ├── qa-lead.md
-        ├── perf-accessibility.md
-        ├── launch-operator.md
-        ├── security-reviewer.md
-        ├── code-simplifier.md
-        ├── repo-scout.md
-        ├── dependency-doctor.md
-        ├── package-scout.md
-        ├── test-writer.md
-        └── schema-reviewer.md
-└── windows/
-    ├── wsl-helpers.ps1         # Agent-neutral PowerShell helpers (wsl6 — 3×2 WSL grid)
-    └── cc-functions.ps1        # Claude-specific launchers (ccgrid/cctab/ccpane/ccprojects/ccupdate)
+├── setup.sh                # Cross-platform bootstrap — installs tools, wires every symlink
+├── check-claude.sh         # Health checks (also check-codex.sh, check-antigravity.sh)
+├── git-hygiene.sh          # Repo/branch hygiene (also gh-bootstrap.sh, hygiene-status.sh, lib-symlinks.sh)
+├── README.md               # This file (also CLAUDE-GUIDE.md, CHANGELOG.md, ROADMAP.md, LICENSE)
+├── mkdocs.yml              # Docs-site config for the published Pages site
+├── docs/                   # ADRs, Windows deep-dive, branch-protection notes
+├── claude/                 # Claude Code layer — CLAUDE.md, hooks, skills, agents, scripts, statusline
+├── codex/                  # Public-safe Codex layer — AGENTS.md, config example, Codex-only skills
+├── antigravity/            # Public-safe Antigravity (agy) layer — GEMINI.md, hooks, agy-only skills
+├── agents/                 # Agent-neutral shared skills, consumed by Codex + Antigravity
+└── windows/                # PowerShell helpers — wsl6, ccgrid/cctab/ccpane
 ```
-
-</details>
 
 ---
 

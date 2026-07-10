@@ -6,6 +6,11 @@
 # `<plugin>@<marketplace>` per line). The manifest stays in the dotfiles repo
 # (setup.sh excludes it from symlinking; see check-claude.sh NOLINK).
 # Triggered manually, or by the warning emitted by PluginDriftCheck.hook.ts.
+#
+# The manifest's `# [global]` / `# [per-project]` section markers (issue #214)
+# are comments, stripped like any other: this script installs BOTH sections —
+# scoping governs enablement (settings.json `enabledPlugins`), not
+# installation, and is checked by PluginDriftCheck.hook.ts, not here.
 
 set -eo pipefail
 

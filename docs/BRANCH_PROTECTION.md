@@ -10,7 +10,9 @@ re-apply if GitHub resets anything or you spin up a fork.
 
 1. Require a pull request before merging
 2. Require **1 approving review**
-3. Require status checks to pass: `shellcheck`, `tsc`, `doc-truth`
+3. Require status checks to pass: `shellcheck`, `tsc`, `doc-truth`, and the
+   two `smoke-install` matrix jobs (`setup.sh syntax + --help (ubuntu-latest)`
+   and `setup.sh syntax + --help (macos-latest)`)
 4. Require branches to be up to date before merging
 5. Require **signed commits**
 6. Block force pushes
@@ -27,7 +29,13 @@ cat > /tmp/main-protection.json <<'JSON'
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["shellcheck", "tsc", "doc-truth"]
+    "contexts": [
+      "shellcheck",
+      "tsc",
+      "doc-truth",
+      "setup.sh syntax + --help (ubuntu-latest)",
+      "setup.sh syntax + --help (macos-latest)"
+    ]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {
@@ -81,24 +89,53 @@ Expected output:
 ```json
 {
   "reviews": 1,
-  "checks": ["shellcheck", "tsc", "doc-truth"],
+  "checks": ["shellcheck", "tsc", "doc-truth", "setup.sh syntax + --help (ubuntu-latest)", "setup.sh syntax + --help (macos-latest)"],
   "signed": true,
   "force_push": false,
   "admins": true
 }
 ```
 
+> **Pending operator action (#203):** the live rule may still list only the
+> original three contexts — agents cannot edit branch protection. To flip the
+> `smoke-install` jobs to required without re-applying the whole rule:
+>
+> ```bash
+> cat > /tmp/required-checks.json <<'JSON'
+> {
+>   "strict": true,
+>   "contexts": [
+>     "shellcheck",
+>     "tsc",
+>     "doc-truth",
+>     "setup.sh syntax + --help (ubuntu-latest)",
+>     "setup.sh syntax + --help (macos-latest)"
+>   ]
+> }
+> JSON
+> gh api -X PATCH \
+>   repos/jckeen/dotfiles/branches/main/protection/required_status_checks \
+>   --input /tmp/required-checks.json
+> ```
+>
+> Delete this callout once `Verify` above shows all five contexts.
+
 ## Notes
 
-- The status-check contexts (`shellcheck`, `tsc`, `doc-truth`) must match the **job names**
-  in `.github/workflows/ci.yml`. If you rename a job, update both this doc and
-  the protection rule.
-- These three are deliberately the **only** protection-required checks. The
-  remaining CI jobs — `checks` (which bundles the doc-refs, no-personal-data,
-  agent-parity, skill-parity, and install-integrity steps), `secret-scan`, and
-  `commit-format`, plus the `smoke-install` workflow — run on every PR but are
-  **advisory**: a failure shows red on the PR and should be fixed, but branch
-  protection does not block the merge on them.
+- The status-check contexts must match the **job names**: `shellcheck`, `tsc`,
+  and `doc-truth` live in `.github/workflows/ci.yml`; the two
+  `setup.sh syntax + --help (...)` contexts are the matrix jobs of
+  `.github/workflows/smoke-install.yml`. If you rename a job, update both this
+  doc and the protection rule.
+- `smoke-install` is gating as of 2026-07 (#203): its `continue-on-error` was
+  removed, and it always runs (no `paths:` filter — a first step skips the real
+  work when no smoke-relevant file changed) so it can be protection-required
+  without non-matching PRs hanging on "Expected".
+- The remaining CI jobs — `checks` (which bundles the doc-refs,
+  no-personal-data, agent-parity, skill-parity, and install-integrity steps),
+  `secret-scan`, and `commit-format` — run on every PR but are **advisory**: a
+  failure shows red on the PR and should be fixed, but branch protection does
+  not block the merge on them.
 - `required_signatures: true` rejects unsigned commits at the server. Configure
   `git config --global commit.gpgsign true` and `gpg.format ssh` (or GPG) on
   every machine that pushes to `main`.
