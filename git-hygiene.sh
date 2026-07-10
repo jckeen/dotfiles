@@ -23,22 +23,31 @@
 
 set -euo pipefail
 
-MODE="audit"
-ROOT="$HOME/dev"
+MODE=""
+ROOT=""
 ASSUME_YES=false
 
 usage() { echo "Usage: $(basename "$0") [audit|clean] [DIR] [--yes]"; }
 
+# Duplicate positionals are rejected rather than last-wins: a second mode token
+# must not silently escalate audit→clean, and a second DIR must not silently
+# replace the first. A dir literally named audit/clean stays reachable as ./audit.
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    audit|clean) MODE="$1" ;;
+    audit|clean)
+      [[ -n "$MODE" ]] && { echo "error: mode already set to '$MODE': $1" >&2; usage >&2; exit 1; }
+      MODE="$1" ;;
     --yes)       ASSUME_YES=true ;;
     -h|--help)   usage; exit 0 ;;
     -*)          echo "unknown flag: $1" >&2; usage >&2; exit 1 ;;
-    *)           ROOT="$1" ;;
+    *)
+      [[ -n "$ROOT" ]] && { echo "error: DIR already set to '$ROOT': $1" >&2; usage >&2; exit 1; }
+      ROOT="$1" ;;
   esac
   shift
 done
+MODE="${MODE:-audit}"
+ROOT="${ROOT:-$HOME/dev}"
 
 # A ROOT that doesn't exist would silently scan zero repos (#196) — fail loudly.
 [[ -d "$ROOT" ]] || { echo "error: no such directory: $ROOT" >&2; usage >&2; exit 1; }
