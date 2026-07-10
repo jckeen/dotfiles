@@ -18,8 +18,8 @@
 #
 # Checks:
 #   1. hooks/ debris     — any non-symlink entry in ~/.claude/hooks/
-#                          (deployed hooks are symlinks from dotfiles; regular
-#                          files there are PAI-era leftovers, ADR-0002)
+#                          (dotfiles-managed hooks are symlinks; a regular file
+#                          there is unexpected — possibly PAI-era, ADR-0002)
 #   2. settings backups  — settings.json.doctor-bak / *.doctor-bak at top level
 #   3. empty commands/   — the dir survives holding nothing but a .gitignore
 #                          (slash commands migrated to skills/)
@@ -93,9 +93,9 @@ if [ -d "$CLAUDE_DIR/hooks" ]; then
     name="${entry#"$CLAUDE_DIR"/}"
     if [ -d "$entry" ]; then
       count="$(find "$entry" -type f 2>/dev/null | wc -l | tr -d ' ')"
-      orphan "$name/ — regular directory ($count file(s)); deployed hooks are symlinks from dotfiles (PAI-era leftover, ADR-0002)"
+      orphan "$name/ — unexpected regular directory ($count file(s)) in hooks/; dotfiles-managed hooks are symlinks (possibly PAI-era, see ADR-0002)"
     else
-      orphan "$name — regular file; deployed hooks are symlinks from dotfiles (PAI-era leftover, ADR-0002)"
+      orphan "$name — unexpected regular file in hooks/; dotfiles-managed hooks are symlinks (possibly PAI-era, see ADR-0002)"
     fi
   done < <(find "$CLAUDE_DIR/hooks" -mindepth 1 -maxdepth 1 ! -type l 2>/dev/null | sort)
 fi
