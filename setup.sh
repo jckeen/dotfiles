@@ -71,6 +71,18 @@ BOOTSTRAP_RC=0
 # shellcheck source=lib-symlinks.sh
 source "$DOTFILES_DIR/lib-symlinks.sh"
 
+# Shared link-state classifier (issue #199): check_link_state lives in
+# lib-checks.sh, shared with the three check-* scripts so audit_link's state
+# machine can't drift from the standalone checkers. Hard-fail with a clear
+# message if it's missing (set -e would abort on the failed source anyway,
+# but with an opaque error).
+if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
+  echo "FATAL: $DOTFILES_DIR/lib-checks.sh is missing (broken checkout — restore it with 'git checkout lib-checks.sh')" >&2
+  exit 1
+fi
+# shellcheck source=lib-checks.sh
+source "$DOTFILES_DIR/lib-checks.sh"
+
 # Counters for summary
 LINKS_CREATED=0
 LINKS_VERIFIED=0
@@ -215,10 +227,12 @@ audit_link() {
       return 1
       ;;
   esac
-  if [ -L "$dst" ]; then
-    local target
-    target="$(readlink "$dst")"
-    if [ "$target" = "$src" ] && [ -e "$dst" ]; then
+  # State classification is shared with the check-* scripts (lib-checks.sh,
+  # issue #199); the repair/reporting policy below stays audit-specific.
+  local state
+  state="$(check_link_state "$src" "$dst")"
+  case "$state" in
+    OK)
       # Symlink resolves to the right file — for executable entrypoints we
       # also enforce the +x bit on the source so a freshly-cloned host with
       # 644-mode bin scripts can't show all-green while `gh-bootstrap`
@@ -227,63 +241,74 @@ audit_link() {
         enforce_executable_bit "$src_real" "$label" "$mode" || return 1
       fi
       return 0  # OK
-    fi
-    # Wrong target or broken
-    printf '  \033[31mBROKEN\033[0m  %s -> %s (expected %s)\n' "$label" "$target" "$src"
-    if [ "$mode" = "repair" ]; then
-      # --dry-run --repair previews fixes without applying them (#133):
-      # print the would-fix line and report the entry as still broken.
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        printf '  [DRY] would fix %s (rm + relink to %s)\n' "$label" "$src"
-        return 1
+      ;;
+    WRONG|BROKEN)
+      printf '  \033[31mBROKEN\033[0m  %s -> %s (expected %s)\n' "$label" "$(readlink "$dst")" "$src"
+      if [ "$mode" = "repair" ]; then
+        # --dry-run --repair previews fixes without applying them (#133):
+        # print the would-fix line and report the entry as still broken.
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          printf '  [DRY] would fix %s (rm + relink to %s)\n' "$label" "$src"
+          return 1
+        fi
+        rm "$dst"
+        mkdir -p "$(dirname "$dst")"
+        ln -s "$src" "$dst"
+        printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+        # Codex P2 on PR #53: repair-path executable enforcement. Without
+        # this, a MISSING/BROKEN bin link gets recreated but the source
+        # stays 644 and `gh-bootstrap` keeps returning Permission denied.
+        if [ "$require" = "executable" ]; then
+          enforce_executable_bit "$src_real" "$label" "$mode" || true
+        fi
+        return 2
       fi
-      rm "$dst"
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst"
-      printf '  \033[32mFIXED\033[0m   %s\n' "$label"
-      # Codex P2 on PR #53: repair-path executable enforcement. Without
-      # this, a MISSING/BROKEN bin link gets recreated but the source
-      # stays 644 and `gh-bootstrap` keeps returning Permission denied.
-      if [ "$require" = "executable" ]; then
-        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      return 1
+      ;;
+    NOT_LINKED_FILE)
+      printf '  \033[33mNOT LINKED\033[0m  %s (regular file, not symlink)\n' "$label"
+      if [ "$mode" = "repair" ]; then
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          printf '  [DRY] would fix %s (back up %s to %s.backup + link to %s)\n' "$label" "$dst" "$dst" "$src"
+          return 1
+        fi
+        mv "$dst" "$dst.backup"
+        mkdir -p "$(dirname "$dst")"
+        ln -s "$src" "$dst"
+        printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
+        if [ "$require" = "executable" ]; then
+          enforce_executable_bit "$src_real" "$label" "$mode" || true
+        fi
+        return 2
       fi
-      return 2
-    fi
-    return 1
-  elif [ -f "$dst" ]; then
-    printf '  \033[33mNOT LINKED\033[0m  %s (regular file, not symlink)\n' "$label"
-    if [ "$mode" = "repair" ]; then
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        printf '  [DRY] would fix %s (back up %s to %s.backup + link to %s)\n' "$label" "$dst" "$dst" "$src"
-        return 1
+      return 1
+      ;;
+    NOT_LINKED_OTHER)
+      # Directory/fifo/… sits where a symlink belongs. Previously this fell
+      # through as OK; now it's reported. Never auto-repaired — replacing a
+      # populated directory is ambiguous, and relinking into it would drop
+      # the symlink *inside* it rather than at $dst.
+      printf '  \033[33mNOT LINKED\033[0m  %s (exists but is not a regular file or symlink — resolve manually)\n' "$label"
+      return 1
+      ;;
+    MISSING)
+      printf '  \033[33mMISSING\033[0m  %s\n' "$label"
+      if [ "$mode" = "repair" ]; then
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          printf '  [DRY] would fix %s (link to %s)\n' "$label" "$src"
+          return 1
+        fi
+        mkdir -p "$(dirname "$dst")"
+        ln -s "$src" "$dst"
+        printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+        if [ "$require" = "executable" ]; then
+          enforce_executable_bit "$src_real" "$label" "$mode" || true
+        fi
+        return 2
       fi
-      mv "$dst" "$dst.backup"
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst"
-      printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
-      if [ "$require" = "executable" ]; then
-        enforce_executable_bit "$src_real" "$label" "$mode" || true
-      fi
-      return 2
-    fi
-    return 1
-  elif [ ! -e "$dst" ]; then
-    printf '  \033[33mMISSING\033[0m  %s\n' "$label"
-    if [ "$mode" = "repair" ]; then
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        printf '  [DRY] would fix %s (link to %s)\n' "$label" "$src"
-        return 1
-      fi
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst"
-      printf '  \033[32mFIXED\033[0m   %s\n' "$label"
-      if [ "$require" = "executable" ]; then
-        enforce_executable_bit "$src_real" "$label" "$mode" || true
-      fi
-      return 2
-    fi
-    return 1
-  fi
+      return 1
+      ;;
+  esac
   return 0
 }
 
