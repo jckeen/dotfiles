@@ -637,22 +637,46 @@ else
 fi
 
 # Wire the tracked githooks/pre-push into THIS repo's hooks dir. link_file
-# honors --dry-run; --git-path resolves the real hooks dir even from a
-# worktree and respects core.hooksPath. The hook blocks a push on findings,
-# with a documented escape hatch: GITLEAKS_SKIP=1 git push
+# honors --dry-run. The hook blocks a push on findings, with a documented
+# escape hatch: GITLEAKS_SKIP=1 git push
+#
+# Two sharp edges here (PR #226 review, both P2):
+#   - core.hooksPath (any scope) redirects hooks to a dir SHARED across
+#     repos; installing there would activate the hook everywhere and
+#     link_file would back up (i.e. silently disable) any pre-push already
+#     in it. Warn + skip instead — the user integrates by hand.
+#   - When run from a linked worktree (agents do this routinely), the
+#     worktree is temporary but <common-dir>/hooks is shared with the main
+#     checkout. Link to the MAIN checkout's copy of the hook (parent of
+#     --git-common-dir), never the worktree's — otherwise removing the
+#     worktree leaves a dangling symlink that git silently ignores and the
+#     secret scan vanishes without warning.
 if [ -f "$DOTFILES_DIR/githooks/pre-push" ]; then
-  _hooks_dir="$(git -C "$DOTFILES_DIR" rev-parse --git-path hooks 2>/dev/null || true)"
-  if [ -n "$_hooks_dir" ]; then
-    case "$_hooks_dir" in /*) ;; *) _hooks_dir="$DOTFILES_DIR/$_hooks_dir" ;; esac
-    # Defensive +x on the source (same rationale as the §1c bin scripts).
-    if [ ! -x "$DOTFILES_DIR/githooks/pre-push" ]; then
-      run chmod +x "$DOTFILES_DIR/githooks/pre-push" 2>/dev/null || true
-    fi
-    run mkdir -p "$_hooks_dir"
-    link_file "$DOTFILES_DIR/githooks/pre-push" "$_hooks_dir/pre-push"
-    echo "  -> pre-push gitleaks hook linked ($_hooks_dir/pre-push; skip once with GITLEAKS_SKIP=1 git push)"
-  else
+  _hooks_path_cfg="$(git -C "$DOTFILES_DIR" config --get core.hooksPath 2>/dev/null || true)"
+  _git_common="$(git -C "$DOTFILES_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -z "$_git_common" ]; then
     echo "  -> not a git checkout; pre-push hook not installed"
+  elif [ -n "$_hooks_path_cfg" ]; then
+    echo "  -> core.hooksPath is set ($_hooks_path_cfg) — that hooks dir is shared across repos,"
+    echo "     so not installing there (it would shadow or disable other repos' hooks)."
+    echo "     Add a call to githooks/pre-push to your shared pre-push hook manually."
+  else
+    case "$_git_common" in /*) ;; *) _git_common="$DOTFILES_DIR/$_git_common" ;; esac
+    _main_checkout="$(dirname "$_git_common")"
+    _hook_src="$_main_checkout/githooks/pre-push"
+    if [ ! -f "$_hook_src" ]; then
+      # Bare repo, or the main checkout's branch predates githooks/. Never
+      # fall back to the worktree copy — it dangles when the worktree goes.
+      echo "  -> $_hook_src not found (main checkout lacks githooks/pre-push); hook not installed"
+    else
+      # Defensive +x on the source (same rationale as the §1c bin scripts).
+      if [ ! -x "$_hook_src" ]; then
+        run chmod +x "$_hook_src" 2>/dev/null || true
+      fi
+      run mkdir -p "$_git_common/hooks"
+      link_file "$_hook_src" "$_git_common/hooks/pre-push"
+      echo "  -> pre-push gitleaks hook linked ($_git_common/hooks/pre-push; skip once with GITLEAKS_SKIP=1 git push)"
+    fi
   fi
 fi
 

@@ -31,8 +31,12 @@ status=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
   # Deleting a remote ref pushes no commits.
   [ "$local_sha" = "$zero" ] && continue
-  if [ "$remote_sha" = "$zero" ]; then
-    # New remote ref: scan everything not already on a remote-tracking ref.
+  if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+    # New remote ref — or a remote sha that doesn't resolve locally (unfetched
+    # remote ref, force-push over unfetched work). The latter MUST take this
+    # fallback too: gitleaks 8.x exits 0 on "Invalid revision range" even with
+    # --exit-code 1, so "$remote_sha..$local_sha" would fail OPEN (PR #226
+    # review, P1). Scan everything not already on a remote-tracking ref.
     range="$local_sha --not --remotes"
   else
     range="$remote_sha..$local_sha"
