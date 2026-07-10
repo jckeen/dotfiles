@@ -36,9 +36,16 @@
 set -uo pipefail
 
 # Shared helpers (yellow/green printers). Sits beside this script both in the
-# repo and in ~/.claude/scripts (setup.sh links them side-by-side).
+# repo and in ~/.claude/scripts (setup.sh links them side-by-side). Hard-fail
+# if it's missing: under `set +e` a failed source would otherwise keep going
+# and sweep with the helpers undefined (issue #230).
+_LIB="$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+if [ ! -f "$_LIB" ]; then
+  echo "FATAL: $_LIB is missing (broken checkout — restore it with 'git checkout claude/scripts/checker-lib.sh')" >&2
+  exit 1
+fi
 # shellcheck source=claude/scripts/checker-lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
+. "$_LIB"
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
