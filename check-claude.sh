@@ -27,6 +27,7 @@ source "$DOTFILES_DIR/lib-symlinks.sh"
 # with check-codex.sh, check-antigravity.sh, and setup.sh's audit path.
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+# shellcheck disable=SC2088  # display hint for MISSING messages — literal ~ intended
 CHECK_MISSING_HINT="~/.claude/"
 
 ERRORS=0

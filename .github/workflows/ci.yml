@@ -18,16 +18,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run shellcheck (severity=error)
+      - name: Run shellcheck (severity=warning)
         uses: ludeeus/action-shellcheck@2.0.0
         env:
-          SHELLCHECK_OPTS: --severity=error
+          # warning severity (#202): quoting/word-splitting/unused-var classes
+          # are checked; intentional patterns carry targeted per-line
+          # `# shellcheck disable=SCxxxx` comments with reasons.
+          SHELLCHECK_OPTS: --severity=warning
         with:
-          severity: error
+          severity: warning
           scandir: "."
-          # All shipped scripts carry a .sh extension, so the action's built-in
-          # *.sh discovery already finds them (additional_files is only for
-          # extension-less scripts).
+          # Shipped scripts carry a .sh extension, so the action's built-in
+          # *.sh discovery finds them; additional_files covers the
+          # extension-less githooks/pre-push.
+          additional_files: "pre-push"
           ignore_paths: >-
             node_modules
             .git
