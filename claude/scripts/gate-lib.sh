@@ -154,6 +154,97 @@ gate_fence() {
   printf '%s_%s' "$prefix" "$(printf '%s' "$*" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
 }
 
+# ─── #212: proportionality valve ───────────────────────────────
+# Not every diff earns the full adversarial pass. A cheap classifier — diff
+# size + changed-path match against risk surfaces — picks the tier BEFORE any
+# reviewer is dispatched:
+#
+#   Tier 1 (reduced): docs-only AND small (≤ GATE_TIER1_MAX_LINES, default
+#     200). The gate may skip with a logged "tier-1 skip" line. Override with
+#     GATE_FORCE_FULL=1 to run the full pass anyway.
+#   Tier 2 (full): anything touching a risk surface, above the size cap, or
+#     not positively classified. NEVER downgradable — no knob skips a tier-2
+#     review.
+#
+# NAMED FAILURE MODE: the valve fails toward the FULL pass. Any classification
+# error — unmeasurable diff, unenumerable changed paths, an unparseable size
+# cap, an unknown file class — escalates to tier 2; nothing ever falls back to
+# the skip.
+
+# gate_path_is_risk <path> — 0 when the path is a risk surface: gate/hook/
+# instruction/CI files (the surfaces that steer reviews — aligned with the
+# codex self-review guard), plus the CLAUDE.md risk list (auth, path/host
+# handling, file IO, schemas, hash chains) matched by path segment and
+# filename keyword. Over-matching is fine (it only escalates); under-matching
+# is what the docsafe allowlist below guards against.
+gate_path_is_risk() {
+  case "$1" in
+    *AGENTS*.md|*CLAUDE*.md|*GEMINI*.md|*FABLE*.md|*MULTI-AGENT*.md|*SKILL.md|*AGENTPACK*) return 0 ;;
+    codex/*|*/codex/*|antigravity/*|*/antigravity/*) return 0 ;;
+    .github/*|*/.github/*|*hooks/*|*.githooks*|*scripts/*|setup.sh|*/setup.sh|install.sh|*/install.sh) return 0 ;;
+    *schema*|*.sql|*migration*) return 0 ;;
+  esac
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *auth*|*token*|*secret*|*credential*|*password*|*session*|*oauth*|*sso*|*crypt*|*hash*|*host*) return 0 ;;
+  esac
+  return 1
+}
+
+# gate_path_is_docsafe <path> — 0 only for file classes with no runtime
+# surface. Deliberately narrow: anything not on this allowlist is an unknown
+# class and escalates to the full pass.
+gate_path_is_docsafe() {
+  case "$1" in
+    *.md|*.markdown|*.rst|LICENSE|LICENSE.*|*/LICENSE|*/LICENSE.*) return 0 ;;
+  esac
+  return 1
+}
+
+# gate_classify_tier — set GATE_TIER (1 reduced / 2 full) + GATE_TIER_REASON
+# from DIFF_CONTENT and the changed paths of "${DIFF_TARGET[@]}". Always
+# returns 0; GATE_TIER=2 is the starting state and every early exit keeps it.
+gate_classify_tier() {
+  GATE_TIER=2
+  GATE_TIER_REASON="full pass (default)"
+  if [[ "${GATE_FORCE_FULL:-0}" == "1" ]]; then
+    GATE_TIER_REASON="full pass (GATE_FORCE_FULL=1)"
+    return 0
+  fi
+  local max="${GATE_TIER1_MAX_LINES:-200}" n paths f
+  if ! [[ "$max" =~ ^[0-9]+$ ]]; then
+    GATE_TIER_REASON="full pass (GATE_TIER1_MAX_LINES='$max' is not a number — escalating)"
+    return 0
+  fi
+  n="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ' || true)"
+  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+    GATE_TIER_REASON="full pass (could not measure the diff — escalating)"
+    return 0
+  fi
+  if (( n > max )); then
+    GATE_TIER_REASON="full pass (diff is $n lines > tier-1 cap $max)"
+    return 0
+  fi
+  paths="$(gate_changed_paths)"
+  if [[ -z "${paths//[[:space:]]/}" ]]; then
+    GATE_TIER_REASON="full pass (could not enumerate changed paths — escalating)"
+    return 0
+  fi
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if gate_path_is_risk "$f"; then
+      GATE_TIER_REASON="full pass (risk surface: $f)"
+      return 0
+    fi
+    if ! gate_path_is_docsafe "$f"; then
+      GATE_TIER_REASON="full pass (unclassified file: $f)"
+      return 0
+    fi
+  done <<<"$paths"
+  GATE_TIER=1
+  GATE_TIER_REASON="docs-only diff, $n lines ≤ $max"
+  return 0
+}
+
 # ─── #205: post-dispatch model verification (agy lane) ─────────
 # agy accepts unrecognized --model slugs without error and silently falls back
 # to the default flash-low tier, which quietly collapses the "independent

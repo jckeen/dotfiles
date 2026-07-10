@@ -51,6 +51,8 @@ export PATH="$SHIM_DIR:$PATH"
 export CODEX_FAKE_DIR=""
 unset CODEX_GATE_REQUIRED
 unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
+unset GATE_FORCE_FULL
+unset GATE_TIER1_MAX_LINES
 
 new_repo() {
   R="$(mktemp -d)"
@@ -206,6 +208,53 @@ export CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1
 check "CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 overrides the guard" 0 "Instruction-surface diff allowed" --uncommitted --no-issues
 unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 assert "codex invoked once the guard is overridden" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# ── #212: proportionality valve ────────────────────────────────────────
+new_repo
+printf '# Title\n\nA sentence of documentation.\n' > "$R/README.md"
+approve_clean
+check "docs-only small diff takes the tier-1 skip" 0 "tier-1 skip" --uncommitted --no-issues
+assert "codex not invoked on a tier-1 skip" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf '# Title\n' > "$R/README.md"
+approve_clean
+export GATE_FORCE_FULL=1
+check "GATE_FORCE_FULL=1 forces the full pass on a docs-only diff" 0 "Codex review passed" --uncommitted --no-issues
+unset GATE_FORCE_FULL
+assert "codex invoked under GATE_FORCE_FULL" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf 'notes about rotation\n' > "$R/token-rotation.md"
+approve_clean
+check "risk-surface filename escalates to the full pass" 0 "Codex review passed" --uncommitted --no-issues
+assert "codex invoked for the risk-surface diff" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf 'small change\n' > "$R/widget.xyz"
+approve_clean
+check "unclassified file escalates to the full pass" 0 "Codex review passed" --uncommitted --no-issues
+assert "codex invoked for the unclassified diff" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf 'line1\nline2\nline3\nline4\nline5\n' > "$R/README.md"
+approve_clean
+export GATE_TIER1_MAX_LINES=2
+check "docs diff above the size cap takes the full pass" 0 "Codex review passed" --uncommitted --no-issues
+unset GATE_TIER1_MAX_LINES
+assert "codex invoked above the size cap" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf '# Title\n' > "$R/README.md"
+approve_clean
+check "adversarial --claim forces the full pass on a docs-only diff" 0 "Codex review passed" --uncommitted --no-issues --claim "the docs are accurate"
+assert "codex invoked when a claim is given" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
 echo ""

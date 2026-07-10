@@ -170,6 +170,17 @@ if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
   degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."
 fi
 
+# ─── Proportionality valve (#212) ──────────────────────────────
+# Docs-only small diffs take a reduced pass; anything touching a risk surface
+# or above the size cap gets the full review, never downgradable. The valve
+# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
+gate_classify_tier
+if [[ "$GATE_TIER" -eq 1 ]]; then
+  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
+  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
+  exit 0
+fi
+
 # ─── Step 4: run agy --print, non-interactively and tool-locked ─
 command -v agy >/dev/null 2>&1 || degrade "agy CLI not found on PATH."
 

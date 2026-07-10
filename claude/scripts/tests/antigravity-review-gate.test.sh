@@ -38,6 +38,9 @@ chmod +x "$SHIM_DIR/agy"
 export PATH="$SHIM_DIR:$PATH"
 export AGY_FAKE_DIR=""
 unset ANTIGRAVITY_GATE_REQUIRED
+unset ANTIGRAVITY_GATE_MODEL
+unset GATE_FORCE_FULL
+unset GATE_TIER1_MAX_LINES
 
 new_repo() {
   R="$(mktemp -d)"
@@ -168,6 +171,36 @@ echo "committed work" >> "$R/code.txt"
 git -C "$R" commit -qam "ahead"
 check "unresolvable --base fails closed" 2 "could not be resolved" --base does-not-exist
 assert "agy not invoked on unresolvable base" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# ── #212: proportionality valve ────────────────────────────────────────
+new_repo
+printf '# Title\n\nDocs only.\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "docs-only small diff takes the tier-1 skip" 0 "tier-1 skip" --uncommitted
+assert "agy not invoked on a tier-1 skip" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf '# Title\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+export GATE_FORCE_FULL=1
+check "GATE_FORCE_FULL=1 forces the full pass on a docs-only diff" 0 "LGTB verdict" --uncommitted
+unset GATE_FORCE_FULL
+assert "agy invoked under GATE_FORCE_FULL" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf 'notes about rotation\n' > "$R/token-rotation.md"
+printf -- '- [P1] Broken thing — token-rotation.md:1\n' > "$AGY_FAKE_DIR/output"
+check "risk-surface filename escalates to the full pass (and still blocks)" 2 "BLOCKING findings" --uncommitted
+rm -rf "$R"
+
+new_repo
+printf 'small change\n' > "$R/widget.xyz"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "unclassified file escalates to the full pass" 0 "LGTB verdict" --uncommitted
+assert "agy invoked for the unclassified diff" "[ -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
 echo ""

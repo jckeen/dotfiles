@@ -146,6 +146,22 @@ if grep -qE '(^|/)AGENTS(\.local)?\.md$|^codex/' <<<"$CHANGED_PATHS"; then
   yellow "⚠ Instruction-surface diff allowed by CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 — make sure a human read those changes."
 fi
 
+# ─── Proportionality valve (#212) ──────────────────────────────
+# Docs-only small diffs take a reduced pass; anything touching a risk surface
+# or above the size cap gets the full review, never downgradable. The valve
+# fails toward the full pass — see gate_classify_tier in gate-lib.sh. An
+# adversarial dispatch always runs full: a claim to refute IS the job.
+gate_classify_tier
+if [[ -n "$CLAIM" || -n "$REPRO" ]]; then
+  GATE_TIER=2
+  GATE_TIER_REASON="full pass (adversarial claim/repro provided)"
+fi
+if [[ "$GATE_TIER" -eq 1 ]]; then
+  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Codex review for this reduced-ceremony diff."
+  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
+  exit 0
+fi
+
 bold "→ Codex review gate"
 echo "  Reviewing: $TARGET_DESC ($N_LINES lines)"
 [[ -n "$CLAIM" ]] && echo "  Adversarial claim: $CLAIM"

@@ -56,6 +56,27 @@ Lanes are defaults, not walls — whoever holds the working tree does the edit.
    work itself and for the judgment (coach) pass. A correctness reviewer
    straining for findings is as costly as one that skims.
 
+## Proportionality: gate tiers (#212)
+
+Not every diff earns the full adversarial tax. Both review gates
+(`codex-review-gate.sh`, `antigravity-review-gate.sh`) run a cheap classifier
+(`gate_classify_tier` in `claude/scripts/gate-lib.sh`) — diff size plus
+changed-path match against risk surfaces — before dispatching any reviewer:
+
+- **Tier 1 (reduced):** docs-only diffs at or under `GATE_TIER1_MAX_LINES`
+  (default 200). The gate may skip, logging a `tier-1 skip` line. Force the
+  full pass anyway with `GATE_FORCE_FULL=1`.
+- **Tier 2 (full):** anything touching a risk surface — auth/token/secret/
+  credential names, path/host handling, schemas, hash chains, and gate/hook/
+  CI/instruction files (AGENTS*.md, CLAUDE.md, GEMINI.md, SKILL.md, `codex/`,
+  `antigravity/`, `.github/`, `scripts/`, hooks) — or above the size cap, or
+  not positively classified. **Never downgradable**: no knob skips a tier-2
+  review, and an adversarial `--claim`/`--repro` dispatch always runs full.
+
+Named failure mode: **the valve fails toward the full pass.** A classification
+error, an unmeasurable diff, or an unknown file class escalates to tier 2 —
+nothing ever falls back to the skip.
+
 ## Handoff payload
 
 When the conductor hands work to Codex or Antigravity, the handoff (a `handoff`
