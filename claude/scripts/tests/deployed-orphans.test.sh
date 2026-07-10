@@ -102,6 +102,34 @@ check "unknown: noted as UNKNOWN" 0 "UNKNOWN some-future-runtime-dir"
 check "unknown: does not fail --strict" 0 "UNKNOWN" "--strict"
 rm -rf "$(dirname "$F")"
 
+# --- known PAI leftover: distinct category, fails --strict (issue #232) -------
+new_fixture
+mkdir -p "$F/PAI"
+printf 'not pai\n' > "$F/stray-debug.log"
+check "pai: PAI/ flagged as PAI-LEFTOVER" 0 "PAI-LEFTOVER PAI"
+check "pai: default exit stays 0" 0 "known PAI leftover"
+check "pai: --strict exits 1" 1 "PAI-LEFTOVER PAI" "--strict"
+check "pai: stray file beside it stays UNKNOWN" 0 "UNKNOWN stray-debug.log"
+# The stray file's own line must carry no PAI attribution (PR #225 review:
+# never assert PAI provenance for arbitrary regular files).
+out="$(CLAUDE_DIR="$F" "$CHECKER" 2>&1)"
+if grep -F "stray-debug.log" <<<"$out" | grep -qi "PAI"; then
+  failed=$((failed + 1))
+  echo "FAIL - stray file must not be attributed to PAI"
+  echo "$out" | sed 's/^/      | /'
+else
+  pass=$((pass + 1))
+  echo "ok   - stray file not attributed to PAI"
+fi
+rm -rf "$(dirname "$F")"
+
+# --- stray file alone: advisory UNKNOWN, --strict still passes ----------------
+new_fixture
+printf 'not pai\n' > "$F/stray-debug.log"
+check "stray file: noted as UNKNOWN" 0 "UNKNOWN stray-debug.log"
+check "stray file: does not fail --strict" 0 "UNKNOWN stray-debug.log" "--strict"
+rm -rf "$(dirname "$F")"
+
 # --- commands/ with real content is not an orphan -----------------------------
 new_fixture
 mkdir -p "$F/commands"

@@ -23,13 +23,18 @@
 #   2. settings backups  — settings.json.doctor-bak / *.doctor-bak at top level
 #   3. empty commands/   — the dir survives holding nothing but a .gitignore
 #                          (slash commands migrated to skills/)
-#   4. unknown top-level — not a symlink, not known runtime state: reported as
+#   4. known PAI paths   — top-level entries whose name EXACTLY matches a
+#                          known PAI leftover (PAI/, MEMORY/, ISA.md,
+#                          settings.plain.json — see PAI_PATHS): reported as
+#                          PAI-LEFTOVER and fails --strict (issue #232)
+#   5. unknown top-level — not a symlink, not known runtime state: reported as
 #                          UNKNOWN for a human to triage; never fails --strict
 #                          (new Claude Code versions grow new runtime dirs)
 #
 # Usage: check-deployed-orphans.sh [--strict]
 #   default   report findings and exit 0 (safe for cron/status hooks)
-#   --strict  exit 1 when any orphan (checks 1-3) is found
+#   --strict  exit 1 when any orphan (checks 1-3) or known PAI leftover
+#             (check 4) is found; UNKNOWNs never fail
 # Env: CLAUDE_DIR overrides ~/.claude (used by the fixture self-test:
 #      tests/deployed-orphans.test.sh).
 
@@ -82,6 +87,17 @@ RUNTIME_FILES=(
   settings.local.json
 )
 
+# Known PAI leftovers at the top level of ~/.claude (ADR-0002, issue #232).
+# EXACT name matches only — the adversarial review of PR #225 rejected loose
+# PAI attribution for arbitrary regular files (a future hooks/debug.log must
+# not be blamed on PAI), so anything not on this list stays advisory UNKNOWN.
+# Names come from the decommission record (Plans/PAI-DECOMMISSION.md): the
+# engine dir, the PAI-era MEMORY/ tree, ISA.md, and the pai-mode settings
+# variant.
+PAI_PATHS=(
+  PAI MEMORY ISA.md settings.plain.json
+)
+
 in_list() {
   local needle="$1"; shift
   local item
@@ -93,7 +109,9 @@ in_list() {
 
 ORPHANS=0
 UNKNOWNS=0
+PAI_LEFTOVERS=0
 orphan() { yellow "ORPHAN  $1"; ORPHANS=$((ORPHANS + 1)); }
+pai_leftover() { yellow "PAI-LEFTOVER $1"; PAI_LEFTOVERS=$((PAI_LEFTOVERS + 1)); }
 
 echo "Checking deployed $CLAUDE_DIR for decommissioned artifacts..."
 
@@ -125,13 +143,18 @@ if [ -d "$CLAUDE_DIR/commands" ] && [ ! -L "$CLAUDE_DIR/commands" ]; then
   fi
 fi
 
-# --- 4. unknown top-level entries (informational, never fails --strict) ------
+# --- 4+5. known PAI leftovers (strict) / unknown top-level (informational) ---
 while IFS= read -r entry; do
   name="${entry#"$CLAUDE_DIR"/}"
   # Symlinks are check-claude.sh's domain; skip.
   [ -L "$entry" ] && continue
   # Already reported by check 2.
   case "$name" in settings.json.*bak* | *.doctor-bak) continue ;; esac
+  # Exact match against the known-PAI list — fails --strict (issue #232).
+  if in_list "$name" "${PAI_PATHS[@]}"; then
+    pai_leftover "$name — known PAI leftover (ADR-0002); back up first (tar czf), verify, then delete"
+    continue
+  fi
   if [ -d "$entry" ]; then
     in_list "$name" "${RUNTIME_DIRS[@]}" && continue
   else
@@ -143,14 +166,15 @@ done < <(find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | sort)
 
 # --- Summary ------------------------------------------------------------------
 echo ""
-if [ "$ORPHANS" -eq 0 ] && [ "$UNKNOWNS" -eq 0 ]; then
+if [ "$ORPHANS" -eq 0 ] && [ "$UNKNOWNS" -eq 0 ] && [ "$PAI_LEFTOVERS" -eq 0 ]; then
   green "No decommissioned artifacts found in $CLAUDE_DIR."
 else
   [ "$ORPHANS" -gt 0 ] && yellow "$ORPHANS orphan(s) from decommissioned integrations. Back up first (tar czf), verify (tar tzf), then delete."
+  [ "$PAI_LEFTOVERS" -gt 0 ] && yellow "$PAI_LEFTOVERS known PAI leftover(s) (ADR-0002) — fails --strict. Back up first (tar czf), verify (tar tzf), then delete."
   [ "$UNKNOWNS" -gt 0 ] && yellow "$UNKNOWNS unknown top-level entr(y/ies) — triage manually (does not fail --strict)."
 fi
 
-if [ "$STRICT" -eq 1 ] && [ "$ORPHANS" -gt 0 ]; then
+if [ "$STRICT" -eq 1 ] && { [ "$ORPHANS" -gt 0 ] || [ "$PAI_LEFTOVERS" -gt 0 ]; }; then
   exit 1
 fi
 exit 0
