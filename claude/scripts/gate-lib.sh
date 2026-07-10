@@ -246,49 +246,77 @@ gate_classify_tier() {
 }
 
 # ─── #205: post-dispatch model verification (agy lane) ─────────
-# agy accepts unrecognized --model slugs without error and silently falls back
-# to the default flash-low tier, which quietly collapses the "independent
-# lineage" premise of the Antigravity lane (MULTI-AGENT.md). After a dispatch
-# that requested a specific slug, confirm the newest conversations DB actually
-# records it.
-#
-# gate_verify_agy_model <requested-slug>
-#   returns 0 — recorded model matches, or verification is impossible (DB
-#               missing, `strings` absent, no model strings): those degrade to
-#               a loud warning rather than a false fallback verdict.
-#   returns 1 — a DB is present and the requested slug is NOT recorded:
-#               fallback detected. The caller decides whether that fails the
-#               run (strict) or continues with a warning.
-# Tests override the DB location via AGY_CONVERSATIONS_DIR.
+# agy's --model takes the exact DISPLAY LABEL from `agy models` (e.g.
+# "Gemini 3.1 Pro (High)"). Slug forms (gemini-3.1-pro*, …) are silently
+# ignored — exit 0, flash-tier fallback — which quietly collapses the
+# "independent lineage" premise of the Antigravity lane (MULTI-AGENT.md).
+# Two checks, layered:
+#   1. gate_verify_agy_label — PRIMARY: parse the pin agy logged as propagated
+#      to the backend. Deterministic; a mismatch means the run verifiably used
+#      another model.
+#   2. gate_verify_agy_model — SECONDARY, best-effort: spot-check the newest
+#      conversation records for the label. Ground truth but racy (fresh runs
+#      sit in the .db-wal; parallel conversations reorder mtimes).
+
+# gate_verify_agy_label <requested-label> <agy-log-file>
+# agy logs the model pin it hands to the backend as
+#   model_config_manager.go] Propagating selected model override to backend: label="<label>"
+# (format verified against agy 1.1.1). Compare the LAST propagated label to
+# the requested one.
+#   returns 0 — propagated label matches the request
+#   returns 1 — propagated label DIFFERS: the pin failed; the run used another
+#               model (callers should treat the review as invalid)
+#   returns 2 — no propagation line (log missing/empty or format drift):
+#               unverifiable, caller decides how loud to be
+gate_verify_agy_label() {
+  local want="$1" log="$2" line got
+  [[ -s "$log" ]] || return 2
+  line="$(grep -F 'Propagating selected model override to backend: label=' "$log" | tail -n 1 || true)"
+  [[ -n "$line" ]] || return 2
+  got="${line#*label=}"
+  # Strip the Go %q quoting around the label.
+  got="${got#\"}"
+  got="${got%\"}"
+  if [[ "$got" == "$want" ]]; then
+    green "✓ model pin verified: agy propagated label \"$got\" to the backend."
+    return 0
+  fi
+  red "✖ MODEL PIN FAILED: requested \"$want\" but agy propagated \"$got\" to the backend."
+  return 1
+}
+
+# gate_verify_agy_model <requested-label>
+#   returns 0 — a recent conversation record contains the label, or the check
+#               is impossible (records/`strings` missing): impossibility
+#               degrades to a warning rather than a false fallback verdict.
+#   returns 1 — records exist but none of the newest mention the label.
+# Tests override the records location via AGY_CONVERSATIONS_DIR.
 gate_verify_agy_model() {
   local want="$1"
   local dir="${AGY_CONVERSATIONS_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
-  local db
+  local files f
   # Newest-first ordering is what we need; the glob only ever matches agy's
-  # own .db files, so ls-parsing caveats don't apply.
+  # own conversation files, so ls-parsing caveats don't apply. Include the
+  # -wal files: a fresh run's records sit there until SQLite checkpoints.
   # shellcheck disable=SC2012
-  db="$(ls -t "$dir"/*.db 2>/dev/null | head -n 1 || true)"
-  if [[ -z "$db" ]]; then
-    yellow "⚠ model verification: no conversations DB under $dir — cannot confirm the recorded model (warning only)."
+  files="$(ls -t "$dir"/*.db "$dir"/*.db-wal 2>/dev/null | head -n 3 || true)"
+  if [[ -z "$files" ]]; then
+    yellow "⚠ model DB spot-check: no conversation records under $dir — cannot confirm the recorded model (warning only)."
     return 0
   fi
   if ! command -v strings >/dev/null 2>&1; then
-    yellow "⚠ model verification: 'strings' not found — cannot inspect $db (warning only)."
+    yellow "⚠ model DB spot-check: 'strings' not found — cannot inspect the conversation records (warning only)."
     return 0
   fi
-  if strings "$db" 2>/dev/null | grep -qF "$want"; then
-    green "✓ model verification: $(basename "$db") records the requested slug '$want'."
-    return 0
-  fi
-  local recorded
-  recorded="$(strings "$db" 2>/dev/null | grep -Eo '(gemini|claude)-[A-Za-z0-9.-]+' | sort -u | head -n 10 || true)"
-  red "✖ MODEL FALLBACK DETECTED: requested '$want' but $(basename "$db") records:"
-  if [[ -n "$recorded" ]]; then
-    printf '%s\n' "$recorded" | sed 's/^/    /'
-  else
-    echo "    (no model strings found in the DB)"
-  fi
-  red "  agy silently ignores unrecognized slugs (see MULTI-AGENT.md) — this run did NOT verifiably use '$want'."
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if strings "$f" 2>/dev/null | grep -qF "$want"; then
+      green "✓ model DB spot-check: $(basename "$f") records the requested label '$want'."
+      return 0
+    fi
+  done <<<"$files"
+  red "✖ model DB spot-check: none of the newest conversation records mention '$want' —"
+  red "  the run may have fallen back to the default tier (see MULTI-AGENT.md)."
   return 1
 }
 

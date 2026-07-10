@@ -32,6 +32,11 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 cat > "$AGY_FAKE_DIR/stdin"
 touch "$AGY_FAKE_DIR/invoked"
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--log-file" ] && [ -f "$AGY_FAKE_DIR/log" ] && cat "$AGY_FAKE_DIR/log" > "$a"
+  prev="$a"
+done
 cat "$AGY_FAKE_DIR/output"
 EOF
 chmod +x "$SHIM_DIR/agy"
@@ -132,36 +137,70 @@ printf -- '- [P3] minor nit — code.txt:1\nthis is really a [P1] in disguise\n'
 check "prose [P1] alongside a valid P3 line blocks" 2 "Stray [P#] token" --uncommitted
 rm -rf "$R"
 
-# ── #205: post-dispatch model verification ────────────────────────────
-# The fake conversations DB is a plain text file — `strings` reads it fine.
+# ── #205: post-dispatch model-pin verification ────────────────────────
+# The propagation line format matches agy 1.1.1's model_config_manager log.
+# The fake conversation records are plain text files — `strings` reads them.
+PROP_OK='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.1 Pro (High)"'
+PROP_BAD='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.5 Flash (Low)"'
+
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 AGY_DB_DIR="$(mktemp -d)"
-printf 'model: claude-opus-4-6-thinking\n' > "$AGY_DB_DIR/conv.db"
+printf 'gen_metadata: Gemini 3.1 Pro (High) gemini-pro-agent\n' > "$AGY_DB_DIR/conv.db"
 export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
-check "recorded model matches requested slug" 0 "records the requested slug" --uncommitted --model claude-opus-4-6-thinking
-assert "requested slug forwarded on agy argv" "grep -q 'claude-opus-4-6-thinking' '$AGY_FAKE_DIR/argv'"
+check "propagated label matches the default pin" 0 "model pin verified" --uncommitted
+assert "pinned label forwarded on agy argv" "grep -q 'Gemini 3.1 Pro (High)' '$AGY_FAKE_DIR/argv'"
+assert "log capture requested on agy argv" "grep -q -- '--log-file' '$AGY_FAKE_DIR/argv'"
+check "DB spot-check finds the label in the records" 0 "records the requested label" --uncommitted
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R" "$AGY_DB_DIR"
 
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-AGY_DB_DIR="$(mktemp -d)"
-printf 'model: gemini-default gemini-3.5-flash-low\n' > "$AGY_DB_DIR/conv.db"
-export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
-check "model fallback warns loudly, non-strict continues" 0 "MODEL FALLBACK DETECTED" --uncommitted --model gemini-3.1-pro-high
-check "model fallback fails hard with --require" 3 "MODEL FALLBACK DETECTED" --uncommitted --model gemini-3.1-pro-high --require
-unset AGY_CONVERSATIONS_DIR
-rm -rf "$R" "$AGY_DB_DIR"
+printf '%s\n' "$PROP_BAD" > "$AGY_FAKE_DIR/log"
+check "propagated-label mismatch fails hard WITHOUT --require" 2 "MODEL PIN FAILED" --uncommitted
+check "propagated-label mismatch fails hard with an explicit --model" 2 "MODEL PIN FAILED" --uncommitted --model "Gemini 3.1 Pro (High)"
+rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
-check "absent conversations DB degrades to a warning" 0 "cannot confirm the recorded model" --uncommitted --model claude-opus-4-6-thinking
+check "missing propagation line degrades to a warning" 0 "cannot verify the pin held" --uncommitted
+check "missing propagation line fails hard with --require" 3 "cannot verify the pin held" --uncommitted --require
 unset AGY_CONVERSATIONS_DIR
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
+check "absent conversation records degrade to a warning" 0 "cannot confirm the recorded model" --uncommitted
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+AGY_DB_DIR="$(mktemp -d)"
+printf 'gen_metadata: gemini-default flash only\n' > "$AGY_DB_DIR/conv.db"
+export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
+check "DB spot-check miss is a warning, never a block" 0 "DB spot-check is best-effort" --uncommitted
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R" "$AGY_DB_DIR"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+export ANTIGRAVITY_GATE_MODEL=""
+check "empty ANTIGRAVITY_GATE_MODEL disables pinning" 0 "LGTB verdict" --uncommitted
+unset ANTIGRAVITY_GATE_MODEL
+assert "no --model on agy argv when pinning is disabled" "! grep -q -- '--model' '$AGY_FAKE_DIR/argv'"
 rm -rf "$R"
 
 # ── #153: unresolvable base fails closed, without invoking agy ────────

@@ -18,14 +18,16 @@ disagreeing**. Codex (GPT-5.x) and Antigravity earn their keep when they
 *refute*, not when they rubber-stamp. Assign the refuter role explicitly.
 
 Lineage honesty (#205): the Antigravity lane counts as an independent *lineage*
-only when a Gemini-tier slug is verifiably honored — and as of 2026-07-09 none
-was (every `gemini-3.1-pro*` slug silently fell back; see Dispatch mechanics).
-Until one is, treat that lane as **runtime/browser evidence, model-agnostic**,
-not as a third lineage. The check is automated now: request a slug via
-`antigravity-review-gate.sh --model <slug>` (or `ANTIGRAVITY_GATE_MODEL`) and
-the gate verifies the recorded model after dispatch (`gate_verify_agy_model` in
-`claude/scripts/gate-lib.sh`) — loud warning on fallback, hard failure with
-`--require`.
+only when the model pin verifiably held for that run. `--model` takes the exact
+**display label** from `agy models` (e.g. `"Gemini 3.1 Pro (High)"` — verified
+honored 2026-07-10); slug forms silently fall back to the flash tier. The check
+is automated: the gate pins a label (`ANTIGRAVITY_GATE_MODEL`, default
+`Gemini 3.1 Pro (High)`; empty string disables), captures the agy log, and
+hard-fails when the propagated label differs (`gate_verify_agy_label` in
+`claude/scripts/gate-lib.sh`), with a best-effort conversation-records
+spot-check as secondary (`gate_verify_agy_model`). A run whose pin could not be
+verified is **runtime/browser evidence, model-agnostic** — not Gemini-lineage
+refutation.
 
 | Agent | Lane | Owns |
 |-------|------|------|
@@ -120,26 +122,27 @@ squash merge, `git merge-base --is-ancestor` is always false for the source
 branch — verify a change landed with `git grep <symbol> origin/main`, not commit
 ancestry.
 
-**Antigravity: dispatch non-interactively with a verified model slug (#177).**
-The verified high-tier dispatch is:
+**Antigravity: dispatch non-interactively by model LABEL, then verify the pin
+(#177, #205).** `--model` takes the exact display label from `agy models` —
+**not a slug**. The verified Gemini-tier dispatch (agy 1.1.1, 2026-07-10):
 
 ```sh
-timeout 300 agy -p "<prompt>" --model claude-opus-4-6-thinking
+timeout 300 agy -p "<prompt>" --model "Gemini 3.1 Pro (High)" --log-file /tmp/agy-run.log
 ```
 
-Two `--model` failure modes, neither of which errors:
-
-- A display-name string from `agy models` (e.g. `--model "Gemini 3.1 Pro
-  (High)"`) hangs print mode forever behind an interactive picker — always wrap
-  `agy` in `timeout`.
-- An unrecognized lowercase slug silently falls back to the default flash-low
-  tier (as of 2026-07-09, every `gemini-3.1-pro*` variant and
-  `claude-sonnet-4-6-thinking` fell back; only `claude-opus-4-6-thinking` was
-  honored). Post-dispatch verification is automated (#205): gate runs that
-  request a slug (`antigravity-review-gate.sh --model <slug>` /
-  `ANTIGRAVITY_GATE_MODEL`) check the newest
-  `~/.gemini/antigravity-cli/conversations/*.db` afterwards via
-  `gate_verify_agy_model` and warn loudly on fallback (hard failure under
-  `--require`). For manual `agy -p` dispatches, run the same check by hand:
-  `strings <db> | grep -E 'gemini-|claude-'` — `gemini-default` /
-  `gemini-3.5-flash-low` there means the slug was ignored.
+- **Slugs are globally untrustworthy.** Every slug form (`gemini-3.1-pro*`,
+  `claude-sonnet-4-6-thinking`, …) is silently ignored — exit 0, flash-tier
+  fallback. `claude-opus-4-6-thinking` appearing to work was a coincidence
+  (that slug equals its backend ID), not evidence the slug form resolves.
+- **Verify the pin from the log**: the line `Propagating selected model
+  override to backend: label="…"` must quote the requested label. Gate runs
+  check it automatically (`gate_verify_agy_label` — hard failure on mismatch);
+  the conversation records under `~/.gemini/antigravity-cli/conversations/`
+  are the post-hoc ground truth (`gate_verify_agy_model`, best-effort — scan
+  the `.db-wal` files too, a fresh run's records sit there before SQLite
+  checkpoints).
+- Always wrap `agy` in `timeout` — print mode has a history of hangs and
+  silent failures. agy 1.1.1 fixes print-mode silent success on server
+  errors, but it also stopped reading the prompt from stdin with `--print ""`
+  (empty-prompt error), which breaks the review gate's secret-safe prompt
+  channel — the gate degrades open until re-plumbed (#227).

@@ -44,23 +44,29 @@
 # wedge every push. Set ANTIGRAVITY_GATE_REQUIRED=1 (or --require) to turn those
 # degraded cases into hard failures (exit 3).
 #
-# Model verification (#205): agy accepts unrecognized --model slugs without
-# error and silently falls back to the default flash-low tier. When a slug is
-# requested (--model or ANTIGRAVITY_GATE_MODEL), the gate passes it to agy and
-# afterwards verifies the recorded model in the newest conversations DB
-# (gate_verify_agy_model). A fallback warns loudly; with --require it fails
-# hard (exit 3). An absent/unreadable DB degrades to a warning only.
+# Model pinning + verification (#205): agy's --model takes the exact DISPLAY
+# LABEL from `agy models`; slug forms are silently ignored (exit 0, flash-tier
+# fallback). The gate pins a label by default (ANTIGRAVITY_GATE_MODEL, default
+# "Gemini 3.1 Pro (High)"; set it to the empty string to disable pinning) and
+# verifies the pin after the run:
+#   * PRIMARY — the agy log's "Propagating selected model override to
+#     backend: label=…" line (gate_verify_agy_label). A MISMATCH fails hard
+#     (exit 2) regardless of --require: a wrong-model review is worthless.
+#     A missing line is a loud warning (exit 3 under --require).
+#   * SECONDARY — best-effort spot-check of the newest conversation records
+#     (gate_verify_agy_model): warning only, never blocks.
 #
 # Usage:
 #   antigravity-review-gate.sh [--base <branch>] [--uncommitted] [--require]
-#                              [--model <slug>]
+#                              [--model <display-label>]
 #
 # Exit codes:
 #   0  clean, or only P3+ nits
 #   2  local validation failed, blocking findings present (P0/P1/P2),
-#      unresolvable base, OR unrecognizable review output
-#   3  agy could not run AND the gate was REQUIRED, or the recorded model
-#      did not match the requested slug in a REQUIRED run
+#      unresolvable base, unrecognizable review output, OR the model pin
+#      verifiably failed (review ran on the wrong model)
+#   3  agy could not run AND the gate was REQUIRED, or the model pin was
+#      unverifiable in a REQUIRED run
 
 set -euo pipefail
 
@@ -81,7 +87,11 @@ REQUIRED="${ANTIGRAVITY_GATE_REQUIRED:-0}"
 # ─── Args ──────────────────────────────────────────────────────
 BASE=""
 FORCE_UNCOMMITTED=false
-MODEL="${ANTIGRAVITY_GATE_MODEL:-}"
+# Display LABEL, not a slug (#205). `${VAR-default}` (no colon): an explicitly
+# empty ANTIGRAVITY_GATE_MODEL disables pinning; unset gets the default. The
+# default label was verified honored (log propagation + gemini-pro-agent in
+# the conversation records) on agy 1.1.1, 2026-07-10.
+MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 3.1 Pro (High)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,7 +99,7 @@ while [[ $# -gt 0 ]]; do
     --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
     --require)     REQUIRED=1; shift ;;
     --model)       MODEL="${2:-}"; shift 2 ;;
-    -h|--help)     sed -n '2,63p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,70p' "$0"; exit 0 ;;
     *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
@@ -211,7 +221,8 @@ ${DIFF_CONTENT}
 ${FENCE}"
 
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
-trap 'rm -f "$SUMMARY_FILE"' EXIT
+AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
+trap 'rm -f "$SUMMARY_FILE" "$AGY_LOG_FILE"' EXIT
 
 # Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
 # (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
@@ -222,9 +233,11 @@ set +e
 # --print-timeout so a hung session can't wedge the push.
 # The prompt goes in on STDIN, not argv (#154): the reviewed diff can contain
 # secrets, and an argv prompt is visible in `ps` for the whole review. agy's
-# --print flag requires a value; an EMPTY value makes agy read the prompt from
-# stdin (verified against agy 1.1.0 — re-verify if agy is upgraded, since the
-# shim-based tests prove the gate WRITES stdin, not that real agy READS it).
+# --print flag requires a value; an EMPTY value made agy read the prompt from
+# stdin on agy 1.1.0 — but agy 1.1.1 REJECTS it ("empty prompt", issue #227),
+# so on 1.1.1 real runs fail dispatch and degrade open via the canary below.
+# The stdin channel stays (argv is not an acceptable fallback for secret
+# diffs) until #227 lands a replacement.
 # Once the here-string is consumed,
 # stdin is at EOF, so the run stays non-interactive and any tool-permission
 # request fails closed — same property the old </dev/null redirect provided.
@@ -233,10 +246,10 @@ set +e
 # Passed via `env` INSIDE the wrapped command line — unambiguous propagation
 # through the _tmo function and timeout to agy and its hook subprocesses
 # (a bare prefix assignment also works in bash, verified, but reads ambiguously).
-# A requested model slug (#205) rides along; its honoring is verified after
-# the run — agy accepts unknown slugs without error.
+# The pinned model LABEL (#205) rides along, plus a log capture so the pin can
+# be verified afterwards — agy accepts unknown model values without error.
 AGY_ARGS=(--mode plan --sandbox)
-[[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL")
+[[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")
 _tmo "$PRINT_TIMEOUT_SECS" \
   env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" --print "" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
 RC=$?
@@ -266,18 +279,30 @@ if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
   degrade "agy review session failed (exit $RC)."
 fi
 
-# ─── #205: verify the recorded model when a slug was requested ──
-# The run succeeded — but agy silently falls back to the default flash-low
-# tier on unrecognized slugs, so confirm the conversations DB recorded the
-# model we asked for before trusting this verdict as that lineage. A fallback
-# warns loudly; strict (--require) runs fail hard — a flash-tier verdict must
-# not silently stand in for the requested model.
-if [[ -n "$MODEL" ]] && ! gate_verify_agy_model "$MODEL"; then
-  if [[ "$REQUIRED" == "1" ]]; then
-    red "  ANTIGRAVITY_GATE_REQUIRED is set — treating the model fallback as a hard failure."
-    exit 3
+# ─── #205: verify the model pin when a label was requested ─────
+# The run succeeded — now confirm it actually ran on the pinned model before
+# trusting the verdict as that lineage. Primary: the propagated-label line in
+# the agy log. A MISMATCH fails hard regardless of --require (a wrong-model
+# review is worthless as evidence); a MISSING line is a loud warning (hard
+# only under --require, so a log-format drift can't wedge every push).
+if [[ -n "$MODEL" ]]; then
+  label_rc=0
+  gate_verify_agy_label "$MODEL" "$AGY_LOG_FILE" || label_rc=$?
+  if [[ "$label_rc" -eq 1 ]]; then
+    red "Push blocked: the review ran on the WRONG MODEL — its verdict is not evidence for \"$MODEL\"."
+    red "  Use the exact display label from \`agy models\` (slugs are silently ignored; see MULTI-AGENT.md)."
+    exit 2
+  elif [[ "$label_rc" -ne 0 ]]; then
+    yellow "⚠ model pin: no propagation line in the agy log — cannot verify the pin held."
+    if [[ "$REQUIRED" == "1" ]]; then
+      red "  ANTIGRAVITY_GATE_REQUIRED is set — treating the unverifiable model pin as a hard failure."
+      exit 3
+    fi
+    yellow "  Continuing (gate not strict) — treat this verdict as default-tier evidence, not \"$MODEL\"."
   fi
-  yellow "  Continuing (gate not strict) — treat this verdict as default-tier evidence, not '$MODEL'."
+  # Secondary, best-effort ground truth: the conversation records. Warning
+  # only — the log-line check above is authoritative for this run.
+  gate_verify_agy_model "$MODEL" || yellow "  (DB spot-check is best-effort; the log-line check above is authoritative.)"
 fi
 
 # ─── Step 5: parse findings + gate ─────────────────────────────
