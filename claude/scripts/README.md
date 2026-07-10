@@ -27,6 +27,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `review-and-push.sh` | AI-reviews overnight changes, pushes if safe | Read-only review + push | Only pushes after validation |
 | `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift | Install (calls `claude plugin install`) | No file edits — updates plugin state |
 | `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`. Tests: `tests/doc-truth.test.sh` | Read-only | No |
+| `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
 
 ## The Morning Workflow
 

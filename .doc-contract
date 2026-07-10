@@ -33,6 +33,11 @@ SOURCE        .github/PULL_REQUEST_TEMPLATE.md
 # (site-src/ and site/ are gitignored, so untracked output is invisible to
 # the checker; the glob documents the tier and guards accidental tracking.)
 GENERATED     site-src/*.md
+# AGENTPACK.yaml is built from skill/agent frontmatter + the hand-maintained
+# meta fragment by claude/scripts/gen-agentpack.sh; freshness is asserted by
+# its own CI step (non-md, so these entries document the tier only).
+GENERATED     claude/AGENTPACK.yaml
+SOURCE        claude/agentpack-meta.json
 
 # Historical — point-in-time records (banner or ADR Status/Date header)
 # (Plans/ is gitignored — untracked files are invisible to the checker.)

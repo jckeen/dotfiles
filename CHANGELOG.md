@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-07-10 — chore: AGENTPACK.yaml is now GENERATED from frontmatter (#207)
+
+### What changed
+- **`claude/scripts/gen-agentpack.sh`** (new) — generates `claude/AGENTPACK.yaml`
+  from the live frontmatter of `claude/skills/*/SKILL.md` and
+  `claude/agents/*.md` (same source of truth as build-site.sh) plus the new
+  hand-maintained fragment `claude/agentpack-meta.json` (pack metadata,
+  compatibility, profiles, the three instruction atoms, per-type atom
+  defaults, pinned skill ordering). `--check` mode exits 1 when the committed
+  manifest is stale; wired into ci.yml's shared checker block.
+- **`claude/AGENTPACK.yaml`** — regenerated: gains a `# GENERATED … do not
+  edit` banner and 12 descriptions (11 skills + security-reviewer agent)
+  resync to current frontmatter. The old hand-applied ~296-char truncation is
+  gone — it was lossy, schema-unrequired, and internally inconsistent
+  (orchestrate sat untruncated at 302 chars), so no deterministic rule could
+  reproduce it.
+- **`.doc-contract`** — `claude/AGENTPACK.yaml` declared GENERATED,
+  `claude/agentpack-meta.json` declared SOURCE (non-md, documentation-only
+  entries).
+- **`claude/MULTI-AGENT.md` / `claude/scripts/README.md`** — note the manifest
+  is generated, never hand-edited.
+
+### Decisions made
+- **GENERATED, not HISTORICAL**: nothing consumes the manifest *today* (no
+  Operator Commons pack published, `~/.agentpack` absent), but the agent-pack
+  CLI's shipped git-source install (`agentpack install
+  github:owner/repo@ref#subpath`) targets exactly this file, and four
+  instruction surfaces (MULTI-AGENT.md, CLAUDE.md, codex/AGENTS.md,
+  antigravity/GEMINI.md) bill the AgentPack as the cross-tool loading
+  mechanism. Marking it HISTORICAL would have meant rewriting the declared
+  team architecture; generating it removes the drift class at near-zero cost.
+- Meta fragment is JSON (`agentpack-meta.json`), not YAML: parsed with
+  python3 stdlib only — no PyYAML dependency in CI; AGENTPACK.yaml itself is
+  already a JSON-bodied YAML document.
+
 ## 2026-07-10 — feat: agent-native-review subagent + deployed-orphan checker (#217, #215)
 
 ### What changed

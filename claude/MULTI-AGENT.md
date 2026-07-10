@@ -2,7 +2,9 @@
 
 How Claude Code (`cc`), Codex (`cx`), and Antigravity work as one team on the
 same repo. This is the shared playbook — all three load it through the AgentPack
-(`AGENTPACK.yaml`), and the operative rules are mirrored into `CLAUDE.md`,
+(`AGENTPACK.yaml`, generated from skill/agent frontmatter by
+`scripts/gen-agentpack.sh` — never edited by hand), and the operative rules are
+mirrored into `CLAUDE.md`,
 `codex/AGENTS.md`, and `antigravity/GEMINI.md` so each tool follows them at
 session start.
 
