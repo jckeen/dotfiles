@@ -36,7 +36,7 @@ Use ALL applicable parallelization patterns:
 - **Named teammates** — For 3+ independent workstreams, spawn named teammates
   via the Agent tool (`name:` parameter) and coordinate them with SendMessage.
   Every session already has one implicit team — there is no TeamCreate/TeamDelete
-  step (removed in Claude Code v2.1.178).
+  step (removed in Claude Code 2.1.x).
 - **Batch operations** — For similar changes across 3+ files (refactors, renames,
   migrations), give one agent clear, repeatable instructions over the file list.
 - **Launch in one message** — All independent research/exploration agents MUST
