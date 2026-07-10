@@ -14,6 +14,11 @@
 #    Assert the required headings appear in BOTH sides of each pair. (The
 #    pairs had drifted to different heading sets.)
 #
+# 3. GUIDE TABLE: CLAUDE-GUIDE.md's "## Slash Commands" table must list exactly
+#    the skill dirs under claude/skills/ — no more, no less. (The table had
+#    drifted: it omitted /antigravity-review and listed the built-in /verify;
+#    only README's count was asserted, so nothing caught it — issue #210.)
+#
 # Usage: check-skill-parity.sh        exit 1 on any drift
 
 set -euo pipefail
@@ -44,6 +49,36 @@ elif [ "$agents_claimed" != "$agents_actual" ]; then
   red "README claims '$agents_claimed-agent' but claude/agents/ has $agents_actual — update every '$agents_claimed-agent' mention."
 else
   green "agent count: README claim ($agents_claimed) matches claude/agents/ ($agents_actual)"
+fi
+
+# ── 1c. CLAUDE-GUIDE slash-command table vs claude/skills/ ─────────
+guide="$REPO_ROOT/CLAUDE-GUIDE.md"
+if [ ! -f "$guide" ]; then
+  red "CLAUDE-GUIDE.md missing — its Slash Commands table is asserted against claude/skills/"
+else
+  # Table rows look like "| `/name …` | use |"; only rows inside the
+  # "## Slash Commands" section count (other tables list /clear, cc, etc.).
+  table_skills=$(awk '/^## Slash Commands/{f=1; next} /^## /{f=0} f' "$guide" \
+    | grep -oE '^\| `/[a-z][a-z-]*' | sed 's#^| `/##' | sort -u)
+  dir_skills=$(find "$REPO_ROOT/claude/skills" -mindepth 1 -maxdepth 1 -type d \
+    -exec basename {} \; | sort)
+  if [ -z "$table_skills" ]; then
+    red "CLAUDE-GUIDE.md has no parseable '## Slash Commands' table — update this check or the guide."
+  else
+    guide_drift=0
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      guide_drift=1
+      red "skill '/$s' exists in claude/skills/ but is missing from CLAUDE-GUIDE.md's Slash Commands table"
+    done < <(comm -23 <(printf '%s\n' "$dir_skills") <(printf '%s\n' "$table_skills"))
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      guide_drift=1
+      red "CLAUDE-GUIDE.md's Slash Commands table lists '/$s' but claude/skills/$s/ does not exist (built-ins don't belong in the table)"
+    done < <(comm -13 <(printf '%s\n' "$dir_skills") <(printf '%s\n' "$table_skills"))
+    [ "$guide_drift" -eq 0 ] \
+      && green "guide table: CLAUDE-GUIDE.md Slash Commands table matches claude/skills/ exactly"
+  fi
 fi
 
 # ── 2. Cross-tool artifact shape (changelog + handoff) ─────────────

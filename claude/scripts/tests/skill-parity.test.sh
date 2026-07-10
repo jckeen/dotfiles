@@ -47,11 +47,25 @@ write_skill() {
   } > "$p"
 }
 
+# write_guide <skill>... — CLAUDE-GUIDE.md whose Slash Commands table lists
+# exactly the given skills (plus non-slash tables the parser must ignore).
+write_guide() {
+  {
+    printf '# Guide\n\n## Slash Commands\n\n| Command | Use |\n|---------|-----|\n'
+    local s
+    for s in "$@"; do
+      printf '| `/%s` | use %s |\n' "$s" "$s"
+    done
+    printf '\n## Shell Commands\n\n| Command | Use |\n|---------|-----|\n| `cc` | launch |\n'
+  } > "$R/CLAUDE-GUIDE.md"
+}
+
 # scaffold_good — README claiming N, exactly the changelog+handoff skill dirs,
-# a matching "N-agent" claim + agent files, and both sides' SKILL.md with all
-# required headings.
+# a matching "N-agent" claim + agent files, a CLAUDE-GUIDE table listing the
+# same skills, and both sides' SKILL.md with all required headings.
 scaffold_good() {
   printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\n' > "$R/README.md"
+  write_guide changelog handoff
   # one agent file to match the "1-agent" claim
   mkdir -p "$R/claude/agents"
   printf '# reviewer\n' > "$R/claude/agents/reviewer.md"
@@ -107,6 +121,26 @@ new_repo
 scaffold_good
 printf '# scout\n' > "$R/claude/agents/scout.md"   # now 2 agents, claim still 1
 check "bad agent count: README claim mismatches agent files fails" 1 "but claude/agents/ has 2"
+
+# --- Case 5: BAD (guide omits a skill) — table drops handoff → exit 1 ---------
+new_repo
+scaffold_good
+write_guide changelog   # handoff dir exists but the guide table lost its row
+check "bad guide table: skill missing from CLAUDE-GUIDE fails" 1 \
+  "missing from CLAUDE-GUIDE.md's Slash Commands table"
+
+# --- Case 6: BAD (guide lists a non-skill) — e.g. a built-in like /verify -----
+new_repo
+scaffold_good
+write_guide changelog handoff verify   # /verify has no claude/skills/ dir
+check "bad guide table: non-skill row in CLAUDE-GUIDE fails" 1 \
+  "claude/skills/verify/ does not exist"
+
+# --- Case 7: BAD (guide missing entirely) → exit 1 ----------------------------
+new_repo
+scaffold_good
+rm "$R/CLAUDE-GUIDE.md"
+check "bad guide: missing CLAUDE-GUIDE.md fails" 1 "CLAUDE-GUIDE.md missing"
 
 echo "---"
 echo "$pass passed, $failed failed"
