@@ -24,9 +24,8 @@
 #   3. empty commands/   — the dir survives holding nothing but a .gitignore
 #                          (slash commands migrated to skills/)
 #   4. known PAI paths   — top-level entries whose name EXACTLY matches a
-#                          known PAI leftover (PAI/, MEMORY/, ISA.md,
-#                          settings.plain.json — see PAI_PATHS): reported as
-#                          PAI-LEFTOVER and fails --strict (issue #232)
+#                          known PAI leftover (see PAI_PATHS): reported as
+#                          PAI-LEFTOVER and fails --strict (issues #232, #248)
 #   5. unknown top-level — not a symlink, not known runtime state: reported as
 #                          UNKNOWN for a human to triage; never fails --strict
 #                          (new Claude Code versions grow new runtime dirs)
@@ -53,6 +52,13 @@ fi
 . "$_LIB"
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+# Strip trailing slashes: every check derives entry names by stripping the
+# "$CLAUDE_DIR/" prefix from find output, and a trailing slash breaks that
+# strip — names stay full paths, so NOTHING matches the allowlists or
+# PAI_PATHS and --strict silently passes a dirty tree (issue #247).
+while [ "$CLAUDE_DIR" != "/" ] && [ "${CLAUDE_DIR%/}" != "$CLAUDE_DIR" ]; do
+  CLAUDE_DIR="${CLAUDE_DIR%/}"
+done
 
 STRICT=0
 for arg in "$@"; do
@@ -93,9 +99,10 @@ RUNTIME_FILES=(
 # not be blamed on PAI), so anything not on this list stays advisory UNKNOWN.
 # Names come from the decommission record (claude-memory repo,
 # dotfiles-plans/PAI-DECOMMISSION.md): the engine dir, the PAI-era MEMORY/
-# tree, ISA.md, and the pai-mode settings variant.
+# tree, ISA.md, the pai-mode settings variant, and pai-mode.sh's saved
+# symlink-target state file (issue #248).
 PAI_PATHS=(
-  PAI MEMORY ISA.md settings.plain.json
+  PAI MEMORY ISA.md settings.plain.json .pai-mode.state
 )
 
 in_list() {
