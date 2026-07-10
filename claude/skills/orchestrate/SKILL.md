@@ -33,8 +33,10 @@ Use ALL applicable parallelization patterns:
   `superpowers:dispatching-parallel-agents`.
 - **Background agents** — For research, exploration, or investigation that doesn't
   block other work, use `run_in_background: true`. Don't wait when you don't need to.
-- **Agent teams** — For 3+ independent workstreams, use `TeamCreate` to coordinate
-  agents with shared task visibility.
+- **Named teammates** — For 3+ independent workstreams, spawn named teammates
+  via the Agent tool (`name:` parameter) and coordinate them with SendMessage.
+  Every session already has one implicit team — there is no TeamCreate/TeamDelete
+  step (removed in Claude Code v2.1.178).
 - **Batch operations** — For similar changes across 3+ files (refactors, renames,
   migrations), give one agent clear, repeatable instructions over the file list.
 - **Launch in one message** — All independent research/exploration agents MUST
@@ -51,7 +53,7 @@ Select capabilities aggressively from the available skills and platform features
 - **Research** — If the task involves unknowns, use `/deep-research` or launch
   parallel search agents (multiple queries at once).
 - **Specialized agents** — Spawn subagents with tailored prompts (or a matching
-  `agentType`) so each brings domain-specific expertise.
+  `subagent_type`) so each brings domain-specific expertise.
 - **Multiple perspectives** — For design or architecture decisions, spin up
   several subagents with different viewpoints and synthesize.
 - **Competing hypotheses** — For debugging, spawn N agents each testing a
