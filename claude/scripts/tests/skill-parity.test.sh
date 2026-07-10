@@ -59,9 +59,9 @@ scaffold_good() {
   write_skill claude changelog "What changed" "Decisions made" "Known issues"
   write_skill agents changelog "What changed" "Decisions made" "Known issues"
   write_skill claude handoff "What we did" "Where we left off" "Key decisions made" \
-    "Open issues" "Next steps" "Context for next session"
+    "Open issues" "Next steps" "Context for next session" "Operator-action queue"
   write_skill agents handoff "What we did" "Where we left off" "Key decisions made" \
-    "Open issues" "Next steps" "Context for next session"
+    "Open issues" "Next steps" "Context for next session" "Operator-action queue"
 }
 
 # check <name> <expected-exit> [<required output fragment>]
