@@ -32,12 +32,20 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 cat > "$AGY_FAKE_DIR/stdin"
 touch "$AGY_FAKE_DIR/invoked"
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--log-file" ] && [ -f "$AGY_FAKE_DIR/log" ] && cat "$AGY_FAKE_DIR/log" > "$a"
+  prev="$a"
+done
 cat "$AGY_FAKE_DIR/output"
 EOF
 chmod +x "$SHIM_DIR/agy"
 export PATH="$SHIM_DIR:$PATH"
 export AGY_FAKE_DIR=""
 unset ANTIGRAVITY_GATE_REQUIRED
+unset ANTIGRAVITY_GATE_MODEL
+unset GATE_FORCE_FULL
+unset GATE_TIER1_MAX_LINES
 
 new_repo() {
   R="$(mktemp -d)"
@@ -129,6 +137,79 @@ printf -- '- [P3] minor nit — code.txt:1\nthis is really a [P1] in disguise\n'
 check "prose [P1] alongside a valid P3 line blocks" 2 "Stray [P#] token" --uncommitted
 rm -rf "$R"
 
+# ── #205: post-dispatch model-pin verification ────────────────────────
+# The propagation line format matches agy 1.1.1's model_config_manager log.
+# The fake conversation records are plain text files — `strings` reads them.
+PROP_OK='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.1 Pro (High)"'
+PROP_BAD='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.5 Flash (Low)"'
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+AGY_DB_DIR="$(mktemp -d)"
+printf 'gen_metadata: Gemini 3.1 Pro (High) gemini-pro-agent\n' > "$AGY_DB_DIR/conv.db"
+export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
+check "propagated label matches the default pin" 0 "model pin verified" --uncommitted
+assert "pinned label forwarded on agy argv" "grep -q 'Gemini 3.1 Pro (High)' '$AGY_FAKE_DIR/argv'"
+assert "log capture requested on agy argv" "grep -q -- '--log-file' '$AGY_FAKE_DIR/argv'"
+check "DB spot-check finds the label in the records" 0 "records the requested label" --uncommitted
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R" "$AGY_DB_DIR"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_BAD" > "$AGY_FAKE_DIR/log"
+check "propagated-label mismatch fails hard WITHOUT --require" 2 "MODEL PIN FAILED" --uncommitted
+check "propagated-label mismatch fails hard with an explicit --model" 2 "MODEL PIN FAILED" --uncommitted --model "Gemini 3.1 Pro (High)"
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s session=42 retry=false\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "trailing fields after the quoted label still verify" 0 "model pin verified" --uncommitted
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
+check "missing propagation line degrades to a warning" 0 "MODEL PIN UNVERIFIED" --uncommitted
+check "missing propagation line fails hard with --require" 3 "MODEL PIN UNVERIFIED" --uncommitted --require
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
+check "absent conversation records degrade to a warning" 0 "cannot confirm the recorded model" --uncommitted
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+AGY_DB_DIR="$(mktemp -d)"
+printf 'gen_metadata: gemini-default flash only\n' > "$AGY_DB_DIR/conv.db"
+export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
+check "DB spot-check miss is a warning, never a block" 0 "DB spot-check is best-effort" --uncommitted
+unset AGY_CONVERSATIONS_DIR
+rm -rf "$R" "$AGY_DB_DIR"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+export ANTIGRAVITY_GATE_MODEL=""
+check "empty ANTIGRAVITY_GATE_MODEL disables pinning" 0 "LGTB verdict" --uncommitted
+unset ANTIGRAVITY_GATE_MODEL
+assert "no --model on agy argv when pinning is disabled" "! grep -q -- '--model' '$AGY_FAKE_DIR/argv'"
+rm -rf "$R"
+
 # ── #153: unresolvable base fails closed, without invoking agy ────────
 new_repo
 git -C "$R" checkout -qb feature
@@ -136,6 +217,49 @@ echo "committed work" >> "$R/code.txt"
 git -C "$R" commit -qam "ahead"
 check "unresolvable --base fails closed" 2 "could not be resolved" --base does-not-exist
 assert "agy not invoked on unresolvable base" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# ── #212: proportionality valve ────────────────────────────────────────
+new_repo
+printf '# Title\n\nDocs only.\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "docs-only small diff takes the tier-1 skip" 0 "tier-1 skip" --uncommitted
+assert "agy not invoked on a tier-1 skip" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf '# Title\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+export GATE_FORCE_FULL=1
+check "GATE_FORCE_FULL=1 forces the full pass on a docs-only diff" 0 "LGTB verdict" --uncommitted
+unset GATE_FORCE_FULL
+assert "agy invoked under GATE_FORCE_FULL" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+printf 'notes about rotation\n' > "$R/token-rotation.md"
+printf -- '- [P1] Broken thing — token-rotation.md:1\n' > "$AGY_FAKE_DIR/output"
+check "risk-surface filename escalates to the full pass (and still blocks)" 2 "BLOCKING findings" --uncommitted
+rm -rf "$R"
+
+new_repo
+printf 'small change\n' > "$R/widget.xyz"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "unclassified file escalates to the full pass" 0 "LGTB verdict" --uncommitted
+assert "agy invoked for the unclassified diff" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# Rename laundering: `git mv risk.sh notes.md` must NOT classify as docs-only —
+# --no-renames lists both sides, and the source path escalates.
+new_repo
+mkdir -p "$R/claude/hooks"
+printf '#!/bin/sh\nexit 0\n' > "$R/claude/hooks/pre-push-guard.sh"
+git -C "$R" add claude/hooks/pre-push-guard.sh
+git -C "$R" commit -qm "add guard"
+git -C "$R" mv claude/hooks/pre-push-guard.sh notes.md
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "renaming a risk surface to .md still takes the full pass" 0 "LGTB verdict" --uncommitted
+assert "agy invoked for the rename-laundered diff" "[ -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
 echo ""

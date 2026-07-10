@@ -44,22 +44,40 @@
 # wedge every push. Set ANTIGRAVITY_GATE_REQUIRED=1 (or --require) to turn those
 # degraded cases into hard failures (exit 3).
 #
+# Model pinning + verification (#205): agy's --model takes the exact DISPLAY
+# LABEL from `agy models`; slug forms are silently ignored (exit 0, flash-tier
+# fallback). The gate pins a label by default (ANTIGRAVITY_GATE_MODEL, default
+# "Gemini 3.1 Pro (High)"; set it to the empty string to disable pinning) and
+# verifies the pin after the run:
+#   * PRIMARY — the agy log's "Propagating selected model override to
+#     backend: label=…" line (gate_verify_agy_label). A MISMATCH fails hard
+#     (exit 2) regardless of --require: a wrong-model review is worthless.
+#     A missing line is a loud warning (exit 3 under --require).
+#   * SECONDARY — best-effort spot-check of the newest conversation records
+#     (gate_verify_agy_model): warning only, never blocks.
+#
 # Usage:
 #   antigravity-review-gate.sh [--base <branch>] [--uncommitted] [--require]
+#                              [--model <display-label>]
 #
 # Exit codes:
 #   0  clean, or only P3+ nits
 #   2  local validation failed, blocking findings present (P0/P1/P2),
-#      unresolvable base, OR unrecognizable review output
-#   3  agy could not run AND the gate was REQUIRED
+#      unresolvable base, unrecognizable review output, OR the model pin
+#      verifiably failed (review ran on the wrong model)
+#   3  agy could not run AND the gate was REQUIRED, or the model pin was
+#      unverifiable in a REQUIRED run
 
 set -euo pipefail
 
-# ─── Colors ────────────────────────────────────────────────────
-red()    { printf '\033[31m%s\033[0m\n' "$*"; }
-yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-green()  { printf '\033[32m%s\033[0m\n' "$*"; }
-bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
+# Shared gate plumbing: colors, base resolution, diff-target selection, diff
+# extraction/filtering, hash fencing, portable timeout (#200). gate-lib.sh
+# ships beside this script in BOTH install locations (the repo's
+# claude/scripts/ and the ~/.claude/scripts symlink farm), so a plain dirname
+# is sufficient and portable — no readlink -f (absent on stock macOS).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gate-lib.sh
+. "$SCRIPT_DIR/gate-lib.sh"
 
 # ─── Config / thresholds ───────────────────────────────────────
 MAX_DIFF_LINES="${ANTIGRAVITY_GATE_MAX_LINES:-500}"
@@ -69,13 +87,19 @@ REQUIRED="${ANTIGRAVITY_GATE_REQUIRED:-0}"
 # ─── Args ──────────────────────────────────────────────────────
 BASE=""
 FORCE_UNCOMMITTED=false
+# Display LABEL, not a slug (#205). `${VAR-default}` (no colon): an explicitly
+# empty ANTIGRAVITY_GATE_MODEL disables pinning; unset gets the default. The
+# default label was verified honored (log propagation + gemini-pro-agent in
+# the conversation records) on agy 1.1.1, 2026-07-10.
+MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 3.1 Pro (High)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)        BASE="${2:-}"; shift 2 ;;
     --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
     --require)     REQUIRED=1; shift ;;
-    -h|--help)     sed -n '2,54p' "$0"; exit 0 ;;
+    --model)       MODEL="${2:-}"; shift 2 ;;
+    -h|--help)     sed -n '2,70p' "$0"; exit 0 ;;
     *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
@@ -121,19 +145,8 @@ fi
 # ─── Step 2: resolve base + pick the diff target ───────────────
 # Prefer the committed delta vs the base branch — that's what the PR will contain
 # — and fall back to the working tree only when there's no committed delta or
-# --uncommitted is forced. (Mirrors codex-review-gate.sh.)
-if [[ -z "$BASE" ]]; then
-  # `|| true`: on clones without origin/HEAD the pipeline fails; under pipefail
-  # that would abort before the `main` fallback, so swallow it.
-  BASE="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
-  [[ -z "$BASE" ]] && BASE="main"
-fi
-BASE_REF=""
-if git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
-  BASE_REF="origin/$BASE"
-elif git rev-parse --verify --quiet "$BASE" >/dev/null; then
-  BASE_REF="$BASE"
-fi
+# --uncommitted is forced. (Shared with codex-review-gate.sh via gate-lib.sh.)
+gate_resolve_base
 
 # Unresolvable base → fail CLOSED (#153). The old fallback reviewed `git diff
 # HEAD`, which silently omits the committed delta — the very thing the PR will
@@ -145,56 +158,17 @@ if [[ -z "$BASE_REF" ]] && [[ "$FORCE_UNCOMMITTED" != "true" ]]; then
   exit 2
 fi
 
-has_committed_delta=false
-if [[ -n "$BASE_REF" ]] && [[ -n "$(git rev-list --max-count=1 "$BASE_REF..HEAD" 2>/dev/null)" ]]; then
-  has_committed_delta=true
-fi
-has_uncommitted=false
-[[ -n "$(git status --porcelain 2>/dev/null)" ]] && has_uncommitted=true
-
-DIFF_TARGET=()
-TARGET_DESC=""
-if [[ "$FORCE_UNCOMMITTED" == "true" ]]; then
-  [[ "$has_uncommitted" == "true" ]] || degrade "no uncommitted changes to review."
-  DIFF_TARGET=(HEAD)
-  TARGET_DESC="uncommitted working-tree changes (forced)"
-elif [[ "$has_committed_delta" == "true" ]]; then
-  DIFF_TARGET=("$BASE_REF...HEAD")
-  TARGET_DESC="committed changes vs $BASE_REF"
-elif [[ "$has_uncommitted" == "true" ]]; then
-  DIFF_TARGET=(HEAD)
-  TARGET_DESC="uncommitted changes (no committed delta vs $BASE_REF)"
-else
-  # No uncommitted changes and no committed delta — and the base is guaranteed
-  # resolved here (unresolvable bases exit 2 above), so this is genuinely
-  # "nothing to review".
-  green "✓ HEAD matches $BASE_REF and no uncommitted changes — nothing to review."
-  exit 0
-fi
+# The base is guaranteed resolved past this point (unresolvable bases exit 2
+# above, except under --uncommitted which never uses the base), so the
+# "nothing to review" exit inside gate_select_diff_target is genuine.
+gate_compute_deltas
+gate_select_diff_target
 
 # ─── Step 3: extract + filter the diff ─────────────────────────
-# Exclude dependency lockfiles and binary/minified assets — no review value, and
-# they burn quota + the line budget.
-DIFF_CONTENT="$(git diff "${DIFF_TARGET[@]}" -- \
-  ':!*-lock.yaml' ':!*-lock.json' ':!package-lock.json' ':!*.lock' ':!bun.lockb' \
-  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.svg' ':!*.ico' ':!*.pdf' \
-  ':!*.min.js' ':!*.min.css' ':!*.map' \
-  2>/dev/null)"
-
-# `git diff HEAD` omits untracked files, so a brand-new file would go unreviewed
-# in an uncommitted review (#150). Append them as added-file diffs, respecting
-# .gitignore and the same asset/lockfile exclusions as the tracked diff above.
-if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
-  while IFS= read -r -d '' f; do
-    case "$f" in
-      *-lock.yaml|*-lock.json|*.lock|bun.lockb|\
-      *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.pdf|*.min.js|*.min.css|*.map) continue ;;
-    esac
-    # --no-index exits 1 when files differ (always, for a new file) — swallow it.
-    ut="$(git diff --no-index --no-color -- /dev/null "$f" 2>/dev/null || true)"
-    [[ -n "$ut" ]] && DIFF_CONTENT+="${DIFF_CONTENT:+$'\n'}$ut"
-  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
-fi
+# Lockfiles and binary/minified assets are excluded (no review value, and they
+# burn quota + the line budget), and untracked files are appended for
+# working-tree reviews (#150) — see gate_extract_diff.
+gate_extract_diff
 
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
@@ -206,6 +180,17 @@ if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
   degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."
 fi
 
+# ─── Proportionality valve (#212) ──────────────────────────────
+# Docs-only small diffs take a reduced pass; anything touching a risk surface
+# or above the size cap gets the full review, never downgradable. The valve
+# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
+gate_classify_tier
+if [[ "$GATE_TIER" -eq 1 ]]; then
+  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
+  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
+  exit 0
+fi
+
 # ─── Step 4: run agy --print, non-interactively and tool-locked ─
 command -v agy >/dev/null 2>&1 || degrade "agy CLI not found on PATH."
 
@@ -213,16 +198,10 @@ bold "→ Antigravity (Gemini) review gate"
 echo "  Reviewing: $TARGET_DESC ($N_LINES lines)"
 echo ""
 
-# Fence the untrusted diff with a boundary the diff cannot forge: derive it from a
-# hash of the diff itself, so injected text can't emit a matching closing marker.
-# Portable hasher — sha1sum (Linux), shasum (macOS), cksum (POSIX fallback).
-_hash() {
-  if   command -v sha1sum >/dev/null 2>&1; then sha1sum
-  elif command -v shasum  >/dev/null 2>&1; then shasum
-  else cksum
-  fi
-}
-FENCE="UNTRUSTED_DIFF_$(printf '%s' "$DIFF_CONTENT" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
+# Fence the untrusted diff with a boundary the diff cannot forge: gate_fence
+# derives it from a hash of the diff itself, so injected text can't emit a
+# matching closing marker.
+FENCE="$(gate_fence UNTRUSTED_DIFF "$DIFF_CONTENT")"
 PROMPT_INSTRUCTION="SYSTEM INSTRUCTION: You are Antigravity, a Gemini-powered developer assistant specializing in front-end engineering, runtime/browser verification, and code quality.
 
 Review the git diff for bug risks, logical flaws, boundary-condition errors, security issues, and over-engineering.
@@ -242,27 +221,23 @@ ${DIFF_CONTENT}
 ${FENCE}"
 
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
-trap 'rm -f "$SUMMARY_FILE"' EXIT
+AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
+trap 'rm -f "$SUMMARY_FILE" "$AGY_LOG_FILE"' EXIT
 
-# Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
-# without a ceiling rather than hard-fail on macOS (#151). Exit 124 (timed out) is
-# only produced by the first two — handled below.
-_tmo() {
-  if   command -v timeout  >/dev/null 2>&1; then timeout "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
-  else shift; "$@"
-  fi
-}
-
+# Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
+# (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
+# (#151). Exit 124 (timed out) is only produced by the first two — handled below.
 set +e
 # NO --dangerously-skip-permissions (see the Security note above). --mode plan and
 # --sandbox restrict the agent. _tmo is a hard ceiling over agy's own
 # --print-timeout so a hung session can't wedge the push.
 # The prompt goes in on STDIN, not argv (#154): the reviewed diff can contain
 # secrets, and an argv prompt is visible in `ps` for the whole review. agy's
-# --print flag requires a value; an EMPTY value makes agy read the prompt from
-# stdin (verified against agy 1.1.0 — re-verify if agy is upgraded, since the
-# shim-based tests prove the gate WRITES stdin, not that real agy READS it).
+# --print flag requires a value; an EMPTY value made agy read the prompt from
+# stdin on agy 1.1.0 — but agy 1.1.1 REJECTS it ("empty prompt", issue #227),
+# so on 1.1.1 real runs fail dispatch and degrade open via the canary below.
+# The stdin channel stays (argv is not an acceptable fallback for secret
+# diffs) until #227 lands a replacement.
 # Once the here-string is consumed,
 # stdin is at EOF, so the run stays non-interactive and any tool-permission
 # request fails closed — same property the old </dev/null redirect provided.
@@ -271,8 +246,12 @@ set +e
 # Passed via `env` INSIDE the wrapped command line — unambiguous propagation
 # through the _tmo function and timeout to agy and its hook subprocesses
 # (a bare prefix assignment also works in bash, verified, but reads ambiguously).
+# The pinned model LABEL (#205) rides along, plus a log capture so the pin can
+# be verified afterwards — agy accepts unknown model values without error.
+AGY_ARGS=(--mode plan --sandbox)
+[[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")
 _tmo "$PRINT_TIMEOUT_SECS" \
-  env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox --print "" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
+  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" --print "" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
 RC=$?
 set -e
 
@@ -298,6 +277,38 @@ if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
     fi
   fi
   degrade "agy review session failed (exit $RC)."
+fi
+
+# ─── #205: verify the model pin when a label was requested ─────
+# The run succeeded — now confirm it actually ran on the pinned model before
+# trusting the verdict as that lineage. Primary: the propagated-label line in
+# the agy log. A MISMATCH fails hard regardless of --require (a wrong-model
+# review is worthless as evidence); a MISSING line is a loud warning (hard
+# only under --require, so a log-format drift can't wedge every push).
+if [[ -n "$MODEL" ]]; then
+  label_rc=0
+  gate_verify_agy_label "$MODEL" "$AGY_LOG_FILE" || label_rc=$?
+  if [[ "$label_rc" -eq 1 ]]; then
+    red "Push blocked: the review ran on the WRONG MODEL — its verdict is not evidence for \"$MODEL\"."
+    red "  Use the exact display label from \`agy models\` (slugs are silently ignored; see MULTI-AGENT.md)."
+    exit 2
+  elif [[ "$label_rc" -ne 0 ]]; then
+    # Failing open here (outside --require) is by design — a log-format drift
+    # must not wedge every push — so the warning has to be unmissable.
+    yellow "⚠ ═══════════════════════════════════════════════════════════════════"
+    yellow "⚠ MODEL PIN UNVERIFIED: no propagation line found in the agy log."
+    yellow "⚠ This verdict may have come from the DEFAULT FLASH TIER, not \"$MODEL\"."
+    yellow "⚠ Do NOT count this run as Gemini-lineage refutation (MULTI-AGENT.md)."
+    yellow "⚠ Set ANTIGRAVITY_GATE_REQUIRED=1 (or pass --require) to make this block."
+    yellow "⚠ ═══════════════════════════════════════════════════════════════════"
+    if [[ "$REQUIRED" == "1" ]]; then
+      red "  ANTIGRAVITY_GATE_REQUIRED is set — treating the unverifiable model pin as a hard failure."
+      exit 3
+    fi
+  fi
+  # Secondary, best-effort ground truth: the conversation records. Warning
+  # only — the log-line check above is authoritative for this run.
+  gate_verify_agy_model "$MODEL" || yellow "  (DB spot-check is best-effort; the log-line check above is authoritative.)"
 fi
 
 # ─── Step 5: parse findings + gate ─────────────────────────────

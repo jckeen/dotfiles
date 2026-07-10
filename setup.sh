@@ -71,6 +71,18 @@ BOOTSTRAP_RC=0
 # shellcheck source=lib-symlinks.sh
 source "$DOTFILES_DIR/lib-symlinks.sh"
 
+# Shared link-state classifier (issue #199): check_link_state lives in
+# lib-checks.sh, shared with the three check-* scripts so audit_link's state
+# machine can't drift from the standalone checkers. Hard-fail with a clear
+# message if it's missing (set -e would abort on the failed source anyway,
+# but with an opaque error).
+if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
+  echo "FATAL: $DOTFILES_DIR/lib-checks.sh is missing (broken checkout — restore it with 'git checkout lib-checks.sh')" >&2
+  exit 1
+fi
+# shellcheck source=lib-checks.sh
+source "$DOTFILES_DIR/lib-checks.sh"
+
 # Counters for summary
 LINKS_CREATED=0
 LINKS_VERIFIED=0
@@ -215,10 +227,12 @@ audit_link() {
       return 1
       ;;
   esac
-  if [ -L "$dst" ]; then
-    local target
-    target="$(readlink "$dst")"
-    if [ "$target" = "$src" ] && [ -e "$dst" ]; then
+  # State classification is shared with the check-* scripts (lib-checks.sh,
+  # issue #199); the repair/reporting policy below stays audit-specific.
+  local state
+  state="$(check_link_state "$src" "$dst")"
+  case "$state" in
+    OK)
       # Symlink resolves to the right file — for executable entrypoints we
       # also enforce the +x bit on the source so a freshly-cloned host with
       # 644-mode bin scripts can't show all-green while `gh-bootstrap`
@@ -227,63 +241,74 @@ audit_link() {
         enforce_executable_bit "$src_real" "$label" "$mode" || return 1
       fi
       return 0  # OK
-    fi
-    # Wrong target or broken
-    printf '  \033[31mBROKEN\033[0m  %s -> %s (expected %s)\n' "$label" "$target" "$src"
-    if [ "$mode" = "repair" ]; then
-      # --dry-run --repair previews fixes without applying them (#133):
-      # print the would-fix line and report the entry as still broken.
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        printf '  [DRY] would fix %s (rm + relink to %s)\n' "$label" "$src"
-        return 1
+      ;;
+    WRONG|BROKEN)
+      printf '  \033[31mBROKEN\033[0m  %s -> %s (expected %s)\n' "$label" "$(readlink "$dst")" "$src"
+      if [ "$mode" = "repair" ]; then
+        # --dry-run --repair previews fixes without applying them (#133):
+        # print the would-fix line and report the entry as still broken.
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          printf '  [DRY] would fix %s (rm + relink to %s)\n' "$label" "$src"
+          return 1
+        fi
+        rm "$dst"
+        mkdir -p "$(dirname "$dst")"
+        ln -s "$src" "$dst"
+        printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+        # Codex P2 on PR #53: repair-path executable enforcement. Without
+        # this, a MISSING/BROKEN bin link gets recreated but the source
+        # stays 644 and `gh-bootstrap` keeps returning Permission denied.
+        if [ "$require" = "executable" ]; then
+          enforce_executable_bit "$src_real" "$label" "$mode" || true
+        fi
+        return 2
       fi
-      rm "$dst"
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst"
-      printf '  \033[32mFIXED\033[0m   %s\n' "$label"
-      # Codex P2 on PR #53: repair-path executable enforcement. Without
-      # this, a MISSING/BROKEN bin link gets recreated but the source
-      # stays 644 and `gh-bootstrap` keeps returning Permission denied.
-      if [ "$require" = "executable" ]; then
-        enforce_executable_bit "$src_real" "$label" "$mode" || true
+      return 1
+      ;;
+    NOT_LINKED_FILE)
+      printf '  \033[33mNOT LINKED\033[0m  %s (regular file, not symlink)\n' "$label"
+      if [ "$mode" = "repair" ]; then
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          printf '  [DRY] would fix %s (back up %s to %s.backup + link to %s)\n' "$label" "$dst" "$dst" "$src"
+          return 1
+        fi
+        mv "$dst" "$dst.backup"
+        mkdir -p "$(dirname "$dst")"
+        ln -s "$src" "$dst"
+        printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
+        if [ "$require" = "executable" ]; then
+          enforce_executable_bit "$src_real" "$label" "$mode" || true
+        fi
+        return 2
       fi
-      return 2
-    fi
-    return 1
-  elif [ -f "$dst" ]; then
-    printf '  \033[33mNOT LINKED\033[0m  %s (regular file, not symlink)\n' "$label"
-    if [ "$mode" = "repair" ]; then
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        printf '  [DRY] would fix %s (back up %s to %s.backup + link to %s)\n' "$label" "$dst" "$dst" "$src"
-        return 1
+      return 1
+      ;;
+    NOT_LINKED_OTHER)
+      # Directory/fifo/… sits where a symlink belongs. Previously this fell
+      # through as OK; now it's reported. Never auto-repaired — replacing a
+      # populated directory is ambiguous, and relinking into it would drop
+      # the symlink *inside* it rather than at $dst.
+      printf '  \033[33mNOT LINKED\033[0m  %s (exists but is not a regular file or symlink — resolve manually)\n' "$label"
+      return 1
+      ;;
+    MISSING)
+      printf '  \033[33mMISSING\033[0m  %s\n' "$label"
+      if [ "$mode" = "repair" ]; then
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          printf '  [DRY] would fix %s (link to %s)\n' "$label" "$src"
+          return 1
+        fi
+        mkdir -p "$(dirname "$dst")"
+        ln -s "$src" "$dst"
+        printf '  \033[32mFIXED\033[0m   %s\n' "$label"
+        if [ "$require" = "executable" ]; then
+          enforce_executable_bit "$src_real" "$label" "$mode" || true
+        fi
+        return 2
       fi
-      mv "$dst" "$dst.backup"
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst"
-      printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
-      if [ "$require" = "executable" ]; then
-        enforce_executable_bit "$src_real" "$label" "$mode" || true
-      fi
-      return 2
-    fi
-    return 1
-  elif [ ! -e "$dst" ]; then
-    printf '  \033[33mMISSING\033[0m  %s\n' "$label"
-    if [ "$mode" = "repair" ]; then
-      if [ "${DRY_RUN:-0}" = "1" ]; then
-        printf '  [DRY] would fix %s (link to %s)\n' "$label" "$src"
-        return 1
-      fi
-      mkdir -p "$(dirname "$dst")"
-      ln -s "$src" "$dst"
-      printf '  \033[32mFIXED\033[0m   %s\n' "$label"
-      if [ "$require" = "executable" ]; then
-        enforce_executable_bit "$src_real" "$label" "$mode" || true
-      fi
-      return 2
-    fi
-    return 1
-  fi
+      return 1
+      ;;
+  esac
   return 0
 }
 
@@ -396,8 +421,24 @@ for cmd in gh git curl jq; do
   command -v "$cmd" &>/dev/null || MISSING_PKGS="$MISSING_PKGS $cmd"
 done
 
-if [ -n "$MISSING_PKGS" ]; then
-  echo "Missing packages:$MISSING_PKGS"
+# Modern CLI stack the Claude config mandates (rg/fd/bat/eza — issue #204):
+# a fresh machine must not violate the guidance it just installed. Package
+# names differ per manager (apt: ripgrep/fd-find/bat/eza; brew: ripgrep/fd/
+# bat/eza), and Ubuntu ships the binaries as fdfind/batcat (shimmed below).
+MISSING_APT=""
+MISSING_BREW=""
+command -v rg &>/dev/null || { MISSING_APT="$MISSING_APT ripgrep"; MISSING_BREW="$MISSING_BREW ripgrep"; }
+command -v fd &>/dev/null || command -v fdfind &>/dev/null \
+  || { MISSING_APT="$MISSING_APT fd-find"; MISSING_BREW="$MISSING_BREW fd"; }
+command -v bat &>/dev/null || command -v batcat &>/dev/null \
+  || { MISSING_APT="$MISSING_APT bat"; MISSING_BREW="$MISSING_BREW bat"; }
+# eza is installed on its own line below: it's absent from older Ubuntu/Debian
+# apt archives, and one unknown package fails the whole apt install.
+MISSING_EZA=0
+command -v eza &>/dev/null || MISSING_EZA=1
+
+if [ -n "$MISSING_PKGS" ] || [ -n "$MISSING_APT" ] || [ "$MISSING_EZA" -eq 1 ]; then
+  echo "Missing packages:$MISSING_PKGS$MISSING_BREW$([ "$MISSING_EZA" -eq 1 ] && echo ' eza')"
   if [[ "$PLATFORM" == "macos" ]]; then
     if ! command -v brew &>/dev/null; then
       echo "Homebrew not found. Install it first:"
@@ -406,16 +447,36 @@ if [ -n "$MISSING_PKGS" ]; then
     fi
     ask_yn "Y" "Install via brew? [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
+    [ "$MISSING_EZA" -eq 1 ] && MISSING_BREW="$MISSING_BREW eza"
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
-    run brew install $MISSING_PKGS || true
+    run brew install $MISSING_PKGS $MISSING_BREW || true
   else
     ask_yn "Y" "Install via apt? (requires sudo) [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
-    run sudo apt update && run sudo apt install -y $MISSING_PKGS unzip
+    run sudo apt update && run sudo apt install -y $MISSING_PKGS $MISSING_APT unzip
+    if [ "$MISSING_EZA" -eq 1 ]; then
+      run sudo apt install -y eza \
+        || echo "  -> eza not in this release's apt archive; install manually (https://eza.rocks)"
+    fi
   fi
 else
   echo "All required packages already installed."
+fi
+
+# Ubuntu/Debian name shims: apt installs the binaries as fdfind (fd-find) and
+# batcat (bat), but the config — and muscle memory — call them fd and bat.
+# Symlink the canonical names into ~/.local/bin (already on PATH via §7).
+# Idempotent (ln -sf) and skipped when the canonical name already resolves.
+if [[ "$PLATFORM" != "macos" ]]; then
+  for _shim in fd:fdfind bat:batcat; do
+    _want="${_shim%%:*}"; _have="${_shim##*:}"
+    if ! command -v "$_want" &>/dev/null && command -v "$_have" &>/dev/null; then
+      run mkdir -p "$HOME_DIR/.local/bin"
+      run ln -sf "$(command -v "$_have")" "$HOME_DIR/.local/bin/$_want"
+      echo "  -> shimmed $_want -> $(command -v "$_have") (~/.local/bin/$_want)"
+    fi
+  done
 fi
 
 # ─── 1b. Audio (WSL only — ALSA → PulseAudio for WSLg) ──────────────
@@ -465,20 +526,276 @@ for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
   echo "  -> $_bin linked into ~/.local/bin"
 done
 
+# ─── 1d. gitleaks + pre-push secret scan ─────────────────────────────
+# gitleaks was CI-only, but a secret is public the moment it's pushed — before
+# CI ever fails (issue #204). Install it locally and wire githooks/pre-push
+# into this repo's hooks dir so the scan blocks the push itself.
+#
+# Install path mirrors the bun installer above: pin the BINARY RELEASE version
+# and verify the download against that release's own checksums manifest — a
+# release tag is immutable, so the checksum can't drift under us. To bump:
+# set GITLEAKS_VERSION to a newer tag from
+# https://github.com/gitleaks/gitleaks/releases — no hash to hand-maintain.
+GITLEAKS_VERSION="8.30.1"
+
+# sha256 of a file, portable across Linux (sha256sum) and macOS (shasum).
+# Shared by the pinned gitleaks (here) and bun (§2b) installers.
+_sha256() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# Map this host to a gitleaks release asset basename (tar.gz), e.g.
+# gitleaks_8.30.1_linux_x64.tar.gz / gitleaks_8.30.1_darwin_arm64.tar.gz.
+gitleaks_asset_name() {
+  local os arch
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="x64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) return 1 ;;
+  esac
+  echo "gitleaks_${GITLEAKS_VERSION}_${os}_${arch}.tar.gz"
+}
+
+install_gitleaks_pinned() {
+  local asset
+  asset="$(gitleaks_asset_name)" || {
+    echo "  -> Unsupported platform/arch for pinned gitleaks install; skipping"
+    return 1
+  }
+  local base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+
+  echo "  -> Installing gitleaks v${GITLEAKS_VERSION} (${asset}) from GitHub release"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would download ${base}/${asset}"
+    echo "  [DRY] would verify against gitleaks_${GITLEAKS_VERSION}_checksums.txt and install to ~/.local/bin/gitleaks"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d)" || { echo "  -> mktemp failed; skipping gitleaks install"; return 1; }
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  if ! curl -fsSL "${base}/${asset}" -o "$tmpdir/$asset"; then
+    echo "  -> Download failed (${base}/${asset}); skipping gitleaks install"
+    return 1
+  fi
+  if ! curl -fsSL "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" -o "$tmpdir/checksums.txt"; then
+    echo "  -> Checksum manifest download failed; skipping gitleaks install"
+    return 1
+  fi
+
+  local expected actual
+  expected="$(awk -v f="$asset" '$2 == f {print $1}' "$tmpdir/checksums.txt")"
+  if [ -z "$expected" ]; then
+    echo "  -> ${asset} not listed in the checksums manifest for v${GITLEAKS_VERSION}; skipping"
+    return 1
+  fi
+  actual="$(_sha256 "$tmpdir/$asset")" || {
+    echo "  -> No sha256 tool (sha256sum/shasum) available; skipping gitleaks install"
+    return 1
+  }
+  if [ "$actual" != "$expected" ]; then
+    echo "  -> SHA-256 mismatch for ${asset} — refusing to install."
+    echo "     Expected: $expected"
+    echo "     Got:      $actual"
+    echo "     Likely a corrupted download; retry. If it persists, verify the"
+    echo "     release at https://github.com/gitleaks/gitleaks/releases/tag/v${GITLEAKS_VERSION}"
+    return 1
+  fi
+  echo "  -> SHA-256 verified; extracting"
+
+  if ! tar -xzf "$tmpdir/$asset" -C "$tmpdir" gitleaks; then
+    echo "  -> tar extract failed; skipping gitleaks install"
+    return 1
+  fi
+  mkdir -p "$HOME_DIR/.local/bin"
+  install -m 755 "$tmpdir/gitleaks" "$HOME_DIR/.local/bin/gitleaks"
+  echo "  -> gitleaks installed to ~/.local/bin/gitleaks"
+}
+
+echo ""
+echo "--- gitleaks (local secret scanning) ---"
+if command -v gitleaks &>/dev/null; then
+  echo "gitleaks already installed: $(gitleaks version 2>/dev/null || echo 'installed')"
+elif [[ "$PLATFORM" == "macos" ]] && command -v brew &>/dev/null; then
+  run brew install gitleaks || echo "  -> gitleaks install failed (continuing; pre-push scan will warn+skip)"
+else
+  # Not in Ubuntu/Debian apt archives, so the pinned release binary is the
+  # Linux path (and the macOS fallback when brew is absent).
+  install_gitleaks_pinned || echo "  -> gitleaks install skipped; pre-push scan will warn+skip until installed"
+fi
+
+# Wire the tracked githooks/pre-push into THIS repo's hooks dir. link_file
+# honors --dry-run. The hook blocks a push on findings, with a documented
+# escape hatch: GITLEAKS_SKIP=1 git push
+#
+# Two sharp edges here (PR #226 review, both P2):
+#   - core.hooksPath (any scope) redirects hooks to a dir SHARED across
+#     repos; installing there would activate the hook everywhere and
+#     link_file would back up (i.e. silently disable) any pre-push already
+#     in it. Warn + skip instead — the user integrates by hand.
+#   - When run from a linked worktree (agents do this routinely), the
+#     worktree is temporary but <common-dir>/hooks is shared with the main
+#     checkout. Link to the MAIN checkout's copy of the hook (parent of
+#     --git-common-dir), never the worktree's — otherwise removing the
+#     worktree leaves a dangling symlink that git silently ignores and the
+#     secret scan vanishes without warning.
+if [ -f "$DOTFILES_DIR/githooks/pre-push" ]; then
+  _hooks_path_cfg="$(git -C "$DOTFILES_DIR" config --get core.hooksPath 2>/dev/null || true)"
+  _git_common="$(git -C "$DOTFILES_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -z "$_git_common" ]; then
+    echo "  -> not a git checkout; pre-push hook not installed"
+  elif [ -n "$_hooks_path_cfg" ]; then
+    echo "  -> core.hooksPath is set ($_hooks_path_cfg) — that hooks dir is shared across repos,"
+    echo "     so not installing there (it would shadow or disable other repos' hooks)."
+    echo "     Add a call to githooks/pre-push to your shared pre-push hook manually."
+  else
+    case "$_git_common" in /*) ;; *) _git_common="$DOTFILES_DIR/$_git_common" ;; esac
+    _main_checkout="$(dirname "$_git_common")"
+    _hook_src="$_main_checkout/githooks/pre-push"
+    if [ ! -f "$_hook_src" ]; then
+      # Bare repo, or the main checkout's branch predates githooks/. Never
+      # fall back to the worktree copy — it dangles when the worktree goes.
+      echo "  -> $_hook_src not found (main checkout lacks githooks/pre-push); hook not installed"
+    else
+      # Defensive +x on the source (same rationale as the §1c bin scripts).
+      if [ ! -x "$_hook_src" ]; then
+        run chmod +x "$_hook_src" 2>/dev/null || true
+      fi
+      run mkdir -p "$_git_common/hooks"
+      link_file "$_hook_src" "$_git_common/hooks/pre-push"
+      echo "  -> pre-push gitleaks hook linked ($_git_common/hooks/pre-push; skip once with GITLEAKS_SKIP=1 git push)"
+    fi
+  fi
+fi
+
 # ─── 2. Node.js (if not present) ─────────────────────────────────────
+# Needed for npm-installed CLIs (Codex, §3c) — Claude Code itself now uses
+# the native installer (§3) and no longer requires Node. On Linux/WSL the
+# default is a PINNED nodejs.org binary release verified against that
+# release's own SHASUMS256.txt — the same immutable-release pattern as bun
+# (§2b) and gitleaks (§1d); no remote script is ever piped to bash. (Issue
+# #204: this path used to print three options and exit 1 mid-install.)
+# To bump: set NODE_VERSION to a newer tag from https://nodejs.org/dist/ —
+# there is no hash to hand-maintain; the checksum comes from the release.
+# Override with NODE_INSTALL_METHOD:
+#   pinned (default) — checksum-verified nodejs.org binary into ~/.local
+#   apt              — distro nodejs + npm (older, but fully distro-signed)
+#   skip             — don't install Node (npm-dependent steps will skip)
+NODE_VERSION="v24.18.0"
+
+# Map this host to a nodejs.org release asset basename (no .tar.gz), e.g.
+# node-v24.18.0-linux-x64. Linux only — macOS installs Node via brew.
+node_asset_name() {
+  local arch
+  [ "$(uname -s)" = "Linux" ] || return 1
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="x64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) return 1 ;;
+  esac
+  echo "node-${NODE_VERSION}-linux-${arch}"
+}
+
+install_node_pinned() {
+  local asset
+  asset="$(node_asset_name)" || {
+    echo "  -> Unsupported platform/arch for pinned Node install; skipping"
+    return 1
+  }
+  local base="https://nodejs.org/dist/${NODE_VERSION}"
+
+  echo "  -> Installing Node.js ${NODE_VERSION} (${asset}) from nodejs.org"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would download ${base}/${asset}.tar.gz"
+    echo "  [DRY] would verify against SHASUMS256.txt and install to ~/.local/share/${asset}"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d)" || { echo "  -> mktemp failed; skipping Node install"; return 1; }
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  if ! curl -fsSL "${base}/${asset}.tar.gz" -o "$tmpdir/node.tar.gz"; then
+    echo "  -> Download failed (${base}/${asset}.tar.gz); skipping Node install"
+    return 1
+  fi
+  if ! curl -fsSL "${base}/SHASUMS256.txt" -o "$tmpdir/SHASUMS256.txt"; then
+    echo "  -> Checksum manifest download failed; skipping Node install"
+    return 1
+  fi
+
+  local expected actual
+  expected="$(awk -v f="${asset}.tar.gz" '$2 == f {print $1}' "$tmpdir/SHASUMS256.txt")"
+  if [ -z "$expected" ]; then
+    echo "  -> ${asset}.tar.gz not listed in SHASUMS256.txt for ${NODE_VERSION}; skipping"
+    return 1
+  fi
+  actual="$(_sha256 "$tmpdir/node.tar.gz")" || {
+    echo "  -> No sha256 tool (sha256sum/shasum) available; skipping Node install"
+    return 1
+  }
+  if [ "$actual" != "$expected" ]; then
+    echo "  -> SHA-256 mismatch for ${asset}.tar.gz — refusing to install."
+    echo "     Expected: $expected"
+    echo "     Got:      $actual"
+    echo "     Likely a corrupted download; retry. If it persists, verify the"
+    echo "     release at ${base}/"
+    return 1
+  fi
+  echo "  -> SHA-256 verified; extracting"
+
+  if ! tar -xzf "$tmpdir/node.tar.gz" -C "$tmpdir"; then
+    echo "  -> tar extract failed; skipping Node install"
+    return 1
+  fi
+  mkdir -p "$HOME_DIR/.local/share" "$HOME_DIR/.local/bin"
+  rm -rf "$HOME_DIR/.local/share/${asset}"
+  mv "$tmpdir/${asset}" "$HOME_DIR/.local/share/${asset}"
+  local tool
+  for tool in node npm npx corepack; do
+    [ -e "$HOME_DIR/.local/share/${asset}/bin/$tool" ] || continue
+    ln -sf "$HOME_DIR/.local/share/${asset}/bin/$tool" "$HOME_DIR/.local/bin/$tool"
+  done
+  echo "  -> Node installed to ~/.local/share/${asset} (node/npm/npx linked into ~/.local/bin)"
+}
+
 if ! command -v node &>/dev/null; then
   echo ""
   echo "--- Installing Node.js ---"
   if [[ "$PLATFORM" == "macos" ]]; then
     run brew install node
   else
-    echo "  Node.js not found. Install via your preferred method:"
-    echo "    Option 1: curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -"
-    echo "    Option 2: sudo apt install -y nodejs npm"
-    echo "    Option 3: Install nvm: https://github.com/nvm-sh/nvm"
-    echo ""
-    echo "  Then re-run setup.sh."
-    exit 1
+    NODE_INSTALL_METHOD="${NODE_INSTALL_METHOD:-pinned}"
+    case "$NODE_INSTALL_METHOD" in
+      skip)
+        echo "  -> NODE_INSTALL_METHOD=skip; not installing Node (Codex npm install will fail until Node exists)"
+        ;;
+      apt)
+        run sudo apt install -y nodejs npm \
+          || echo "  -> Node install via apt failed (continuing; npm-dependent steps will be skipped)"
+        ;;
+      pinned|*)
+        install_node_pinned \
+          || echo "  -> Node install skipped (continuing; npm-dependent steps will be skipped)"
+        ;;
+    esac
+    # Make the fresh install resolvable for the remainder of this script.
+    export PATH="$HOME_DIR/.local/bin:$PATH"
+    if [ "${DRY_RUN:-0}" != "1" ] && ! command -v node &>/dev/null && [ "$NODE_INSTALL_METHOD" != "skip" ]; then
+      echo "  !! WARNING: node still not found after install attempt; Codex (§3c) will not install"
+    fi
   fi
 else
   echo "Node.js already installed: $(node -v)"
@@ -510,16 +827,7 @@ fi
 # downloads a pinned, checksum-verified binary.
 BUN_VERSION="bun-v1.3.14"
 
-# sha256 of a file, portable across Linux (sha256sum) and macOS (shasum).
-_sha256() {
-  if command -v sha256sum &>/dev/null; then
-    sha256sum "$1" | awk '{print $1}'
-  elif command -v shasum &>/dev/null; then
-    shasum -a 256 "$1" | awk '{print $1}'
-  else
-    return 1
-  fi
-}
+# (_sha256 helper is defined in §1d, shared with the gitleaks installer.)
 
 # Map this host to a bun release asset basename (no .zip), mirroring
 # bun.sh/install's own os/arch/variant selection: -musl for musl libc,
@@ -669,10 +977,74 @@ if [ ! -e "$HOME/.bun/bin/bun" ]; then
 fi
 
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
+# Official native installer (verified against https://code.claude.com/docs/en/setup
+# 2026-07-10): https://claude.ai/install.sh for macOS, Linux, and WSL.
+# Replaces the legacy `npm install -g @anthropic-ai/claude-code` path (issue
+# #204) — the native install auto-updates in the background and doesn't
+# depend on Node. Installs to ~/.local/bin/claude (on PATH via §7).
+#
+# The remote script is never piped straight into bash: it's downloaded to a
+# temp file, verified against the sha256 pinned below, THEN executed. The
+# installer script is mutable upstream, so on drift we fail CLOSED with
+# update instructions. After reviewing a legitimate upstream change, refresh
+# the pin with:  curl -fsSL https://claude.ai/install.sh | sha256sum
+# Escape hatch: CLAUDE_INSTALL_UNPINNED=1 runs the current upstream script
+# unverified (supply-chain risk — the pinned+verified path is the default).
+CLAUDE_INSTALLER_SHA256="b3f79015b54c751440a6488f07b1b64f9088742b9052bc1bd356d13108320d2a"
+
+install_claude_native() {
+  if [ "${CLAUDE_INSTALL_UNPINNED:-0}" = "1" ]; then
+    echo "  -> WARNING: CLAUDE_INSTALL_UNPINNED=1 set; running unverified Claude installer"
+    echo "     (supply-chain risk — the pinned+verified path is the default)"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would exec unverified Claude Code installer"
+      return 0
+    fi
+    run bash -c "curl -fsSL https://claude.ai/install.sh | bash"
+    return
+  fi
+
+  echo "  -> Installing Claude Code via the native installer (pinned sha256)"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would download https://claude.ai/install.sh, verify its sha256, and execute it"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d)" || { echo "  -> mktemp failed; skipping Claude install"; return 1; }
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  if ! curl -fsSL https://claude.ai/install.sh -o "$tmpdir/install.sh"; then
+    echo "  -> Download failed (https://claude.ai/install.sh); skipping Claude install"
+    return 1
+  fi
+  local actual
+  actual="$(_sha256 "$tmpdir/install.sh")" || {
+    echo "  -> No sha256 tool (sha256sum/shasum) available; skipping Claude install"
+    return 1
+  }
+  if [ "$actual" != "$CLAUDE_INSTALLER_SHA256" ]; then
+    echo "  -> SHA-256 mismatch for install.sh — refusing to run it."
+    echo "     Expected: $CLAUDE_INSTALLER_SHA256"
+    echo "     Got:      $actual"
+    echo "     The upstream installer changed. Review it (less $tmpdir/install.sh or"
+    echo "     https://claude.ai/install.sh), then update CLAUDE_INSTALLER_SHA256 in"
+    echo "     setup.sh, or bypass once with CLAUDE_INSTALL_UNPINNED=1."
+    return 1
+  fi
+  echo "  -> SHA-256 verified; running installer"
+  bash "$tmpdir/install.sh"
+}
+
 if ! command -v claude &>/dev/null; then
   echo ""
-  echo "--- Installing Claude Code CLI ---"
-  run npm install -g @anthropic-ai/claude-code
+  echo "--- Installing Claude Code CLI (native installer) ---"
+  install_claude_native \
+    || echo "  -> Claude Code native install failed (continuing; see https://code.claude.com/docs/en/setup)"
+  # Make claude resolvable for the remainder of this script (§3a/§3b need it).
+  if [ -x "$HOME_DIR/.local/bin/claude" ]; then
+    export PATH="$HOME_DIR/.local/bin:$PATH"
+  fi
 else
   echo "Claude Code already installed: $(claude --version 2>/dev/null || echo 'installed')"
 fi
