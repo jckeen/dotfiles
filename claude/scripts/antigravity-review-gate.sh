@@ -55,11 +55,14 @@
 
 set -euo pipefail
 
-# ─── Colors ────────────────────────────────────────────────────
-red()    { printf '\033[31m%s\033[0m\n' "$*"; }
-yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-green()  { printf '\033[32m%s\033[0m\n' "$*"; }
-bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
+# Shared gate plumbing: colors, base resolution, diff-target selection, diff
+# extraction/filtering, hash fencing, portable timeout (#200). gate-lib.sh
+# ships beside this script in BOTH install locations (the repo's
+# claude/scripts/ and the ~/.claude/scripts symlink farm), so a plain dirname
+# is sufficient and portable — no readlink -f (absent on stock macOS).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gate-lib.sh
+. "$SCRIPT_DIR/gate-lib.sh"
 
 # ─── Config / thresholds ───────────────────────────────────────
 MAX_DIFF_LINES="${ANTIGRAVITY_GATE_MAX_LINES:-500}"
@@ -121,19 +124,8 @@ fi
 # ─── Step 2: resolve base + pick the diff target ───────────────
 # Prefer the committed delta vs the base branch — that's what the PR will contain
 # — and fall back to the working tree only when there's no committed delta or
-# --uncommitted is forced. (Mirrors codex-review-gate.sh.)
-if [[ -z "$BASE" ]]; then
-  # `|| true`: on clones without origin/HEAD the pipeline fails; under pipefail
-  # that would abort before the `main` fallback, so swallow it.
-  BASE="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
-  [[ -z "$BASE" ]] && BASE="main"
-fi
-BASE_REF=""
-if git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
-  BASE_REF="origin/$BASE"
-elif git rev-parse --verify --quiet "$BASE" >/dev/null; then
-  BASE_REF="$BASE"
-fi
+# --uncommitted is forced. (Shared with codex-review-gate.sh via gate-lib.sh.)
+gate_resolve_base
 
 # Unresolvable base → fail CLOSED (#153). The old fallback reviewed `git diff
 # HEAD`, which silently omits the committed delta — the very thing the PR will
@@ -145,56 +137,17 @@ if [[ -z "$BASE_REF" ]] && [[ "$FORCE_UNCOMMITTED" != "true" ]]; then
   exit 2
 fi
 
-has_committed_delta=false
-if [[ -n "$BASE_REF" ]] && [[ -n "$(git rev-list --max-count=1 "$BASE_REF..HEAD" 2>/dev/null)" ]]; then
-  has_committed_delta=true
-fi
-has_uncommitted=false
-[[ -n "$(git status --porcelain 2>/dev/null)" ]] && has_uncommitted=true
-
-DIFF_TARGET=()
-TARGET_DESC=""
-if [[ "$FORCE_UNCOMMITTED" == "true" ]]; then
-  [[ "$has_uncommitted" == "true" ]] || degrade "no uncommitted changes to review."
-  DIFF_TARGET=(HEAD)
-  TARGET_DESC="uncommitted working-tree changes (forced)"
-elif [[ "$has_committed_delta" == "true" ]]; then
-  DIFF_TARGET=("$BASE_REF...HEAD")
-  TARGET_DESC="committed changes vs $BASE_REF"
-elif [[ "$has_uncommitted" == "true" ]]; then
-  DIFF_TARGET=(HEAD)
-  TARGET_DESC="uncommitted changes (no committed delta vs $BASE_REF)"
-else
-  # No uncommitted changes and no committed delta — and the base is guaranteed
-  # resolved here (unresolvable bases exit 2 above), so this is genuinely
-  # "nothing to review".
-  green "✓ HEAD matches $BASE_REF and no uncommitted changes — nothing to review."
-  exit 0
-fi
+# The base is guaranteed resolved past this point (unresolvable bases exit 2
+# above, except under --uncommitted which never uses the base), so the
+# "nothing to review" exit inside gate_select_diff_target is genuine.
+gate_compute_deltas
+gate_select_diff_target
 
 # ─── Step 3: extract + filter the diff ─────────────────────────
-# Exclude dependency lockfiles and binary/minified assets — no review value, and
-# they burn quota + the line budget.
-DIFF_CONTENT="$(git diff "${DIFF_TARGET[@]}" -- \
-  ':!*-lock.yaml' ':!*-lock.json' ':!package-lock.json' ':!*.lock' ':!bun.lockb' \
-  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.svg' ':!*.ico' ':!*.pdf' \
-  ':!*.min.js' ':!*.min.css' ':!*.map' \
-  2>/dev/null)"
-
-# `git diff HEAD` omits untracked files, so a brand-new file would go unreviewed
-# in an uncommitted review (#150). Append them as added-file diffs, respecting
-# .gitignore and the same asset/lockfile exclusions as the tracked diff above.
-if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
-  while IFS= read -r -d '' f; do
-    case "$f" in
-      *-lock.yaml|*-lock.json|*.lock|bun.lockb|\
-      *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.pdf|*.min.js|*.min.css|*.map) continue ;;
-    esac
-    # --no-index exits 1 when files differ (always, for a new file) — swallow it.
-    ut="$(git diff --no-index --no-color -- /dev/null "$f" 2>/dev/null || true)"
-    [[ -n "$ut" ]] && DIFF_CONTENT+="${DIFF_CONTENT:+$'\n'}$ut"
-  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
-fi
+# Lockfiles and binary/minified assets are excluded (no review value, and they
+# burn quota + the line budget), and untracked files are appended for
+# working-tree reviews (#150) — see gate_extract_diff.
+gate_extract_diff
 
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
@@ -213,16 +166,10 @@ bold "→ Antigravity (Gemini) review gate"
 echo "  Reviewing: $TARGET_DESC ($N_LINES lines)"
 echo ""
 
-# Fence the untrusted diff with a boundary the diff cannot forge: derive it from a
-# hash of the diff itself, so injected text can't emit a matching closing marker.
-# Portable hasher — sha1sum (Linux), shasum (macOS), cksum (POSIX fallback).
-_hash() {
-  if   command -v sha1sum >/dev/null 2>&1; then sha1sum
-  elif command -v shasum  >/dev/null 2>&1; then shasum
-  else cksum
-  fi
-}
-FENCE="UNTRUSTED_DIFF_$(printf '%s' "$DIFF_CONTENT" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
+# Fence the untrusted diff with a boundary the diff cannot forge: gate_fence
+# derives it from a hash of the diff itself, so injected text can't emit a
+# matching closing marker.
+FENCE="$(gate_fence UNTRUSTED_DIFF "$DIFF_CONTENT")"
 PROMPT_INSTRUCTION="SYSTEM INSTRUCTION: You are Antigravity, a Gemini-powered developer assistant specializing in front-end engineering, runtime/browser verification, and code quality.
 
 Review the git diff for bug risks, logical flaws, boundary-condition errors, security issues, and over-engineering.
@@ -244,16 +191,9 @@ ${FENCE}"
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
 trap 'rm -f "$SUMMARY_FILE"' EXIT
 
-# Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
-# without a ceiling rather than hard-fail on macOS (#151). Exit 124 (timed out) is
-# only produced by the first two — handled below.
-_tmo() {
-  if   command -v timeout  >/dev/null 2>&1; then timeout "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
-  else shift; "$@"
-  fi
-}
-
+# Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
+# (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
+# (#151). Exit 124 (timed out) is only produced by the first two — handled below.
 set +e
 # NO --dangerously-skip-permissions (see the Security note above). --mode plan and
 # --sandbox restrict the agent. _tmo is a hard ceiling over agy's own

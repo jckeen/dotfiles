@@ -48,17 +48,17 @@
 
 set -euo pipefail
 
-# ─── Colors ────────────────────────────────────────────────────
-red()    { printf '\033[31m%s\033[0m\n' "$*"; }
-yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-green()  { printf '\033[32m%s\033[0m\n' "$*"; }
-bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
-
-# The schema ships beside this script in BOTH install locations (the repo's
-# claude/scripts/ and the ~/.claude/scripts symlink farm), so a plain dirname
-# is sufficient and portable — no readlink -f (absent on stock macOS).
+# The schema and gate-lib.sh ship beside this script in BOTH install locations
+# (the repo's claude/scripts/ and the ~/.claude/scripts symlink farm), so a
+# plain dirname is sufficient and portable — no readlink -f (absent on stock
+# macOS).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEMA="$SCRIPT_DIR/codex-review-schema.json"
+
+# Shared gate plumbing: colors, base resolution, diff-target selection, diff
+# extraction/filtering, hash fencing (#200).
+# shellcheck source=gate-lib.sh
+. "$SCRIPT_DIR/gate-lib.sh"
 
 # ─── Args ──────────────────────────────────────────────────────
 BASE=""
@@ -101,85 +101,21 @@ command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
-# ─── Pick the review target ────────────────────────────────────
-# Prefer the committed delta vs the base branch — that is exactly what the PR
-# will contain, and it ignores unrelated unstaged/untracked WIP left in the tree
-# (the workflow stages specific files, never `git add -A`). Fall back to the
-# working tree only when there's no committed delta yet, or when --uncommitted
-# is passed explicitly.
-TARGET_DESC=""
-DIFF_TARGET=()
-
-# Resolve the base to a ref that actually exists. On feature branches / fresh
-# clones the local `main` is often absent while `origin/main` is present.
-if [[ -z "$BASE" ]]; then
-  # `|| true`: in clones without origin/HEAD the symbolic-ref pipeline fails, and
-  # under `set -euo pipefail` that would abort the script before the `main`
-  # fallback below — so swallow it and let the fallback run.
-  BASE="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
-  [[ -z "$BASE" ]] && BASE="main"
-fi
-# Prefer the remote-tracking ref: a local `main` is often stale relative to
-# `origin/main`, and reviewing against a stale base would diff in already-merged
-# commits or omit real ones. Fall back to the local ref for remote-less repos.
-BASE_REF=""
-if git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
-  BASE_REF="origin/$BASE"
-elif git rev-parse --verify --quiet "$BASE" >/dev/null; then
-  BASE_REF="$BASE"
-fi
-
-has_committed_delta=false
-if [[ -n "$BASE_REF" ]] && [[ -n "$(git rev-list --max-count=1 "$BASE_REF..HEAD" 2>/dev/null)" ]]; then
-  has_committed_delta=true
-fi
-has_uncommitted=false
-[[ -n "$(git status --porcelain 2>/dev/null)" ]] && has_uncommitted=true
-
-if [[ "$FORCE_UNCOMMITTED" == "true" ]]; then
-  [[ "$has_uncommitted" == "true" ]] || degrade "no uncommitted changes to review."
-  DIFF_TARGET=("HEAD")
-  TARGET_DESC="uncommitted working-tree changes (forced)"
-elif [[ "$has_committed_delta" == "true" ]]; then
-  DIFF_TARGET=("$BASE_REF...HEAD")
-  TARGET_DESC="committed changes vs $BASE_REF"
-elif [[ "$has_uncommitted" == "true" ]]; then
-  DIFF_TARGET=("HEAD")
-  TARGET_DESC="uncommitted changes (no committed delta vs ${BASE_REF:-base})"
-else
-  # Reached here only with no uncommitted changes and no committed delta. That
-  # is genuinely "nothing to review" ONLY if the base actually resolved — if it
-  # didn't, has_committed_delta is false because we couldn't diff, not because
-  # the branch matches base, so reporting success would silently bypass the gate
-  # for committed work. Fail closed in that case.
-  [[ -n "$BASE_REF" ]] || degrade "base '$BASE' could not be resolved; cannot verify the committed delta."
-  green "✓ HEAD matches $BASE_REF and no uncommitted changes — nothing to review."
-  exit 0
-fi
+# ─── Pick the review target (shared plumbing from gate-lib.sh) ─
+# Resolve the base to a ref that actually exists (on feature branches / fresh
+# clones the local `main` is often absent while `origin/main` is present),
+# then prefer the committed delta vs that base — exactly what the PR will
+# contain. An unresolvable base with nothing else to review degrades inside
+# gate_select_diff_target rather than reporting a false "nothing to review".
+gate_resolve_base
+gate_compute_deltas
+gate_select_diff_target
 
 # ─── Extract + filter the diff (the gate scopes; the reviewer never does) ──
-# Exclude dependency lockfiles and binary/minified assets — no review value.
-# Mirrors antigravity-review-gate.sh so both gates review the same target.
-DIFF_CONTENT="$(git diff "${DIFF_TARGET[@]}" -- \
-  ':!*-lock.yaml' ':!*-lock.json' ':!package-lock.json' ':!*.lock' ':!bun.lockb' \
-  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.svg' ':!*.ico' ':!*.pdf' \
-  ':!*.min.js' ':!*.min.css' ':!*.map' \
-  2>/dev/null)"
-
-# `git diff HEAD` omits untracked files, so a brand-new file would go unreviewed
-# in an uncommitted review. Append them as added-file diffs, respecting
-# .gitignore and the same asset/lockfile exclusions as the tracked diff above.
-if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
-  while IFS= read -r -d '' f; do
-    case "$f" in
-      *-lock.yaml|*-lock.json|*.lock|bun.lockb|\
-      *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.pdf|*.min.js|*.min.css|*.map) continue ;;
-    esac
-    # --no-index exits 1 when files differ (always, for a new file) — swallow it.
-    ut="$(git diff --no-index --no-color -- /dev/null "$f" 2>/dev/null || true)"
-    [[ -n "$ut" ]] && DIFF_CONTENT+="${DIFF_CONTENT:+$'\n'}$ut"
-  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
-fi
+# Lockfiles and binary/minified assets are excluded, and untracked files are
+# appended for working-tree reviews — see gate_extract_diff. Both gates review
+# the same target because both consume this one implementation.
+gate_extract_diff
 
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
@@ -197,10 +133,7 @@ fi
 # instruction surface could steer the very review that judges it, so a codex
 # self-review of those files is not trustworthy. Fail closed toward the
 # cross-vendor gate (antigravity-review-gate.sh) and human eyes.
-CHANGED_PATHS="$(git diff --name-only "${DIFF_TARGET[@]}" 2>/dev/null || true)"
-if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
-  CHANGED_PATHS+="${CHANGED_PATHS:+$'\n'}$(git ls-files --others --exclude-standard 2>/dev/null || true)"
-fi
+CHANGED_PATHS="$(gate_changed_paths)"
 if grep -qE '(^|/)AGENTS(\.local)?\.md$|^codex/' <<<"$CHANGED_PATHS"; then
   if [[ "${CODEX_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
     red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/)."
@@ -220,15 +153,8 @@ echo ""
 
 # ─── Build the fenced review prompt ────────────────────────────
 # Fence the untrusted diff with a boundary derived from a hash of the diff
-# itself, so injected text can't emit a matching closing marker. Portable
-# hasher — sha1sum (Linux), shasum (macOS), cksum (POSIX fallback).
-_hash() {
-  if   command -v sha1sum >/dev/null 2>&1; then sha1sum
-  elif command -v shasum  >/dev/null 2>&1; then shasum
-  else cksum
-  fi
-}
-FENCE="UNTRUSTED_DIFF_$(printf '%s' "$DIFF_CONTENT" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
+# itself (gate_fence), so injected text can't emit a matching closing marker.
+FENCE="$(gate_fence UNTRUSTED_DIFF "$DIFF_CONTENT")"
 
 PROMPT="You are performing a pre-push code review as an independent reviewer.
 
@@ -256,7 +182,7 @@ change is sound, verdict is \"approve\" with an empty findings array."
 if [[ -n "$CLAIM" || -n "$REPRO" ]]; then
   # The claim/repro payload arrives from a handoff (PR text, notes) — treat it
   # as data, fenced like the diff, so it cannot join the gate's instructions.
-  CLAIM_FENCE="UNTRUSTED_CLAIM_$(printf '%s%s' "$CLAIM" "$REPRO" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
+  CLAIM_FENCE="$(gate_fence UNTRUSTED_CLAIM "${CLAIM}${REPRO}")"
   PROMPT+="
 
 ADVERSARIAL REVIEW: your primary job is to REFUTE the claim quoted below, not
