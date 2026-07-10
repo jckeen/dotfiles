@@ -26,12 +26,33 @@ R=""
 # One PATH shim for the whole run; per-test capture dir via AGY_FAKE_DIR.
 # The shim replays $AGY_FAKE_DIR/output and records how it was called, so tests
 # can assert both the gate's exit behavior and the prompt-delivery channel.
+# It emulates agy 1.1.1 prompt semantics (#227): a prompt flag with an EMPTY
+# value errors out ("empty prompt") WITHOUT reading stdin, a non-empty prompt
+# flag suppresses the stdin read, and stdin is consumed only when no prompt
+# flag is present — so a gate that regresses to the pre-1.1.1 `--print ""`
+# form fails these tests the same way it fails against the real binary.
 SHIM_DIR="$(mktemp -d)"
 cat > "$SHIM_DIR/agy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
-cat > "$AGY_FAKE_DIR/stdin"
 touch "$AGY_FAKE_DIR/invoked"
+have_prompt_flag=0 prompt_value="" expect_value=0
+for a in "$@"; do
+  if [ "$expect_value" = 1 ]; then prompt_value="$a"; expect_value=0; continue; fi
+  case "$a" in
+    --print|-p|--prompt) have_prompt_flag=1; expect_value=1 ;;
+  esac
+done
+if [ "$have_prompt_flag" = 1 ] && [ -z "$prompt_value" ]; then
+  echo 'Error: empty prompt. Usage: agy --print "your prompt here"' >&2
+  : > "$AGY_FAKE_DIR/stdin"
+  exit 1
+fi
+if [ "$have_prompt_flag" = 1 ]; then
+  : > "$AGY_FAKE_DIR/stdin"
+else
+  cat > "$AGY_FAKE_DIR/stdin"
+fi
 prev=""
 for a in "$@"; do
   [ "$prev" = "--log-file" ] && [ -f "$AGY_FAKE_DIR/log" ] && cat "$AGY_FAKE_DIR/log" > "$a"
@@ -105,6 +126,9 @@ check "whole-output LGTB passes" 0 "LGTB verdict" --uncommitted
 assert "prompt+diff delivered on stdin" "grep -q 'change' '$AGY_FAKE_DIR/stdin'"
 assert "diff absent from agy argv" "! grep -q 'change' '$AGY_FAKE_DIR/argv'"
 assert "fence preamble absent from agy argv" "! grep -q 'UNTRUSTED' '$AGY_FAKE_DIR/argv'"
+# ── #227: no prompt flag at all — agy ≥1.1.1 reads stdin only then, and a
+# prompt flag reappearing on argv is one release away from an argv secret leak.
+assert "no prompt flag on agy argv" "! grep -qE -- '^(--print|-p|--prompt)$' '$AGY_FAKE_DIR/argv'"
 rm -rf "$R"
 
 new_repo
