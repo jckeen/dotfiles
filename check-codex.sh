@@ -20,9 +20,13 @@ report_orphan() {
   local link="$1" label="$2" target
   target="$(readlink "$link")"
   if [ "$ORPHAN_FIX" = "--fix" ]; then
-    rm "$link"
-    green "CLEANED  $label (removed orphaned link -> $target)"
-    FIXED=$((FIXED + 1))
+    if rm "$link"; then
+      green "CLEANED  $label (removed orphaned link -> $target)"
+      FIXED=$((FIXED + 1))
+    else
+      red "FAILED  $label could not be removed"
+      ERRORS=$((ERRORS + 1))
+    fi
   else
     red "ORPHAN  $label -> $target (managed source removed)"
     ERRORS=$((ERRORS + 1))
@@ -81,12 +85,23 @@ else
     for skill_dir in "$SKILLS_SRC/"*/; do
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
-      while IFS= read -r -d '' skill_file; do
-        skill_rel="${skill_file#"$skill_dir"}"
-        skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"
-        check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
-        check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
-      done < <(find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0)
+      skill_file_list="$(mktemp)"
+      if [ -z "$skill_file_list" ]; then
+        red "FAILED  unable to allocate skill traversal manifest"
+        ERRORS=$((ERRORS + 1))
+      elif find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
+        while IFS= read -r -d '' skill_file; do
+          skill_rel="${skill_file#"$skill_dir"}"
+          skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"
+          check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
+          check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
+        done < "$skill_file_list"
+        rm -f "$skill_file_list"
+      else
+        rm -f "$skill_file_list"
+        red "FAILED  unable to traverse complete skill bundle: $skill_name"
+        ERRORS=$((ERRORS + 1))
+      fi
     done
   fi
 
@@ -135,17 +150,28 @@ else
   done
 
   if [ -e "$CODEX_DST/skills" ] || [ -L "$CODEX_DST/skills" ]; then
-    while IFS= read -r -d '' link; do
-      label="${link#"$CODEX_DST"/}"
-      target="$(readlink "$link")"
-      if [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
-        source_rel="${target#"$SKILLS_SRC"/}"
-        expected_link="$CODEX_DST/skills/$source_rel"
-        if [[ "/$source_rel/" != *"/../"* ]] && [ "$link" = "$expected_link" ]; then
-          report_orphan "$link" "$label"
+    skill_link_list="$(mktemp)"
+    if [ -z "$skill_link_list" ]; then
+      red "FAILED  unable to allocate orphan traversal manifest"
+      ERRORS=$((ERRORS + 1))
+    elif find "$CODEX_DST/skills" -type l -print0 > "$skill_link_list"; then
+      while IFS= read -r -d '' link; do
+        label="${link#"$CODEX_DST"/}"
+        target="$(readlink "$link")"
+        if [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
+          source_rel="${target#"$SKILLS_SRC"/}"
+          expected_link="$CODEX_DST/skills/$source_rel"
+          if [[ "/$source_rel/" != *"/../"* ]] && [ "$link" = "$expected_link" ]; then
+            report_orphan "$link" "$label"
+          fi
         fi
-      fi
-    done < <(find "$CODEX_DST/skills" -type l -print0 2>/dev/null)
+      done < "$skill_link_list"
+      rm -f "$skill_link_list"
+    else
+      rm -f "$skill_link_list"
+      red "FAILED  unable to traverse managed skill destinations"
+      ERRORS=$((ERRORS + 1))
+    fi
   fi
 fi
 

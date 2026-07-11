@@ -1507,12 +1507,22 @@ if [ -d "$DOTFILES_DIR/agents/skills" ]; then
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
+    skill_file_list="$(mktemp)" || {
+      echo "ERROR: unable to allocate Codex skill traversal manifest" >&2
+      exit 1
+    }
+    if ! find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
+      rm -f "$skill_file_list"
+      echo "ERROR: unable to traverse complete Codex skill bundle: $skill_dir" >&2
+      exit 1
+    fi
     while IFS= read -r -d '' skill_file; do
       skill_rel="${skill_file#"$skill_dir"}"
       skill_dst="$HOME_DIR/.codex/skills/$skill_name/$skill_rel"
       prepare_directory "$HOME_DIR" "$(dirname "$skill_dst")"
       link_file "$skill_file" "$skill_dst"
-    done < <(find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0)
+    done < "$skill_file_list"
+    rm "$skill_file_list"
   done
   echo "  -> Codex skills linked (source: agents/skills)"
 fi

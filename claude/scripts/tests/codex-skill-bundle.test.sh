@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Self-test recursive Codex skill deployment auditing with a throwaway HOME.
 
-set -uo pipefail
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-R="$(mktemp -d)"
-H="$(mktemp -d)"
-OUT="$(mktemp)"
+R="$(mktemp -d)" || { echo "FAIL - unable to allocate source fixture"; exit 1; }
+H="$(mktemp -d)" || { echo "FAIL - unable to allocate HOME fixture"; exit 1; }
+OUT="$(mktemp)" || { echo "FAIL - unable to allocate output fixture"; exit 1; }
 trap 'rm -rf "$R" "$H" "$OUT"' EXIT
 
 pass=0
@@ -36,6 +36,26 @@ if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1 && grep -q 'All good' "$OUT"; the
 else
   fail "complete nested skill bundle failed"
 fi
+
+chmod 000 "$R/agents/skills/demo/references"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "failed source traversal was accepted"
+elif grep -q 'FAILED.*traverse complete skill bundle' "$OUT"; then
+  ok "failed source traversal fails the audit"
+else
+  fail "failed source traversal lacked a useful report"
+fi
+chmod 755 "$R/agents/skills/demo/references"
+
+chmod 000 "$H/.codex/skills/demo/references"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "failed destination traversal was accepted"
+elif grep -q 'FAILED.*traverse managed skill destinations' "$OUT"; then
+  ok "failed destination traversal fails the audit"
+else
+  fail "failed destination traversal lacked a useful report"
+fi
+chmod 755 "$H/.codex/skills/demo/references"
 
 mkdir -p "$H/vendor-skill"
 ln -s "$H/vendor-skill" "$H/.codex/skills/vendor"
@@ -72,6 +92,17 @@ elif grep -q 'ORPHAN.*stale/deep.md' "$OUT"; then
 else
   fail "deep orphan failure was not reported"
 fi
+
+chmod 500 "$H/.codex/skills/demo/references/stale"
+if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1; then
+  fail "failed orphan removal was reported as success"
+elif grep -q 'FAILED.*stale/deep.md could not be removed' "$OUT" \
+  && [ -L "$H/.codex/skills/demo/references/stale/deep.md" ]; then
+  ok "failed orphan removal remains visible"
+else
+  fail "failed orphan removal lacked a useful report"
+fi
+chmod 700 "$H/.codex/skills/demo/references/stale"
 
 rm "$H/.codex/skills/demo/references/stale/deep.md"
 mv "$H/.codex/skills" "$H/external-skills"
