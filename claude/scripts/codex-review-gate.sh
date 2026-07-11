@@ -250,7 +250,7 @@ CODEX_RC=$?
 set -e
 
 if [[ ! -s "$OUT_FILE" ]]; then
-  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed 's/^/    /' "$ERR_FILE" | head -20; }
+  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed -n '1,20{s/^/    /;p;}' "$ERR_FILE"; }
   degrade "Codex produced no review output (rc=$CODEX_RC)."
 fi
 
@@ -271,7 +271,7 @@ if ! jq -e '
            or (.severity == "medium") or (.severity == "low"))
     ))' "$OUT_FILE" >/dev/null 2>&1; then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
-  sed 's/^/  /' "$OUT_FILE" | head -30
+  sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
   red "Push blocked: cannot confirm review is clean."
   exit 2
 fi
@@ -355,7 +355,7 @@ fi
 # "approve with nothing to report" means the run itself failed and left JSON we
 # should not trust — treat as tool failure, not as a pass.
 if [[ "$CODEX_RC" -ne 0 && "$N_TOTAL" -eq 0 ]]; then
-  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed 's/^/    /' "$ERR_FILE" | head -20; }
+  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed -n '1,20{s/^/    /;p;}' "$ERR_FILE"; }
   degrade "codex exited rc=$CODEX_RC yet reported a clean approve — not trusting the result."
 fi
 

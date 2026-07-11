@@ -13,6 +13,8 @@
 - Hardened recursive setup and audit behavior for nested bundles: file-to-dir
   transitions are backed up safely, missing nested links are reported with
   their relative path, and deeply orphaned managed links fail the audit.
+- Fixed the Codex review gate's long-stderr reporting path so `pipefail` cannot
+  terminate the gate with `141` before its configured degrade-or-block result.
 
 ### Decisions made
 - Keep the orchestration contract agent-neutral and isolate runtime tool names
