@@ -98,34 +98,8 @@ Expected output:
 }
 ```
 
-> **Pending operator action (#203, #237):** the live rule may still list only
-> the original three contexts — agents cannot edit branch protection. To flip
-> the `smoke-install` jobs and `agentpack-generated` to required without
-> re-applying the whole rule (one call covers both):
->
-> ```bash
-> cat > /tmp/required-checks.json <<'JSON'
-> {
->   "strict": true,
->   "contexts": [
->     "shellcheck",
->     "tsc",
->     "doc-truth",
->     "agentpack-generated",
->     "setup.sh syntax + --help (ubuntu-latest)",
->     "setup.sh syntax + --help (macos-latest)"
->   ]
-> }
-> JSON
-> gh api -X PATCH \
->   repos/jckeen/dotfiles/branches/main/protection/required_status_checks \
->   --input /tmp/required-checks.json
-> ```
->
-> `agentpack-generated` must exist as a job on `main` before the PATCH (it
-> does once the PR for #237 merges — a context that never reports leaves
-> every PR stuck on "Expected"). Delete this callout once `Verify` above
-> shows all six contexts.
+All six contexts went live 2026-07-10 (#203, #237) — the operator PATCH was
+applied and `Verify` above matches the live rule.
 
 ## Notes
 
