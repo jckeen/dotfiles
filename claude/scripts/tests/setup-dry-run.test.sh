@@ -53,6 +53,14 @@ git config --file "$TESTHOME/.gitconfig" user.email test@test.test
 printf 'cd /mnt/c/Users/test\n' > "$TESTHOME/.bashrc"
 printf '# real profile\n' > "$TESTHOME/.bash_profile"
 mkdir -p "$TESTHOME/.codex" "$TESTHOME/external-codex-skills"
+mkdir -p "$TESTHOME/external-codex-skills/orchestrate/agents" \
+  "$TESTHOME/external-codex-skills/orchestrate/references"
+ln -s "$REPO_ROOT/agents/skills/orchestrate/SKILL.md" \
+  "$TESTHOME/external-codex-skills/orchestrate/SKILL.md"
+ln -s "$REPO_ROOT/agents/skills/orchestrate/agents/openai.yaml" \
+  "$TESTHOME/external-codex-skills/orchestrate/agents/openai.yaml"
+ln -s "$REPO_ROOT/agents/skills/orchestrate/references/runtime-contracts.md" \
+  "$TESTHOME/external-codex-skills/orchestrate/references/runtime-contracts.md"
 ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 
 before="$(snapshot "$TESTHOME")"
@@ -86,14 +94,14 @@ else
   fail "no '[DRY] would link' lines — link_file guard not exercised"
 fi
 
-if grep -q '/.codex/skills/orchestrate/agents/openai.yaml' "$OUT" &&
-  grep -q '/.codex/skills/orchestrate/references/runtime-contracts.md' "$OUT"; then
+if grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/agents/openai.yaml ->" "$OUT" &&
+  grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/references/runtime-contracts.md ->" "$OUT"; then
   ok "Codex skill bundles include nested metadata and references"
 else
   fail "Codex skill bundle files were not included in the dry-run link plan"
 fi
 
-if grep -q "would back up $TESTHOME/.codex/skills to $TESTHOME/.codex/skills.backup" "$OUT"; then
+if [ "$(grep -c "would back up $TESTHOME/.codex/skills to $TESTHOME/.codex/skills.backup" "$OUT")" -eq 1 ]; then
   ok "Codex setup refuses to write through a symlinked skill ancestor"
 else
   fail "Codex setup did not isolate a symlinked skill ancestor"

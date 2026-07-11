@@ -87,6 +87,27 @@ source "$DOTFILES_DIR/lib-checks.sh"
 LINKS_CREATED=0
 LINKS_VERIFIED=0
 LINKS_BROKEN=0
+DRY_PREPARED_DIRS=()
+DRY_REPLACED_DIRS=()
+
+array_contains() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+dry_path_under_replaced_dir() {
+  local path="$1" replaced
+  for replaced in "${DRY_REPLACED_DIRS[@]}"; do
+    case "$path" in
+      "$replaced"|"$replaced"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
 
 # ─── Symlink health audit (--check / --repair) ──────────────────────
 # Checks ALL symlinks: dotfiles AND claude-memory (bootstrap.sh)
@@ -390,7 +411,9 @@ detect_platform() {
 link_file() {
   local src="$1" dst="$2"
   if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
-    return 0
+    if [ "${DRY_RUN:-0}" != "1" ] || ! dry_path_under_replaced_dir "$dst"; then
+      return 0
+    fi
   fi
   if [ "${DRY_RUN:-0}" = "1" ]; then
     if [ ! -L "$dst" ] && { [ -f "$dst" ] || [ -d "$dst" ]; }; then
@@ -433,14 +456,28 @@ prepare_directory() {
   for component in "${components[@]}"; do
     [ -n "$component" ] || continue
     current="$current/$component"
-    if [ -d "$current" ] && [ ! -L "$current" ]; then
-      continue
-    fi
     if [ "${DRY_RUN:-0}" = "1" ]; then
+      if array_contains "$current" "${DRY_PREPARED_DIRS[@]}"; then
+        continue
+      fi
+      if dry_path_under_replaced_dir "$current"; then
+        echo "  [DRY] would create directory $current"
+        DRY_PREPARED_DIRS+=("$current")
+        continue
+      fi
+      if [ -d "$current" ] && [ ! -L "$current" ]; then
+        DRY_PREPARED_DIRS+=("$current")
+        continue
+      fi
       if [ -e "$current" ] || [ -L "$current" ]; then
         echo "  [DRY] would back up $current to $current.backup"
+        DRY_REPLACED_DIRS+=("$current")
       fi
       echo "  [DRY] would create directory $current"
+      DRY_PREPARED_DIRS+=("$current")
+      continue
+    fi
+    if [ -d "$current" ] && [ ! -L "$current" ]; then
       continue
     fi
     if [ -e "$current" ] || [ -L "$current" ]; then

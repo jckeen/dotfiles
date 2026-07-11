@@ -65,6 +65,18 @@ else
   fail "unmanaged directory-symlink skill failed the audit"
 fi
 
+mkdir -p "$H/managed-external"
+ln -s "$R/agents/skills/demo/references/deep.md" "$H/managed-external/deep.md"
+ln -s "$H/managed-external" "$H/.codex/skills/demo/references/managed-link"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "directory symlink inside a managed skill was accepted"
+elif grep -q 'UNSAFE.*managed-link is a directory symlink inside a managed skill' "$OUT"; then
+  ok "directory symlink inside a managed skill fails closed"
+else
+  fail "managed directory symlink lacked a useful report"
+fi
+rm "$H/.codex/skills/demo/references/managed-link"
+
 mkdir -p "$H/.codex/sessions/x"
 ln -s "$R/removed-runtime-file" "$H/.codex/sessions/x/unmanaged.md"
 if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1 \

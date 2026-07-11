@@ -47,10 +47,10 @@ fi
 source "$DOTFILES_DIR/lib-checks.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.codex/"
-declare -A REPORTED_UNSAFE_DIRS=()
+REPORTED_UNSAFE_DIRS=()
 
 check_managed_parent_chain() {
-  local root="$1" dir="$2" relative current component
+  local root="$1" dir="$2" relative current component reported already_reported
   local -a components
   relative="${dir#"$root"}"
   relative="${relative#/}"
@@ -59,11 +59,15 @@ check_managed_parent_chain() {
   for component in "${components[@]}"; do
     [ -n "$component" ] || continue
     current="$current/$component"
-    if [ -L "$current" ] && [ -z "${REPORTED_UNSAFE_DIRS[$current]:-}" ]; then
+    already_reported=0
+    for reported in "${REPORTED_UNSAFE_DIRS[@]}"; do
+      [ "$reported" = "$current" ] && already_reported=1
+    done
+    if [ -L "$current" ] && [ "$already_reported" -eq 0 ]; then
       red "UNSAFE  ${current#"$CODEX_DST"/} is a managed directory symlink -> $(readlink "$current")"
       red "        Managed skill ancestors must be real directories."
       ERRORS=$((ERRORS + 1))
-      REPORTED_UNSAFE_DIRS[$current]=1
+      REPORTED_UNSAFE_DIRS+=("$current")
     fi
   done
 }
@@ -158,7 +162,13 @@ else
       while IFS= read -r -d '' link; do
         label="${link#"$CODEX_DST"/}"
         target="$(readlink "$link")"
-        if [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
+        destination_rel="${link#"$CODEX_DST/skills/"}"
+        destination_skill="${destination_rel%%/*}"
+        if [ -d "$SKILLS_SRC/$destination_skill" ] && [ -d "$link" ]; then
+          red "UNSAFE  $label is a directory symlink inside a managed skill -> $target"
+          red "        Managed skill directories must be real directories."
+          ERRORS=$((ERRORS + 1))
+        elif [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
           source_rel="${target#"$SKILLS_SRC"/}"
           expected_link="$CODEX_DST/skills/$source_rel"
           if [[ "/$source_rel/" != *"/../"* ]] && [ "$link" = "$expected_link" ]; then
