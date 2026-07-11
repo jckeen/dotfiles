@@ -58,11 +58,34 @@ else
 fi
 rm "$R/agents/skills/escaped"
 
+mv "$R/agents/skills" "$R/agents/real-skills"
+ln -s "$R/agents/real-skills" "$R/agents/skills"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "symlinked aggregate source skill root was accepted"
+elif grep -q 'UNSAFE.*shared source skill root is a directory symlink' "$OUT"; then
+  ok "symlinked aggregate source skill root fails closed"
+else
+  fail "symlinked aggregate source skill root lacked a useful report"
+fi
+rm "$R/agents/skills"
+mv "$R/agents/real-skills" "$R/agents/skills"
+
+printf 'external instructions\n' > "$R/external-file.md"
+ln -s "$R/external-file.md" "$R/agents/skills/demo/escaped-file.md"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "escaping source file symlink was accepted"
+elif grep -q 'UNSAFE.*source skill symlink escapes its bundle' "$OUT"; then
+  ok "escaping source file symlink fails closed"
+else
+  fail "escaping source file symlink lacked a useful report"
+fi
+rm "$R/agents/skills/demo/escaped-file.md"
+
 mkdir -p "$R/shared-directory"
 ln -s "$R/shared-directory" "$R/agents/skills/demo/directory-link"
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
   fail "source directory symlink was accepted"
-elif grep -q 'UNSAFE.*source skill bundle contains a directory symlink' "$OUT"; then
+elif grep -q 'UNSAFE.*source skill symlink escapes its bundle' "$OUT"; then
   ok "source directory symlink fails closed"
 else
   fail "source directory symlink lacked a useful report"

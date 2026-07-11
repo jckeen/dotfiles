@@ -426,6 +426,9 @@ link_file() {
         return 1
       fi
       echo "  [DRY] would back up $dst to $dst.backup"
+    elif [ -e "$dst" ]; then
+      echo "ERROR: refusing to replace unsupported destination type: $dst" >&2
+      return 1
     fi
     echo "  [DRY] would link $dst -> $src"
     return 0
@@ -439,6 +442,9 @@ link_file() {
     fi
     mv "$dst" "$dst.backup"
     echo "  -> backed up existing $dst to $dst.backup"
+  elif [ -e "$dst" ]; then
+    echo "ERROR: refusing to replace unsupported destination type: $dst" >&2
+    return 1
   fi
   ln -s "$src" "$dst"
   LINKS_CREATED=$((LINKS_CREATED + 1))
@@ -1552,7 +1558,10 @@ if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
   echo "  -> Codex AGENTS.md linked"
 fi
 
-if [ -d "$DOTFILES_DIR/agents/skills" ]; then
+if [ -L "$DOTFILES_DIR/agents/skills" ]; then
+  echo "ERROR: shared Codex skill root cannot be a directory symlink: $DOTFILES_DIR/agents/skills" >&2
+  exit 1
+elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     if [ -L "${skill_dir%/}" ]; then
       echo "ERROR: Codex skill root cannot be a directory symlink: ${skill_dir%/}" >&2
@@ -1570,15 +1579,22 @@ if [ -d "$DOTFILES_DIR/agents/skills" ]; then
       exit 1
     fi
     invalid_skill_symlink=""
+    skill_root_real="$(realpath "${skill_dir%/}")"
     while IFS= read -r -d '' skill_file; do
-      if [ -L "$skill_file" ] && [ -d "$skill_file" ]; then
-        invalid_skill_symlink="$skill_file"
-        break
+      if [ -L "$skill_file" ]; then
+        skill_target_real="$(realpath "$skill_file" 2>/dev/null || true)"
+        case "$skill_target_real" in
+          "$skill_root_real"/*) ;;
+          *)
+            invalid_skill_symlink="$skill_file"
+            break
+            ;;
+        esac
       fi
     done < "$skill_file_list"
     if [ -n "$invalid_skill_symlink" ]; then
       rm -f "$skill_file_list"
-      echo "ERROR: Codex skill bundles cannot contain directory symlinks: $invalid_skill_symlink" >&2
+      echo "ERROR: Codex skill symlink escapes its bundle or is broken: $invalid_skill_symlink" >&2
       exit 1
     fi
     while IFS= read -r -d '' skill_file; do

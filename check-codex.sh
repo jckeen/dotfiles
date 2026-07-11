@@ -85,7 +85,10 @@ elif [ ! -d "$CODEX_DST" ]; then
 else
   check_link "$CODEX_SRC/AGENTS.md" "$CODEX_DST/AGENTS.md" "AGENTS.md"
 
-  if [ -d "$SKILLS_SRC" ]; then
+  if [ -L "$SKILLS_SRC" ]; then
+    red "UNSAFE  shared source skill root is a directory symlink: $SKILLS_SRC"
+    ERRORS=$((ERRORS + 1))
+  elif [ -d "$SKILLS_SRC" ]; then
     for skill_dir in "$SKILLS_SRC/"*/; do
       if [ -L "${skill_dir%/}" ]; then
         red "UNSAFE  source skill root is a directory symlink: ${skill_dir#"$SKILLS_SRC"/}"
@@ -94,16 +97,23 @@ else
       fi
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
+      skill_root_real="$(realpath "${skill_dir%/}")"
       skill_file_list="$(mktemp)"
       if [ -z "$skill_file_list" ]; then
         red "FAILED  unable to allocate skill traversal manifest"
         ERRORS=$((ERRORS + 1))
       elif find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
         while IFS= read -r -d '' skill_file; do
-          if [ -L "$skill_file" ] && [ -d "$skill_file" ]; then
-            red "UNSAFE  source skill bundle contains a directory symlink: ${skill_file#"$SKILLS_SRC"/}"
-            ERRORS=$((ERRORS + 1))
-            continue
+          if [ -L "$skill_file" ]; then
+            skill_target_real="$(realpath "$skill_file" 2>/dev/null)"
+            case "$skill_target_real" in
+              "$skill_root_real"/*) ;;
+              *)
+                red "UNSAFE  source skill symlink escapes its bundle or is broken: ${skill_file#"$SKILLS_SRC"/}"
+                ERRORS=$((ERRORS + 1))
+                continue
+                ;;
+            esac
           fi
           skill_rel="${skill_file#"$skill_dir"}"
           skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"

@@ -143,6 +143,23 @@ else
 fi
 rm "$TESTHOME/.codex/AGENTS.md" "$TESTHOME/.codex/AGENTS.md.backup"
 
+mkfifo "$TESTHOME/.codex/AGENTS.md"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "dry-run accepted an unsupported leaf destination type"
+elif grep -q "refusing to replace unsupported destination type: $TESTHOME/.codex/AGENTS.md" "$OUT"; then
+  ok "dry-run rejects unsupported leaf destination types"
+else
+  fail "unsupported leaf destination lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ]; then
+  ok "special-file collision dry-run made zero mutations in \$HOME"
+else
+  fail "special-file collision dry-run mutated \$HOME"
+fi
+rm "$TESTHOME/.codex/AGENTS.md"
+
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on
 # PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).
 # Non-zero exit is expected — the entries are still broken after a preview.
