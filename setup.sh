@@ -414,26 +414,45 @@ link_file() {
 }
 
 prepare_directory() {
-  local dir="$1"
-  if [ -d "$dir" ] && [ ! -L "$dir" ]; then
-    return 0
-  fi
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    if [ -e "$dir" ] || [ -L "$dir" ]; then
-      echo "  [DRY] would back up $dir to $dir.backup"
-    fi
-    run mkdir -p "$dir"
-    return 0
-  fi
-  if [ -e "$dir" ] || [ -L "$dir" ]; then
-    if [ -e "$dir.backup" ] || [ -L "$dir.backup" ]; then
-      echo "ERROR: refusing to replace $dir because $dir.backup already exists" >&2
+  local root="$1" dir="$2" relative current component
+  local -a components
+
+  case "$dir" in
+    "$root"|"$root"/*) ;;
+    *)
+      echo "ERROR: refusing to prepare directory outside $root: $dir" >&2
       return 1
+      ;;
+  esac
+
+  relative="${dir#"$root"}"
+  relative="${relative#/}"
+  IFS='/' read -r -a components <<< "$relative"
+  current="$root"
+
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || continue
+    current="$current/$component"
+    if [ -d "$current" ] && [ ! -L "$current" ]; then
+      continue
     fi
-    mv "$dir" "$dir.backup"
-    echo "  -> backed up existing $dir to $dir.backup"
-  fi
-  mkdir -p "$dir"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      if [ -e "$current" ] || [ -L "$current" ]; then
+        echo "  [DRY] would back up $current to $current.backup"
+      fi
+      echo "  [DRY] would create directory $current"
+      continue
+    fi
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      if [ -e "$current.backup" ] || [ -L "$current.backup" ]; then
+        echo "ERROR: refusing to replace $current because $current.backup already exists" >&2
+        return 1
+      fi
+      mv "$current" "$current.backup"
+      echo "  -> backed up existing $current to $current.backup"
+    fi
+    mkdir "$current"
+  done
 }
 
 detect_platform
@@ -1477,7 +1496,7 @@ fi
 # ─── 5b. Codex config ────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Codex config ---"
-run mkdir -p "$HOME_DIR/.codex"
+prepare_directory "$HOME_DIR" "$HOME_DIR/.codex"
 
 if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
   link_file "$DOTFILES_DIR/codex/AGENTS.md" "$HOME_DIR/.codex/AGENTS.md"
@@ -1492,7 +1511,7 @@ if [ -d "$DOTFILES_DIR/agents/skills" ]; then
     while IFS= read -r -d '' skill_file; do
       skill_rel="${skill_file#"$skill_dir"}"
       skill_dst="$HOME_DIR/.codex/skills/$skill_name/$skill_rel"
-      prepare_directory "$(dirname "$skill_dst")"
+      prepare_directory "$HOME_DIR" "$(dirname "$skill_dst")"
       link_file "$skill_file" "$skill_dst"
     done < <(find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0)
   done

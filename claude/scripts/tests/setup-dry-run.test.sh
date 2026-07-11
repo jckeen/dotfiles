@@ -52,6 +52,8 @@ git config --file "$TESTHOME/.gitconfig" user.name test
 git config --file "$TESTHOME/.gitconfig" user.email test@test.test
 printf 'cd /mnt/c/Users/test\n' > "$TESTHOME/.bashrc"
 printf '# real profile\n' > "$TESTHOME/.bash_profile"
+mkdir -p "$TESTHOME/.codex" "$TESTHOME/external-codex-skills"
+ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 
 before="$(snapshot "$TESTHOME")"
 
@@ -89,6 +91,12 @@ if grep -q '/.codex/skills/orchestrate/agents/openai.yaml' "$OUT" &&
   ok "Codex skill bundles include nested metadata and references"
 else
   fail "Codex skill bundle files were not included in the dry-run link plan"
+fi
+
+if grep -q "would back up $TESTHOME/.codex/skills to $TESTHOME/.codex/skills.backup" "$OUT"; then
+  ok "Codex setup refuses to write through a symlinked skill ancestor"
+else
+  fail "Codex setup did not isolate a symlinked skill ancestor"
 fi
 
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on

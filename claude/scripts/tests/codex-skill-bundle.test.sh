@@ -31,10 +31,19 @@ else
 fi
 
 ln -s "$R/agents/skills/demo/references/runtime.md" "$H/.codex/skills/demo/references/runtime.md"
-if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1 && grep -q 'All good' "$OUT"; then
   ok "complete nested skill bundle passes"
 else
   fail "complete nested skill bundle failed"
+fi
+
+mkdir -p "$H/.codex/sessions/x"
+ln -s "$R/removed-runtime-file" "$H/.codex/sessions/x/unmanaged.md"
+if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1 \
+  && [ -L "$H/.codex/sessions/x/unmanaged.md" ]; then
+  ok "orphan cleanup ignores links outside managed paths"
+else
+  fail "orphan cleanup modified unmanaged runtime state"
 fi
 
 mkdir -p "$H/.codex/skills/demo/references/stale"
@@ -45,6 +54,17 @@ elif grep -q 'ORPHAN.*stale/deep.md' "$OUT"; then
   ok "deep orphaned managed link fails"
 else
   fail "deep orphan failure was not reported"
+fi
+
+rm "$H/.codex/skills/demo/references/stale/deep.md"
+mv "$H/.codex/skills" "$H/external-skills"
+ln -s "$H/external-skills" "$H/.codex/skills"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "symlinked managed skill directory was accepted"
+elif grep -q 'UNSAFE.*skills is a directory symlink' "$OUT"; then
+  ok "symlinked managed skill directory fails closed"
+else
+  fail "symlinked managed skill directory failed without a useful report"
 fi
 
 echo ""

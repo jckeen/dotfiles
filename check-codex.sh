@@ -14,6 +14,20 @@ CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
 ERRORS=0
 WARNINGS=0
 FIXED=0
+ORPHAN_FIX="${1:-}"
+
+report_orphan() {
+  local link="$1" label="$2" target
+  target="$(readlink "$link")"
+  if [ "$ORPHAN_FIX" = "--fix" ]; then
+    rm "$link"
+    green "CLEANED  $label (removed orphaned link -> $target)"
+    FIXED=$((FIXED + 1))
+  else
+    red "ORPHAN  $label -> $target (managed source removed)"
+    ERRORS=$((ERRORS + 1))
+  fi
+}
 
 # Shared check_link + report helpers (issue #199) — single source of truth
 # with check-claude.sh, check-antigravity.sh, and setup.sh's audit path.
@@ -86,20 +100,27 @@ else
 
   echo ""
   echo "Checking for orphaned managed symlinks..."
-  while IFS= read -r link; do
+  for link in "$CODEX_DST/AGENTS.md" "$CODEX_DST/AGENTS.local.md" "$CODEX_DST/MEMORY.md"; do
+    [ -L "$link" ] || continue
     target="$(readlink "$link")"
-    if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
-      label="${link#"$CODEX_DST"/}"
-      if [ "${1:-}" = "--fix" ]; then
-        rm "$link"
-        green "CLEANED  $label (removed orphaned link -> $target)"
-        FIXED=$((FIXED + 1))
-      else
-        red "ORPHAN  $label -> $target (source removed from dotfiles)"
-        ERRORS=$((ERRORS + 1))
-      fi
+    if { [[ "$target" == "$DOTFILES_DIR/"* ]] || [[ "$target" == "$CODEX_MEMORY_REPO/"* ]]; } && [ ! -e "$link" ]; then
+      report_orphan "$link" "${link#"$CODEX_DST"/}"
     fi
-  done < <(find "$CODEX_DST" -type l 2>/dev/null)
+  done
+
+  if [ -e "$CODEX_DST/skills" ] || [ -L "$CODEX_DST/skills" ]; then
+    while IFS= read -r -d '' link; do
+      label="${link#"$CODEX_DST"/}"
+      target="$(readlink "$link")"
+      if [ -d "$link" ]; then
+        red "UNSAFE  $label is a directory symlink -> $target"
+        red "        Managed skill directories must be real directories."
+        ERRORS=$((ERRORS + 1))
+      elif [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
+        report_orphan "$link" "$label"
+      fi
+    done < <(find "$CODEX_DST/skills" -type l -print0 2>/dev/null)
+  fi
 fi
 
 # Branch hygiene status (silent if clean)
