@@ -14,6 +14,24 @@ CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
 ERRORS=0
 WARNINGS=0
 FIXED=0
+ORPHAN_FIX="${1:-}"
+
+report_orphan() {
+  local link="$1" label="$2" target
+  target="$(readlink "$link")"
+  if [ "$ORPHAN_FIX" = "--fix" ]; then
+    if rm "$link"; then
+      green "CLEANED  $label (removed orphaned link -> $target)"
+      FIXED=$((FIXED + 1))
+    else
+      red "FAILED  $label could not be removed"
+      ERRORS=$((ERRORS + 1))
+    fi
+  else
+    red "ORPHAN  $label -> $target (managed source removed)"
+    ERRORS=$((ERRORS + 1))
+  fi
+}
 
 # Shared check_link + report helpers (issue #199) — single source of truth
 # with check-claude.sh, check-antigravity.sh, and setup.sh's audit path.
@@ -29,25 +47,85 @@ fi
 source "$DOTFILES_DIR/lib-checks.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.codex/"
+REPORTED_UNSAFE_DIRS=()
+
+check_managed_parent_chain() {
+  local root="$1" dir="$2" relative current component reported already_reported
+  local -a components
+  relative="${dir#"$root"}"
+  relative="${relative#/}"
+  IFS='/' read -r -a components <<< "$relative"
+  current="$root"
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || continue
+    current="$current/$component"
+    already_reported=0
+    for reported in "${REPORTED_UNSAFE_DIRS[@]}"; do
+      [ "$reported" = "$current" ] && already_reported=1
+    done
+    if [ -L "$current" ] && [ "$already_reported" -eq 0 ]; then
+      red "UNSAFE  ${current#"$CODEX_DST"/} is a managed directory symlink -> $(readlink "$current")"
+      red "        Managed skill ancestors must be real directories."
+      ERRORS=$((ERRORS + 1))
+      REPORTED_UNSAFE_DIRS+=("$current")
+    fi
+  done
+}
 
 echo "Checking Codex public-safe config..."
 echo ""
 
-if [ ! -d "$CODEX_DST" ]; then
+if [ -L "$CODEX_DST" ]; then
+  red "UNSAFE  ~/.codex is a directory symlink -> $(readlink "$CODEX_DST")"
+  red "        Refusing to audit or clean through a symlinked runtime root."
+  ERRORS=$((ERRORS + 1))
+elif [ ! -d "$CODEX_DST" ]; then
   yellow "MISSING  ~/.codex (Codex has not been initialized on this machine)"
   WARNINGS=$((WARNINGS + 1))
 else
   check_link "$CODEX_SRC/AGENTS.md" "$CODEX_DST/AGENTS.md" "AGENTS.md"
 
-  if [ -d "$SKILLS_SRC" ]; then
+  if [ -L "$SKILLS_SRC" ]; then
+    red "UNSAFE  shared source skill root is a directory symlink: $SKILLS_SRC"
+    ERRORS=$((ERRORS + 1))
+  elif [ -d "$SKILLS_SRC" ]; then
     for skill_dir in "$SKILLS_SRC/"*/; do
+      if [ -L "${skill_dir%/}" ]; then
+        red "UNSAFE  source skill root is a directory symlink: ${skill_dir#"$SKILLS_SRC"/}"
+        ERRORS=$((ERRORS + 1))
+        continue
+      fi
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
-      for skill_file in "$skill_dir"*; do
-        [ -f "$skill_file" ] || continue
-        fname="$(basename "$skill_file")"
-        check_link "$skill_file" "$CODEX_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname"
-      done
+      skill_root_real="$(realpath "${skill_dir%/}")"
+      skill_file_list="$(mktemp)"
+      if [ -z "$skill_file_list" ]; then
+        red "FAILED  unable to allocate skill traversal manifest"
+        ERRORS=$((ERRORS + 1))
+      elif find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
+        while IFS= read -r -d '' skill_file; do
+          if [ -L "$skill_file" ]; then
+            skill_target_real="$(realpath "$skill_file" 2>/dev/null)"
+            case "$skill_target_real" in
+              "$skill_root_real"/*) ;;
+              *)
+                red "UNSAFE  source skill symlink escapes its bundle or is broken: ${skill_file#"$SKILLS_SRC"/}"
+                ERRORS=$((ERRORS + 1))
+                continue
+                ;;
+            esac
+          fi
+          skill_rel="${skill_file#"$skill_dir"}"
+          skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"
+          check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
+          check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
+        done < "$skill_file_list"
+        rm -f "$skill_file_list"
+      else
+        rm -f "$skill_file_list"
+        red "FAILED  unable to traverse complete skill bundle: $skill_name"
+        ERRORS=$((ERRORS + 1))
+      fi
     done
   fi
 
@@ -87,20 +165,48 @@ else
 
   echo ""
   echo "Checking for orphaned managed symlinks..."
-  while IFS= read -r link; do
-    target="$(readlink "$link")"
-    if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
-      label="${link#$CODEX_DST/}"
-      if [ "${1:-}" = "--fix" ]; then
-        rm "$link"
-        green "CLEANED  $label (removed orphaned link -> $target)"
-        FIXED=$((FIXED + 1))
-      else
-        red "ORPHAN  $label -> $target (source removed from dotfiles)"
-        ERRORS=$((ERRORS + 1))
-      fi
+  for source_and_link in \
+    "$CODEX_SRC/AGENTS.md|$CODEX_DST/AGENTS.md" \
+    "$CODEX_MEMORY_REPO/AGENTS.local.md|$CODEX_DST/AGENTS.local.md" \
+    "$CODEX_MEMORY_REPO/MEMORY.md|$CODEX_DST/MEMORY.md"; do
+    source="${source_and_link%%|*}"
+    link="${source_and_link#*|}"
+    [ -L "$link" ] || continue
+    if [ "$(readlink "$link")" = "$source" ] && [ ! -e "$link" ]; then
+      report_orphan "$link" "${link#"$CODEX_DST"/}"
     fi
-  done < <(find "$CODEX_DST" -maxdepth 3 -type l 2>/dev/null)
+  done
+
+  if [ -e "$CODEX_DST/skills" ] || [ -L "$CODEX_DST/skills" ]; then
+    skill_link_list="$(mktemp)"
+    if [ -z "$skill_link_list" ]; then
+      red "FAILED  unable to allocate orphan traversal manifest"
+      ERRORS=$((ERRORS + 1))
+    elif find "$CODEX_DST/skills" -type l -print0 > "$skill_link_list"; then
+      while IFS= read -r -d '' link; do
+        label="${link#"$CODEX_DST"/}"
+        target="$(readlink "$link")"
+        destination_rel="${link#"$CODEX_DST/skills/"}"
+        destination_skill="${destination_rel%%/*}"
+        if [ -d "$SKILLS_SRC/$destination_skill" ] && [ -d "$link" ]; then
+          red "UNSAFE  $label is a directory symlink inside a managed skill -> $target"
+          red "        Managed skill directories must be real directories."
+          ERRORS=$((ERRORS + 1))
+        elif [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
+          source_rel="${target#"$SKILLS_SRC"/}"
+          expected_link="$CODEX_DST/skills/$source_rel"
+          if [[ "/$source_rel/" != *"/../"* ]] && [ "$link" = "$expected_link" ]; then
+            report_orphan "$link" "$label"
+          fi
+        fi
+      done < "$skill_link_list"
+      rm -f "$skill_link_list"
+    else
+      rm -f "$skill_link_list"
+      red "FAILED  unable to traverse managed skill destinations"
+      ERRORS=$((ERRORS + 1))
+    fi
+  fi
 fi
 
 # Branch hygiene status (silent if clean)

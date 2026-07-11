@@ -42,6 +42,7 @@ for a in "$@"; do
   [ "$prev" = "-o" ] && cat "$CODEX_FAKE_DIR/output" > "$a"
   prev="$a"
 done
+[ -f "$CODEX_FAKE_DIR/stderr" ] && cat "$CODEX_FAKE_DIR/stderr" >&2
 rc=0
 [ -f "$CODEX_FAKE_DIR/rc" ] && rc="$(cat "$CODEX_FAKE_DIR/rc")"
 exit "$rc"
@@ -173,6 +174,13 @@ echo "change" >> "$R/code.txt"
 : > "$CODEX_FAKE_DIR/output"
 check "empty output degrades open with a warning" 0 "produced no review output" --uncommitted --no-issues
 check "empty output fails hard with --require" 3 "produced no review output" --uncommitted --no-issues --require
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+: > "$CODEX_FAKE_DIR/output"
+for i in $(seq 1 100); do echo "verbose stderr line $i"; done > "$CODEX_FAKE_DIR/stderr"
+check "long stderr reaches the degrade path without pipefail 141" 0 "produced no review output" --uncommitted --no-issues
 rm -rf "$R"
 
 # ── unresolved base: never a false 'nothing to review'; hard with --require ──

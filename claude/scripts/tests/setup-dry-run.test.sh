@@ -52,6 +52,16 @@ git config --file "$TESTHOME/.gitconfig" user.name test
 git config --file "$TESTHOME/.gitconfig" user.email test@test.test
 printf 'cd /mnt/c/Users/test\n' > "$TESTHOME/.bashrc"
 printf '# real profile\n' > "$TESTHOME/.bash_profile"
+mkdir -p "$TESTHOME/.codex" "$TESTHOME/external-codex-skills"
+mkdir -p "$TESTHOME/external-codex-skills/orchestrate/agents" \
+  "$TESTHOME/external-codex-skills/orchestrate/references"
+printf 'stale external skill\n' > "$TESTHOME/external-codex-skills/orchestrate/SKILL.md"
+printf 'stale external backup\n' > "$TESTHOME/external-codex-skills/orchestrate/SKILL.md.backup"
+ln -s "$REPO_ROOT/agents/skills/orchestrate/agents/openai.yaml" \
+  "$TESTHOME/external-codex-skills/orchestrate/agents/openai.yaml"
+ln -s "$REPO_ROOT/agents/skills/orchestrate/references/runtime-contracts.md" \
+  "$TESTHOME/external-codex-skills/orchestrate/references/runtime-contracts.md"
+ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 
 before="$(snapshot "$TESTHOME")"
 
@@ -83,6 +93,72 @@ if grep -q '\[DRY\] would link' "$OUT"; then
 else
   fail "no '[DRY] would link' lines — link_file guard not exercised"
 fi
+
+if grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/agents/openai.yaml ->" "$OUT" &&
+  grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/references/runtime-contracts.md ->" "$OUT" &&
+  grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/SKILL.md ->" "$OUT"; then
+  ok "Codex skill bundles include nested metadata and references"
+else
+  fail "Codex skill bundle files were not included in the dry-run link plan"
+fi
+
+if [ "$(grep -c "would back up $TESTHOME/.codex/skills to $TESTHOME/.codex/skills.backup" "$OUT")" -eq 1 ]; then
+  ok "Codex setup refuses to write through a symlinked skill ancestor"
+else
+  fail "Codex setup did not isolate a symlinked skill ancestor"
+fi
+
+mkdir "$TESTHOME/.codex/skills.backup"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "dry-run accepted a conflicting ancestor backup"
+elif grep -q "refusing to replace $TESTHOME/.codex/skills because $TESTHOME/.codex/skills.backup already exists" "$OUT"; then
+  ok "dry-run refuses the same ancestor backup collision as a real run"
+else
+  fail "dry-run backup collision lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ]; then
+  ok "backup-collision dry-run made zero mutations in \$HOME"
+else
+  fail "backup-collision dry-run mutated \$HOME"
+fi
+rm -r "$TESTHOME/.codex/skills.backup"
+
+printf 'conflicting agent rules\n' > "$TESTHOME/.codex/AGENTS.md"
+printf 'existing backup\n' > "$TESTHOME/.codex/AGENTS.md.backup"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "dry-run accepted a conflicting leaf backup"
+elif grep -q "refusing to replace $TESTHOME/.codex/AGENTS.md because $TESTHOME/.codex/AGENTS.md.backup already exists" "$OUT"; then
+  ok "dry-run refuses the same leaf backup collision as a real run"
+else
+  fail "dry-run leaf backup collision lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ]; then
+  ok "leaf-collision dry-run made zero mutations in \$HOME"
+else
+  fail "leaf-collision dry-run mutated \$HOME"
+fi
+rm "$TESTHOME/.codex/AGENTS.md" "$TESTHOME/.codex/AGENTS.md.backup"
+
+mkfifo "$TESTHOME/.codex/AGENTS.md"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "dry-run accepted an unsupported leaf destination type"
+elif grep -q "refusing to replace unsupported destination type: $TESTHOME/.codex/AGENTS.md" "$OUT"; then
+  ok "dry-run rejects unsupported leaf destination types"
+else
+  fail "unsupported leaf destination lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ]; then
+  ok "special-file collision dry-run made zero mutations in \$HOME"
+else
+  fail "special-file collision dry-run mutated \$HOME"
+fi
+rm "$TESTHOME/.codex/AGENTS.md"
 
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on
 # PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).

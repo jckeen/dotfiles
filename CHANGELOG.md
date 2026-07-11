@@ -15,6 +15,30 @@
 - Device pairing remains Codex-managed local state. `cx` reconnects a paired
   host but never creates pairing codes or opts a new host into remote access.
 
+## 2026-07-10 — feat: add portable Codex orchestration
+
+### What changed
+- Added the shared `orchestrate` skill for Codex and Antigravity: proportional
+  planning, explicit acceptance criteria, isolated delegation, adversarial
+  claim-and-repro review, integration verification, and durable handoff.
+- Bundled runtime-specific dispatch guidance and Codex UI metadata with the
+  skill. `setup.sh` now links complete nested skill bundles into
+  `~/.codex/skills/` instead of only top-level files; its dry-run regression
+  test asserts both nested metadata and references are included.
+- Hardened recursive setup and audit behavior for nested bundles: file-to-dir
+  transitions are backed up safely, missing nested links are reported with
+  their relative path, and deeply orphaned managed links fail the audit.
+- Fixed the Codex review gate's long-stderr reporting path so `pipefail` cannot
+  terminate the gate with `141` before its configured degrade-or-block result.
+
+### Decisions made
+- Keep the orchestration contract agent-neutral and isolate runtime tool names
+  in a reference file. Claude retains its richer native skill while Codex and
+  Antigravity share the portable workflow.
+- Treat same-model subagents as context-independent breadth, not an independent
+  model lineage. Cross-lineage review requirements still need Claude, Codex,
+  or verified Antigravity in the appropriate refuter lane.
+
 ## 2026-07-10 — fix: link scripts/*.json data files so gate schemas resolve through the symlink farm
 
 ### What changed

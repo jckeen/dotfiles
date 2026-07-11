@@ -24,6 +24,7 @@ SOURCE        claude/MULTI-AGENT.md
 SOURCE        claude/agents/*.md
 SOURCE        claude/skills/*/SKILL.md
 SOURCE        agents/skills/*/SKILL.md
+SOURCE        agents/skills/*/references/*.md
 SOURCE        antigravity/skills/*/SKILL.md
 SOURCE        .github/ISSUE_TEMPLATE/*.md
 SOURCE        .github/PULL_REQUEST_TEMPLATE.md

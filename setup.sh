@@ -87,6 +87,27 @@ source "$DOTFILES_DIR/lib-checks.sh"
 LINKS_CREATED=0
 LINKS_VERIFIED=0
 LINKS_BROKEN=0
+DRY_PREPARED_DIRS=""
+DRY_REPLACED_DIRS=""
+
+path_list_contains() {
+  local needle="$1" list="$2" item
+  while IFS= read -r item; do
+    [ "$item" = "$needle" ] && return 0
+  done <<< "$list"
+  return 1
+}
+
+dry_path_under_replaced_dir() {
+  local path="$1" replaced
+  while IFS= read -r replaced; do
+    [ -n "$replaced" ] || continue
+    case "$path" in
+      "$replaced"|"$replaced"/*) return 0 ;;
+    esac
+  done <<< "$DRY_REPLACED_DIRS"
+  return 1
+}
 
 # ─── Symlink health audit (--check / --repair) ──────────────────────
 # Checks ALL symlinks: dotfiles AND claude-memory (bootstrap.sh)
@@ -389,24 +410,104 @@ detect_platform() {
 # files under --dry-run). An already-correct link is a no-op in both modes.
 link_file() {
   local src="$1" dst="$2"
-  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+  if [ "${DRY_RUN:-0}" = "1" ] && dry_path_under_replaced_dir "$dst"; then
+    echo "  [DRY] would link $dst -> $src"
     return 0
   fi
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    if [ "${DRY_RUN:-0}" != "1" ] || ! dry_path_under_replaced_dir "$dst"; then
+      return 0
+    fi
+  fi
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    if [ ! -L "$dst" ] && [ -f "$dst" ]; then
+    if [ ! -L "$dst" ] && { [ -f "$dst" ] || [ -d "$dst" ]; }; then
+      if [ -e "$dst.backup" ] || [ -L "$dst.backup" ]; then
+        echo "ERROR: refusing to replace $dst because $dst.backup already exists" >&2
+        return 1
+      fi
       echo "  [DRY] would back up $dst to $dst.backup"
+    elif [ -e "$dst" ]; then
+      echo "ERROR: refusing to replace unsupported destination type: $dst" >&2
+      return 1
     fi
     echo "  [DRY] would link $dst -> $src"
     return 0
   fi
   if [ -L "$dst" ]; then
     rm "$dst"
-  elif [ -f "$dst" ]; then
+  elif [ -f "$dst" ] || [ -d "$dst" ]; then
+    if [ -e "$dst.backup" ] || [ -L "$dst.backup" ]; then
+      echo "ERROR: refusing to replace $dst because $dst.backup already exists" >&2
+      return 1
+    fi
     mv "$dst" "$dst.backup"
     echo "  -> backed up existing $dst to $dst.backup"
+  elif [ -e "$dst" ]; then
+    echo "ERROR: refusing to replace unsupported destination type: $dst" >&2
+    return 1
   fi
   ln -s "$src" "$dst"
   LINKS_CREATED=$((LINKS_CREATED + 1))
+}
+
+prepare_directory() {
+  local root="$1" dir="$2" relative current component
+  local -a components
+
+  case "$dir" in
+    "$root"|"$root"/*) ;;
+    *)
+      echo "ERROR: refusing to prepare directory outside $root: $dir" >&2
+      return 1
+      ;;
+  esac
+
+  relative="${dir#"$root"}"
+  relative="${relative#/}"
+  IFS='/' read -r -a components <<< "$relative"
+  current="$root"
+
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || continue
+    current="$current/$component"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      if path_list_contains "$current" "$DRY_PREPARED_DIRS"; then
+        continue
+      fi
+      if dry_path_under_replaced_dir "$current"; then
+        echo "  [DRY] would create directory $current"
+        DRY_PREPARED_DIRS="${DRY_PREPARED_DIRS}${current}"$'\n'
+        continue
+      fi
+      if [ -d "$current" ] && [ ! -L "$current" ]; then
+        DRY_PREPARED_DIRS="${DRY_PREPARED_DIRS}${current}"$'\n'
+        continue
+      fi
+      if [ -e "$current" ] || [ -L "$current" ]; then
+        if [ -e "$current.backup" ] || [ -L "$current.backup" ]; then
+          echo "ERROR: refusing to replace $current because $current.backup already exists" >&2
+          return 1
+        fi
+        echo "  [DRY] would back up $current to $current.backup"
+        DRY_REPLACED_DIRS="${DRY_REPLACED_DIRS}${current}"$'\n'
+      fi
+      echo "  [DRY] would create directory $current"
+      DRY_PREPARED_DIRS="${DRY_PREPARED_DIRS}${current}"$'\n'
+      continue
+    fi
+    if [ -d "$current" ] && [ ! -L "$current" ]; then
+      continue
+    fi
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      if [ -e "$current.backup" ] || [ -L "$current.backup" ]; then
+        echo "ERROR: refusing to replace $current because $current.backup already exists" >&2
+        return 1
+      fi
+      mv "$current" "$current.backup"
+      echo "  -> backed up existing $current to $current.backup"
+    fi
+    mkdir "$current"
+  done
 }
 
 detect_platform
@@ -1450,22 +1551,59 @@ fi
 # ─── 5b. Codex config ────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Codex config ---"
-run mkdir -p "$HOME_DIR/.codex"
+prepare_directory "$HOME_DIR" "$HOME_DIR/.codex"
 
 if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
   link_file "$DOTFILES_DIR/codex/AGENTS.md" "$HOME_DIR/.codex/AGENTS.md"
   echo "  -> Codex AGENTS.md linked"
 fi
 
-if [ -d "$DOTFILES_DIR/agents/skills" ]; then
-  run mkdir -p "$HOME_DIR/.codex/skills"
+if [ -L "$DOTFILES_DIR/agents/skills" ]; then
+  echo "ERROR: shared Codex skill root cannot be a directory symlink: $DOTFILES_DIR/agents/skills" >&2
+  exit 1
+elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
+    if [ -L "${skill_dir%/}" ]; then
+      echo "ERROR: Codex skill root cannot be a directory symlink: ${skill_dir%/}" >&2
+      exit 1
+    fi
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
-    run mkdir -p "$HOME_DIR/.codex/skills/$skill_name"
-    for skill_file in "$skill_dir"*; do
-      [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.codex/skills/$skill_name/$(basename "$skill_file")"
-    done
+    skill_file_list="$(mktemp)" || {
+      echo "ERROR: unable to allocate Codex skill traversal manifest" >&2
+      exit 1
+    }
+    if ! find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
+      rm -f "$skill_file_list"
+      echo "ERROR: unable to traverse complete Codex skill bundle: $skill_dir" >&2
+      exit 1
+    fi
+    invalid_skill_symlink=""
+    skill_root_real="$(realpath "${skill_dir%/}")"
+    while IFS= read -r -d '' skill_file; do
+      if [ -L "$skill_file" ]; then
+        skill_target_real="$(realpath "$skill_file" 2>/dev/null || true)"
+        case "$skill_target_real" in
+          "$skill_root_real"/*) ;;
+          *)
+            invalid_skill_symlink="$skill_file"
+            break
+            ;;
+        esac
+      fi
+    done < "$skill_file_list"
+    if [ -n "$invalid_skill_symlink" ]; then
+      rm -f "$skill_file_list"
+      echo "ERROR: Codex skill symlink escapes its bundle or is broken: $invalid_skill_symlink" >&2
+      exit 1
+    fi
+    while IFS= read -r -d '' skill_file; do
+      skill_rel="${skill_file#"$skill_dir"}"
+      skill_dst="$HOME_DIR/.codex/skills/$skill_name/$skill_rel"
+      prepare_directory "$HOME_DIR" "$(dirname "$skill_dst")"
+      link_file "$skill_file" "$skill_dst"
+    done < "$skill_file_list"
+    rm "$skill_file_list"
   done
   echo "  -> Codex skills linked (source: agents/skills)"
 fi
