@@ -107,6 +107,23 @@ else
   fail "Codex setup did not isolate a symlinked skill ancestor"
 fi
 
+mkdir "$TESTHOME/.codex/skills.backup"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "dry-run accepted a conflicting ancestor backup"
+elif grep -q "refusing to replace $TESTHOME/.codex/skills because $TESTHOME/.codex/skills.backup already exists" "$OUT"; then
+  ok "dry-run refuses the same ancestor backup collision as a real run"
+else
+  fail "dry-run backup collision lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ]; then
+  ok "backup-collision dry-run made zero mutations in \$HOME"
+else
+  fail "backup-collision dry-run mutated \$HOME"
+fi
+rm -r "$TESTHOME/.codex/skills.backup"
+
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on
 # PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).
 # Non-zero exit is expected — the entries are still broken after a preview.

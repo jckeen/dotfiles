@@ -87,25 +87,25 @@ source "$DOTFILES_DIR/lib-checks.sh"
 LINKS_CREATED=0
 LINKS_VERIFIED=0
 LINKS_BROKEN=0
-DRY_PREPARED_DIRS=()
-DRY_REPLACED_DIRS=()
+DRY_PREPARED_DIRS=""
+DRY_REPLACED_DIRS=""
 
-array_contains() {
-  local needle="$1" item
-  shift
-  for item in "$@"; do
+path_list_contains() {
+  local needle="$1" list="$2" item
+  while IFS= read -r item; do
     [ "$item" = "$needle" ] && return 0
-  done
+  done <<< "$list"
   return 1
 }
 
 dry_path_under_replaced_dir() {
   local path="$1" replaced
-  for replaced in "${DRY_REPLACED_DIRS[@]}"; do
+  while IFS= read -r replaced; do
+    [ -n "$replaced" ] || continue
     case "$path" in
       "$replaced"|"$replaced"/*) return 0 ;;
     esac
-  done
+  done <<< "$DRY_REPLACED_DIRS"
   return 1
 }
 
@@ -457,24 +457,28 @@ prepare_directory() {
     [ -n "$component" ] || continue
     current="$current/$component"
     if [ "${DRY_RUN:-0}" = "1" ]; then
-      if array_contains "$current" "${DRY_PREPARED_DIRS[@]}"; then
+      if path_list_contains "$current" "$DRY_PREPARED_DIRS"; then
         continue
       fi
       if dry_path_under_replaced_dir "$current"; then
         echo "  [DRY] would create directory $current"
-        DRY_PREPARED_DIRS+=("$current")
+        DRY_PREPARED_DIRS="${DRY_PREPARED_DIRS}${current}"$'\n'
         continue
       fi
       if [ -d "$current" ] && [ ! -L "$current" ]; then
-        DRY_PREPARED_DIRS+=("$current")
+        DRY_PREPARED_DIRS="${DRY_PREPARED_DIRS}${current}"$'\n'
         continue
       fi
       if [ -e "$current" ] || [ -L "$current" ]; then
+        if [ -e "$current.backup" ] || [ -L "$current.backup" ]; then
+          echo "ERROR: refusing to replace $current because $current.backup already exists" >&2
+          return 1
+        fi
         echo "  [DRY] would back up $current to $current.backup"
-        DRY_REPLACED_DIRS+=("$current")
+        DRY_REPLACED_DIRS="${DRY_REPLACED_DIRS}${current}"$'\n'
       fi
       echo "  [DRY] would create directory $current"
-      DRY_PREPARED_DIRS+=("$current")
+      DRY_PREPARED_DIRS="${DRY_PREPARED_DIRS}${current}"$'\n'
       continue
     fi
     if [ -d "$current" ] && [ ! -L "$current" ]; then
