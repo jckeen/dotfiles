@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orchestrate"
+  short_description: "Coordinate complex engineering work end to end"
+  default_prompt: "Use $orchestrate to coordinate this task end to end with proportional planning, isolated delegation, verification, adversarial review, and a durable handoff."

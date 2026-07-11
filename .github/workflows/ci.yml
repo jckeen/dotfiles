@@ -171,6 +171,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/setup-dry-run.test.sh
 
+      - name: codex-skill-bundle (recursive link audit)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/codex-skill-bundle.test.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest

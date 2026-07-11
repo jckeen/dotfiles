@@ -84,6 +84,13 @@ else
   fail "no '[DRY] would link' lines — link_file guard not exercised"
 fi
 
+if grep -q '/.codex/skills/orchestrate/agents/openai.yaml' "$OUT" &&
+  grep -q '/.codex/skills/orchestrate/references/runtime-contracts.md' "$OUT"; then
+  ok "Codex skill bundles include nested metadata and references"
+else
+  fail "Codex skill bundle files were not included in the dry-run link plan"
+fi
+
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on
 # PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).
 # Non-zero exit is expected — the entries are still broken after a preview.

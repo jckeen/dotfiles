@@ -43,11 +43,10 @@ else
     for skill_dir in "$SKILLS_SRC/"*/; do
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
-      for skill_file in "$skill_dir"*; do
-        [ -f "$skill_file" ] || continue
-        fname="$(basename "$skill_file")"
-        check_link "$skill_file" "$CODEX_DST/skills/$skill_name/$fname" "skills/$skill_name/$fname"
-      done
+      while IFS= read -r -d '' skill_file; do
+        skill_rel="${skill_file#"$skill_dir"}"
+        check_link "$skill_file" "$CODEX_DST/skills/$skill_name/$skill_rel" "skills/$skill_name/$skill_rel"
+      done < <(find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0)
     done
   fi
 
@@ -90,7 +89,7 @@ else
   while IFS= read -r link; do
     target="$(readlink "$link")"
     if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
-      label="${link#$CODEX_DST/}"
+      label="${link#"$CODEX_DST"/}"
       if [ "${1:-}" = "--fix" ]; then
         rm "$link"
         green "CLEANED  $label (removed orphaned link -> $target)"
@@ -100,7 +99,7 @@ else
         ERRORS=$((ERRORS + 1))
       fi
     fi
-  done < <(find "$CODEX_DST" -maxdepth 3 -type l 2>/dev/null)
+  done < <(find "$CODEX_DST" -type l 2>/dev/null)
 fi
 
 # Branch hygiene status (silent if clean)

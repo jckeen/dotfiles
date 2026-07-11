@@ -400,7 +400,12 @@ This public dotfiles repo only tracks reusable Codex guidance, skills, and examp
 - live `config.toml` project trust entries
 - private MCP endpoints, token env values, account IDs, client names, or private project details
 
-`setup.sh` links public `codex/AGENTS.md` and the shared `agents/skills/*/SKILL.md` into `~/.codex/`. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when the private repo exists. It does not migrate live `~/.codex` state. `check-codex.sh` warns when private/generated Codex files exist so you remember they are local-only.
+`setup.sh` links public `codex/AGENTS.md` and complete shared skill bundles
+from `agents/skills/*/` into `~/.codex/skills/`, including references and UI
+metadata. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when
+the private repo exists. It does not migrate live `~/.codex` state.
+`check-codex.sh` audits those nested links and warns when private/generated
+Codex files exist so you remember they are local-only.
 
 </details>
 

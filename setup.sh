@@ -393,7 +393,7 @@ link_file() {
     return 0
   fi
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    if [ ! -L "$dst" ] && [ -f "$dst" ]; then
+    if [ ! -L "$dst" ] && { [ -f "$dst" ] || [ -d "$dst" ]; }; then
       echo "  [DRY] would back up $dst to $dst.backup"
     fi
     echo "  [DRY] would link $dst -> $src"
@@ -401,12 +401,39 @@ link_file() {
   fi
   if [ -L "$dst" ]; then
     rm "$dst"
-  elif [ -f "$dst" ]; then
+  elif [ -f "$dst" ] || [ -d "$dst" ]; then
+    if [ -e "$dst.backup" ] || [ -L "$dst.backup" ]; then
+      echo "ERROR: refusing to replace $dst because $dst.backup already exists" >&2
+      return 1
+    fi
     mv "$dst" "$dst.backup"
     echo "  -> backed up existing $dst to $dst.backup"
   fi
   ln -s "$src" "$dst"
   LINKS_CREATED=$((LINKS_CREATED + 1))
+}
+
+prepare_directory() {
+  local dir="$1"
+  if [ -d "$dir" ] && [ ! -L "$dir" ]; then
+    return 0
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+      echo "  [DRY] would back up $dir to $dir.backup"
+    fi
+    run mkdir -p "$dir"
+    return 0
+  fi
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    if [ -e "$dir.backup" ] || [ -L "$dir.backup" ]; then
+      echo "ERROR: refusing to replace $dir because $dir.backup already exists" >&2
+      return 1
+    fi
+    mv "$dir" "$dir.backup"
+    echo "  -> backed up existing $dir to $dir.backup"
+  fi
+  mkdir -p "$dir"
 }
 
 detect_platform
@@ -1462,10 +1489,12 @@ if [ -d "$DOTFILES_DIR/agents/skills" ]; then
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
-    run mkdir -p "$HOME_DIR/.codex/skills/$skill_name"
-    for skill_file in "$skill_dir"*; do
-      [ -f "$skill_file" ] && link_file "$skill_file" "$HOME_DIR/.codex/skills/$skill_name/$(basename "$skill_file")"
-    done
+    while IFS= read -r -d '' skill_file; do
+      skill_rel="${skill_file#"$skill_dir"}"
+      skill_dst="$HOME_DIR/.codex/skills/$skill_name/$skill_rel"
+      prepare_directory "$(dirname "$skill_dst")"
+      link_file "$skill_file" "$skill_dst"
+    done < <(find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0)
   done
   echo "  -> Codex skills linked (source: agents/skills)"
 fi
