@@ -43,11 +43,35 @@ fi
 source "$DOTFILES_DIR/lib-checks.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.codex/"
+declare -A REPORTED_UNSAFE_DIRS=()
+
+check_managed_parent_chain() {
+  local root="$1" dir="$2" relative current component
+  local -a components
+  relative="${dir#"$root"}"
+  relative="${relative#/}"
+  IFS='/' read -r -a components <<< "$relative"
+  current="$root"
+  for component in "${components[@]}"; do
+    [ -n "$component" ] || continue
+    current="$current/$component"
+    if [ -L "$current" ] && [ -z "${REPORTED_UNSAFE_DIRS[$current]:-}" ]; then
+      red "UNSAFE  ${current#"$CODEX_DST"/} is a managed directory symlink -> $(readlink "$current")"
+      red "        Managed skill ancestors must be real directories."
+      ERRORS=$((ERRORS + 1))
+      REPORTED_UNSAFE_DIRS[$current]=1
+    fi
+  done
+}
 
 echo "Checking Codex public-safe config..."
 echo ""
 
-if [ ! -d "$CODEX_DST" ]; then
+if [ -L "$CODEX_DST" ]; then
+  red "UNSAFE  ~/.codex is a directory symlink -> $(readlink "$CODEX_DST")"
+  red "        Refusing to audit or clean through a symlinked runtime root."
+  ERRORS=$((ERRORS + 1))
+elif [ ! -d "$CODEX_DST" ]; then
   yellow "MISSING  ~/.codex (Codex has not been initialized on this machine)"
   WARNINGS=$((WARNINGS + 1))
 else
@@ -59,7 +83,9 @@ else
       skill_name="$(basename "$skill_dir")"
       while IFS= read -r -d '' skill_file; do
         skill_rel="${skill_file#"$skill_dir"}"
-        check_link "$skill_file" "$CODEX_DST/skills/$skill_name/$skill_rel" "skills/$skill_name/$skill_rel"
+        skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"
+        check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
+        check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
       done < <(find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0)
     done
   fi
@@ -112,12 +138,12 @@ else
     while IFS= read -r -d '' link; do
       label="${link#"$CODEX_DST"/}"
       target="$(readlink "$link")"
-      if [ -d "$link" ]; then
-        red "UNSAFE  $label is a directory symlink -> $target"
-        red "        Managed skill directories must be real directories."
-        ERRORS=$((ERRORS + 1))
-      elif [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
-        report_orphan "$link" "$label"
+      if [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
+        source_rel="${target#"$SKILLS_SRC"/}"
+        expected_link="$CODEX_DST/skills/$source_rel"
+        if [[ "/$source_rel/" != *"/../"* ]] && [ "$link" = "$expected_link" ]; then
+          report_orphan "$link" "$label"
+        fi
       fi
     done < <(find "$CODEX_DST/skills" -type l -print0 2>/dev/null)
   fi

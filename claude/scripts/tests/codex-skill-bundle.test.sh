@@ -37,6 +37,14 @@ else
   fail "complete nested skill bundle failed"
 fi
 
+mkdir -p "$H/vendor-skill"
+ln -s "$H/vendor-skill" "$H/.codex/skills/vendor"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  ok "unmanaged directory-symlink skill remains valid"
+else
+  fail "unmanaged directory-symlink skill failed the audit"
+fi
+
 mkdir -p "$H/.codex/sessions/x"
 ln -s "$R/removed-runtime-file" "$H/.codex/sessions/x/unmanaged.md"
 if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1 \
@@ -46,8 +54,17 @@ else
   fail "orphan cleanup modified unmanaged runtime state"
 fi
 
+mkdir -p "$H/.codex/skills/local"
+ln -s "$R/agents/skills/demo/removed.md" "$H/.codex/skills/local/custom.md"
+if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1 \
+  && [ -L "$H/.codex/skills/local/custom.md" ]; then
+  ok "orphan cleanup requires an exact managed destination"
+else
+  fail "orphan cleanup removed a target-prefix collision"
+fi
+
 mkdir -p "$H/.codex/skills/demo/references/stale"
-ln -s "$R/agents/skills/demo/references/missing.md" "$H/.codex/skills/demo/references/stale/deep.md"
+ln -s "$R/agents/skills/demo/references/stale/deep.md" "$H/.codex/skills/demo/references/stale/deep.md"
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
   fail "deep orphaned managed link was accepted"
 elif grep -q 'ORPHAN.*stale/deep.md' "$OUT"; then
@@ -61,10 +78,21 @@ mv "$H/.codex/skills" "$H/external-skills"
 ln -s "$H/external-skills" "$H/.codex/skills"
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
   fail "symlinked managed skill directory was accepted"
-elif grep -q 'UNSAFE.*skills is a directory symlink' "$OUT"; then
+elif grep -q 'UNSAFE.*skills is a managed directory symlink' "$OUT"; then
   ok "symlinked managed skill directory fails closed"
 else
   fail "symlinked managed skill directory failed without a useful report"
+fi
+
+mv "$H/.codex" "$H/external-codex"
+ln -s "$H/external-codex" "$H/.codex"
+if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1; then
+  fail "symlinked Codex runtime root was accepted"
+elif grep -q 'UNSAFE.*~/.codex is a directory symlink' "$OUT" \
+  && [ -L "$H/external-codex/skills/local/custom.md" ]; then
+  ok "symlinked Codex runtime root fails without cleanup traversal"
+else
+  fail "symlinked Codex runtime root did not fail closed"
 fi
 
 echo ""

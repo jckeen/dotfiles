@@ -1504,7 +1504,6 @@ if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
 fi
 
 if [ -d "$DOTFILES_DIR/agents/skills" ]; then
-  run mkdir -p "$HOME_DIR/.codex/skills"
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
