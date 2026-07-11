@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-11 — feat: reconnect opted-in Codex Remote Control from `cx`
+
+### What changed
+- `cx` now idempotently starts or reconnects Codex Remote Control before the
+  interactive CLI when the host's persisted Codex settings show that remote
+  access was already enabled.
+- Remote startup failures warn without blocking local Codex use. Hosts that
+  never enabled Remote Control remain untouched.
+- A focused shell regression test covers startup order, failure handling, and
+  the opt-in boundary, and runs in CI.
+
+### Decisions made
+- Device pairing remains Codex-managed local state. `cx` reconnects a paired
+  host but never creates pairing codes or opts a new host into remote access.
+
 ## 2026-07-10 — feat: add portable Codex orchestration
 
 ### What changed
