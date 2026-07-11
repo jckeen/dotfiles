@@ -162,10 +162,14 @@ timeout 300 agy -p "<prompt>" --model "Gemini 3.1 Pro (High)" --log-file /tmp/ag
   ```
 
   The channel is undocumented upstream (no `--prompt-file` or `-` sentinel
-  exists as of 1.1.1; codex's `exec [PROMPT | -]` is the prior art to cite in
-  a feature request), so treat any empty-output run as a possible regression —
-  the gate's canary and self-test guard it. The argv `-p "<prompt>"` form
-  stays acceptable only for secret-free prompts.
+  exists as of 1.1.1), so treat any empty-output run as a possible
+  regression — the gate's canary and self-test guard it. Both upstream
+  reports are filed (2026-07-10): the slug-fallback bug as
+  google-antigravity/antigravity-cli#581 and the stdin-sentinel /
+  `--prompt-file` feature request as antigravity-cli#582 (codex's
+  `exec [PROMPT | -]` cited as prior art). If either lands, move the gate
+  onto the documented channel and drop this pin note. The argv
+  `-p "<prompt>"` form stays acceptable only for secret-free prompts.
 - Evidence status: the label pin + propagation-line verification was proven
   live (2026-07-10) on both the argv form and the no-prompt-flag stdin form
   the gate now uses (#227 fix), so the gate's dispatch→log→verify pipeline
