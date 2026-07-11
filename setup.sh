@@ -410,6 +410,10 @@ detect_platform() {
 # files under --dry-run). An already-correct link is a no-op in both modes.
 link_file() {
   local src="$1" dst="$2"
+  if [ "${DRY_RUN:-0}" = "1" ] && dry_path_under_replaced_dir "$dst"; then
+    echo "  [DRY] would link $dst -> $src"
+    return 0
+  fi
   if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
     if [ "${DRY_RUN:-0}" != "1" ] || ! dry_path_under_replaced_dir "$dst"; then
       return 0
@@ -1550,6 +1554,10 @@ fi
 
 if [ -d "$DOTFILES_DIR/agents/skills" ]; then
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
+    if [ -L "${skill_dir%/}" ]; then
+      echo "ERROR: Codex skill root cannot be a directory symlink: ${skill_dir%/}" >&2
+      exit 1
+    fi
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
     skill_file_list="$(mktemp)" || {

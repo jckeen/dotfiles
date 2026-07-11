@@ -87,6 +87,11 @@ else
 
   if [ -d "$SKILLS_SRC" ]; then
     for skill_dir in "$SKILLS_SRC/"*/; do
+      if [ -L "${skill_dir%/}" ]; then
+        red "UNSAFE  source skill root is a directory symlink: ${skill_dir#"$SKILLS_SRC"/}"
+        ERRORS=$((ERRORS + 1))
+        continue
+      fi
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
       skill_file_list="$(mktemp)"
@@ -150,10 +155,14 @@ else
 
   echo ""
   echo "Checking for orphaned managed symlinks..."
-  for link in "$CODEX_DST/AGENTS.md" "$CODEX_DST/AGENTS.local.md" "$CODEX_DST/MEMORY.md"; do
+  for source_and_link in \
+    "$CODEX_SRC/AGENTS.md|$CODEX_DST/AGENTS.md" \
+    "$CODEX_MEMORY_REPO/AGENTS.local.md|$CODEX_DST/AGENTS.local.md" \
+    "$CODEX_MEMORY_REPO/MEMORY.md|$CODEX_DST/MEMORY.md"; do
+    source="${source_and_link%%|*}"
+    link="${source_and_link#*|}"
     [ -L "$link" ] || continue
-    target="$(readlink "$link")"
-    if { [[ "$target" == "$DOTFILES_DIR/"* ]] || [[ "$target" == "$CODEX_MEMORY_REPO/"* ]]; } && [ ! -e "$link" ]; then
+    if [ "$(readlink "$link")" = "$source" ] && [ ! -e "$link" ]; then
       report_orphan "$link" "${link#"$CODEX_DST"/}"
     fi
   done

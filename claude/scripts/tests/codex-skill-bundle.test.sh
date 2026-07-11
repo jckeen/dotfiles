@@ -47,6 +47,17 @@ else
 fi
 chmod 755 "$R/agents/skills/demo/references"
 
+mkdir -p "$R/external-skill"
+ln -s "$R/external-skill" "$R/agents/skills/escaped"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "symlinked source skill root was accepted"
+elif grep -q 'UNSAFE.*source skill root is a directory symlink' "$OUT"; then
+  ok "symlinked source skill root fails closed"
+else
+  fail "symlinked source skill root lacked a useful report"
+fi
+rm "$R/agents/skills/escaped"
+
 mkdir -p "$R/shared-directory"
 ln -s "$R/shared-directory" "$R/agents/skills/demo/directory-link"
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
@@ -96,6 +107,18 @@ if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1 \
 else
   fail "orphan cleanup modified unmanaged runtime state"
 fi
+
+rm "$H/.codex/AGENTS.md"
+ln -s "$R/removed-custom-agents.md" "$H/.codex/AGENTS.md"
+if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1; then
+  fail "wrong top-level link was accepted"
+elif [ -L "$H/.codex/AGENTS.md" ] && grep -q 'WRONG.*AGENTS.md' "$OUT"; then
+  ok "wrong top-level link remains report-only under fix"
+else
+  fail "wrong top-level link was removed or not reported"
+fi
+rm "$H/.codex/AGENTS.md"
+ln -s "$R/codex/AGENTS.md" "$H/.codex/AGENTS.md"
 
 mkdir -p "$H/.codex/skills/local"
 ln -s "$R/agents/skills/demo/removed.md" "$H/.codex/skills/local/custom.md"

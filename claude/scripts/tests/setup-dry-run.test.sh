@@ -55,8 +55,8 @@ printf '# real profile\n' > "$TESTHOME/.bash_profile"
 mkdir -p "$TESTHOME/.codex" "$TESTHOME/external-codex-skills"
 mkdir -p "$TESTHOME/external-codex-skills/orchestrate/agents" \
   "$TESTHOME/external-codex-skills/orchestrate/references"
-ln -s "$REPO_ROOT/agents/skills/orchestrate/SKILL.md" \
-  "$TESTHOME/external-codex-skills/orchestrate/SKILL.md"
+printf 'stale external skill\n' > "$TESTHOME/external-codex-skills/orchestrate/SKILL.md"
+printf 'stale external backup\n' > "$TESTHOME/external-codex-skills/orchestrate/SKILL.md.backup"
 ln -s "$REPO_ROOT/agents/skills/orchestrate/agents/openai.yaml" \
   "$TESTHOME/external-codex-skills/orchestrate/agents/openai.yaml"
 ln -s "$REPO_ROOT/agents/skills/orchestrate/references/runtime-contracts.md" \
@@ -95,7 +95,8 @@ else
 fi
 
 if grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/agents/openai.yaml ->" "$OUT" &&
-  grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/references/runtime-contracts.md ->" "$OUT"; then
+  grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/references/runtime-contracts.md ->" "$OUT" &&
+  grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/SKILL.md ->" "$OUT"; then
   ok "Codex skill bundles include nested metadata and references"
 else
   fail "Codex skill bundle files were not included in the dry-run link plan"
