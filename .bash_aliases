@@ -260,6 +260,18 @@ cx() {
   _agent_preflight "resume fork" "$(_dev_dir)/dotfiles/check-codex.sh" "$@" || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
+  # Idempotently restore mobile access after a reboot or WSL shutdown, but only
+  # on hosts where the user already enabled it. Pairing persists in Codex state,
+  # so reconnecting does not create a new pairing code on every launch.
+  local remote_settings="$HOME/.codex/app-server-daemon/settings.json"
+  if [ -f "$remote_settings" ] \
+    && grep -Eq '"remoteControlEnabled"[[:space:]]*:[[:space:]]*true' "$remote_settings" \
+    && ! codex remote-control start --json >/dev/null 2>&1; then
+    # Remote Control is experimental and optional: surface a failure, but never
+    # make it a prerequisite for the local CLI.
+    echo "⚠ Codex Remote Control unavailable — mobile access is off for this session." >&2
+  fi
+
   codex "$@"
 }
 

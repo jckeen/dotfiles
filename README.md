@@ -21,7 +21,7 @@ Best practices sourced from [Boris Cherny](https://howborisusesclaudecode.com) (
 
 After setup, you don't have to remember much. Open a terminal and:
 
-- **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
+- **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex and reconnects Remote Control on hosts where it was already enabled. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **17 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/fable-mode` (recalibrate to the conduct layer), `/antigravity-review` (Gemini second-opinion review gate). Type the verb, get the workflow.
 - **An 18-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 10 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
@@ -165,7 +165,7 @@ After setup, run these to see what you've got:
 
 ```bash
 cc                    # pulls all your repos, then launches Claude
-cx                    # pulls all your repos, then launches Codex
+cx                    # pulls repos, reconnects enabled Remote Control, launches Codex
 dotfiles-update       # pull latest dotfiles + re-run setup (idempotent — safe anytime)
 projects              # list everything under ~/dev/
 sessions              # show active Claude sessions and their cwds
@@ -275,7 +275,7 @@ templates, and the golden rules. What follows is the short version.
 | Command | What it does |
 |---------|-------------|
 | `cc [project]` | Sync repos + memory, health check, heal plugin drift, launch Claude |
-| `cx [project]` | Same ergonomics for Codex |
+| `cx [project]` | Same ergonomics for Codex; reconnects previously enabled Remote Control |
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
 | `/handoff` | Capture session state before `/clear` or stopping |
