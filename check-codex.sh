@@ -95,6 +95,11 @@ else
         ERRORS=$((ERRORS + 1))
       elif find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
         while IFS= read -r -d '' skill_file; do
+          if [ -L "$skill_file" ] && [ -d "$skill_file" ]; then
+            red "UNSAFE  source skill bundle contains a directory symlink: ${skill_file#"$SKILLS_SRC"/}"
+            ERRORS=$((ERRORS + 1))
+            continue
+          fi
           skill_rel="${skill_file#"$skill_dir"}"
           skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"
           check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"

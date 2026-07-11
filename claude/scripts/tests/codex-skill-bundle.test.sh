@@ -47,6 +47,17 @@ else
 fi
 chmod 755 "$R/agents/skills/demo/references"
 
+mkdir -p "$R/shared-directory"
+ln -s "$R/shared-directory" "$R/agents/skills/demo/directory-link"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "source directory symlink was accepted"
+elif grep -q 'UNSAFE.*source skill bundle contains a directory symlink' "$OUT"; then
+  ok "source directory symlink fails closed"
+else
+  fail "source directory symlink lacked a useful report"
+fi
+rm "$R/agents/skills/demo/directory-link"
+
 chmod 000 "$H/.codex/skills/demo/references"
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
   fail "failed destination traversal was accepted"

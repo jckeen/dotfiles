@@ -417,6 +417,10 @@ link_file() {
   fi
   if [ "${DRY_RUN:-0}" = "1" ]; then
     if [ ! -L "$dst" ] && { [ -f "$dst" ] || [ -d "$dst" ]; }; then
+      if [ -e "$dst.backup" ] || [ -L "$dst.backup" ]; then
+        echo "ERROR: refusing to replace $dst because $dst.backup already exists" >&2
+        return 1
+      fi
       echo "  [DRY] would back up $dst to $dst.backup"
     fi
     echo "  [DRY] would link $dst -> $src"
@@ -1555,6 +1559,18 @@ if [ -d "$DOTFILES_DIR/agents/skills" ]; then
     if ! find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
       rm -f "$skill_file_list"
       echo "ERROR: unable to traverse complete Codex skill bundle: $skill_dir" >&2
+      exit 1
+    fi
+    invalid_skill_symlink=""
+    while IFS= read -r -d '' skill_file; do
+      if [ -L "$skill_file" ] && [ -d "$skill_file" ]; then
+        invalid_skill_symlink="$skill_file"
+        break
+      fi
+    done < "$skill_file_list"
+    if [ -n "$invalid_skill_symlink" ]; then
+      rm -f "$skill_file_list"
+      echo "ERROR: Codex skill bundles cannot contain directory symlinks: $invalid_skill_symlink" >&2
       exit 1
     fi
     while IFS= read -r -d '' skill_file; do

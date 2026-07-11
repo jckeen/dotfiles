@@ -124,6 +124,24 @@ else
 fi
 rm -r "$TESTHOME/.codex/skills.backup"
 
+printf 'conflicting agent rules\n' > "$TESTHOME/.codex/AGENTS.md"
+printf 'existing backup\n' > "$TESTHOME/.codex/AGENTS.md.backup"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "dry-run accepted a conflicting leaf backup"
+elif grep -q "refusing to replace $TESTHOME/.codex/AGENTS.md because $TESTHOME/.codex/AGENTS.md.backup already exists" "$OUT"; then
+  ok "dry-run refuses the same leaf backup collision as a real run"
+else
+  fail "dry-run leaf backup collision lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ]; then
+  ok "leaf-collision dry-run made zero mutations in \$HOME"
+else
+  fail "leaf-collision dry-run mutated \$HOME"
+fi
+rm "$TESTHOME/.codex/AGENTS.md" "$TESTHOME/.codex/AGENTS.md.backup"
+
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on
 # PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).
 # Non-zero exit is expected — the entries are still broken after a preview.
