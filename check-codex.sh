@@ -11,7 +11,7 @@ CODEX_SRC="$DOTFILES_DIR/codex"
 SKILLS_SRC="$DOTFILES_DIR/agents/skills"
 CODEX_DST="$HOME/.codex"
 AGENT_SKILLS_DST="$HOME/.agents/skills"
-CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
+CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}"
 ERRORS=0
 WARNINGS=0
 FIXED=0
@@ -86,6 +86,19 @@ elif [ ! -d "$CODEX_DST" ]; then
 else
   check_link "$CODEX_SRC/AGENTS.md" "$CODEX_DST/AGENTS.md" "AGENTS.md"
 
+  AGENT_SKILLS_UNSAFE=0
+  if [ -L "$HOME/.agents" ]; then
+    red "UNSAFE  canonical user-skill parent is a directory symlink -> $(readlink "$HOME/.agents")"
+    red "        Refusing to audit or clean through a symlinked ~/.agents root."
+    ERRORS=$((ERRORS + 1))
+    AGENT_SKILLS_UNSAFE=1
+  elif [ -L "$AGENT_SKILLS_DST" ]; then
+    red "UNSAFE  canonical user-skill root is a directory symlink -> $(readlink "$AGENT_SKILLS_DST")"
+    red "        Refusing to audit or clean through a symlinked skills root."
+    ERRORS=$((ERRORS + 1))
+    AGENT_SKILLS_UNSAFE=1
+  fi
+
   if [ -L "$SKILLS_SRC" ]; then
     red "UNSAFE  shared source skill root is a directory symlink: $SKILLS_SRC"
     ERRORS=$((ERRORS + 1))
@@ -121,7 +134,9 @@ else
           check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
           check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
         done < "$skill_file_list"
-        check_link "${skill_dir%/}" "$AGENT_SKILLS_DST/$skill_name" "user-skills/$skill_name"
+        if [ "$AGENT_SKILLS_UNSAFE" -eq 0 ]; then
+          check_link "${skill_dir%/}" "$AGENT_SKILLS_DST/$skill_name" "user-skills/$skill_name"
+        fi
         rm -f "$skill_file_list"
       else
         rm -f "$skill_file_list"
@@ -210,7 +225,7 @@ else
     fi
   fi
 
-  if [ -d "$AGENT_SKILLS_DST" ]; then
+  if [ "$AGENT_SKILLS_UNSAFE" -eq 0 ] && [ -d "$AGENT_SKILLS_DST" ]; then
     for link in "$AGENT_SKILLS_DST"/*; do
       [ -L "$link" ] || continue
       target="$(readlink "$link")"

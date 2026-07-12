@@ -1614,7 +1614,10 @@ CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}
 if [ -d "$CODEX_MEMORY_REPO" ]; then
   echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
   if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
-    if run bash "$CODEX_MEMORY_REPO/bootstrap.sh"; then
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      run bash "$CODEX_MEMORY_REPO/bootstrap.sh"
+      echo "  [DRY] Codex portable private defaults would be applied"
+    elif run bash "$CODEX_MEMORY_REPO/bootstrap.sh"; then
       echo "  -> Codex portable private defaults applied"
     else
       echo "  -> WARNING: Codex portable private defaults could not be applied"

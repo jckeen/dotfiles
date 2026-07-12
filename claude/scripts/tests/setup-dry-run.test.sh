@@ -81,10 +81,11 @@ else
 fi
 
 if grep -Fq "[DRY] bash $TESTHOME/codex-memory/bootstrap.sh" "$OUT" \
+  && ! grep -Fq "Codex portable private defaults applied" "$OUT" \
   && [ ! -e "$TESTHOME/codex-bootstrap-invoked" ]; then
   ok "Codex private bootstrap is previewed without running in dry-run mode"
 else
-  fail "Codex private bootstrap did not honor the dry-run boundary"
+  fail "Codex private bootstrap dry-run claimed or performed a live apply"
 fi
 
 after="$(snapshot "$TESTHOME")"

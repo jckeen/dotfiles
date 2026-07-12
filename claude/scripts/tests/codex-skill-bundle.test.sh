@@ -39,6 +39,18 @@ else
   fail "complete nested skill bundle failed"
 fi
 
+mkdir -p "$H/custom-codex-memory"
+printf '# private instructions\n' > "$H/custom-codex-memory/AGENTS.local.md"
+printf '# private memory\n' > "$H/custom-codex-memory/MEMORY.md"
+if HOME="$H" CODEX_MEMORY_REPO="$H/custom-codex-memory" \
+  "$R/check-codex.sh" > "$OUT" 2>&1 \
+  && grep -q 'MISSING.*AGENTS.local.md' "$OUT" \
+  && grep -q 'MISSING.*MEMORY.md' "$OUT"; then
+  ok "custom Codex memory repository override is audited"
+else
+  fail "CODEX_MEMORY_REPO override was ignored by the health check"
+fi
+
 chmod 000 "$R/agents/skills/demo/references"
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
   fail "failed source traversal was accepted"
@@ -195,6 +207,19 @@ elif grep -q 'UNSAFE.*~/.codex is a directory symlink' "$OUT" \
   ok "symlinked Codex runtime root fails without cleanup traversal"
 else
   fail "symlinked Codex runtime root did not fail closed"
+fi
+
+rm "$H/.codex"
+mv "$H/external-codex" "$H/.codex"
+mv "$H/.agents/skills" "$H/external-agent-skills"
+ln -s "$H/external-agent-skills" "$H/.agents/skills"
+if HOME="$H" "$R/check-codex.sh" --fix > "$OUT" 2>&1; then
+  fail "symlinked canonical user-skill root was accepted"
+elif grep -q 'UNSAFE.*user-skill root is a directory symlink' "$OUT" \
+  && [ -L "$H/external-agent-skills/demo" ]; then
+  ok "symlinked canonical user-skill root fails without cleanup traversal"
+else
+  fail "symlinked canonical user-skill root did not fail closed"
 fi
 
 echo ""
