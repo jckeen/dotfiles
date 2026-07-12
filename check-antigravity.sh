@@ -11,10 +11,18 @@ DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGY_SRC="$DOTFILES_DIR/antigravity"
 AGY_DST="$HOME/.gemini/config"
 AGY_STATE="$HOME/.gemini/antigravity-cli"
-AGY_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/agy-memory"
+AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
 ERRORS=0
 WARNINGS=0
 FIXED=0
+FIX=0
+STRICT=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix) FIX=1 ;;
+    --strict) STRICT=1 ;;
+  esac
+done
 
 # Shared check_link + report helpers (issue #199) — single source of truth
 # with check-claude.sh, check-codex.sh, and setup.sh's audit path. Resolved
@@ -32,16 +40,32 @@ CHECK_MISSING_HINT="~/.gemini/config/"
 echo "Checking Antigravity public-safe config..."
 echo ""
 
-if [ ! -d "$AGY_DST" ]; then
-  yellow "MISSING  ~/.gemini/config (Antigravity has not been initialized on this machine)"
-  WARNINGS=$((WARNINGS + 1))
+if [ -L "$HOME/.gemini" ]; then
+  red "UNSAFE  ~/.gemini is a directory symlink -> $(readlink "$HOME/.gemini")"
+  red "        Refusing to audit or clean through a symlinked runtime parent."
+  ERRORS=$((ERRORS + 1))
+elif [ -L "$AGY_DST" ]; then
+  red "UNSAFE  ~/.gemini/config is a directory symlink -> $(readlink "$AGY_DST")"
+  red "        Refusing to audit or clean through a symlinked runtime root."
+  ERRORS=$((ERRORS + 1))
+elif [ ! -d "$AGY_DST" ]; then
+  red "MISSING  ~/.gemini/config (Antigravity has not been initialized on this machine)"
+  ERRORS=$((ERRORS + 1))
 else
   check_link "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" "GEMINI.md"
   check_link "$AGY_SRC/hooks.json" "$AGY_DST/hooks.json" "hooks.json"
 
+  AGY_SKILLS_UNSAFE=0
+  if [ -L "$AGY_DST/skills" ]; then
+    red "UNSAFE  skills is a managed directory symlink -> $(readlink "$AGY_DST/skills")"
+    red "        Managed skill ancestors must be real directories."
+    ERRORS=$((ERRORS + 1))
+    AGY_SKILLS_UNSAFE=1
+  fi
+
   # Shared workflow skills: dir-level symlinks into the agent-neutral set
   # maintained at agents/skills (single source for Codex and Antigravity).
-  if [ -d "$DOTFILES_DIR/agents/skills" ]; then
+  if [ "$AGY_SKILLS_UNSAFE" -eq 0 ] && [ -d "$DOTFILES_DIR/agents/skills" ]; then
     for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
@@ -50,7 +74,7 @@ else
   fi
 
   # Antigravity-only skills (browser-verify, ...).
-  if [ -d "$AGY_SRC/skills" ]; then
+  if [ "$AGY_SKILLS_UNSAFE" -eq 0 ] && [ -d "$AGY_SRC/skills" ]; then
     for skill_dir in "$AGY_SRC/skills/"*/; do
       [ -d "$skill_dir" ] || continue
       skill_name="$(basename "$skill_dir")"
@@ -63,6 +87,13 @@ else
   if [ ! -s "$AGY_DST/mcp_config.json" ]; then
     yellow "MISSING  mcp_config.json is absent or empty — the browser/runtime lane has no MCP tooling (re-run setup.sh to seed from antigravity/mcp_config.json.example)"
     WARNINGS=$((WARNINGS + 1))
+  elif ! command -v jq >/dev/null 2>&1; then
+    red "INVALID  mcp_config.json cannot be validated because jq is unavailable"
+    ERRORS=$((ERRORS + 1))
+  elif ! jq -e 'type == "object" and ((.mcpServers // .mcp_servers) | type == "object")' \
+    "$AGY_DST/mcp_config.json" >/dev/null 2>&1; then
+    red "INVALID  mcp_config.json must be valid JSON with an MCP server object"
+    ERRORS=$((ERRORS + 1))
   else
     echo "LOCAL   mcp_config.json present (local by design; template: antigravity/mcp_config.json.example)"
   fi
@@ -93,7 +124,7 @@ else
     target="$(readlink "$link")"
     if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
       label="${link#$AGY_DST/}"
-      if [ "${1:-}" = "--fix" ]; then
+      if [ "$FIX" -eq 1 ]; then
         rm "$link"
         green "CLEANED  $label (removed orphaned link -> $target)"
         FIXED=$((FIXED + 1))
@@ -112,6 +143,7 @@ if [ $ERRORS -eq 0 ]; then
   else
     yellow "$WARNINGS warning(s) found."
     echo "Warnings are actionable config issues. LOCAL runtime state lines are informational."
+    [ "$STRICT" -eq 1 ] && exit 1
   fi
   [ $FIXED -gt 0 ] && green "Cleaned up $FIXED item(s)."
   exit 0

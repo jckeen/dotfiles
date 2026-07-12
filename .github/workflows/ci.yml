@@ -181,6 +181,22 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/cx-remote-control.test.sh
 
+      - name: shared agent launcher preflight
+        if: ${{ !cancelled() }}
+        run: bash claude/scripts/tests/agent-preflight.test.sh
+
+      - name: Antigravity launcher
+        if: ${{ !cancelled() }}
+        run: bash claude/scripts/tests/agy-launcher.test.sh
+
+      - name: Antigravity config safety
+        if: ${{ !cancelled() }}
+        run: bash claude/scripts/tests/antigravity-config.test.sh
+
+      - name: Claude memory sync boundary
+        if: ${{ !cancelled() }}
+        run: bash claude/scripts/tests/memory-sync.test.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest

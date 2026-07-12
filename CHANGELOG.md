@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-07-12 — fix: make the three-runtime workstation fail closed
+
+### What changed
+- Added a managed `agy` launch path with the same project selection, repository
+  sync, and health-check rhythm as `cc` and `cx`, plus a pinned clean-machine
+  Antigravity installer and post-setup audit.
+- Repository pull and runtime health failures now stop launches. Claude memory
+  auto-sync is limited to project memory trees, preserves staged user work,
+  scans staged and pending commits individually, propagates commit/push
+  failures, and retries safe pending commits.
+- Antigravity setup and health checks now refuse symlinked runtime roots,
+  validate local MCP JSON, pin the seeded GitHub and Playwright MCP packages,
+  honor a relocated private memory repo, and participate in `setup.sh --check`.
+- Corrected the generated AgentPack metadata so non-Claude targets describe
+  their current partial portability instead of claiming full support.
+
+### Decisions made
+- Treat plugin and hook parity as capability parity across runtime-specific
+  providers, not as identical marketplace package names.
+- Keep Claude's existing live settings behavior unchanged in this patch; its
+  merge-preserving migration and relocation work are tracked in the private
+  repository rather than hidden in the public bootstrap.
+
+### Known issues
+- AgentPack user-scope Codex/Antigravity transport, target variants, and
+  compiler-derived fidelity remain tracked in AgentPack issues.
+- Operator Commons now tracks compatibility ingestion, platform-aware setup
+  comparison, target-fidelity recommendations, and portable private agent state.
+
 ## 2026-07-12 — feat: keep Codex permissions and workflows aligned
 
 ### What changed

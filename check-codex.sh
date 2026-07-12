@@ -15,7 +15,14 @@ CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}
 ERRORS=0
 WARNINGS=0
 FIXED=0
-ORPHAN_FIX="${1:-}"
+ORPHAN_FIX=""
+STRICT=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix) ORPHAN_FIX=--fix ;;
+    --strict) STRICT=1 ;;
+  esac
+done
 
 report_orphan() {
   local link="$1" label="$2" target
@@ -81,8 +88,8 @@ if [ -L "$CODEX_DST" ]; then
   red "        Refusing to audit or clean through a symlinked runtime root."
   ERRORS=$((ERRORS + 1))
 elif [ ! -d "$CODEX_DST" ]; then
-  yellow "MISSING  ~/.codex (Codex has not been initialized on this machine)"
-  WARNINGS=$((WARNINGS + 1))
+  red "MISSING  ~/.codex (Codex has not been initialized on this machine)"
+  ERRORS=$((ERRORS + 1))
 else
   check_link "$CODEX_SRC/AGENTS.md" "$CODEX_DST/AGENTS.md" "AGENTS.md"
 
@@ -251,6 +258,7 @@ if [ $ERRORS -eq 0 ]; then
   else
     yellow "$WARNINGS warning(s) found."
     echo "Warnings are actionable config issues. LOCAL runtime state lines are informational."
+    [ "$STRICT" -eq 1 ] && exit 1
   fi
   [ $FIXED -gt 0 ] && green "Cleaned up $FIXED item(s)."
   exit 0

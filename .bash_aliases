@@ -12,7 +12,7 @@ alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
 
 # Detect dev directory — reads from ~/.claude/dev-dir (written by setup.sh).
-# Memoized: this is called on nearly every cc/cx/gh invocation, so cache the
+# Memoized: this is called on nearly every cc/cx/agy/gh invocation, so cache the
 # value after the first read instead of forking `cat` each time.
 _dev_dir() {
   if [ -z "${_DEV_DIR_CACHE:-}" ]; then
@@ -25,10 +25,9 @@ _dev_dir() {
   printf '%s\n' "$_DEV_DIR_CACHE"
 }
 
-# Pull latest for all git repos under dev directory.
-# Pulls run concurrently (each in the background) and results print in listing
-# order once complete, so total wall time is the slowest single pull rather than
-# the sum — this is what every cc/cx launch waits on.
+# Pull latest for all git repos under dev directory. Pulls are intentionally
+# sequential: linked worktrees share fetch/object state, so parallel pulls can
+# contend even though their checked-out branches are different.
 pull-all() {
   local dev_dir
   dev_dir="$(_dev_dir)"
@@ -36,26 +35,79 @@ pull-all() {
     echo "Dev directory not found: $dev_dir"
     return 1
   fi
-  local tmp names=() outs=() pids=() i=0
-  tmp="$(mktemp -d)"
-  local repo name
+  local failed=0 remote_output upstream output
+  local repo name rc
   for repo in "$dev_dir"/*/; do
-    [ -d "$repo/.git" ] || continue
-    git -C "$repo" remote -v 2>/dev/null | grep -q . || continue
+    [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || continue
     name="$(basename "$repo")"
-    names+=("$name")
-    outs+=("$tmp/$i.out")
-    git -C "$repo" pull --ff-only >"$tmp/$i.out" 2>&1 &
-    pids+=("$!")
-    i=$((i + 1))
+    if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
+      failed=1
+      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+      continue
+    fi
+    if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
+      failed=1
+      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$remote_output")"
+      continue
+    fi
+    [ -n "$remote_output" ] || continue
+    if ! upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+      printf "  %-20s%s\n" "$name" "No upstream branch; skipped"
+      continue
+    fi
+    rc=0
+    output="$(git -C "$repo" pull --ff-only 2>&1)" || rc=$?
+    [ "$rc" -eq 0 ] || failed=1
+    printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
   done
-  local n=0 pid
-  for pid in "${pids[@]}"; do
-    wait "$pid"
-    printf "  %-20s%s\n" "${names[$n]}" "$(tail -1 "${outs[$n]}")"
-    n=$((n + 1))
+  return "$failed"
+}
+
+# Strict launcher health wrappers. Standalone checkers remain useful as
+# reporters, while launchers treat every actionable managed-config warning as
+# a stop condition.
+_check_claude_launch_health() {
+  sync-memory || return 1
+  "$(_dev_dir)/dotfiles/check-claude.sh" --heal
+}
+
+_check_codex_launch_health() {
+  "$(_dev_dir)/dotfiles/check-codex.sh" --strict
+}
+
+_check_antigravity_launch_health() {
+  "$(_dev_dir)/dotfiles/check-antigravity.sh" --strict
+}
+
+_codex_is_resume_invocation() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  if [ -n "${1:-}" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    shift
+  fi
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      resume|fork) return 0 ;;
+      --|-h|--help|-V|--version|-i|--image) return 1 ;;
+      --image=*|-i?*) shift ;;
+      --strict-config|--oss|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--search|--no-alt-screen)
+        shift
+        ;;
+      --config=*|--enable=*|--disable=*|--remote=*|--remote-auth-token-env=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|--cd=*|--add-dir=*|--ask-for-approval=*)
+        shift
+        ;;
+      -c|-m|-p|-s|-C|-a|--config|--enable|--disable|--remote|--remote-auth-token-env|--model|--local-provider|--profile|--sandbox|--cd|--add-dir|--ask-for-approval)
+        [ "$#" -ge 2 ] || return 1
+        shift 2
+        ;;
+      -c?*|-m?*|-p?*|-s?*|-C?*|-a?*)
+        shift
+        ;;
+      *) return 1 ;;
+    esac
   done
-  rm -rf "$tmp"
+  return 1
 }
 
 # Check Claude config symlinks are healthy
@@ -69,26 +121,274 @@ check-codex() {
 }
 
 # Commit and push any pending memory changes from last session
+_memory_git() {
+  local repo="$1"
+  shift
+  GIT_NO_REPLACE_OBJECTS=1 git -C "$repo" "$@"
+}
+
+_memory_path_is_publishable() {
+  local path="$1" folded sensitive_folded
+  [[ "$path" =~ ^[^/]+/memory/ ]] || return 1
+  folded="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')" || return 1
+  # Allow an explicit author/authors document component without weakening the
+  # auth/authorization/oauth deny boundary elsewhere in the path.
+  sensitive_folded="$(printf '%s' "$folded" \
+    | sed -E 's#(^|/)authors?(\.[^/]*)?(/|$)#\1\2\3#g')" || return 1
+  [[ ! "$sensitive_folded" =~ auth|session|cache ]] || return 1
+  [[ ! "$folded" =~ (^|/)(auth|sessions?|cache|logs?|credentials?|tokens?|secrets?)([^[:alnum:]/][^/]*|/|$)|(^|/)[^/]*\.env([^/]*)(/|$)|\.(key|pem)([^/]*)$|secret|credentials|token ]]
+}
+
+_memory_content_is_safe() {
+  local content_file="$1" scan_dir
+  scan_dir="$(mktemp -d)" || return 1
+  if ! (
+    unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+    cd "$scan_dir" || exit 1
+    gitleaks stdin --redact --exit-code 1 --no-banner \
+      --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null < "$content_file"
+  ); then
+    rm -rf "$scan_dir"
+    return 1
+  fi
+  rm -rf "$scan_dir"
+}
+
+_memory_blob_is_safe() {
+  local repo="$1" tree="$2" path="$3" listing blob blob_spec
+  listing="$(mktemp)" || return 1
+  blob="$(mktemp)" || { rm -f "$listing"; return 1; }
+
+  if [ "$tree" = ":" ]; then
+    blob_spec=":$path"
+    _memory_git "$repo" ls-files --stage -z -- "$path" > "$listing" || {
+      rm -f "$listing" "$blob"
+      return 1
+    }
+  else
+    blob_spec="$tree:$path"
+    _memory_git "$repo" ls-tree -z "$tree" -- "$path" > "$listing" || {
+      rm -f "$listing" "$blob"
+      return 1
+    }
+  fi
+
+  # Deletions have no resulting blob to publish. Every other changed entry is
+  # scanned as raw content, so binary patches cannot hide embedded credentials.
+  if [ ! -s "$listing" ]; then
+    rm -f "$listing" "$blob"
+    return 0
+  fi
+  if ! _memory_git "$repo" cat-file blob "$blob_spec" > "$blob" \
+    || ! _memory_content_is_safe "$blob"; then
+    rm -f "$listing" "$blob"
+    return 1
+  fi
+  rm -f "$listing" "$blob"
+}
+
+_memory_range_is_safe() {
+  local repo="$1" upstream="$2" memory_pathspec="$3" validated_head="${4:-HEAD}"
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "  Memory sync requires gitleaks before publishing commits." >&2
+    return 1
+  fi
+
+  local commits_file paths_file commit_file commit path unsafe
+  commits_file="$(mktemp)" || return 1
+  if ! _memory_git "$repo" rev-list --reverse "$upstream".."$validated_head" > "$commits_file"; then
+    rm -f "$commits_file"
+    return 1
+  fi
+
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    commit_file="$(mktemp)" || { rm -f "$commits_file"; return 1; }
+    if ! _memory_git "$repo" cat-file commit "$commit" > "$commit_file" \
+      || ! _memory_content_is_safe "$commit_file"; then
+      rm -f "$commit_file" "$commits_file"
+      echo "  SECRET-LIKE COMMIT METADATA IN PENDING MEMORY HISTORY — refusing to push." >&2
+      return 1
+    fi
+    rm -f "$commit_file"
+    paths_file="$(mktemp)" || { rm -f "$commits_file"; return 1; }
+    if ! _memory_git "$repo" diff-tree --root --no-commit-id --name-only -z -r -m "$commit" > "$paths_file"; then
+      rm -f "$paths_file" "$commits_file"
+      return 1
+    fi
+    unsafe=0
+    while IFS= read -r -d '' path; do
+      [ -n "$path" ] || continue
+      if ! _memory_path_is_publishable "$path"; then
+        unsafe=1
+        break
+      fi
+      if ! _memory_blob_is_safe "$repo" "$commit" "$path"; then
+        echo "  SECRET-LIKE CONTENT IN PENDING MEMORY COMMIT — refusing to push." >&2
+        rm -f "$paths_file" "$commits_file"
+        return 1
+      fi
+    done < "$paths_file"
+    rm -f "$paths_file"
+    if [ "$unsafe" -eq 1 ]; then
+      echo "  Memory sync paused: commit $commit includes non-memory paths." >&2
+      rm -f "$commits_file"
+      return 1
+    fi
+
+  done < "$commits_file"
+  rm -f "$commits_file"
+}
+
+_memory_push_upstream() {
+  local repo="$1" validated_head="$2" remote="$3" merge_ref="$4" expected_upstream="$5"
+  if [ "$remote" = "." ] || [[ "$merge_ref" != refs/heads/* ]] \
+    || ! git check-ref-format "$merge_ref" >/dev/null 2>&1; then
+    echo "  Memory sync requires a remote branch upstream." >&2
+    return 1
+  fi
+  if ! _memory_git "$repo" merge-base --is-ancestor \
+      "$expected_upstream" "$validated_head"; then
+    echo "  Memory sync boundary is not an ancestor of the reviewed commit." >&2
+    return 1
+  fi
+
+  # An explicit destination ref prevents push.default, remote.*.push, or a
+  # configured mirror from publishing any refs outside the validated range.
+  # The source is the immutable reviewed OID, never a mutable HEAD reference.
+  _memory_git "$repo" -c "remote.$remote.mirror=false" -c push.followTags=false \
+    push -q --force-with-lease="$merge_ref:$expected_upstream" -- \
+      "$remote" "$validated_head:$merge_ref"
+}
+
+_memory_snapshot_upstream() {
+  local repo="$1" branch_ref branch current_ref current_head
+  branch_ref="$(_memory_git "$repo" symbolic-ref --quiet HEAD)" || return 1
+  branch="${branch_ref#refs/heads/}"
+  _memory_remote="$(_memory_git "$repo" config --get "branch.$branch.remote")" || return 1
+  _memory_merge_ref="$(_memory_git "$repo" config --get "branch.$branch.merge")" || return 1
+  _memory_upstream_oid="$(_memory_git "$repo" rev-parse "$branch@{upstream}^{commit}")" || return 1
+  _memory_validated_head="$(_memory_git "$repo" rev-parse "$branch_ref^{commit}")" || return 1
+  current_ref="$(_memory_git "$repo" symbolic-ref --quiet HEAD)" || return 1
+  current_head="$(_memory_git "$repo" rev-parse HEAD)" || return 1
+  [ "$current_ref" = "$branch_ref" ] && [ "$current_head" = "$_memory_validated_head" ]
+}
+
 sync-memory() {
   local dev_dir
   dev_dir="$(_dev_dir)"
   local mem_repo="$dev_dir/claude-memory"
-  if [ -d "$mem_repo/.git" ]; then
-    if [ -n "$(git -C "$mem_repo" status --porcelain 2>/dev/null)" ]; then
-      echo "  Saving memory..."
-      git -C "$mem_repo" add -A
-      # Defense in depth: refuse to commit if anything that looks like a secret
-      # got staged (env files, keys, pem/credentials, or paths containing "secret").
-      if git -C "$mem_repo" diff --cached --name-only \
-           | grep -E '\.(env|key|pem)$|secret|credentials' >/dev/null; then
-        echo "  SECRET-LIKE FILE STAGED — aborting memory sync." >&2
-        git -C "$mem_repo" reset -q
-        return 1
-      fi
-      git -C "$mem_repo" commit -q -m "auto: sync memory $(date +%Y-%m-%d)"
-      git -C "$mem_repo" push -q 2>/dev/null && echo "  Memory saved." || echo "  Memory committed locally (push failed)."
-    fi
+  if [ ! -e "$mem_repo/.git" ] && [ ! -L "$mem_repo/.git" ]; then
+    return 0
   fi
+  if ! _memory_git "$mem_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "  Claude memory path exists but is not a healthy Git worktree." >&2
+    return 1
+  fi
+
+  # Claude's auto-memory contract writes only immediate-project memory trees
+  # such as dev/memory and dotfiles/memory. Preferences, settings, identity,
+  # auth, sessions, caches, and arbitrary repo files require an intentional
+  # commit and can never ride this automatic path.
+  local memory_pathspec=':(glob)*/memory/**'
+
+  # Retry a commit whose earlier push failed even when the worktree is now
+  # clean. Without this, an interrupted cross-machine sync stays local forever.
+  local upstream ahead remote merge_ref validated_head
+  upstream="$(git -C "$mem_repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" || {
+    echo "  Memory sync has no upstream branch; configure one before automatic sync." >&2
+    return 1
+  }
+  _memory_snapshot_upstream "$mem_repo" || return 1
+  upstream="$_memory_upstream_oid"
+  remote="$_memory_remote"
+  merge_ref="$_memory_merge_ref"
+  validated_head="$_memory_validated_head"
+  ahead="$(_memory_git "$mem_repo" rev-list --count "$upstream".."$validated_head" 2>/dev/null)" || return 1
+  if [ "$ahead" -gt 0 ]; then
+    _memory_range_is_safe "$mem_repo" "$upstream" "$memory_pathspec" "$validated_head" || return 1
+    echo "  Publishing pending memory commit..."
+    if ! _memory_push_upstream "$mem_repo" "$validated_head" "$remote" \
+        "$merge_ref" "$upstream"; then
+      echo "  Memory push failed; the local commit remains pending." >&2
+      return 1
+    fi
+    echo "  Memory saved."
+  fi
+
+  local status_output
+  if ! status_output="$(_memory_git "$mem_repo" -c status.showUntrackedFiles=all \
+      status --porcelain --untracked-files=all -- "$memory_pathspec" 2>/dev/null)"; then
+    echo "  Memory sync could not read repository status." >&2
+    return 1
+  fi
+  [ -n "$status_output" ] || return 0
+
+  # Never absorb or disturb work the user already staged for a separate commit.
+  if ! git -C "$mem_repo" diff --cached --quiet; then
+    echo "  Memory sync paused: claude-memory already has staged user work." >&2
+    return 1
+  fi
+
+  echo "  Saving memory..."
+  git -C "$mem_repo" add -- "$memory_pathspec" || return 1
+  if git -C "$mem_repo" diff --cached --quiet; then
+    return 0
+  fi
+
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "  Memory sync requires gitleaks for staged-content scanning (run ./setup.sh)." >&2
+    git -C "$mem_repo" restore --staged -- "$memory_pathspec"
+    return 1
+  fi
+
+  local staged_paths staged_path
+  staged_paths="$(mktemp)" || {
+    git -C "$mem_repo" restore --staged -- "$memory_pathspec"
+    return 1
+  }
+  if ! git -C "$mem_repo" diff --cached --name-only -z -- "$memory_pathspec" > "$staged_paths"; then
+    rm -f "$staged_paths"
+    git -C "$mem_repo" restore --staged -- "$memory_pathspec"
+    return 1
+  fi
+  while IFS= read -r -d '' staged_path; do
+    if ! _memory_path_is_publishable "$staged_path"; then
+      rm -f "$staged_paths"
+      echo "  SECRET-LIKE MEMORY PATH STAGED — aborting memory sync." >&2
+      git -C "$mem_repo" restore --staged -- "$memory_pathspec"
+      return 1
+    fi
+    if ! _memory_blob_is_safe "$mem_repo" ":" "$staged_path"; then
+      rm -f "$staged_paths"
+      echo "  SECRET-LIKE MEMORY CONTENT DETECTED — aborting memory sync." >&2
+      git -C "$mem_repo" restore --staged -- "$memory_pathspec"
+      return 1
+    fi
+  done < "$staged_paths"
+  rm -f "$staged_paths"
+
+  if ! git -C "$mem_repo" commit -q --only \
+      -m "auto: sync memory $(date +%Y-%m-%d)" -- "$memory_pathspec"; then
+    git -C "$mem_repo" restore --staged -- "$memory_pathspec"
+    echo "  Memory commit failed; nothing was pushed." >&2
+    return 1
+  fi
+  _memory_snapshot_upstream "$mem_repo" || return 1
+  upstream="$_memory_upstream_oid"
+  remote="$_memory_remote"
+  merge_ref="$_memory_merge_ref"
+  validated_head="$_memory_validated_head"
+  if ! _memory_range_is_safe "$mem_repo" "$upstream" "$memory_pathspec" "$validated_head"; then
+    echo "  Memory commit stayed local because its committed history failed validation." >&2
+    return 1
+  fi
+  if ! _memory_push_upstream "$mem_repo" "$validated_head" "$remote" \
+      "$merge_ref" "$upstream"; then
+    echo "  Memory push failed; the local commit remains pending." >&2
+    return 1
+  fi
+  echo "  Memory saved."
 }
 
 # Validate critical claude-memory symlinks before launching Claude
@@ -116,9 +416,9 @@ _check_critical_symlinks() {
   fi
 }
 
-# Shared cc/cx preflight: resume detection, project cd, and the "Syncing
-# repos…" sequence (pull-all + a per-tool health check). Extracted from cc/cx
-# so the two can't drift apart again.
+# Shared agent preflight: resume detection, project cd, and the "Syncing repos…"
+# sequence (pull-all + a per-tool health check). Keep cc/cx/agy on this path so
+# their machine-sync behavior cannot drift independently.
 #   $1  — space-separated resume keywords (e.g. "--resume -r --continue -c")
 #   $2  — health-check command run inside the sync block (e.g. "sync-memory")
 #   $3… — the caller's original positional args ("$@")
@@ -136,13 +436,29 @@ _agent_preflight() {
 
   # Detect resume-style invocation anywhere in the args. resume_keys is left
   # unquoted so it word-splits into the individual keywords to match against.
-  _agent_resuming=0
-  local arg key
-  for arg in "$@"; do
-    for key in $resume_keys; do
-      if [ "$arg" = "$key" ]; then _agent_resuming=1; break 2; fi
+  _agent_resuming="${_agent_force_resuming:-0}"
+  _agent_force_resuming=0
+  local arg key arg_index=0 runtime_arg_index=1
+  if [ -n "${1:-}" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    runtime_arg_index=2
+  fi
+  if [ "$_agent_resuming" -eq 0 ]; then
+    for arg in "$@"; do
+      arg_index=$((arg_index + 1))
+      [ "$arg" = "--" ] && break
+      for key in $resume_keys; do
+        if [[ "$key" != -* ]] && [ "$arg_index" -ne "$runtime_arg_index" ]; then
+          continue
+        fi
+        case "$key" in
+          *=) [[ "$arg" == "$key"* ]] || continue ;;
+          *) [ "$arg" = "$key" ] || continue ;;
+        esac
+        _agent_resuming=1
+        break 2
+      done
     done
-  done
+  fi
 
   # If a project name was passed, cd into it (honored even when resuming) and
   # tell the caller to shift it out.
@@ -157,11 +473,17 @@ _agent_preflight() {
 
   if [ "$_agent_resuming" -eq 0 ]; then
     echo "Syncing repos..."
-    pull-all
-    echo ""
-    "$health_cmd"
+    if ! pull-all; then
+      echo "Repository sync failed — resolve the pull error before launching the agent." >&2
+      return 1
+    fi
     echo ""
   fi
+  if ! "$health_cmd"; then
+    echo "Agent health check failed — repair the reported drift before launch." >&2
+    return 1
+  fi
+  echo ""
 }
 
 # Launch Claude, syncing everything first
@@ -171,7 +493,7 @@ _agent_preflight() {
 #        cc -c / --continue — continue most recent session in current dir (skips sync)
 #        cc --resume <id>   — resume a specific session id (skips sync)
 # Any --resume/-r/--continue/-c in the args triggers the quick-resume path:
-# no repo sync, no memory sync, no claude health check.
+# no repository pulls, but memory publication and runtime health still run.
 # shellcheck disable=SC2120  # args come from interactive use, not in-file callers
 cc() {
   # Quick critical symlink validation (fast — just 2 stat calls; cwd-independent,
@@ -179,17 +501,13 @@ cc() {
   _check_critical_symlinks
 
   # Shared preflight: resume detection, project cd, and the repo + memory sync.
-  _agent_preflight "--resume -r --continue -c" "sync-memory" "$@" || return 1
+  _agent_preflight "--resume --resume= -r --continue --continue= -c" \
+    "_check_claude_launch_health" "$@" || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
   local resuming="$_agent_resuming"
 
-  # --heal runs on EVERY launch, including resume — and AFTER the repo sync, so a
-  # fresh launch links the hook/script/skill files the pull just fetched (running
-  # it before pull would miss them). On resume there's no pull, so it just heals
-  # the current tree — the one thing resume must not skip, or scripts added
-  # between sessions stay MISSING. Fast + zero-clobber; NOT LINKED / WRONG /
-  # orphan stay report-only.
-  "$(_dev_dir)/dotfiles/check-claude.sh" --heal
+  # The preflight always runs --heal after any fresh repository pull (or
+  # directly on resume), and propagates every remaining drift failure.
 
   # Heal plugin drift before the session loads its plugins — the pre-exec
   # analogue to --heal above. Because the install runs before `claude` starts,
@@ -255,9 +573,11 @@ cc() {
 #        cx <project>        — cd into ~/dev/<project> first, then launch
 #        cx resume|fork ...  — resume/fork without repo sync
 cx() {
+  _agent_force_resuming=0
+  _codex_is_resume_invocation "$@" && _agent_force_resuming=1
   # Shared preflight: resume/fork detection, project cd, and the repo sync +
   # Codex config health check (no Claude memory or ~/.claude healing).
-  _agent_preflight "resume fork" "$(_dev_dir)/dotfiles/check-codex.sh" "$@" || return 1
+  _agent_preflight "" "_check_codex_launch_health" "$@" || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
   # Reapply portable private defaults after the repo sync without replacing the
@@ -282,6 +602,20 @@ cx() {
   fi
 
   codex "$@"
+}
+
+# Launch Antigravity with the same project-selection and sync ergonomics as
+# cc/cx. `command` bypasses this function and resolves the installed agy binary.
+# Usage: agy                         — launch from the current project
+#        agy <project>               — cd into ~/dev/<project> first
+#        agy --continue|-c           — continue without the sync preflight
+#        agy --conversation <id>     — resume by id without the sync preflight
+agy() {
+  _agent_preflight "--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=" \
+    "_check_antigravity_launch_health" "$@" || return 1
+  [ "$_agent_shifted" -eq 1 ] && shift
+
+  command agy "$@"
 }
 
 codex-update() {

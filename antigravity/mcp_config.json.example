@@ -3,13 +3,13 @@
   "mcpServers": {
     "playwright": {
       "command": "bunx",
-      "args": ["@playwright/mcp@latest"]
+      "args": ["@playwright/mcp@0.0.78"]
     },
     "github": {
       "command": "bash",
       "args": [
         "-c",
-        "GITHUB_PERSONAL_ACCESS_TOKEN=\"$(gh auth token)\" exec bunx @modelcontextprotocol/server-github"
+        "GITHUB_PERSONAL_ACCESS_TOKEN=\"$(gh auth token)\" exec bunx @modelcontextprotocol/server-github@2025.4.8"
       ]
     }
   }

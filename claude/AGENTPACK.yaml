@@ -16,16 +16,20 @@
         "status": "supported"
       },
       "codex": {
-        "status": "supported"
+        "status": "partial",
+        "notes": "Shared skills and guidance compile, but Claude tool-restricted subagents are omitted and user-scope Codex sync is not yet implemented."
       },
       "cursor": {
-        "status": "supported"
+        "status": "partial",
+        "notes": "Core instructions and skills compile, but Claude-specific agents, hooks, and plugin behavior require review."
       },
       "chatgpt": {
-        "status": "supported"
+        "status": "partial",
+        "notes": "Portable prose and skills compile with lossy runtime behavior; hooks, local agents, and machine workflows are not preserved."
       },
       "generic": {
-        "status": "supported"
+        "status": "partial",
+        "notes": "Used as the current Antigravity ceiling: prose and skills compile, while live hooks, MCP, plugins, and subagent semantics remain runtime-specific."
       }
     }
   },
