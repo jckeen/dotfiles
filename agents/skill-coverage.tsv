@@ -1,0 +1,19 @@
+# skill	scope	rationale required for runtime-specific entries
+antigravity-review	claude-only	Claude wrapper around the Antigravity companion gate.
+branch-hygiene	shared
+changelog	shared
+claude-server	claude-only	Starts Claude Code remote control rather than a portable agent workflow.
+commit-push-pr	shared
+decompose	shared
+drift-sweep	shared
+fable-mode	shared
+fix-issue	shared
+handoff	shared
+jj	claude-only	Claude's current Jujutsu driver contains Claude-specific interaction guidance.
+kickoff	claude-only	The current scaffold writes Claude-specific project surfaces.
+log-error	claude-only	The current ERRORS.md workflow conflicts with the shared GitHub-only tracker contract.
+orchestrate	shared
+repo-health	agent-only	Claude uses its repo-scout agent for the equivalent read-only briefing.
+review	shared
+session-retro	shared
+simplify	shared

@@ -18,11 +18,22 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 
 CALLS="$(mktemp)"
 TEST_HOME="$(mktemp -d)"
-trap 'rm -f "$CALLS"; rm -rf "$TEST_HOME"' EXIT
+TEST_DEV="$(mktemp -d)"
+trap 'rm -f "$CALLS"; rm -rf "$TEST_HOME" "$TEST_DEV"' EXIT
 export HOME="$TEST_HOME"
+export CODEX_MEMORY_REPO="$TEST_DEV/private-codex-memory"
 mkdir -p "$HOME/.codex/app-server-daemon"
+mkdir -p "$CODEX_MEMORY_REPO"
 printf '{"remoteControlEnabled":true}\n' \
   > "$HOME/.codex/app-server-daemon/settings.json"
+cat > "$CODEX_MEMORY_REPO/bootstrap.sh" <<EOF
+#!/usr/bin/env bash
+printf 'bootstrap\n' >> "$CALLS"
+EOF
+
+_dev_dir() {
+  printf '%s\n' "$TEST_DEV"
+}
 
 _agent_preflight() {
   _agent_resuming=0
@@ -38,7 +49,7 @@ codex() {
 }
 
 cx resume session-123 >/dev/null 2>&1
-expected_calls=$'remote-control start --json\nresume session-123'
+expected_calls=$'bootstrap\nremote-control start --json\nresume session-123'
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "cx starts Remote Control before launching Codex"
 else
@@ -59,7 +70,7 @@ else
   fail "cx did not warn when Remote Control failed"
 fi
 
-expected_calls=$'remote-control start --json\n--model test-model'
+expected_calls=$'bootstrap\nremote-control start --json\n--model test-model'
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "cx still launches Codex after a Remote Control failure"
 else
@@ -71,7 +82,8 @@ printf '{"remoteControlEnabled":false}\n' \
   > "$HOME/.codex/app-server-daemon/settings.json"
 unset REMOTE_START_RC
 cx exec --help >/dev/null 2>&1
-if [ "$(cat "$CALLS")" = "exec --help" ]; then
+expected_calls=$'bootstrap\nexec --help'
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "cx does not enable Remote Control on an unconfigured host"
 else
   fail "cx opted an unconfigured host into Remote Control: $(tr '\n' '|' < "$CALLS")"

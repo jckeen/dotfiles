@@ -43,7 +43,11 @@ It does not import or publish live `~/.codex` runtime state.
 
 Public, reusable workflow skills live under `agents/skills/` (the
 agent-neutral set shared with Antigravity — see `agents/README.md`) and are
-symlinked into `~/.codex/skills/` by `setup.sh`. Until 2026-07 they lived at
+directory-linked into Codex's documented user scope at `~/.agents/skills/` by
+`setup.sh`; compatibility links under `~/.codex/skills/` support older clients.
+Invoke them through `/skills`, mention them as `$skill-name`, or let Codex match
+their descriptions implicitly. Custom Claude-style `/skill-name` commands are
+not Codex skill invocations. Until 2026-07 the shared sources lived at
 `codex/skills/`; the directory moved when Antigravity started consuming the
 same set (issue #166).
 

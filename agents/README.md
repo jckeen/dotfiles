@@ -15,14 +15,17 @@ three are committed build artifacts; edit the sources here and regenerate
 `agents/skills/` is the agent-neutral workflow skill set — the single source
 consumed by every non-Claude agent in this setup:
 
-- **Codex**: `setup.sh` links each skill file into `~/.codex/skills/<name>/`.
+- **Codex**: `setup.sh` directory-links each skill into the documented user
+  scope at `~/.agents/skills/<name>/`; per-file links under
+  `~/.codex/skills/<name>/` remain as compatibility support for older clients.
 - **Antigravity (agy)**: `setup.sh` dir-symlinks each skill into
   `~/.gemini/config/skills/<name>/`.
 
-Claude Code keeps its own richer set under `claude/skills/`; the
-`changelog` and `handoff` pairs here must stay shape-identical to their
-Claude counterparts (asserted in CI by
-`claude/scripts/check-skill-parity.sh`).
+Claude Code keeps its own richer set under `claude/skills/`.
+`agents/skill-coverage.tsv` classifies every workflow as shared or
+runtime-specific, and `claude/scripts/check-skill-parity.sh` fails CI when a
+skill is added, removed, or promoted without updating that contract. The
+`changelog` and `handoff` pairs must also keep identical artifact shapes.
 
 Keep these skills generic and public-safe — personal preferences and private
 project context belong in the private memory repos (`codex-memory`,
@@ -31,5 +34,6 @@ project context belong in the private memory repos (`codex-memory`,
 > **Transition note:** this directory was `codex/skills/` until 2026-07
 > (issue #166). It was renamed because it had become the shared source for
 > both Codex and Antigravity, not a Codex-only set. Re-run `./setup.sh`
-> after pulling so the `~/.codex/skills/` and `~/.gemini/config/skills/`
+> after pulling so the `~/.agents/skills/`, compatibility
+> `~/.codex/skills/`, and `~/.gemini/config/skills/`
 > symlinks repoint at the new path.

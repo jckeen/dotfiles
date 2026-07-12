@@ -23,7 +23,7 @@ Use this workflow for GitHub issue numbers, issue URLs, or clear bug reports.
 5. Verify:
    - Run the focused new test first.
    - Then run the smallest useful existing test, lint, or typecheck command.
-6. If asked to ship:
+6. If the user or an applicable standing order authorizes shipping:
    - Stage only relevant files.
    - Commit with a conventional message such as
      `fix: handle expired session refresh (#123)`.

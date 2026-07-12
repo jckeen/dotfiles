@@ -1,0 +1,4 @@
+interface:
+  display_name: "Drift Sweep"
+  short_description: "Audit documentation truth and drift"
+  default_prompt: "Use $drift-sweep to bootstrap or audit this repository's documentation contract and reconcile stale operational truth."

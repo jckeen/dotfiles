@@ -1,0 +1,4 @@
+interface:
+  display_name: "Decompose"
+  short_description: "Design bounded parallel workstreams"
+  default_prompt: "Use $decompose to analyze this task, define acceptance criteria, and produce self-contained workstream prompts before implementation."

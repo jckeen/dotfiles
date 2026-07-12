@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Retro"
+  short_description: "Propose improvements to the shared agent toolset"
+  default_prompt: "Use $session-retro to identify and propose one to three durable improvements to shared skills, instructions, or memory without applying them before confirmation."

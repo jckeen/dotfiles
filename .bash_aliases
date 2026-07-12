@@ -260,6 +260,15 @@ cx() {
   _agent_preflight "resume fork" "$(_dev_dir)/dotfiles/check-codex.sh" "$@" || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
+  # Reapply portable private defaults after the repo sync without replacing the
+  # machine-local config that holds project trust and integration settings.
+  local codex_memory_bootstrap
+  codex_memory_bootstrap="${CODEX_MEMORY_REPO:-$(_dev_dir)/codex-memory}/bootstrap.sh"
+  if [ -f "$codex_memory_bootstrap" ] \
+    && ! bash "$codex_memory_bootstrap"; then
+    echo "⚠ Codex private defaults could not be applied — continuing with the existing local config." >&2
+  fi
+
   # Idempotently restore mobile access after a reboot or WSL shutdown, but only
   # on hosts where the user already enabled it. Pairing persists in Codex state,
   # so reconnecting does not create a new pairing code on every launch.

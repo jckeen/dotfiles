@@ -1562,6 +1562,7 @@ if [ -L "$DOTFILES_DIR/agents/skills" ]; then
   echo "ERROR: shared Codex skill root cannot be a directory symlink: $DOTFILES_DIR/agents/skills" >&2
   exit 1
 elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
+  prepare_directory "$HOME_DIR" "$HOME_DIR/.agents/skills"
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     if [ -L "${skill_dir%/}" ]; then
       echo "ERROR: Codex skill root cannot be a directory symlink: ${skill_dir%/}" >&2
@@ -1604,23 +1605,21 @@ elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
       link_file "$skill_file" "$skill_dst"
     done < "$skill_file_list"
     rm "$skill_file_list"
+    link_file "${skill_dir%/}" "$HOME_DIR/.agents/skills/$skill_name"
   done
-  echo "  -> Codex skills linked (source: agents/skills)"
+  echo "  -> Codex skills linked into ~/.agents/skills (legacy ~/.codex links retained for compatibility)"
 fi
 
-if [ -L "$HOME_DIR/.codex/config.toml" ]; then
-  echo "  -> WARNING: ~/.codex/config.toml is a symlink."
-  echo "     Codex writes machine-specific project trust there; replace it with a local file before committing changes."
-elif [ -f "$HOME_DIR/.codex/config.toml" ]; then
-  echo "  -> Codex config.toml left local (public-safe)"
-elif [ -f "$DOTFILES_DIR/codex/config.toml.example" ]; then
-  echo "  -> No local Codex config.toml found."
-  echo "     Review $DOTFILES_DIR/codex/config.toml.example before creating one."
-fi
-
-CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
+CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}"
 if [ -d "$CODEX_MEMORY_REPO" ]; then
   echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
+  if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
+    if run bash "$CODEX_MEMORY_REPO/bootstrap.sh"; then
+      echo "  -> Codex portable private defaults applied"
+    else
+      echo "  -> WARNING: Codex portable private defaults could not be applied"
+    fi
+  fi
   for f in AGENTS.local.md MEMORY.md; do
     if [ -f "$CODEX_MEMORY_REPO/$f" ]; then
       link_file "$CODEX_MEMORY_REPO/$f" "$HOME_DIR/.codex/$f"
@@ -1631,6 +1630,16 @@ if [ -d "$CODEX_MEMORY_REPO" ]; then
 else
   echo "  -> Optional private Codex memory repo not found at $CODEX_MEMORY_REPO"
   echo "     Create it only if you want portable private Codex memory."
+fi
+
+if [ -L "$HOME_DIR/.codex/config.toml" ]; then
+  echo "  -> WARNING: ~/.codex/config.toml is a symlink."
+  echo "     Codex writes machine-specific project trust there; replace it with a local file before committing changes."
+elif [ -f "$HOME_DIR/.codex/config.toml" ]; then
+  echo "  -> Codex config.toml left local (public-safe)"
+elif [ -f "$DOTFILES_DIR/codex/config.toml.example" ]; then
+  echo "  -> No local Codex config.toml found."
+  echo "     Review $DOTFILES_DIR/codex/config.toml.example before creating one."
 fi
 
 # ─── 5c. Antigravity (agy) config ────────────────────────────────────

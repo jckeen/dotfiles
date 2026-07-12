@@ -65,6 +65,8 @@ write_guide() {
 # same skills, and both sides' SKILL.md with all required headings.
 scaffold_good() {
   printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\n' > "$R/README.md"
+  mkdir -p "$R/agents"
+  printf 'changelog\tshared\nhandoff\tshared\n' > "$R/agents/skill-coverage.tsv"
   write_guide changelog handoff
   # one agent file to match the "1-agent" claim
   mkdir -p "$R/claude/agents"
@@ -175,6 +177,14 @@ printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\
   > "$R/README.md"
 check "bad partial bump: stale second 'N slash commands' claim fails" 1 \
   "README claims '3 slash commands'"
+
+# --- Case 12: BAD (coverage) — every workflow needs an explicit disposition --
+new_repo
+scaffold_good
+grep -v '^handoff' "$R/agents/skill-coverage.tsv" > "$R/agents/skill-coverage.tsv.tmp"
+mv "$R/agents/skill-coverage.tsv.tmp" "$R/agents/skill-coverage.tsv"
+check "bad coverage: unclassified Claude/shared skill fails" 1 \
+  "missing from agents/skill-coverage.tsv"
 
 echo "---"
 echo "$pass passed, $failed failed"

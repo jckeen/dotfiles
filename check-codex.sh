@@ -10,6 +10,7 @@ CODEX_SRC="$DOTFILES_DIR/codex"
 # source for Codex and Antigravity), not under codex/.
 SKILLS_SRC="$DOTFILES_DIR/agents/skills"
 CODEX_DST="$HOME/.codex"
+AGENT_SKILLS_DST="$HOME/.agents/skills"
 CODEX_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/codex-memory"
 ERRORS=0
 WARNINGS=0
@@ -120,6 +121,7 @@ else
           check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
           check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
         done < "$skill_file_list"
+        check_link "${skill_dir%/}" "$AGENT_SKILLS_DST/$skill_name" "user-skills/$skill_name"
         rm -f "$skill_file_list"
       else
         rm -f "$skill_file_list"
@@ -206,6 +208,19 @@ else
       red "FAILED  unable to traverse managed skill destinations"
       ERRORS=$((ERRORS + 1))
     fi
+  fi
+
+  if [ -d "$AGENT_SKILLS_DST" ]; then
+    for link in "$AGENT_SKILLS_DST"/*; do
+      [ -L "$link" ] || continue
+      target="$(readlink "$link")"
+      if [[ "$target" == "$SKILLS_SRC/"* ]] && [ ! -e "$link" ]; then
+        expected="$SKILLS_SRC/$(basename "$link")"
+        if [ "$target" = "$expected" ]; then
+          report_orphan "$link" "user-skills/$(basename "$link")"
+        fi
+      fi
+    done
   fi
 fi
 

@@ -41,16 +41,26 @@ make a pull request.
      Proceed.
    - Exit 3 / loud warning → Codex could not run; the gate degrades open. Note
      it and continue, or set `CODEX_GATE_REQUIRED=1` to hard-require the review.
-7. Push the current branch, setting upstream if needed.
-8. Create a PR with `gh pr create`:
+7. Run `~/.claude/scripts/antigravity-review-gate.sh` as an advisory,
+   cross-lineage second opinion for runtime, frontend, or boundary-sensitive
+   changes. Skip it for pure docs/config when it adds no signal. Treat real
+   findings as actionable, but do not make this advisory gate authoritative
+   over the Codex stop-gate and CI.
+8. Push the current non-default branch, setting upstream if needed.
+9. Create a PR with `gh pr create`:
    - title under 70 characters
    - body covering what changed, why, and how it was tested
    - issue links such as `Fixes #123` when applicable
-9. Return the PR URL and verification result. The merge gate is the Codex review
-   (step 6) plus CI green (see ADR-0003).
+10. Inspect `gh pr checks` and report pending or failed checks. The merge gate is
+    the Codex review plus CI green (see ADR-0003).
+11. Enable auto-merge only when an applicable standing order explicitly grants
+    that authority and the required review/CI conditions are satisfied.
+    Otherwise return the PR URL and verification state without merging.
 
 ## Safety
 
 - Never stage secrets or generated runtime state.
 - Never revert unrelated work.
+- Never push implementation directly to a default or protected branch.
+- Never force-push, bypass hooks, or amend published history under this skill.
 - If verification fails, stop and fix or report the failure before pushing.

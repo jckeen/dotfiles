@@ -14,13 +14,15 @@ failed=0
 ok() { pass=$((pass + 1)); echo "ok   - $1"; }
 fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 
-mkdir -p "$R/codex" "$R/agents/skills/demo/references" "$H/.codex/skills/demo/references"
+mkdir -p "$R/codex" "$R/agents/skills/demo/references" \
+  "$H/.codex/skills/demo/references" "$H/.agents/skills"
 cp "$REPO_ROOT/check-codex.sh" "$REPO_ROOT/lib-checks.sh" "$R/"
 printf '# Agent rules\n' > "$R/codex/AGENTS.md"
 printf '%s\n' '---' 'name: demo' 'description: Demo skill.' '---' > "$R/agents/skills/demo/SKILL.md"
 printf '# Nested reference\n' > "$R/agents/skills/demo/references/runtime.md"
 ln -s "$R/codex/AGENTS.md" "$H/.codex/AGENTS.md"
 ln -s "$R/agents/skills/demo/SKILL.md" "$H/.codex/skills/demo/SKILL.md"
+ln -s "$R/agents/skills/demo" "$H/.agents/skills/demo"
 
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1 \
   && grep -q 'MISSING.*skills/demo/references/runtime.md' "$OUT" \
