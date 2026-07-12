@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-07-12 — feat: keep Codex permissions and workflows aligned
+
+### What changed
+- Codex's portable private defaults now persist the Auto permission posture,
+  automatic approval review, and a scoped reviewer policy while preserving
+  machine-local trust and integration settings.
+- Shared skills are linked into Codex's documented user discovery scope, and
+  the docs now distinguish Claude `/skill-name` commands from Codex `/skills`
+  and `$skill-name` invocation.
+- Added portable `decompose`, `drift-sweep`, `fable-mode`, and `session-retro`
+  workflows plus a CI-enforced coverage contract for every Claude/shared skill.
+
+### Decisions made
+- Keep runtime-specific adapters where tool semantics differ, but require every
+  workflow to have an explicit shared or runtime-specific disposition.
+- Preserve compatibility links for older Codex clients while making the
+  documented user skill location canonical.
+
+## 2026-07-11 — feat: persist portable Codex defaults without syncing live config
+
+### What changed
+- `setup.sh` now runs an optional `codex-memory/bootstrap.sh` before reporting
+  local Codex config state, while dry-run previews the call without executing
+  it.
+- `cx` reapplies the private bootstrap after repository sync, so newly pulled
+  personal defaults take effect without copying or symlinking the live config.
+- Focused regression coverage verifies the setup dry-run boundary and the
+  bootstrap-before-launch order.
+
+### Decisions made
+- Keep `~/.codex/config.toml` machine-local because it contains project trust
+  and integration state. The private companion repo owns only an explicit,
+  portable defaults overlay that merges into that file.
+
 ## 2026-07-11 — feat: reconnect opted-in Codex Remote Control from `cx`
 
 ### What changed

@@ -104,7 +104,63 @@ else
   fi
 fi
 
-# ── 2. Cross-tool artifact shape (changelog + handoff) ─────────────
+# ── 2. Explicit Claude/shared-agent workflow coverage ──────────────
+coverage="$REPO_ROOT/agents/skill-coverage.tsv"
+if [ ! -f "$coverage" ]; then
+  red "agents/skill-coverage.tsv missing — every workflow needs a shared/runtime-specific disposition"
+else
+  coverage_names=$(awk -F '\t' 'NF && $1 !~ /^#/ {print $1}' "$coverage" | sort)
+  duplicate_names=$(printf '%s\n' "$coverage_names" | uniq -d)
+  [ -z "$duplicate_names" ] \
+    || red "agents/skill-coverage.tsv contains duplicate skill names: $(tr '\n' ' ' <<<"$duplicate_names")"
+
+  claude_skills=$(find "$REPO_ROOT/claude/skills" -mindepth 1 -maxdepth 1 -type d \
+    -exec basename {} \; | sort)
+  shared_skills=$(find "$REPO_ROOT/agents/skills" -mindepth 1 -maxdepth 1 -type d \
+    -exec basename {} \; | sort)
+  all_skills=$(printf '%s\n%s\n' "$claude_skills" "$shared_skills" | sed '/^$/d' | sort -u)
+  missing_coverage=$(comm -23 <(printf '%s\n' "$all_skills") <(printf '%s\n' "$coverage_names"))
+  stale_coverage=$(comm -13 <(printf '%s\n' "$all_skills") <(printf '%s\n' "$coverage_names"))
+  [ -z "$missing_coverage" ] \
+    || red "skill(s) missing from agents/skill-coverage.tsv: $(tr '\n' ' ' <<<"$missing_coverage")"
+  [ -z "$stale_coverage" ] \
+    || red "agents/skill-coverage.tsv names missing skill(s): $(tr '\n' ' ' <<<"$stale_coverage")"
+
+  while IFS=$'\t' read -r skill scope rationale; do
+    [ -n "$skill" ] || continue
+    [[ "$skill" == \#* ]] && continue
+    case "$scope" in
+      shared)
+        [ -d "$REPO_ROOT/claude/skills/$skill" ] \
+          || red "coverage marks '$skill' shared but claude/skills/$skill is missing"
+        [ -d "$REPO_ROOT/agents/skills/$skill" ] \
+          || red "coverage marks '$skill' shared but agents/skills/$skill is missing"
+        ;;
+      claude-only)
+        [ -d "$REPO_ROOT/claude/skills/$skill" ] \
+          || red "coverage marks '$skill' claude-only but its Claude skill is missing"
+        [ ! -d "$REPO_ROOT/agents/skills/$skill" ] \
+          || red "coverage marks '$skill' claude-only but a shared-agent skill exists"
+        [ -n "$rationale" ] \
+          || red "coverage marks '$skill' claude-only without a rationale"
+        ;;
+      agent-only)
+        [ -d "$REPO_ROOT/agents/skills/$skill" ] \
+          || red "coverage marks '$skill' agent-only but its shared-agent skill is missing"
+        [ ! -d "$REPO_ROOT/claude/skills/$skill" ] \
+          || red "coverage marks '$skill' agent-only but a Claude skill exists"
+        [ -n "$rationale" ] \
+          || red "coverage marks '$skill' agent-only without a rationale"
+        ;;
+      *) red "agents/skill-coverage.tsv has invalid scope '$scope' for '$skill'" ;;
+    esac
+  done < "$coverage"
+
+  [ "$VIOLATIONS" -eq 0 ] \
+    && green "workflow coverage: every Claude/shared-agent skill has an explicit disposition"
+fi
+
+# ── 3. Cross-tool artifact shape (changelog + handoff) ─────────────
 require_headings() {
   local skill="$1"; shift
   local side file h

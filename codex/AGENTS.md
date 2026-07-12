@@ -35,7 +35,7 @@ its pre-send checklist.
 - Doc contract: a repo's Markdown surfaces are declared in a root
   `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
   and asserted in CI by `check-doc-truth.sh`; bootstrap or audit one with
-  `/drift-sweep` (ADR 0005 in dotfiles). Keep LIVING small — a wrong doc is
+  `$drift-sweep` (ADR 0005 in dotfiles). Keep LIVING small — a wrong doc is
   worse than no doc; delete or mark HISTORICAL rather than let it freeze.
 - Never hardcode a count, version, SHA, or hostname in prose that CI can't
   assert — point at the canonical source instead. GitHub issues are the only

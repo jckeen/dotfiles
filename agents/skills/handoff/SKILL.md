@@ -16,12 +16,13 @@ brief.
 4. Queue USER ACTION items to `~/.claude/operator-queue.md` — see
    "Operator-action queue" below for the block format and rules.
 5. Session-end hygiene (before saving the note):
-   - `git worktree list` — remove worktrees this session created and no
-     longer needs (`git worktree remove <path>`).
-   - Delete local branches fully merged into the default branch
+   - `git worktree list` — identify worktrees this session created and no
+     longer needs. Remove only those already covered by explicit cleanup
+     authorization and proven to contain no unique work; otherwise list them.
+   - Inventory local branches fully merged into the default branch
      (`git branch --merged "$(git rev-parse --abbrev-ref origin/HEAD)"` —
-     don't assume it's named `main`), excluding the default and current
-     branches.
+     don't assume it's named `main`). Delete them only when the user or an
+     applicable standing order explicitly authorizes branch deletion.
    - Push or PR every branch that has work on it — never leave work
      stranded local-only.
    - `gh pr list` — note each open PR's review + CI state in the

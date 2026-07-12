@@ -53,6 +53,12 @@ git config --file "$TESTHOME/.gitconfig" user.email test@test.test
 printf 'cd /mnt/c/Users/test\n' > "$TESTHOME/.bashrc"
 printf '# real profile\n' > "$TESTHOME/.bash_profile"
 mkdir -p "$TESTHOME/.codex" "$TESTHOME/external-codex-skills"
+mkdir -p "$TESTHOME/codex-memory"
+cat > "$TESTHOME/codex-memory/bootstrap.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'invoked\n' > "$HOME/codex-bootstrap-invoked"
+EOF
+chmod +x "$TESTHOME/codex-memory/bootstrap.sh"
 mkdir -p "$TESTHOME/external-codex-skills/orchestrate/agents" \
   "$TESTHOME/external-codex-skills/orchestrate/references"
 printf 'stale external skill\n' > "$TESTHOME/external-codex-skills/orchestrate/SKILL.md"
@@ -66,11 +72,20 @@ ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 before="$(snapshot "$TESTHOME")"
 
 # --yes so prompts take safe defaults (no stdin); dry-run must exit 0.
-if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+if HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \
+  "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
   ok "setup.sh --yes --dry-run exits 0"
 else
   fail "setup.sh --yes --dry-run exited $? (output follows)"
   sed 's/^/      | /' "$OUT"
+fi
+
+if grep -Fq "[DRY] bash $TESTHOME/codex-memory/bootstrap.sh" "$OUT" \
+  && ! grep -Fq "Codex portable private defaults applied" "$OUT" \
+  && [ ! -e "$TESTHOME/codex-bootstrap-invoked" ]; then
+  ok "Codex private bootstrap is previewed without running in dry-run mode"
+else
+  fail "Codex private bootstrap dry-run claimed or performed a live apply"
 fi
 
 after="$(snapshot "$TESTHOME")"
@@ -100,6 +115,12 @@ if grep -q "\[DRY\] would link $TESTHOME/.codex/skills/orchestrate/agents/openai
   ok "Codex skill bundles include nested metadata and references"
 else
   fail "Codex skill bundle files were not included in the dry-run link plan"
+fi
+
+if grep -q "\[DRY\] would link $TESTHOME/.agents/skills/orchestrate ->" "$OUT"; then
+  ok "Codex shared skills deploy to the documented user discovery path"
+else
+  fail "Codex shared skills were not deployed under ~/.agents/skills"
 fi
 
 if [ "$(grep -c "would back up $TESTHOME/.codex/skills to $TESTHOME/.codex/skills.backup" "$OUT")" -eq 1 ]; then

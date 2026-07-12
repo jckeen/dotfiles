@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fable Mode"
+  short_description: "Recalibrate to the shared conduct layer"
+  default_prompt: "Use $fable-mode to reload the shared FABLE conduct layer, audit recent replies, and continue with corrected behavior."

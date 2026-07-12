@@ -29,7 +29,7 @@ After setup, you don't have to remember much. Open a terminal and:
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
 - **Auto-hygiene** — a daily systemd timer cleans stale branches across every repo in `~/dev/`, surfaces drift at every Claude/Codex session start, and bootstraps the canonical 8 GitHub auto-merge settings on every newly-created or cloned repo.
-- **Public-safe Codex parity** — the public-safe skill subset (review, simplify, fix-issue, commit-push-pr, handoff, changelog, branch-hygiene) is wired so `cx` mirrors `cc` on those shared workflows, plus a Codex-only `repo-health` skill (its Claude-side analogue is the `repo-scout` agent, not a skill). The same skill set is dir-symlinked into Antigravity's global config (`~/.gemini/config/skills/`), so `agy` shares the workflow too. Codex auth, sessions, sqlite state, and live `config.toml` stay local; only public-safe guidance and skills are shared.
+- **Public-safe Codex parity** — portable workflows live once under `agents/skills/` and are exposed to Codex, Claude where applicable, and Antigravity. Codex selects them with `/skills` or `$skill-name` (for example `$orchestrate`); Claude keeps its `/skill-name` syntax. `agents/skill-coverage.tsv` and CI require every workflow to be explicitly shared or runtime-specific, so a new Claude skill cannot silently disappear from the other-agent layer. Codex auth, sessions, sqlite state, and live `config.toml` stay local.
 - **Cross-platform symlink hygiene** — `setup.sh` is idempotent and runs the same on macOS and WSL. Edit `~/.claude/agents/foo.md` and the change is in your repo automatically (it's a symlink). `dotfiles-update` keeps everything in sync with one command.
 
 > **Why this exists:** Claude Code and Codex are powerful but the defaults aren't tuned for serious daily work — context bloats, sessions vanish without handoffs, branches pile up, agent reviews are ad-hoc, and you re-discover the same gotchas every project. This repo encodes the "second-day knowledge" that makes the tools actually compound. If you're going to spend hundreds of hours in these CLIs, spend the first 10 minutes setting up properly.
@@ -219,7 +219,7 @@ WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for audio
 
 <br>
 
-Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. The global instructions live in this repo and are symlinked into `~/.claude/`; private settings (MCP servers, permissions, plugins) come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there.
+Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so edits in either location stay in sync. The global instructions live in this repo and are symlinked into `~/.claude/`; private settings (MCP servers, permissions, plugins) come from `claude-memory`. Codex is stricter: only public-safe guidance and skills are symlinked into `~/.codex/`; live `~/.codex/config.toml` stays local because Codex stores machine-specific project trust there. An optional private `codex-memory` bootstrap can merge explicitly portable defaults without replacing that local state.
 
 | What | Files | Purpose |
 |------|-------|----------|
@@ -237,7 +237,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Subagents** | `agents/*.md` | 18 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
-| **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows (review, issue fixes, PRs, handoffs), per-file-linked into `~/.codex/skills/` |
+| **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
 | **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
 | **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`; generated from `agents/canon/` per ADR-0007) |
 | **Antigravity skills** | `agents/skills/*/` (shared) | The same agent-neutral workflow set, dir-symlinked into `~/.gemini/config/skills/` |
@@ -387,6 +387,9 @@ This public dotfiles repo only tracks reusable Codex guidance, skills, and examp
 ~/dev/codex-memory/
 ├── AGENTS.local.md              # private Codex preferences
 ├── MEMORY.md                    # durable private notes
+├── config.defaults.toml         # portable top-level config choices
+├── bootstrap.sh                 # safe merge into the local live config
+├── merge_config.py              # validated atomic TOML merger
 ├── README.md
 └── .gitignore
 ```
@@ -401,9 +404,13 @@ This public dotfiles repo only tracks reusable Codex guidance, skills, and examp
 - private MCP endpoints, token env values, account IDs, client names, or private project details
 
 `setup.sh` links public `codex/AGENTS.md` and complete shared skill bundles
-from `agents/skills/*/` into `~/.codex/skills/`, including references and UI
-metadata. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when
-the private repo exists. It does not migrate live `~/.codex` state.
+from `agents/skills/*/` into `~/.agents/skills/`, including references and UI
+metadata. Compatibility links remain under `~/.codex/skills/` for older Codex
+clients. It also links `AGENTS.local.md` and `MEMORY.md` into `~/.codex/` when
+the private repo exists. When that repo provides `bootstrap.sh`, setup runs it
+and `cx` reapplies it after repository sync. The bootstrap merges only the
+explicit keys in `config.defaults.toml`; it never copies or symlinks the whole
+live config, so machine-specific project trust and integrations remain local.
 `check-codex.sh` audits those nested links and warns when private/generated
 Codex files exist so you remember they are local-only.
 
