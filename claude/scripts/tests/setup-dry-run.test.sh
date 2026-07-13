@@ -45,7 +45,11 @@ snapshot() {
 
 TESTHOME="$(mktemp -d)"
 OUT="$(mktemp)"
-trap 'rm -rf "$TESTHOME" "$OUT"' EXIT
+CHECK_OUT="$(mktemp)"
+INSTALL_OUT="$(mktemp)"
+SKILLS_OUT="$(mktemp)"
+SKILLS_EXTERNAL="$(mktemp -d)"
+trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL"' EXIT
 
 # Seed the mutation-tempting fixtures.
 git config --file "$TESTHOME/.gitconfig" user.name test
@@ -102,6 +106,44 @@ if grep -q 'Mode: DRY-RUN' "$OUT"; then
 else
   fail "missing 'Mode: DRY-RUN' banner"
 fi
+
+if grep -q 'Checking Antigravity public-safe config' "$OUT"; then
+  ok "post-setup audit covers the Antigravity installation"
+else
+  fail "post-setup audit skipped the Antigravity installation"
+fi
+
+HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \
+  "$SETUP" --check > "$CHECK_OUT" 2>&1 || true
+if grep -q 'Checking Codex public-safe config' "$CHECK_OUT" \
+  && grep -q 'Checking Antigravity public-safe config' "$CHECK_OUT"; then
+  ok "setup.sh --check audits Codex and Antigravity as well as Claude"
+else
+  fail "setup.sh --check is not a three-runtime audit"
+fi
+
+PATH="/usr/bin:/bin" HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \
+  "$SETUP" --yes --dry-run > "$INSTALL_OUT" 2>&1 || true
+if grep -q 'would download https://antigravity.google/cli/install.sh' "$INSTALL_OUT"; then
+  ok "clean-machine dry-run includes the pinned Antigravity installer"
+else
+  fail "clean-machine setup omits the Antigravity CLI"
+fi
+
+mkdir -p "$TESTHOME/.gemini/config"
+ln -s "$SKILLS_EXTERNAL" "$TESTHOME/.gemini/config/skills"
+skills_before="$(snapshot "$SKILLS_EXTERNAL")"
+HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \
+  "$SETUP" --yes --dry-run > "$SKILLS_OUT" 2>&1 || true
+skills_after="$(snapshot "$SKILLS_EXTERNAL")"
+if grep -Fq "[DRY] would back up $TESTHOME/.gemini/config/skills" "$SKILLS_OUT" \
+  && [ "$skills_before" = "$skills_after" ]; then
+  ok "Antigravity setup safely prepares a symlinked skills ancestor"
+else
+  fail "Antigravity setup would traverse a symlinked skills ancestor"
+fi
+rm "$TESTHOME/.gemini/config/skills"
+rmdir "$TESTHOME/.gemini/config" "$TESTHOME/.gemini"
 
 if grep -q '\[DRY\] would link' "$OUT"; then
   ok "link_file dry-run guard engaged (would-link preview printed)"
@@ -184,6 +226,9 @@ rm "$TESTHOME/.codex/AGENTS.md"
 # --dry-run --repair must preview fixes without applying them (reviewer P3 on
 # PR #187: audit_link's repair branches used to rm/mv/ln unconditionally).
 # Non-zero exit is expected — the entries are still broken after a preview.
+mkdir -p "$TESTHOME/.agents/skills"
+ln -s "$REPO_ROOT/agents/skills/reviewer-ghost" \
+  "$TESTHOME/.agents/skills/reviewer-ghost"
 before="$(snapshot "$TESTHOME")"
 HOME="$TESTHOME" "$SETUP" --dry-run --repair > "$OUT" 2>&1
 repair_rc=$?
@@ -196,11 +241,23 @@ else
   diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed 's/^/      | /'
 fi
 
+if [ -L "$TESTHOME/.agents/skills/reviewer-ghost" ]; then
+  ok "dry-run repair preserves orphan links found by nested runtime checkers"
+else
+  fail "dry-run repair let a nested checker delete an orphan link"
+fi
+
 if grep -q '\[DRY\] would fix' "$OUT"; then
   ok "repair dry-run guard engaged (would-fix preview printed)"
 else
   fail "no '[DRY] would fix' lines — repair guard not exercised"
   sed 's/^/      | /' "$OUT"
+fi
+
+if grep -q '"${checker_args\[@\]}"' "$SETUP"; then
+  fail "health audit still expands an empty array under nounset (breaks macOS Bash 3.2)"
+else
+  ok "health audit avoids Bash 3.2 empty-array nounset expansion"
 fi
 
 echo ""

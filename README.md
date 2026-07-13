@@ -1,12 +1,12 @@
-# Dotfiles — A Jumpstart for Claude Code + Codex
+# Dotfiles — A Jumpstart for Claude Code + Codex + Antigravity
 
 [![Docs site](https://img.shields.io/badge/docs-jckeen.github.io%2Fdotfiles-blue)](https://jckeen.github.io/dotfiles/)
 
 **📖 Browsable docs:** everything in this repo is also published as a searchable site at **[jckeen.github.io/dotfiles](https://jckeen.github.io/dotfiles/)** — rebuilt on every push to `main`.
 
-A one-command setup that gets you from a blank machine to a full Claude Code + Codex working environment with sane defaults, safety hooks, multi-session tooling, and an 18-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
+A one-command setup that gets you from a blank machine to a coordinated Claude Code, Codex, and Gemini-powered Antigravity environment with sane defaults, safety hooks, multi-session tooling, and an 18-agent code-review orchestra. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
-This is opinionated — it's how *I* (and now hopefully you) run Claude Code and Codex day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
+This is opinionated — it's how *I* (and now hopefully you) switch between Claude Code, Codex, and Antigravity day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
 **Get started:**
 ```bash
@@ -21,7 +21,7 @@ Best practices sourced from [Boris Cherny](https://howborisusesclaudecode.com) (
 
 After setup, you don't have to remember much. Open a terminal and:
 
-- **`cc`** — one alias that pulls every repo in your `~/dev/` directory (fast-forward only), syncs your memory repo, runs a health check, then launches Claude Code. **`cx`** does the same for Codex and reconnects Remote Control on hosts where it was already enabled. No more "is my repo up to date?" or "did I forget to pull?" — that's automatic now.
+- **`cc` / `cx` / `agy`** — the three launchers share project selection, fast-forward-only repo sync, and runtime health checks. `cc` safely publishes approved Claude memory paths; `cx` reapplies portable Codex defaults and reconnects opted-in Remote Control; `agy` launches the Gemini-powered Antigravity CLI. Any failed pull or health check stops the launch instead of opening an agent on stale state.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **17 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/fable-mode` (recalibrate to the conduct layer), `/antigravity-review` (Gemini second-opinion review gate). Type the verb, get the workflow.
 - **An 18-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 10 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
@@ -38,7 +38,7 @@ After setup, you don't have to remember much. Open a terminal and:
 
 ## Quick Start
 
-Pick your platform. Each path leaves you with the same end state: Claude Code + Codex installed, hooks wired, slash commands available, status line showing, multi-session helpers ready.
+Pick your platform. Each path leaves you with the same end state: Claude Code, Codex, and Antigravity installed, shared workflows wired, runtime-specific hooks and integrations checked, and multi-session helpers ready.
 
 <details>
 <summary><strong>🪟 Windows (WSL2 — recommended)</strong></summary>
@@ -166,6 +166,7 @@ After setup, run these to see what you've got:
 ```bash
 cc                    # pulls all your repos, then launches Claude
 cx                    # pulls repos, reconnects enabled Remote Control, launches Codex
+agy                   # pulls repos, checks Antigravity config, launches Gemini/Antigravity
 dotfiles-update       # pull latest dotfiles + re-run setup (idempotent — safe anytime)
 projects              # list everything under ~/dev/
 sessions              # show active Claude sessions and their cwds
@@ -193,10 +194,10 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 
 ## What this installs and configures
 
-`setup.sh` installs CLI tools, symlinks Claude/Codex config into `~/.claude/` and `~/.codex/`, and wires platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
+`setup.sh` installs CLI tools, wires the public and private layers for all three runtimes, and configures platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
 
 <details>
-<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, claude, codex, bun)</summary>
+<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, claude, codex, agy, bun)</summary>
 
 <br>
 
@@ -206,8 +207,9 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `git` | Version control | Homebrew / apt |
 | `node` | Node.js LTS | Homebrew / NodeSource |
 | `jq` | JSON processing (used by hooks) | Homebrew / apt |
-| `claude` | Claude Code CLI | npm |
+| `claude` | Claude Code CLI | SHA-256-pinned official native installer |
 | `codex` | OpenAI Codex CLI | npm |
+| `agy` | Google Antigravity CLI (Gemini agent runtime) | SHA-256-pinned official installer; release payload checksum-verified by the vendor installer |
 | `bun` | Runtime for `*.hook.ts` hooks | Pinned GitHub release (`BUN_VERSION` in `setup.sh`), SHA-256-verified against the release's `SHASUMS256.txt` |
 
 WSL also gets: `pulseaudio-utils`, `libasound2-plugins`, `alsa-utils` (for audio routing).

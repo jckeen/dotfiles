@@ -175,6 +175,32 @@ run_health_audit() {
   fi
 
   echo ""
+  echo "--- Codex symlinks and local-state boundary ---"
+  if [ -x "$DOTFILES_DIR/check-codex.sh" ]; then
+    if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+      "$DOTFILES_DIR/check-codex.sh" --fix || errors=$((errors + 1))
+    else
+      "$DOTFILES_DIR/check-codex.sh" || errors=$((errors + 1))
+    fi
+  else
+    echo "  FATAL check-codex.sh is missing or not executable"
+    errors=$((errors + 1))
+  fi
+
+  echo ""
+  echo "--- Antigravity symlinks and local-state boundary ---"
+  if [ -x "$DOTFILES_DIR/check-antigravity.sh" ]; then
+    if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+      "$DOTFILES_DIR/check-antigravity.sh" --fix || errors=$((errors + 1))
+    else
+      "$DOTFILES_DIR/check-antigravity.sh" || errors=$((errors + 1))
+    fi
+  else
+    echo "  FATAL check-antigravity.sh is missing or not executable"
+    errors=$((errors + 1))
+  fi
+
+  echo ""
   echo "=== Audit Summary ==="
   echo "  Verified: $verified"
   [ "$mode" = "repair" ] && echo "  Repaired: $repaired"
@@ -1308,6 +1334,67 @@ if command -v codex &>/dev/null; then
   fi
 fi
 
+# ─── 3d. Antigravity CLI ────────────────────────────────────────────
+# Official installer for macOS/Linux/WSL, verified against the vendor's
+# antigravity-cli repository and Google codelab. The bootstrapper verifies the
+# downloaded release payload against its published release manifest; we also pin
+# the mutable bootstrap script itself before executing it.
+ANTIGRAVITY_INSTALLER_SHA256="ee1ea43ce4e9e56356c4ab6dad907ef357ae4bdfcaadb682735909fb57c9c640"
+
+install_antigravity_native() {
+  if [ "${ANTIGRAVITY_INSTALL_UNPINNED:-0}" = "1" ]; then
+    echo "  -> WARNING: ANTIGRAVITY_INSTALL_UNPINNED=1 set; running unverified Antigravity installer"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would execute the current unverified Antigravity installer"
+      return 0
+    fi
+  fi
+
+  echo "  -> Installing Antigravity CLI via the official installer"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would download https://antigravity.google/cli/install.sh, verify its sha256, and execute it"
+    return 0
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d)" || { echo "  -> mktemp failed; skipping Antigravity install"; return 1; }
+  trap 'rm -rf "$tmpdir"' RETURN
+  if ! curl -fsSL https://antigravity.google/cli/install.sh -o "$tmpdir/install.sh"; then
+    echo "  -> Download failed; skipping Antigravity install"
+    return 1
+  fi
+
+  if [ "${ANTIGRAVITY_INSTALL_UNPINNED:-0}" != "1" ]; then
+    local actual
+    actual="$(_sha256 "$tmpdir/install.sh")" || {
+      echo "  -> No sha256 tool available; skipping Antigravity install"
+      return 1
+    }
+    if [ "$actual" != "$ANTIGRAVITY_INSTALLER_SHA256" ]; then
+      echo "  -> SHA-256 mismatch for the Antigravity installer — refusing to run it."
+      echo "     Expected: $ANTIGRAVITY_INSTALLER_SHA256"
+      echo "     Got:      $actual"
+      echo "     Review https://antigravity.google/cli/install.sh and update the pin,"
+      echo "     or bypass once with ANTIGRAVITY_INSTALL_UNPINNED=1."
+      return 1
+    fi
+    echo "  -> SHA-256 verified; running installer"
+  fi
+  bash "$tmpdir/install.sh"
+}
+
+if ! command -v agy &>/dev/null; then
+  echo ""
+  echo "--- Installing Antigravity CLI ---"
+  install_antigravity_native \
+    || echo "  -> Antigravity install failed (continuing; see https://antigravity.google/docs/cli-overview)"
+  if [ -x "$HOME_DIR/.local/bin/agy" ]; then
+    export PATH="$HOME_DIR/.local/bin:$PATH"
+  fi
+else
+  echo "Antigravity CLI already installed: $(command agy --version 2>/dev/null || echo 'installed')"
+fi
+
 # ─── 4. Git config ───────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Git config ---"
@@ -1652,7 +1739,7 @@ fi
 echo ""
 echo "--- Setting up Antigravity config ---"
 AGY_CONFIG_DIR="$HOME_DIR/.gemini/config"
-run mkdir -p "$AGY_CONFIG_DIR"
+prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR"
 
 if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
   link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
@@ -1664,7 +1751,7 @@ fi
 # under ~/.gemini/config/skills/; symlink each one (dir-level, unlike the
 # per-file Codex links, since agy resolves rule/skill paths through the link).
 if [ -d "$DOTFILES_DIR/agents/skills" ]; then
-  run mkdir -p "$AGY_CONFIG_DIR/skills"
+  prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR/skills"
   for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
@@ -1680,7 +1767,7 @@ fi
 # Antigravity-only skills (e.g. browser-verify) live in antigravity/skills;
 # same dir-level symlink treatment as the shared set.
 if [ -d "$DOTFILES_DIR/antigravity/skills" ]; then
-  run mkdir -p "$AGY_CONFIG_DIR/skills"
+  prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR/skills"
   for skill_dir in "$DOTFILES_DIR/antigravity/skills/"*/; do
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
@@ -1712,7 +1799,7 @@ if [ -f "$DOTFILES_DIR/antigravity/mcp_config.json.example" ]; then
   fi
 fi
 
-AGY_MEMORY_REPO="$(dirname "$DOTFILES_DIR")/agy-memory"
+AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
 if [ -d "$AGY_MEMORY_REPO" ]; then
   echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
   for f in GEMINI.local.md MEMORY.md; do
@@ -1984,10 +2071,6 @@ echo ""
 echo "Running post-setup health audit..."
 echo ""
 run_health_audit "check" || true
-if [ -x "$DOTFILES_DIR/check-codex.sh" ]; then
-  echo ""
-  "$DOTFILES_DIR/check-codex.sh" || true
-fi
 echo ""
 echo "Claude config files are symlinked — edits in ~/.claude/"
 echo "will automatically be reflected in your dotfiles repo."
@@ -2008,6 +2091,7 @@ if [ "${CODEX_AUTHED:-0}" -eq 0 ]; then
 else
   echo "  Codex: run 'cx' to pull repos and start Codex"
 fi
+echo "  Antigravity: run 'agy' to pull repos, check config, and sign in or launch"
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
   echo "  WSL Chrome bridge:"

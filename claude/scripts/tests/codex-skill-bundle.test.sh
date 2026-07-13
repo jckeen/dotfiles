@@ -24,12 +24,28 @@ ln -s "$R/codex/AGENTS.md" "$H/.codex/AGENTS.md"
 ln -s "$R/agents/skills/demo/SKILL.md" "$H/.codex/skills/demo/SKILL.md"
 ln -s "$R/agents/skills/demo" "$H/.agents/skills/demo"
 
+MISSING_HOME="$(mktemp -d)"
+if HOME="$MISSING_HOME" "$R/check-codex.sh" > "$OUT" 2>&1; then
+  fail "checker accepted missing Codex runtime configuration"
+elif grep -q 'MISSING.*Codex has not been initialized' "$OUT"; then
+  ok "checker fails health checks when Codex is uninitialized"
+else
+  fail "missing Codex state lacked a useful diagnostic"
+fi
+rm -rf "$MISSING_HOME"
+
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1 \
   && grep -q 'MISSING.*skills/demo/references/runtime.md' "$OUT" \
   && ! grep -q 'All good' "$OUT"; then
   ok "missing nested skill link warns with its relative path"
 else
   fail "missing nested skill link was not surfaced clearly"
+fi
+
+if HOME="$H" "$R/check-codex.sh" --strict > "$OUT" 2>&1; then
+  fail "strict checker accepted missing managed Codex config"
+else
+  ok "strict checker turns actionable Codex drift into launcher failure"
 fi
 
 ln -s "$R/agents/skills/demo/references/runtime.md" "$H/.codex/skills/demo/references/runtime.md"
