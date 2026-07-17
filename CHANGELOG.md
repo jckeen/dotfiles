@@ -12,6 +12,11 @@
   protection pointer to match their canonical current surfaces.
 - `cx` applies strict config parsing to the real agent invocation after private
   defaults are merged; direct `codex` remains the management-command surface.
+- Merge-review round: the bounded Remote Control pipeline now normalizes
+  SIGKILL/SIGPIPE deaths past the deadline to the documented timeout status
+  (fixes a WSL2-only test failure), a missing `jq` prints a warning instead of
+  silently skipping Remote Control auto-start, and the recovery module's
+  docstring records the safety argument behind the pidfd/fingerprint ordering.
 
 ### Decisions made
 - Keep Remote Control optional for local work and never signal a process unless

@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
-"""Snapshot and recover only an exactly identified managed Codex updater."""
+"""Snapshot and recover only an exactly identified managed Codex updater.
+
+Safety argument — why the SIGTERM path cannot hit the wrong process:
+
+- Within one boot, a reused PID's start ticks must postdate the snapshot's, so
+  an exact ``{bootId, pid, startTicks}`` match proves the ``/proc`` reads
+  describe the fingerprinted process even though those reads are keyed by PID
+  rather than by the pidfd.
+- ``snapshot_updater`` has no prior identity to compare against, so it needs
+  the signal-0 liveness proof through the held pidfd to bind its ``/proc``
+  reads to a live process; ``terminate_stale_updater`` does not, because any
+  mismatch fails the exact-fingerprint comparison before a signal is sent.
+- If the pidfd and the validated process ever diverge, the pidfd necessarily
+  refers to an already-dead process, so signaling it is harmless and
+  ``_wait_for_exit`` degrades safely.
+- Plain SIGTERM with no SIGKILL escalation is a deliberate fail-closed choice.
+
+None of this is reproducible in a unit test: do not reorder ``pidfd_open``
+relative to the ``/proc`` reads, and do not remove the signal-0 call.
+"""
 
 from __future__ import annotations
 

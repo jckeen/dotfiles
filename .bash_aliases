@@ -600,11 +600,12 @@ _codex_with_timeout() {
 }
 
 _codex_remote_run() (
-  local timeout_seconds="$1" output_file rc
+  local timeout_seconds="$1" output_file rc started
   local -a pipeline_status
   shift
   output_file="$(mktemp)" || return 125
   trap 'rm -f "$output_file"' EXIT
+  started=$SECONDS
 
   # A separately timed collector bounds both retained output and how long an
   # escaped child may hold the pipeline open. Closing that pipe stops further
@@ -613,6 +614,14 @@ _codex_remote_run() (
     | _codex_with_timeout "$timeout_seconds" tail -c 8192 > "$output_file"
   pipeline_status=("${PIPESTATUS[@]}")
   rc="${pipeline_status[0]}"
+  # KILL escalation can take out timeout itself, and the closed collector pipe
+  # can then kill the codex stage with SIGPIPE before _codex_with_timeout's own
+  # 137→124 normalization runs. Past the deadline, both are the documented
+  # timeout status.
+  if { [ "$rc" -eq 137 ] || [ "$rc" -eq 141 ]; } \
+    && [ "$((SECONDS - started))" -ge "$timeout_seconds" ]; then
+    rc=124
+  fi
   if [ "$rc" -ne 0 ]; then
     command cat "$output_file"
   fi
@@ -706,11 +715,14 @@ cx() {
   # on hosts where the user already enabled it. Pairing persists in Codex state,
   # so reconnecting does not create a new pairing code on every launch.
   local remote_settings="$HOME/.codex/app-server-daemon/settings.json"
-  if [ -f "$remote_settings" ] \
-    && jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1; then
-    # Remote Control is optional: bounded recovery failures never prevent the
-    # local CLI from launching.
-    _codex_ensure_remote_control
+  if [ -f "$remote_settings" ]; then
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "⚠ jq not installed — skipping the Remote Control auto-start check." >&2
+    elif jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1; then
+      # Remote Control is optional: bounded recovery failures never prevent the
+      # local CLI from launching.
+      _codex_ensure_remote_control
+    fi
   fi
 
   codex --strict-config "$@"
