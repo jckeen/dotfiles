@@ -1,0 +1,5 @@
+# Public-safe Codex named profile example.
+# Copy to ~/.codex/readonly.config.toml and use with `codex --profile readonly`.
+
+sandbox_mode = "read-only"
+approval_policy = "on-request"

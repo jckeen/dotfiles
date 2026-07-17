@@ -175,11 +175,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/codex-skill-bundle.test.sh
 
+      - name: Codex config examples
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/codex-config.test.sh
+
       # cx reconnects an already-enabled Codex Remote Control daemon without
       # opting unconfigured hosts into remote access.
       - name: cx Remote Control startup
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/cx-remote-control.test.sh
+
+      - name: Codex Remote Control stale-updater recovery
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/codex-remote-recovery.test.sh
 
       - name: shared agent launcher preflight
         if: ${{ !cancelled() }}

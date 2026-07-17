@@ -151,7 +151,7 @@ codex login            # Optional
 ./setup.sh --help      # usage and flag reference
 ```
 
-> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI runs a **gitleaks** `secret-scan` job (token/key/credential shapes, full-history) and a `no-personal-data` leak check (machine-specific home paths) on every PR; branch protection requires the `shellcheck`, `tsc`, and `doc-truth` checks to pass before merge (see [docs/BRANCH_PROTECTION.md](docs/BRANCH_PROTECTION.md)).
+> **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions or memories, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI runs secret and personal-data checks on every PR; the canonical required-check policy lives in [docs/BRANCH_PROTECTION.md](docs/BRANCH_PROTECTION.md).
 
 > **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Without it you still get hooks, skills, agents, status line, and dotfiles — the global `claude/CLAUDE.md` is symlinked either way.
 
@@ -240,7 +240,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
-| **Codex config example** | `codex/config.toml.example` | Template only; live `~/.codex/config.toml` stays local |
+| **Codex config examples** | `codex/*.toml.example` | Templates only; live `~/.codex/config.toml` stays local |
 | **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`; generated from `agents/canon/` per ADR-0007) |
 | **Antigravity skills** | `agents/skills/*/` (shared) | The same agent-neutral workflow set, dir-symlinked into `~/.gemini/config/skills/` |
 | **Git config** | `.gitconfig` + `.gitconfig.local` | Identity, editor, credential helper (per-platform) |
@@ -401,7 +401,7 @@ This public dotfiles repo only tracks reusable Codex guidance, skills, and examp
 - `auth.json`
 - `history.jsonl`
 - `logs_*.sqlite*` or `state_*.sqlite*`
-- `log/`, `sessions/`, `shell_snapshots/`, `cache/`, `.tmp/`, `tmp/`
+- `log/`, `sessions/`, `shell_snapshots/`, `memories/`, `cache/`, `.tmp/`, `tmp/`
 - live `config.toml` project trust entries
 - private MCP endpoints, token env values, account IDs, client names, or private project details
 
