@@ -17,6 +17,7 @@ from typing import Callable
 
 MAX_RECORD_BYTES = 4096
 MAX_CMDLINE_BYTES = 4096
+MAX_PROC_STAT_BYTES = 64 * 1024 * 1024
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 MONTHS = (
     "Jan",
@@ -78,6 +79,32 @@ def _load_pid_record(pid_file: Path, expected_uid: int) -> tuple[int, str]:
     return pid, process_start
 
 
+def _read_boot_time(proc_stat_path: Path) -> int:
+    """Find btime without retaining the potentially large per-CPU stat file."""
+
+    fd = os.open(proc_stat_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+    scanned = 0
+    window = b"\n"
+    try:
+        while True:
+            chunk = os.read(fd, 8192)
+            if not chunk:
+                break
+            scanned += len(chunk)
+            if scanned > MAX_PROC_STAT_BYTES:
+                raise ValueError("process stat scan is too large")
+            window += chunk
+            marker = window.find(b"\nbtime ")
+            if marker >= 0:
+                value = window[marker + len(b"\nbtime ") :]
+                if b"\n" in value:
+                    return int(value.split(b"\n", 1)[0])
+            window = window[-128:]
+    finally:
+        os.close(fd)
+    raise ValueError("process stat has no boot time")
+
+
 def _load_exact_identity(
     identity_file: Path, expected_uid: int
 ) -> dict[str, object]:
@@ -103,12 +130,7 @@ def _process_identity(
 ) -> dict[str, object]:
     if clock_ticks <= 0:
         raise ValueError("clock tick rate is invalid")
-    proc_stat = _read_bounded(proc_root / "stat", MAX_RECORD_BYTES).decode("ascii")
-    boot_time = next(
-        int(line.split()[1])
-        for line in proc_stat.splitlines()
-        if line.startswith("btime ")
-    )
+    boot_time = _read_boot_time(proc_root / "stat")
     boot_id = (
         _read_bounded(proc_root / "sys/kernel/random/boot_id", MAX_RECORD_BYTES)
         .decode("ascii")

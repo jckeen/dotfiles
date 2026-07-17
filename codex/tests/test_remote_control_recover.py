@@ -126,6 +126,13 @@ class RemoteControlRecoverTest(unittest.TestCase):
         self.assertTrue(self.recover())
         self.assertEqual(self.signals, [(99, signal.SIGTERM)])
 
+    def test_many_core_proc_stat_is_streamed(self):
+        cpu_lines = "".join(f"cpu{number} 1 2 3 4 5 6 7 8 9 10\n" for number in range(1000))
+        (self.proc / "stat").write_text(cpu_lines + f"btime {self.boot_time}\n")
+        self.assertGreater((self.proc / "stat").stat().st_size, RECOVER.MAX_RECORD_BYTES)
+        self.assertTrue(self.recover())
+        self.assertEqual(self.signals, [(99, signal.SIGTERM)])
+
     def test_foreign_command_line_is_refused(self):
         (self.proc / str(self.pid) / "cmdline").write_bytes(b"/usr/bin/sleep\0600\0")
         self.assertFalse(self.recover())
