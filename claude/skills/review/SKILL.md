@@ -6,6 +6,10 @@ description: Read-only review of recent git changes (diff since the last review/
 When the user runs /review, do the following:
 
 1. Run `git diff HEAD~3..HEAD` (or since last review/tag) to see recent changes.
+   If the argument is a PR number, review that GitHub PR instead: `gh pr diff <n>`
+   (or `git diff <base>...<headRefName>` when the branch is local), and first
+   verify the local head matches the PR's `headRefOid`
+   (`gh pr view <n> --json headRefOid`) so the review covers exactly what merges.
 2. Review the diff for the checklist below. Run this pass at low effort — a
    fast, literal read of what the code does, not a rewrite of the design.
 
