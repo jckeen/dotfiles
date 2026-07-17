@@ -55,6 +55,15 @@ else
   fail "complete nested skill bundle failed"
 fi
 
+mkdir -p "$H/.codex/memories"
+if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1 \
+  && grep -q 'LOCAL.*memories/.*keep it private' "$OUT"; then
+  ok "generated Codex memories are identified as private runtime state"
+else
+  fail "generated Codex memories were absent from the public-state audit"
+fi
+rmdir "$H/.codex/memories"
+
 mkdir -p "$H/custom-codex-memory"
 printf '# private instructions\n' > "$H/custom-codex-memory/AGENTS.local.md"
 printf '# private memory\n' > "$H/custom-codex-memory/MEMORY.md"

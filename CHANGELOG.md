@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-07-17 — fix: recover stale Codex Remote Control safely
+
+### What changed
+- `cx` now bounds Remote Control lifecycle commands, reports a safe diagnostic
+  command without echoing upstream stderr, and recovers the known
+  dead-app-server/orphan-updater state with one pidfd-backed,
+  exact-kernel-identity-checked termination and one retry.
+- Updated the public Codex profile example, generated-memory safety audit,
+  long-running-work guidance, AgentPack compatibility metadata, and branch
+  protection pointer to match their canonical current surfaces.
+- `cx` applies strict config parsing to the real agent invocation after private
+  defaults are merged; direct `codex` remains the management-command surface.
+- Merge-review round: the bounded Remote Control pipeline now normalizes
+  SIGKILL/SIGPIPE deaths past the deadline to the documented timeout status
+  (fixes a WSL2-only test failure), a missing `jq` prints a warning instead of
+  silently skipping Remote Control auto-start, and the recovery module's
+  docstring records the safety argument behind the pidfd/fingerprint ordering.
+
+### Decisions made
+- Keep Remote Control optional for local work and never signal a process unless
+  its boot ID and exact start ticks match the fingerprint recorded after an
+  earlier successful launch, and its current owner, executable, and updater
+  arguments still match the managed-process contract.
+- Use native Goal mode, compaction, resume, Remote Control, and durable handoffs
+  for long sessions. Do not impose an arbitrary wall-clock limit or mandatory
+  lifecycle hooks.
+
+### Known issues
+- The upstream cause of the experimental updater surviving its app server is
+  still unknown; the launcher handles the observed state without assuming all
+  Remote Control failures share that cause.
+- Device-side connectivity still requires verification from a paired client.
+
 ## 2026-07-12 — fix: make the three-runtime workstation fail closed
 
 ### What changed

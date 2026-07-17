@@ -179,6 +179,7 @@ else
   warn_if_present "$CODEX_DST/log" "log/"
   warn_if_present "$CODEX_DST/sessions" "sessions/"
   warn_if_present "$CODEX_DST/shell_snapshots" "shell_snapshots/"
+  warn_if_present "$CODEX_DST/memories" "memories/"
   warn_if_present "$CODEX_DST/cache" "cache/"
   warn_if_present "$CODEX_DST/.tmp" ".tmp/"
   warn_if_present "$CODEX_DST/tmp" "tmp/"

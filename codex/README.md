@@ -3,7 +3,7 @@
 This is how I run Codex day-to-day — the reusable, public-safe pieces. Codex
 keeps its own auth, history, sqlite state, and per-project trust local; what
 lives here is everything I'm happy to share across machines (and with you, if
-you fork this repo): the global `AGENTS.md` rules and example config. The
+you fork this repo): the global `AGENTS.md` rules and example configs. The
 workflow skills Codex loads live in the agent-neutral `agents/skills/` (see
 below). Live Codex runtime state stays in `~/.codex/`; anything personal
 lives in a separate private `~/dev/codex-memory` repo.
@@ -22,6 +22,7 @@ lives in a separate private `~/dev/codex-memory` repo.
 - `~/.codex/log/`, `logs_*.sqlite*`, `state_*.sqlite*`
 - `~/.codex/sessions/`
 - `~/.codex/shell_snapshots/`
+- `~/.codex/memories/`
 - `~/.codex/cache/`, `.tmp/`, `tmp/`
 - machine-specific `~/.codex/config.toml` project trust entries
 - private MCP endpoints, bearer token env values, or account details
@@ -39,6 +40,18 @@ When present, `setup.sh` links these private files into `~/.codex/`:
 
 It does not import or publish live `~/.codex` runtime state.
 
+## Named Profiles
+
+Codex named profiles use separate files. To install the public-safe read-only
+example, copy `readonly.config.toml.example` to
+`~/.codex/readonly.config.toml`, review it, then launch with
+`codex --profile readonly`. Keep machine-specific trust and integrations in
+the normal local `~/.codex/config.toml`.
+
+The `cx` agent launcher applies `--strict-config` to the real Codex invocation
+after the private defaults bootstrap, so unknown config keys fail before agent
+work starts. Use `codex` directly for CLI management commands.
+
 ## Public Skills
 
 Public, reusable workflow skills live under `agents/skills/` (the
@@ -54,3 +67,18 @@ same set (issue #166).
 Keep these skills generic and public-safe. Put personal preferences, private
 project context, and machine-specific instructions in `~/dev/codex-memory`
 instead.
+
+## Long-Running Work
+
+Use Codex Goal mode (`/goal`) when a task explicitly needs persistent,
+multi-turn execution. Put the outcome, constraints, acceptance criteria, and
+stopping conditions in the goal; keep the normal sandbox and approval policy
+in force. Remote Control is the steering and approval surface while the host
+stays awake and connected—it is not a substitute for checkpoints.
+
+For continuity, compact the active chat when needed, resume the same session
+instead of starting cold, and finish material work with the shared `handoff`
+skill so the branch, verification evidence, open risks, and resumable session
+ID survive the terminal. If resume history becomes unreliable, run
+`codex doctor --summary --ascii --no-color`, archive chats that are genuinely
+complete, and never delete `~/.codex` session or database files by hand.

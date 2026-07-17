@@ -572,6 +572,128 @@ cc() {
 # Usage: cx                 — launch from current dir (defaults to ~/dev outside git)
 #        cx <project>        — cd into ~/dev/<project> first, then launch
 #        cx resume|fork ...  — resume/fork without repo sync
+_codex_with_timeout() {
+  local timeout_seconds="$1" rc started
+  shift
+  started=$SECONDS
+
+  local timeout_bin
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_bin="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="gtimeout"
+  else
+    return 125
+  fi
+
+  # Let timeout own the child's process group so its TERM/KILL escalation
+  # reaches ordinary descendants. Session-escaping children are handled by
+  # the bounded capture in _codex_remote_run.
+  "$timeout_bin" --kill-after=1s "${timeout_seconds}s" "$@" && return 0
+  rc=$?
+  # GNU timeout exits 137 when its KILL escalation was needed. Normalize that
+  # to the documented deadline status consumed by the launcher.
+  if [ "$rc" -eq 137 ] && [ "$((SECONDS - started))" -ge "$timeout_seconds" ]; then
+    return 124
+  fi
+  return "$rc"
+}
+
+_codex_remote_run() (
+  local timeout_seconds="$1" output_file rc started
+  local -a pipeline_status
+  shift
+  output_file="$(mktemp)" || return 125
+  trap 'rm -f "$output_file"' EXIT
+  started=$SECONDS
+
+  # A separately timed collector bounds both retained output and how long an
+  # escaped child may hold the pipeline open. Closing that pipe stops further
+  # capture without imposing a file-size limit on Codex's own state writes.
+  _codex_with_timeout "$timeout_seconds" codex "$@" 2>&1 \
+    | _codex_with_timeout "$timeout_seconds" tail -c 8192 > "$output_file"
+  pipeline_status=("${PIPESTATUS[@]}")
+  rc="${pipeline_status[0]}"
+  # KILL escalation can take out timeout itself, and the closed collector pipe
+  # can then kill the codex stage with SIGPIPE before _codex_with_timeout's own
+  # 137→124 normalization runs. Past the deadline, both are the documented
+  # timeout status.
+  if { [ "$rc" -eq 137 ] || [ "$rc" -eq 141 ]; } \
+    && [ "$((SECONDS - started))" -ge "$timeout_seconds" ]; then
+    rc=124
+  fi
+  if [ "$rc" -ne 0 ]; then
+    command cat "$output_file"
+  fi
+  return "$rc"
+)
+
+_codex_remote_is_stale_socket_failure() {
+  local failure="$1"
+  grep -Fq 'app server did not become ready' <<< "$failure" \
+    && grep -Fq 'app-server-control.sock' <<< "$failure" \
+    && grep -Fq 'No such file or directory' <<< "$failure"
+}
+
+_codex_remote_identity() {
+  local action="$1"
+  local pid_file="$HOME/.codex/app-server-daemon/app-server-updater.pid"
+  local identity_file="$HOME/.codex/app-server-daemon/app-server-updater.identity.json"
+  local helper
+  helper="$(_dev_dir)/dotfiles/codex/remote_control_recover.py"
+
+  command -v python3 >/dev/null 2>&1 || return 1
+  [ -f "$helper" ] || return 1
+  _codex_with_timeout 7 python3 "$helper" "$action" "$pid_file" "$identity_file" \
+    >/dev/null 2>&1
+}
+
+_codex_remote_snapshot_updater() {
+  _codex_remote_identity snapshot
+}
+
+_codex_remote_recover_stale_updater() {
+  _codex_remote_identity recover
+}
+
+_codex_ensure_remote_control() {
+  local timeout_seconds=15 stop_timeout_seconds=8 failure rc
+
+  if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
+    _codex_remote_snapshot_updater || true
+    return 0
+  else
+    rc=$?
+  fi
+
+  if [ "$rc" -eq 125 ]; then
+    echo "⚠ Codex Remote Control auto-start skipped — no timeout command is available." >&2
+    return 0
+  fi
+
+  if _codex_remote_is_stale_socket_failure "$failure" \
+    && _codex_remote_recover_stale_updater; then
+    _codex_remote_run "$stop_timeout_seconds" remote-control stop --json \
+      >/dev/null 2>&1 || true
+    if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
+      _codex_remote_snapshot_updater || true
+      echo "⚠ Codex Remote Control recovered a stale managed daemon." >&2
+      return 0
+    else
+      rc=$?
+    fi
+  fi
+
+  if [ "$rc" -eq 124 ]; then
+    echo "⚠ Codex Remote Control timed out after $timeout_seconds seconds — mobile access is off for this session." >&2
+  else
+    echo "⚠ Codex Remote Control unavailable (exit $rc) — mobile access is off for this session." >&2
+  fi
+  # Remote Control stderr can contain relay URLs, pairing codes, or tokens.
+  # Offer a direct diagnostic command without trying to redact unknown formats.
+  echo "  Run: codex remote-control start --json" >&2
+}
+
 cx() {
   _agent_force_resuming=0
   _codex_is_resume_invocation "$@" && _agent_force_resuming=1
@@ -593,15 +715,17 @@ cx() {
   # on hosts where the user already enabled it. Pairing persists in Codex state,
   # so reconnecting does not create a new pairing code on every launch.
   local remote_settings="$HOME/.codex/app-server-daemon/settings.json"
-  if [ -f "$remote_settings" ] \
-    && grep -Eq '"remoteControlEnabled"[[:space:]]*:[[:space:]]*true' "$remote_settings" \
-    && ! codex remote-control start --json >/dev/null 2>&1; then
-    # Remote Control is experimental and optional: surface a failure, but never
-    # make it a prerequisite for the local CLI.
-    echo "⚠ Codex Remote Control unavailable — mobile access is off for this session." >&2
+  if [ -f "$remote_settings" ]; then
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "⚠ jq not installed — skipping the Remote Control auto-start check." >&2
+    elif jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1; then
+      # Remote Control is optional: bounded recovery failures never prevent the
+      # local CLI from launching.
+      _codex_ensure_remote_control
+    fi
   fi
 
-  codex "$@"
+  codex --strict-config "$@"
 }
 
 # Launch Antigravity with the same project-selection and sync ergonomics as

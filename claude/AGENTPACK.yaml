@@ -17,7 +17,7 @@
       },
       "codex": {
         "status": "partial",
-        "notes": "Shared skills and guidance compile, but Claude tool-restricted subagents are omitted and user-scope Codex sync is not yet implemented."
+        "notes": "Shared skills and guidance sync into Codex's user scope; Claude-only hooks and tool-restricted subagents remain runtime-specific."
       },
       "cursor": {
         "status": "partial",
