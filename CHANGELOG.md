@@ -13,17 +13,22 @@
   The complete packet is size-bounded, author-controlled content sits behind a
   hash-derived untrusted-data boundary, output uses the exact measured UTF-8
   bytes, and empty path scopes fail closed. An isolated copy of the Git index
-  plus a staged attribute tree in a temporary object store and worktree avoids
+  plus a config-free temporary Git directory, object store, and worktree avoids
   repository-index mutation, clean-filter execution, worktree normalization,
-  symlink traversal, and blocking worktree attributes; non-UTF-8 patches are
-  preserved byte-for-byte as base64, and large Git diagnostics are drained
+  symlink traversal, replacement refs, and repository-controlled diff behavior.
+  Non-UTF-8 patches and patches containing terminal controls are preserved
+  byte-for-byte as inert base64, and large Git diagnostics are drained
   concurrently.
 - Added CI coverage for scope traversal and pathspec expansion, binary evidence,
   empty and oversized diffs, configured Git converters and clean filters,
-  staged-versus-unstaged state, ordinary and linked-worktree index immutability,
-  executable modes, large diagnostics, symlinked worktree paths, blocking
-  unstaged attributes, submodule gitlinks, non-UTF-8 bytes, and Markdown-shaped
-  source or command content.
+  staged-versus-unstaged state, ordinary, linked-worktree, split, concurrently
+  rotated split, and caller-selected index immutability, quoted relative object
+  alternates, executable modes, large diagnostics, symlinked worktree paths,
+  older Git compatibility, routing-environment isolation, blocking unstaged
+  attributes, local and environment-injected submodule config,
+  source-repository object formats, replacement refs,
+  non-UTF-8 and terminal-control bytes, terminal-safe parser errors, and
+  Markdown-shaped source or command content.
 
 ### Decisions made
 - Reuse `session-retro` instead of creating an autonomous learning ledger or a
@@ -33,6 +38,9 @@
   path scope, or exceeds its explicit whole-packet bound. Every intended change
   must be staged before packet generation; unstaged and untracked state remains
   excluded by design.
+- Render a canonical, attribute-free Git patch: staged attribute files remain
+  reviewable changes, but repository config and attributes cannot suppress,
+  expand, transform, or execute content while the packet is built.
 
 ### Known issues
 - The packet builder covers staged Git changes. Non-Git artifacts still need

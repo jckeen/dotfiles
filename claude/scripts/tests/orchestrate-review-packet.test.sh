@@ -11,8 +11,12 @@ TOOL="$REPO_ROOT/agents/skills/orchestrate/scripts/build_review_packet.py"
 R="$(mktemp -d)" || exit 1
 S="$(mktemp -d)" || exit 1
 L="$(mktemp -d)" || exit 1
+Q="$(mktemp -d)" || exit 1
+T="$(mktemp -d)" || exit 1
+U="$(mktemp -d)" || exit 1
+V="$(mktemp -d)" || exit 1
 OUT="$(mktemp)" || exit 1
-trap 'rm -rf "$R" "$S" "$L" "$OUT"' EXIT
+trap 'rm -rf "$R" "$S" "$L" "$Q" "$T" "$U" "$V" "$OUT"' EXIT
 pass=0
 failed=0
 
@@ -48,12 +52,13 @@ printf '#!/usr/bin/env bash\nprintf "mode before\\n"\n' > "$R/staged-mode.sh"
 printf 'target\n' > "$R/target.txt"
 ln -s target.txt "$R/link.txt"
 printf 'special before\n' > "$R/special.txt"
+printf 'terminal before\n' > "$R/terminal.txt"
 mkdir -p "$R/nested"
 printf 'nested before\n' > "$R/nested/tracked.txt"
 git -C "$R" add .gitattributes tracked.txt other.txt converted.dat \
   filtered.filtered invalid-utf8.txt partial.txt unstaged.txt '[ab].txt' a.txt \
   b.txt asset.bin executable.sh staged-mode.sh target.txt link.txt special.txt \
-  nested/tracked.txt
+  terminal.txt nested/tracked.txt
 git -C "$R" commit -qm base
 base="$(git -C "$R" rev-parse HEAD)"
 
@@ -120,6 +125,43 @@ else
   fail 'packet generation mutated the ordinary repository index'
 fi
 
+GIT_BIN="$(command -v git)"
+mkdir "$R/fake-git-bin"
+printf '%s\n' '#!/usr/bin/env bash' > "$R/fake-git-bin/git"
+printf 'REAL_GIT=%q\n' "$GIT_BIN" >> "$R/fake-git-bin/git"
+printf '%s\n' \
+  'saw_diff=0' \
+  'saw_shared_index=0' \
+  'for arg in "$@"; do' \
+  '  case "$arg" in' \
+  '    --attr-source*) exit 97 ;;' \
+  '    diff) saw_diff=1 ;;' \
+  '    --shared-index-path) saw_shared_index=1 ;;' \
+  '  esac' \
+  'done' \
+  'if [ -n "${REVIEW_PACKET_ROTATE_SPLIT_REPO:-}" ] && [ "$saw_shared_index" = 1 ]; then' \
+  '  printf "concurrent rotation\n" >> "$REVIEW_PACKET_ROTATE_SPLIT_REPO/tracked.txt"' \
+  '  env -u GIT_INDEX_FILE "$REAL_GIT" -C "$REVIEW_PACKET_ROTATE_SPLIT_REPO" add tracked.txt' \
+  '  env -u GIT_INDEX_FILE "$REAL_GIT" -C "$REVIEW_PACKET_ROTATE_SPLIT_REPO" update-index --split-index' \
+  'fi' \
+  'if [ "${REVIEW_PACKET_FAKE_STDERR:-}" = 1 ] && [ "$saw_diff" = 1 ]; then' \
+  '  for _ in {1..8000}; do printf "synthetic diagnostic line\n" >&2; done' \
+  'fi' \
+  'exec "$REAL_GIT" "$@"' >> "$R/fake-git-bin/git"
+chmod +x "$R/fake-git-bin/git"
+: > "$OUT"
+if env PATH="$R/fake-git-bin:$PATH" python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Packet generation supports Git without attr-source.' \
+  --repro 'git diff --cached -- partial.txt' \
+  --path partial.txt > "$OUT" 2>&1 \
+  && grep -qF '+partial staged' "$OUT"; then
+  ok 'packet generation does not require the newer attr-source option'
+else
+  fail 'packet generation required the newer attr-source option'
+fi
+
 : > "$OUT"
 if python3 "$TOOL" \
   --repo "$R" \
@@ -134,6 +176,26 @@ else
   fail 'an unstaged-only scope lacked the staged-artifact diagnostic'
 fi
 
+CUSTOM_INDEX="$R/custom-index"
+cp "$R_INDEX_PATH" "$CUSTOM_INDEX"
+GIT_INDEX_FILE="$CUSTOM_INDEX" git -C "$R" add unstaged.txt
+DEFAULT_INDEX_BEFORE="$(git hash-object "$R_INDEX_PATH")"
+CUSTOM_INDEX_BEFORE="$(git hash-object "$CUSTOM_INDEX")"
+: > "$OUT"
+if env GIT_INDEX_FILE="$CUSTOM_INDEX" python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'A caller-selected index is the staged review source.' \
+  --repro 'git diff --cached -- unstaged.txt' \
+  --path unstaged.txt > "$OUT" 2>&1 \
+  && grep -qF '+unstaged after' "$OUT" \
+  && [ "$(git hash-object "$R_INDEX_PATH")" = "$DEFAULT_INDEX_BEFORE" ] \
+  && [ "$(git hash-object "$CUSTOM_INDEX")" = "$CUSTOM_INDEX_BEFORE" ]; then
+  ok 'caller-selected indexes are honored without mutating either index'
+else
+  fail 'caller-selected index evidence or immutability was lost'
+fi
+
 git -C "$L" init -q
 git -C "$L" config user.email t@t.test
 git -C "$L" config user.name test
@@ -146,7 +208,13 @@ git -C "$L/linked" add tracked.txt
 L_INDEX_PATH="$(git -C "$L/linked" rev-parse --absolute-git-dir)/index"
 L_INDEX_BEFORE="$(git hash-object "$L_INDEX_PATH")"
 : > "$OUT"
-if python3 "$TOOL" \
+if env \
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=diff.ignoreSubmodules \
+  GIT_CONFIG_VALUE_0=all \
+  GIT_CONFIG_KEY_1=diff.submodule \
+  GIT_CONFIG_VALUE_1=diff \
+  python3 "$TOOL" \
   --repo "$L/linked" \
   --base HEAD \
   --claim 'Linked worktrees resolve their common object database.' \
@@ -161,6 +229,152 @@ if [ "$(git hash-object "$L_INDEX_PATH")" = "$L_INDEX_BEFORE" ]; then
   ok 'linked-worktree index remains byte-identical'
 else
   fail 'packet generation mutated the linked-worktree index'
+fi
+
+: > "$OUT"
+if env \
+  GIT_DIR="$(git -C "$L/linked" rev-parse --absolute-git-dir)" \
+  GIT_WORK_TREE="$L/linked" \
+  python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'The explicit repository remains authoritative.' \
+  --repro 'git diff --cached -- partial.txt' \
+  --path partial.txt > "$OUT" 2>&1 \
+  && grep -qF "Repository: \`$(basename "$R")\`" "$OUT" \
+  && grep -qF '+partial staged' "$OUT" \
+  && ! grep -qF '+linked after' "$OUT"; then
+  ok 'routing environment cannot override the explicit repository'
+else
+  fail 'routing environment overrode the explicit repository'
+fi
+
+git -C "$T" init -q
+git -C "$T" config user.email t@t.test
+git -C "$T" config user.name test
+printf 'split before\n' > "$T/tracked.txt"
+git -C "$T" add tracked.txt
+git -C "$T" commit -qm base
+git -C "$T" config core.splitIndex true
+git -C "$T" update-index --split-index
+printf 'split after\n' >> "$T/tracked.txt"
+git -C "$T" add tracked.txt
+T_INDEX_PATH="$(git -C "$T" rev-parse --absolute-git-dir)/index"
+T_SHARED_INDEX_PATH="$(git -C "$T" rev-parse --shared-index-path)"
+case "$T_SHARED_INDEX_PATH" in
+  /*) ;;
+  *) T_SHARED_INDEX_PATH="$T/$T_SHARED_INDEX_PATH" ;;
+esac
+T_INDEX_BEFORE="$(git hash-object "$T_INDEX_PATH")"
+T_SHARED_INDEX_BEFORE="$(git hash-object "$T_SHARED_INDEX_PATH")"
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$T" \
+  --base HEAD \
+  --claim 'Split-index evidence remains available without repository mutation.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+split after' "$OUT" \
+  && [ "$(git hash-object "$T_INDEX_PATH")" = "$T_INDEX_BEFORE" ] \
+  && [ "$(git hash-object "$T_SHARED_INDEX_PATH")" = "$T_SHARED_INDEX_BEFORE" ]; then
+  ok 'split indexes are copied completely without repository mutation'
+else
+  fail 'split-index evidence or immutability was lost'
+fi
+
+printf 'snapshot before rotation\n' >> "$T/tracked.txt"
+git -C "$T" add tracked.txt
+: > "$OUT"
+if env \
+  PATH="$R/fake-git-bin:$PATH" \
+  REVIEW_PACKET_ROTATE_SPLIT_REPO="$T" \
+  python3 "$TOOL" \
+  --repo "$T" \
+  --base HEAD \
+  --claim 'A split-index snapshot remains coherent during rotation.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+snapshot before rotation' "$OUT" \
+  && ! grep -qF '+concurrent rotation' "$OUT"; then
+  ok 'split-index rotation cannot mismatch the copied index pair'
+else
+  fail 'split-index rotation mismatched the copied index pair'
+fi
+
+if git -C "$U" init -q --object-format=sha256 2>/dev/null; then
+  git -C "$U" config user.email t@t.test
+  git -C "$U" config user.name test
+  printf 'sha256 before\n' > "$U/tracked.txt"
+  git -C "$U" add tracked.txt
+  git -C "$U" commit -qm base
+  printf 'sha256 after\n' >> "$U/tracked.txt"
+  git -C "$U" add tracked.txt
+  : > "$OUT"
+  if python3 "$TOOL" \
+    --repo "$U" \
+    --base HEAD \
+    --claim 'The isolated view preserves the repository object format.' \
+    --repro 'git diff --cached -- tracked.txt' \
+    --path tracked.txt > "$OUT" 2>&1 \
+    && grep -qF '+sha256 after' "$OUT"; then
+    ok 'SHA-256 repositories retain their object format'
+  else
+    fail 'the isolated view lost the SHA-256 repository object format'
+  fi
+else
+  ok 'SHA-256 repository test skipped because installed Git lacks support'
+fi
+
+git -C "$V" init -q
+git -C "$V" config user.email t@t.test
+git -C "$V" config user.name test
+printf 'alternate before\n' > "$V/tracked.txt"
+git -C "$V" add tracked.txt
+git -C "$V" commit -qm base
+mv "$V/.git/objects" "$V/alt:objects"
+mkdir -p "$V/.git/objects/info" "$V/.git/objects/pack"
+printf 'alternate after\n' >> "$V/tracked.txt"
+GIT_OBJECT_DIRECTORY="$V/alt:objects" git -C "$V" add tracked.txt
+: > "$OUT"
+if env GIT_ALTERNATE_OBJECT_DIRECTORIES='"alt:objects"' python3 "$TOOL" \
+  --repo "$V" \
+  --base HEAD \
+  --claim 'Relative object alternates resolve under the explicit repository.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+alternate after' "$OUT"; then
+  ok 'relative object alternates resolve consistently under the repository'
+else
+  fail 'relative object alternates resolved under the caller directory'
+fi
+
+git -C "$Q" init -q
+git -C "$Q" config user.email t@t.test
+git -C "$Q" config user.name test
+printf 'original base\n' > "$Q/replaced.txt"
+git -C "$Q" add replaced.txt
+git -C "$Q" commit -qm base
+Q_BASE="$(git -C "$Q" rev-parse HEAD)"
+printf 'replacement base\n' > "$Q/replaced.txt"
+git -C "$Q" commit -qam replacement
+Q_REPLACEMENT="$(git -C "$Q" rev-parse HEAD)"
+git -C "$Q" switch -q --detach "$Q_BASE"
+git -C "$Q" replace "$Q_BASE" "$Q_REPLACEMENT"
+printf 'staged result\n' > "$Q/replaced.txt"
+git -C "$Q" add replaced.txt
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$Q" \
+  --base "$Q_BASE" \
+  --claim 'The displayed base names the tree used for review.' \
+  --repro 'git diff --cached -- replaced.txt' \
+  --path replaced.txt > "$OUT" 2>&1 \
+  && grep -qF -- '-original base' "$OUT" \
+  && grep -qF '+staged result' "$OUT" \
+  && ! grep -qF 'replacement base' "$OUT"; then
+  ok 'replacement refs cannot substitute the displayed base tree'
+else
+  fail 'a replacement ref silently substituted the displayed base tree'
 fi
 
 : > "$OUT"
@@ -267,17 +481,26 @@ else
 fi
 SUBMODULE_HEAD="$(git -C "$S/module" rev-parse HEAD)"
 git -C "$S" update-index --cacheinfo "160000,$SUBMODULE_HEAD,module"
+git -C "$S" config diff.ignoreSubmodules all
+git -C "$S" config diff.submodule diff
 : > "$OUT"
-if python3 "$TOOL" \
+if env \
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=diff.ignoreSubmodules \
+  GIT_CONFIG_VALUE_0=all \
+  GIT_CONFIG_KEY_1=diff.submodule \
+  GIT_CONFIG_VALUE_1=diff \
+  python3 "$TOOL" \
   --repo "$S" \
   --base HEAD \
   --claim 'A staged gitlink update remains visible for review.' \
   --repro 'git diff --cached -- module' \
   --path module > "$OUT" 2>&1 \
-  && grep -qF "Subproject commit $SUBMODULE_HEAD" "$OUT"; then
-  ok 'staged submodule gitlink updates remain visible'
+  && grep -qF "Subproject commit $SUBMODULE_HEAD" "$OUT" \
+  && ! grep -qF 'diff --git a/module/tracked.txt' "$OUT"; then
+  ok 'staged submodule gitlinks ignore suppressing or expanding config'
 else
-  fail 'a staged submodule gitlink update was omitted'
+  fail 'Git config suppressed or expanded a staged submodule gitlink'
 fi
 
 : > "$OUT"
@@ -304,6 +527,23 @@ else
 fi
 printf 'invalid \377\n' > "$R/invalid-utf8.txt"
 git -C "$R" add invalid-utf8.txt
+
+printf 'unsafe \033]0;review-packet-title\007\n' > "$R/terminal.txt"
+git -C "$R" add terminal.txt
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Terminal control bytes cannot reach rendered packet output.' \
+  --repro 'git diff --cached -- terminal.txt' \
+  --path terminal.txt > "$OUT" 2>&1 \
+  && grep -qF 'Encoding: `base64` of the exact raw Git patch.' "$OUT" \
+  && ! grep -qF $'\033' "$OUT"; then
+  ok 'terminal control bytes are preserved only as inert base64 evidence'
+else
+  fail 'terminal control bytes remained active in packet output'
+fi
+git -C "$R" restore --source=HEAD --staged --worktree terminal.txt
 
 if python3 "$TOOL" \
   --repo "$R" \
@@ -447,18 +687,14 @@ fi
 mv "$R/.gitattributes" "$R/.gitattributes.fifo"
 mv "$R/.gitattributes.safe" "$R/.gitattributes"
 if [ "$FIFO_TOOL_OK" -eq 1 ]; then
-  ok 'staged attribute resolution ignores an unstaged worktree FIFO'
+  ok 'canonical diff generation ignores an unstaged worktree FIFO'
 else
-  fail 'staged diff metadata read the unstaged worktree attributes'
+  fail 'canonical diff generation read the unstaged worktree attributes'
 fi
 
-cp "$R/.gitattributes" "$R/.gitattributes.safe"
-for _ in {1..8000}; do
-  printf '!invalid-negative-pattern\n'
-done > "$R/.gitattributes"
-git -C "$R" add .gitattributes 2>/dev/null
 : > "$OUT"
-if timeout 5 python3 "$TOOL" \
+if env PATH="$R/fake-git-bin:$PATH" REVIEW_PACKET_FAKE_STDERR=1 \
+  timeout 5 python3 "$TOOL" \
   --repo "$R" \
   --base HEAD \
   --claim 'Repository diagnostics cannot block bounded packet output.' \
@@ -469,8 +705,6 @@ if timeout 5 python3 "$TOOL" \
 else
   fail 'Git stderr saturation blocked bounded packet output'
 fi
-mv "$R/.gitattributes.safe" "$R/.gitattributes"
-git -C "$R" add .gitattributes 2>/dev/null
 
 : > "$OUT"
 python3 "$TOOL" \
@@ -507,6 +741,36 @@ elif grep -qF 'must not be blank' "$OUT"; then
   ok 'claim and repro contracts reject blank values'
 else
   fail 'a blank claim lacked a useful diagnostic'
+fi
+
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim $'unsafe \033 claim' \
+  --repro 'git diff --cached --check' > "$OUT" 2>&1; then
+  fail 'a terminal control character was accepted in packet metadata'
+elif grep -qF 'must not contain terminal control characters' "$OUT" \
+  && ! grep -qF $'\033' "$OUT"; then
+  ok 'packet metadata rejects terminal control characters safely'
+else
+  fail 'terminal-unsafe packet metadata lacked a safe diagnostic'
+fi
+
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim safe \
+  --repro safe \
+  --unknown $'unsafe-\033]0;packet-title\007' > "$OUT" 2>&1; then
+  fail 'a terminal control character was accepted in an unknown argument'
+elif grep -qF 'unrecognized arguments:' "$OUT" \
+  && ! grep -qF $'\033' "$OUT" \
+  && ! grep -qF $'\007' "$OUT"; then
+  ok 'argument-parser diagnostics escape terminal control characters'
+else
+  fail 'argument-parser diagnostics emitted active terminal controls'
 fi
 
 : > "$OUT"

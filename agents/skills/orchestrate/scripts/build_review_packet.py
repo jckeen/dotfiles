@@ -14,19 +14,38 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 from typing import BinaryIO
 
 DEFAULT_MAX_BYTES = 200_000
 MAX_DIAGNOSTIC_BYTES = 64_000
 
 
-def git(repo: Path, *args: str) -> str:
+def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    for key in (
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_OBJECT_DIRECTORY",
+    ):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = str(index_file)
+    elif "GIT_INDEX_FILE" in os.environ:
+        env["GIT_INDEX_FILE"] = os.environ["GIT_INDEX_FILE"]
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     result = subprocess.run(
-        ["git", "-C", str(repo), "--attr-source=HEAD", *args],
+        ["git", "-C", str(repo), *args],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
@@ -41,66 +60,171 @@ def drain_stderr(stream: BinaryIO, sink: bytearray) -> None:
             sink.extend(chunk[:remaining])
 
 
-def staged_attr_source(
+def decode_git_path(value: str) -> str:
+    if not value.startswith('"'):
+        return value
+    if not value.endswith('"'):
+        raise ValueError("invalid quoted Git alternate-object path")
+    encoded = value[1:-1]
+    decoded = bytearray()
+    index = 0
+    escapes = {
+        "a": 7,
+        "b": 8,
+        "t": 9,
+        "n": 10,
+        "v": 11,
+        "f": 12,
+        "r": 13,
+        '"': 34,
+        "\\": 92,
+    }
+    while index < len(encoded):
+        character = encoded[index]
+        if character != "\\":
+            decoded.extend(os.fsencode(character))
+            index += 1
+            continue
+        index += 1
+        if index == len(encoded):
+            raise ValueError("invalid quoted Git alternate-object path")
+        escaped = encoded[index]
+        if escaped in escapes:
+            decoded.append(escapes[escaped])
+            index += 1
+            continue
+        if escaped in "01234567":
+            end = index + 1
+            while end < min(index + 3, len(encoded)) and encoded[end] in "01234567":
+                end += 1
+            decoded.append(int(encoded[index:end], 8))
+            index = end
+            continue
+        raise ValueError("invalid quoted Git alternate-object path")
+    return os.fsdecode(bytes(decoded))
+
+
+def split_git_path_list(value: str) -> list[str]:
+    entries: list[str] = []
+    start = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+        elif quoted and character == "\\":
+            escaped = True
+        elif character == '"':
+            quoted = not quoted
+        elif character == os.pathsep and not quoted:
+            entries.append(value[start:index])
+            start = index + 1
+    if quoted or escaped:
+        raise ValueError("invalid quoted Git alternate-object path")
+    entries.append(value[start:])
+    return [decode_git_path(entry) for entry in entries if entry]
+
+
+def encode_git_path(value: str) -> str:
+    encoded = ['"']
+    for byte in os.fsencode(value):
+        if byte in (34, 92):
+            encoded.append("\\" + chr(byte))
+        elif 32 <= byte <= 126:
+            encoded.append(chr(byte))
+        else:
+            encoded.append(f"\\{byte:03o}")
+    encoded.append('"')
+    return "".join(encoded)
+
+
+def isolated_git_view(
     repo: Path,
     workspace: Path,
-) -> tuple[str, dict[str, str], Path, Path]:
-    object_dir = workspace / "objects"
+    base: str,
+) -> tuple[dict[str, str], Path, Path]:
+    git_dir = workspace / "git"
+    git_dir.mkdir()
+    object_dir = git_dir / "objects"
     object_dir.mkdir()
+    (git_dir / "refs" / "heads").mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/review\n", encoding="ascii")
+    if len(base) == 64:
+        (git_dir / "config").write_text(
+            "[core]\n\trepositoryFormatVersion = 1\n"
+            "[extensions]\n\tobjectFormat = sha256\n",
+            encoding="ascii",
+        )
+    elif len(base) != 40:
+        raise ValueError("unsupported Git object format")
     isolated_worktree = workspace / "worktree"
     isolated_worktree.mkdir()
-    git_dir = Path(git(repo, "rev-parse", "--absolute-git-dir").strip())
     source_index = Path(git(repo, "rev-parse", "--git-path", "index").strip())
     if not source_index.is_absolute():
         source_index = repo / source_index
     isolated_index = workspace / "index"
     shutil.copyfile(source_index, isolated_index)
-    common_dir = Path(git(repo, "rev-parse", "--git-common-dir").strip())
-    if not common_dir.is_absolute():
-        common_dir = (repo / common_dir).resolve()
-    alternates = [str(common_dir / "objects")]
+    shared_index_value = git(
+        repo,
+        "rev-parse",
+        "--shared-index-path",
+        index_file=isolated_index,
+    ).strip()
+    if shared_index_value:
+        source_shared_index = Path(shared_index_value)
+        if not source_shared_index.is_absolute():
+            source_shared_index = repo / source_shared_index
+        shutil.copyfile(
+            source_shared_index,
+            isolated_index.parent / source_shared_index.name,
+        )
+    source_objects = Path(git(repo, "rev-parse", "--git-path", "objects").strip())
+    if not source_objects.is_absolute():
+        source_objects = repo / source_objects
+    alternates = [source_objects]
     inherited_alternates = os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
     if inherited_alternates:
-        alternates.append(inherited_alternates)
+        for inherited in split_git_path_list(inherited_alternates):
+            inherited_path = Path(inherited)
+            if not inherited_path.is_absolute():
+                inherited_path = repo / inherited_path
+            alternates.append(inherited_path)
 
-    env = os.environ.copy()
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    env["GIT_ATTR_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_DIFF_OPTS"] = ""
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_OBJECT_DIRECTORY"] = str(object_dir)
-    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(alternates)
-    env["GIT_INDEX_FILE"] = str(isolated_index)
-    env["GIT_WORK_TREE"] = str(isolated_worktree)
-    result = subprocess.run(
-        [
-            "git",
-            f"--git-dir={git_dir}",
-            f"--work-tree={isolated_worktree}",
-            "--attr-source=HEAD",
-            "write-tree",
-        ],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
+    env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(
+        encode_git_path(str(alternate)) for alternate in alternates
     )
-    if result.returncode != 0:
-        detail = result.stderr.strip()
-        raise ValueError(detail or "could not resolve staged attribute tree")
-    return result.stdout.strip(), env, git_dir, isolated_worktree
+    env["GIT_INDEX_FILE"] = str(isolated_index)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_WORK_TREE"] = str(isolated_worktree)
+    return env, git_dir, isolated_worktree
 
 
 def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
     with tempfile.TemporaryDirectory(prefix="review-packet-") as workspace_name:
-        attr_source, env, git_dir, isolated_worktree = staged_attr_source(
+        env, git_dir, isolated_worktree = isolated_git_view(
             repo,
             Path(workspace_name),
+            base,
         )
         process = subprocess.Popen(
             [
                 "git",
                 f"--git-dir={git_dir}",
                 f"--work-tree={isolated_worktree}",
+                "-c",
+                f"core.attributesFile={os.devnull}",
                 "--literal-pathspecs",
-                f"--attr-source={attr_source}",
                 "diff",
                 "--cached",
                 "--binary",
@@ -108,6 +232,8 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
                 "--no-ext-diff",
                 "--no-textconv",
                 "--find-renames",
+                "--ignore-submodules=none",
+                "--submodule=short",
                 base,
                 "--",
                 *(str(path) for path in paths),
@@ -156,13 +282,40 @@ def positive_int(value: str) -> int:
 def nonblank(value: str) -> str:
     if not value.strip():
         raise argparse.ArgumentTypeError("must not be blank")
+    if has_terminal_control(value):
+        raise argparse.ArgumentTypeError("must not contain terminal control characters")
     return value
 
 
 def repo_path(value: str) -> str:
     if not value.strip():
         raise argparse.ArgumentTypeError("--path must not be empty")
+    if has_terminal_control(value):
+        raise argparse.ArgumentTypeError(
+            "--path must not contain terminal control characters"
+        )
     return value
+
+
+def has_terminal_control(value: str) -> bool:
+    return any(
+        character not in "\n\t"
+        and unicodedata.category(character).startswith("C")
+        for character in value
+    )
+
+
+def terminal_safe(value: str) -> str:
+    return value.encode("unicode_escape").decode("ascii")
+
+
+class SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(
+            2,
+            f"{terminal_safe(self.prog)}: error: {terminal_safe(message)}\n",
+        )
 
 
 def fenced(content: str, language: str) -> str:
@@ -187,7 +340,8 @@ def untrusted_marker(content: str) -> str:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = SafeArgumentParser(
+        prog=terminal_safe(Path(sys.argv[0]).name),
         description="Build a bounded staged-evidence packet for adversarial review."
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -216,13 +370,17 @@ def build_packet(args: argparse.Namespace) -> bytes:
     if not diff:
         raise ValueError("staged diff is empty")
     try:
-        diff_evidence = fenced(diff.decode("utf-8"), "diff")
+        decoded_diff = diff.decode("utf-8")
     except UnicodeDecodeError:
+        decoded_diff = None
+    if decoded_diff is None or has_terminal_control(decoded_diff):
         encoded_diff = base64.b64encode(diff).decode("ascii")
         diff_evidence = (
             "Encoding: `base64` of the exact raw Git patch. Decode before review.\n\n"
             f"{fenced(encoded_diff, 'base64')}"
         )
+    else:
+        diff_evidence = fenced(decoded_diff, "diff")
     scope = (
         fenced("\n".join(str(path) for path in paths), "text")
         if paths
@@ -232,7 +390,7 @@ def build_packet(args: argparse.Namespace) -> bytes:
     if not verification:
         verification = "- None supplied."
     body = (
-        f"Repository: `{repo.name}`\n\n"
+        f"Repository: `{terminal_safe(repo.name)}`\n\n"
         f"Base commit: `{base}`\n\n"
         "## Path scope\n\n"
         f"{scope}\n\n"
@@ -269,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.buffer.write(build_packet(args))
     except (OSError, ValueError) as error:
-        print(f"build-review-packet: {error}", file=sys.stderr)
+        print(f"build-review-packet: {terminal_safe(str(error))}", file=sys.stderr)
         return 2
     return 0
 

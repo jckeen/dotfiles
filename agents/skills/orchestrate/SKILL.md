@@ -106,7 +106,8 @@ implementation. Separate these concepts:
 For staged or committed Git changes, prefer the bundled packet builder so the
 reviewer gets the exact base-to-index artifact behind a hash-derived
 untrusted-data boundary, without unstaged files, untracked files, configured
-clean-filter execution, or the author's reasoning:
+clean-filter execution, replacement refs, repository-controlled diff behavior,
+or the author's reasoning:
 
 ```bash
 python3 <skill-dir>/scripts/build_review_packet.py \
@@ -121,8 +122,10 @@ silently trimming evidence. For non-Git artifacts, assemble the same raw fields
 manually. Stage intended new files before building the packet; untracked files
 are deliberately excluded. Stage every intended tracked change too; unstaged
 worktree state and attributes are outside the review artifact. Decode a packet's
-labeled base64 diff before reviewing non-UTF-8 evidence. A staged submodule
-gitlink is covered, but review nested repository content with its own packet.
+labeled base64 diff before reviewing non-UTF-8 or terminal-control evidence.
+The packet uses a canonical attribute-free diff: staged attribute files remain
+visible changes but do not control packet rendering. A staged submodule gitlink
+is covered, but review nested repository content with its own packet.
 
 Multiple agents from one model lineage add breadth but do not satisfy a
 cross-lineage review requirement. Route disputed claims back through the exact
