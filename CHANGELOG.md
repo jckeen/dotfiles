@@ -15,7 +15,9 @@
   bytes, and empty path scopes fail closed. An isolated copy of the Git index
   plus a config-free temporary Git directory, object store, and worktree avoids
   repository-index mutation, clean-filter execution, worktree normalization,
-  symlink traversal, replacement refs, and repository-controlled diff behavior.
+  symlink traversal, fsmonitor execution, replacement refs, and
+  repository-controlled diff behavior. Repository and caller-index paths retain
+  their exact whitespace, while selected paths use an unambiguous JSON array.
   Non-UTF-8 patches and patches containing terminal controls are preserved
   byte-for-byte as inert base64, and large Git diagnostics are drained
   concurrently.
@@ -24,11 +26,12 @@
   staged-versus-unstaged state, ordinary, linked-worktree, split, concurrently
   rotated split, and caller-selected index immutability, quoted relative object
   alternates, executable modes, large diagnostics, symlinked worktree paths,
+  whitespace-bearing repository and index paths, newline-bearing scope paths,
   older Git compatibility, routing-environment isolation, blocking unstaged
-  attributes, local and environment-injected submodule config,
-  source-repository object formats, replacement refs,
-  non-UTF-8 and terminal-control bytes, terminal-safe parser errors, and
-  Markdown-shaped source or command content.
+  attributes, fsmonitor hooks, local and environment-injected submodule config,
+  source-repository object formats, replacement refs, non-UTF-8 and
+  terminal-control bytes, terminal-safe parser errors, and Markdown-shaped
+  source or command content.
 
 ### Decisions made
 - Reuse `session-retro` instead of creating an autonomous learning ledger or a

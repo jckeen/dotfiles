@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -40,7 +41,7 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
     result = subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -51,6 +52,10 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
         detail = result.stderr.strip() or result.stdout.strip()
         raise ValueError(detail or f"git {' '.join(args)} failed")
     return result.stdout
+
+
+def git_value(output: str) -> str:
+    return output[:-1] if output.endswith("\n") else output
 
 
 def drain_stderr(stream: BinaryIO, sink: bytearray) -> None:
@@ -159,17 +164,19 @@ def isolated_git_view(
         raise ValueError("unsupported Git object format")
     isolated_worktree = workspace / "worktree"
     isolated_worktree.mkdir()
-    source_index = Path(git(repo, "rev-parse", "--git-path", "index").strip())
+    source_index = Path(git_value(git(repo, "rev-parse", "--git-path", "index")))
     if not source_index.is_absolute():
         source_index = repo / source_index
     isolated_index = workspace / "index"
     shutil.copyfile(source_index, isolated_index)
-    shared_index_value = git(
-        repo,
-        "rev-parse",
-        "--shared-index-path",
-        index_file=isolated_index,
-    ).strip()
+    shared_index_value = git_value(
+        git(
+            repo,
+            "rev-parse",
+            "--shared-index-path",
+            index_file=isolated_index,
+        )
+    )
     if shared_index_value:
         source_shared_index = Path(shared_index_value)
         if not source_shared_index.is_absolute():
@@ -178,7 +185,9 @@ def isolated_git_view(
             source_shared_index,
             isolated_index.parent / source_shared_index.name,
         )
-    source_objects = Path(git(repo, "rev-parse", "--git-path", "objects").strip())
+    source_objects = Path(
+        git_value(git(repo, "rev-parse", "--git-path", "objects"))
+    )
     if not source_objects.is_absolute():
         source_objects = repo / source_objects
     alternates = [source_objects]
@@ -224,6 +233,8 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
                 f"--work-tree={isolated_worktree}",
                 "-c",
                 f"core.attributesFile={os.devnull}",
+                "-c",
+                "core.fsmonitor=false",
                 "--literal-pathspecs",
                 "diff",
                 "--cached",
@@ -342,7 +353,7 @@ def untrusted_marker(content: str) -> str:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = SafeArgumentParser(
         prog=terminal_safe(Path(sys.argv[0]).name),
-        description="Build a bounded staged-evidence packet for adversarial review."
+        description="Build a bounded staged-evidence packet for adversarial review.",
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--base", required=True)
@@ -355,14 +366,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def build_packet(args: argparse.Namespace) -> bytes:
-    repo = Path(git(args.repo, "rev-parse", "--show-toplevel").strip())
-    base = git(
-        repo,
-        "rev-parse",
-        "--verify",
-        "--end-of-options",
-        f"{args.base}^{{commit}}",
-    ).strip()
+    repo = Path(git_value(git(args.repo, "rev-parse", "--show-toplevel")))
+    base = git_value(
+        git(
+            repo,
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{args.base}^{{commit}}",
+        )
+    )
     paths = [Path(value) for value in args.path]
     if any(path.is_absolute() or ".." in path.parts for path in paths):
         raise ValueError("--path values must stay inside the repository")
@@ -382,7 +395,10 @@ def build_packet(args: argparse.Namespace) -> bytes:
     else:
         diff_evidence = fenced(decoded_diff, "diff")
     scope = (
-        fenced("\n".join(str(path) for path in paths), "text")
+        fenced(
+            json.dumps([str(path) for path in paths], ensure_ascii=True, indent=2),
+            "json",
+        )
         if paths
         else "All staged changes from base."
     )

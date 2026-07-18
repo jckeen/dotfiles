@@ -15,8 +15,9 @@ Q="$(mktemp -d)" || exit 1
 T="$(mktemp -d)" || exit 1
 U="$(mktemp -d)" || exit 1
 V="$(mktemp -d)" || exit 1
+W_PARENT="$(mktemp -d)" || exit 1
 OUT="$(mktemp)" || exit 1
-trap 'rm -rf "$R" "$S" "$L" "$Q" "$T" "$U" "$V" "$OUT"' EXIT
+trap 'rm -rf "$R" "$S" "$L" "$Q" "$T" "$U" "$V" "$W_PARENT" "$OUT"' EXIT
 pass=0
 failed=0
 
@@ -196,6 +197,31 @@ else
   fail 'caller-selected index evidence or immutability was lost'
 fi
 
+CUSTOM_INDEX_SPACED="$R/custom-index "
+cp "$R_INDEX_PATH" "$CUSTOM_INDEX_SPACED"
+printf 'spaced index state\n' > "$R/unstaged.txt"
+GIT_INDEX_FILE="$CUSTOM_INDEX_SPACED" git -C "$R" add unstaged.txt
+printf 'unstaged before\nunstaged after\n' > "$R/unstaged.txt"
+DEFAULT_INDEX_BEFORE="$(git hash-object "$R_INDEX_PATH")"
+CUSTOM_INDEX_BEFORE="$(git hash-object "$CUSTOM_INDEX")"
+CUSTOM_INDEX_SPACED_BEFORE="$(git hash-object "$CUSTOM_INDEX_SPACED")"
+: > "$OUT"
+if env GIT_INDEX_FILE="$CUSTOM_INDEX_SPACED" python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Caller-selected index paths preserve trailing spaces.' \
+  --repro 'git diff --cached -- unstaged.txt' \
+  --path unstaged.txt > "$OUT" 2>&1 \
+  && grep -qF '+spaced index state' "$OUT" \
+  && ! grep -qF '+unstaged after' "$OUT" \
+  && [ "$(git hash-object "$R_INDEX_PATH")" = "$DEFAULT_INDEX_BEFORE" ] \
+  && [ "$(git hash-object "$CUSTOM_INDEX")" = "$CUSTOM_INDEX_BEFORE" ] \
+  && [ "$(git hash-object "$CUSTOM_INDEX_SPACED")" = "$CUSTOM_INDEX_SPACED_BEFORE" ]; then
+  ok 'caller-selected index paths preserve trailing spaces exactly'
+else
+  fail 'caller-selected index paths lost trailing-space identity'
+fi
+
 git -C "$L" init -q
 git -C "$L" config user.email t@t.test
 git -C "$L" config user.name test
@@ -348,6 +374,35 @@ else
   fail 'relative object alternates resolved under the caller directory'
 fi
 
+W="$W_PARENT/repo "
+W_TRIMMED="$W_PARENT/repo"
+git -C "$W_PARENT" init -q "$W"
+git -C "$W_PARENT" init -q "$W_TRIMMED"
+for whitespace_repo in "$W" "$W_TRIMMED"; do
+  git -C "$whitespace_repo" config user.email t@t.test
+  git -C "$whitespace_repo" config user.name test
+  printf 'before\n' > "$whitespace_repo/tracked.txt"
+  git -C "$whitespace_repo" add tracked.txt
+  git -C "$whitespace_repo" commit -qm base
+done
+printf 'selected spaced repository\n' >> "$W/tracked.txt"
+git -C "$W" add tracked.txt
+printf 'wrong trimmed repository\n' >> "$W_TRIMMED/tracked.txt"
+git -C "$W_TRIMMED" add tracked.txt
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$W" \
+  --base HEAD \
+  --claim 'The explicit repository path preserves trailing spaces.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+selected spaced repository' "$OUT" \
+  && ! grep -qF '+wrong trimmed repository' "$OUT"; then
+  ok 'explicit repository paths preserve trailing spaces exactly'
+else
+  fail 'the explicit repository path lost trailing-space identity'
+fi
+
 git -C "$Q" init -q
 git -C "$Q" config user.email t@t.test
 git -C "$Q" config user.name test
@@ -435,6 +490,30 @@ if python3 "$TOOL" \
 else
   fail 'configured clean filters executed or rewrote review evidence'
 fi
+
+FSMONITOR_SENTINEL="$R/fsmonitor-ran"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  ': > "$FSMONITOR_SENTINEL"' \
+  'printf "token\\0"' > "$R/fsmonitor-hook.sh"
+chmod +x "$R/fsmonitor-hook.sh"
+export FSMONITOR_SENTINEL
+git -C "$R" config core.fsmonitor "$R/fsmonitor-hook.sh"
+rm -f "$FSMONITOR_SENTINEL"
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Reading staged evidence cannot execute fsmonitor hooks.' \
+  --repro 'git diff --cached -- partial.txt' \
+  --path partial.txt > "$OUT" 2>&1 \
+  && grep -qF '+partial staged' "$OUT" \
+  && [ ! -e "$FSMONITOR_SENTINEL" ]; then
+  ok 'configured fsmonitor hooks cannot execute while reading evidence'
+else
+  fail 'a configured fsmonitor hook executed while reading evidence'
+fi
+git -C "$R" config --unset core.fsmonitor
 
 : > "$OUT"
 if python3 "$TOOL" \
@@ -544,6 +623,25 @@ else
   fail 'terminal control bytes remained active in packet output'
 fi
 git -C "$R" restore --source=HEAD --staged --worktree terminal.txt
+
+ODD_PATH=$'line\nbreak.txt'
+printf 'newline path\n' > "$R/$ODD_PATH"
+git -C "$R" add -- "$ODD_PATH"
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Path scope has an injective representation.' \
+  --repro 'git diff --cached -- "$ODD_PATH"' \
+  --path "$ODD_PATH" > "$OUT" 2>&1 \
+  && grep -qF '```json' "$OUT" \
+  && grep -qF '"line\nbreak.txt"' "$OUT"; then
+  ok 'newline-containing path scope is serialized without ambiguity'
+else
+  fail 'newline-containing path scope remained ambiguous'
+fi
+git -C "$R" restore --staged -- "$ODD_PATH"
+rm "$R/$ODD_PATH"
 
 if python3 "$TOOL" \
   --repo "$R" \
@@ -854,7 +952,8 @@ if python3 "$TOOL" \
   --verify 'printf `uname`' \
   --path tracked.txt > "$OUT" 2>&1 \
   && grep -qF 'printf `uname`' "$OUT" \
-  && [ "$(grep -cF '```text' "$OUT")" -eq 3 ]; then
+  && [ "$(grep -cF '```text' "$OUT")" -eq 2 ] \
+  && grep -qF '```json' "$OUT"; then
   ok 'verification commands use literal blocks instead of fragile inline Markdown'
 else
   fail 'verification commands were not preserved as literal evidence'
