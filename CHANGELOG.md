@@ -14,11 +14,14 @@
   bytes, and empty path scopes fail closed. Raw worktree evidence is assembled
   without executing configured clean filters; non-UTF-8 patches are preserved
   byte-for-byte as base64, and descriptor-relative reads cannot follow
-  symlinked ancestors outside the repository.
+  symlinked ancestors outside the repository. Linked worktrees resolve their
+  common object database, index modes remain authoritative when filesystem mode
+  checks are disabled, and large Git diagnostics are drained concurrently.
 - Added CI coverage for scope traversal and pathspec expansion, binary evidence,
   empty and oversized diffs, configured Git converters and clean filters,
-  symlinked ancestors, selected submodules, non-UTF-8 bytes, and
-  Markdown-shaped source or command content.
+  linked worktrees, executable modes, large diagnostics, symlinked ancestors,
+  selected submodules, non-UTF-8 bytes, and Markdown-shaped source or command
+  content.
 
 ### Decisions made
 - Reuse `session-retro` instead of creating an autonomous learning ledger or a

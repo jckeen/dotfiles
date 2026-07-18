@@ -14,8 +14,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+from typing import BinaryIO
 
 DEFAULT_MAX_BYTES = 200_000
+MAX_DIAGNOSTIC_BYTES = 64_000
 
 
 def git(repo: Path, *args: str) -> str:
@@ -50,6 +53,13 @@ def git_bytes(
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(detail or f"git {' '.join(args)} failed")
     return result.stdout
+
+
+def drain_stderr(stream: BinaryIO, sink: bytearray) -> None:
+    while chunk := stream.read(64_000):
+        remaining = MAX_DIAGNOSTIC_BYTES - len(sink)
+        if remaining > 0:
+            sink.extend(chunk[:remaining])
 
 
 def core_filemode(repo: Path) -> bool:
@@ -159,6 +169,7 @@ def raw_worktree_blob(
     path: bytes,
     *,
     filemode: bool,
+    index_mode: bytes,
 ) -> tuple[bytes, bytes] | None:
     opened_parent = open_parent(root_fd, path)
     if opened_parent is None:
@@ -192,9 +203,13 @@ def raw_worktree_blob(
                 opened_metadata = os.fstat(source_fd)
                 if not stat.S_ISREG(opened_metadata.st_mode):
                     raise ValueError("tracked path changed while reading")
-                mode = b"100644"
-                if filemode and opened_metadata.st_mode & stat.S_IXUSR:
-                    mode = b"100755"
+                if filemode:
+                    executable = opened_metadata.st_mode & stat.S_IXUSR
+                    mode = b"100755" if executable else b"100644"
+                elif index_mode in (b"100644", b"100755"):
+                    mode = index_mode
+                else:
+                    mode = b"100644"
                 return mode, hash_raw_blob(repo, env, source_fd=source_fd)
             finally:
                 os.close(source_fd)
@@ -231,8 +246,10 @@ def build_raw_index(
 ) -> dict[str, str]:
     object_dir = workspace / "objects"
     object_dir.mkdir()
-    git_dir = Path(git(repo, "rev-parse", "--absolute-git-dir").strip())
-    alternates = [str(git_dir / "objects")]
+    common_dir = Path(git(repo, "rev-parse", "--git-common-dir").strip())
+    if not common_dir.is_absolute():
+        common_dir = (repo / common_dir).resolve()
+    alternates = [str(common_dir / "objects")]
     inherited_alternates = os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
     if inherited_alternates:
         alternates.append(inherited_alternates)
@@ -275,6 +292,7 @@ def build_raw_index(
                     root_fd,
                     path,
                     filemode=filemode,
+                    index_mode=mode,
                 )
                 if raw_blob is None:
                     if path not in skip_worktree:
@@ -315,14 +333,31 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
             env=env,
         )
         assert process.stdout is not None
-        payload = process.stdout.read(max_bytes + 1)
-        if len(payload) > max_bytes:
-            process.kill()
-            process.communicate()
+        assert process.stderr is not None
+        stderr = bytearray()
+        stderr_thread = threading.Thread(
+            target=drain_stderr,
+            args=(process.stderr, stderr),
+            daemon=True,
+        )
+        stderr_thread.start()
+        try:
+            payload = process.stdout.read(max_bytes + 1)
+            oversized = len(payload) > max_bytes
+            if oversized:
+                process.kill()
+            process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            stderr_thread.join()
+            process.stderr.close()
+        if oversized:
             raise ValueError(f"tracked diff exceeds --max-bytes ({max_bytes})")
-        _, stderr = process.communicate()
         if process.returncode != 0:
-            detail = stderr.decode("utf-8", errors="replace").strip()
+            detail = bytes(stderr).decode("utf-8", errors="replace").strip()
             raise ValueError(detail or "git diff failed")
         return payload
 
