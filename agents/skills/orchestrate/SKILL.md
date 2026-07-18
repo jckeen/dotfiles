@@ -104,7 +104,8 @@ implementation. Separate these concepts:
   different failure modes.
 
 For tracked Git changes, prefer the bundled packet builder so the reviewer gets
-a bounded diff without untracked files or the author's reasoning:
+a bounded packet behind a hash-derived untrusted-data boundary, without
+untracked files or the author's reasoning:
 
 ```bash
 python3 <skill-dir>/scripts/build_review_packet.py \
