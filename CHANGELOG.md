@@ -7,36 +7,38 @@
   existing `session-retro` proposal and confirmation boundary after the
   user-facing result is verified.
 - Added a bundled review-packet builder that gives fresh-context reviewers a
-  bounded tracked diff, path scope, falsifiable claim, exact repro, and
-  verification commands without including untracked files or author reasoning.
+  bounded staged diff, path scope, falsifiable claim, exact repro, and
+  verification commands without including unstaged or untracked files or author
+  reasoning.
   The complete packet is size-bounded, author-controlled content sits behind a
   hash-derived untrusted-data boundary, output uses the exact measured UTF-8
-  bytes, and empty path scopes fail closed. Raw worktree evidence is assembled
-  without executing configured clean filters; non-UTF-8 patches are preserved
-  byte-for-byte as base64, and descriptor-relative reads cannot follow
-  symlinked ancestors outside the repository. Linked worktrees resolve their
-  common object database, index modes remain authoritative when filesystem mode
-  checks are disabled, and large Git diagnostics are drained concurrently.
+  bytes, and empty path scopes fail closed. An isolated copy of the Git index
+  plus a staged attribute tree in a temporary object store and worktree avoids
+  repository-index mutation, clean-filter execution, worktree normalization,
+  symlink traversal, and blocking worktree attributes; non-UTF-8 patches are
+  preserved byte-for-byte as base64, and large Git diagnostics are drained
+  concurrently.
 - Added CI coverage for scope traversal and pathspec expansion, binary evidence,
   empty and oversized diffs, configured Git converters and clean filters,
-  linked worktrees, executable modes, large diagnostics, symlinked ancestors,
-  selected submodules, non-UTF-8 bytes, and Markdown-shaped source or command
-  content.
+  staged-versus-unstaged state, ordinary and linked-worktree index immutability,
+  executable modes, large diagnostics, symlinked worktree paths, blocking
+  unstaged attributes, submodule gitlinks, non-UTF-8 bytes, and Markdown-shaped
+  source or command content.
 
 ### Decisions made
 - Reuse `session-retro` instead of creating an autonomous learning ledger or a
   second proposal format. Changelog, handoff, and GitHub issues retain their
   existing ownership of history, continuity, and unresolved work.
-- Fail closed when a review packet has no tracked evidence, contains an empty
-  path scope, or exceeds its explicit whole-packet bound. Intended new files
-  must be staged before packet generation; private untracked state remains
+- Fail closed when a review packet has no staged evidence, contains an empty
+  path scope, or exceeds its explicit whole-packet bound. Every intended change
+  must be staged before packet generation; unstaged and untracked state remains
   excluded by design.
 
 ### Known issues
-- The packet builder covers tracked Git changes. Non-Git artifacts still need
+- The packet builder covers staged Git changes. Non-Git artifacts still need
   an equivalent raw claim, repro, scope, and evidence packet assembled manually.
-- Selected submodule paths fail closed and require a separate review of the
-  nested repository state.
+- Staged submodule gitlinks are covered, but nested repository content still
+  needs its own review packet.
 
 ## 2026-07-17 — fix: recover stale Codex Remote Control safely
 

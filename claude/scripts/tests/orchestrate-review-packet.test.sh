@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
 # Single-quoted command examples are literal review-packet payloads.
-# orchestrate-review-packet.test.sh — raw review packets stay scoped and safe.
+# orchestrate-review-packet.test.sh — staged review packets stay scoped and safe.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +36,8 @@ printf '*.dat diff=secret\n*.filtered filter=danger\n' > "$R/.gitattributes"
 printf 'raw before\n' > "$R/converted.dat"
 printf 'filter before\n' > "$R/filtered.filtered"
 printf 'invalid \377\n' > "$R/invalid-utf8.txt"
+printf 'partial before\n' > "$R/partial.txt"
+printf 'unstaged before\n' > "$R/unstaged.txt"
 printf 'literal before\n' > "$R/[ab].txt"
 printf 'a before\n' > "$R/a.txt"
 printf 'b before\n' > "$R/b.txt"
@@ -43,11 +45,15 @@ printf '\000binary before\n' > "$R/asset.bin"
 printf '#!/usr/bin/env bash\nprintf "exec before\\n"\n' > "$R/executable.sh"
 chmod +x "$R/executable.sh"
 printf '#!/usr/bin/env bash\nprintf "mode before\\n"\n' > "$R/staged-mode.sh"
+printf 'target\n' > "$R/target.txt"
+ln -s target.txt "$R/link.txt"
+printf 'special before\n' > "$R/special.txt"
 mkdir -p "$R/nested"
 printf 'nested before\n' > "$R/nested/tracked.txt"
 git -C "$R" add .gitattributes tracked.txt other.txt converted.dat \
-  filtered.filtered invalid-utf8.txt '[ab].txt' a.txt b.txt asset.bin \
-  executable.sh staged-mode.sh nested/tracked.txt
+  filtered.filtered invalid-utf8.txt partial.txt unstaged.txt '[ab].txt' a.txt \
+  b.txt asset.bin executable.sh staged-mode.sh target.txt link.txt special.txt \
+  nested/tracked.txt
 git -C "$R" commit -qm base
 base="$(git -C "$R" rev-parse HEAD)"
 
@@ -56,6 +62,10 @@ printf 'other after\n' >> "$R/other.txt"
 printf 'raw after\n' >> "$R/converted.dat"
 printf 'filter after\n' >> "$R/filtered.filtered"
 printf 'invalid \376\n' > "$R/invalid-utf8.txt"
+printf 'partial staged\n' >> "$R/partial.txt"
+git -C "$R" add partial.txt
+printf 'partial before\n' > "$R/partial.txt"
+printf 'unstaged after\n' >> "$R/unstaged.txt"
 printf 'literal after\n' >> "$R/[ab].txt"
 printf 'a after\n' >> "$R/a.txt"
 printf 'b after\n' >> "$R/b.txt"
@@ -63,10 +73,18 @@ printf '\000binary after\n' >> "$R/asset.bin"
 printf 'printf "exec after\\n"\n' >> "$R/executable.sh"
 git -C "$R" update-index --chmod=+x staged-mode.sh
 git -C "$R" config core.fileMode false
+git -C "$R" config core.symlinks false
+mv "$R/link.txt" "$R/link.original"
+printf 'target.txt' > "$R/link.txt"
+mv "$R/special.txt" "$R/special.original"
+mkfifo "$R/special.txt"
 mv "$R/nested" "$R/nested-original"
 mkdir "$R/external"
 printf 'outside secret\n' > "$R/external/tracked.txt"
 ln -s "$R/external" "$R/nested"
+git -C "$R" add tracked.txt other.txt converted.dat filtered.filtered \
+  invalid-utf8.txt '[ab].txt' a.txt b.txt asset.bin executable.sh
+git -C "$R" update-index --force-remove nested/tracked.txt
 printf 'never include me\n' > "$R/private-token.txt"
 printf '#!/usr/bin/env bash\nprintf "TEXTCONV_SECRET\\n"\n' > "$R/textconv.sh"
 chmod +x "$R/textconv.sh"
@@ -80,6 +98,41 @@ printf '%s\n' \
 chmod +x "$R/clean-filter.sh"
 git -C "$R" config filter.danger.clean "$R/clean-filter.sh"
 git -C "$R" config filter.danger.required true
+R_INDEX_PATH="$(git -C "$R" rev-parse --absolute-git-dir)/index"
+R_INDEX_BEFORE="$(git hash-object "$R_INDEX_PATH")"
+
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Staged evidence cannot be hidden by a worktree edit.' \
+  --repro 'git diff --cached -- partial.txt' \
+  --path partial.txt > "$OUT" 2>&1 \
+  && grep -qF '+partial staged' "$OUT" \
+  && ! grep -qF '+partial before' "$OUT"; then
+  ok 'worktree edits cannot hide staged review evidence'
+else
+  fail 'a worktree edit hid the staged review artifact'
+fi
+if [ "$(git hash-object "$R_INDEX_PATH")" = "$R_INDEX_BEFORE" ]; then
+  ok 'ordinary repository index remains byte-identical'
+else
+  fail 'packet generation mutated the ordinary repository index'
+fi
+
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Unstaged-only changes are outside the review artifact.' \
+  --repro 'git diff --cached -- unstaged.txt' \
+  --path unstaged.txt > "$OUT" 2>&1; then
+  fail 'an unstaged-only change entered the staged review artifact'
+elif grep -qF 'staged diff is empty' "$OUT"; then
+  ok 'unstaged-only changes are excluded from staged review evidence'
+else
+  fail 'an unstaged-only scope lacked the staged-artifact diagnostic'
+fi
 
 git -C "$L" init -q
 git -C "$L" config user.email t@t.test
@@ -89,6 +142,9 @@ git -C "$L" add tracked.txt
 git -C "$L" commit -qm base
 git -C "$L" worktree add -qb linked-review "$L/linked"
 printf 'linked after\n' >> "$L/linked/tracked.txt"
+git -C "$L/linked" add tracked.txt
+L_INDEX_PATH="$(git -C "$L/linked" rev-parse --absolute-git-dir)/index"
+L_INDEX_BEFORE="$(git hash-object "$L_INDEX_PATH")"
 : > "$OUT"
 if python3 "$TOOL" \
   --repo "$L/linked" \
@@ -100,6 +156,11 @@ if python3 "$TOOL" \
   ok 'linked worktrees resolve base objects through the common Git directory'
 else
   fail 'linked worktree base objects were unavailable to the packet builder'
+fi
+if [ "$(git hash-object "$L_INDEX_PATH")" = "$L_INDEX_BEFORE" ]; then
+  ok 'linked-worktree index remains byte-identical'
+else
+  fail 'packet generation mutated the linked-worktree index'
 fi
 
 : > "$OUT"
@@ -131,12 +192,26 @@ else
   fail 'core.fileMode=false omitted an explicit staged executable mode'
 fi
 
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'A symlink placeholder cannot alter the staged artifact.' \
+  --repro 'git diff --cached -- link.txt' \
+  --path link.txt > "$OUT" 2>&1; then
+  fail 'a core.symlinks=false placeholder created a staged type change'
+elif grep -qF 'staged diff is empty' "$OUT"; then
+  ok 'core.symlinks=false placeholders stay outside staged review evidence'
+else
+  fail 'a symlink placeholder lacked the staged-artifact diagnostic'
+fi
+
 rm -f "$FILTER_SENTINEL"
 : > "$OUT"
 if python3 "$TOOL" \
   --repo "$R" \
   --base HEAD \
-  --claim 'Review evidence uses raw tracked bytes.' \
+  --claim 'Review evidence uses staged Git objects.' \
   --repro 'git diff -- filtered.filtered' \
   --path filtered.filtered > "$OUT" 2>&1 \
   && grep -qF '+filter after' "$OUT" \
@@ -156,9 +231,9 @@ if python3 "$TOOL" \
   --path nested/tracked.txt > "$OUT" 2>&1 \
   && grep -qF -- '-nested before' "$OUT" \
   && ! grep -qF 'outside secret' "$OUT"; then
-  ok 'symlinked ancestors cannot redirect raw evidence outside the repository'
+  ok 'worktree symlinks cannot redirect staged evidence outside the repository'
 else
-  fail 'raw evidence followed a symlinked ancestor outside the repository'
+  fail 'a worktree symlink redirected staged evidence outside the repository'
 fi
 
 git -C "$S" init -q
@@ -181,27 +256,28 @@ git -C "$S/module" commit -qm second
 if python3 "$TOOL" \
   --repo "$S" \
   --base HEAD \
-  --claim 'Selected submodule state is never silently omitted.' \
-  --repro 'git diff HEAD -- module' \
+  --claim 'Unstaged submodule state stays outside the staged artifact.' \
+  --repro 'git diff --cached -- module' \
   --path module > "$OUT" 2>&1; then
-  fail 'an unstaged submodule commit change was silently omitted'
-elif grep -qF 'submodule paths require separate review' "$OUT"; then
-  ok 'selected submodule scopes fail closed for separate review'
+  fail 'an unstaged submodule change entered the staged artifact'
+elif grep -qF 'staged diff is empty' "$OUT"; then
+  ok 'unstaged submodule changes stay outside staged review evidence'
 else
-  fail 'an unstaged submodule change lacked a fail-closed diagnostic'
+  fail 'an unstaged submodule scope lacked the staged-artifact diagnostic'
 fi
+SUBMODULE_HEAD="$(git -C "$S/module" rev-parse HEAD)"
+git -C "$S" update-index --cacheinfo "160000,$SUBMODULE_HEAD,module"
 : > "$OUT"
 if python3 "$TOOL" \
   --repo "$S" \
   --base HEAD \
-  --claim 'Nested submodule scopes retain the review boundary.' \
-  --repro 'git diff HEAD -- module/tracked.txt' \
-  --path module/tracked.txt > "$OUT" 2>&1; then
-  fail 'a nested submodule scope bypassed the separate-review boundary'
-elif grep -qF 'submodule paths require separate review' "$OUT"; then
-  ok 'paths inside submodules fail closed for separate review'
+  --claim 'A staged gitlink update remains visible for review.' \
+  --repro 'git diff --cached -- module' \
+  --path module > "$OUT" 2>&1 \
+  && grep -qF "Subproject commit $SUBMODULE_HEAD" "$OUT"; then
+  ok 'staged submodule gitlink updates remain visible'
 else
-  fail 'a nested submodule scope lacked a fail-closed diagnostic'
+  fail 'a staged submodule gitlink update was omitted'
 fi
 
 : > "$OUT"
@@ -227,25 +303,26 @@ else
   fail 'non-UTF-8 patch bytes were corrupted or made ambiguous'
 fi
 printf 'invalid \377\n' > "$R/invalid-utf8.txt"
+git -C "$R" add invalid-utf8.txt
 
 if python3 "$TOOL" \
   --repo "$R" \
   --base HEAD \
-  --claim 'The tracked change preserves behavior.' \
-  --repro 'git diff --check' \
+  --claim 'The staged change preserves behavior.' \
+  --repro 'git diff --cached --check' \
   --verify 'bash tests/focused.test.sh' > "$OUT" 2>&1 \
   && grep -qF '# Adversarial Review Packet' "$OUT" \
   && grep -qF "$base" "$OUT" \
-  && grep -qF 'The tracked change preserves behavior.' "$OUT" \
-  && grep -qF 'git diff --check' "$OUT" \
+  && grep -qF 'The staged change preserves behavior.' "$OUT" \
+  && grep -qF 'git diff --cached --check' "$OUT" \
   && grep -qF '+after' "$OUT" \
   && ! grep -qF 'private-token.txt' "$OUT" \
   && ! grep -qF 'never include me' "$OUT" \
   && ! grep -qF 'TEXTCONV_SECRET' "$OUT" \
   && ! grep -qF $'\033[' "$OUT"; then
-  ok 'packet contains the tracked raw artifact without untracked data'
+  ok 'packet contains the exact staged artifact without untracked data'
 else
-  fail 'packet did not preserve the scoped raw-evidence contract'
+  fail 'packet did not preserve the scoped staged-evidence contract'
 fi
 
 : > "$OUT"
@@ -257,7 +334,8 @@ if python3 "$TOOL" \
   --path tracked.txt > "$OUT" 2>&1 \
   && grep -qF '## Path scope' "$OUT" \
   && grep -qF 'tracked.txt' "$OUT" \
-  && ! grep -qF 'other.txt' "$OUT"; then
+  && ! grep -qF 'other.txt' "$OUT" \
+  && ! grep -qF 'special.txt' "$OUT"; then
   ok 'path filters keep unrelated tracked changes out of the packet'
 else
   fail 'path filters did not bound the review artifact'
@@ -325,10 +403,10 @@ if python3 "$TOOL" \
   --repo "$R" \
   --base HEAD \
   --claim 'The review artifact remains bounded.' \
-  --repro 'git diff --check' \
+  --repro 'git diff --cached --check' \
   --max-bytes 32 > "$OUT" 2>&1; then
   fail 'oversized diffs were accepted'
-elif grep -qF 'tracked diff exceeds --max-bytes (32)' "$OUT" \
+elif grep -qF 'staged diff exceeds --max-bytes (32)' "$OUT" \
   && ! grep -qF '+after' "$OUT"; then
   ok 'oversized diffs fail closed without emitting partial evidence'
 else
@@ -352,10 +430,33 @@ else
   fail 'the complete packet byte bound lacked a safe diagnostic'
 fi
 
+mv "$R/.gitattributes" "$R/.gitattributes.safe"
+mkfifo "$R/.gitattributes"
+: > "$OUT"
+if timeout --kill-after=1 5 python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Unstaged attributes cannot block staged evidence.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '# Adversarial Review Packet' "$OUT"; then
+  FIFO_TOOL_OK=1
+else
+  FIFO_TOOL_OK=0
+fi
+mv "$R/.gitattributes" "$R/.gitattributes.fifo"
+mv "$R/.gitattributes.safe" "$R/.gitattributes"
+if [ "$FIFO_TOOL_OK" -eq 1 ]; then
+  ok 'staged attribute resolution ignores an unstaged worktree FIFO'
+else
+  fail 'staged diff metadata read the unstaged worktree attributes'
+fi
+
 cp "$R/.gitattributes" "$R/.gitattributes.safe"
 for _ in {1..8000}; do
   printf '!invalid-negative-pattern\n'
 done > "$R/.gitattributes"
+git -C "$R" add .gitattributes 2>/dev/null
 : > "$OUT"
 if timeout 5 python3 "$TOOL" \
   --repo "$R" \
@@ -369,6 +470,7 @@ else
   fail 'Git stderr saturation blocked bounded packet output'
 fi
 mv "$R/.gitattributes.safe" "$R/.gitattributes"
+git -C "$R" add .gitattributes 2>/dev/null
 
 : > "$OUT"
 python3 "$TOOL" \
@@ -399,7 +501,7 @@ if python3 "$TOOL" \
   --repo "$R" \
   --base HEAD \
   --claim '   ' \
-  --repro 'git diff --check' > "$OUT" 2>&1; then
+  --repro 'git diff --cached --check' > "$OUT" 2>&1; then
   fail 'a blank claim was accepted'
 elif grep -qF 'must not be blank' "$OUT"; then
   ok 'claim and repro contracts reject blank values'
@@ -415,13 +517,14 @@ if python3 "$TOOL" \
   --repro 'git diff -- unchanged.txt' \
   --path unchanged.txt > "$OUT" 2>&1; then
   fail 'an empty review scope was accepted'
-elif grep -qF 'tracked diff is empty' "$OUT"; then
+elif grep -qF 'staged diff is empty' "$OUT"; then
   ok 'empty review scopes fail before dispatch'
 else
   fail 'an empty review scope lacked a useful diagnostic'
 fi
 
 printf '```\n' >> "$R/tracked.txt"
+git -C "$R" add tracked.txt
 : > "$OUT"
 if python3 "$TOOL" \
   --repo "$R" \

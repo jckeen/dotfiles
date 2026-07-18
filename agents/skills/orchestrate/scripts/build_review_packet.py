@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Build a fresh-context review packet from tracked Git evidence."""
+"""Build a fresh-context review packet from staged Git evidence."""
 
 from __future__ import annotations
 
 import argparse
 import base64
-import errno
 import hashlib
 import os
 from pathlib import Path
 import re
-import stat
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,7 +22,7 @@ MAX_DIAGNOSTIC_BYTES = 64_000
 
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-C", str(repo), "--attr-source=HEAD", *args],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -35,26 +34,6 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout
 
 
-def git_bytes(
-    repo: Path,
-    *args: str,
-    env: dict[str, str] | None = None,
-    stdin: bytes | None = None,
-) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=False,
-        input=stdin,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise ValueError(detail or f"git {' '.join(args)} failed")
-    return result.stdout
-
-
 def drain_stderr(stream: BinaryIO, sink: bytearray) -> None:
     while chunk := stream.read(64_000):
         remaining = MAX_DIAGNOSTIC_BYTES - len(sink)
@@ -62,190 +41,20 @@ def drain_stderr(stream: BinaryIO, sink: bytearray) -> None:
             sink.extend(chunk[:remaining])
 
 
-def core_filemode(repo: Path) -> bool:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "config", "--bool", "--get", "core.fileMode"],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if result.returncode == 1:
-        return True
-    if result.returncode != 0:
-        detail = result.stderr.strip()
-        raise ValueError(detail or "could not read core.fileMode")
-    return result.stdout.strip() == "true"
-
-
-def hash_raw_blob(
-    repo: Path,
-    env: dict[str, str],
-    *,
-    content: bytes | None = None,
-    source_fd: int | None = None,
-) -> bytes:
-    if (content is None) == (source_fd is None):
-        raise ValueError("raw blob hashing needs exactly one content source")
-    command = [
-        "git",
-        "-C",
-        str(repo),
-        "hash-object",
-        "--no-filters",
-        "-w",
-        "--stdin",
-    ]
-    if source_fd is not None:
-        result = subprocess.run(
-            command,
-            check=False,
-            stdin=source_fd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-    else:
-        result = subprocess.run(
-            command,
-            check=False,
-            input=content,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise ValueError(detail or "could not hash raw tracked content")
-    return result.stdout.strip()
-
-
-def secure_open_flags(*, directory: bool = False) -> int:
-    required = ("O_CLOEXEC", "O_NOFOLLOW")
-    if directory:
-        required += ("O_DIRECTORY",)
-    if any(not hasattr(os, name) for name in required):
-        raise ValueError("platform cannot securely read tracked worktree paths")
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
-    if directory:
-        flags |= os.O_DIRECTORY
-    return flags
-
-
-def open_parent(root_fd: int, path: bytes) -> tuple[int, bytes] | None:
-    components = path.split(b"/")
-    unsupported = any(
-        component in (b"", b".", b"..") for component in components
-    )
-    if not components or unsupported:
-        raise ValueError("tracked path has unsupported components")
-
-    current_fd = os.dup(root_fd)
-    try:
-        for component in components[:-1]:
-            try:
-                next_fd = os.open(
-                    component,
-                    secure_open_flags(directory=True),
-                    dir_fd=current_fd,
-                )
-            except OSError as error:
-                if error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
-                    os.close(current_fd)
-                    return None
-                raise
-            os.close(current_fd)
-            current_fd = next_fd
-        return current_fd, components[-1]
-    except Exception:
-        os.close(current_fd)
-        raise
-
-
-def raw_worktree_blob(
-    repo: Path,
-    env: dict[str, str],
-    root_fd: int,
-    path: bytes,
-    *,
-    filemode: bool,
-    index_mode: bytes,
-) -> tuple[bytes, bytes] | None:
-    opened_parent = open_parent(root_fd, path)
-    if opened_parent is None:
-        return None
-    parent_fd, name = opened_parent
-    try:
-        try:
-            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return None
-
-        if stat.S_ISLNK(metadata.st_mode):
-            try:
-                target = os.readlink(name, dir_fd=parent_fd)
-            except OSError as error:
-                raise ValueError("tracked path changed while reading") from error
-            if isinstance(target, str):
-                target = os.fsencode(target)
-            return b"120000", hash_raw_blob(repo, env, content=target)
-
-        if stat.S_ISREG(metadata.st_mode):
-            try:
-                source_fd = os.open(
-                    name,
-                    secure_open_flags(),
-                    dir_fd=parent_fd,
-                )
-            except OSError as error:
-                raise ValueError("tracked path changed while reading") from error
-            try:
-                opened_metadata = os.fstat(source_fd)
-                if not stat.S_ISREG(opened_metadata.st_mode):
-                    raise ValueError("tracked path changed while reading")
-                if filemode:
-                    executable = opened_metadata.st_mode & stat.S_IXUSR
-                    mode = b"100755" if executable else b"100644"
-                elif index_mode in (b"100644", b"100755"):
-                    mode = index_mode
-                else:
-                    mode = b"100644"
-                return mode, hash_raw_blob(repo, env, source_fd=source_fd)
-            finally:
-                os.close(source_fd)
-
-        if stat.S_ISDIR(metadata.st_mode):
-            return None
-        display_path = os.fsdecode(path)
-        raise ValueError(f"unsupported tracked path type: {display_path}")
-    finally:
-        os.close(parent_fd)
-
-
-def path_is_selected(path: bytes, paths: list[Path]) -> bool:
-    if not paths:
-        return True
-    candidate = os.fsdecode(path)
-    for scope in paths:
-        prefix = scope.as_posix().rstrip("/")
-        selected = (
-            prefix in ("", ".")
-            or candidate == prefix
-            or candidate.startswith(f"{prefix}/")
-            or prefix.startswith(f"{candidate}/")
-        )
-        if selected:
-            return True
-    return False
-
-
-def build_raw_index(
+def staged_attr_source(
     repo: Path,
     workspace: Path,
-    paths: list[Path],
-) -> dict[str, str]:
+) -> tuple[str, dict[str, str], Path, Path]:
     object_dir = workspace / "objects"
     object_dir.mkdir()
+    isolated_worktree = workspace / "worktree"
+    isolated_worktree.mkdir()
+    git_dir = Path(git(repo, "rev-parse", "--absolute-git-dir").strip())
+    source_index = Path(git(repo, "rev-parse", "--git-path", "index").strip())
+    if not source_index.is_absolute():
+        source_index = repo / source_index
+    isolated_index = workspace / "index"
+    shutil.copyfile(source_index, isolated_index)
     common_dir = Path(git(repo, "rev-parse", "--git-common-dir").strip())
     if not common_dir.is_absolute():
         common_dir = (repo / common_dir).resolve()
@@ -255,68 +64,43 @@ def build_raw_index(
         alternates.append(inherited_alternates)
 
     env = os.environ.copy()
-    env["GIT_INDEX_FILE"] = str(workspace / "index")
     env["GIT_OBJECT_DIRECTORY"] = str(object_dir)
     env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(alternates)
-    git_bytes(repo, "read-tree", "--empty", env=env)
-
-    skip_worktree = {
-        record[2:]
-        for record in git_bytes(repo, "ls-files", "-t", "-z").split(b"\0")
-        if record.startswith(b"S ")
-    }
-    filemode = core_filemode(repo)
-    repo_bytes = os.fsencode(repo)
-    index_info = bytearray()
-    root_fd = os.open(repo_bytes, secure_open_flags(directory=True))
-
-    try:
-        for record in git_bytes(repo, "ls-files", "--stage", "-z").split(b"\0"):
-            if not record:
-                continue
-            metadata, path = record.split(b"\t", 1)
-            mode, object_id, stage = metadata.split(b" ")
-            if stage != b"0":
-                raise ValueError("unmerged index entries are not supported")
-
-            if mode == b"160000":
-                if path_is_selected(path, paths):
-                    display_path = os.fsdecode(path)
-                    raise ValueError(
-                        f"submodule paths require separate review: {display_path}"
-                    )
-            else:
-                raw_blob = raw_worktree_blob(
-                    repo,
-                    env,
-                    root_fd,
-                    path,
-                    filemode=filemode,
-                    index_mode=mode,
-                )
-                if raw_blob is None:
-                    if path not in skip_worktree:
-                        continue
-                else:
-                    mode, object_id = raw_blob
-
-            index_info.extend(mode + b" " + object_id + b"\t" + path + b"\0")
-    finally:
-        os.close(root_fd)
-
-    git_bytes(repo, "update-index", "-z", "--index-info", env=env, stdin=index_info)
-    return env
+    env["GIT_INDEX_FILE"] = str(isolated_index)
+    env["GIT_WORK_TREE"] = str(isolated_worktree)
+    result = subprocess.run(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            f"--work-tree={isolated_worktree}",
+            "--attr-source=HEAD",
+            "write-tree",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise ValueError(detail or "could not resolve staged attribute tree")
+    return result.stdout.strip(), env, git_dir, isolated_worktree
 
 
 def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
     with tempfile.TemporaryDirectory(prefix="review-packet-") as workspace_name:
-        env = build_raw_index(repo, Path(workspace_name), paths)
+        attr_source, env, git_dir, isolated_worktree = staged_attr_source(
+            repo,
+            Path(workspace_name),
+        )
         process = subprocess.Popen(
             [
                 "git",
-                "-C",
-                str(repo),
+                f"--git-dir={git_dir}",
+                f"--work-tree={isolated_worktree}",
                 "--literal-pathspecs",
+                f"--attr-source={attr_source}",
                 "diff",
                 "--cached",
                 "--binary",
@@ -355,7 +139,7 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
             stderr_thread.join()
             process.stderr.close()
         if oversized:
-            raise ValueError(f"tracked diff exceeds --max-bytes ({max_bytes})")
+            raise ValueError(f"staged diff exceeds --max-bytes ({max_bytes})")
         if process.returncode != 0:
             detail = bytes(stderr).decode("utf-8", errors="replace").strip()
             raise ValueError(detail or "git diff failed")
@@ -404,7 +188,7 @@ def untrusted_marker(content: str) -> str:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a bounded raw-evidence packet for adversarial review."
+        description="Build a bounded staged-evidence packet for adversarial review."
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--base", required=True)
@@ -418,13 +202,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def build_packet(args: argparse.Namespace) -> bytes:
     repo = Path(git(args.repo, "rev-parse", "--show-toplevel").strip())
-    base = git(repo, "rev-parse", "--verify", f"{args.base}^{{commit}}").strip()
+    base = git(
+        repo,
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{args.base}^{{commit}}",
+    ).strip()
     paths = [Path(value) for value in args.path]
     if any(path.is_absolute() or ".." in path.parts for path in paths):
         raise ValueError("--path values must stay inside the repository")
     diff = git_diff(repo, base, paths, args.max_bytes)
     if not diff:
-        raise ValueError("tracked diff is empty")
+        raise ValueError("staged diff is empty")
     try:
         diff_evidence = fenced(diff.decode("utf-8"), "diff")
     except UnicodeDecodeError:
@@ -436,7 +226,7 @@ def build_packet(args: argparse.Namespace) -> bytes:
     scope = (
         fenced("\n".join(str(path) for path in paths), "text")
         if paths
-        else "All tracked changes from base."
+        else "All staged changes from base."
     )
     verification = "\n\n".join(fenced(command, "text") for command in args.verify)
     if not verification:
@@ -452,7 +242,7 @@ def build_packet(args: argparse.Namespace) -> bytes:
         f"{fenced(args.repro, 'text')}\n\n"
         "## Verification commands\n\n"
         f"{verification}\n\n"
-        "## Tracked diff\n\n"
+        "## Staged diff\n\n"
         f"{diff_evidence}\n"
     )
     marker = untrusted_marker(body)

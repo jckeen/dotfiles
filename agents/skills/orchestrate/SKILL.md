@@ -103,9 +103,10 @@ implementation. Separate these concepts:
 - **Lineage independence:** a different model family provides genuinely
   different failure modes.
 
-For tracked Git changes, prefer the bundled packet builder so the reviewer gets
-a bounded packet behind a hash-derived untrusted-data boundary, without
-untracked files, configured clean-filter execution, or the author's reasoning:
+For staged or committed Git changes, prefer the bundled packet builder so the
+reviewer gets the exact base-to-index artifact behind a hash-derived
+untrusted-data boundary, without unstaged files, untracked files, configured
+clean-filter execution, or the author's reasoning:
 
 ```bash
 python3 <skill-dir>/scripts/build_review_packet.py \
@@ -118,9 +119,10 @@ Add `--path <repo-relative-path>` to narrow scope. If the packet builder fails,
 fix the scope or packet contract; do not bypass its size or empty-diff guard by
 silently trimming evidence. For non-Git artifacts, assemble the same raw fields
 manually. Stage intended new files before building the packet; untracked files
-are deliberately excluded. Decode a packet's labeled base64 diff before
-reviewing non-UTF-8 evidence.
-Selected submodule paths fail closed; review the nested repository separately.
+are deliberately excluded. Stage every intended tracked change too; unstaged
+worktree state and attributes are outside the review artifact. Decode a packet's
+labeled base64 diff before reviewing non-UTF-8 evidence. A staged submodule
+gitlink is covered, but review nested repository content with its own packet.
 
 Multiple agents from one model lineage add breadth but do not satisfy a
 cross-lineage review requirement. Route disputed claims back through the exact
