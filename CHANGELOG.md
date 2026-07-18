@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-07-18 — feat: learn from verified orchestration
+
+### What changed
+- Shared orchestration now routes evidence-backed workflow lessons through the
+  existing `session-retro` proposal and confirmation boundary after the
+  user-facing result is verified.
+- Added a bundled review-packet builder that gives fresh-context reviewers a
+  bounded tracked diff, path scope, falsifiable claim, exact repro, and
+  verification commands without including untracked files or author reasoning.
+- Added CI coverage for scope traversal and pathspec expansion, binary evidence,
+  empty and oversized diffs, configured Git converters, and Markdown-shaped
+  source or command content.
+
+### Decisions made
+- Reuse `session-retro` instead of creating an autonomous learning ledger or a
+  second proposal format. Changelog, handoff, and GitHub issues retain their
+  existing ownership of history, continuity, and unresolved work.
+- Fail closed when a review packet has no tracked evidence or exceeds its
+  explicit bound. Intended new files must be staged before packet generation;
+  private untracked state remains excluded by design.
+
+### Known issues
+- The packet builder covers tracked Git changes. Non-Git artifacts still need
+  an equivalent raw claim, repro, scope, and evidence packet assembled manually.
+
 ## 2026-07-17 — fix: recover stale Codex Remote Control safely
 
 ### What changed

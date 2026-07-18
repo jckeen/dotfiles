@@ -129,6 +129,10 @@ jobs:
           claude/scripts/tests/skill-parity.test.sh
           claude/scripts/check-skill-parity.sh
 
+      - name: orchestrate review packet
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/orchestrate-review-packet.test.sh
+
       - name: install-integrity (self-test + checker)
         if: ${{ !cancelled() }}
         run: |
