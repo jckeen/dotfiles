@@ -45,13 +45,14 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         env=env,
     )
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
+        detail = os.fsdecode(result.stderr).strip() or os.fsdecode(
+            result.stdout
+        ).strip()
         raise ValueError(detail or f"git {' '.join(args)} failed")
-    return result.stdout
+    return os.fsdecode(result.stdout)
 
 
 def git_value(output: str) -> str:
@@ -219,6 +220,46 @@ def isolated_git_view(
     return env, git_dir, isolated_worktree
 
 
+def reject_unmerged_scope(
+    git_dir: Path,
+    isolated_worktree: Path,
+    env: dict[str, str],
+    base: str,
+    paths: list[Path],
+) -> None:
+    result = subprocess.run(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            f"--work-tree={isolated_worktree}",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "--literal-pathspecs",
+            "diff",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--diff-filter=U",
+            "--ignore-submodules=none",
+            base,
+            "--",
+            *(str(path) for path in paths),
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    if result.returncode == 1:
+        raise ValueError("staged scope contains unmerged entries")
+    if result.returncode != 0:
+        detail = os.fsdecode(result.stderr).strip()
+        raise ValueError(detail or "could not inspect staged conflict entries")
+
+
 def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
     with tempfile.TemporaryDirectory(prefix="review-packet-") as workspace_name:
         env, git_dir, isolated_worktree = isolated_git_view(
@@ -226,6 +267,7 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
             Path(workspace_name),
             base,
         )
+        reject_unmerged_scope(git_dir, isolated_worktree, env, base, paths)
         process = subprocess.Popen(
             [
                 "git",

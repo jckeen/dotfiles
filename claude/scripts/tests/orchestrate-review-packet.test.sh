@@ -16,8 +16,10 @@ T="$(mktemp -d)" || exit 1
 U="$(mktemp -d)" || exit 1
 V="$(mktemp -d)" || exit 1
 W_PARENT="$(mktemp -d)" || exit 1
+X="$(mktemp -d)" || exit 1
+Y_PARENT="$(mktemp -d)" || exit 1
 OUT="$(mktemp)" || exit 1
-trap 'rm -rf "$R" "$S" "$L" "$Q" "$T" "$U" "$V" "$W_PARENT" "$OUT"' EXIT
+trap 'rm -rf "$R" "$S" "$L" "$Q" "$T" "$U" "$V" "$W_PARENT" "$X" "$Y_PARENT" "$OUT"' EXIT
 pass=0
 failed=0
 
@@ -401,6 +403,56 @@ if python3 "$TOOL" \
   ok 'explicit repository paths preserve trailing spaces exactly'
 else
   fail 'the explicit repository path lost trailing-space identity'
+fi
+
+git -C "$X" init -q
+git -C "$X" config user.email t@t.test
+git -C "$X" config user.name test
+printf 'conflict base\n' > "$X/conflict.txt"
+git -C "$X" add conflict.txt
+git -C "$X" commit -qm base
+X_BASE_BLOB="$(git -C "$X" rev-parse HEAD:conflict.txt)"
+X_OURS_BLOB="$(printf 'conflict ours\n' | git -C "$X" hash-object -w --stdin)"
+X_THEIRS_BLOB="$(printf 'conflict theirs\n' | git -C "$X" hash-object -w --stdin)"
+git -C "$X" update-index --force-remove conflict.txt
+printf '100644 %s 1\tconflict.txt\n100644 %s 2\tconflict.txt\n100644 %s 3\tconflict.txt\n' \
+  "$X_BASE_BLOB" "$X_OURS_BLOB" "$X_THEIRS_BLOB" > "$X/index-info"
+git -C "$X" update-index --index-info < "$X/index-info"
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$X" \
+  --base HEAD \
+  --claim 'Conflicted index stages cannot be summarized as exact evidence.' \
+  --repro 'git diff --cached -- conflict.txt' \
+  --path conflict.txt > "$OUT" 2>&1; then
+  fail 'an unmerged index produced incomplete review evidence'
+elif grep -qF 'staged scope contains unmerged entries' "$OUT" \
+  && ! grep -qF '# Adversarial Review Packet' "$OUT"; then
+  ok 'unmerged index scopes fail closed before packet generation'
+else
+  fail 'an unmerged index lacked a safe exact-evidence diagnostic'
+fi
+
+NON_UTF_REPO="$Y_PARENT/"$'repo-\xff'
+git -C "$Y_PARENT" init -q "$NON_UTF_REPO"
+git -C "$NON_UTF_REPO" config user.email t@t.test
+git -C "$NON_UTF_REPO" config user.name test
+printf 'non-utf before\n' > "$NON_UTF_REPO/tracked.txt"
+git -C "$NON_UTF_REPO" add tracked.txt
+git -C "$NON_UTF_REPO" commit -qm base
+printf 'non-utf after\n' >> "$NON_UTF_REPO/tracked.txt"
+git -C "$NON_UTF_REPO" add tracked.txt
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$NON_UTF_REPO" \
+  --base HEAD \
+  --claim 'Filesystem-byte repository paths remain reviewable.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+non-utf after' "$OUT"; then
+  ok 'non-UTF-8 repository paths round-trip through Git discovery'
+else
+  fail 'a valid non-UTF-8 repository path was rejected'
 fi
 
 git -C "$Q" init -q
