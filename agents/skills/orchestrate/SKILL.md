@@ -105,7 +105,7 @@ implementation. Separate these concepts:
 
 For tracked Git changes, prefer the bundled packet builder so the reviewer gets
 a bounded packet behind a hash-derived untrusted-data boundary, without
-untracked files or the author's reasoning:
+untracked files, configured clean-filter execution, or the author's reasoning:
 
 ```bash
 python3 <skill-dir>/scripts/build_review_packet.py \
@@ -118,7 +118,9 @@ Add `--path <repo-relative-path>` to narrow scope. If the packet builder fails,
 fix the scope or packet contract; do not bypass its size or empty-diff guard by
 silently trimming evidence. For non-Git artifacts, assemble the same raw fields
 manually. Stage intended new files before building the packet; untracked files
-are deliberately excluded.
+are deliberately excluded. Decode a packet's labeled base64 diff before
+reviewing non-UTF-8 evidence.
+Selected submodule paths fail closed; review the nested repository separately.
 
 Multiple agents from one model lineage add breadth but do not satisfy a
 cross-lineage review requirement. Route disputed claims back through the exact
