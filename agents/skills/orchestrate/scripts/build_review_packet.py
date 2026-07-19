@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from typing import BinaryIO
 
 DEFAULT_MAX_BYTES = 200_000
 MAX_DIAGNOSTIC_BYTES = 64_000
+MAX_INDEX_PATH_BYTES = 1_000_000
 
 
 def drain_bounded(
@@ -78,7 +80,12 @@ def caller_path(value: str) -> Path:
     return path if path.is_absolute() else Path.cwd() / path
 
 
-def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
+def git(
+    repo: Path,
+    *args: str,
+    index_file: Path | None = None,
+    inherit_index: bool = True,
+) -> str:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -92,7 +99,7 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
             env[key] = os.environ[key]
     if index_file is not None:
         env["GIT_INDEX_FILE"] = str(index_file)
-    elif "GIT_INDEX_FILE" in os.environ:
+    elif inherit_index and "GIT_INDEX_FILE" in os.environ:
         env["GIT_INDEX_FILE"] = str(caller_path(os.environ["GIT_INDEX_FILE"]))
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -110,6 +117,92 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
 
 def git_value(output: str) -> str:
     return output[:-1] if output.endswith("\n") else output
+
+
+def read_exact(stream: BinaryIO, size: int, context: str) -> bytes:
+    payload = stream.read(size)
+    if len(payload) != size:
+        raise ValueError(f"truncated Git index {context}")
+    return payload
+
+
+def skip_nul_terminated(stream: BinaryIO, context: str) -> None:
+    consumed = 0
+    while consumed <= MAX_INDEX_PATH_BYTES:
+        chunk = stream.read(min(4096, MAX_INDEX_PATH_BYTES + 1 - consumed))
+        if not chunk:
+            raise ValueError(f"truncated Git index {context}")
+        terminator = chunk.find(b"\0")
+        if terminator >= 0:
+            stream.seek(terminator + 1 - len(chunk), os.SEEK_CUR)
+            return
+        consumed += len(chunk)
+    raise ValueError(f"Git index {context} exceeds safety limit")
+
+
+def shared_index_name(index_file: Path, oid_bytes: int) -> str | None:
+    file_size = index_file.stat().st_size
+    with index_file.open("rb") as stream:
+        signature, version, entry_count = struct.unpack(
+            ">4sII", read_exact(stream, 12, "header")
+        )
+        if signature != b"DIRC" or version not in (2, 3, 4):
+            raise ValueError("unsupported Git index format")
+        minimum_entry_bytes = 40 + oid_bytes + 3
+        if entry_count > max(0, (file_size - 12 - oid_bytes) // minimum_entry_bytes):
+            raise ValueError("invalid Git index entry count")
+
+        for _ in range(entry_count):
+            entry_start = stream.tell()
+            fixed = read_exact(stream, 40 + oid_bytes + 2, "entry")
+            flags = struct.unpack(">H", fixed[-2:])[0]
+            if flags & 0x4000:
+                if version == 2:
+                    raise ValueError("invalid extended flags in Git index v2")
+                read_exact(stream, 2, "extended entry flags")
+
+            if version == 4:
+                for _ in range(10):
+                    encoded = read_exact(stream, 1, "v4 pathname prefix")[0]
+                    if not encoded & 0x80:
+                        break
+                else:
+                    raise ValueError("invalid Git index v4 pathname prefix")
+                skip_nul_terminated(stream, "v4 pathname")
+            else:
+                name_length = flags & 0x0FFF
+                if name_length < 0x0FFF:
+                    pathname = read_exact(stream, name_length + 1, "pathname")
+                    if not pathname.endswith(b"\0"):
+                        raise ValueError("invalid Git index pathname")
+                else:
+                    skip_nul_terminated(stream, "pathname")
+                padding = (-(stream.tell() - entry_start)) % 8
+                if padding and any(read_exact(stream, padding, "entry padding")):
+                    raise ValueError("invalid Git index entry padding")
+
+        extension_end = file_size - oid_bytes
+        if stream.tell() > extension_end:
+            raise ValueError("Git index entries overlap checksum")
+        shared_name = None
+        while stream.tell() < extension_end:
+            if extension_end - stream.tell() < 8:
+                raise ValueError("truncated Git index extension header")
+            extension, extension_size = struct.unpack(
+                ">4sI", read_exact(stream, 8, "extension header")
+            )
+            if extension_size > extension_end - stream.tell():
+                raise ValueError("Git index extension exceeds file size")
+            if extension == b"link":
+                if shared_name is not None or extension_size < oid_bytes:
+                    raise ValueError("invalid Git split-index extension")
+                shared_oid = read_exact(stream, oid_bytes, "shared-index identifier")
+                stream.seek(extension_size - oid_bytes, os.SEEK_CUR)
+                if any(shared_oid):
+                    shared_name = f"sharedindex.{shared_oid.hex()}"
+            else:
+                stream.seek(extension_size, os.SEEK_CUR)
+        return shared_name
 
 
 def drain_stderr(stream: BinaryIO, sink: bytearray) -> None:
@@ -223,6 +316,16 @@ def isolated_git_view(
         raise ValueError("unsupported Git object format")
     isolated_worktree = workspace / "worktree"
     isolated_worktree.mkdir()
+    source_git_dir = Path(
+        git_value(
+            git(
+                repo,
+                "rev-parse",
+                "--absolute-git-dir",
+                inherit_index=False,
+            )
+        )
+    )
     inherited_index = os.environ.get("GIT_INDEX_FILE")
     if inherited_index is not None:
         source_index = caller_path(inherited_index)
@@ -234,21 +337,12 @@ def isolated_git_view(
             source_index = repo / source_index
     isolated_index = workspace / "index"
     shutil.copyfile(source_index, isolated_index)
-    shared_index_value = git_value(
-        git(
-            repo,
-            "rev-parse",
-            "--shared-index-path",
-            index_file=isolated_index,
-        )
-    )
-    if shared_index_value:
-        source_shared_index = Path(shared_index_value)
-        if not source_shared_index.is_absolute():
-            source_shared_index = repo / source_shared_index
+    shared_index = shared_index_name(isolated_index, len(base) // 2)
+    if shared_index:
+        source_shared_index = source_git_dir / shared_index
         shutil.copyfile(
             source_shared_index,
-            isolated_index.parent / source_shared_index.name,
+            isolated_index.parent / shared_index,
         )
     source_objects = Path(
         git_value(git(repo, "rev-parse", "--git-path", "objects"))
@@ -430,7 +524,7 @@ def nonblank(value: str) -> str:
 
 
 def repo_path(value: str) -> str:
-    if not value.strip():
+    if value == "":
         raise argparse.ArgumentTypeError("--path must not be empty")
     return value
 

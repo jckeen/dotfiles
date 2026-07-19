@@ -117,7 +117,8 @@ python3 <skill-dir>/scripts/build_review_packet.py \
 ```
 
 Add `--path <repo-relative-path>` to narrow scope; the packet renders selected
-paths as a JSON array so unusual filenames remain unambiguous. If the packet
+paths as a JSON array so unusual filenames, including whitespace-only names,
+remain unambiguous. If the packet
 builder fails, fix the scope or packet contract; do not bypass its size or
 empty-diff guard by silently trimming evidence. For non-Git artifacts, assemble
 the same raw fields manually. Any unmerged index fails closed because it cannot

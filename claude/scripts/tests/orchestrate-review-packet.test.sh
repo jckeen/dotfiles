@@ -134,17 +134,19 @@ printf '%s\n' '#!/usr/bin/env bash' > "$R/fake-git-bin/git"
 printf 'REAL_GIT=%q\n' "$GIT_BIN" >> "$R/fake-git-bin/git"
 printf '%s\n' \
   'saw_diff=0' \
+  'saw_git_path=0' \
+  'saw_index_path=0' \
   'saw_show_toplevel=0' \
-  'saw_shared_index=0' \
   'for arg in "$@"; do' \
   '  case "$arg" in' \
   '    --attr-source*) exit 97 ;;' \
   '    diff) saw_diff=1 ;;' \
+  '    --git-path) saw_git_path=1 ;;' \
+  '    index) if [ "$saw_git_path" = 1 ]; then saw_index_path=1; fi ;;' \
   '    --show-toplevel) saw_show_toplevel=1 ;;' \
-  '    --shared-index-path) saw_shared_index=1 ;;' \
   '  esac' \
   'done' \
-  'if [ -n "${REVIEW_PACKET_ROTATE_SPLIT_REPO:-}" ] && [ "$saw_shared_index" = 1 ]; then' \
+  'if [ -n "${REVIEW_PACKET_ROTATE_SPLIT_REPO:-}" ] && [ "$saw_index_path" = 1 ]; then' \
   '  printf "concurrent rotation\n" >> "$REVIEW_PACKET_ROTATE_SPLIT_REPO/tracked.txt"' \
   '  env -u GIT_INDEX_FILE "$REAL_GIT" -C "$REVIEW_PACKET_ROTATE_SPLIT_REPO" add tracked.txt' \
   '  env -u GIT_INDEX_FILE "$REAL_GIT" -C "$REVIEW_PACKET_ROTATE_SPLIT_REPO" update-index --split-index' \
@@ -346,6 +348,7 @@ case "$T_SHARED_INDEX_PATH" in
 esac
 T_INDEX_BEFORE="$(git hash-object "$T_INDEX_PATH")"
 T_SHARED_INDEX_BEFORE="$(git hash-object "$T_SHARED_INDEX_PATH")"
+T_SHARED_INDEX_MTIME_BEFORE="$(stat -c %y "$T_SHARED_INDEX_PATH")"
 : > "$OUT"
 if python3 "$TOOL" \
   --repo "$T" \
@@ -355,10 +358,11 @@ if python3 "$TOOL" \
   --path tracked.txt > "$OUT" 2>&1 \
   && grep -qF '+split after' "$OUT" \
   && [ "$(git hash-object "$T_INDEX_PATH")" = "$T_INDEX_BEFORE" ] \
-  && [ "$(git hash-object "$T_SHARED_INDEX_PATH")" = "$T_SHARED_INDEX_BEFORE" ]; then
-  ok 'split indexes are copied completely without repository mutation'
+  && [ "$(git hash-object "$T_SHARED_INDEX_PATH")" = "$T_SHARED_INDEX_BEFORE" ] \
+  && [ "$(stat -c %y "$T_SHARED_INDEX_PATH")" = "$T_SHARED_INDEX_MTIME_BEFORE" ]; then
+  ok 'split indexes are copied without source content or mtime mutation'
 else
-  fail 'split-index evidence or immutability was lost'
+  fail 'split-index evidence or source mtime immutability was lost'
 fi
 
 printf 'snapshot before rotation\n' >> "$T/tracked.txt"
@@ -374,10 +378,34 @@ if env \
   --repro 'git diff --cached -- tracked.txt' \
   --path tracked.txt > "$OUT" 2>&1 \
   && grep -qF '+snapshot before rotation' "$OUT" \
-  && ! grep -qF '+concurrent rotation' "$OUT"; then
-  ok 'split-index rotation cannot mismatch the copied index pair'
+  && grep -qF '+concurrent rotation' "$OUT"; then
+  ok 'split-index discovery rotation keeps the copied pair coherent'
 else
-  fail 'split-index rotation mismatched the copied index pair'
+  fail 'split-index discovery rotation produced incoherent evidence'
+fi
+
+V4_SPLIT="$Y_PARENT/v4-split"
+git -C "$Y_PARENT" init -q "$V4_SPLIT"
+git -C "$V4_SPLIT" config user.email t@t.test
+git -C "$V4_SPLIT" config user.name test
+printf 'v4 split before\n' > "$V4_SPLIT/tracked.txt"
+git -C "$V4_SPLIT" add tracked.txt
+git -C "$V4_SPLIT" commit -qm base
+git -C "$V4_SPLIT" update-index --index-version 4
+git -C "$V4_SPLIT" update-index --split-index
+printf 'v4 split after\n' >> "$V4_SPLIT/tracked.txt"
+git -C "$V4_SPLIT" add tracked.txt
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$V4_SPLIT" \
+  --base HEAD \
+  --claim 'Version 4 split-index metadata remains portable.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+v4 split after' "$OUT"; then
+  ok 'version 4 split indexes resolve their shared companion without source reads'
+else
+  fail 'version 4 split-index metadata could not be parsed safely'
 fi
 
 if git -C "$U" init -q --object-format=sha256 2>/dev/null; then
@@ -386,6 +414,7 @@ if git -C "$U" init -q --object-format=sha256 2>/dev/null; then
   printf 'sha256 before\n' > "$U/tracked.txt"
   git -C "$U" add tracked.txt
   git -C "$U" commit -qm base
+  git -C "$U" update-index --split-index
   printf 'sha256 after\n' >> "$U/tracked.txt"
   git -C "$U" add tracked.txt
   : > "$OUT"
@@ -396,9 +425,9 @@ if git -C "$U" init -q --object-format=sha256 2>/dev/null; then
     --repro 'git diff --cached -- tracked.txt' \
     --path tracked.txt > "$OUT" 2>&1 \
     && grep -qF '+sha256 after' "$OUT"; then
-    ok 'SHA-256 repositories retain their object format'
+    ok 'SHA-256 split indexes retain their object format'
   else
-    fail 'the isolated view lost the SHA-256 repository object format'
+    fail 'the isolated view lost the SHA-256 split-index object format'
   fi
 else
   ok 'SHA-256 repository test skipped because installed Git lacks support'
@@ -538,6 +567,23 @@ if python3 "$TOOL" \
   ok 'non-UTF-8 filenames remain selectable with unambiguous scope'
 else
   fail 'a valid non-UTF-8 filename was rejected by path scope'
+fi
+
+WHITESPACE_PATH='   '
+printf 'whitespace filename\n' > "$NON_UTF_REPO/$WHITESPACE_PATH"
+git -C "$NON_UTF_REPO" add -- "$WHITESPACE_PATH"
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$NON_UTF_REPO" \
+  --base HEAD \
+  --claim 'Whitespace-only filenames remain selectable.' \
+  --repro 'git diff --cached -- "   "' \
+  --path "$WHITESPACE_PATH" > "$OUT" 2>&1 \
+  && grep -qF '+whitespace filename' "$OUT" \
+  && grep -qF '"   "' "$OUT"; then
+  ok 'whitespace-only filenames remain selectable with explicit scope'
+else
+  fail 'a valid whitespace-only filename was treated as an empty path'
 fi
 
 git -C "$Q" init -q
