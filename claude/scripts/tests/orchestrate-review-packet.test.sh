@@ -221,6 +221,35 @@ else
   fail 'caller-selected index evidence or immutability was lost'
 fi
 
+RELATIVE_INDEX_CALLER="$Y_PARENT/relative-index-caller"
+mkdir "$RELATIVE_INDEX_CALLER"
+cp "$R_INDEX_PATH" "$RELATIVE_INDEX_CALLER/relative index"
+printf 'relative caller index state\n' > "$R/unstaged.txt"
+GIT_INDEX_FILE="$RELATIVE_INDEX_CALLER/relative index" \
+  git -C "$R" add unstaged.txt
+cp "$R_INDEX_PATH" "$R/relative index"
+printf 'wrong repository-relative index state\n' > "$R/unstaged.txt"
+GIT_INDEX_FILE="$R/relative index" git -C "$R" add unstaged.txt
+printf 'unstaged before\nunstaged after\n' > "$R/unstaged.txt"
+RELATIVE_INDEX_BEFORE="$(git hash-object "$RELATIVE_INDEX_CALLER/relative index")"
+: > "$OUT"
+if (
+  cd "$RELATIVE_INDEX_CALLER"
+  GIT_INDEX_FILE='relative index' python3 "$TOOL" \
+    --repo "$R" \
+    --base HEAD \
+    --claim 'Relative caller-selected indexes retain launch-directory identity.' \
+    --repro 'git diff --cached -- unstaged.txt' \
+    --path unstaged.txt > "$OUT" 2>&1
+) \
+  && grep -qF '+relative caller index state' "$OUT" \
+  && ! grep -qF '+unstaged after' "$OUT" \
+  && [ "$(git hash-object "$RELATIVE_INDEX_CALLER/relative index")" = "$RELATIVE_INDEX_BEFORE" ]; then
+  ok 'relative caller-selected indexes resolve from the launch directory'
+else
+  fail 'a relative caller-selected index resolved from the repository'
+fi
+
 CUSTOM_INDEX_SPACED="$R/custom-index "
 cp "$R_INDEX_PATH" "$CUSTOM_INDEX_SPACED"
 printf 'spaced index state\n' > "$R/unstaged.txt"

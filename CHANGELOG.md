@@ -19,23 +19,24 @@
   repository-controlled diff behavior. The copied index is snapshotted to a
   tree, then compared with an empty index so staged attributes remain visible
   evidence without becoming rendering policy. Repository and caller-index paths
-  retain their exact filesystem bytes and whitespace, while selected paths use
-  an unambiguous JSON array. Non-UTF-8 patches and patches containing terminal
-  controls are preserved byte-for-byte as inert base64, conflicted indexes fail
-  before emitting incomplete evidence, and every captured Git stream is drained
+  retain their exact filesystem bytes and whitespace; relative caller indexes
+  remain rooted at the launch directory. Selected paths use an unambiguous JSON
+  array. Non-UTF-8 patches and patches containing terminal controls are
+  preserved byte-for-byte as inert base64, conflicted indexes fail before
+  emitting incomplete evidence, and every captured Git stream is drained
   concurrently with a bound.
 - Added CI coverage for scope traversal and pathspec expansion, binary evidence,
   empty and oversized diffs, configured Git converters and clean filters,
   staged-versus-unstaged state, ordinary, linked-worktree, split, concurrently
-  rotated split, and caller-selected index immutability, quoted and
-  literal-quote relative object alternates, executable modes, large diagnostics,
-  symlinked worktree paths, staged attribute-policy changes,
-  whitespace-bearing repository and index paths, newline-bearing scope paths,
+  rotated split, and caller-selected index immutability and relative-path
+  resolution, quoted and literal-quote relative object alternates, executable
+  modes, large diagnostics, symlinked worktree paths, staged attribute-policy
+  changes, whitespace-bearing repository and index paths, newline-bearing scope paths,
   non-UTF-8 repository paths and filenames, unmerged index stages, older Git
   compatibility, routing-environment isolation, blocking unstaged attributes,
   fsmonitor hooks, local and environment-injected submodule config,
-  source-repository object
-  formats, replacement refs, non-UTF-8 and terminal-control bytes, bounded
+  source-repository object formats, replacement refs, non-UTF-8 and
+  terminal-control bytes, bounded
   helper and diff diagnostics, terminal-safe parser errors, fail-fast fixture
   setup, and Markdown-shaped source or command content.
 

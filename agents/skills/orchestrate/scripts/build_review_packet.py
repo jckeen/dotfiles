@@ -73,6 +73,11 @@ def run_bounded(
     return process.returncode, bytes(stdout), bytes(stderr), stdout_oversized.is_set()
 
 
+def caller_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else Path.cwd() / path
+
+
 def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
     env = {
         key: value
@@ -88,7 +93,7 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
     if index_file is not None:
         env["GIT_INDEX_FILE"] = str(index_file)
     elif "GIT_INDEX_FILE" in os.environ:
-        env["GIT_INDEX_FILE"] = os.environ["GIT_INDEX_FILE"]
+        env["GIT_INDEX_FILE"] = str(caller_path(os.environ["GIT_INDEX_FILE"]))
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
     returncode, stdout, stderr, stdout_oversized = run_bounded(
@@ -218,9 +223,15 @@ def isolated_git_view(
         raise ValueError("unsupported Git object format")
     isolated_worktree = workspace / "worktree"
     isolated_worktree.mkdir()
-    source_index = Path(git_value(git(repo, "rev-parse", "--git-path", "index")))
-    if not source_index.is_absolute():
-        source_index = repo / source_index
+    inherited_index = os.environ.get("GIT_INDEX_FILE")
+    if inherited_index is not None:
+        source_index = caller_path(inherited_index)
+    else:
+        source_index = Path(
+            git_value(git(repo, "rev-parse", "--git-path", "index"))
+        )
+        if not source_index.is_absolute():
+            source_index = repo / source_index
     isolated_index = workspace / "index"
     shutil.copyfile(source_index, isolated_index)
     shared_index_value = git_value(
