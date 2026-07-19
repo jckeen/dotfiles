@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016
 # Single-quoted command examples are literal review-packet payloads.
 # orchestrate-review-packet.test.sh — staged review packets stay scoped and safe.
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -134,11 +134,13 @@ printf '%s\n' '#!/usr/bin/env bash' > "$R/fake-git-bin/git"
 printf 'REAL_GIT=%q\n' "$GIT_BIN" >> "$R/fake-git-bin/git"
 printf '%s\n' \
   'saw_diff=0' \
+  'saw_show_toplevel=0' \
   'saw_shared_index=0' \
   'for arg in "$@"; do' \
   '  case "$arg" in' \
   '    --attr-source*) exit 97 ;;' \
   '    diff) saw_diff=1 ;;' \
+  '    --show-toplevel) saw_show_toplevel=1 ;;' \
   '    --shared-index-path) saw_shared_index=1 ;;' \
   '  esac' \
   'done' \
@@ -149,6 +151,10 @@ printf '%s\n' \
   'fi' \
   'if [ "${REVIEW_PACKET_FAKE_STDERR:-}" = 1 ] && [ "$saw_diff" = 1 ]; then' \
   '  for _ in {1..8000}; do printf "synthetic diagnostic line\n" >&2; done' \
+  'fi' \
+  'if [ "${REVIEW_PACKET_FAKE_HELPER_STDERR:-}" = 1 ] && [ "$saw_show_toplevel" = 1 ]; then' \
+  '  for _ in {1..8000}; do printf "synthetic helper diagnostic\n" >&2; done' \
+  '  exit 98' \
   'fi' \
   'exec "$REAL_GIT" "$@"' >> "$R/fake-git-bin/git"
 chmod +x "$R/fake-git-bin/git"
@@ -163,6 +169,22 @@ if env PATH="$R/fake-git-bin:$PATH" python3 "$TOOL" \
   ok 'packet generation does not require the newer attr-source option'
 else
   fail 'packet generation required the newer attr-source option'
+fi
+
+: > "$OUT"
+if env PATH="$R/fake-git-bin:$PATH" REVIEW_PACKET_FAKE_HELPER_STDERR=1 \
+  python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Repository discovery diagnostics remain bounded.' \
+  --repro 'git diff --cached -- partial.txt' \
+  --path partial.txt > "$OUT" 2>&1; then
+  fail 'a failing helper command unexpectedly produced a packet'
+elif [ "$(wc -c < "$OUT")" -lt 100000 ] \
+  && grep -qF 'synthetic helper diagnostic' "$OUT"; then
+  ok 'pre-diff Git diagnostics remain bounded'
+else
+  fail 'pre-diff Git diagnostics bypassed their memory and output bound'
 fi
 
 : > "$OUT"
@@ -423,8 +445,11 @@ git -C "$X" init -q
 git -C "$X" config user.email t@t.test
 git -C "$X" config user.name test
 printf 'conflict base\n' > "$X/conflict.txt"
-git -C "$X" add conflict.txt
+printf 'selected base\n' > "$X/selected.txt"
+git -C "$X" add conflict.txt selected.txt
 git -C "$X" commit -qm base
+printf 'selected after\n' >> "$X/selected.txt"
+git -C "$X" add selected.txt
 X_BASE_BLOB="$(git -C "$X" rev-parse HEAD:conflict.txt)"
 X_OURS_BLOB="$(printf 'conflict ours\n' | git -C "$X" hash-object -w --stdin)"
 X_THEIRS_BLOB="$(printf 'conflict theirs\n' | git -C "$X" hash-object -w --stdin)"
@@ -436,13 +461,13 @@ git -C "$X" update-index --index-info < "$X/index-info"
 if python3 "$TOOL" \
   --repo "$X" \
   --base HEAD \
-  --claim 'Conflicted index stages cannot be summarized as exact evidence.' \
-  --repro 'git diff --cached -- conflict.txt' \
-  --path conflict.txt > "$OUT" 2>&1; then
+  --claim 'An unmerged index cannot produce an exact staged tree.' \
+  --repro 'git diff --cached -- selected.txt' \
+  --path selected.txt > "$OUT" 2>&1; then
   fail 'an unmerged index produced incomplete review evidence'
-elif grep -qF 'staged scope contains unmerged entries' "$OUT" \
+elif grep -qF 'staged index contains unmerged entries' "$OUT" \
   && ! grep -qF '# Adversarial Review Packet' "$OUT"; then
-  ok 'unmerged index scopes fail closed before packet generation'
+  ok 'unmerged indexes fail closed before packet generation'
 else
   fail 'an unmerged index lacked a safe exact-evidence diagnostic'
 fi
@@ -572,6 +597,25 @@ if python3 "$TOOL" \
   ok 'configured clean filters cannot execute or rewrite review evidence'
 else
   fail 'configured clean filters executed or rewrote review evidence'
+fi
+
+printf '*.dat diff=secret\n*.filtered filter=danger\ntracked.txt -diff\n' \
+  > "$R/.gitattributes"
+git -C "$R" add .gitattributes
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Staged attributes remain evidence rather than rendering policy.' \
+  --repro 'git diff --cached -- .gitattributes tracked.txt' \
+  --path .gitattributes \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+tracked.txt -diff' "$OUT" \
+  && grep -qF '+after' "$OUT" \
+  && ! grep -qF 'Binary files' "$OUT"; then
+  ok 'staged attributes cannot control canonical diff rendering'
+else
+  fail 'staged attributes changed canonical diff rendering'
 fi
 
 FSMONITOR_SENTINEL="$R/fsmonitor-ran"

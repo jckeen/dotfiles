@@ -22,6 +22,57 @@ DEFAULT_MAX_BYTES = 200_000
 MAX_DIAGNOSTIC_BYTES = 64_000
 
 
+def drain_bounded(
+    stream: BinaryIO,
+    sink: bytearray,
+    limit: int,
+    oversized: threading.Event,
+) -> None:
+    while chunk := stream.read(64_000):
+        remaining = limit - len(sink)
+        if remaining > 0:
+            sink.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            oversized.set()
+
+
+def run_bounded(
+    command: list[str],
+    env: dict[str, str],
+    stdout_limit: int = MAX_DIAGNOSTIC_BYTES,
+) -> tuple[int, bytes, bytes, bool]:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout = bytearray()
+    stderr = bytearray()
+    stdout_oversized = threading.Event()
+    stderr_oversized = threading.Event()
+    stdout_thread = threading.Thread(
+        target=drain_bounded,
+        args=(process.stdout, stdout, stdout_limit, stdout_oversized),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=drain_bounded,
+        args=(process.stderr, stderr, MAX_DIAGNOSTIC_BYTES, stderr_oversized),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    process.stdout.close()
+    process.stderr.close()
+    return process.returncode, bytes(stdout), bytes(stderr), stdout_oversized.is_set()
+
+
 def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
     env = {
         key: value
@@ -40,19 +91,16 @@ def git(repo: Path, *args: str, index_file: Path | None = None) -> str:
         env["GIT_INDEX_FILE"] = os.environ["GIT_INDEX_FILE"]
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    result = subprocess.run(
+    returncode, stdout, stderr, stdout_oversized = run_bounded(
         ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         env=env,
     )
-    if result.returncode != 0:
-        detail = os.fsdecode(result.stderr).strip() or os.fsdecode(
-            result.stdout
-        ).strip()
+    if stdout_oversized:
+        raise ValueError(f"git {' '.join(args)} output exceeds diagnostic limit")
+    if returncode != 0:
+        detail = os.fsdecode(stderr).strip() or os.fsdecode(stdout).strip()
         raise ValueError(detail or f"git {' '.join(args)} failed")
-    return os.fsdecode(result.stdout)
+    return os.fsdecode(stdout)
 
 
 def git_value(output: str) -> str:
@@ -225,14 +273,12 @@ def isolated_git_view(
     return env, git_dir, isolated_worktree
 
 
-def reject_unmerged_scope(
+def reject_unmerged_index(
     git_dir: Path,
     isolated_worktree: Path,
     env: dict[str, str],
-    base: str,
-    paths: list[Path],
 ) -> None:
-    result = subprocess.run(
+    returncode, stdout, stderr, stdout_oversized = run_bounded(
         [
             "git",
             f"--git-dir={git_dir}",
@@ -241,28 +287,48 @@ def reject_unmerged_scope(
             f"core.attributesFile={os.devnull}",
             "-c",
             "core.fsmonitor=false",
-            "--literal-pathspecs",
-            "diff",
-            "--cached",
-            "--quiet",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--diff-filter=U",
-            "--ignore-submodules=none",
-            base,
-            "--",
-            *(str(path) for path in paths),
+            "ls-files",
+            "--unmerged",
+            "-z",
         ],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        env=env,
+        stdout_limit=1,
+    )
+    if stdout or stdout_oversized:
+        raise ValueError("staged index contains unmerged entries")
+    if returncode != 0:
+        detail = os.fsdecode(stderr).strip()
+        raise ValueError(detail or "could not inspect staged conflict entries")
+
+
+def write_staged_tree(
+    git_dir: Path,
+    isolated_worktree: Path,
+    env: dict[str, str],
+    oid_length: int,
+) -> str:
+    returncode, stdout, stderr, stdout_oversized = run_bounded(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            f"--work-tree={isolated_worktree}",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "write-tree",
+        ],
         env=env,
     )
-    if result.returncode == 1:
-        raise ValueError("staged scope contains unmerged entries")
-    if result.returncode != 0:
-        detail = os.fsdecode(result.stderr).strip()
-        raise ValueError(detail or "could not inspect staged conflict entries")
+    if stdout_oversized:
+        raise ValueError("staged tree identifier exceeds diagnostic limit")
+    if returncode != 0:
+        detail = os.fsdecode(stderr).strip() or os.fsdecode(stdout).strip()
+        raise ValueError(detail or "could not snapshot staged index")
+    tree = git_value(os.fsdecode(stdout))
+    if not re.fullmatch(rf"[0-9a-f]{{{oid_length}}}", tree):
+        raise ValueError("Git returned an invalid staged tree identifier")
+    return tree
 
 
 def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
@@ -272,7 +338,14 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
             Path(workspace_name),
             base,
         )
-        reject_unmerged_scope(git_dir, isolated_worktree, env, base, paths)
+        reject_unmerged_index(git_dir, isolated_worktree, env)
+        staged_tree = write_staged_tree(
+            git_dir,
+            isolated_worktree,
+            env,
+            len(base),
+        )
+        env["GIT_INDEX_FILE"] = str(Path(workspace_name) / "empty-index")
         process = subprocess.Popen(
             [
                 "git",
@@ -284,7 +357,6 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
                 "core.fsmonitor=false",
                 "--literal-pathspecs",
                 "diff",
-                "--cached",
                 "--binary",
                 "--no-color",
                 "--no-ext-diff",
@@ -293,6 +365,7 @@ def git_diff(repo: Path, base: str, paths: list[Path], max_bytes: int) -> bytes:
                 "--ignore-submodules=none",
                 "--submodule=short",
                 base,
+                staged_tree,
                 "--",
                 *(str(path) for path in paths),
             ],

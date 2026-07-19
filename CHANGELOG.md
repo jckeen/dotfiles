@@ -16,34 +16,37 @@
   plus a config-free temporary Git directory, object store, and worktree avoids
   repository-index mutation, clean-filter execution, worktree normalization,
   symlink traversal, fsmonitor execution, replacement refs, and
-  repository-controlled diff behavior. Repository and caller-index paths retain
-  their exact filesystem bytes and whitespace, while selected paths use an
-  unambiguous JSON array. Non-UTF-8 patches and patches containing terminal
-  controls are preserved byte-for-byte as inert base64, conflicted scopes fail
-  before emitting incomplete evidence, and large Git diagnostics are drained
-  concurrently.
+  repository-controlled diff behavior. The copied index is snapshotted to a
+  tree, then compared with an empty index so staged attributes remain visible
+  evidence without becoming rendering policy. Repository and caller-index paths
+  retain their exact filesystem bytes and whitespace, while selected paths use
+  an unambiguous JSON array. Non-UTF-8 patches and patches containing terminal
+  controls are preserved byte-for-byte as inert base64, conflicted indexes fail
+  before emitting incomplete evidence, and every captured Git stream is drained
+  concurrently with a bound.
 - Added CI coverage for scope traversal and pathspec expansion, binary evidence,
   empty and oversized diffs, configured Git converters and clean filters,
   staged-versus-unstaged state, ordinary, linked-worktree, split, concurrently
   rotated split, and caller-selected index immutability, quoted and
   literal-quote relative object alternates, executable modes, large diagnostics,
-  symlinked worktree paths,
+  symlinked worktree paths, staged attribute-policy changes,
   whitespace-bearing repository and index paths, newline-bearing scope paths,
   non-UTF-8 repository paths and filenames, unmerged index stages, older Git
   compatibility, routing-environment isolation, blocking unstaged attributes,
-  fsmonitor hooks,
-  local and environment-injected submodule config, source-repository object
-  formats, replacement refs, non-UTF-8 and terminal-control bytes, terminal-safe
-  parser errors, and Markdown-shaped source or command content.
+  fsmonitor hooks, local and environment-injected submodule config,
+  source-repository object
+  formats, replacement refs, non-UTF-8 and terminal-control bytes, bounded
+  helper and diff diagnostics, terminal-safe parser errors, fail-fast fixture
+  setup, and Markdown-shaped source or command content.
 
 ### Decisions made
 - Reuse `session-retro` instead of creating an autonomous learning ledger or a
   second proposal format. Changelog, handoff, and GitHub issues retain their
   existing ownership of history, continuity, and unresolved work.
-- Fail closed when a review packet has no staged evidence, contains an empty or
-  unmerged path scope, or exceeds its explicit whole-packet bound. Every intended
-  change must be staged before packet generation; unstaged and untracked state
-  remains excluded by design.
+- Fail closed when a review packet has no staged evidence, the copied index has
+  any unmerged entries, or the packet exceeds its explicit whole-packet bound.
+  Every intended change must be staged before packet generation; unstaged and
+  untracked state remains excluded by design.
 - Render a canonical, attribute-free Git patch: staged attribute files remain
   reviewable changes, but repository config and attributes cannot suppress,
   expand, transform, or execute content while the packet is built.
