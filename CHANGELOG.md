@@ -25,11 +25,13 @@
 - Added CI coverage for scope traversal and pathspec expansion, binary evidence,
   empty and oversized diffs, configured Git converters and clean filters,
   staged-versus-unstaged state, ordinary, linked-worktree, split, concurrently
-  rotated split, and caller-selected index immutability, quoted relative object
-  alternates, executable modes, large diagnostics, symlinked worktree paths,
+  rotated split, and caller-selected index immutability, quoted and
+  literal-quote relative object alternates, executable modes, large diagnostics,
+  symlinked worktree paths,
   whitespace-bearing repository and index paths, newline-bearing scope paths,
-  non-UTF-8 repository paths, unmerged index stages, older Git compatibility,
-  routing-environment isolation, blocking unstaged attributes, fsmonitor hooks,
+  non-UTF-8 repository paths and filenames, unmerged index stages, older Git
+  compatibility, routing-environment isolation, blocking unstaged attributes,
+  fsmonitor hooks,
   local and environment-injected submodule config, source-repository object
   formats, replacement refs, non-UTF-8 and terminal-control bytes, terminal-safe
   parser errors, and Markdown-shaped source or command content.

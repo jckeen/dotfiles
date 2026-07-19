@@ -116,13 +116,18 @@ def split_git_path_list(value: str) -> list[str]:
     quoted = False
     escaped = False
     for index, character in enumerate(value):
-        if escaped:
-            escaped = False
-        elif quoted and character == "\\":
-            escaped = True
-        elif character == '"':
-            quoted = not quoted
-        elif character == os.pathsep and not quoted:
+        if index == start and character == '"':
+            quoted = True
+            continue
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+            continue
+        if character == os.pathsep:
             entries.append(value[start:index])
             start = index + 1
     if quoted or escaped:
@@ -343,10 +348,6 @@ def nonblank(value: str) -> str:
 def repo_path(value: str) -> str:
     if not value.strip():
         raise argparse.ArgumentTypeError("--path must not be empty")
-    if has_terminal_control(value):
-        raise argparse.ArgumentTypeError(
-            "--path must not contain terminal control characters"
-        )
     return value
 
 

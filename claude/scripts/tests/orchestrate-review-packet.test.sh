@@ -376,6 +376,20 @@ else
   fail 'relative object alternates resolved under the caller directory'
 fi
 
+mv "$V/alt:objects" "$V/alt\"objects"
+: > "$OUT"
+if env GIT_ALTERNATE_OBJECT_DIRECTORIES='alt"objects' python3 "$TOOL" \
+  --repo "$V" \
+  --base HEAD \
+  --claim 'Literal quotes inside unquoted alternate paths remain filename bytes.' \
+  --repro 'git diff --cached -- tracked.txt' \
+  --path tracked.txt > "$OUT" 2>&1 \
+  && grep -qF '+alternate after' "$OUT"; then
+  ok 'literal quotes in unquoted alternate paths remain literal'
+else
+  fail 'a literal quote was treated as alternate-path syntax'
+fi
+
 W="$W_PARENT/repo "
 W_TRIMMED="$W_PARENT/repo"
 git -C "$W_PARENT" init -q "$W"
@@ -453,6 +467,23 @@ if python3 "$TOOL" \
   ok 'non-UTF-8 repository paths round-trip through Git discovery'
 else
   fail 'a valid non-UTF-8 repository path was rejected'
+fi
+
+NON_UTF_PATH=$'file-\xff.txt'
+printf 'non-utf filename\n' > "$NON_UTF_REPO/$NON_UTF_PATH"
+git -C "$NON_UTF_REPO" add -- "$NON_UTF_PATH"
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$NON_UTF_REPO" \
+  --base HEAD \
+  --claim 'Filesystem-byte filenames remain selectable.' \
+  --repro 'git diff --cached -- "$NON_UTF_PATH"' \
+  --path "$NON_UTF_PATH" > "$OUT" 2>&1 \
+  && grep -qF '+non-utf filename' "$OUT" \
+  && grep -qF '\udcff' "$OUT"; then
+  ok 'non-UTF-8 filenames remain selectable with unambiguous scope'
+else
+  fail 'a valid non-UTF-8 filename was rejected by path scope'
 fi
 
 git -C "$Q" init -q
