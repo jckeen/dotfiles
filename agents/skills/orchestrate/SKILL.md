@@ -103,6 +103,35 @@ implementation. Separate these concepts:
 - **Lineage independence:** a different model family provides genuinely
   different failure modes.
 
+For staged or committed Git changes, prefer the bundled packet builder so the
+reviewer gets the exact base-to-index artifact behind a hash-derived
+untrusted-data boundary, without unstaged files, untracked files, configured
+clean-filter execution, replacement refs, repository-controlled diff behavior,
+or the author's reasoning:
+
+```bash
+python3 <skill-dir>/scripts/build_review_packet.py \
+  --repo <checkout> --base <ref> \
+  --claim '<falsifiable claim>' --repro '<exact command>' \
+  --verify '<verification command>'
+```
+
+Add `--path <repo-relative-path>` to narrow scope; the packet renders selected
+paths as a JSON array so unusual filenames, including whitespace-only names,
+remain unambiguous. If the packet
+builder fails, fix the scope or packet contract; do not bypass its size or
+empty-diff guard by silently trimming evidence. For non-Git artifacts, assemble
+the same raw fields manually. Any unmerged index fails closed because it cannot
+be snapshotted as an exact staged tree; resolve conflicts before review. Stage
+intended new files before building the packet; untracked files are deliberately
+excluded. Stage every intended tracked change too; unstaged worktree state and
+attributes are outside the review artifact. Decode a packet's labeled base64
+diff before reviewing non-UTF-8 or terminal-control evidence.
+The packet snapshots a copy of the index to a tree, then uses an empty index for
+a canonical attribute-free tree comparison: staged attribute files remain
+visible changes but do not control packet rendering. A staged submodule gitlink
+is covered, but review nested repository content with its own packet.
+
 Multiple agents from one model lineage add breadth but do not satisfy a
 cross-lineage review requirement. Route disputed claims back through the exact
 repro and prefer observed behavior over votes.
@@ -114,6 +143,8 @@ schema changes, or public trust boundaries, add a focused security review.
 
 1. Simplify the changed code without changing behavior.
 2. Re-run every check affected by integration or simplification.
+   If simplification changed the reviewed artifact, rebuild the packet and
+   repeat the fresh-context review before continuing.
 3. Inspect the final diff and working tree for unrelated or generated state.
 4. Update living documentation only when behavior or repository policy
    requires it. Do not create shadow trackers.
@@ -121,6 +152,20 @@ schema changes, or public trust boundaries, add a focused security review.
    the user requested it or already approved that exact action.
 6. Persist a durable handoff or issue/PR verdict when project instructions
    require one.
+
+## Learn From Verified Work
+
+After the user-facing outcome is verified, invoke `$session-retro` once when
+the work exposed a meaningful trigger miss, recurring footgun, reusable
+workflow, parity gap, or stale instruction. Pass only facts the conductor
+verified directly, with the relevant paths and command evidence; agent reports
+remain hypotheses until then. Let `session-retro` own proposal selection,
+confirmation, unattended storage, and application.
+
+Keep completed history in the changelog, continuation context in the handoff,
+and unresolved work in GitHub issues. Create no learning ledger, orchestration
+receipt, checklist, or memory file. If no durable improvement is worth
+proposing, skip the retro instead of manufacturing one.
 
 Finish with the outcome, verification evidence, review verdict, and any
 remaining risk. Do not end on a plan that could still be executed.

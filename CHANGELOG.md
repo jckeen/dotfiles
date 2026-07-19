@@ -1,5 +1,67 @@
 # Changelog
 
+## 2026-07-18 — feat: learn from verified orchestration
+
+### What changed
+- Shared orchestration now routes evidence-backed workflow lessons through the
+  existing `session-retro` proposal and confirmation boundary after the
+  user-facing result is verified.
+- Added a bundled review-packet builder that gives fresh-context reviewers a
+  bounded staged diff, path scope, falsifiable claim, exact repro, and
+  verification commands without including unstaged or untracked files or author
+  reasoning.
+  The complete packet is size-bounded, author-controlled content sits behind a
+  hash-derived untrusted-data boundary, output uses the exact measured UTF-8
+  bytes, and empty path scopes fail closed. An isolated copy of the Git index
+  plus a config-free temporary Git directory, object store, and worktree avoids
+  repository-index mutation, clean-filter execution, worktree normalization,
+  symlink traversal, fsmonitor execution, replacement refs, and
+  repository-controlled diff behavior. The copied index is snapshotted to a
+  tree, then compared with an empty index so staged attributes remain visible
+  evidence without becoming rendering policy. Split-index companions are
+  selected from the copied index's `link` extension without asking Git to read
+  and refresh source metadata. Repository and caller-index paths retain their
+  exact filesystem bytes and whitespace; relative caller indexes remain rooted
+  at the launch directory. Selected paths, including whitespace-only filenames,
+  use an unambiguous JSON array. Non-UTF-8 patches and patches containing
+  terminal controls are preserved byte-for-byte as inert base64, conflicted
+  indexes fail before emitting incomplete evidence, and every captured Git
+  stream is drained concurrently with a bound.
+- Added CI coverage for scope traversal and pathspec expansion, binary evidence,
+  empty and oversized diffs, configured Git converters and clean filters,
+  staged-versus-unstaged state, ordinary, linked-worktree, version-2,
+  version-4, SHA-256, and discovery-rotated split indexes, source companion
+  content and mtime immutability, caller-selected index immutability and
+  relative-path resolution, quoted and literal-quote relative object
+  alternates, executable modes, large diagnostics, symlinked worktree paths,
+  staged attribute-policy changes, whitespace-bearing repository, index, and
+  scope paths, newline-bearing scope paths, non-UTF-8 repository paths and
+  filenames, unmerged index stages, older Git
+  compatibility, routing-environment isolation, blocking unstaged attributes,
+  fsmonitor hooks, local and environment-injected submodule config,
+  source-repository object formats, replacement refs, non-UTF-8 and
+  terminal-control bytes, bounded helper and diff diagnostics, terminal-safe
+  parser errors, fail-fast fixture
+  setup, and Markdown-shaped source or command content.
+
+### Decisions made
+- Reuse `session-retro` instead of creating an autonomous learning ledger or a
+  second proposal format. Changelog, handoff, and GitHub issues retain their
+  existing ownership of history, continuity, and unresolved work.
+- Fail closed when a review packet has no staged evidence, the copied index has
+  any unmerged entries, or the packet exceeds its explicit whole-packet bound.
+  Every intended change must be staged before packet generation; unstaged and
+  untracked state remains excluded by design.
+- Render a canonical, attribute-free Git patch: staged attribute files remain
+  reviewable changes, but repository config and attributes cannot suppress,
+  expand, transform, or execute content while the packet is built.
+
+### Known issues
+- The packet builder covers staged Git changes. Non-Git artifacts still need
+  an equivalent raw claim, repro, scope, and evidence packet assembled manually.
+- Staged submodule gitlinks are covered, but nested repository content still
+  needs its own review packet.
+
 ## 2026-07-17 — fix: recover stale Codex Remote Control safely
 
 ### What changed
