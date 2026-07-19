@@ -227,16 +227,16 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 |------|-------|----------|
 | **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`; generated from `agents/canon/` per ADR-0007 — edit the sources, not the file) |
 | **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
-| **Agent Pack** | `AgentPack.md` | 18-agent review orchestra (loaded on-demand, not symlinked) |
-| **Status line** | `statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
-| **Commit hook** | `hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
-| **Format hook** | `hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
-| **Notification hook** | `hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
-| **Permission guard** | `hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
-| **Other hooks** | `hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
+| **Agent Pack** | `claude/AgentPack.md` | 18-agent review orchestra (loaded on-demand, not symlinked) |
+| **Status line** | `claude/statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
+| **Commit hook** | `claude/hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
+| **Format hook** | `claude/hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
+| **Notification hook** | `claude/hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
+| **Permission guard** | `claude/hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
+| **Other hooks** | `claude/hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
 | **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line); deliberately not symlinked (listed in `claude/nolink.txt`) |
-| **Skills** | `skills/*/SKILL.md` | Claude slash commands (see below) |
-| **Subagents** | `agents/*.md` | 18 specialized review agents |
+| **Skills** | `claude/skills/*/SKILL.md` | Claude slash commands (see below) |
+| **Subagents** | `claude/agents/*.md` | 18 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
