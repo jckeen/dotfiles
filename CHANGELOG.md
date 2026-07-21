@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-20 — fix: self-heal Codex skill links before launch
+
+### What changed
+- `cx` now enables the existing missing-only symlink healer before its strict
+  Codex health check, so newly pulled files inside shared skill bundles are
+  linked before the agent starts.
+- The Codex checker refuses to heal through a symlinked managed directory and
+  retains strict failure behavior for ambiguous or unsafe drift.
+- Added regression coverage for launcher arguments, nested skill-file healing,
+  and the managed-directory boundary.
+
+### Decisions made
+- Reuse the shared checker healing contract: only an absent destination with a
+  present source can be created automatically. Existing files, wrong targets,
+  broken links, and unsafe directory layouts remain report-only failures.
+
+### Known issues
+- None.
+
 ## 2026-07-18 — feat: learn from verified orchestration
 
 ### What changed

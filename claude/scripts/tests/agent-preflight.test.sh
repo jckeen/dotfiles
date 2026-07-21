@@ -15,7 +15,8 @@ TEST_HOME="$(mktemp -d)"
 TEST_DEV="$(mktemp -d)"
 SHIM_DIR="$(mktemp -d)"
 HEALTH_CALLS="$(mktemp)"
-trap 'rm -rf "$TEST_HOME" "$TEST_DEV" "$SHIM_DIR"; rm -f "$HEALTH_CALLS"' EXIT
+WRAPPER_CALLS="$(mktemp)"
+trap 'rm -rf "$TEST_HOME" "$TEST_DEV" "$SHIM_DIR"; rm -f "$HEALTH_CALLS" "$WRAPPER_CALLS"' EXIT
 
 mkdir -p "$TEST_DEV/good" "$TEST_DEV/linked-upstream" "$TEST_DEV/bad/.git" "$TEST_DEV/broken/.git"
 printf 'gitdir: /tmp/simulated-linked-worktree\n' > "$TEST_DEV/good/.git"
@@ -128,7 +129,7 @@ exit 9
 EOF
 cat > "$TEST_DEV/dotfiles/check-codex.sh" <<'EOF'
 #!/usr/bin/env bash
-[ "${1:-}" = "--strict" ] || exit 8
+printf 'codex:%s\n' "$*" >> "$WRAPPER_CALLS"
 exit 9
 EOF
 cat > "$TEST_DEV/dotfiles/check-antigravity.sh" <<'EOF'
@@ -140,6 +141,7 @@ chmod +x "$TEST_DEV/dotfiles/check-claude.sh" \
   "$TEST_DEV/dotfiles/check-codex.sh" \
   "$TEST_DEV/dotfiles/check-antigravity.sh"
 sync-memory() { return 0; }
+export WRAPPER_CALLS
 
 if _check_claude_launch_health >/dev/null 2>&1 \
   || _check_codex_launch_health >/dev/null 2>&1 \
@@ -147,6 +149,12 @@ if _check_claude_launch_health >/dev/null 2>&1 \
   fail "a launcher health wrapper ignored actual checker failure"
 else
   ok "all launcher integrations propagate strict runtime checker failures"
+fi
+
+if grep -Fxq 'codex:--heal --strict' "$WRAPPER_CALLS"; then
+  ok "Codex launcher safely heals missing managed links before strict validation"
+else
+  fail "Codex launcher did not enable safe managed-link healing"
 fi
 
 : > "$HEALTH_CALLS"

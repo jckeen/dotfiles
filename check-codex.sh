@@ -15,11 +15,15 @@ CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}
 ERRORS=0
 WARNINGS=0
 FIXED=0
+HEALED=0
 ORPHAN_FIX=""
+HEAL=0
 STRICT=0
+# shellcheck disable=SC2034  # HEAL is consumed by sourced lib-checks.sh.
 for arg in "$@"; do
   case "$arg" in
     --fix) ORPHAN_FIX=--fix ;;
+    --heal) HEAL=1 ;;
     --strict) STRICT=1 ;;
   esac
 done
@@ -58,8 +62,9 @@ CHECK_MISSING_HINT="~/.codex/"
 REPORTED_UNSAFE_DIRS=()
 
 check_managed_parent_chain() {
-  local root="$1" dir="$2" relative current component reported already_reported
+  local root="$1" dir="$2" relative current component reported already_reported unsafe
   local -a components
+  unsafe=0
   relative="${dir#"$root"}"
   relative="${relative#/}"
   IFS='/' read -r -a components <<< "$relative"
@@ -71,13 +76,17 @@ check_managed_parent_chain() {
     for reported in "${REPORTED_UNSAFE_DIRS[@]}"; do
       [ "$reported" = "$current" ] && already_reported=1
     done
-    if [ -L "$current" ] && [ "$already_reported" -eq 0 ]; then
-      red "UNSAFE  ${current#"$CODEX_DST"/} is a managed directory symlink -> $(readlink "$current")"
-      red "        Managed skill ancestors must be real directories."
-      ERRORS=$((ERRORS + 1))
-      REPORTED_UNSAFE_DIRS+=("$current")
+    if [ -L "$current" ]; then
+      unsafe=1
+      if [ "$already_reported" -eq 0 ]; then
+        red "UNSAFE  ${current#"$CODEX_DST"/} is a managed directory symlink -> $(readlink "$current")"
+        red "        Managed skill ancestors must be real directories."
+        ERRORS=$((ERRORS + 1))
+        REPORTED_UNSAFE_DIRS+=("$current")
+      fi
     fi
   done
+  return "$unsafe"
 }
 
 echo "Checking Codex public-safe config..."
@@ -138,8 +147,12 @@ else
           fi
           skill_rel="${skill_file#"$skill_dir"}"
           skill_dst="$CODEX_DST/skills/$skill_name/$skill_rel"
-          check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"
+          heal_requested="$HEAL"
+          if ! check_managed_parent_chain "$CODEX_DST" "$(dirname "$skill_dst")"; then
+            HEAL=0
+          fi
           check_link "$skill_file" "$skill_dst" "skills/$skill_name/$skill_rel"
+          HEAL="$heal_requested"
         done < "$skill_file_list"
         if [ "$AGENT_SKILLS_UNSAFE" -eq 0 ]; then
           check_link "${skill_dir%/}" "$AGENT_SKILLS_DST/$skill_name" "user-skills/$skill_name"
@@ -253,6 +266,7 @@ if [ -x "$DOTFILES_DIR/hygiene-status.sh" ]; then
 fi
 
 echo ""
+[ $HEALED -gt 0 ] && green "Self-healed $HEALED missing link(s)."
 if [ $ERRORS -eq 0 ]; then
   if [ $WARNINGS -eq 0 ]; then
     green "All good. Codex public config is in sync."
