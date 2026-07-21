@@ -72,7 +72,7 @@ _check_claude_launch_health() {
 }
 
 _check_codex_launch_health() {
-  "$(_dev_dir)/dotfiles/check-codex.sh" --strict
+  "$(_dev_dir)/dotfiles/check-codex.sh" --heal --strict
 }
 
 _check_antigravity_launch_health() {

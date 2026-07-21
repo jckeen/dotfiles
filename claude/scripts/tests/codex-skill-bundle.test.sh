@@ -48,7 +48,15 @@ else
   ok "strict checker turns actionable Codex drift into launcher failure"
 fi
 
-ln -s "$R/agents/skills/demo/references/runtime.md" "$H/.codex/skills/demo/references/runtime.md"
+if HOME="$H" "$R/check-codex.sh" --heal --strict > "$OUT" 2>&1 \
+  && [ "$(readlink "$H/.codex/skills/demo/references/runtime.md")" \
+    = "$R/agents/skills/demo/references/runtime.md" ] \
+  && grep -q 'HEALED.*skills/demo/references/runtime.md' "$OUT"; then
+  ok "strict checker safely heals a missing nested skill link"
+else
+  fail "strict checker did not heal a missing nested skill link"
+fi
+
 if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1 && grep -q 'All good' "$OUT"; then
   ok "complete nested skill bundle passes"
 else
@@ -215,12 +223,14 @@ chmod 700 "$H/.codex/skills/demo/references/stale"
 rm "$H/.codex/skills/demo/references/stale/deep.md"
 mv "$H/.codex/skills" "$H/external-skills"
 ln -s "$H/external-skills" "$H/.codex/skills"
-if HOME="$H" "$R/check-codex.sh" > "$OUT" 2>&1; then
+printf '# Arrived after initial deployment\n' > "$R/agents/skills/demo/references/late.md"
+if HOME="$H" "$R/check-codex.sh" --heal > "$OUT" 2>&1; then
   fail "symlinked managed skill directory was accepted"
-elif grep -q 'UNSAFE.*skills is a managed directory symlink' "$OUT"; then
-  ok "symlinked managed skill directory fails closed"
+elif grep -q 'UNSAFE.*skills is a managed directory symlink' "$OUT" \
+  && [ ! -e "$H/external-skills/demo/references/late.md" ]; then
+  ok "symlinked managed skill directory fails closed without healing through it"
 else
-  fail "symlinked managed skill directory failed without a useful report"
+  fail "symlinked managed skill directory was mutated or lacked a useful report"
 fi
 
 mv "$H/.codex" "$H/external-codex"
