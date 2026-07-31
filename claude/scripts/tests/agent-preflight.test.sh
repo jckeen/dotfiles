@@ -18,7 +18,8 @@ HEALTH_CALLS="$(mktemp)"
 WRAPPER_CALLS="$(mktemp)"
 trap 'rm -rf "$TEST_HOME" "$TEST_DEV" "$SHIM_DIR"; rm -f "$HEALTH_CALLS" "$WRAPPER_CALLS"' EXIT
 
-mkdir -p "$TEST_DEV/good" "$TEST_DEV/linked-upstream" "$TEST_DEV/bad/.git" "$TEST_DEV/broken/.git"
+mkdir -p "$TEST_DEV/good" "$TEST_DEV/linked-upstream" "$TEST_DEV/bad/.git" \
+  "$TEST_DEV/broken/.git" "$TEST_DEV/dirty/.git"
 printf 'gitdir: /tmp/simulated-linked-worktree\n' > "$TEST_DEV/good/.git"
 printf 'gitdir: /tmp/simulated-linked-worktree-with-upstream\n' > "$TEST_DEV/linked-upstream/.git"
 cat > "$SHIM_DIR/git" <<'EOF'
@@ -53,6 +54,14 @@ case "${1:-} ${2:-}" in
     if [ "$(basename "$repo")" = "bad" ] && [ "${ALL_PULLS_SUCCEED:-0}" != "1" ]; then
       echo "fatal: simulated pull failure" >&2
       exit 42
+    fi
+    if [ "$(basename "$repo")" = "dirty" ] && [ "${ALL_PULLS_SUCCEED:-0}" != "1" ]; then
+      # Mirrors a real aborted --ff-only pull: the diagnostic comes first
+      # and the LAST line looks like a success (issue #280).
+      echo "error: Your local changes to the following files would be overwritten by merge:" >&2
+      echo "        .gitignore" >&2
+      echo "Updating 1111111..2222222"
+      exit 1
     fi
     echo "Already up to date."
     ;;
@@ -102,6 +111,13 @@ if grep -Eq 'broken[[:space:]]+fatal: simulated repository discovery failure' <<
   ok "pull-all reports repository discovery failures"
 else
   fail "pull-all silently skipped an unhealthy repository"
+fi
+
+if grep -Eq 'dirty[[:space:]]+error: Your local changes' <<< "$pull_all_output" \
+  && ! grep -Eq 'dirty[[:space:]]+Updating ' <<< "$pull_all_output"; then
+  ok "pull-all surfaces the first error line of a multi-line pull failure"
+else
+  fail "pull-all masked a multi-line pull failure behind its success-looking last line"
 fi
 
 if _agent_preflight "resume" health_probe --model test >/dev/null 2>&1; then
@@ -223,6 +239,17 @@ if _codex_is_resume_invocation -m gpt-5 resume --last \
   ok "Codex resume parser skips recognized global options and their values"
 else
   fail "Codex resume parser misclassified a global-option command line"
+fi
+
+# Separated --image/-i VALUE forms are valid Codex global options; the parser
+# must consume the value and still see the resume subcommand (issue #276).
+if _codex_is_resume_invocation --image /tmp/example.png resume --last \
+  && _codex_is_resume_invocation -i /tmp/example.png fork --last \
+  && ! _codex_is_resume_invocation --image /tmp/example.png exec 'task' \
+  && ! _codex_is_resume_invocation --image; then
+  ok "Codex resume parser consumes separated image option values"
+else
+  fail "a separated --image value hid the resume subcommand from the parser"
 fi
 
 echo ""
