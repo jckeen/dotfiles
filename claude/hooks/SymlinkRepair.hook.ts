@@ -146,11 +146,14 @@ function main(): void {
     'hooks',
   );
 
-  // 3) scripts/*.sh
+  // 3) scripts/*.{sh,json} — gate scripts resolve sibling data files (JSON
+  //    schemas) via plain dirname, so a schema not linked beside the script
+  //    is invisible to it and the gate degrades open (issue #271; mirrors
+  //    lib-symlinks.sh's scripts category).
   linkDir(
     join(CLAUDE_SRC, 'scripts'),
     join(CLAUDE_DST, 'scripts'),
-    (n) => n.endsWith('.sh'),
+    (n) => n.endsWith('.sh') || n.endsWith('.json'),
     'scripts',
   );
 

@@ -73,6 +73,16 @@ if [ ! -d "$CLAUDE_DIR" ]; then
   exit 1
 fi
 
+# A symlinked config dir must still be TRAVERSED: with the trailing slash
+# stripped above, GNU find's default -P mode examines the command-line
+# symlink itself instead of descending, so every sweep below would silently
+# report a clean tree (issue #269). Resolve to the physical directory —
+# `cd -P` is portable where `readlink -f` is GNU-only.
+CLAUDE_DIR="$(cd -P "$CLAUDE_DIR" 2>/dev/null && pwd)" || {
+  echo "check-deployed-orphans: unable to resolve $CLAUDE_DIR to a physical directory" >&2
+  exit 1
+}
+
 # Runtime state Claude Code (and the deployed tooling) writes itself. Top-level
 # entries in this list are never flagged. Enumerated from a live ~/.claude plus
 # what setup.sh/check-claude.sh manage as real directories-of-symlinks
@@ -153,7 +163,15 @@ fi
 # --- 4+5. known PAI leftovers (strict) / unknown top-level (informational) ---
 while IFS= read -r entry; do
   name="${entry#"$CLAUDE_DIR"/}"
-  # Symlinks are check-claude.sh's domain; skip.
+  # A symlink whose NAME matches a known PAI leftover is still a PAI
+  # leftover regardless of link health: check-claude.sh only flags orphaned
+  # or broken symlinks, so a HEALTHY foreign link (e.g. a PAI-era
+  # .env-style link into ~/.config/PAI) passes both checkers (issue #246).
+  if [ -L "$entry" ] && in_list "$name" "${PAI_PATHS[@]}"; then
+    pai_leftover "$name — known PAI leftover symlink (ADR-0002); verify the target, then remove the link"
+    continue
+  fi
+  # Other symlinks are check-claude.sh's domain; skip.
   [ -L "$entry" ] && continue
   # Already reported by check 2.
   case "$name" in settings.json.*bak* | *.doctor-bak) continue ;; esac
