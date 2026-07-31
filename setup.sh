@@ -753,14 +753,23 @@ install_gitleaks_pinned() {
 
 echo ""
 echo "--- gitleaks (local secret scanning) ---"
-if command -v gitleaks &>/dev/null; then
+# The pre-push hook runs `gitleaks git ...`, a subcommand added in v8.19.0.
+# A pre-existing older install would satisfy `command -v` but then block
+# every push on "unknown command" instead of an actual leak (issue #268),
+# so require git-mode support — not mere presence — before trusting it.
+if command -v gitleaks &>/dev/null && gitleaks git --help &>/dev/null; then
   echo "gitleaks already installed: $(gitleaks version 2>/dev/null || echo 'installed')"
-elif [[ "$PLATFORM" == "macos" ]] && command -v brew &>/dev/null; then
-  run brew install gitleaks || echo "  -> gitleaks install failed (continuing; pre-push scan will warn+skip)"
 else
-  # Not in Ubuntu/Debian apt archives, so the pinned release binary is the
-  # Linux path (and the macOS fallback when brew is absent).
-  install_gitleaks_pinned || echo "  -> gitleaks install skipped; pre-push scan will warn+skip until installed"
+  if command -v gitleaks &>/dev/null; then
+    echo "  -> existing gitleaks ($(gitleaks version 2>/dev/null || echo 'unknown version')) lacks the 'git' subcommand (pre-v8.19); upgrading"
+  fi
+  if [[ "$PLATFORM" == "macos" ]] && command -v brew &>/dev/null; then
+    run brew install gitleaks || echo "  -> gitleaks install failed (continuing; pre-push scan will warn+skip)"
+  else
+    # Not in Ubuntu/Debian apt archives, so the pinned release binary is the
+    # Linux path (and the macOS fallback when brew is absent).
+    install_gitleaks_pinned || echo "  -> gitleaks install skipped; pre-push scan will warn+skip until installed"
+  fi
 fi
 
 # Wire the tracked githooks/pre-push into THIS repo's hooks dir. link_file
@@ -895,7 +904,21 @@ install_node_pinned() {
     [ -e "$HOME_DIR/.local/share/${asset}/bin/$tool" ] || continue
     ln -sf "$HOME_DIR/.local/share/${asset}/bin/$tool" "$HOME_DIR/.local/bin/$tool"
   done
-  echo "  -> Node installed to ~/.local/share/${asset} (node/npm/npx linked into ~/.local/bin)"
+  # npm's global prefix defaults to the tarball dir, so `npm install -g`
+  # binaries (e.g. codex, §3c) would land in ~/.local/share/${asset}/bin —
+  # which is NOT on PATH (issue #267). Point the global prefix at ~/.local
+  # so global executables land in the already-on-PATH ~/.local/bin.
+  # PATH must carry the freshly-linked bin dir for THIS invocation: npm's
+  # `#!/usr/bin/env node` shebang needs the new node, and on a first-time
+  # install nothing has put it on PATH yet (the caller's export runs only
+  # after this function returns) — without it npm exits 127 and Codex npm
+  # globals later land outside PATH.
+  if ! PATH="$HOME_DIR/.local/bin:$PATH" \
+    "$HOME_DIR/.local/bin/npm" config set prefix "$HOME_DIR/.local"; then
+    echo "  !! ERROR: npm config set prefix failed; npm -g binaries (e.g. codex) would land outside PATH"
+    return 1
+  fi
+  echo "  -> Node installed to ~/.local/share/${asset} (node/npm/npx linked into ~/.local/bin; npm -g prefix set to ~/.local)"
 }
 
 if ! command -v node &>/dev/null; then
@@ -915,7 +938,7 @@ if ! command -v node &>/dev/null; then
         ;;
       pinned|*)
         install_node_pinned \
-          || echo "  -> Node install skipped (continuing; npm-dependent steps will be skipped)"
+          || echo "  -> Node pinned install failed or was skipped (continuing; npm-dependent steps will be skipped)"
         ;;
     esac
     # Make the fresh install resolvable for the remainder of this script.
@@ -1638,6 +1661,15 @@ fi
 # ─── 5b. Codex config ────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Codex config ---"
+# A symlinked ~/.codex must never route through prepare_directory: it would
+# back up the symlink and create a fresh empty dir, silently disconnecting
+# live Codex state (auth.json, config.toml, sessions) from the path Codex
+# uses (issue #273). check-codex.sh likewise refuses a symlinked root.
+if [ -L "$HOME_DIR/.codex" ]; then
+  echo "ERROR: $HOME_DIR/.codex is a symlink; refusing to replace the Codex runtime root." >&2
+  echo "       Make ~/.codex a real directory (move the target back, or remove the link) and re-run setup.sh." >&2
+  exit 1
+fi
 prepare_directory "$HOME_DIR" "$HOME_DIR/.codex"
 
 if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
@@ -1672,7 +1704,16 @@ elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
       if [ -L "$skill_file" ]; then
         skill_target_real="$(realpath "$skill_file" 2>/dev/null || true)"
         case "$skill_target_real" in
-          "$skill_root_real"/*) ;;
+          "$skill_root_real"/*)
+            # In-bundle is not enough: a symlink resolving to a DIRECTORY
+            # inside the bundle would install a directory symlink under
+            # ~/.codex/skills, which check-codex.sh immediately flags
+            # UNSAFE (issue #274). Require a regular file.
+            if [ ! -f "$skill_target_real" ]; then
+              invalid_skill_symlink="$skill_file"
+              break
+            fi
+            ;;
           *)
             invalid_skill_symlink="$skill_file"
             break
@@ -1682,7 +1723,7 @@ elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
     done < "$skill_file_list"
     if [ -n "$invalid_skill_symlink" ]; then
       rm -f "$skill_file_list"
-      echo "ERROR: Codex skill symlink escapes its bundle or is broken: $invalid_skill_symlink" >&2
+      echo "ERROR: Codex skill symlink escapes its bundle, is broken, or targets a non-file: $invalid_skill_symlink" >&2
       exit 1
     fi
     while IFS= read -r -d '' skill_file; do
