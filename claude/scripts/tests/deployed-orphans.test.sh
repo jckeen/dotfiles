@@ -147,6 +147,42 @@ else
 fi
 rm -rf "$(dirname "$F")"
 
+# --- symlinked CLAUDE_DIR (with trailing slash) is traversed (issue #269) -----
+new_fixture
+mkdir -p "$F/PAI"
+LINKED="$(mktemp -d)/link"
+ln -s "$F" "$LINKED"
+out="$(CLAUDE_DIR="$LINKED/" "$CHECKER" --strict 2>&1)"
+rc=$?
+if [ "$rc" -eq 1 ] && grep -qF "PAI-LEFTOVER PAI" <<<"$out"; then
+  pass=$((pass + 1))
+  echo "ok   - symlinked CLAUDE_DIR with trailing slash is traversed and strict-fails on PAI"
+else
+  failed=$((failed + 1))
+  echo "FAIL - symlinked CLAUDE_DIR must be traversed, not examined as a link (got rc=$rc)"
+  echo "$out" | sed 's/^/      | /'
+fi
+rm -rf "$(dirname "$LINKED")" "$(dirname "$F")"
+
+# --- healthy symlink with a known PAI name is still a leftover (issue #246) ---
+new_fixture
+PAI_TARGET="$(mktemp -d)"
+ln -s "$PAI_TARGET" "$F/PAI"
+check "pai: healthy PAI-named symlink flagged as PAI-LEFTOVER" 0 "PAI-LEFTOVER PAI"
+check "pai: healthy PAI-named symlink fails --strict" 1 "PAI-LEFTOVER PAI" "--strict"
+# A healthy symlink with a non-PAI name stays check-claude.sh's domain.
+ln -s "$PAI_TARGET" "$F/some-other-link"
+out="$(CLAUDE_DIR="$F" "$CHECKER" --strict 2>&1)"
+if grep -F "some-other-link" <<<"$out" | grep -qi "PAI"; then
+  failed=$((failed + 1))
+  echo "FAIL - non-PAI-named symlink must not be attributed to PAI"
+  echo "$out" | sed 's/^/      | /'
+else
+  pass=$((pass + 1))
+  echo "ok   - non-PAI-named symlink left to check-claude.sh"
+fi
+rm -rf "$PAI_TARGET" "$(dirname "$F")"
+
 # --- stray file alone: advisory UNKNOWN, --strict still passes ----------------
 new_fixture
 printf 'not pai\n' > "$F/stray-debug.log"
