@@ -908,8 +908,16 @@ install_node_pinned() {
   # binaries (e.g. codex, §3c) would land in ~/.local/share/${asset}/bin —
   # which is NOT on PATH (issue #267). Point the global prefix at ~/.local
   # so global executables land in the already-on-PATH ~/.local/bin.
-  "$HOME_DIR/.local/bin/npm" config set prefix "$HOME_DIR/.local" \
-    || echo "  !! WARNING: could not set npm global prefix; npm -g binaries may be off PATH"
+  # PATH must carry the freshly-linked bin dir for THIS invocation: npm's
+  # `#!/usr/bin/env node` shebang needs the new node, and on a first-time
+  # install nothing has put it on PATH yet (the caller's export runs only
+  # after this function returns) — without it npm exits 127 and Codex npm
+  # globals later land outside PATH.
+  if ! PATH="$HOME_DIR/.local/bin:$PATH" \
+    "$HOME_DIR/.local/bin/npm" config set prefix "$HOME_DIR/.local"; then
+    echo "  !! ERROR: npm config set prefix failed; npm -g binaries (e.g. codex) would land outside PATH"
+    return 1
+  fi
   echo "  -> Node installed to ~/.local/share/${asset} (node/npm/npx linked into ~/.local/bin; npm -g prefix set to ~/.local)"
 }
 
@@ -930,7 +938,7 @@ if ! command -v node &>/dev/null; then
         ;;
       pinned|*)
         install_node_pinned \
-          || echo "  -> Node install skipped (continuing; npm-dependent steps will be skipped)"
+          || echo "  -> Node pinned install failed or was skipped (continuing; npm-dependent steps will be skipped)"
         ;;
     esac
     # Make the fresh install resolvable for the remainder of this script.

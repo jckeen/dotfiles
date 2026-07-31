@@ -303,6 +303,84 @@ else
   fail "unable to plant the in-bundle directory symlink fixture"
 fi
 
+# Codex review on PR #300: the first npm invocation of a first-time pinned
+# Node install (`npm config set prefix`) runs BEFORE the caller's
+# `export PATH="$HOME_DIR/.local/bin:$PATH"`, so npm's `#!/usr/bin/env node`
+# shebang used to exit 127 — masked by `|| echo` — and Codex npm globals later
+# landed outside PATH. Exercise the real install_node_pinned (non-dry) in a
+# sandbox: a stub curl serves a fixture tarball whose npm needs the
+# freshly-linked node as its shebang interpreter; the stub node records the
+# prefix call. Fails on the old ordering (npm never runs → marker never
+# written).
+NODEHOME="$(mktemp -d)"
+NODESTUBS="$(mktemp -d)"
+NODEFIX="$(mktemp -d)"
+NODEOUT="$(mktemp)"
+# shellcheck disable=SC2034  # consumed by the eval'd node_asset_name below
+NODE_VERSION="$(sed -n 's/^NODE_VERSION="\(.*\)"/\1/p' "$SETUP" | head -1)"
+eval "$(sed -n '/^_sha256()/,/^}/p; /^node_asset_name()/,/^}/p; /^install_node_pinned()/,/^}/p' "$SETUP")"
+
+if asset="$(node_asset_name)"; then
+  mkdir -p "$NODEFIX/$asset/bin"
+  cat > "$NODEFIX/$asset/bin/node" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$NODEHOME/npm-invocation"
+STUB
+  chmod +x "$NODEFIX/$asset/bin/node"
+  printf '#!/usr/bin/env node\n// stub npm; the stub node above records the argv\n' \
+    > "$NODEFIX/$asset/bin/npm"
+  chmod +x "$NODEFIX/$asset/bin/npm"
+  tar -czf "$NODEFIX/$asset.tar.gz" -C "$NODEFIX" "$asset"
+  (cd "$NODEFIX" && sha256sum "$asset.tar.gz" > SHASUMS256.txt)
+
+  cat > "$NODESTUBS/curl" <<STUB
+#!/bin/sh
+out=""; url=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -*) shift ;;
+    *)  url="\$1"; shift ;;
+  esac
+done
+case "\$url" in
+  *.tar.gz)        cp "$NODEFIX/$asset.tar.gz" "\$out" ;;
+  *SHASUMS256.txt) cp "$NODEFIX/SHASUMS256.txt" "\$out" ;;
+  *) exit 22 ;;
+esac
+STUB
+  chmod +x "$NODESTUBS/curl"
+
+  (
+    export HOME="$NODEHOME"
+    # shellcheck disable=SC2034  # consumed by the eval'd install_node_pinned
+    HOME_DIR="$NODEHOME"
+    # shellcheck disable=SC2034  # consumed by the eval'd install_node_pinned
+    DRY_RUN=0
+    # Deliberately excludes any preexisting node install dir — a first-time
+    # machine has no node on PATH when install_node_pinned runs.
+    PATH="$NODESTUBS:/usr/bin:/bin"
+    install_node_pinned
+  ) > "$NODEOUT" 2>&1
+  node_rc=$?
+
+  if [ "$node_rc" -eq 0 ] \
+    && grep -q "config set prefix $NODEHOME/.local" "$NODEHOME/npm-invocation" 2>/dev/null; then
+    ok "first-time pinned install runs npm with the fresh node on PATH (prefix set)"
+  else
+    fail "first-time pinned install could not run npm — shebang node off PATH? (rc=$node_rc)"
+    sed 's/^/      | /' "$NODEOUT"
+  fi
+  if grep -qi 'WARNING: could not set npm global prefix' "$NODEOUT"; then
+    fail "npm prefix failure was masked as a soft warning instead of surfacing"
+  else
+    ok "npm prefix failure is not masked by a soft-warning path"
+  fi
+else
+  ok "pinned-Node ordering test skipped (non-Linux or unsupported arch) # SKIP"
+fi
+rm -rf "$NODEHOME" "$NODESTUBS" "$NODEFIX" "$NODEOUT"
+
 echo ""
 echo "setup-dry-run: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1
