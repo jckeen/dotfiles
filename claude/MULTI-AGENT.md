@@ -167,8 +167,11 @@ timeout 300 agy -p "<prompt>" --model "Gemini 3.1 Pro (High)" --log-file /tmp/ag
   reports are filed (2026-07-10): the slug-fallback bug as
   google-antigravity/antigravity-cli#581 and the stdin-sentinel /
   `--prompt-file` feature request as antigravity-cli#582 (codex's
-  `exec [PROMPT | -]` cited as prior art). If either lands, move the gate
-  onto the documented channel and drop this pin note. The argv
+  `exec [PROMPT | -]` cited as prior art). The gate migration is tied to
+  #582 ONLY: move onto the documented prompt channel and drop this pin note
+  when #582 lands. #581 is unrelated to the prompt channel — when it lands,
+  just relax the model-label pin guidance; do not move the gate off the
+  verified no-argv stdin path for it. The argv
   `-p "<prompt>"` form stays acceptable only for secret-free prompts.
 - Evidence status: the label pin + propagation-line verification was proven
   live (2026-07-10) on both the argv form and the no-prompt-flag stdin form

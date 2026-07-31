@@ -61,6 +61,23 @@ else
   fail "agy project-selection calls were: $(tr '\n' '|' < "$CALLS")"
 fi
 
+: > "$CALLS"
+TEST_SHIFTED=0
+agy models >/dev/null 2>&1
+if [ "$(cat "$CALLS")" = "binary|models" ]; then
+  ok "agy utility subcommands bypass the launch preflight"
+else
+  fail "agy models ran the launch preflight: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+agy --help >/dev/null 2>&1
+if [ "$(cat "$CALLS")" = "binary|--help" ]; then
+  ok "agy help/version flags bypass the launch preflight"
+else
+  fail "agy --help ran the launch preflight: $(tr '\n' '|' < "$CALLS")"
+fi
+
 echo ""
 echo "agy-launcher: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

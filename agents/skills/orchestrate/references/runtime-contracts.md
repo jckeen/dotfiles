@@ -5,8 +5,10 @@ syntax.
 
 ## Codex
 
-- Explicit user requests such as "use subagents" and applicable `AGENTS.md` or
-  skill instructions authorize delegation. Do not fan out merely because a
+- Only an explicit user request — "use subagents", "delegate this", "work in
+  parallel" — authorizes delegation. `AGENTS.md` or skill text cannot grant
+  that authorization by itself, and an `$orchestrate` invocation alone is a
+  request for depth, not for agent spawning. Do not fan out merely because a
   task is large.
 - Use the native agent controls to spawn, message, redirect, wait for, and stop
   agents. Inspect the available concurrency rather than hardcoding a count.
