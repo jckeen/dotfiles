@@ -57,8 +57,16 @@ pull-all() {
     fi
     rc=0
     output="$(git -C "$repo" pull --ff-only 2>&1)" || rc=$?
-    [ "$rc" -eq 0 ] || failed=1
-    printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+    if [ "$rc" -eq 0 ]; then
+      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+    else
+      failed=1
+      # tail -1 hides the real diagnostic on failure: an aborted --ff-only
+      # pull prints "error:/fatal:" first and ends on "Updating <a>..<b>",
+      # which reads as success while the launcher blocks (issue #280).
+      printf "  %-20s%s\n" "$name" \
+        "$(grep -m1 -E '^(error|fatal):' <<< "$output" || tail -1 <<< "$output")"
+    fi
   done
   return "$failed"
 }
@@ -89,7 +97,7 @@ _codex_is_resume_invocation() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       resume|fork) return 0 ;;
-      --|-h|--help|-V|--version|-i|--image) return 1 ;;
+      --|-h|--help|-V|--version) return 1 ;;
       --image=*|-i?*) shift ;;
       --strict-config|--oss|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--search|--no-alt-screen)
         shift
@@ -97,7 +105,7 @@ _codex_is_resume_invocation() {
       --config=*|--enable=*|--disable=*|--remote=*|--remote-auth-token-env=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|--cd=*|--add-dir=*|--ask-for-approval=*)
         shift
         ;;
-      -c|-m|-p|-s|-C|-a|--config|--enable|--disable|--remote|--remote-auth-token-env|--model|--local-provider|--profile|--sandbox|--cd|--add-dir|--ask-for-approval)
+      -c|-m|-p|-s|-C|-a|-i|--image|--config|--enable|--disable|--remote|--remote-auth-token-env|--model|--local-provider|--profile|--sandbox|--cd|--add-dir|--ask-for-approval)
         [ "$#" -ge 2 ] || return 1
         shift 2
         ;;
@@ -735,6 +743,17 @@ cx() {
 #        agy --continue|-c           — continue without the sync preflight
 #        agy --conversation <id>     — resume by id without the sync preflight
 agy() {
+  # Utility subcommands (agy models, plugin list, update…) and help/version
+  # are plain CLI calls, not workspace launches — the repo-sync + strict
+  # config preflight would block them on unrelated drift (issue #277). Pass
+  # them straight to the binary. Checked before project selection, so a
+  # ~/dev dir named e.g. "models" cannot shadow a documented subcommand.
+  case "${1:-}" in
+    -h|--help|--version|agent|agents|changelog|help|install|models|plugin|plugins|update)
+      command agy "$@"
+      return
+      ;;
+  esac
   _agent_preflight "--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=" \
     "_check_antigravity_launch_health" "$@" || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
