@@ -49,7 +49,9 @@ CHECK_OUT="$(mktemp)"
 INSTALL_OUT="$(mktemp)"
 SKILLS_OUT="$(mktemp)"
 SKILLS_EXTERNAL="$(mktemp -d)"
-trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL"' EXIT
+# dir-link-fixture: planted in the checkout by the issue #274 test below;
+# listed here so an aborted run can't leave the working tree dirty.
+trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
 
 # Seed the mutation-tempting fixtures.
 git config --file "$TESTHOME/.gitconfig" user.name test
@@ -258,6 +260,47 @@ if grep -q '"${checker_args\[@\]}"' "$SETUP"; then
   fail "health audit still expands an empty array under nounset (breaks macOS Bash 3.2)"
 else
   ok "health audit avoids Bash 3.2 empty-array nounset expansion"
+fi
+
+# A symlinked ~/.codex is live runtime state living elsewhere; replacing it
+# with a fresh dir would disconnect auth/sessions from the path Codex uses
+# (issue #273). Setup must refuse, in dry-run and real mode alike.
+CODEX_REAL="$(mktemp -d)"
+mv "$TESTHOME/.codex" "$TESTHOME/.codex.relocated"
+ln -s "$CODEX_REAL" "$TESTHOME/.codex"
+before="$(snapshot "$TESTHOME")"
+if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+  fail "setup accepted a symlinked ~/.codex runtime root"
+elif grep -q "refusing to replace the Codex runtime root" "$OUT"; then
+  ok "setup refuses a symlinked ~/.codex runtime root"
+else
+  fail "symlinked ~/.codex runtime root lacked a useful report"
+fi
+after="$(snapshot "$TESTHOME")"
+if [ "$before" = "$after" ] && [ -L "$TESTHOME/.codex" ]; then
+  ok "symlinked ~/.codex refusal made zero mutations"
+else
+  fail "symlinked ~/.codex refusal mutated \$HOME"
+fi
+rm "$TESTHOME/.codex"
+mv "$TESTHOME/.codex.relocated" "$TESTHOME/.codex"
+rm -rf "$CODEX_REAL"
+
+# An in-bundle symlink that resolves to a DIRECTORY would deploy a directory
+# symlink under ~/.codex/skills, which check-codex.sh flags UNSAFE; setup
+# must reject the bundle instead of installing that state (issue #274).
+ln -s references "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture" 2>/dev/null || true
+if [ -L "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture" ]; then
+  if HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$OUT" 2>&1; then
+    fail "setup accepted an in-bundle directory symlink in a Codex skill"
+  elif grep -q "Codex skill symlink escapes its bundle, is broken, or targets a non-file" "$OUT"; then
+    ok "setup rejects in-bundle directory symlinks in Codex skill bundles"
+  else
+    fail "in-bundle directory symlink lacked a useful report"
+  fi
+  rm "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"
+else
+  fail "unable to plant the in-bundle directory symlink fixture"
 fi
 
 echo ""
