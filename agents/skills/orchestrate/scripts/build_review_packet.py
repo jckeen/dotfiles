@@ -22,6 +22,11 @@ from typing import BinaryIO
 DEFAULT_MAX_BYTES = 200_000
 MAX_DIAGNOSTIC_BYTES = 64_000
 MAX_INDEX_PATH_BYTES = 1_000_000
+# Operational ceiling for --max-bytes. Values above the platform index-size
+# limit make BufferedReader.read(max_bytes + 1) raise OverflowError, which
+# main() does not catch; anything near that limit is an impractical
+# allocation request anyway (issue #289).
+MAX_MAX_BYTES = 100_000_000
 
 
 def drain_bounded(
@@ -512,6 +517,8 @@ def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    if parsed > MAX_MAX_BYTES:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_MAX_BYTES}")
     return parsed
 
 
@@ -641,6 +648,10 @@ def build_packet(args: argparse.Namespace) -> bytes:
         f"{diff_evidence}\n"
     )
     marker = untrusted_marker(body)
+    # DELIBERATE reviewer-facing instructions: this preamble IS the trusted
+    # reviewer contract this builder exists to emit (issues #286-#288, #291).
+    # Everything author-controlled stays between the boundary markers below;
+    # only this fixed template speaks to the reviewer.
     packet = (
         "# Adversarial Review Packet\n\n"
         "## Reviewer contract\n\n"

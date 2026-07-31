@@ -31,7 +31,10 @@ ok() {
 fail() {
   failed=$((failed + 1))
   echo "FAIL - $1"
-  sed 's/^/      | /' "$OUT"
+  # `l` renders control bytes as escapes: several tests deliberately inject
+  # ESC/OSC sequences, and a sanitization regression must not replay them
+  # verbatim into the CI log (issue #290).
+  LC_ALL=C sed -n 's/^/      | /;l' "$OUT"
 }
 
 git -C "$R" init -q
@@ -968,6 +971,23 @@ elif grep -qF 'review packet exceeds --max-bytes (1000)' "$OUT" \
   ok 'the byte bound covers the complete review packet'
 else
   fail 'the complete packet byte bound lacked a safe diagnostic'
+fi
+
+# --max-bytes beyond the operational ceiling must fail with a controlled
+# diagnostic, not an uncaught OverflowError from read() (issue #289).
+: > "$OUT"
+if python3 "$TOOL" \
+  --repo "$R" \
+  --base HEAD \
+  --claim 'Oversized byte bounds fail closed.' \
+  --repro 'git diff --cached --check' \
+  --max-bytes 9223372036854775808 > "$OUT" 2>&1; then
+  fail 'an oversized --max-bytes value was accepted'
+elif grep -qF 'must be at most' "$OUT" \
+  && ! grep -qF 'Traceback' "$OUT"; then
+  ok 'oversized --max-bytes values fail with a controlled diagnostic'
+else
+  fail 'an oversized --max-bytes value produced an uncontrolled failure'
 fi
 
 mv "$R/.gitattributes" "$R/.gitattributes.safe"
