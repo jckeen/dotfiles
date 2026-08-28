@@ -46,6 +46,9 @@ playwright@claude-plugins-official
 sentry@claude-plugins-official
 # posthog → clarity-engine (posthog-js + posthog-node dependencies)
 posthog@claude-plugins-official
+# render → impact-dash (render.yaml); replaces the hand-added user-scope HTTP
+#          entry, whose OAuth discovery failed (no dynamic client registration)
+render@claude-plugins-official
 
 # Third-party (not the official marketplace). soundcheck adds automatic
 # background security triage on generated code — the one review capability the
