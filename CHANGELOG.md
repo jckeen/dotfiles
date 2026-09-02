@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-02 — fix: pull-all no longer blocks launches on a deleted upstream branch
+
+### What changed
+- `pull-all` pulls with `--prune` and treats "no such ref was fetched" as a
+  skip with an explanatory line, so a checkout whose branch was deleted on
+  origin (delete-on-merge) no longer fails `cc`/`cx`/`agy` until the daily
+  git-hygiene timer happened to prune it.
+- Regression coverage in `agent-preflight.test.sh` for the deleted-upstream
+  case, including that the pull is invoked with `--prune`.
+
 ## 2026-07-20 — fix: self-heal Codex skill links before launch
 
 ### What changed
