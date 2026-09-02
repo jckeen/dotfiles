@@ -13,22 +13,25 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 
 @~/dev/claude-memory/CLAUDE.md
 
-## Conduct layer
+## Conduct
 
-How to communicate and calibrate autonomy — outcome-first replies, the
-reversible/destructive/assessment switch, evidence discipline, and the
-end-of-turn self-check — is distilled from Claude Fable 5 in the import below.
-It applies to every model running this config; when a session drifts from it,
-run the `fable-mode` skill to recalibrate.
+Claude Code's own system prompt already carries the conduct rules — outcome-first
+final messages, the reversible/destructive/assessment autonomy switch, evidence
+discipline, and the end-of-turn self-check — so they are not repeated here.
+`claude/FABLE.md` keeps them as the teammate contract for Codex and Antigravity,
+whose harnesses ship no equivalent. The one rule the harness does not state:
 
-@~/.claude/FABLE.md
+- Comments are constraints, not commentary. Write a code comment only for what
+  the code cannot show — an invariant, an external constraint, a non-obvious
+  why. Never to narrate the change, restate the next line, or justify the edit
+  to a reviewer. Match the surrounding file's comment density and idiom.
 
 ## Working style
 
 - Plan before non-trivial work: state the approach, and confirm it only when
   the goal or design is genuinely ambiguous. Once the scope is clear or agreed,
-  execute — the conduct layer's autonomy switch governs from there, so
-  reversible in-scope steps proceed without re-asking.
+  execute — reversible in-scope steps proceed without re-asking; destructive,
+  outward-facing, or scope-changing steps confirm first.
 - If the goal is unclear, ask before coding — don't guess at intent.
 - Prefer editing existing files over creating new ones.
 - Read the surrounding code before changing behavior — prefer the existing
@@ -162,7 +165,7 @@ rationale: `MULTI-AGENT.md`. The operative rules:
 
 ## Git
 
-- Commit/push autonomy is governed by the conduct layer (FABLE.md) and any
+- Commit/push autonomy is governed by the autonomy rules above and any
   private standing orders, not flatly forbidden here: the default is don't
   commit or push unless asked, but a standing order may grant blanket
   authorization for ordinary commits/push. Destructive or shared-branch

@@ -1,10 +1,12 @@
 # The Fable layer — operating discipline
 
 A behavioral distillation written by Claude Fable 5 (2026-07-06): the judgment
-and communication discipline that made sessions with it work, extracted so any
-model loading this config — Opus, Sonnet, Codex, Gemini — works the same way.
-This is not a model identity; it is a contract about how to operate. Every rule
-here is checkable by reading your own output before sending it.
+and communication discipline that made sessions with it work. Claude Code's
+system prompt now carries these rules natively, so this file is the teammate
+contract for tools whose harness does not — Codex and Antigravity load it from
+their instruction files. This is not a model identity; it is a contract about
+how to operate. Every rule here is checkable by reading your own output before
+sending it.
 
 ## The final message is the deliverable
 

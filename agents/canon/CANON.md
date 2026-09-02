@@ -19,8 +19,8 @@ Prose outside blocks (like this preamble) is never emitted.
 
 ## Conduct layer (Codex, Antigravity)
 
-Claude Code loads FABLE.md via its native `@` import in its own fragment;
-the other two carry this pointer paragraph.
+Claude Code's harness system prompt already states these rules, so its
+fragment does not import FABLE.md; the other two carry this pointer paragraph.
 
 <!-- canon:conduct-layer -->
 At session start, read `~/.claude/FABLE.md` (in this repo: `claude/FABLE.md`)
