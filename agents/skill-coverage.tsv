@@ -6,7 +6,6 @@ claude-server	claude-only	Starts Claude Code remote control rather than a portab
 commit-push-pr	shared
 decompose	shared
 drift-sweep	shared
-fable-mode	shared
 fix-issue	shared
 handoff	shared
 jj	claude-only	Claude's current Jujutsu driver contains Claude-specific interaction guidance.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-02 — chore: retire the FABLE.md import for Claude Code; keep it as the Codex/Antigravity contract
+
+### What changed
+- `claude/CLAUDE.md` no longer imports `FABLE.md`. Claude Code's harness
+  system prompt now carries the same conduct rules natively, so the import was
+  a second copy that could only drift. The one rule the harness lacks (code
+  comments are constraints, not commentary) moved into CLAUDE.md directly.
+- `FABLE.md` stays, reframed as the teammate contract for Codex and
+  Antigravity, which still load it from their instruction files.
+- Removed the `fable-mode` skill (never invoked in 41 sessions) from Claude,
+  Codex, and Antigravity bundles, the AgentPack, README, and CLAUDE-GUIDE.
+
 ## 2026-09-02 — fix: pull-all no longer blocks launches on a deleted upstream branch
 
 ### What changed

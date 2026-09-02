@@ -170,7 +170,7 @@ if not skills:
     die("no skills found under claude/skills/*/SKILL.md")
 
 # Pinned skills (skill_order_first) lead in the given order; the rest sort
-# alphabetically — this reproduces fable-mode's deliberate first position.
+# alphabetically.
 first = meta.get("skill_order_first", [])
 skills.sort(key=lambda a: (first.index(a["name"]) if a["name"] in first else len(first), a["name"]))
 atoms += skills
