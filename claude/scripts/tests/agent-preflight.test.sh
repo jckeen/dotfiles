@@ -19,7 +19,7 @@ WRAPPER_CALLS="$(mktemp)"
 trap 'rm -rf "$TEST_HOME" "$TEST_DEV" "$SHIM_DIR"; rm -f "$HEALTH_CALLS" "$WRAPPER_CALLS"' EXIT
 
 mkdir -p "$TEST_DEV/good" "$TEST_DEV/linked-upstream" "$TEST_DEV/bad/.git" \
-  "$TEST_DEV/broken/.git" "$TEST_DEV/dirty/.git"
+  "$TEST_DEV/broken/.git" "$TEST_DEV/dirty/.git" "$TEST_DEV/gone/.git"
 printf 'gitdir: /tmp/simulated-linked-worktree\n' > "$TEST_DEV/good/.git"
 printf 'gitdir: /tmp/simulated-linked-worktree-with-upstream\n' > "$TEST_DEV/linked-upstream/.git"
 cat > "$SHIM_DIR/git" <<'EOF'
@@ -54,6 +54,18 @@ case "${1:-} ${2:-}" in
     if [ "$(basename "$repo")" = "bad" ] && [ "${ALL_PULLS_SUCCEED:-0}" != "1" ]; then
       echo "fatal: simulated pull failure" >&2
       exit 42
+    fi
+    if [ "$(basename "$repo")" = "gone" ]; then
+      # Mirrors a checkout whose upstream branch was deleted on origin after
+      # a merge: the stale remote-tracking ref survives until a --prune fetch,
+      # so a plain pull fails forever while a pruning pull fails exactly once.
+      if [ "${3:-}" != "--prune" ]; then
+        echo "fatal: shim: pull without --prune never clears a gone upstream" >&2
+        exit 3
+      fi
+      echo "Your configuration specifies to merge with the ref 'refs/heads/feature'" >&2
+      echo "from the remote, but no such ref was fetched." >&2
+      exit 1
     fi
     if [ "$(basename "$repo")" = "dirty" ] && [ "${ALL_PULLS_SUCCEED:-0}" != "1" ]; then
       # Mirrors a real aborted --ff-only pull: the diagnostic comes first
@@ -120,6 +132,12 @@ else
   fail "pull-all masked a multi-line pull failure behind its success-looking last line"
 fi
 
+if grep -Eq 'gone[[:space:]]+Upstream branch deleted on origin' <<< "$pull_all_output"; then
+  ok "pull-all names a deleted upstream branch instead of a bare pull error"
+else
+  fail "pull-all did not explain a deleted-upstream pull failure"
+fi
+
 if _agent_preflight "resume" health_probe --model test >/dev/null 2>&1; then
   fail "agent preflight continued after repository sync failed"
 elif [ ! -s "$HEALTH_CALLS" ]; then
@@ -130,6 +148,12 @@ fi
 
 export ALL_PULLS_SUCCEED=1
 export BROKEN_REPO_HEALTHY=1
+if pull-all >/dev/null 2>&1; then
+  ok "a deleted upstream branch is skipped rather than blocking the launch"
+else
+  fail "a deleted upstream branch blocked pull-all even though every other repo pulled"
+fi
+
 HEALTH_RC=9
 if _agent_preflight "resume" health_probe --model test >/dev/null 2>&1; then
   fail "agent preflight continued after its runtime health check failed"

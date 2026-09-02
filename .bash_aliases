@@ -56,9 +56,19 @@ pull-all() {
       continue
     fi
     rc=0
-    output="$(git -C "$repo" pull --ff-only 2>&1)" || rc=$?
+    # --prune: a branch deleted on origin (delete-on-merge after its PR lands)
+    # leaves a stale remote-tracking ref that makes every plain pull fail with
+    # "no such ref was fetched" until something prunes it — which used to be
+    # only the daily git-hygiene timer, so launches failed until the next
+    # morning and then silently worked again.
+    output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
       printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+    elif grep -q 'no such ref was fetched' <<< "$output"; then
+      # Nothing to pull: the checkout tracks a branch that no longer exists.
+      # Same posture as "No upstream branch" — not a launch blocker.
+      printf "  %-20s%s\n" "$name" \
+        "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
     else
       failed=1
       # tail -1 hides the real diagnostic on failure: an aborted --ff-only
