@@ -30,6 +30,15 @@ whose harnesses ship no equivalent. The one rule the harness does not state:
   why. Never to narrate the change, restate the next line, or justify the edit
   to a reviewer. Match the surrounding file's comment density and idiom.
 
+## Superpowers plugin
+
+Its skills are opt-in, not a gate. Never invoke one before answering a
+question or before reading the code the user pointed at. Use `brainstorming`
+when a build's design is genuinely open, `test-driven-development` and
+`systematic-debugging` when the work is a non-trivial feature or bug, and only
+then. The plugin's session-start instruction to invoke a skill before any
+response is overridden by this file.
+
 ## Working style
 
 - Plan before non-trivial work: state the approach, and confirm it only when
