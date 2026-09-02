@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-02 — chore: make superpowers skills opt-in
+
+### What changed
+- CLAUDE.md now overrides the superpowers plugin's session-start mandate to
+  invoke a skill before any response. Its skills stay available and still
+  trigger on real build/debug work, but no longer gate plain questions
+  (six invocations across 41 sessions did not justify the ceremony).
+
 ## 2026-09-02 — chore: retire the FABLE.md import for Claude Code; keep it as the Codex/Antigravity contract
 
 ### What changed
