@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-02 — feat: operator-queue items carry a `verified:` date; the reminder flags stale ones
+
+### What changed
+- The operator-action queue format (handoff skill, claude + agents) gains an
+  optional `- verified: YYYY-MM-DD` line with the rule: when a session touches
+  an item's subject, re-check it against live state and set/bump `verified`;
+  remove the block only when done. Eight of 26 items were stale or wrong this
+  morning because nothing recorded when an item was last checked.
+- `OperatorQueueReminder.hook.sh` computes each item's freshness as the newest
+  of `verified`/`added` (leading date prefix, so annotated dates still parse),
+  marks anything older than 30 days — or undated — `[stale — re-verify]`,
+  shows `verified Nd ago`, and counts stale items in the header. Deadline-first
+  ordering and past-due flags are unchanged; still one awk pass, still bounded.
+- Fixture suite `operator-queue-reminder.test.sh`; wired into CI.
+
 ## 2026-09-02 — feat: the daily git-hygiene timer prunes safely-dead local branches
 
 ### What changed
