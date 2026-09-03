@@ -10,12 +10,13 @@
 #
 # Flags:
 #   --yes       don't prompt before deleting a branch
-#   --dry-run   print "would delete" lines; delete nothing
+#   --dry-run   print "would delete" lines; write nothing — no branch deletion,
+#               no `fetch --prune`, no `remote set-head` (see Notes)
 #   --gh        prune only: also delete a squash-merged branch when GitHub
-#               confirms a MERGED PR whose head ref is the branch AND whose head
-#               SHA is the local tip (or a locally-present descendant of it).
-#               Needs `gh auth status` to pass; any gh error keeps the branch
-#               (fail closed).
+#               confirms a MERGED PR into the default branch whose head ref is
+#               the branch AND whose head SHA is the local tip (or a
+#               locally-present descendant of it). Needs `gh auth status` to
+#               pass; any gh error keeps the branch (fail closed).
 #
 # What "clean" does (heuristic — squash-merge detection by commit subject):
 #   1. git fetch --prune        (drops stale remote-tracking refs)
@@ -24,7 +25,7 @@
 #        a) cherry vs origin/<default> shows all '-' (patch-equivalent), OR
 #        b) every commit's subject is found in origin/<default>'s history
 #           (catches squash-merged branches that cherry misses), OR
-#        c) the branch's PR is MERGED on GitHub (via gh)
+#        c) the branch's PR into origin/<default> is MERGED on GitHub (via gh)
 #   4. Never touches: dirty working trees, current branch, branches checked
 #      out in worktrees, branches with unique unmerged work.
 #
@@ -35,9 +36,11 @@
 #           HYGIENE_MIN_AGE_HOURS (default 24).
 #   delete: no unique commits vs origin/<default> (`git cherry` shows no '+'),
 #           reported as "merged into", "upstream gone" or "cherry-equivalent";
-#     or, with --gh: upstream gone (or never set) AND a merged PR on GitHub
-#           has this branch as head ref and the local tip as its head SHA (or
-#           as an ancestor of a head SHA present locally).
+#     or, with --gh: upstream gone (or never set) AND a PR merged INTO THE
+#           DEFAULT BRANCH on GitHub has this branch as head ref and the local
+#           tip as its head SHA (or as an ancestor of a head SHA present
+#           locally). A PR merged into a release/feature branch that never
+#           reached the default does not count.
 #   A squash-merged branch with unique commits and no confirming PR is kept —
 #   subject matching is a heuristic, and prune runs unattended.
 #
@@ -49,6 +52,13 @@
 # Notes:
 #   - Every deletion prints the full SHA and a recovery command; the SHA also
 #     lives in `git reflog` for ~90 days.
+#   - --dry-run touches no local state. It still runs `git fetch origin`
+#     (updates remote-tracking refs, deletes none) so the classification sees
+#     the remote's current tips, learns which refs a real run would drop via
+#     `git fetch --prune --dry-run`, and resolves a missing origin/HEAD with
+#     `git ls-remote --symref` instead of `remote set-head`. A branch whose
+#     upstream would be pruned is classified as "upstream gone", so the
+#     preview matches what the real run deletes.
 #   - Requires: git, gh (optional; used by clean's check (c) and prune --gh).
 
 set -euo pipefail
@@ -69,7 +79,9 @@ Usage: $(basename "$0") [audit|clean|prune] [DIR] [--yes] [--dry-run] [--gh]
   clean   heuristic cleanup: cherry-equivalent, subject-matched squash merges, merged PRs
   prune   strict cleanup: no unique commits (or --gh: a merged PR carries this tip),
           untouched for HYGIENE_MIN_AGE_HOURS (24); never default/current/worktree branches
-  --yes      no prompt   --dry-run  delete nothing   --gh  prune's GitHub merged-PR check
+  --yes      no prompt
+  --dry-run  write nothing: no deletions, no fetch --prune, no remote set-head
+  --gh       prune only: also delete when a PR into the default branch merged with this tip
 EOF
 }
 
@@ -178,9 +190,9 @@ is_branch_safely_merged() {
   if command -v gh >/dev/null 2>&1; then
     local pr_state
     pr_state=$(gh -R "$(origin_slug "$repo")" \
-               pr list --state all --head "$br" --json state --jq '.[0].state' 2>/dev/null || echo "")
+               pr list --state all --head "$br" --base "$default" --json state --jq '.[0].state' 2>/dev/null || echo "")
     if [[ "$pr_state" == "MERGED" ]]; then
-      REASON="PR is MERGED on GitHub"
+      REASON="PR into $default is MERGED on GitHub"
       return 0
     fi
   fi
@@ -201,26 +213,29 @@ branch_last_touched() {
   echo $(( commit_t > reflog_t ? commit_t : reflog_t ))
 }
 
-# Returns 0 when GitHub confirms a merged PR whose head is this branch and
-# whose head SHA is this tip — or a descendant of it that is present locally
-# (the PR was rebased or extended after this checkout last fetched it). A name
-# match alone is not enough: local commits the PR never carried must survive.
-# Any gh failure returns 1 (keep). Sets GH_REASON.
+# Returns 0 when GitHub confirms a PR merged into the default branch whose head
+# is this branch and whose head SHA is this tip — or a descendant of it that is
+# present locally (the PR was rebased or extended after this checkout last
+# fetched it). A name match alone is not enough: local commits the PR never
+# carried must survive. The base filter matters too: a PR merged into a
+# release/feature branch has not reached the default, so its work is not yet
+# on origin/<default> and the branch must stay. Any gh failure returns 1
+# (keep). Sets GH_REASON.
 gh_confirms_merged() {
-  local repo="$1" br="$2" tip="$3" out line num head
+  local repo="$1" br="$2" tip="$3" default="$4" out line num head
   GH_REASON=""
-  out=$(gh -R "$(origin_slug "$repo")" pr list --state merged --head "$br" --limit 10 \
+  out=$(gh -R "$(origin_slug "$repo")" pr list --state merged --head "$br" --base "$default" --limit 10 \
           --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' 2>/dev/null) || return 1
   while IFS= read -r line; do
     [[ "$line" =~ ^([0-9]+)\ ([0-9a-f]{40})$ ]] || continue
     num="${BASH_REMATCH[1]}" head="${BASH_REMATCH[2]}"
     if [[ "$head" == "$tip" ]]; then
-      GH_REASON="PR #$num merged on GitHub with this exact tip"
+      GH_REASON="PR #$num merged into $default on GitHub with this exact tip"
       return 0
     fi
     if git -C "$repo" cat-file -e "$head^{commit}" 2>/dev/null \
        && git -C "$repo" merge-base --is-ancestor "$tip" "$head" 2>/dev/null; then
-      GH_REASON="PR #$num merged on GitHub; local tip is an ancestor of its head ${head:0:7}"
+      GH_REASON="PR #$num merged into $default on GitHub; local tip is an ancestor of its head ${head:0:7}"
       return 0
     fi
   done <<< "$out"
@@ -251,8 +266,11 @@ is_branch_safely_dead() {
   local upstream track
   IFS=$'\t' read -r upstream track < <(git -C "$repo" for-each-ref \
       --format='%(upstream)%09%(upstream:track)' "refs/heads/$br")
+  # Under --dry-run nothing was pruned, so a ref the real run would drop is
+  # still present; WOULD_PRUNE (filled by audit_repo) makes it count as gone.
   local gone=false
   [[ "$track" == "[gone]" ]] && gone=true
+  [[ -n "$upstream" && -n "$WOULD_PRUNE" ]] && grep -qxF "$upstream" <<<"$WOULD_PRUNE" && gone=true
 
   local cherry_unique
   cherry_unique=$(git -C "$repo" cherry "origin/$default" "$br" 2>/dev/null | grep -c '^+' || true)
@@ -273,7 +291,7 @@ is_branch_safely_dead() {
   if $GH_OK && { $gone || [[ -z "$upstream" ]]; }; then
     local tip
     tip=$(git -C "$repo" rev-parse "refs/heads/$br")
-    if gh_confirms_merged "$repo" "$br" "$tip"; then
+    if gh_confirms_merged "$repo" "$br" "$tip" "$default"; then
       REASON="$GH_REASON"
       return 0
     fi
@@ -333,18 +351,34 @@ audit_repo() {
   echo "${c_blue}┌── $repo${c_reset}  ${c_dim}(on $current; default: ${default:-?})${c_reset}"
 
   if [[ -z "$default" ]]; then
-    if [[ "$MODE" != "audit" ]]; then
+    if [[ "$MODE" == "audit" ]]; then
+      warn "origin/HEAD not set — run \`git remote set-head origin -a\`"
+    elif $DRY_RUN; then
+      # Read-only lookup of the remote's HEAD; the real run writes it.
+      default=$(git ls-remote --symref origin HEAD 2>/dev/null \
+                | sed -nE 's|^ref: refs/heads/(.+)\tHEAD$|\1|p')
+      [[ -n "$default" ]] && info "would set origin/HEAD -> $default [dry-run]"
+    else
       git remote set-head origin -a >/dev/null 2>&1 && ok "set origin/HEAD"
       default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' || echo "")
-    else
-      warn "origin/HEAD not set — run \`git remote set-head origin -a\`"
     fi
   fi
 
+  # WOULD_PRUNE: refs/remotes/origin/<x> lines that a real run's --prune would
+  # drop; only populated under --dry-run, read by is_branch_safely_dead.
+  WOULD_PRUNE=""
   if [[ "$MODE" != "audit" ]]; then
     local pruned
-    pruned=$(git fetch --prune origin 2>&1 | grep -c '\[deleted\]' || true)
-    [[ "$pruned" -gt 0 ]] && ok "pruned $pruned stale remote-tracking refs"
+    if $DRY_RUN; then
+      git fetch origin >/dev/null 2>&1 || true
+      WOULD_PRUNE=$(git fetch --prune --dry-run origin 2>&1 \
+                    | sed -nE 's|^ - \[deleted\].*-> (origin/.+)$|refs/remotes/\1|p')
+      pruned=$(grep -c . <<<"$WOULD_PRUNE" || true)
+      [[ "$pruned" -gt 0 ]] && info "would prune $pruned stale remote-tracking ref(s) [dry-run]"
+    else
+      pruned=$(git fetch --prune origin 2>&1 | grep -c '\[deleted\]' || true)
+      [[ "$pruned" -gt 0 ]] && ok "pruned $pruned stale remote-tracking refs"
+    fi
   fi
 
   if [[ "$dirty" -gt 0 ]]; then

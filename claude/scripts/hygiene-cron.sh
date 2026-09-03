@@ -3,7 +3,9 @@
 #   1. Runs `gh-bootstrap --check --all ~/dev`, writes JSON status for hooks
 #   2. Runs `git-hygiene prune ~/dev --yes --gh` — deletes only safely-dead
 #      local branches (see git-hygiene.sh for the SAFE class), logs each
-#      deletion with its SHA, and pushes an ntfy summary when ≥1 was deleted
+#      deletion with its SHA, and pushes an ntfy summary when ≥1 was deleted.
+#      The summary carries counts only — ntfy topics are effectively public,
+#      so repo and branch names stay in the local log.
 #
 # Triggered by git-hygiene.timer. Logs to ~/.local/state/hygiene/cron.log;
 # the last run's deletions land in last-prune.tsv, all of them in deletions.tsv
@@ -105,10 +107,10 @@ else
     cat "$REPORT" >> "$LOG_DIR/deletions.tsv"
     repo_count=$(cut -f1 "$REPORT" | sort -u | wc -l)
     echo "pruned $deleted_count branch(es) across $repo_count repo(s) — recovery SHAs in $LOG_DIR/deletions.tsv"
-    {
-      echo "$deleted_count branch(es) deleted across $repo_count repo(s); recover: git branch <name> <sha> (see ~/.local/state/hygiene/deletions.tsv)"
-      awk -F'\t' '{ printf "%s: %s (%s)\n", $1, $2, substr($3, 1, 7) }' "$REPORT"
-    } | notify_ntfy "git-hygiene: pruned $deleted_count branch(es)"
+    # Counts only: an ntfy topic is readable by anyone who guesses it, so the
+    # private repo/branch names (and $HOME) never leave this machine.
+    echo "git-hygiene pruned $deleted_count branch(es) across $repo_count repo(s); details and recovery SHAs in ${LOG_FILE/#"$HOME"/\~}" \
+      | notify_ntfy "git-hygiene: pruned $deleted_count branch(es)"
   else
     echo "pruned 0 branches — no notification"
   fi

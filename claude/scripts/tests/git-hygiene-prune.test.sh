@@ -25,9 +25,11 @@ pass=0
 failed=0
 
 # ── PATH shims ─────────────────────────────────────────────────────────
-# gh: `auth status` exits GH_FAKE_AUTH_EXIT; `pr list --head X` records X and
-# replays $GH_FAKE_DIR/pr.X (the "<number> <sha>" lines git-hygiene asks for
-# via --jq), exits 1 when $GH_FAKE_DIR/fail.X exists, else prints nothing.
+# gh: `auth status` exits GH_FAKE_AUTH_EXIT; `pr list --head X [--base B]`
+# records "X B" and replays the "<number> <sha> <base>" rows of
+# $GH_FAKE_DIR/pr.X whose base matches B (all rows when no --base was passed —
+# which is exactly the bug a base-less query has), printing "<number> <sha>"
+# as git-hygiene's --jq does; exits 1 when $GH_FAKE_DIR/fail.X exists.
 # curl: records headers + body so the ntfy summary can be asserted.
 SHIM_DIR="$(mktemp -d)"
 cat > "$SHIM_DIR/gh" <<'EOF'
@@ -35,14 +37,19 @@ cat > "$SHIM_DIR/gh" <<'EOF'
 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
   exit "${GH_FAKE_AUTH_EXIT:-0}"
 fi
-head="" prev=""
+head="" base="" prev=""
 for a in "$@"; do
   [ "$prev" = "--head" ] && head="$a"
+  [ "$prev" = "--base" ] && base="$a"
   prev="$a"
 done
-echo "$head" >> "$GH_FAKE_DIR/calls"
+echo "$head ${base:-<none>}" >> "$GH_FAKE_DIR/calls"
 [ -e "$GH_FAKE_DIR/fail.$head" ] && { echo "gh: boom" >&2; exit 1; }
-[ -e "$GH_FAKE_DIR/pr.$head" ] && cat "$GH_FAKE_DIR/pr.$head"
+if [ -e "$GH_FAKE_DIR/pr.$head" ]; then
+  while read -r num sha prbase; do
+    if [ -z "$base" ] || [ "$base" = "$prbase" ]; then echo "$num $sha"; fi
+  done < "$GH_FAKE_DIR/pr.$head"
+fi
 exit 0
 EOF
 cat > "$SHIM_DIR/curl" <<'EOF'
@@ -120,7 +127,7 @@ build_fixture() {
 
   # squash-* : two commits each, squash-merged GitHub-side, remote deleted.
   local br
-  for br in squash-nopr squash-pr squash-pr-wrongsha gh-fail; do
+  for br in squash-nopr squash-pr squash-pr-wrongsha squash-pr-release gh-fail; do
     g -C "$C" checkout -q -b "$br" main
     commit_file "$C" "$br-1.txt" "$br one"
     commit_file "$C" "$br-2.txt" "$br two"
@@ -164,28 +171,43 @@ build_fixture() {
   # recent: nothing unique, created just now.
   git -C "$C" branch -q recent main
 
+  # Fake GitHub: "<number> <sha> <base>" per merged PR. squash-pr-release's
+  # PR merged with this exact tip — but into release/x, never into main.
   GH_FAKE_DIR="$(mktemp -d)"
-  echo "7 $(git -C "$C" rev-parse squash-pr)" > "$GH_FAKE_DIR/pr.squash-pr"
-  echo "8 0000000000000000000000000000000000000000" > "$GH_FAKE_DIR/pr.squash-pr-wrongsha"
-  echo "9 $(git -C "$C" rev-parse gh-fail)" > "$GH_FAKE_DIR/pr.gh-fail"
+  echo "7 $(git -C "$C" rev-parse squash-pr) main" > "$GH_FAKE_DIR/pr.squash-pr"
+  echo "8 0000000000000000000000000000000000000000 main" > "$GH_FAKE_DIR/pr.squash-pr-wrongsha"
+  echo "9 $(git -C "$C" rev-parse gh-fail) main" > "$GH_FAKE_DIR/pr.gh-fail"
   touch "$GH_FAKE_DIR/fail.gh-fail"
-  echo "10 $(git -C "$FIX/gh" rev-parse squash-pr-ancestor)" > "$GH_FAKE_DIR/pr.squash-pr-ancestor"
-  echo "11 $(git -C "$FIX/gh" rev-parse squash-pr-unfetched)" > "$GH_FAKE_DIR/pr.squash-pr-unfetched"
+  echo "10 $(git -C "$FIX/gh" rev-parse squash-pr-ancestor) main" > "$GH_FAKE_DIR/pr.squash-pr-ancestor"
+  echo "11 $(git -C "$FIX/gh" rev-parse squash-pr-unfetched) main" > "$GH_FAKE_DIR/pr.squash-pr-unfetched"
+  echo "12 $(git -C "$C" rev-parse squash-pr-release) release/x" > "$GH_FAKE_DIR/pr.squash-pr-release"
 }
+
+has_remote_ref() { git -C "$FIX/dev/repo" rev-parse --verify -q "refs/remotes/origin/$1" >/dev/null 2>&1; }
 
 branches() { LC_ALL=C git -C "$FIX/dev/repo" for-each-ref --format='%(refname:short)' refs/heads/ | LC_ALL=C sort | tr '\n' ' '; }
 has_branch() { git -C "$FIX/dev/repo" rev-parse --verify -q "refs/heads/$1" >/dev/null 2>&1; }
 
-ALL="current-branch gh-fail gone-empty main merged-ff recent squash-nopr squash-pr squash-pr-ancestor squash-pr-unfetched squash-pr-wrongsha unique-work wt-branch "
+ALL="current-branch gh-fail gone-empty main merged-ff recent squash-nopr squash-pr squash-pr-ancestor squash-pr-release squash-pr-unfetched squash-pr-wrongsha unique-work wt-branch "
 
-# ── prune: dry-run deletes nothing, names what it would ─────────────────
+# ── prune: dry-run deletes nothing, writes nothing, names what it would ──
+# The clone has never run fetch --prune, so origin/squash-pr is a stale
+# remote-tracking ref (the remote branch is gone); origin/HEAD is removed so
+# the default-branch lookup has to happen without `remote set-head`.
 build_fixture "$(mktemp -d)"
+git -C "$FIX/dev/repo" symbolic-ref -d refs/remotes/origin/HEAD
+assert "dry-run precondition: stale origin/squash-pr present" "has_remote_ref squash-pr"
 out="$("$HYGIENE" prune "$FIX/dev" --yes --dry-run --gh 2>&1)"
 assert "dry-run: every branch survives" "[ \"\$(branches)\" = \"$ALL\" ]"
+assert "dry-run: stale remote-tracking ref not pruned" "has_remote_ref squash-pr"
+assert "dry-run: origin/HEAD not written" "! has_remote_ref HEAD"
+assert "dry-run: reports the default it resolved read-only" "outgrep 'would set origin/HEAD -> main'"
+assert "dry-run: reports refs the real run would prune" "outgrepE 'would prune [1-9][0-9]* stale remote-tracking ref'"
 assert "dry-run: would delete merged-ff" "outgrep 'would delete merged-ff'"
-assert "dry-run: would delete squash-pr (gh confirms)" "outgrep 'would delete squash-pr '"
+assert "dry-run: would delete squash-pr (gh confirms; upstream would be pruned)" "outgrep 'would delete squash-pr '"
 assert "dry-run: would delete gone-empty" "outgrep 'would delete gone-empty'"
 assert "dry-run: keeps squash-nopr" "outgrep 'squash-nopr — kept'"
+assert "dry-run: keeps squash-pr-release (PR base is not the default)" "outgrep 'squash-pr-release — kept'"
 assert "dry-run: banner says dry-run" "outgrep 'prune (dry-run)'"
 
 # ── prune without --gh: only zero-unique-commit branches go ────────────
@@ -216,16 +238,18 @@ assert "--gh unauthenticated: gh pr list never called" "[ ! -s '$GH_FAKE_DIR/cal
 # ── --gh with a login: only an exact-tip merged PR unlocks a squash branch ─
 out="$("$HYGIENE" prune "$FIX/dev" --yes --gh 2>&1)"
 assert "--gh: squash-pr deleted" "! has_branch squash-pr"
-assert "--gh: deletion reason names the PR" "outgrepE 'deleted squash-pr .*PR #7 merged on GitHub with this exact tip'"
+assert "--gh: deletion reason names the PR" "outgrepE 'deleted squash-pr .*PR #7 merged into main on GitHub with this exact tip'"
 assert "--gh: squash-nopr kept (no merged PR)" "has_branch squash-nopr"
 assert "--gh: squash-pr-wrongsha kept (PR head is not this tip)" "has_branch squash-pr-wrongsha"
 assert "--gh: gh-fail kept (gh error fails closed)" "has_branch gh-fail"
 assert "--gh: squash-pr-ancestor deleted (local tip is an ancestor of the fetched PR head)" "! has_branch squash-pr-ancestor"
-assert "--gh: ancestor reason names the PR" "outgrepE 'deleted squash-pr-ancestor .*PR #10 merged on GitHub; local tip is an ancestor of its head [0-9a-f]{7}'"
+assert "--gh: ancestor reason names the PR" "outgrepE 'deleted squash-pr-ancestor .*PR #10 merged into main on GitHub; local tip is an ancestor of its head [0-9a-f]{7}'"
 assert "--gh: squash-pr-unfetched kept (PR head object absent locally)" "has_branch squash-pr-unfetched"
-assert "--gh: gh asked about squash-pr" "grep -qx 'squash-pr' '$GH_FAKE_DIR/calls'"
+assert "--gh: squash-pr-release kept (merged into release/x, never into main)" "has_branch squash-pr-release"
+assert "--gh: gh asked about squash-pr with --base main" "grep -qx 'squash-pr main' '$GH_FAKE_DIR/calls'"
+assert "--gh: every gh query carried the default base" "! grep -q '<none>' '$GH_FAKE_DIR/calls'"
 assert "--gh: survivors are exactly the unsafe set" \
-  "[ \"\$(branches)\" = 'current-branch gh-fail main recent squash-nopr squash-pr-unfetched squash-pr-wrongsha unique-work wt-branch ' ]"
+  "[ \"\$(branches)\" = 'current-branch gh-fail main recent squash-nopr squash-pr-release squash-pr-unfetched squash-pr-wrongsha unique-work wt-branch ' ]"
 
 # ── age window is configurable ──────────────────────────────────────────
 out="$(HYGIENE_MIN_AGE_HOURS=0 "$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
@@ -264,12 +288,29 @@ assert "cron: deletions.tsv appended (4 rows)" "[ \"\$(wc -l < '$H/.local/state/
 assert "cron: ntfy sent once" "[ \"\$(wc -l < '$CURL_FAKE_DIR/calls')\" -eq 1 ]"
 assert "cron: ntfy URL uses settings.json topic" "grep -qx 'https://ntfy.sh/test-topic' '$CURL_FAKE_DIR/argv'"
 assert "cron: ntfy title counts deletions" "grep -qx 'Title: git-hygiene: pruned 4 branch(es)' '$CURL_FAKE_DIR/argv'"
-assert "cron: ntfy body lists repo: branch" "grep -qE '^repo: merged-ff \([0-9a-f]{7}\)$' '$CURL_FAKE_DIR/body'"
+assert "cron: ntfy body is counts + log path" \
+  "grep -qx 'git-hygiene pruned 4 branch(es) across 1 repo(s); details and recovery SHAs in ~/.local/state/hygiene/cron.log' '$CURL_FAKE_DIR/body'"
+assert "cron: ntfy body carries no repo or branch names" \
+  "! grep -qE 'repo:|merged-ff|squash-pr|gone-empty|[0-9a-f]{40}' '$CURL_FAKE_DIR/body' '$CURL_FAKE_DIR/argv'"
+assert "cron: ntfy body does not leak \$HOME" "! grep -qF \"$H\" '$CURL_FAKE_DIR/body'"
+assert "cron: log still names every deleted branch" "grep -q 'deleted squash-pr ' '$log'"
 
 # Second run: nothing left to delete → no notification.
 HOME="$H" HYGIENE_DEV_DIR="$FIX/dev" HYGIENE_SCRIPT_DIR="$H/stub" "$CRON"
 assert "cron: zero deletions → no ntfy" "[ \"\$(wc -l < '$CURL_FAKE_DIR/calls')\" -eq 1 ]"
 assert "cron: zero deletions logged" "grep -q 'pruned 0 branches — no notification' '$log'"
+rm -rf "$FIX" "$GH_FAKE_DIR" "$H" "$CURL_FAKE_DIR"
+
+# ── hygiene-cron: NTFY_SERVER overrides the ntfy host ───────────────────
+build_fixture "$(mktemp -d)"
+H="$(mktemp -d)"
+mkdir -p "$H/stub"
+printf '#!/usr/bin/env bash\necho "  repo — clean"\n' > "$H/stub/gh-bootstrap.sh"
+chmod +x "$H/stub/gh-bootstrap.sh"
+ln -s "$(cd -P "$(dirname "$HYGIENE")" && pwd)/git-hygiene.sh" "$H/stub/git-hygiene.sh"
+CURL_FAKE_DIR="$(mktemp -d)"
+HOME="$H" NTFY_TOPIC=t2 NTFY_SERVER=https://ntfy.example.com/sub HYGIENE_DEV_DIR="$FIX/dev" HYGIENE_SCRIPT_DIR="$H/stub" "$CRON"
+assert "NTFY_SERVER: ntfy URL uses the override" "grep -qx 'https://ntfy.example.com/sub/t2' '$CURL_FAKE_DIR/argv'"
 rm -rf "$FIX" "$GH_FAKE_DIR" "$H" "$CURL_FAKE_DIR"
 
 # ── hygiene-cron: HYGIENE_DELETE=0 disables the prune entirely ──────────

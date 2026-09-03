@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-02 — fix: prune confirms merges against the default branch; dry-run is read-only; ntfy sends counts only
+
+### What changed
+- `git-hygiene.sh`: the GitHub merged-PR check (prune `--gh`, and clean's
+  check (c)) now queries `gh pr list … --base <default>`. A branch whose PR
+  merged into a release or feature branch that never reached the default was
+  previously deleted as "merged"; it is now kept, and the deletion reason
+  names the base ("PR #N merged into main …").
+- `--dry-run` no longer writes anything: no `git remote set-head` (a missing
+  origin/HEAD is resolved read-only via `git ls-remote --symref`) and no
+  `git fetch --prune`. It still runs a plain `git fetch origin` (updates refs,
+  deletes none) and learns which refs a real run would drop from
+  `git fetch --prune --dry-run`, treating those upstreams as gone — so the
+  preview matches the real run without touching remote-tracking state.
+- `hygiene-cron.sh`: the ntfy summary is now counts only ("git-hygiene pruned
+  N branch(es) across M repo(s); details and recovery SHAs in
+  ~/.local/state/hygiene/cron.log"). Repo and branch names, SHAs, and `$HOME`
+  stay in the local log — ntfy topics are readable by anyone who guesses
+  them. `NTFY_SERVER` (default `https://ntfy.sh`) was already honoured and is
+  now tested.
+- `git-hygiene-prune.test.sh`: 52 → 64 assertions; the `gh` shim filters by
+  `--base` and a `squash-pr-release` fixture branch pins the base check.
+
 ## 2026-09-02 — feat: operator-queue items carry a `verified:` date; the reminder flags stale ones
 
 ### What changed

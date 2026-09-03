@@ -20,8 +20,10 @@ The user has a three-layer auto-hygiene system in `~/dev/dotfiles/`:
    branches (class below). Every deletion is logged with its SHA to
    `~/.local/state/hygiene/cron.log` and `deletions.tsv` (recover with
    `git branch <name> <sha>`); an ntfy summary is pushed only when something
-   was deleted. `HYGIENE_DELETE=0` in the unit's environment disables the
-   prune.
+   was deleted, and it carries counts plus the log path only — repo and
+   branch names never leave the local log (ntfy topics are effectively
+   public). `NTFY_SERVER` overrides the default `https://ntfy.sh`.
+   `HYGIENE_DELETE=0` in the unit's environment disables the prune.
 3. **Shell `gh` wrapper** in `.bash_aliases` — when the user runs
    `gh repo create` or `gh repo clone` from their shell, the wrapper auto-runs
    `gh-bootstrap.sh` on the new repo. Note: this only fires from the user's
@@ -37,7 +39,8 @@ When the user asks about hygiene state:
 2. If the user wants a fresh check, run
    `~/dev/dotfiles/gh-bootstrap.sh --check --all ~/dev`.
 3. To clean stale local branches now: `~/dev/dotfiles/git-hygiene.sh prune
-   ~/dev --yes --gh` (what the timer runs; add `--dry-run` to preview), or
+   ~/dev --yes --gh` (what the timer runs; add `--dry-run` to preview — it
+   writes nothing: no deletions, no `fetch --prune`, no `remote set-head`), or
    the broader heuristic `~/dev/dotfiles/git-hygiene.sh clean ~/dev --yes`.
 4. To bootstrap a new or drifted repo:
    `~/dev/dotfiles/gh-bootstrap.sh <owner/repo>` or `--all <dir>`.
@@ -56,7 +59,9 @@ signals before deleting:
 1. `git cherry origin/<default> <branch>` — patch-equivalent commits
 2. Each commit's subject is found in `origin/<default>` history
    (catches squash collapses that cherry misses)
-3. `gh pr list --state all --head <branch>` returns MERGED
+3. `gh pr list --state all --head <branch> --base <default>` returns MERGED
+   (a PR merged into a release/feature branch that never reached the default
+   does not count)
 
 A branch is deleted only when at least one signal confirms merge. Dirty
 working trees, current branch, and worktree-checked-out branches are always
@@ -66,9 +71,9 @@ skipped.
 unattended: it deletes a branch only when it is not the default, checked-out,
 or worktree branch, was not touched in the last 24 h, and either has no unique
 commits vs `origin/<default>` (merged, upstream gone, or cherry-equivalent)
-or — with `--gh` and a working `gh auth status` — GitHub shows a merged PR
-whose head ref is the branch and whose head SHA is the local tip (or a
-locally-fetched descendant of it). Subject matching is not used; a
+or — with `--gh` and a working `gh auth status` — GitHub shows a PR merged
+into the default branch whose head ref is the branch and whose head SHA is
+the local tip (or a locally-fetched descendant of it). Subject matching is not used; a
 squash-merged branch with no confirming PR is kept, and any `gh` error keeps
 the branch.
 
