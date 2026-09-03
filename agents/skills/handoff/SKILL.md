@@ -79,11 +79,20 @@ per block:
 - added: YYYY-MM-DD
 - project: <source project>
 - deadline: YYYY-MM-DD
+- verified: YYYY-MM-DD
 - action: <one line: what the operator must do>
 ```
 
-The slug is stable (same action = same slug across sessions); `deadline` is
-optional — omit the line if none. **Append only if absent** — match on the
-slug, never re-add or duplicate an existing item. **Remove an item's block
-only when the action is actually done**, not when it's merely mentioned
-again.
+The slug is stable (same action = same slug across sessions); `deadline` and
+`verified` are optional — omit the line if none. **Append only if absent** —
+match on the slug, never re-add or duplicate an existing item. **Remove an
+item's block only when the action is actually done**, not when it's merely
+mentioned again.
+
+`verified` records the last time the item was checked against live state
+(the PR, the env var, the dashboard — not the previous handoff). **When a
+session touches an item's subject, re-check it against live state and
+set/bump `verified`; remove the block only when done.** The SessionStart
+reminder treats the newest of `verified`/`added` as the item's freshness and
+marks anything older than 30 days `[stale — re-verify]`, so an unbumped item
+announces its own rot instead of being repeated as fact.

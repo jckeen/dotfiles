@@ -216,6 +216,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/git-hygiene-prune.test.sh
 
+      # SessionStart reminder: deadline-first ordering, past-due flags, and the
+      # verified/added freshness rule are pinned against crafted queues.
+      - name: operator-queue reminder (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/operator-queue-reminder.test.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest
