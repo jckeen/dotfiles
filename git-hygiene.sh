@@ -2,11 +2,22 @@
 # git-hygiene — multi-repo branch hygiene audit and cleanup
 #
 # Usage:
-#   git-hygiene audit [DIR]    # report only, no changes (default: ~/dev)
-#   git-hygiene clean [DIR]    # safe automatic cleanup
-#   git-hygiene clean --yes    # don't prompt before deleting branches
+#   git-hygiene audit [DIR]                       # report only (default DIR: ~/dev)
+#   git-hygiene clean [DIR] [--yes] [--dry-run]   # heuristic cleanup (below)
+#   git-hygiene prune [DIR] [--yes] [--gh] [--dry-run]
+#                                                 # strict "safely dead" cleanup —
+#                                                 # what the daily timer runs
 #
-# What "safe cleanup" does:
+# Flags:
+#   --yes       don't prompt before deleting a branch
+#   --dry-run   print "would delete" lines; delete nothing
+#   --gh        prune only: also delete a squash-merged branch when GitHub
+#               confirms a MERGED PR whose head ref is the branch AND whose head
+#               SHA is the local tip (or a locally-present descendant of it).
+#               Needs `gh auth status` to pass; any gh error keeps the branch
+#               (fail closed).
+#
+# What "clean" does (heuristic — squash-merge detection by commit subject):
 #   1. git fetch --prune        (drops stale remote-tracking refs)
 #   2. git remote set-head origin -a  (sets origin/HEAD if missing)
 #   3. For each non-default local branch: delete IF
@@ -17,27 +28,62 @@
 #   4. Never touches: dirty working trees, current branch, branches checked
 #      out in worktrees, branches with unique unmerged work.
 #
+# What "prune" deletes — the SAFE class, evaluated per branch after the same
+# fetch --prune / set-head steps:
+#   never:  the default branch, the checked-out branch, a worktree's branch,
+#           or anything touched (commit or ref update) within the last
+#           HYGIENE_MIN_AGE_HOURS (default 24).
+#   delete: no unique commits vs origin/<default> (`git cherry` shows no '+'),
+#           reported as "merged into", "upstream gone" or "cherry-equivalent";
+#     or, with --gh: upstream gone (or never set) AND a merged PR on GitHub
+#           has this branch as head ref and the local tip as its head SHA (or
+#           as an ancestor of a head SHA present locally).
+#   A squash-merged branch with unique commits and no confirming PR is kept —
+#   subject matching is a heuristic, and prune runs unattended.
+#
+# Env:
+#   HYGIENE_MIN_AGE_HOURS   prune's "recently touched" window (default 24)
+#   HYGIENE_REPORT=FILE     append "repo<TAB>branch<TAB>sha<TAB>reason" per
+#                           deletion (the timer turns this into a summary)
+#
 # Notes:
-#   - Deleted branch SHAs are kept in `git reflog` for ~90 days (recoverable).
-#   - Requires: git, gh (optional but recommended for PR-based detection).
+#   - Every deletion prints the full SHA and a recovery command; the SHA also
+#     lives in `git reflog` for ~90 days.
+#   - Requires: git, gh (optional; used by clean's check (c) and prune --gh).
 
 set -euo pipefail
 
 MODE=""
 ROOT=""
 ASSUME_YES=false
+DRY_RUN=false
+GH_CHECK=false
+GH_OK=false
+MIN_AGE_HOURS="${HYGIENE_MIN_AGE_HOURS:-24}"
+REPORT_FILE="${HYGIENE_REPORT:-}"
 
-usage() { echo "Usage: $(basename "$0") [audit|clean] [DIR] [--yes]"; }
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [audit|clean|prune] [DIR] [--yes] [--dry-run] [--gh]
+  audit   report only (default)
+  clean   heuristic cleanup: cherry-equivalent, subject-matched squash merges, merged PRs
+  prune   strict cleanup: no unique commits (or --gh: a merged PR carries this tip),
+          untouched for HYGIENE_MIN_AGE_HOURS (24); never default/current/worktree branches
+  --yes      no prompt   --dry-run  delete nothing   --gh  prune's GitHub merged-PR check
+EOF
+}
 
 # Duplicate positionals are rejected rather than last-wins: a second mode token
 # must not silently escalate audit→clean, and a second DIR must not silently
 # replace the first. A dir literally named audit/clean stays reachable as ./audit.
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    audit|clean)
+    audit|clean|prune)
       [[ -n "$MODE" ]] && { echo "error: mode already set to '$MODE': $1" >&2; usage >&2; exit 1; }
       MODE="$1" ;;
     --yes)       ASSUME_YES=true ;;
+    --dry-run)   DRY_RUN=true ;;
+    --gh)        GH_CHECK=true ;;
     -h|--help)   usage; exit 0 ;;
     -*)          echo "unknown flag: $1" >&2; usage >&2; exit 1 ;;
     *)
@@ -51,9 +97,18 @@ ROOT="${ROOT:-$HOME/dev}"
 
 # A ROOT that doesn't exist would silently scan zero repos (#196) — fail loudly.
 [[ -d "$ROOT" ]] || { echo "error: no such directory: $ROOT" >&2; usage >&2; exit 1; }
+[[ "$MIN_AGE_HOURS" =~ ^[0-9]+$ ]] || { echo "error: HYGIENE_MIN_AGE_HOURS must be an integer: $MIN_AGE_HOURS" >&2; exit 1; }
+if $GH_CHECK && [[ "$MODE" != "prune" ]]; then
+  echo "error: --gh only applies to prune" >&2; usage >&2; exit 1
+fi
 
-c_red=$'\033[31m'; c_green=$'\033[32m'; c_yellow=$'\033[33m'
-c_blue=$'\033[34m'; c_dim=$'\033[2m'; c_reset=$'\033[0m'
+# Colors only on a terminal — the timer's log and the tests read plain text.
+if [[ -t 1 ]]; then
+  c_red=$'\033[31m'; c_green=$'\033[32m'; c_yellow=$'\033[33m'
+  c_blue=$'\033[34m'; c_dim=$'\033[2m'; c_reset=$'\033[0m'
+else
+  c_red=""; c_green=""; c_yellow=""; c_blue=""; c_dim=""; c_reset=""
+fi
 
 ok()    { echo "${c_green}✓${c_reset} $*"; }
 warn()  { echo "${c_yellow}⚠${c_reset} $*"; }
@@ -65,6 +120,23 @@ confirm() {
   $ASSUME_YES && return 0
   read -r -p "  $1 [y/N] " yn
   [[ "$yn" =~ ^[Yy]$ ]]
+}
+
+# The GitHub check is opt-in and gated on a working login; without one it is
+# reported once and skipped, never silently attempted.
+if $GH_CHECK; then
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    GH_OK=true
+  else
+    warn "--gh: gh missing or not authenticated — merged-PR check disabled, squash-merged branches are kept"
+  fi
+fi
+
+origin_slug() {
+  # owner/repo from the origin URL, tolerating SSH and HTTPS forms with or
+  # without a trailing .git (a single-stage sed dropped the slug when .git was
+  # absent).
+  git -C "$1" remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'
 }
 
 # Returns 0 if branch is safe to delete, 1 otherwise. Sets REASON.
@@ -105,12 +177,7 @@ is_branch_safely_merged() {
   # PR check via gh
   if command -v gh >/dev/null 2>&1; then
     local pr_state
-    # Extract owner/repo from the origin URL, tolerating both SSH and HTTPS forms
-    # with or without a trailing .git (the prior single-stage sed dropped the
-    # slug when .git was absent).
-    local slug
-    slug=$(git -C "$repo" remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#')
-    pr_state=$(gh -R "$slug" \
+    pr_state=$(gh -R "$(origin_slug "$repo")" \
                pr list --state all --head "$br" --json state --jq '.[0].state' 2>/dev/null || echo "")
     if [[ "$pr_state" == "MERGED" ]]; then
       REASON="PR is MERGED on GitHub"
@@ -120,6 +187,126 @@ is_branch_safely_merged() {
 
   REASON="$cherry_unique unique patch(es) not found on origin/$default — keep"
   return 1
+}
+
+# Epoch of the branch's newest activity: tip committer date or latest reflog
+# entry, whichever is later — a fresh `git branch` off an old commit is still
+# a fresh branch.
+branch_last_touched() {
+  local repo="$1" br="$2" commit_t reflog_t
+  commit_t=$(git -C "$repo" log -1 --format=%ct "refs/heads/$br" 2>/dev/null || echo 0)
+  reflog_t=$(git -C "$repo" log -g -1 --date=unix --format=%gd "refs/heads/$br" 2>/dev/null \
+             | sed -nE 's/.*@\{([0-9]+)\}$/\1/p')
+  reflog_t="${reflog_t:-0}"
+  echo $(( commit_t > reflog_t ? commit_t : reflog_t ))
+}
+
+# Returns 0 when GitHub confirms a merged PR whose head is this branch and
+# whose head SHA is this tip — or a descendant of it that is present locally
+# (the PR was rebased or extended after this checkout last fetched it). A name
+# match alone is not enough: local commits the PR never carried must survive.
+# Any gh failure returns 1 (keep). Sets GH_REASON.
+gh_confirms_merged() {
+  local repo="$1" br="$2" tip="$3" out line num head
+  GH_REASON=""
+  out=$(gh -R "$(origin_slug "$repo")" pr list --state merged --head "$br" --limit 10 \
+          --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    [[ "$line" =~ ^([0-9]+)\ ([0-9a-f]{40})$ ]] || continue
+    num="${BASH_REMATCH[1]}" head="${BASH_REMATCH[2]}"
+    if [[ "$head" == "$tip" ]]; then
+      GH_REASON="PR #$num merged on GitHub with this exact tip"
+      return 0
+    fi
+    if git -C "$repo" cat-file -e "$head^{commit}" 2>/dev/null \
+       && git -C "$repo" merge-base --is-ancestor "$tip" "$head" 2>/dev/null; then
+      GH_REASON="PR #$num merged on GitHub; local tip is an ancestor of its head ${head:0:7}"
+      return 0
+    fi
+  done <<< "$out"
+  return 1
+}
+
+# Returns 0 if the branch is in prune's SAFE class, 1 otherwise. Sets REASON.
+is_branch_safely_dead() {
+  local repo="$1" br="$2" default="$3"
+  REASON=""
+
+  # `git cherry` against a missing ref prints nothing, which would read as
+  # "no unique commits" — refuse to evaluate without the remote-tracking ref.
+  if ! git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$default" >/dev/null 2>&1; then
+    REASON="origin/$default not fetched — cannot evaluate, keep"
+    return 1
+  fi
+
+  local now touched age_h
+  now=$(date +%s)
+  touched=$(branch_last_touched "$repo" "$br")
+  age_h=$(( (now - touched) / 3600 ))
+  if (( now - touched < MIN_AGE_HOURS * 3600 )); then
+    REASON="touched ${age_h}h ago (< ${MIN_AGE_HOURS}h) — keep"
+    return 1
+  fi
+
+  local upstream track
+  IFS=$'\t' read -r upstream track < <(git -C "$repo" for-each-ref \
+      --format='%(upstream)%09%(upstream:track)' "refs/heads/$br")
+  local gone=false
+  [[ "$track" == "[gone]" ]] && gone=true
+
+  local cherry_unique
+  cherry_unique=$(git -C "$repo" cherry "origin/$default" "$br" 2>/dev/null | grep -c '^+' || true)
+  if [[ "$cherry_unique" == "0" ]]; then
+    if git -C "$repo" merge-base --is-ancestor "$br" "origin/$default" 2>/dev/null; then
+      REASON="merged into origin/$default"
+    elif $gone; then
+      REASON="upstream gone, cherry-equivalent to origin/$default"
+    else
+      REASON="cherry-equivalent to origin/$default"
+    fi
+    return 0
+  fi
+
+  # Squash-merged shape: unique commits, remote branch deleted (or never
+  # pushed with -u). Only GitHub can confirm; a still-present upstream means
+  # the branch is alive on the remote and is never a prune candidate.
+  if $GH_OK && { $gone || [[ -z "$upstream" ]]; }; then
+    local tip
+    tip=$(git -C "$repo" rev-parse "refs/heads/$br")
+    if gh_confirms_merged "$repo" "$br" "$tip"; then
+      REASON="$GH_REASON"
+      return 0
+    fi
+  fi
+
+  if $gone; then
+    REASON="upstream gone but $cherry_unique unique patch(es) — squash-merged? keep"
+  else
+    REASON="$cherry_unique unique patch(es) not on origin/$default — keep"
+  fi
+  return 1
+}
+
+delete_branch() {
+  local d="$1" repo="$2" br="$3"
+  local sha
+  sha=$(git -C "$d" rev-parse "refs/heads/$br")
+  if $DRY_RUN; then
+    info "would delete $br ${c_dim}(at $sha — $REASON)${c_reset} [dry-run]"
+    return 0
+  fi
+  if confirm "delete $br ($REASON)?"; then
+    if ! git -C "$d" branch -D "$br" >/dev/null 2>&1; then
+      fail "$br — git branch -D failed; kept"
+      return 0
+    fi
+    ok "deleted $br ${c_dim}(was $sha — $REASON; recover: git branch $br $sha)${c_reset}"
+    if [[ -n "$REPORT_FILE" ]]; then
+      printf '%s\t%s\t%s\t%s\n' "$repo" "$br" "$sha" "$REASON" >> "$REPORT_FILE"
+    fi
+  else
+    info "$br — kept by user"
+  fi
 }
 
 audit_repo() {
@@ -146,7 +333,7 @@ audit_repo() {
   echo "${c_blue}┌── $repo${c_reset}  ${c_dim}(on $current; default: ${default:-?})${c_reset}"
 
   if [[ -z "$default" ]]; then
-    if [[ "$MODE" == "clean" ]]; then
+    if [[ "$MODE" != "audit" ]]; then
       git remote set-head origin -a >/dev/null 2>&1 && ok "set origin/HEAD"
       default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' || echo "")
     else
@@ -154,7 +341,7 @@ audit_repo() {
     fi
   fi
 
-  if [[ "$MODE" == "clean" ]]; then
+  if [[ "$MODE" != "audit" ]]; then
     local pruned
     pruned=$(git fetch --prune origin 2>&1 | grep -c '\[deleted\]' || true)
     [[ "$pruned" -gt 0 ]] && ok "pruned $pruned stale remote-tracking refs"
@@ -174,7 +361,7 @@ audit_repo() {
       info "$br (current) — skipped"
       continue
     fi
-    if git worktree list --porcelain | grep -q "^branch refs/heads/$br$"; then
+    if git worktree list --porcelain | grep -qxF "branch refs/heads/$br"; then
       info "$br (in worktree) — skipped"
       continue
     fi
@@ -184,22 +371,26 @@ audit_repo() {
       continue
     fi
 
-    if is_branch_safely_merged "$d" "$br" "$default"; then
-      if [[ "$MODE" == "clean" ]]; then
-        if confirm "delete $br ($REASON)?"; then
-          local sha
-          sha=$(git rev-parse --short "$br")
-          git branch -D "$br" >/dev/null 2>&1
-          ok "deleted $br ${c_dim}(was $sha — $REASON)${c_reset}"
+    case "$MODE" in
+      prune)
+        if is_branch_safely_dead "$d" "$br" "$default"; then
+          delete_branch "$d" "$repo" "$br"
         else
-          info "$br — kept by user"
-        fi
-      else
-        ok "$br — safely deletable: $REASON"
-      fi
-    else
-      warn "$br — has unique work: $REASON"
-    fi
+          info "$br — kept: $REASON"
+        fi ;;
+      clean)
+        if is_branch_safely_merged "$d" "$br" "$default"; then
+          delete_branch "$d" "$repo" "$br"
+        else
+          warn "$br — has unique work: $REASON"
+        fi ;;
+      *)
+        if is_branch_safely_merged "$d" "$br" "$default"; then
+          ok "$br — safely deletable: $REASON"
+        else
+          warn "$br — has unique work: $REASON"
+        fi ;;
+    esac
   done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
 
   [[ "$extras" -eq 0 ]] && ok "no extra local branches"
@@ -208,7 +399,9 @@ audit_repo() {
 
 main() {
   local repo_count=0
-  echo "${c_blue}━━━ git-hygiene ${MODE} ━━━${c_reset}  ${c_dim}root: $ROOT${c_reset}"
+  local banner="$MODE"
+  $DRY_RUN && banner="$MODE (dry-run)"
+  echo "${c_blue}━━━ git-hygiene ${banner} ━━━${c_reset}  ${c_dim}root: $ROOT${c_reset}"
   echo
   for d in "$ROOT"/*/; do
     [[ -d "$d/.git" || -f "$d/.git" ]] || continue

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-02 — feat: the daily git-hygiene timer prunes safely-dead local branches
+
+### What changed
+- `git-hygiene.sh prune` — a strict, unattended-safe mode: deletes a local
+  branch only when it is not the default, checked-out, or worktree branch, was
+  not touched in the last 24 h (`HYGIENE_MIN_AGE_HOURS`), and either has no
+  unique commits vs `origin/<default>` or, with `--gh`, GitHub confirms a
+  merged PR whose head ref is the branch and whose head SHA is the local tip
+  (or a locally-fetched descendant). Squash-merged branches without that
+  confirmation are kept; any `gh` failure keeps the branch. `--dry-run` for
+  both `clean` and `prune`; colors only on a terminal.
+- `hygiene-cron.sh` runs `prune ~/dev --yes --gh` every day in place of the
+  Sunday `clean --yes` (whose subject-match heuristic is not in the safe
+  class). Each deletion is logged with its full SHA and a recovery command to
+  `cron.log`, appended to `deletions.tsv`, and summarised via ntfy only when
+  ≥1 branch was deleted (topic falls back to the settings.json env block).
+  `HYGIENE_DELETE=0` disables the prune, `HYGIENE_GH_CHECK=0` the GitHub step.
+- Fixture suite `git-hygiene-prune.test.sh` (origin + clone, gh/curl shims)
+  pins which branches survive; wired into CI.
+
 ## 2026-09-02 — chore: make superpowers skills opt-in
 
 ### What changed

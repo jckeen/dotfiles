@@ -14,9 +14,14 @@ The user has a three-layer auto-hygiene system in `~/dev/dotfiles/`:
    `allow_update_branch=true`, and a squash-only merge policy with
    `squash_merge_commit_title=PR_TITLE` / `squash_merge_commit_message=PR_BODY`.
 2. **Daily systemd timer** (`git-hygiene.timer`, fires 09:30 local) — runs
-   `gh-bootstrap.sh --check --all ~/dev` and writes drift state to
-   `~/.local/state/hygiene/status.json`. On Sundays it also runs
-   `git-hygiene.sh clean ~/dev --yes` to delete locally-merged branches.
+   `gh-bootstrap.sh --check --all ~/dev`, writes drift state to
+   `~/.local/state/hygiene/status.json`, then runs
+   `git-hygiene.sh prune ~/dev --yes --gh` to delete safely-dead local
+   branches (class below). Every deletion is logged with its SHA to
+   `~/.local/state/hygiene/cron.log` and `deletions.tsv` (recover with
+   `git branch <name> <sha>`); an ntfy summary is pushed only when something
+   was deleted. `HYGIENE_DELETE=0` in the unit's environment disables the
+   prune.
 3. **Shell `gh` wrapper** in `.bash_aliases` — when the user runs
    `gh repo create` or `gh repo clone` from their shell, the wrapper auto-runs
    `gh-bootstrap.sh` on the new repo. Note: this only fires from the user's
@@ -31,8 +36,9 @@ When the user asks about hygiene state:
    `--text` for a full readout. This is read-only and instant.
 2. If the user wants a fresh check, run
    `~/dev/dotfiles/gh-bootstrap.sh --check --all ~/dev`.
-3. To clean stale local branches now (instead of waiting for Sunday):
-   `~/dev/dotfiles/git-hygiene.sh clean ~/dev --yes`.
+3. To clean stale local branches now: `~/dev/dotfiles/git-hygiene.sh prune
+   ~/dev --yes --gh` (what the timer runs; add `--dry-run` to preview), or
+   the broader heuristic `~/dev/dotfiles/git-hygiene.sh clean ~/dev --yes`.
 4. To bootstrap a new or drifted repo:
    `~/dev/dotfiles/gh-bootstrap.sh <owner/repo>` or `--all <dir>`.
 
@@ -55,6 +61,16 @@ signals before deleting:
 A branch is deleted only when at least one signal confirms merge. Dirty
 working trees, current branch, and worktree-checked-out branches are always
 skipped.
+
+`git-hygiene.sh prune` (the timer's mode) is stricter because it runs
+unattended: it deletes a branch only when it is not the default, checked-out,
+or worktree branch, was not touched in the last 24 h, and either has no unique
+commits vs `origin/<default>` (merged, upstream gone, or cherry-equivalent)
+or — with `--gh` and a working `gh auth status` — GitHub shows a merged PR
+whose head ref is the branch and whose head SHA is the local tip (or a
+locally-fetched descendant of it). Subject matching is not used; a
+squash-merged branch with no confirming PR is kept, and any `gh` error keeps
+the branch.
 
 ## Output
 
