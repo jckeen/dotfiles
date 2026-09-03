@@ -370,8 +370,10 @@ audit_repo() {
   if [[ "$MODE" != "audit" ]]; then
     local pruned
     if $DRY_RUN; then
-      git fetch origin >/dev/null 2>&1 || true
-      WOULD_PRUNE=$(git fetch --prune --dry-run origin 2>&1 \
+      # git >= 2.48 creates a missing origin/HEAD on any fetch
+      # (remote.<name>.followRemoteHEAD=create); a dry-run must not.
+      git -c remote.origin.followRemoteHEAD=never fetch origin >/dev/null 2>&1 || true
+      WOULD_PRUNE=$(git -c remote.origin.followRemoteHEAD=never fetch --prune --dry-run origin 2>&1 \
                     | sed -nE 's|^ - \[deleted\].*-> (origin/.+)$|refs/remotes/\1|p')
       pruned=$(grep -c . <<<"$WOULD_PRUNE" || true)
       [[ "$pruned" -gt 0 ]] && info "would prune $pruned stale remote-tracking ref(s) [dry-run]"
