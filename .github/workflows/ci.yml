@@ -209,6 +209,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/memory-sync.test.sh
 
+      # Self-test only: the daily timer's prune runs unattended, so the SAFE
+      # class (what survives, what goes, what gh must confirm) is pinned with
+      # throwaway origin+clone fixtures and gh/curl PATH shims.
+      - name: git-hygiene prune + hygiene-cron (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/git-hygiene-prune.test.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest

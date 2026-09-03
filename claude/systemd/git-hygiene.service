@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily branch-hygiene check + weekly auto-clean (jckeen/dotfiles)
+Description=Daily branch-hygiene check + safe local-branch prune (jckeen/dotfiles)
 Documentation=https://github.com/jckeen/dotfiles
 After=network-online.target
 Wants=network-online.target
@@ -24,10 +24,12 @@ ProtectSystem=strict
 ProtectHome=read-only
 # Writable paths:
 #   - %h/.local/state/hygiene — status.json + cron.log
-#   - %h/dev                  — Sunday `git-hygiene clean ~/dev --yes` needs to
-#                                update git refs, prune branches, and acquire
-#                                index locks across every repo under ~/dev/.
-#                                Without this, the weekly clean silently fails.
+#   - %h/dev                  — the daily `git-hygiene prune ~/dev --yes --gh`
+#                                needs to update git refs, delete branches, and
+#                                acquire index locks across every repo under
+#                                ~/dev/. Without this, the prune silently fails.
+# Set `Environment=HYGIENE_DELETE=0` in a drop-in to keep the audit and stop
+# the prune (hygiene-cron.sh documents the other knobs).
 ReadWritePaths=%h/.local/state/hygiene %h/dev
 # Drop AF_NETLINK, AF_PACKET, raw sockets — keep only UNIX + IPv4/IPv6 (gh API + git fetch).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
