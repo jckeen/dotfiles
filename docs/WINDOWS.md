@@ -34,6 +34,14 @@ machine that doesn't run Claude, copy just `wsl-helpers.ps1` and skip
 | `ccprojects` | cc-functions | List available projects (from WSL) |
 | `ccupdate` | cc-functions | Refresh the local copy from the WSL source |
 
+None of these panes survive closing the Windows Terminal tab or window. For a
+session that should, run `cct <project>` inside any pane instead of `cc`: it
+wraps the same launch in a named tmux session you can detach from (`Ctrl-b d`)
+and reattach to later with the same command. Inside tmux, hold Shift while
+drag-selecting to let Windows Terminal copy natively; tmux owns the mouse
+otherwise. `cct` is defined in `.bash_aliases` — see
+[CLAUDE-GUIDE](../CLAUDE-GUIDE.md#shell-commands).
+
 ## Install
 
 **`setup.sh` does this for you on WSL.** Section 7b detects WSL, calls **both**

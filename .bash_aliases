@@ -585,6 +585,70 @@ cc() {
   printf '\033]9;9;\033\\' 2>/dev/null
 }
 
+# Run cc inside a named, detachable tmux session so the Claude process outlives
+# a closed Windows Terminal tab/window or a dropped SSH hop. Remote Control
+# goes offline within seconds of the local process exiting, so this is what
+# keeps a claude.ai/code or mobile session reachable after the terminal is
+# gone. Opt-in: plain cc and wsl6 never touch tmux.
+# Usage: cct                — session named after the current dir
+#        cct <project>      — session named <project>, cc cds into it
+#        cct <project> -c   — any further args pass straight to cc
+# An existing session of that name is attached, not recreated; detach with
+# Ctrl-b d, list with `tmux ls`. Args are typed into the session's login
+# shell (which already sources this file), so cc's preflight runs unchanged.
+cct() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "cct: tmux not installed — run dotfiles-update (setup.sh installs it)" >&2
+    return 1
+  fi
+  if [ -n "${TMUX:-}" ]; then
+    echo "cct: already inside tmux — use cc here, or detach first (Ctrl-b d)" >&2
+    return 1
+  fi
+  local name dir
+  if [ -n "${1:-}" ] && [ -d "$(_dev_dir)/$1" ]; then
+    name="$1"
+    dir="$(_dev_dir)/$1"
+  else
+    name="$(basename "$PWD")"
+    dir="$PWD"
+  fi
+  # tmux rejects '.' and ':' in session names (they're target separators).
+  # The rewrite is lossy (.next and _next both become _next), so each session
+  # records its project dir in CCT_DIR and a same-named session for a
+  # different dir gets a numeric suffix instead of being attached by mistake.
+  name="${name//[^A-Za-z0-9_-]/_}"
+  local base="$name" n=2
+  while tmux has-session -t "=$name" 2>/dev/null; do
+    [ "$(tmux show-environment -t "=$name" CCT_DIR 2>/dev/null)" = "CCT_DIR=$dir" ] && break
+    name="${base}-$n"
+    n=$((n + 1))
+  done
+
+  if tmux has-session -t "=$name" 2>/dev/null; then
+    echo "cct: attaching to existing session '$name'" >&2
+    tmux attach-session -t "=$name"
+    return
+  fi
+
+  # Start detached, then type the command: send-keys goes through the pane's
+  # interactive bash, so %q-quoted args are parsed exactly as typed at a prompt
+  # (new-session's command arg is joined with spaces and run via sh -c, which
+  # would mangle quoting). The explicit cd defeats .bashrc's auto-cd to ~/dev
+  # when cct is run from a repo dir with no <project> arg.
+  local cmd
+  printf -v cmd 'cd %q && cc' "$PWD"
+  if [ "$#" -gt 0 ]; then
+    local arg
+    for arg in "$@"; do
+      printf -v cmd '%s %q' "$cmd" "$arg"
+    done
+  fi
+  tmux new-session -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" || return 1
+  tmux send-keys -t "=$name" "$cmd" Enter
+  tmux attach-session -t "=$name"
+}
+
 # Launch Codex with the same project-selection ergonomics as cc, but without
 # touching Claude memory or ~/.claude health checks.
 # Usage: cx                 — launch from current dir (defaults to ~/dev outside git)

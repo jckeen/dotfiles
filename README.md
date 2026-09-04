@@ -197,7 +197,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 `setup.sh` installs CLI tools, wires the public and private layers for all three runtimes, and configures platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
 
 <details>
-<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, claude, codex, agy, bun)</summary>
+<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, tmux, claude, codex, agy, bun)</summary>
 
 <br>
 
@@ -207,6 +207,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `git` | Version control | Homebrew / apt |
 | `node` | Node.js LTS | Homebrew / NodeSource |
 | `jq` | JSON processing (used by hooks) | Homebrew / apt |
+| `tmux` | Detachable sessions for the opt-in `cct` launcher | Homebrew / apt |
 | `claude` | Claude Code CLI | SHA-256-pinned official native installer |
 | `codex` | OpenAI Codex CLI | npm |
 | `agy` | Google Antigravity CLI (Gemini agent runtime) | SHA-256-pinned official installer; release payload checksum-verified by the vendor installer |
@@ -279,6 +280,7 @@ templates, and the golden rules. What follows is the short version.
 | `cc [project]` | Sync repos + memory, health check, heal plugin drift, launch Claude |
 | `cx [project]` | Same ergonomics for Codex; reconnects previously enabled Remote Control |
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
+| `cct [project]` | `cc` inside a named tmux session, so the process and its Remote Control link survive a closed terminal |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
 | `/handoff` | Capture session state before `/clear` or stopping |
 | `/orchestrate` | Full-lifecycle max-effort mode — worktrees, parallel agents |
