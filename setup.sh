@@ -544,7 +544,8 @@ echo "=== Dotfiles setup from $DOTFILES_DIR ==="
 echo ""
 echo "--- Installing system packages ---"
 MISSING_PKGS=""
-for cmd in gh git curl jq; do
+# tmux backs the opt-in `cct` launcher (.tmux.conf is linked in section 7).
+for cmd in gh git curl jq tmux; do
   command -v "$cmd" &>/dev/null || MISSING_PKGS="$MISSING_PKGS $cmd"
 done
 
@@ -1967,6 +1968,11 @@ else
   link_file "$DOTFILES_DIR/.bash_profile" "$HOME_DIR/.bash_profile"
   echo "  -> .bash_profile linked (login shells now source .bashrc)"
 fi
+
+# tmux config for the opt-in `cct` launcher (all platforms; tmux itself is
+# installed in section 1). Symlinked so edits sync with the repo.
+link_file "$DOTFILES_DIR/.tmux.conf" "$HOME_DIR/.tmux.conf"
+echo "  -> .tmux.conf linked"
 
 # ─── 7c. Verification — login shell can resolve cc ───────────────────
 # Catches regressions before the user hits them. If `bash -li -c 'type cc'`

@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-09-04 — feat: opt-in tmux persistence via `cct`
+
+### What changed
+- `.tmux.conf` is back in the repo and symlinked by `setup.sh` section 7. It
+  restores the 2026-03 config and adds the two settings Claude Code documents
+  for tmux (`extended-keys on`, `allow-passthrough on`) so Shift+Enter
+  multi-line prompts work, plus `focus-events` and truecolor overrides.
+- `setup.sh` section 1 installs `tmux` alongside gh/git/curl/jq.
+- New `cct [project] [cc args…]` in `.bash_aliases`: runs `cc` inside a tmux
+  session named after the project (or the current dir), attaches to an
+  existing session of that name instead of recreating it, refuses to nest
+  inside tmux, and types the command into the pane's login shell so `cc`'s
+  preflight runs unchanged. Detach with `Ctrl-b d`.
+- Docs: CLAUDE-GUIDE (session start + shell commands), README (tools table,
+  commands table), docs/WINDOWS.md (persistence note for the wsl6/cc* panes).
+
+### Decisions made
+- Reverses 2026-03-16 ("remote control replaces tmux"). That entry's premise
+  was wrong: per the Remote Control docs, a session goes offline within
+  seconds of the local `claude` process exiting, and tmux/screen is the
+  documented way to keep it alive through a closed terminal. tmux and Remote
+  Control are complementary.
+- Opt-in only. `cc`, `wsl6`, and the `cc*` pane launchers stay tmux-free; the
+  key-handling and mouse-select friction is confined to sessions the user
+  chose to make persistent.
+
+### Known issues
+- Windows Terminal's extended-key support inside tmux is untested from this
+  side; if Shift+Enter still sends a plain Enter, use Alt+Enter or `\` +
+  Enter until it's verified.
+- `cc`'s OSC 9;9 tab-colour escape does not pass through tmux; coloured tabs
+  only work for non-tmux launches.
+
 ## 2026-09-02 — fix: prune confirms merges against the default branch; dry-run is read-only; ntfy sends counts only
 
 ### What changed

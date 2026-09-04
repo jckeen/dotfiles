@@ -27,9 +27,13 @@ claude                   # Start new session directly
 claude --continue        # Resume most recent
 claude --resume          # Pick from recent sessions
 claude-server            # Isolated worktree + remote access
+cct [project]            # cc inside a named tmux session — survives a closed terminal
 ```
 
 Remote access is always on. Connect from anywhere at `claude.ai/code`.
+It only stays online while the local `claude` process is running, so for a
+session you want reachable after closing the terminal, start it with `cct`
+and detach (`Ctrl-b d`); `cct <project>` again reattaches.
 
 ---
 
@@ -121,6 +125,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `check-antigravity` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
+| `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
 | `projects` | List projects in the dev dir |
 | `sessions` | Show active Claude sessions and their working dirs |
