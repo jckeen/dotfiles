@@ -605,14 +605,25 @@ cct() {
     echo "cct: already inside tmux — use cc here, or detach first (Ctrl-b d)" >&2
     return 1
   fi
-  local name
+  local name dir
   if [ -n "${1:-}" ] && [ -d "$(_dev_dir)/$1" ]; then
     name="$1"
+    dir="$(_dev_dir)/$1"
   else
     name="$(basename "$PWD")"
+    dir="$PWD"
   fi
   # tmux rejects '.' and ':' in session names (they're target separators).
+  # The rewrite is lossy (.next and _next both become _next), so each session
+  # records its project dir in CCT_DIR and a same-named session for a
+  # different dir gets a numeric suffix instead of being attached by mistake.
   name="${name//[^A-Za-z0-9_-]/_}"
+  local base="$name" n=2
+  while tmux has-session -t "=$name" 2>/dev/null; do
+    [ "$(tmux show-environment -t "=$name" CCT_DIR 2>/dev/null)" = "CCT_DIR=$dir" ] && break
+    name="${base}-$n"
+    n=$((n + 1))
+  done
 
   if tmux has-session -t "=$name" 2>/dev/null; then
     echo "cct: attaching to existing session '$name'" >&2
@@ -633,7 +644,7 @@ cct() {
       printf -v cmd '%s %q' "$cmd" "$arg"
     done
   fi
-  tmux new-session -d -s "$name" -c "$PWD" || return 1
+  tmux new-session -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" || return 1
   tmux send-keys -t "=$name" "$cmd" Enter
   tmux attach-session -t "=$name"
 }

@@ -12,7 +12,10 @@
   session named after the project (or the current dir), attaches to an
   existing session of that name instead of recreating it, refuses to nest
   inside tmux, and types the command into the pane's login shell so `cc`'s
-  preflight runs unchanged. Detach with `Ctrl-b d`.
+  preflight runs unchanged. Detach with `Ctrl-b d`. Session names drop the
+  `.`/`:` tmux forbids, so each session records its dir in `CCT_DIR` and a
+  same-named session for a different dir gets a `-2` suffix rather than
+  being attached by mistake (Codex refutation finding on #350).
 - Docs: CLAUDE-GUIDE (session start + shell commands), README (tools table,
   commands table), docs/WINDOWS.md (persistence note for the wsl6/cc* panes).
 
