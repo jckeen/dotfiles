@@ -66,7 +66,9 @@ fi
 
 cat > "$TEST_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
+[ -z "${REMOTE_TEST_WARNING:-}" ] || printf '%s\n' "$REMOTE_TEST_WARNING" >&2
 printf '%s\n' "$REMOTE_TEST_JSON"
+exit "${REMOTE_TEST_RC:-0}"
 EOF
 remote_test_cases=('{"status":"connected","timedOut":false}'
   '{"status":"connecting","timedOut":true}' 'invalid JSON')
@@ -82,6 +84,24 @@ for REMOTE_TEST_JSON in "${remote_test_cases[@]}"; do
     fail "Remote Control accepted unready startup JSON (expected $expected_rc, got $actual_rc)"
   fi
 done
+
+export REMOTE_TEST_WARNING='warning: an optional Codex setting is deprecated'
+REMOTE_TEST_JSON='{"status":"connected","timedOut":false}'
+if PATH="$TEST_BIN:$PATH" _codex_remote_run 1 remote-control start --json >/dev/null 2>&1; then
+  ok "harmless stderr warnings do not hide a connected startup result"
+else
+  fail "Remote Control rejected connected JSON because stderr contained a warning"
+fi
+export REMOTE_TEST_RC=1
+REMOTE_TEST_WARNING='Error: app server is running but is not managed by codex app-server daemon'
+if captured="$(PATH="$TEST_BIN:$PATH" _codex_remote_run 1 remote-control start --json 2>&1)"; then
+  fail "Remote Control ignored the failing command exit status"
+elif grep -Fxq "$REMOTE_TEST_WARNING" <<< "$captured"; then
+  ok "failing startup preserves stderr for recovery classification"
+else
+  fail "Remote Control lost the stderr diagnostic during bounded capture"
+fi
+unset REMOTE_TEST_WARNING REMOTE_TEST_RC
 
 _codex_remote_run() {
   local timeout_seconds="$1"

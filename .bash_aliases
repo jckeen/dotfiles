@@ -682,19 +682,23 @@ _codex_with_timeout() {
 }
 
 _codex_remote_run() (
-  local timeout_seconds="$1" output_file rc started
+  local timeout_seconds="$1" output_file error_file="" error_collector rc started
   local -a pipeline_status
   shift
   output_file="$(mktemp)" || return 125
-  trap 'rm -f "$output_file"' EXIT
+  trap 'rm -f "$output_file"; [ -z "$error_file" ] || rm -f "$error_file"' EXIT
+  error_file="$(mktemp)" || return 125
   started=$SECONDS
 
-  # A separately timed collector bounds both retained output and how long an
-  # escaped child may hold the pipeline open. Closing that pipe stops further
-  # capture without imposing a file-size limit on Codex's own state writes.
-  _codex_with_timeout "$timeout_seconds" codex "$@" 2>&1 \
-    | _codex_with_timeout "$timeout_seconds" tail -c 8192 > "$output_file"
+  # Separately timed collectors bound both streams even when an escaped child
+  # holds them open. Keep stdout JSON separate from harmless stderr warnings.
+  exec 3> >(_codex_with_timeout "$timeout_seconds" tail -c 8192 > "$error_file" 2>/dev/null)
+  error_collector=$!
+  _codex_with_timeout "$timeout_seconds" codex "$@" 2>&3 3>&- \
+    | _codex_with_timeout "$timeout_seconds" tail -c 8192 3>&- > "$output_file"
   pipeline_status=("${PIPESTATUS[@]}")
+  exec 3>&-
+  wait "$error_collector" 2>/dev/null || true
   rc="${pipeline_status[0]}"
   # KILL escalation can take out timeout itself, and the closed collector pipe
   # can then kill the codex stage with SIGPIPE before _codex_with_timeout's own
@@ -710,7 +714,7 @@ _codex_remote_run() (
     return 75
   fi
   if [ "$rc" -ne 0 ]; then
-    command cat "$output_file"
+    command cat "$output_file" "$error_file"
   fi
   return "$rc"
 )
