@@ -16,7 +16,9 @@ Claude Code as the implementer. Invariants the mock suite pins:
 - --dry-run resolves inputs and prints the plan without creating files,
   launching Claude, or contacting its service.
 - Stopping the runner (SIGINT/SIGTERM, or --timeout) terminates only the
-  process group it owns and records the interrupted state.
+  process group it owns and records the interrupted state. The leader stays
+  unreaped until the last signal is sent, so the group id cannot be reused
+  by a stranger while it is still a target (Linux procfs is required).
 
 This wrapper is not an isolation boundary: Claude runs with the caller's
 normal configuration, hooks, permissions, and credentials. No permission
@@ -31,6 +33,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -170,54 +173,113 @@ def shell_launch(events_fd: int, prompt_fd: int, cwd: Path, command: list[str]) 
     return ["/bin/bash", "-ic", body, "claude-operator", str(cwd), *command]
 
 
-def group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+def live_members(pgid: int) -> list[int]:
+    """Running (non-zombie) processes in the group, read from Linux procfs.
+
+    `killpg(pgid, 0)` cannot be used for this: it also answers for the zombie
+    leader, which stop_owned keeps on purpose."""
+    members = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="ascii", errors="replace") as stat:
+                fields = stat.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue  # exited between listing and reading
+        if fields[0] not in ("Z", "X") and int(fields[2]) == pgid:
+            members.append(int(entry))
+    return members
 
 
-def stop_owned(process: subprocess.Popen | None) -> None:
-    """Terminate the whole process group this runner started.
+def leader_exited(pid: int) -> bool:
+    """True once the direct child has exited. WNOWAIT leaves it unreaped so
+    its PID, and with it the group id, stays pinned until stop_owned is done."""
+    return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
 
-    The group is addressed by its id, not through the leader: a leader that
-    already exited can leave children behind (a Bash-tool child holding the
-    events pipe open, for instance), and those are still the runner's to stop.
-    SIGTERM first; anything that ignores it is SIGKILLed after the grace period.
-    Nothing outside the group is touched."""
+
+def stream_lines(fd: int, leader_pid: int):
+    """Yield decoded lines from the events pipe until every writer closed it,
+    or until the leader has exited and the pipe has been drained of what was
+    already written. Signals interrupt the wait and propagate as usual."""
+    os.set_blocking(fd, False)
+    buffer = b""
+    drain_only = False
+    while True:
+        ready, _, _ = select.select([fd], [], [], 0 if drain_only else 0.1)
+        if ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                chunk = None
+            if chunk == b"":
+                break
+            if chunk:
+                buffer += chunk
+                *lines, buffer = buffer.split(b"\n")
+                for line in lines:
+                    yield line.decode("utf-8", errors="replace") + "\n"
+                continue
+        if drain_only:
+            break
+        if leader_exited(leader_pid):
+            drain_only = True
+    if buffer:
+        yield buffer.decode("utf-8", errors="replace") + "\n"
+
+
+def stop_owned(process: subprocess.Popen | None, state: dict) -> None:
+    """Terminate the whole process group this runner started, and nothing else.
+
+    The group is addressed by id, so a leader that already exited can still
+    leave children behind (a Bash-tool child holding the events pipe open) that
+    are the runner's to stop. The leader is deliberately NOT reaped until the
+    last signal has been sent: its zombie keeps the PID, and therefore the
+    group id, from being reused by an unrelated process while the runner still
+    targets it. SIGTERM first; anything that ignores it is SIGKILLed after the
+    grace period. Signalling errors and survivors are recorded in `state`
+    rather than raised, so the final run.json is always written."""
     if process is None:
         return
     pgid = process.pid  # start_new_session=True made the leader its own group
-    process.poll()  # reap the leader if it already exited so it stops counting as a member
-    if group_alive(pgid):
+    errors: list[str] = []
+
+    def signal_group(signum: signal.Signals) -> None:
         try:
-            os.killpg(pgid, signal.SIGTERM)
+            os.killpg(pgid, signum)
         except ProcessLookupError:
             pass
-        deadline = time.monotonic() + STOP_GRACE_SECONDS
-        while group_alive(pgid) and time.monotonic() < deadline:
-            process.poll()
-            time.sleep(0.1)
-    if group_alive(pgid):
+        except OSError as error:
+            errors.append(f"{signum.name}: {error}")
+
+    try:
+        if live_members(pgid):
+            signal_group(signal.SIGTERM)
+            deadline = time.monotonic() + STOP_GRACE_SECONDS
+            while live_members(pgid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+        if live_members(pgid):
+            signal_group(signal.SIGKILL)
+            deadline = time.monotonic() + 2
+            while live_members(pgid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+        survivors = live_members(pgid)
+    finally:
         try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        deadline = time.monotonic() + 2
-        while group_alive(pgid) and time.monotonic() < deadline:
-            process.poll()
-            time.sleep(0.05)
-    if process.poll() is None:
-        process.wait()
+            process.wait(timeout=STOP_GRACE_SECONDS)  # only now is the group id released
+        except subprocess.TimeoutExpired:
+            errors.append("leader still running after SIGKILL; left unreaped")
+    if errors:
+        state["stop_errors"] = errors
+    if survivors:
+        state["stop_survivors"] = survivors
 
 
 def main(argv: list[str] | None = None) -> int:
     args = arguments(argv)
-    if os.name != "posix":
-        raise ValueError("run this helper with Python inside WSL/Linux/macOS, not Windows Python")
+    if os.name != "posix" or not os.path.exists("/proc/self/stat"):
+        raise ValueError("run this helper with Python inside WSL or Linux: it tracks the owned process group "
+                         "through Linux procfs (/proc)")
     if os.environ.get("CLAUDECODE"):
         raise ValueError("refusing to launch Claude from inside a Claude Code session (CLAUDECODE is set); "
                          "an operator that is already Claude should use its native subagents and worktrees")
@@ -277,18 +339,26 @@ def main(argv: list[str] | None = None) -> int:
     # Only the first termination signal (or the alarm) unwinds the run. Later
     # ones arrive while stop_owned is still waiting out a TERM-ignoring child;
     # raising then would abandon the group and leave run.json at "running".
+    # While `deferring`, a signal is parked instead of raised: it arrived
+    # between Popen creating the child and the runner taking ownership of it,
+    # and raising there would orphan a live Claude with no recorded group.
     stopping = False
+    deferring = False
+    pending: signal.Signals | None = None
 
     def on_signal(signum, _frame):
-        nonlocal stopping
+        nonlocal stopping, pending
         if stopping:
+            return
+        if deferring:
+            pending = pending or signal.Signals(signum)
             return
         stopping = True
         raise Interrupted(signum)
 
     def on_alarm(_signum, _frame):
         nonlocal stopping
-        if stopping:
+        if stopping or deferring:
             return
         stopping = True
         raise TimedOut()
@@ -300,50 +370,88 @@ def main(argv: list[str] | None = None) -> int:
     process: subprocess.Popen | None = None
     result: dict | None = None
     return_code = EXIT_FAILED
+    torn_down = False
+
+    def teardown() -> None:
+        """Stop the owned group exactly once; non-raising on every path until
+        run.json is final. Runs at normal completion too, so a descendant that
+        closed stdout and lingered does not outlive the run, and so the
+        leader's exit code is read only after the group id is no longer needed."""
+        nonlocal torn_down, stopping
+        if torn_down:
+            return
+        torn_down = True
+        stopping = True
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        stop_owned(process, state)
+
+    def handle_line(line: str) -> None:
+        nonlocal result
+        events.write(line)
+        events.flush()
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "result":
+            result = event
+            write_json(output / "result.json", result)
+        elif event.get("type") == "assistant":
+            # Progress is best-effort: a malformed assistant event must
+            # not stop the loop from reaching a later valid result.
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    emit({"event": "progress", "text": str(block.get("text", ""))[:1400]})
+                elif block.get("type") == "tool_use":
+                    emit({"event": "tool", "name": block.get("name")})
+
     try:
         events_read, events_write = os.pipe()
         prompt_fd = os.open(prompt_path, os.O_RDONLY)
         with (output / "stderr.log").open("w", encoding="utf-8") as errors, \
-             (output / "events.jsonl").open("w", encoding="utf-8") as events, \
-             os.fdopen(events_read, "r", encoding="utf-8", errors="replace") as stream:
+             (output / "events.jsonl").open("w", encoding="utf-8") as events:
             try:
+                deferring = True
                 process = subprocess.Popen(shell_launch(events_write, prompt_fd, cwd, command), cwd=cwd,
                                            stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
                                            pass_fds=(events_write, prompt_fd), start_new_session=True)
             finally:
+                deferring = False
                 os.close(events_write)
                 os.close(prompt_fd)
-            if args.timeout is not None:
-                signal.setitimer(signal.ITIMER_REAL, args.timeout)
             state.update(status="running", claude_process_group=process.pid)
             write_json(output / "run.json", state)
+            if pending is not None:
+                stopping = True
+                raise Interrupted(pending)
+            if args.timeout is not None:
+                signal.setitimer(signal.ITIMER_REAL, args.timeout)
             emit({"event": "started", **state})
-            for line in stream:
-                events.write(line)
-                events.flush()
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                if event.get("type") == "result":
-                    result = event
-                    write_json(output / "result.json", result)
-                elif event.get("type") == "assistant":
-                    # Progress is best-effort: a malformed assistant event must
-                    # not stop the loop from reaching a later valid result.
-                    message = event.get("message")
-                    content = message.get("content") if isinstance(message, dict) else None
-                    for block in content if isinstance(content, list) else []:
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") == "text":
-                            emit({"event": "progress", "text": str(block.get("text", ""))[:1400]})
-                        elif block.get("type") == "tool_use":
-                            emit({"event": "tool", "name": block.get("name")})
-            return_code = process.wait()
-            signal.setitimer(signal.ITIMER_REAL, 0)
+            # Completion is the direct child's exit (peeked without reaping),
+            # not the pipe's EOF: a background job from ~/.bashrc inherits the
+            # events descriptor and can hold it open long after Claude has
+            # written its result and exited. Everything already in the pipe is
+            # drained before teardown stops such stragglers.
+            try:
+                for line in stream_lines(events_read, process.pid):
+                    handle_line(line)
+            finally:
+                os.close(events_read)
+            # Closing stdout is not exiting: Claude may still be finishing its
+            # own cleanup after the last event. Wait for the exit itself
+            # (still unreaped) with the turn timeout and signals live, so a
+            # hung child with a closed pipe times out instead of being killed
+            # for merely going quiet.
+            while not leader_exited(process.pid):
+                time.sleep(0.05)
+            teardown()
+            return_code = process.returncode
         # Success means success for the exact requested session; a result that
         # names another session, or none at all, is not that.
         if result and result.get("session_id") != session_id:
@@ -367,6 +475,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             state["status"] = "turn_complete"
             return_code = EXIT_COMPLETE
+        # A turn whose owned processes could not all be stopped is not a
+        # clean success, whatever Claude's result said.
+        if state["status"] == "turn_complete" and (state.get("stop_errors") or state.get("stop_survivors")):
+            state.update(status="failed", error="Claude reported success but owned processes were not stopped "
+                                                "cleanly (see stop_errors / stop_survivors)")
+            return_code = EXIT_FAILED
     except Interrupted as interrupt:
         state.update(status="interrupted", interrupted_by=str(interrupt))
         return_code = SIGNAL_EXIT_BASE + interrupt.signum
@@ -377,9 +491,10 @@ def main(argv: list[str] | None = None) -> int:
         state.update(status="failed", error=f"{type(error).__name__}: {error}")
         return_code = EXIT_FAILED
     finally:
-        stopping = True  # teardown is non-raising on every path until run.json is final
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        stop_owned(process)
+        try:
+            teardown()
+        except Exception as error:  # noqa: BLE001 - evidence beats a clean traceback here
+            state["teardown_error"] = f"{type(error).__name__}: {error}"
         if process is not None:
             state["claude_exit_code"] = process.returncode
         state.update(finished_at=now(), exit_code=return_code)

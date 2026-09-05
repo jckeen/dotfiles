@@ -54,6 +54,11 @@ does it attach the prompt, `cd` to the requested project (so a `~/.bashrc`
 that changes directory cannot move Claude elsewhere), and exec Claude.
 Preserve that order in any alternative launcher.
 
+The runner itself is Linux/WSL only: it reads `/proc` to know which members
+of the owned process group are still running, and it keeps the exited Claude
+process unreaped until the last stop signal has been sent so the group id
+cannot be reused by an unrelated process while it is still a target.
+
 ## Operating from Windows
 
 Run the runner inside WSL with `wsl.exe -d <distro> --exec python3 …`. A

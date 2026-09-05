@@ -34,13 +34,30 @@
   `read` cannot eat part of it; a nonzero Claude exit always maps to runner
   exit 1 with the raw code in `claude_exit_code`; a malformed assistant
   event no longer aborts the stream before a later valid result.
+  Process-lifecycle round (Antigravity + Codex on f846b4a): the exited
+  Claude process is left unreaped until the last stop signal is sent, so its
+  zombie pins the group id and no `killpg` can reach a reused PID; running
+  members are counted through `/proc` (the runner is now Linux/WSL only and
+  says so); signalling errors during teardown land in `run.json` as
+  `stop_errors`/`stop_survivors` instead of aborting the final write; a
+  signal arriving between `Popen` and ownership is parked and delivered once
+  the group is recorded, so Claude cannot be orphaned by a launch-time
+  cancel; and a turn completes when Claude exits, not when the events pipe
+  reaches EOF, so a `~/.bashrc` background job that inherited the pipe no
+  longer turns a finished turn into a timeout or a hang (teardown stops it).
+  Closing stdout is not exiting either: after EOF the runner waits for
+  Claude's own exit (timeout and signals still live) before stopping the
+  group, and a success whose teardown left `stop_errors` or
+  `stop_survivors` is reported as failed rather than as a clean turn.
 - Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`
   (stdlib Python, stub `claude`, throwaway HOME with a crafted `~/.bashrc`,
   from-scratch child env) wired into the CI `checks` job; cases cover
   success, failure, denial, exact resume, missing or mismatched session ID, literal prompt,
   cwd restoration, dry-run, existing-output and dangling-link preservation,
   native-only executable selection, bypass-flag rejection, SIGINT and
-  timeout cleanup, and leader-exited group cleanup with a bystander check.
+  timeout cleanup, leader-exited group cleanup with a bystander check,
+  launch-boundary cancellation, an inherited-pipe background writer, and
+  in-process syscall observation of group signalling and teardown failure.
 - Docs: `agents/skill-coverage.tsv` row (agent-only, rationale),
   `codex/README.md` section, `docs/WINDOWS.md` section on the separate
   Windows Codex config root and installing the skill there.

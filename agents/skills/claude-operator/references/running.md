@@ -2,7 +2,8 @@
 
 `scripts/claude_run.py` runs one native Claude Code print-mode turn from a
 prompt file and records evidence. Python 3 standard library only; run it inside
-WSL, Linux, or macOS. Write the UTF-8 prompt in your private workspace and
+WSL or Linux (it tracks the owned process group through `/proc`, so it refuses
+to start elsewhere). Write the UTF-8 prompt in your private workspace and
 choose a new output directory for every turn.
 
 ```bash
@@ -30,6 +31,9 @@ The output directory receives:
 
 - `run.json`: cwd, the exact requested session ID, the executable used and
   why, the owned process group, start and finish times, status, and exit code.
+  If teardown could not signal the group or something in it survived
+  SIGKILL, `stop_errors` and `stop_survivors` say so; the file is written
+  regardless.
 - `prompt.txt`: the exact bytes sent for this turn.
 - `events.jsonl`: every stream-json event Claude emitted.
 - `stderr.log`: Claude's stderr plus any shell startup-file chatter.
@@ -44,7 +48,7 @@ is in progress: `started` (with the runner PID and process group), `progress`
 | Exit | `run.json` status | Meaning |
 | --- | --- | --- |
 | 0 | `turn_complete` | Claude returned a success result for this exact session. It does **not** establish the acceptance criteria; verify the work. |
-| 1 | `failed` | No result, an error result, a nonzero Claude exit (raw code kept in `claude_exit_code`), an auth or quota failure, or a rejected CLI flag (`unsupported_flag` names it). |
+| 1 | `failed` | No result, an error result, a nonzero Claude exit (raw code kept in `claude_exit_code`), an auth or quota failure, a rejected CLI flag (`unsupported_flag` names it), or a success whose owned processes could not all be stopped (`stop_errors` / `stop_survivors`). |
 | 1 | `session_mismatch` | The result's session ID differs from the requested one or is missing; `actual_session_id` records what came back. Do not treat as a resumable continuation. |
 | 2 | `needs_permission` | The turn finished but recorded permission denials. Read them in `result.json` before continuing, even if Claude's prose says it is done. |
 | 124 | `timed_out` | `--timeout` elapsed; the owned run was stopped. |
@@ -79,7 +83,10 @@ The runner puts Claude in its own process group and records it as
 behind), escalates to SIGKILL after ten seconds for anything that ignored it,
 and records the interrupted state with the evidence gathered so far. Further
 signals during that teardown are ignored until the group is reaped and
-`run.json` is final. Never stop all Claude processes or
+`run.json` is final. The same teardown runs at normal completion, so a
+background job started by a shell startup file does not outlive the turn.
+A turn is complete when Claude itself exits; the runner does not wait for
+such a job to close the inherited output pipe. Never stop all Claude processes or
 another user's session. Inspect `git status` before resuming an interrupted
 edit. `--timeout SECONDS` applies the same stop automatically.
 

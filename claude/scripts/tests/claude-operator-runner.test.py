@@ -8,6 +8,9 @@ and inherits none of the developer's shell startup side effects. Standard
 library only. Run directly: python3 claude/scripts/tests/claude-operator-runner.test.py
 """
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -17,9 +20,18 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import uuid
 
 RUNNER = Path(__file__).resolve().parents[3] / "agents/skills/claude-operator/scripts/claude_run.py"
+
+
+def load_runner_module():
+    """Import the runner for in-process tests that need to observe its syscalls."""
+    spec = importlib.util.spec_from_file_location("claude_run_under_test", RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 FAKE_CLAUDE = f'''#!{sys.executable}
 import json, os, subprocess, sys, time
@@ -56,6 +68,23 @@ if mode == "hang_ignore_term":
         time.sleep(0.02)  # the handler must be installed before anyone signals the group
     emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
     time.sleep(300)
+if mode == "close_stdout_then_cleanup":
+    emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
+          "permission_denials": [], "result": "done"}})
+    os.close(1)
+    time.sleep(0.5)  # Claude-side cleanup after its last event
+    open(os.environ["FAKE_CLAUDE_MARKER"], "w").close()
+    sys.exit(0)
+if mode == "close_stdout_hang":
+    os.close(1)
+    time.sleep(300)
+if mode == "success_with_surviving_child":
+    child = subprocess.Popen([sys.executable, "-c",
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"])
+    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
+          "permission_denials": [], "result": "done"}})
+    sys.exit(0)
 if mode == "malformed_progress":
     emit({{"type": "assistant", "message": None}})
     emit({{"type": "assistant", "message": {{"content": "not a list"}}}})
@@ -112,6 +141,30 @@ def wait_dead(pids, seconds=10):
     return False
 
 
+def group_members(pgid):
+    """Running (non-zombie) processes whose process group is pgid, via /proc."""
+    members = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            fields = Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if fields[0] not in ("Z", "X") and int(fields[2]) == pgid:
+            members.append(int(entry))
+    return members
+
+
+def wait_group_empty(pgid, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not group_members(pgid):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="claude-operator-test-")
@@ -159,6 +212,32 @@ class RunnerTests(unittest.TestCase):
     def run_turn(self, *extra, mode="success", claude_bin=True, **env_extra):
         return subprocess.run(self.command(*extra, claude_bin=claude_bin), capture_output=True,
                               text=True, env=self.env(mode, **env_extra), timeout=60)
+
+    def run_in_process(self, *extra, mode="success", **env_extra):
+        """Run main() inside this interpreter so a test can observe or fail the
+        runner's syscalls. The child environment is still built from scratch;
+        the runner's signal handlers are restored afterwards."""
+        module = load_runner_module()
+        handled = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGALRM)
+        saved = {s: signal.getsignal(s) for s in handled}
+        stdout = io.StringIO()
+        argv = self.command(*extra)[2:]
+        try:
+            with mock.patch.dict(os.environ, self.env(mode, **env_extra), clear=True), \
+                 contextlib.redirect_stdout(stdout):
+                rc = module.main(argv)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            for s, handler in saved.items():
+                signal.signal(s, handler)
+        return rc, stdout.getvalue()
+
+    def pids_from(self, stdout):
+        for line in stdout.splitlines():
+            event = json.loads(line)
+            if event.get("event") == "progress" and event["text"].startswith("PIDS "):
+                return json.loads(event["text"][5:])
+        self.fail("stub never reported its pids")
 
     def received(self):
         if not self.record.exists():
@@ -453,23 +532,148 @@ class RunnerTests(unittest.TestCase):
         # Unrelated process in its own session: must be untouched by the cleanup.
         bystander = subprocess.Popen(["sleep", "300"], start_new_session=True)
         try:
-            proc, pids = self.start_hanging_run("--timeout", "1", mode="orphan")
+            started = time.monotonic()
+            proc, pids = self.start_hanging_run(mode="orphan")
             leader, child = pids
             stdout, stderr = proc.communicate(timeout=60)
-            self.assertEqual(proc.returncode, 124, stderr)
+            # Claude itself exited without a result: that is a failure, observed
+            # as soon as it happened, and it does not wait for the child's EOF.
+            self.assertEqual(proc.returncode, 1, stderr)
+            self.assertLess(time.monotonic() - started, 25)
             # A zombie would already count as dead; require the live child to be gone too.
             self.assertTrue(wait_dead([child], seconds=5), "TERM-ignoring child survived the runner stop")
             self.assertFalse(is_alive(leader))
             self.assertTrue(is_alive(bystander.pid), "cleanup reached a process outside the owned group")
             state = self.state()
-            self.assertEqual(state["status"], "timed_out")
-            self.assertEqual(state["exit_code"], 124)
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["exit_code"], 1)
             self.assertEqual(state["claude_exit_code"], 0)
             self.assertIn("finished_at", state)
-            self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "timed_out")
+            self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "failed")
         finally:
             bystander.kill()
             bystander.wait()
+
+    def test_background_startup_writer_does_not_block_or_misreport_completion(self):
+        # A ~/.bashrc background job inherits the events pipe and keeps it
+        # open long after Claude wrote its result and exited.
+        with (self.home / ".bashrc").open("a") as rc:
+            rc.write("sleep 30 &\n")
+        started = time.monotonic()
+        outcome = self.run_turn("--timeout", "3")
+        elapsed = time.monotonic() - started
+        self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
+        self.assertLess(elapsed, 3, "completion waited for the inherited pipe instead of Claude's exit")
+        state = self.state()
+        self.assertEqual(state["status"], "turn_complete")
+        self.assertEqual(json.loads((self.out / "result.json").read_text())["result"], "done")
+        self.assertIn('"type": "result"', (self.out / "events.jsonl").read_text())
+        self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5),
+                        "the startup background job outlived the turn")
+
+    def test_closing_stdout_is_not_treated_as_exit(self):
+        marker = self.base / "cleanup-finished"
+        outcome = self.run_turn(mode="close_stdout_then_cleanup", FAKE_CLAUDE_MARKER=str(marker))
+        self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
+        state = self.state()
+        self.assertEqual(state["status"], "turn_complete")
+        self.assertEqual(state["claude_exit_code"], 0)
+        self.assertTrue(marker.exists(), "Claude was stopped before it finished its own cleanup")
+
+    def test_hung_child_with_closed_stdout_still_times_out(self):
+        outcome = self.run_turn("--timeout", "1", mode="close_stdout_hang")
+        self.assertEqual(outcome.returncode, 124, outcome.stderr)
+        state = self.state()
+        self.assertEqual(state["status"], "timed_out")
+        self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5))
+
+    def test_success_with_unstoppable_survivor_is_not_success(self):
+        def refused(_pgid, _sig):
+            raise PermissionError(1, "simulated EPERM")
+
+        with mock.patch.object(os, "killpg", refused):
+            rc, stdout = self.run_in_process(mode="success_with_surviving_child")
+        leader, child = self.pids_from(stdout)
+        try:
+            self.assertEqual(rc, 1)
+            state = self.state()
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["exit_code"], 1)
+            self.assertIn("stop_survivors", state["error"])
+            self.assertEqual(state["stop_survivors"], [child])
+            self.assertEqual(len(state["stop_errors"]), 2)
+            self.assertEqual(json.loads((self.out / "result.json").read_text())["subtype"], "success")
+            self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "failed")
+        finally:
+            os.kill(child, signal.SIGKILL)
+
+    def test_cancel_at_launch_boundary_still_stops_the_owned_child(self):
+        real_popen = subprocess.Popen
+
+        def popen_then_signal(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            # Delivered to the runner's handler before this frame returns, i.e.
+            # after the child exists and before the runner has recorded it.
+            os.kill(os.getpid(), signal.SIGTERM)
+            return child
+
+        with mock.patch.object(subprocess, "Popen", popen_then_signal):
+            rc, stdout = self.run_in_process(mode="hang")
+        self.assertEqual(rc, 143)
+        state = self.state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["interrupted_by"], "SIGTERM")
+        self.assertIn("claude_process_group", state)
+        self.assertIn("finished_at", state)
+        self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5),
+                        "a launch-time cancel left the owned group running")
+        self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "interrupted")
+
+    def test_signals_go_only_to_the_pinned_group(self):
+        real_killpg = os.killpg
+        calls = []
+
+        def observed(pgid, sig):
+            # Ownership is intact only while the leader's PID still exists
+            # (running or zombie): then the group id cannot belong to anyone else.
+            calls.append((pgid, signal.Signals(sig), Path(f"/proc/{pgid}/stat").exists()))
+            return real_killpg(pgid, sig)
+
+        with mock.patch.object(os, "killpg", observed):
+            rc, stdout = self.run_in_process(mode="orphan")
+        leader, child = self.pids_from(stdout)
+        self.assertEqual(rc, 1)
+        state = self.state()
+        self.assertEqual(state["claude_process_group"], leader)
+        self.assertEqual([c[1] for c in calls], [signal.SIGTERM, signal.SIGKILL])
+        self.assertTrue(all(pgid == leader for pgid, _, _ in calls), calls)
+        self.assertTrue(all(pinned for _, _, pinned in calls), "a signal was sent after ownership was released")
+        self.assertFalse(Path(f"/proc/{leader}/stat").exists(), "leader was not reaped at the end")
+        self.assertFalse(is_alive(child))
+        self.assertNotIn("stop_errors", state)
+        self.assertNotIn("stop_survivors", state)
+
+    def test_failed_cleanup_syscalls_still_leave_a_final_run_json(self):
+        def refused(_pgid, _sig):
+            raise PermissionError(1, "simulated EPERM")
+
+        with mock.patch.object(os, "killpg", refused):
+            rc, stdout = self.run_in_process(mode="orphan")
+        leader, child = self.pids_from(stdout)
+        try:
+            self.assertEqual(rc, 1)
+            state = self.state()
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["exit_code"], 1)
+            self.assertIn("finished_at", state)
+            self.assertEqual(len(state["stop_errors"]), 2)
+            self.assertIn("SIGTERM", state["stop_errors"][0])
+            self.assertIn("SIGKILL", state["stop_errors"][1])
+            self.assertEqual(state["stop_survivors"], [child])
+            self.assertFalse(Path(f"/proc/{leader}/stat").exists())
+            self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "failed")
+        finally:
+            os.kill(child, signal.SIGKILL)
 
     def test_second_signal_during_teardown_does_not_abandon_the_group(self):
         marker = self.base / "term-seen"
