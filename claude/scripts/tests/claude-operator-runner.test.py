@@ -49,25 +49,43 @@ with open(os.environ["FAKE_CLAUDE_RECORD"], "a", encoding="utf-8") as record:
                              "rc_marker": os.environ.get("OPERATOR_TEST_RC")}}) + "\\n")
 def emit(obj):
     print(json.dumps(obj), flush=True)
+IGNORE_TERM = "signal.signal(signal.SIGTERM, signal.SIG_IGN)"
+MARK_TERM = "signal.signal(signal.SIGTERM, lambda *_: open(os.environ['FAKE_CLAUDE_TERM_MARKER'], 'w').close())"
+def start_child(term_handler):
+    """Spawn a helper that survives SIGTERM, and return only once it has told
+    us over a pipe that the handler is installed. FAKE_CHILD_STARTUP_DELAY
+    (seconds) deliberately slows the child's startup so a test can prove the
+    handshake, not a race, is what makes the handler present."""
+    ready_r, ready_w = os.pipe()
+    code = "\\n".join([
+        "import os, signal, sys, time",
+        "time.sleep(float(os.environ.get('FAKE_CHILD_STARTUP_DELAY', '0')))",
+        term_handler,
+        "os.write(int(sys.argv[1]), b'r'); os.close(int(sys.argv[1]))",
+        "while True: time.sleep(0.1)",
+    ])
+    child = subprocess.Popen([sys.executable, "-c", code, str(ready_w)], pass_fds=(ready_w,))
+    os.close(ready_w)
+    ready = os.read(ready_r, 1)
+    os.close(ready_r)
+    if ready != b"r":
+        sys.stderr.write("helper child died before it was ready\\n")
+        sys.exit(70)
+    return child
+def pids(*extra):
+    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), *extra])}}]}}}})
 emit({{"type": "system", "subtype": "init", "session_id": sid}})
 emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "working"}},
                                                     {{"type": "tool_use", "name": "Read"}}]}}}})
 if mode == "hang":
     child = subprocess.Popen(["sleep", "300"])
-    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    pids(child.pid)
     time.sleep(300)
 if mode == "hang_ignore_term":
     # The child survives SIGTERM and writes a marker when it arrives, so a test
     # knows the runner's teardown has begun; the leader hangs until stopped.
-    child = subprocess.Popen([sys.executable, "-c",
-        "import os, signal, time\\n"
-        "def mark(*_): open(os.environ['FAKE_CLAUDE_TERM_MARKER'], 'w').close()\\n"
-        "signal.signal(signal.SIGTERM, mark)\\n"
-        "open(os.environ['FAKE_CLAUDE_TERM_MARKER'] + '.ready', 'w').close()\\n"
-        "while True: time.sleep(0.1)"])
-    while not os.path.exists(os.environ["FAKE_CLAUDE_TERM_MARKER"] + ".ready"):
-        time.sleep(0.02)  # the handler must be installed before anyone signals the group
-    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    child = start_child(MARK_TERM)
+    pids(child.pid)
     time.sleep(300)
 if mode == "close_stdout_then_cleanup":
     emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
@@ -80,23 +98,38 @@ if mode == "close_stdout_hang":
     os.close(1)
     time.sleep(300)
 if mode == "success_with_chatty_child":
-    # Inherits the events pipe and never stops writing to it.
-    child = subprocess.Popen(["yes", "noise"])
-    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    # Inherits the events pipe and never stops writing to it, but only after
+    # this process's valid events are flushed, so the noise cannot interleave
+    # with them; the parent exits only once the writer is provably writing.
+    gate_r, gate_w = os.pipe()
+    started_r, started_w = os.pipe()
+    code = "\\n".join([
+        "import os, sys",
+        "os.read(int(sys.argv[1]), 1)",
+        "print('noise', flush=True)",
+        "os.write(int(sys.argv[2]), b'w'); os.close(int(sys.argv[2]))",
+        "while True: print('noise', flush=True)",
+    ])
+    child = subprocess.Popen([sys.executable, "-c", code, str(gate_r), str(started_w)], pass_fds=(gate_r, started_w))
+    os.close(gate_r)
+    os.close(started_w)
+    pids(child.pid)
     emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
           "permission_denials": [], "result": "done"}})
+    os.write(gate_w, b"g")
+    os.close(gate_w)
+    if os.read(started_r, 1) != b"w":
+        sys.exit(70)
     sys.exit(0)
 if mode == "denied_with_surviving_child":
-    child = subprocess.Popen([sys.executable, "-c",
-        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"])
-    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    child = start_child(IGNORE_TERM)
+    pids(child.pid)
     emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
           "permission_denials": [{{"tool_name": "Bash", "tool_input": {{"command": "bun test"}}}}], "result": "done"}})
     sys.exit(0)
 if mode == "success_with_surviving_child":
-    child = subprocess.Popen([sys.executable, "-c",
-        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"])
-    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    child = start_child(IGNORE_TERM)
+    pids(child.pid)
     emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
           "permission_denials": [], "result": "done"}})
     sys.exit(0)
@@ -109,9 +142,8 @@ if mode == "exit_code":
 if mode == "orphan":
     # A child that ignores SIGTERM and keeps the inherited stdout open; the
     # leader then exits, so the group outlives its leader.
-    child = subprocess.Popen([sys.executable, "-c",
-        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"])
-    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    child = start_child(IGNORE_TERM)
+    pids(child.pid)
     sys.exit(0)
 if mode == "no_result":
     sys.exit(0)
@@ -841,7 +873,9 @@ class RunnerTests(unittest.TestCase):
                         "a launch-time cancel left the owned group running")
         self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "interrupted")
 
-    def test_signals_go_only_to_the_pinned_group(self):
+    @contextlib.contextmanager
+    def observed_killpg(self):
+        """Record every group signal as (pgid, signal, leader-pid-still-exists)."""
         real_killpg = os.killpg
         calls = []
 
@@ -852,6 +886,10 @@ class RunnerTests(unittest.TestCase):
             return real_killpg(pgid, sig)
 
         with mock.patch.object(os, "killpg", observed):
+            yield calls
+
+    def test_signals_go_only_to_the_pinned_group(self):
+        with self.observed_killpg() as calls:
             rc, stdout = self.run_in_process(mode="orphan")
         leader, child = self.pids_from(stdout)
         self.assertEqual(rc, 1)
@@ -864,6 +902,18 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(is_alive(child))
         self.assertNotIn("stop_errors", state)
         self.assertNotIn("stop_survivors", state)
+
+    def test_slow_child_startup_still_reaches_the_term_ignore_handler(self):
+        # With the child's interpreter deliberately delayed, a fixture that
+        # published PIDS before the handler existed would see SIGTERM alone
+        # succeed; the ready handshake guarantees the escalation is exercised.
+        with self.observed_killpg() as calls:
+            rc, stdout = self.run_in_process(mode="orphan", FAKE_CHILD_STARTUP_DELAY="0.4")
+        leader, child = self.pids_from(stdout)
+        self.assertEqual(rc, 1)
+        self.assertEqual([c[1] for c in calls], [signal.SIGTERM, signal.SIGKILL])
+        self.assertTrue(all(pgid == leader and pinned for pgid, _, pinned in calls), calls)
+        self.assertFalse(is_alive(child))
 
     def test_failed_cleanup_syscalls_still_leave_a_final_run_json(self):
         def refused(_pgid, _sig):
