@@ -50,7 +50,7 @@ is in progress: `started` (with the runner PID and process group), `progress`
 | 0 | `turn_complete` | Claude returned a success result for this exact session. It does **not** establish the acceptance criteria; verify the work. |
 | 1 | `failed` | No result, an error result, a nonzero Claude exit (raw code kept in `claude_exit_code`), an auth or quota failure, a rejected CLI flag (`unsupported_flag` names it), or a success whose owned processes could not all be stopped (`stop_errors` / `stop_survivors`). |
 | 1 | `session_mismatch` | The result's session ID differs from the requested one or is missing; `actual_session_id` records what came back. Do not treat as a resumable continuation. |
-| 2 | `needs_permission` | The turn finished but recorded permission denials. Read them in `result.json` before continuing, even if Claude's prose says it is done. |
+| 2 | `needs_permission` | Claude exited 0 with a success result for the exact session that records permission denials. Read them in `result.json` before continuing, even if Claude's prose says it is done. Precedence is deliberate: a nonzero exit is `failed` even when denials are present (the raw code and the denials are both kept), so a process error is never reported as a mere approval need. |
 | 124 | `timed_out` | `--timeout` elapsed; the owned run was stopped. |
 | 130 / 143 | `interrupted` | The runner received SIGINT / SIGTERM and stopped the owned run; `interrupted_by` names the signal. |
 | 64 | (no run directory) | Usage error, including any attempt to pass a bypass flag or an option-shaped `--allow-tool`/`--tools`/`--model` value. |

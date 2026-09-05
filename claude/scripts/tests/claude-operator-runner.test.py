@@ -78,6 +78,13 @@ if mode == "close_stdout_then_cleanup":
 if mode == "close_stdout_hang":
     os.close(1)
     time.sleep(300)
+if mode == "success_with_chatty_child":
+    # Inherits the events pipe and never stops writing to it.
+    child = subprocess.Popen(["yes", "noise"])
+    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
+          "permission_denials": [], "result": "done"}})
+    sys.exit(0)
 if mode == "success_with_surviving_child":
     child = subprocess.Popen([sys.executable, "-c",
         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"])
@@ -112,6 +119,10 @@ elif mode == "mismatch":
     result["session_id"] = "00000000-0000-4000-8000-000000000000"
 elif mode == "no_session_id":
     del result["session_id"]
+elif mode == "denied_then_exit_1":
+    result["permission_denials"] = [{{"tool_name": "Bash", "tool_input": {{"command": "bun test"}}}}]
+    emit(result)
+    sys.exit(1)
 emit(result)
 '''
 
@@ -231,6 +242,32 @@ class RunnerTests(unittest.TestCase):
             for s, handler in saved.items():
                 signal.signal(s, handler)
         return rc, stdout.getvalue()
+
+    @contextlib.contextmanager
+    def signal_inside_teardown(self, at_line_events):
+        """Send SIGINT to this process at chosen statement boundaries inside the
+        runner's teardown(), via a trace function scoped to that frame. A
+        signal raised there surfaces exactly between two statements."""
+        seen = []
+
+        def local_tracer(frame, event, _arg):
+            if event == "line":
+                seen.append(frame.f_lineno)
+                if at_line_events(len(seen)):
+                    os.kill(os.getpid(), signal.SIGINT)
+            return local_tracer
+
+        def global_tracer(frame, event, _arg):
+            if event == "call" and frame.f_code.co_name == "teardown" \
+                    and Path(frame.f_code.co_filename).resolve() == RUNNER.resolve():
+                return local_tracer
+            return None
+
+        sys.settrace(global_tracer)
+        try:
+            yield seen
+        finally:
+            sys.settrace(None)
 
     def pids_from(self, stdout):
         for line in stdout.splitlines():
@@ -606,6 +643,100 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "failed")
         finally:
             os.kill(child, signal.SIGKILL)
+
+    def test_continuously_writing_child_does_not_delay_completion(self):
+        started = time.monotonic()
+        outcome = self.run_turn("--timeout", "5", mode="success_with_chatty_child")
+        child = None
+        try:
+            leader, child = self.pids_from(outcome.stdout)
+            elapsed = time.monotonic() - started
+            self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout[-2000:])
+            self.assertLess(elapsed, 5, "completion waited on a writer that never stops")
+            state = self.state()
+            self.assertEqual(state["status"], "turn_complete")
+            self.assertEqual(json.loads((self.out / "result.json").read_text())["result"], "done")
+            self.assertIn('"type": "result"', (self.out / "events.jsonl").read_text())
+            self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5),
+                            "the chatty writer outlived the turn")
+        finally:
+            if child is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child, signal.SIGKILL)
+
+    def test_nonzero_exit_with_denials_is_failed_not_needs_permission(self):
+        outcome = self.run_turn(mode="denied_then_exit_1")
+        self.assertEqual(outcome.returncode, 1, outcome.stdout)
+        state = self.state()
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["claude_exit_code"], 1)
+        denials = json.loads((self.out / "result.json").read_text())["permission_denials"]
+        self.assertEqual(denials[0]["tool_name"], "Bash")
+
+    def test_cancel_after_popen_before_recording_keeps_group_identity(self):
+        module = load_runner_module()
+        real_write_json = module.write_json
+        fired = []
+
+        def signal_while_recording(path, value):
+            if value.get("status") == "running" and "claude_process_group" in value and not fired:
+                fired.append(True)
+                os.kill(os.getpid(), signal.SIGTERM)  # child exists, group not yet on disk
+            return real_write_json(path, value)
+
+        with mock.patch.object(module, "write_json", signal_while_recording):
+            argv = self.command()[2:]
+            handled = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGALRM)
+            saved = {s: signal.getsignal(s) for s in handled}
+            stdout = io.StringIO()
+            try:
+                with mock.patch.dict(os.environ, self.env("hang"), clear=True), contextlib.redirect_stdout(stdout):
+                    rc = module.main(argv)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                for s, handler in saved.items():
+                    signal.signal(s, handler)
+        self.assertTrue(fired)
+        self.assertEqual(rc, 143)
+        state = self.state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["interrupted_by"], "SIGTERM")
+        self.assertIn("claude_process_group", state)
+        self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5))
+
+    def test_signal_before_teardown_entry_is_retried_not_skipped(self):
+        with self.signal_inside_teardown(lambda n: n == 1) as seen:
+            rc, stdout = self.run_in_process(mode="success_with_surviving_child")
+        leader, child = self.pids_from(stdout)
+        try:
+            self.assertTrue(seen, "teardown was never traced")
+            self.assertEqual(rc, 130)
+            state = self.state()
+            self.assertEqual(state["status"], "interrupted")
+            self.assertEqual(state["interrupted_by"], "SIGINT")
+            self.assertIn("finished_at", state)
+            self.assertNotIn("stop_survivors", state)
+            self.assertNotIn("teardown_error", state)
+            self.assertTrue(wait_group_empty(leader, seconds=5), "a signal at teardown entry skipped the cleanup")
+            self.assertEqual(json.loads((self.out / "result.json").read_text())["subtype"], "success")
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, signal.SIGKILL)
+
+    def test_signal_after_teardown_entry_cannot_abandon_cleanup(self):
+        with self.signal_inside_teardown(lambda n: n >= 2) as seen:
+            rc, stdout = self.run_in_process(mode="success_with_surviving_child")
+        leader, child = self.pids_from(stdout)
+        try:
+            self.assertGreaterEqual(len(seen), 2, "teardown had fewer boundaries than expected")
+            self.assertEqual(rc, 0)
+            state = self.state()
+            self.assertEqual(state["status"], "turn_complete")
+            self.assertNotIn("stop_survivors", state)
+            self.assertTrue(wait_group_empty(leader, seconds=5), "a signal inside teardown abandoned the cleanup")
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, signal.SIGKILL)
 
     def test_cancel_at_launch_boundary_still_stops_the_owned_child(self):
         real_popen = subprocess.Popen

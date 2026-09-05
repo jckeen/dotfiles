@@ -11,44 +11,33 @@
   group it owns. Exit codes separate a completed turn (0), a failure (1), and
   a turn that ended on permission denials (2). Installed by the existing
   `setup.sh` shared-skill links; nothing new to run.
-- Runner fixes over the private draft: Bash startup-file stdout (Ubuntu's
-  `/etc/bash.bashrc` sudo hint, banners) no longer pollutes `events.jsonl`;
-  SIGTERM/SIGHUP and a new `--timeout` stop the owned run and record the
-  state instead of orphaning Claude; the prompt is validated as UTF-8 and sent
-  byte-exact; a rejected CLI flag is named in `run.json` rather than retried
-  with weaker settings; usage errors exit 64 so they cannot be mistaken for
-  the permission-denied exit; the runner refuses to nest inside a Claude Code
-  session. Codex refutation findings folded in: the stop path addresses the
-  process group by id and SIGKILLs TERM-ignoring survivors even after the
-  leader exited (a child holding the events pipe open no longer outlives a
-  timeout); executable selection never searches `PATH` (on WSL that resolves
-  the Windows npm shim with its own config and auth); a dangling symlink at
-  the requested output path is rejected before it can be resolved and
-  created through; a success result that omits its session ID is a
-  `session_mismatch`, not a completed turn. Post-commit gate findings
-  (Codex + Antigravity): option-shaped `--allow-tool`/`--tools`/`--model`
-  values are rejected before launch so a bypass flag cannot ride the
-  variadic allow list; a second signal during teardown is ignored until the
-  group is reaped and `run.json` is final; Bash startup runs with stdin on
-  `/dev/null` and the prompt is attached only in the exec body, so a startup
-  `read` cannot eat part of it; a nonzero Claude exit always maps to runner
-  exit 1 with the raw code in `claude_exit_code`; a malformed assistant
-  event no longer aborts the stream before a later valid result.
-  Process-lifecycle round (Antigravity + Codex on f846b4a): the exited
-  Claude process is left unreaped until the last stop signal is sent, so its
-  zombie pins the group id and no `killpg` can reach a reused PID; running
-  members are counted through `/proc` (the runner is now Linux/WSL only and
-  says so); signalling errors during teardown land in `run.json` as
-  `stop_errors`/`stop_survivors` instead of aborting the final write; a
-  signal arriving between `Popen` and ownership is parked and delivered once
-  the group is recorded, so Claude cannot be orphaned by a launch-time
-  cancel; and a turn completes when Claude exits, not when the events pipe
-  reaches EOF, so a `~/.bashrc` background job that inherited the pipe no
-  longer turns a finished turn into a timeout or a hang (teardown stops it).
-  Closing stdout is not exiting either: after EOF the runner waits for
-  Claude's own exit (timeout and signals still live) before stopping the
-  group, and a success whose teardown left `stop_errors` or
-  `stop_survivors` is reported as failed rather than as a clean turn.
+- Runner behavior, hardened through Codex and Antigravity review rounds
+  before merge. Launch: interactive Bash loads startup files with stdout on
+  `stderr.log` and stdin on `/dev/null`, then attaches the prompt, `cd`s,
+  and execs Claude, so banners cannot pollute `events.jsonl`, a startup
+  `read` cannot eat the prompt, and a `cd` cannot move Claude; the
+  executable is `~/.local/bin/claude` or `--claude-bin`, never a `PATH`
+  lookup (on WSL that is the Windows npm shim); option-shaped
+  `--allow-tool`/`--tools`/`--model` values are rejected before launch;
+  the runner refuses to nest inside a Claude Code session. Evidence: the
+  prompt is validated as UTF-8 and sent byte-exact; a dangling symlink at
+  the output path is rejected before it can be created through; a success
+  result with a missing or different session ID is `session_mismatch`; a
+  rejected CLI flag is named rather than retried with weaker settings;
+  usage errors exit 64. Completion: a turn ends when Claude itself exits
+  (peeked without reaping), not when the events pipe closes or goes quiet,
+  with the drain bounded to the bytes queued at that moment, so an
+  inherited or chatty descendant can neither hang the turn nor turn it into
+  a timeout; a nonzero exit is `failed` (raw code in `claude_exit_code`)
+  even with denials present; `needs_permission` is a completed exit-0 turn
+  with denials. Ownership (Linux/WSL only, via `/proc`): the exited Claude
+  process stays unreaped until the last stop signal so its zombie pins the
+  group id; teardown is SIGTERM, a grace period, then SIGKILL for the whole
+  group, runs on every path including normal completion, records
+  `stop_errors`/`stop_survivors` instead of aborting the final `run.json`,
+  turns a success with survivors into `failed`, ignores repeated signals
+  once entered, retries if a signal lands before it can enter, and defers
+  a signal that arrives between `Popen` and the group being recorded.
 - Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`
   (stdlib Python, stub `claude`, throwaway HOME with a crafted `~/.bashrc`,
   from-scratch child env) wired into the CI `checks` job; cases cover
@@ -56,8 +45,10 @@
   cwd restoration, dry-run, existing-output and dangling-link preservation,
   native-only executable selection, bypass-flag rejection, SIGINT and
   timeout cleanup, leader-exited group cleanup with a bystander check,
-  launch-boundary cancellation, an inherited-pipe background writer, and
-  in-process syscall observation of group signalling and teardown failure.
+  launch- and teardown-boundary signal injection, inherited-pipe and
+  continuously-writing descendants, denial-with-nonzero-exit precedence,
+  and in-process syscall observation of group signalling and teardown
+  failure.
 - Docs: `agents/skill-coverage.tsv` row (agent-only, rationale),
   `codex/README.md` section, `docs/WINDOWS.md` section on the separate
   Windows Codex config root and installing the skill there.

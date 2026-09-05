@@ -28,7 +28,9 @@ bypass is exposed.
 from __future__ import annotations
 
 import argparse
+import array
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -37,6 +39,7 @@ import select
 import signal
 import subprocess
 import sys
+import termios
 import time
 import uuid
 
@@ -198,32 +201,52 @@ def leader_exited(pid: int) -> bool:
     return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
 
 
+def queued_bytes(fd: int) -> int:
+    """Bytes currently waiting in the pipe (Linux FIONREAD)."""
+    counter = array.array("i", [0])
+    fcntl.ioctl(fd, termios.FIONREAD, counter)
+    return counter[0]
+
+
 def stream_lines(fd: int, leader_pid: int):
     """Yield decoded lines from the events pipe until every writer closed it,
-    or until the leader has exited and the pipe has been drained of what was
-    already written. Signals interrupt the wait and propagate as usual."""
+    or until the leader has exited and the bytes that were queued at that
+    moment have been drained. The exit check runs on every iteration, whether
+    or not bytes arrived, and the drain is bounded to that snapshot: a
+    descendant that never stops writing cannot keep the turn open. Signals
+    interrupt the wait and propagate as usual."""
     os.set_blocking(fd, False)
     buffer = b""
-    drain_only = False
+
+    def read_available(limit: int = 65536) -> bytes | None:
+        try:
+            return os.read(fd, limit)
+        except BlockingIOError:
+            return None
+
+    def lines_from(chunk: bytes):
+        nonlocal buffer
+        buffer += chunk
+        *lines, buffer = buffer.split(b"\n")
+        for line in lines:
+            yield line.decode("utf-8", errors="replace") + "\n"
+
     while True:
-        ready, _, _ = select.select([fd], [], [], 0 if drain_only else 0.1)
-        if ready:
-            try:
-                chunk = os.read(fd, 65536)
-            except BlockingIOError:
-                chunk = None
-            if chunk == b"":
-                break
-            if chunk:
-                buffer += chunk
-                *lines, buffer = buffer.split(b"\n")
-                for line in lines:
-                    yield line.decode("utf-8", errors="replace") + "\n"
-                continue
-        if drain_only:
+        ready, _, _ = select.select([fd], [], [], 0.1)
+        chunk = read_available() if ready else None
+        if chunk == b"":
             break
+        if chunk:
+            yield from lines_from(chunk)
         if leader_exited(leader_pid):
-            drain_only = True
+            remaining = queued_bytes(fd)
+            while remaining > 0:
+                chunk = read_available(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield from lines_from(chunk)
+            break
     if buffer:
         yield buffer.decode("utf-8", errors="replace") + "\n"
 
@@ -378,10 +401,13 @@ def main(argv: list[str] | None = None) -> int:
         closed stdout and lingered does not outlive the run, and so the
         leader's exit code is read only after the group id is no longer needed."""
         nonlocal torn_down, stopping
+        # Non-raising first: a signal landing before this store raises out of
+        # here before the idempotence marker is set, so the caller's retry
+        # loop runs the cleanup; a signal after it can only be ignored.
+        stopping = True
         if torn_down:
             return
         torn_down = True
-        stopping = True
         signal.setitimer(signal.ITIMER_REAL, 0)
         stop_owned(process, state)
 
@@ -412,21 +438,24 @@ def main(argv: list[str] | None = None) -> int:
                     emit({"event": "tool", "name": block.get("name")})
 
     try:
-        events_read, events_write = os.pipe()
-        prompt_fd = os.open(prompt_path, os.O_RDONLY)
         with (output / "stderr.log").open("w", encoding="utf-8") as errors, \
              (output / "events.jsonl").open("w", encoding="utf-8") as events:
+            events_read, events_write = os.pipe()
+            prompt_fd = os.open(prompt_path, os.O_RDONLY)
+            # Deferred from just before the child can exist until its group is
+            # on disk, so a cancel in that window can neither orphan Claude
+            # nor leave the final state without the group's identity.
+            deferring = True
             try:
-                deferring = True
                 process = subprocess.Popen(shell_launch(events_write, prompt_fd, cwd, command), cwd=cwd,
                                            stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
                                            pass_fds=(events_write, prompt_fd), start_new_session=True)
             finally:
-                deferring = False
                 os.close(events_write)
                 os.close(prompt_fd)
             state.update(status="running", claude_process_group=process.pid)
             write_json(output / "run.json", state)
+            deferring = False
             if pending is not None:
                 stopping = True
                 raise Interrupted(pending)
@@ -457,6 +486,9 @@ def main(argv: list[str] | None = None) -> int:
         if result and result.get("session_id") != session_id:
             state.update(status="session_mismatch", actual_session_id=result.get("session_id"))
             return_code = EXIT_FAILED
+        # A nonzero Claude exit is a failure even when the result carries
+        # permission denials: a process error must not be read as a mere
+        # approval need. needs_permission is reserved for a completed turn.
         elif not result or result.get("is_error") or result.get("subtype") != "success" or return_code:
             state["status"] = "failed"
             flag = unsupported_flag(output / "stderr.log")
@@ -491,10 +523,15 @@ def main(argv: list[str] | None = None) -> int:
         state.update(status="failed", error=f"{type(error).__name__}: {error}")
         return_code = EXIT_FAILED
     finally:
-        try:
-            teardown()
-        except Exception as error:  # noqa: BLE001 - evidence beats a clean traceback here
-            state["teardown_error"] = f"{type(error).__name__}: {error}"
+        while True:
+            try:
+                teardown()
+                break
+            except (Interrupted, TimedOut):
+                continue  # beat teardown to its non-raising marker; the group is still owned, retry
+            except Exception as error:  # noqa: BLE001 - evidence beats a clean traceback here
+                state["teardown_error"] = f"{type(error).__name__}: {error}"
+                break
         if process is not None:
             state["claude_exit_code"] = process.returncode
         state.update(finished_at=now(), exit_code=return_code)
