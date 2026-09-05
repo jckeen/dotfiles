@@ -41,7 +41,14 @@
   turns a completed turn (success or denials) with survivors into `failed`
   so nothing resumes over a live run, ignores repeated signals
   once entered, retries if a signal lands before it can enter, and defers
-  a signal that arrives between `Popen` and the group being recorded.
+  a signal that arrives between `Popen` and the group being recorded. The
+  boundary is the owned Linux session: job-control groups created by a
+  startup `set -m; job &` are signalled through pidfds with membership
+  re-verified (Python 3.9+, kernel 5.3+); a `setsid` daemon is outside it.
+  The prompt and events descriptors are attached only on the final exec, so
+  a startup-defined `cd` function or DEBUG trap cannot read the prompt or
+  write into the events; and both JSON surfaces are ASCII-escaped so an
+  escaped lone surrogate in Claude's stream round-trips instead of raising.
 - Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`
   (stdlib Python, stub `claude`, throwaway HOME with a crafted `~/.bashrc`,
   from-scratch child env) wired into the CI `checks` job; cases cover

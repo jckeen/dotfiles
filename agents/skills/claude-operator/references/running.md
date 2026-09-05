@@ -1,10 +1,11 @@
 # File-backed Claude turns
 
 `scripts/claude_run.py` runs one native Claude Code print-mode turn from a
-prompt file and records evidence. Python 3 standard library only; run it inside
-WSL or Linux (it tracks the owned process group through `/proc`, so it refuses
-to start elsewhere). Write the UTF-8 prompt in your private workspace and
-choose a new output directory for every turn.
+prompt file and records evidence. Python 3.9+ standard library only; run it
+inside WSL or Linux with kernel 5.3 or newer (it tracks the owned session
+through `/proc` and pidfds, so it refuses to start elsewhere). Write the
+UTF-8 prompt in your private workspace and choose a new output directory for
+every turn.
 
 ```bash
 python3 ~/.agents/skills/claude-operator/scripts/claude_run.py \
@@ -86,7 +87,16 @@ signals during that teardown are ignored until the group is reaped and
 `run.json` is final. The same teardown runs at normal completion, so a
 background job started by a shell startup file does not outlive the turn.
 A turn is complete when Claude itself exits; the runner does not wait for
-such a job to close the inherited output pipe. Never stop all Claude processes or
+such a job to close the inherited output pipe.
+
+The owned boundary is the Linux session Claude was started in (its id is
+`claude_process_group`). That covers Claude, everything it spawned, and jobs
+that Bash job control (`set -m`) moved into other process groups of the same
+session; those are signalled individually through pidfds with membership
+re-verified. A process that deliberately starts its own session with
+`setsid` has left the boundary and is not pursued. The events and prompt
+descriptors are attached only on the final exec of Claude, so startup
+functions (even a redefined `cd`) and DEBUG traps never see them. Never stop all Claude processes or
 another user's session. Inspect `git status` before resuming an interrupted
 edit. `--timeout SECONDS` applies the same stop automatically.
 

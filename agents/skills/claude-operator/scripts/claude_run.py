@@ -81,14 +81,18 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ASCII-escaped JSON on both output surfaces: a lone surrogate that Claude's
+# stream carried as "\ud800" round-trips as the same escape instead of raising
+# UnicodeEncodeError and losing a later valid result. Prompt bytes are
+# untouched by this; they never pass through json.
 def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
 def emit(event: dict) -> None:
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    print(json.dumps(event, ensure_ascii=True), flush=True)
 
 
 def arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -172,33 +176,66 @@ def shell_launch(events_fd: int, prompt_fd: int, cwd: Path, command: list[str]) 
     version managers, aliases) with stdout pointed at the log and stdin at
     /dev/null: startup files may print (Ubuntu's /etc/bash.bashrc sudo hint, a
     banner) and may read (a `read` prompt), and neither may touch the
-    stream-json evidence or eat part of the prompt. The -c body then reclaims
-    the events pipe as stdout and the prompt file as stdin, cd's after the
-    startup files so a ~/.bashrc that changes directory cannot move Claude out
-    of the project, and execs Claude. The prompt is not part of this string or
-    of "$@": Claude reads it from the descriptor."""
-    body = (f'exec >&{events_fd} {events_fd}>&- <&{prompt_fd} {prompt_fd}<&-; '
-            'cd -- "$1" || exit $?; shift; exec "$@"')
+    stream-json evidence or eat part of the prompt. The -c body then restores
+    the project directory with the `cd` builtin (a startup-defined `cd`
+    function must not run with the prompt attached, or at all) and attaches
+    the events pipe and prompt file as redirections on the final exec itself,
+    so no shell command, function, or DEBUG trap ever runs with them on stdin
+    or stdout. The prompt is not part of this string or of "$@": Claude reads
+    it from the descriptor."""
+    body = ('builtin cd -- "$1" || builtin exit $?; builtin shift; '
+            f'builtin exec "$@" >&{events_fd} {events_fd}>&- <&{prompt_fd} {prompt_fd}<&-')
     return ["/bin/bash", "-ic", body, "claude-operator", str(cwd), *command]
 
 
-def live_members(pgid: int) -> list[int]:
-    """Running (non-zombie) processes in the group, read from Linux procfs.
+def proc_stat(pid: int) -> tuple[str, int, int] | None:
+    """(state, pgrp, session) of a process from Linux procfs, or None if gone."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as stat:
+            fields = stat.read().rsplit(")", 1)[1].split()
+        return fields[0], int(fields[2]), int(fields[3])
+    except (OSError, IndexError, ValueError):
+        return None
 
-    `killpg(pgid, 0)` cannot be used for this: it also answers for the zombie
-    leader, which stop_owned keeps on purpose."""
-    members = []
+
+def session_members(sid: int) -> dict[int, int]:
+    """Running (non-zombie) processes in the owned Linux session, as pid ->
+    process group. `killpg(pgid, 0)` cannot be used for this: it also answers
+    for the zombie leader, which stop_owned keeps on purpose."""
+    members = {}
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
-        try:
-            with open(f"/proc/{entry}/stat", encoding="ascii", errors="replace") as stat:
-                fields = stat.read().rsplit(")", 1)[1].split()
-        except (OSError, IndexError):
-            continue  # exited between listing and reading
-        if fields[0] not in ("Z", "X") and int(fields[2]) == pgid:
-            members.append(int(entry))
+        info = proc_stat(int(entry))
+        if info and info[0] not in ("Z", "X") and info[2] == sid:
+            members[int(entry)] = info[1]
     return members
+
+
+def signal_member(pid: int, sid: int, signum: signal.Signals, errors: list[str]) -> None:
+    """Signal one process outside the primary group through a pidfd. The pidfd
+    is bound to the process that held the PID when it was opened; membership
+    in the owned session is re-checked after opening, so a PID reused by a
+    stranger between the scan and the open is skipped, and a reuse after the
+    check cannot redirect the signal."""
+    try:
+        pidfd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    except OSError as error:
+        errors.append(f"{signum.name} pid {pid}: pidfd_open: {error}")
+        return
+    try:
+        info = proc_stat(pid)
+        if info is None or info[2] != sid:
+            return
+        signal.pidfd_send_signal(pidfd, signum)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        errors.append(f"{signum.name} pid {pid}: {error}")
+    finally:
+        os.close(pidfd)
 
 
 def leader_exited(pid: int) -> bool:
@@ -258,44 +295,54 @@ def stream_lines(fd: int, leader_pid: int):
 
 
 def stop_owned(process: subprocess.Popen | None, state: dict) -> None:
-    """Terminate the whole process group this runner started, and nothing else.
+    """Terminate everything left in the Linux session this runner started,
+    and nothing else.
 
-    The group is addressed by id, so a leader that already exited can still
-    leave children behind (a Bash-tool child holding the events pipe open) that
-    are the runner's to stop. The leader is deliberately NOT reaped until the
-    last signal has been sent: its zombie keeps the PID, and therefore the
-    group id, from being reused by an unrelated process while the runner still
-    targets it. SIGTERM first; anything that ignores it is SIGKILLed after the
-    grace period. Signalling errors and survivors are recorded in `state`
-    rather than raised, so the final run.json is always written."""
+    The session id and the primary process group id are both the leader's
+    PID. The leader is deliberately NOT reaped until the last signal has been
+    sent: its zombie keeps that PID, and therefore the session and primary
+    group ids, from being reused by an unrelated process while the runner
+    still targets them. The primary group is signalled with killpg; members
+    that Bash job control moved into other groups of the same session (a
+    `set -m; job &` in a startup file) are signalled individually through
+    pidfds with membership re-verified. A process that started its own
+    session with setsid has left the owned boundary and is not pursued.
+    SIGTERM first; anything that ignores it is SIGKILLed after the grace
+    period. Signalling errors and survivors are recorded in `state` rather
+    than raised, so the final run.json is always written."""
     if process is None:
         return
-    pgid = process.pid  # start_new_session=True made the leader its own group
+    sid = pgid = process.pid  # start_new_session=True: leader pid == session id == primary group id
     errors: list[str] = []
 
-    def signal_group(signum: signal.Signals) -> None:
-        try:
-            os.killpg(pgid, signum)
-        except ProcessLookupError:
-            pass
-        except OSError as error:
-            errors.append(f"{signum.name}: {error}")
+    def signal_session(signum: signal.Signals) -> None:
+        members = session_members(sid)
+        if any(group == pgid for group in members.values()):
+            try:
+                os.killpg(pgid, signum)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                errors.append(f"{signum.name}: {error}")
+        for pid, group in members.items():
+            if group != pgid:
+                signal_member(pid, sid, signum, errors)
 
     try:
-        if live_members(pgid):
-            signal_group(signal.SIGTERM)
+        if session_members(sid):
+            signal_session(signal.SIGTERM)
             deadline = time.monotonic() + STOP_GRACE_SECONDS
-            while live_members(pgid) and time.monotonic() < deadline:
+            while session_members(sid) and time.monotonic() < deadline:
                 time.sleep(0.1)
-        if live_members(pgid):
-            signal_group(signal.SIGKILL)
+        if session_members(sid):
+            signal_session(signal.SIGKILL)
             deadline = time.monotonic() + 2
-            while live_members(pgid) and time.monotonic() < deadline:
+            while session_members(sid) and time.monotonic() < deadline:
                 time.sleep(0.05)
-        survivors = live_members(pgid)
+        survivors = sorted(session_members(sid))
     finally:
         try:
-            process.wait(timeout=STOP_GRACE_SECONDS)  # only now is the group id released
+            process.wait(timeout=STOP_GRACE_SECONDS)  # only now are the session and group ids released
         except subprocess.TimeoutExpired:
             errors.append("leader still running after SIGKILL; left unreaped")
     if errors:
@@ -306,9 +353,9 @@ def stop_owned(process: subprocess.Popen | None, state: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = arguments(argv)
-    if os.name != "posix" or not os.path.exists("/proc/self/stat"):
-        raise ValueError("run this helper with Python inside WSL or Linux: it tracks the owned process group "
-                         "through Linux procfs (/proc)")
+    if os.name != "posix" or not os.path.exists("/proc/self/stat") or not hasattr(os, "pidfd_open"):
+        raise ValueError("run this helper with Python 3.9+ inside WSL or Linux (kernel 5.3+): it tracks the "
+                         "owned session through Linux procfs (/proc) and pidfds")
     if os.environ.get("CLAUDECODE"):
         raise ValueError("refusing to launch Claude from inside a Claude Code session (CLAUDECODE is set); "
                          "an operator that is already Claude should use its native subagents and worktrees")

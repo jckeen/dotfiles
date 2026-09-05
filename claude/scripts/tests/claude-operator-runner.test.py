@@ -14,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import resource
 import signal
 import subprocess
@@ -133,6 +134,13 @@ if mode == "success_with_surviving_child":
     emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
           "permission_denials": [], "result": "done"}})
     sys.exit(0)
+if mode == "lone_surrogate":
+    # Claude's stream can legitimately carry JSON-escaped lone surrogates.
+    sys.stdout.write('{{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "bad \\\\ud800 char"}}]}}}}\\n')
+    sys.stdout.write('{{"type": "result", "subtype": "success", "is_error": false, "session_id": "' + sid + '", '
+                     '"permission_denials": [], "result": "done \\\\udfff"}}\\n')
+    sys.stdout.flush()
+    sys.exit(0)
 if mode == "malformed_progress":
     emit({{"type": "assistant", "message": None}})
     emit({{"type": "assistant", "message": {{"content": "not a list"}}}})
@@ -204,6 +212,21 @@ def group_members(pgid):
             continue
         if fields[0] not in ("Z", "X") and int(fields[2]) == pgid:
             members.append(int(entry))
+    return members
+
+
+def session_members(sid):
+    """Running (non-zombie) processes whose Linux session is sid, as pid -> pgrp."""
+    members = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            fields = Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if fields[0] not in ("Z", "X") and int(fields[3]) == sid:
+            members[int(entry)] = int(fields[2])
     return members
 
 
@@ -850,6 +873,57 @@ class RunnerTests(unittest.TestCase):
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(child, signal.SIGKILL)
+
+    def test_redefined_cd_and_debug_trap_cannot_reach_prompt_or_events(self):
+        with (self.home / ".bashrc").open("a") as rc:
+            rc.write('cd() { IFS= read -r CD_LINE; echo "CD_SAW=[$CD_LINE]"; builtin cd "$@"; }\n'
+                     'trap \'IFS= read -r TRAP_LINE; echo "TRAP_SAW=[$TRAP_LINE]"\' DEBUG\n')
+        outcome = self.run_turn()
+        self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
+        received = self.received()[0]
+        self.assertEqual(received["prompt"], LITERAL_PROMPT, "a startup function consumed prompt bytes")
+        self.assertEqual(Path(received["cwd"]).resolve(), self.project.resolve())
+        log = (self.out / "stderr.log").read_text()
+        self.assertIn("TRAP_SAW=[]", log, "the DEBUG trap was not exercised")
+        self.assertNotIn("CD_SAW", log + outcome.stdout, "the redefined cd function ran")
+        events = (self.out / "events.jsonl").read_text()
+        for line in events.splitlines():
+            json.loads(line)  # every event line is Claude's, nothing from the shell
+        self.assertNotIn("TRAP_SAW", events)
+        self.assertEqual(self.state()["status"], "turn_complete")
+
+    def test_job_controlled_startup_job_is_stopped_within_the_owned_session(self):
+        with (self.home / ".bashrc").open("a") as rc:
+            rc.write('set -m; sleep 300 & echo "JOB_PID=$! JOB_PGID=$(cut -d" " -f5 /proc/$!/stat)" >&2; set +m\n')
+        bystander = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        try:
+            outcome = self.run_turn()
+            self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
+            state = self.state()
+            match = re.search(r"JOB_PID=(\d+) JOB_PGID=(\d+)", (self.out / "stderr.log").read_text())
+            self.assertIsNotNone(match, "the job-controlled startup job was not started")
+            job_pid, job_pgid = int(match.group(1)), int(match.group(2))
+            sid = state["claude_process_group"]
+            self.assertNotEqual(job_pgid, sid, "fixture did not place the job in a second process group")
+            self.assertEqual(state["status"], "turn_complete")
+            self.assertNotIn("stop_survivors", state)
+            self.assertNotIn("stop_errors", state)
+            self.assertFalse(is_alive(job_pid), "the job-controlled startup job outlived the turn")
+            self.assertEqual(session_members(sid), {})
+            self.assertTrue(is_alive(bystander.pid), "cleanup reached a process outside the owned session")
+        finally:
+            bystander.kill()
+            bystander.wait()
+
+    def test_lone_surrogates_in_the_stream_do_not_break_completion(self):
+        outcome = self.run_turn(mode="lone_surrogate")
+        self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
+        self.assertEqual(self.state()["status"], "turn_complete")
+        result = json.loads((self.out / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["result"], "done \udfff")
+        progress = [e for e in self.events(outcome) if e["event"] == "progress"]
+        self.assertEqual(progress[-1]["text"], "bad \ud800 char")
+        self.assertEqual(self.events(outcome)[-1]["result"], "done \udfff")
 
     def test_cancel_at_launch_boundary_still_stops_the_owned_child(self):
         real_popen = subprocess.Popen

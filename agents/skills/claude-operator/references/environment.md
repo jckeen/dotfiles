@@ -50,14 +50,16 @@ The runner starts Claude through an interactive Bash so the user's `PATH`,
 version managers, and aliases apply, with the startup files' stdout diverted
 to the run's `stderr.log` and their stdin detached (`/dev/null`), so a
 startup `read` cannot consume part of the prompt. Only after those files load
-does it attach the prompt, `cd` to the requested project (so a `~/.bashrc`
-that changes directory cannot move Claude elsewhere), and exec Claude.
-Preserve that order in any alternative launcher.
+does it `cd` to the requested project with the builtin (so a `~/.bashrc`
+that changes directory, or redefines `cd`, cannot move Claude elsewhere) and
+exec Claude with the prompt and events descriptors attached on that exec
+alone. Preserve that order in any alternative launcher.
 
-The runner itself is Linux/WSL only: it reads `/proc` to know which members
-of the owned process group are still running, and it keeps the exited Claude
-process unreaped until the last stop signal has been sent so the group id
-cannot be reused by an unrelated process while it is still a target.
+The runner itself is Linux/WSL only (Python 3.9+, kernel 5.3+): it reads
+`/proc` to know which members of the owned session are still running, signals
+job-control groups through pidfds, and keeps the exited Claude process
+unreaped until the last stop signal has been sent so the session and group
+ids cannot be reused by an unrelated process while they are still targets.
 
 ## Operating from Windows
 
