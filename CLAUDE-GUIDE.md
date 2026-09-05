@@ -117,7 +117,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | Command | What it does |
 |---------|-------------|
 | `cc [project]` | Pull repos, sync memory, health check, heal plugin drift, launch Claude (optionally in `~/dev/<project>`) |
-| `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead); reconnects Remote Control only when already enabled on the host |
+| `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead); reconnects already-enabled Remote Control, repairs verified missing daemon records on supported Linux hosts, and attempts one timed restart for recovery |
 | `pull-all` | Fast-forward pull on every repo in dev dir |
 | `sync-memory` | Commit and push pending memory changes |
 | `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |

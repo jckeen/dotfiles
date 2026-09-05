@@ -704,6 +704,11 @@ _codex_remote_run() (
     && [ "$((SECONDS - started))" -ge "$timeout_seconds" ]; then
     rc=124
   fi
+  # Codex can exit successfully with status=connecting after its readiness wait.
+  if [ "$rc" -eq 0 ] && [ "$*" = "remote-control start --json" ] \
+    && ! jq -e -s 'length == 1 and .[0].status == "connected"' "$output_file" >/dev/null 2>&1; then
+    return 75
+  fi
   if [ "$rc" -ne 0 ]; then
     command cat "$output_file"
   fi
@@ -740,6 +745,7 @@ _codex_remote_recover_stale_updater() {
 
 _codex_ensure_remote_control() {
   local timeout_seconds=15 stop_timeout_seconds=8 failure rc
+  local recovery_message=""
 
   if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
     _codex_remote_snapshot_updater || true
@@ -757,16 +763,35 @@ _codex_ensure_remote_control() {
     && _codex_remote_recover_stale_updater; then
     _codex_remote_run "$stop_timeout_seconds" remote-control stop --json \
       >/dev/null 2>&1 || true
+    recovery_message="recovered a stale managed daemon"
+  elif [ "$rc" -eq 1 ] \
+    && {
+      grep -Eq '^Error: Remote control is enabled on .+ but the connection is errored\.$' <<< "$failure" \
+        || {
+          grep -Fxq 'Error: app server is running but is not managed by codex app-server daemon' <<< "$failure" \
+            && _codex_remote_identity repair
+        }
+    }; then
+    if failure="$(_codex_remote_run "$timeout_seconds" app-server daemon restart 2>&1)"; then
+      recovery_message="recovered an errored connection"
+    else
+      rc=$?
+    fi
+  fi
+
+  if [ -n "$recovery_message" ]; then
     if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
       _codex_remote_snapshot_updater || true
-      echo "⚠ Codex Remote Control recovered a stale managed daemon." >&2
+      echo "⚠ Codex Remote Control $recovery_message." >&2
       return 0
     else
       rc=$?
     fi
   fi
 
-  if [ "$rc" -eq 124 ]; then
+  if [ "$rc" -eq 75 ]; then
+    echo "⚠ Codex Remote Control connection is not ready yet — local Codex will still launch." >&2
+  elif [ "$rc" -eq 124 ]; then
     echo "⚠ Codex Remote Control timed out after $timeout_seconds seconds — mobile access is off for this session." >&2
   else
     echo "⚠ Codex Remote Control unavailable (exit $rc) — mobile access is off for this session." >&2
