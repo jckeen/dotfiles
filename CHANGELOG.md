@@ -24,7 +24,10 @@
   the output path is rejected before it can be created through; a success
   result with a missing or different session ID is `session_mismatch`; a
   rejected CLI flag is named rather than retried with weaker settings;
-  usage errors exit 64. Completion: a turn ends when Claude itself exits
+  usage errors exit 64, including NaN/infinite/non-positive `--timeout`.
+  Input reads are bounded: the prompt is read only up to its limit before
+  rejection, and the stderr diagnostic scan reads only its prefix, so a
+  wrongly chosen huge file cannot exhaust memory. Completion: a turn ends when Claude itself exits
   (peeked without reaping), not when the events pipe closes or goes quiet,
   with the drain bounded to the bytes queued at that moment, so an
   inherited or chatty descendant can neither hang the turn nor turn it into
@@ -35,7 +38,8 @@
   group id; teardown is SIGTERM, a grace period, then SIGKILL for the whole
   group, runs on every path including normal completion, records
   `stop_errors`/`stop_survivors` instead of aborting the final `run.json`,
-  turns a success with survivors into `failed`, ignores repeated signals
+  turns a completed turn (success or denials) with survivors into `failed`
+  so nothing resumes over a live run, ignores repeated signals
   once entered, retries if a signal lands before it can enter, and defers
   a signal that arrives between `Popen` and the group being recorded.
 - Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`

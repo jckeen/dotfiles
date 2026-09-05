@@ -48,7 +48,7 @@ is in progress: `started` (with the runner PID and process group), `progress`
 | Exit | `run.json` status | Meaning |
 | --- | --- | --- |
 | 0 | `turn_complete` | Claude returned a success result for this exact session. It does **not** establish the acceptance criteria; verify the work. |
-| 1 | `failed` | No result, an error result, a nonzero Claude exit (raw code kept in `claude_exit_code`), an auth or quota failure, a rejected CLI flag (`unsupported_flag` names it), or a success whose owned processes could not all be stopped (`stop_errors` / `stop_survivors`). |
+| 1 | `failed` | No result, an error result, a nonzero Claude exit (raw code kept in `claude_exit_code`), an auth or quota failure, a rejected CLI flag (`unsupported_flag` names it), or a completed turn (success or denials) whose owned processes could not all be stopped (`stop_errors` / `stop_survivors`); do not resume while those are live. |
 | 1 | `session_mismatch` | The result's session ID differs from the requested one or is missing; `actual_session_id` records what came back. Do not treat as a resumable continuation. |
 | 2 | `needs_permission` | Claude exited 0 with a success result for the exact session that records permission denials. Read them in `result.json` before continuing, even if Claude's prose says it is done. Precedence is deliberate: a nonzero exit is `failed` even when denials are present (the raw code and the denials are both kept), so a process error is never reported as a mere approval need. |
 | 124 | `timed_out` | `--timeout` elapsed; the owned run was stopped. |
@@ -98,7 +98,7 @@ edit. `--timeout SECONDS` applies the same stop automatically.
   `'Bash(bun test)'`. They add to the user's existing permissions.
 - `--tools LIST`: restrict the built-in tool set, e.g. `Read,Edit,Bash`.
 - `--model VALUE`: only when the user chooses a model.
-- `--timeout SECONDS`: stop the owned run after this long.
+- `--timeout SECONDS`: stop the owned run after this long (finite, positive).
 - `--claude-bin PATH`: explicit executable.
 - `--safe-mode`: customizations disabled; troubleshooting only.
 - `--dry-run`: resolve inputs and print the planned command as JSON without

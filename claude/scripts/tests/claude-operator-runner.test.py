@@ -14,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import resource
 import signal
 import subprocess
 import sys
@@ -84,6 +85,13 @@ if mode == "success_with_chatty_child":
     emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
     emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
           "permission_denials": [], "result": "done"}})
+    sys.exit(0)
+if mode == "denied_with_surviving_child":
+    child = subprocess.Popen([sys.executable, "-c",
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"])
+    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    emit({{"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
+          "permission_denials": [{{"tool_name": "Bash", "tool_input": {{"command": "bun test"}}}}], "result": "done"}})
     sys.exit(0)
 if mode == "success_with_surviving_child":
     child = subprocess.Popen([sys.executable, "-c",
@@ -520,6 +528,58 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(sorted(p.relative_to(self.base) for p in self.base.rglob("*")), before)
         self.assertEqual(self.received(), [])
 
+    def test_oversized_prompt_is_rejected_without_being_loaded(self):
+        limit = load_runner_module().MAX_PROMPT_BYTES
+        with self.prompt.open("wb") as huge:  # sparse: 2 GiB apparent, almost nothing on disk
+            huge.seek(2 * 1024 ** 3 - 1)
+            huge.write(b"\0")
+        cap = 512 * 1024 ** 2  # far below the file, comfortably above the interpreter
+        outcome = subprocess.run(self.command(), capture_output=True, text=True, env=self.env(), timeout=60,
+                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)))
+        self.assertEqual(outcome.returncode, 1, outcome.stderr)
+        self.assertIn(f"exceeds the runner's {limit} byte", outcome.stderr)
+        self.assertNotIn("MemoryError", outcome.stderr)
+        self.assertNotIn("Traceback", outcome.stderr)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(self.received(), [])
+
+    def test_prompt_exactly_at_the_limit_with_bom_still_passes(self):
+        limit = load_runner_module().MAX_PROMPT_BYTES
+        body = (b"x" * (limit - 1)) + b"\n"
+        self.prompt.write_bytes(b"\xef\xbb\xbf" + body)
+        outcome = self.run_turn()
+        self.assertEqual(outcome.returncode, 0, outcome.stderr)
+        self.assertEqual((self.out / "prompt.txt").read_bytes(), body)
+        self.prompt.write_bytes(b"\xef\xbb\xbf" + body + b"y")
+        self.out = self.base / "runs" / "run-02"
+        outcome = self.run_turn()
+        self.assertEqual(outcome.returncode, 1)
+        self.assertIn("exceeds", outcome.stderr)
+
+    def test_huge_stderr_log_still_yields_the_flag_without_loading_it(self):
+        log = self.base / "stderr.log"
+        with log.open("wb") as huge:
+            huge.write(b"error: unknown option '--permission-prompts'\nmore output\n")
+            huge.truncate(4 * 1024 ** 3)  # sparse tail, far beyond any sane allocation
+        cap = 512 * 1024 ** 2
+        probe = ("import importlib.util, sys\nfrom pathlib import Path\n"
+                 "spec = importlib.util.spec_from_file_location('r', sys.argv[1])\n"
+                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+                 "print(m.unsupported_flag(Path(sys.argv[2])))")
+        outcome = subprocess.run([sys.executable, "-c", probe, str(RUNNER), str(log)], capture_output=True,
+                                 text=True, timeout=60,
+                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)))
+        self.assertEqual(outcome.returncode, 0, outcome.stderr)
+        self.assertEqual(outcome.stdout.strip(), "--permission-prompts")
+
+    def test_invalid_timeout_values_are_rejected_before_anything_happens(self):
+        for value in ("nan", "inf", "-inf", "0", "-1"):
+            outcome = self.run_turn(f"--timeout={value}")  # '=' form: a leading '-' would read as an option
+            self.assertEqual(outcome.returncode, 64, value)
+            self.assertIn("finite, positive", outcome.stderr, value)
+            self.assertFalse(self.out.exists())
+            self.assertEqual(self.received(), [])
+
     def test_invalid_utf8_prompt_is_rejected(self):
         self.prompt.write_bytes(b"bad \xff prompt")
         outcome = self.run_turn()
@@ -623,6 +683,27 @@ class RunnerTests(unittest.TestCase):
         state = self.state()
         self.assertEqual(state["status"], "timed_out")
         self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5))
+
+    def test_denials_with_unstoppable_survivor_are_failed_not_needs_permission(self):
+        def refused(_pgid, _sig):
+            raise PermissionError(1, "simulated EPERM")
+
+        with mock.patch.object(os, "killpg", refused):
+            rc, stdout = self.run_in_process(mode="denied_with_surviving_child")
+        leader, child = self.pids_from(stdout)
+        try:
+            self.assertEqual(rc, 1, "a live owned child must not be reported as a mere approval need")
+            state = self.state()
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["exit_code"], 1)
+            self.assertIn("do not resume", state["error"])
+            self.assertEqual(state["stop_survivors"], [child])
+            self.assertEqual(len(state["stop_errors"]), 2)
+            denials = json.loads((self.out / "result.json").read_text())["permission_denials"]
+            self.assertEqual(denials[0]["tool_name"], "Bash")
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, signal.SIGKILL)
 
     def test_success_with_unstoppable_survivor_is_not_success(self):
         def refused(_pgid, _sig):

@@ -32,6 +32,7 @@ import array
 from datetime import datetime, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -47,6 +48,7 @@ PERMISSION_MODES = ("manual", "acceptEdits", "auto", "dontAsk", "plan")
 # Claude's own stdin limit is higher; this catches a wrong --prompt-file (a
 # binary, a repo dump) before anything launches.
 MAX_PROMPT_BYTES = 9_000_000
+UTF8_BOM = b"\xef\xbb\xbf"
 EXIT_COMPLETE = 0
 EXIT_FAILED = 1
 EXIT_NEEDS_PERMISSION = 2
@@ -106,8 +108,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         help="launch with customizations disabled (troubleshooting only)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; create and launch nothing")
     args = parser.parse_args(argv)
-    if args.timeout is not None and args.timeout <= 0:
-        parser.error("--timeout must be a positive number of seconds")
+    if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout > 0):
+        parser.error("--timeout must be a finite, positive number of seconds")
     # Forwarded values become argv tokens after Claude's own options. A value
     # shaped like an option (`--allow-tool=--dangerously-skip-permissions`)
     # would be parsed by Claude as that option, smuggling a bypass past the
@@ -138,23 +140,27 @@ def find_claude(explicit: Path | None) -> tuple[Path, str]:
 
 
 def load_prompt(path: Path) -> bytes:
-    raw = path.read_bytes()
-    if raw.startswith(b"\xef\xbb\xbf"):
-        raw = raw[3:]
+    # Read only up to the limit (plus an optional BOM and one overflow byte):
+    # a wrongly selected huge file is rejected without ever being loaded.
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_PROMPT_BYTES + len(UTF8_BOM) + 1)
+    if raw.startswith(UTF8_BOM):
+        raw = raw[len(UTF8_BOM):]
+    if len(raw) > MAX_PROMPT_BYTES:
+        raise ValueError(f"prompt exceeds the runner's {MAX_PROMPT_BYTES} byte stdin limit")
     try:
         raw.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError(f"prompt file is not valid UTF-8: {error}") from error
     if not raw.strip():
         raise ValueError("prompt file is empty")
-    if len(raw) > MAX_PROMPT_BYTES:
-        raise ValueError(f"prompt exceeds the runner's {MAX_PROMPT_BYTES} byte stdin limit")
     return raw
 
 
 def unsupported_flag(stderr_path: Path) -> str | None:
     try:
-        text = stderr_path.read_text(encoding="utf-8", errors="replace")[:20_000]
+        with stderr_path.open("r", encoding="utf-8", errors="replace") as log:
+            text = log.read(20_000)  # the diagnostic is at the top; never load the whole log
     except OSError:
         return None
     match = UNKNOWN_OPTION_RE.search(text)
@@ -450,6 +456,9 @@ def main(argv: list[str] | None = None) -> int:
                 process = subprocess.Popen(shell_launch(events_write, prompt_fd, cwd, command), cwd=cwd,
                                            stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
                                            pass_fds=(events_write, prompt_fd), start_new_session=True)
+            except BaseException:
+                os.close(events_read)  # nobody will read it; the normal path closes it after streaming
+                raise
             finally:
                 os.close(events_write)
                 os.close(prompt_fd)
@@ -507,11 +516,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             state["status"] = "turn_complete"
             return_code = EXIT_COMPLETE
-        # A turn whose owned processes could not all be stopped is not a
-        # clean success, whatever Claude's result said.
-        if state["status"] == "turn_complete" and (state.get("stop_errors") or state.get("stop_survivors")):
-            state.update(status="failed", error="Claude reported success but owned processes were not stopped "
-                                                "cleanly (see stop_errors / stop_survivors)")
+        # A turn whose owned processes could not all be stopped is neither a
+        # clean success nor a safe place to resume from, whatever Claude's
+        # result said; the result (denials included) stays in result.json.
+        if state["status"] in ("turn_complete", "needs_permission") \
+                and (state.get("stop_errors") or state.get("stop_survivors")):
+            state.update(status="failed", error="Claude's turn ended but owned processes were not stopped "
+                                                "cleanly (see stop_errors / stop_survivors); do not resume "
+                                                "until they are gone")
             return_code = EXIT_FAILED
     except Interrupted as interrupt:
         state.update(status="interrupted", interrupted_by=str(interrupt))
