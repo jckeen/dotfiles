@@ -102,6 +102,15 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.timeout is not None and args.timeout <= 0:
         parser.error("--timeout must be a positive number of seconds")
+    # Forwarded values become argv tokens after Claude's own options. A value
+    # shaped like an option (`--allow-tool=--dangerously-skip-permissions`)
+    # would be parsed by Claude as that option, smuggling a bypass past the
+    # recorded permission mode. Flags inside a rule ("Bash(bun test --watch)")
+    # are fine; only a leading dash is rejected.
+    for option, values in (("--allow-tool", args.allow_tool), ("--tools", [args.tools]), ("--model", [args.model])):
+        for value in values:
+            if value is not None and value.startswith("-"):
+                parser.error(f"{option} value {value!r} looks like a command-line option and is not forwarded")
     return args
 
 
@@ -146,16 +155,18 @@ def unsupported_flag(stderr_path: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def shell_launch(events_fd: int, cwd: Path, command: list[str]) -> list[str]:
+def shell_launch(events_fd: int, prompt_fd: int, cwd: Path, command: list[str]) -> list[str]:
     """Interactive Bash loads the user's startup files first (their PATH,
-    version managers, aliases), while its stdout points at the log: startup
-    files may print (Ubuntu's /etc/bash.bashrc sudo hint, a ~/.bashrc banner)
-    and that must not land in the stream-json evidence. The -c body then
-    reclaims the events pipe as stdout, cd's after the startup files so a
-    ~/.bashrc that changes directory cannot move Claude out of the project,
-    and execs Claude. The prompt is not part of this string or of "$@": it
-    arrives on stdin."""
-    body = f'exec >&{events_fd} {events_fd}>&-; cd -- "$1" || exit $?; shift; exec "$@"'
+    version managers, aliases) with stdout pointed at the log and stdin at
+    /dev/null: startup files may print (Ubuntu's /etc/bash.bashrc sudo hint, a
+    banner) and may read (a `read` prompt), and neither may touch the
+    stream-json evidence or eat part of the prompt. The -c body then reclaims
+    the events pipe as stdout and the prompt file as stdin, cd's after the
+    startup files so a ~/.bashrc that changes directory cannot move Claude out
+    of the project, and execs Claude. The prompt is not part of this string or
+    of "$@": Claude reads it from the descriptor."""
+    body = (f'exec >&{events_fd} {events_fd}>&- <&{prompt_fd} {prompt_fd}<&-; '
+            'cd -- "$1" || exit $?; shift; exec "$@"')
     return ["/bin/bash", "-ic", body, "claude-operator", str(cwd), *command]
 
 
@@ -249,7 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         "timeout_seconds": args.timeout,
         "runner_pid": os.getpid(),
         "status": "prepared",
-        "shell": "interactive bash loads startup files (stdout to stderr.log), then cd to cwd, then exec claude",
+        "shell": "interactive bash loads startup files (stdout to stderr.log, stdin /dev/null), then cd to cwd, "
+                 "then exec claude with the prompt on stdin",
         "command": command,
     }
     if args.dry_run:
@@ -262,10 +274,23 @@ def main(argv: list[str] | None = None) -> int:
     state.update(status="starting", started_at=now())
     write_json(output / "run.json", state)
 
+    # Only the first termination signal (or the alarm) unwinds the run. Later
+    # ones arrive while stop_owned is still waiting out a TERM-ignoring child;
+    # raising then would abandon the group and leave run.json at "running".
+    stopping = False
+
     def on_signal(signum, _frame):
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
         raise Interrupted(signum)
 
     def on_alarm(_signum, _frame):
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
         raise TimedOut()
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -277,16 +302,17 @@ def main(argv: list[str] | None = None) -> int:
     return_code = EXIT_FAILED
     try:
         events_read, events_write = os.pipe()
+        prompt_fd = os.open(prompt_path, os.O_RDONLY)
         with (output / "stderr.log").open("w", encoding="utf-8") as errors, \
              (output / "events.jsonl").open("w", encoding="utf-8") as events, \
-             prompt_path.open("rb") as prompt_input, \
              os.fdopen(events_read, "r", encoding="utf-8", errors="replace") as stream:
             try:
-                process = subprocess.Popen(shell_launch(events_write, cwd, command), cwd=cwd,
-                                           stdin=prompt_input, stdout=errors, stderr=errors,
-                                           pass_fds=(events_write,), start_new_session=True)
+                process = subprocess.Popen(shell_launch(events_write, prompt_fd, cwd, command), cwd=cwd,
+                                           stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
+                                           pass_fds=(events_write, prompt_fd), start_new_session=True)
             finally:
                 os.close(events_write)
+                os.close(prompt_fd)
             if args.timeout is not None:
                 signal.setitimer(signal.ITIMER_REAL, args.timeout)
             state.update(status="running", claude_process_group=process.pid)
@@ -305,7 +331,11 @@ def main(argv: list[str] | None = None) -> int:
                     result = event
                     write_json(output / "result.json", result)
                 elif event.get("type") == "assistant":
-                    for block in event.get("message", {}).get("content", []):
+                    # Progress is best-effort: a malformed assistant event must
+                    # not stop the loop from reaching a later valid result.
+                    message = event.get("message")
+                    content = message.get("content") if isinstance(message, dict) else None
+                    for block in content if isinstance(content, list) else []:
                         if not isinstance(block, dict):
                             continue
                         if block.get("type") == "text":
@@ -328,7 +358,9 @@ def main(argv: list[str] | None = None) -> int:
                                    "dropping it, the runner never retries with weaker permission handling")
             elif not result:
                 state["error"] = "Claude exited without a result event (see stderr.log)"
-            return_code = return_code or EXIT_FAILED
+            # Claude's raw exit code is kept as claude_exit_code; the runner's
+            # own code must not collide with 2/124/130 from the public contract.
+            return_code = EXIT_FAILED
         elif result.get("permission_denials"):
             state["status"] = "needs_permission"
             return_code = EXIT_NEEDS_PERMISSION
@@ -345,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         state.update(status="failed", error=f"{type(error).__name__}: {error}")
         return_code = EXIT_FAILED
     finally:
+        stopping = True  # teardown is non-raising on every path until run.json is final
         signal.setitimer(signal.ITIMER_REAL, 0)
         stop_owned(process)
         if process is not None:

@@ -44,12 +44,12 @@ is in progress: `started` (with the runner PID and process group), `progress`
 | Exit | `run.json` status | Meaning |
 | --- | --- | --- |
 | 0 | `turn_complete` | Claude returned a success result for this exact session. It does **not** establish the acceptance criteria; verify the work. |
-| 1 | `failed` | No result, an error result, a nonzero Claude exit, an auth or quota failure, or a rejected CLI flag (`unsupported_flag` names it). |
+| 1 | `failed` | No result, an error result, a nonzero Claude exit (raw code kept in `claude_exit_code`), an auth or quota failure, or a rejected CLI flag (`unsupported_flag` names it). |
 | 1 | `session_mismatch` | The result's session ID differs from the requested one or is missing; `actual_session_id` records what came back. Do not treat as a resumable continuation. |
 | 2 | `needs_permission` | The turn finished but recorded permission denials. Read them in `result.json` before continuing, even if Claude's prose says it is done. |
 | 124 | `timed_out` | `--timeout` elapsed; the owned run was stopped. |
 | 130 / 143 | `interrupted` | The runner received SIGINT / SIGTERM and stopped the owned run; `interrupted_by` names the signal. |
-| 64 | (no run directory) | Usage error, including any attempt to pass a bypass flag. |
+| 64 | (no run directory) | Usage error, including any attempt to pass a bypass flag or an option-shaped `--allow-tool`/`--tools`/`--model` value. |
 
 If the installed Claude rejects `--permission-prompts` (older CLI), the run is
 reported as failed with the flag named. Upgrade Claude Code; the runner never
@@ -77,7 +77,9 @@ The runner puts Claude in its own process group and records it as
 `runner_pid` from `run.json`; the runner sends SIGTERM to the whole group
 (even if the original Claude process already exited and left children
 behind), escalates to SIGKILL after ten seconds for anything that ignored it,
-and records the interrupted state with the evidence gathered so far. Never stop all Claude processes or
+and records the interrupted state with the evidence gathered so far. Further
+signals during that teardown are ignored until the group is reaped and
+`run.json` is final. Never stop all Claude processes or
 another user's session. Inspect `git status` before resuming an interrupted
 edit. `--timeout SECONDS` applies the same stop automatically.
 

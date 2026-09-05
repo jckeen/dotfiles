@@ -43,6 +43,25 @@ if mode == "hang":
     child = subprocess.Popen(["sleep", "300"])
     emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
     time.sleep(300)
+if mode == "hang_ignore_term":
+    # The child survives SIGTERM and writes a marker when it arrives, so a test
+    # knows the runner's teardown has begun; the leader hangs until stopped.
+    child = subprocess.Popen([sys.executable, "-c",
+        "import os, signal, time\\n"
+        "def mark(*_): open(os.environ['FAKE_CLAUDE_TERM_MARKER'], 'w').close()\\n"
+        "signal.signal(signal.SIGTERM, mark)\\n"
+        "open(os.environ['FAKE_CLAUDE_TERM_MARKER'] + '.ready', 'w').close()\\n"
+        "while True: time.sleep(0.1)"])
+    while not os.path.exists(os.environ["FAKE_CLAUDE_TERM_MARKER"] + ".ready"):
+        time.sleep(0.02)  # the handler must be installed before anyone signals the group
+    emit({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "PIDS " + json.dumps([os.getpid(), child.pid])}}]}}}})
+    time.sleep(300)
+if mode == "malformed_progress":
+    emit({{"type": "assistant", "message": None}})
+    emit({{"type": "assistant", "message": {{"content": "not a list"}}}})
+    emit({{"type": "assistant", "message": {{"content": ["not a block", {{"type": "text", "text": "still here"}}]}}}})
+if mode == "exit_code":
+    sys.exit(int(os.environ["FAKE_CLAUDE_EXIT"]))
 if mode == "orphan":
     # A child that ignores SIGTERM and keeps the inherited stdout open; the
     # leader then exits, so the group outlives its leader.
@@ -103,9 +122,11 @@ class RunnerTests(unittest.TestCase):
         self.project.mkdir()
         (self.base / "elsewhere").mkdir()
         # The crafted startup file proves it ran, prints a banner the way login
-        # banners and /etc/bash.bashrc hints do, and tries to move Claude away.
+        # banners and /etc/bash.bashrc hints do, tries to read stdin the way an
+        # interactive prompt would, and tries to move Claude away.
         (self.home / ".bashrc").write_text(
-            f'export OPERATOR_TEST_RC=loaded\necho STARTUP_BANNER\ncd "{self.base}/elsewhere"\n')
+            f'export OPERATOR_TEST_RC=loaded\necho STARTUP_BANNER\n'
+            f'IFS= read -r STARTUP_INPUT\necho "STARTUP_READ=[$STARTUP_INPUT]"\ncd "{self.base}/elsewhere"\n')
         self.fake = self.base / "fake-claude"
         self.fake.write_text(FAKE_CLAUDE, encoding="utf-8")
         self.fake.chmod(0o700)
@@ -199,6 +220,14 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("STARTUP_BANNER", (self.out / "stderr.log").read_text())
         self.assertNotIn("STARTUP_BANNER", outcome.stdout)
 
+    def test_startup_files_cannot_consume_the_prompt(self):
+        outcome = self.run_turn()
+        self.assertEqual(outcome.returncode, 0, outcome.stderr)
+        # The startup `read` ran (proof it was exercised) but saw nothing;
+        # Claude still received every byte of the prompt.
+        self.assertIn("STARTUP_READ=[]", (self.out / "stderr.log").read_text())
+        self.assertEqual(self.received()[0]["prompt"], LITERAL_PROMPT)
+
     def test_exact_resume_passes_the_requested_session(self):
         sid = str(uuid.uuid4())
         outcome = self.run_turn("--resume", sid)
@@ -247,6 +276,23 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.state()["status"], "failed")
         self.assertEqual(self.state()["claude_exit_code"], 1)
 
+    def test_reserved_child_exit_codes_do_not_leak_into_the_runner_contract(self):
+        for code in (2, 64, 124, 130, 143):
+            self.out = self.base / "runs" / f"exit-{code}"
+            outcome = self.run_turn(mode="exit_code", FAKE_CLAUDE_EXIT=str(code))
+            self.assertEqual(outcome.returncode, 1, f"child exit {code} leaked as the runner exit code")
+            state = self.state()
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["claude_exit_code"], code)
+            self.assertEqual(state["exit_code"], 1)
+
+    def test_malformed_progress_events_do_not_hide_a_later_result(self):
+        outcome = self.run_turn(mode="malformed_progress")
+        self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
+        self.assertEqual(self.state()["status"], "turn_complete")
+        texts = [e["text"] for e in self.events(outcome) if e["event"] == "progress"]
+        self.assertEqual(texts, ["working", "still here"])
+
     def test_unsupported_flag_is_reported_not_worked_around(self):
         outcome = self.run_turn(mode="unknown_flag")
         self.assertEqual(outcome.returncode, 1)
@@ -263,6 +309,25 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(outcome.returncode, 64, flag)
             self.assertEqual(self.received(), [])
             self.assertFalse(self.out.exists())
+
+    def test_option_shaped_forwarded_values_are_rejected(self):
+        injections = (
+            ["--allow-tool", "Read", "--allow-tool=--dangerously-skip-permissions"],
+            ["--allow-tool=--permission-mode", "--allow-tool", "bypassPermissions"],
+            ["--allow-tool=-p"],
+            ["--tools=--bare"],
+            ["--model=--dangerously-skip-permissions"],
+        )
+        for argv in injections:
+            outcome = self.run_turn(*argv)
+            self.assertEqual(outcome.returncode, 64, argv)
+            self.assertIn("looks like a command-line option", outcome.stderr)
+            self.assertEqual(self.received(), [])
+            self.assertFalse(self.out.exists())
+        # Flags inside a rule are legitimate and forwarded intact.
+        outcome = self.run_turn("--allow-tool", "Bash(bun test --coverage)", "--dry-run")
+        self.assertEqual(outcome.returncode, 0, outcome.stderr)
+        self.assertEqual(self.events(outcome)[0]["command"][-1], "Bash(bun test --coverage)")
 
     def test_refuses_to_nest_inside_a_claude_session(self):
         outcome = self.run_turn(CLAUDECODE="1")
@@ -347,9 +412,9 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
 
     # ── owned-process cleanup ───────────────────────────────────────────
-    def start_hanging_run(self, *extra, mode="hang"):
+    def start_hanging_run(self, *extra, mode="hang", **env_extra):
         proc = subprocess.Popen(self.command(*extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=self.env(mode))
+                                text=True, env=self.env(mode, **env_extra))
         pids = None
         for line in proc.stdout:
             event = json.loads(line)
@@ -405,6 +470,28 @@ class RunnerTests(unittest.TestCase):
         finally:
             bystander.kill()
             bystander.wait()
+
+    def test_second_signal_during_teardown_does_not_abandon_the_group(self):
+        marker = self.base / "term-seen"
+        proc, pids = self.start_hanging_run(mode="hang_ignore_term", FAKE_CLAUDE_TERM_MARKER=str(marker))
+        leader, child = pids
+        proc.send_signal(signal.SIGINT)
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists(), "teardown never sent SIGTERM to the child")
+        # Teardown is now waiting out the TERM-ignoring child: hit it again.
+        proc.send_signal(signal.SIGINT)
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 130, stderr)
+        self.assertTrue(wait_dead([leader, child], seconds=5), "group survived a repeated signal during teardown")
+        state = self.state()
+        self.assertEqual(state["status"], "interrupted")
+        self.assertEqual(state["interrupted_by"], "SIGINT")
+        self.assertEqual(state["exit_code"], 130)
+        self.assertIn("finished_at", state)
+        self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "interrupted")
 
     def test_zombie_is_not_mistaken_for_a_running_child(self):
         zombie = subprocess.Popen(["true"])

@@ -48,9 +48,11 @@ explore. They also sync repositories and private memory.
 
 The runner starts Claude through an interactive Bash so the user's `PATH`,
 version managers, and aliases apply, with the startup files' stdout diverted
-to the run's `stderr.log`. Only after those files load does it `cd` to the
-requested project, so a `~/.bashrc` that changes directory cannot move Claude
-elsewhere. Preserve that order in any alternative launcher.
+to the run's `stderr.log` and their stdin detached (`/dev/null`), so a
+startup `read` cannot consume part of the prompt. Only after those files load
+does it attach the prompt, `cd` to the requested project (so a `~/.bashrc`
+that changes directory cannot move Claude elsewhere), and exec Claude.
+Preserve that order in any alternative launcher.
 
 ## Operating from Windows
 

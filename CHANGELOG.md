@@ -25,7 +25,15 @@
   the Windows npm shim with its own config and auth); a dangling symlink at
   the requested output path is rejected before it can be resolved and
   created through; a success result that omits its session ID is a
-  `session_mismatch`, not a completed turn.
+  `session_mismatch`, not a completed turn. Post-commit gate findings
+  (Codex + Antigravity): option-shaped `--allow-tool`/`--tools`/`--model`
+  values are rejected before launch so a bypass flag cannot ride the
+  variadic allow list; a second signal during teardown is ignored until the
+  group is reaped and `run.json` is final; Bash startup runs with stdin on
+  `/dev/null` and the prompt is attached only in the exec body, so a startup
+  `read` cannot eat part of it; a nonzero Claude exit always maps to runner
+  exit 1 with the raw code in `claude_exit_code`; a malformed assistant
+  event no longer aborts the stream before a later valid result.
 - Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`
   (stdlib Python, stub `claude`, throwaway HOME with a crafted `~/.bashrc`,
   from-scratch child env) wired into the CI `checks` job; cases cover
