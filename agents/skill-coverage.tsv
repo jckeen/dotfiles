@@ -2,6 +2,7 @@
 antigravity-review	claude-only	Claude wrapper around the Antigravity companion gate.
 branch-hygiene	shared
 changelog	shared
+claude-operator	agent-only	Drives Claude Code as the implementer from another agent; a Claude-side copy would be recursive self-delegation.
 claude-server	claude-only	Starts Claude Code remote control rather than a portable agent workflow.
 commit-push-pr	shared
 decompose	shared

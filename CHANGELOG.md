@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-09-05 — feat: shared `claude-operator` skill drives Claude Code from Codex
+
+### What changed
+- New agent-only skill `agents/skills/claude-operator/` (SKILL.md, two
+  references, `agents/openai.yaml`, and `scripts/claude_run.py`). An operator
+  agent briefs Claude from a prompt file, runs one native print-mode turn,
+  gets streamed events plus the exact session ID in a fresh run directory,
+  resumes that exact session for follow-ups, and stops only the process
+  group it owns. Exit codes separate a completed turn (0), a failure (1), and
+  a turn that ended on permission denials (2). Installed by the existing
+  `setup.sh` shared-skill links; nothing new to run.
+- Runner fixes over the private draft: Bash startup-file stdout (Ubuntu's
+  `/etc/bash.bashrc` sudo hint, banners) no longer pollutes `events.jsonl`;
+  SIGTERM/SIGHUP and a new `--timeout` stop the owned run and record the
+  state instead of orphaning Claude; the prompt is validated as UTF-8 and sent
+  byte-exact; a rejected CLI flag is named in `run.json` rather than retried
+  with weaker settings; usage errors exit 64 so they cannot be mistaken for
+  the permission-denied exit; the runner refuses to nest inside a Claude Code
+  session. Codex refutation findings folded in: the stop path addresses the
+  process group by id and SIGKILLs TERM-ignoring survivors even after the
+  leader exited (a child holding the events pipe open no longer outlives a
+  timeout); executable selection never searches `PATH` (on WSL that resolves
+  the Windows npm shim with its own config and auth); a dangling symlink at
+  the requested output path is rejected before it can be resolved and
+  created through; a success result that omits its session ID is a
+  `session_mismatch`, not a completed turn.
+- Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`
+  (stdlib Python, stub `claude`, throwaway HOME with a crafted `~/.bashrc`,
+  from-scratch child env) wired into the CI `checks` job; cases cover
+  success, failure, denial, exact resume, missing or mismatched session ID, literal prompt,
+  cwd restoration, dry-run, existing-output and dangling-link preservation,
+  native-only executable selection, bypass-flag rejection, SIGINT and
+  timeout cleanup, and leader-exited group cleanup with a bystander check.
+- Docs: `agents/skill-coverage.tsv` row (agent-only, rationale),
+  `codex/README.md` section, `docs/WINDOWS.md` section on the separate
+  Windows Codex config root and installing the skill there.
+
+### Decisions made
+- Opt-in only: the public skill never makes Claude the default implementer;
+  that preference stays in the private memory layer.
+- The wrapper is documented as not an isolation boundary and exposes no
+  `bypassPermissions`, `--dangerously-skip-permissions`, or `--bare`.
+
+### Known issues
+- The Windows-side copy is a manual `Copy-Item`; it does not refresh with
+  `dotfiles-update`.
+
 ## 2026-09-04 — feat: opt-in tmux persistence via `cct`
 
 ### What changed
