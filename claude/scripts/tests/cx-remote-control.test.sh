@@ -67,7 +67,7 @@ fi
 cat > "$TEST_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${REMOTE_TEST_WARNING:-}" ] || printf '%s\n' "$REMOTE_TEST_WARNING" >&2
-printf '%s\n' "$REMOTE_TEST_JSON"
+printf '%s' "$REMOTE_TEST_JSON"
 exit "${REMOTE_TEST_RC:-0}"
 EOF
 remote_test_cases=('{"status":"connected","timedOut":false}'
@@ -97,7 +97,7 @@ REMOTE_TEST_WARNING='Error: app server is running but is not managed by codex ap
 if captured="$(PATH="$TEST_BIN:$PATH" _codex_remote_run 1 remote-control start --json 2>&1)"; then
   fail "Remote Control ignored the failing command exit status"
 elif grep -Fxq "$REMOTE_TEST_WARNING" <<< "$captured"; then
-  ok "failing startup preserves stderr for recovery classification"
+  ok "failing startup preserves stderr after unterminated stdout for recovery classification"
 else
   fail "Remote Control lost the stderr diagnostic during bounded capture"
 fi

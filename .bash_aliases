@@ -714,7 +714,9 @@ _codex_remote_run() (
     return 75
   fi
   if [ "$rc" -ne 0 ]; then
-    command cat "$output_file" "$error_file"
+    command cat "$output_file"
+    printf '\n'
+    command cat "$error_file"
   fi
   return "$rc"
 )
