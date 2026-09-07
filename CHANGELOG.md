@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-06 — feat: harvested Codex findings carry `codex-finding` so the janitor can expire them
+
+### What changed
+- `claude/scripts/harvest-codex-comments.sh` files each Codex-bot review comment
+  with the `codex-finding` label (retrying unlabeled on a 422 so a repo without
+  the label still gets the issue). The label exists in every owned repo.
+- Pairs with jw-routines: the nightly docs steward now keeps one rolling
+  `Docs needing review — consolidated tracker` per repo instead of a dated issue
+  per night, the weekly repo janitor re-verifies every `codex-finding` against
+  the default branch and closes fixed/obsolete ones with evidence, and the
+  Monday fleet digest reports backlog pressure per repo.
+
+### Decisions made
+- Findings expire by evidence, not by age: a bot never closes a human-filed
+  issue, and a codex finding is only closed with a sha or current file:line
+  showing the concern is gone.
+- Fleet-wide triage on 2026-09-06 took open issues from 317 to 233; the 84
+  closed were bot-filed duplicates or already-fixed findings.
+
 ## 2026-09-05 — feat: shared `claude-operator` skill drives Claude Code from Codex
 
 ### What changed
