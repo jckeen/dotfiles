@@ -5,6 +5,9 @@
 # the pull/health interplay that needs scripted failures.
 set -uo pipefail
 
+# Exported shell functions take precedence over the fixture's PATH shims.
+unset -f git codex claude
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
