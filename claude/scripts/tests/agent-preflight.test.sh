@@ -8,8 +8,8 @@ set -uo pipefail
 # Exported shell functions take precedence over the fixture's PATH shims.
 unset -f git codex claude
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SCRIPT_DIR="$(CDPATH='' builtin cd "$(dirname "${BASH_SOURCE[0]}")" && builtin pwd)"
+REPO_ROOT="$(CDPATH='' builtin cd "$SCRIPT_DIR/../../.." && builtin pwd)"
 
 pass=0
 failed=0
@@ -103,6 +103,14 @@ if ! _pull_all_is_linked_worktree "$REAL_DEV/ordinary/" \
   ok "linked worktrees are identified by git-dir/common-dir, not by a gitfile"
 else
   fail "worktree classification misread a gitfile checkout, submodule, or linked worktree"
+fi
+
+if ! CDPATH=. _pull_all_is_linked_worktree "$REAL_DEV/ordinary/" \
+  && ! CDPATH=. _pull_all_is_linked_worktree "$REAL_DEV/gitfile-ordinary/" \
+  && CDPATH=. _pull_all_is_linked_worktree "$REAL_DEV/linked/"; then
+  ok "worktree classification ignores CDPATH output and directory search"
+else
+  fail "CDPATH changed the detected worktree layout"
 fi
 
 real_output="$(pull-all 2>&1)"

@@ -49,10 +49,11 @@ _pull_all_git_error() {
 # Return 2 when metadata cannot be resolved; callers must not assume ordinary.
 _pull_all_is_linked_worktree() {
   local repo="$1" git_dir common_dir
+  local CDPATH=""
   git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)" || return 2
   common_dir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 2
-  git_dir="$(cd -P -- "$repo" && cd -P -- "$git_dir" && pwd -P)" || return 2
-  common_dir="$(cd -P -- "$repo" && cd -P -- "$common_dir" && pwd -P)" || return 2
+  git_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$git_dir" && builtin pwd -P)" || return 2
+  common_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$common_dir" && builtin pwd -P)" || return 2
   [ "$git_dir" != "$common_dir" ]
 }
 
