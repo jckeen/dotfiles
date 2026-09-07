@@ -22,7 +22,7 @@ opening a PR.
 
 If your PR touches `setup.sh`:
 
-- Run `shellcheck setup.sh` — it must be clean (severity `error`).
+- Run `shellcheck setup.sh` — it must be clean (severity `warning`).
 - Run `./setup.sh --check` on at least one platform and include the result
   in the PR description, e.g. *"I ran `./setup.sh --check` on macOS 14
   (Apple Silicon) — passes."*
