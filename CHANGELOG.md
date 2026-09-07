@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-06 — fix: agent launchers continue after sync failures
+
+- `cc`, `cx`, and `agy` warn with repository errors and continue with local
+  files when sync fails. Claude memory publication failures also warn and
+  continue; required configuration health checks still block startup.
+- Linked worktrees fetch without changing their branches or files. Ordinary
+  checkouts keep fast-forward pulls; unresolved Git layouts are reported and
+  skipped. Standalone sync commands still return failures to their callers.
+- Regression coverage exercises real Git worktrees, checkout classification,
+  failed syncs, and launcher runtime reachability with passing or failing health.
+
 ## 2026-09-05 — feat: shared `claude-operator` skill drives Claude Code from Codex
 
 ### What changed
