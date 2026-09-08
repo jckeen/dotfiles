@@ -25,12 +25,45 @@ _dev_dir() {
   printf '%s\n' "$_DEV_DIR_CACHE"
 }
 
-# Pull latest for all git repos under dev directory. Pulls are intentionally
-# sequential: linked worktrees share fetch/object state, so parallel pulls can
-# contend even though their checked-out branches are different.
+_pull_all_report() {
+  printf '  %-20s  %s\n' "$1" "$2"
+}
+
+_pull_all_failure() {
+  _pull_all_failures+="$1: $2"$'\n'
+  _pull_all_report "$1" "$2"
+}
+
+# First error:/fatal: line of a git transcript. tail -1 hides the real
+# diagnostic: an aborted --ff-only pull prints the error first and ends on
+# "Updating <a>..<b>", which reads as success (issue #280).
+_pull_all_git_error() {
+  grep -m1 -E '^(error|fatal):' <<< "$1" || tail -1 <<< "$1"
+}
+
+# A linked worktree's own git dir (<common>/worktrees/<name>) differs from the
+# repository's common dir; in every other layout — plain .git directory,
+# --separate-git-dir gitfile, submodule gitfile — the two resolve to the same
+# path. Both are canonicalized physically because git realpaths one and not
+# the other, and a symlinked dev dir would otherwise misclassify every repo.
+# Return 2 when metadata cannot be resolved; callers must not assume ordinary.
+_pull_all_is_linked_worktree() {
+  local repo="$1" git_dir common_dir
+  local CDPATH=""
+  git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)" || return 2
+  common_dir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 2
+  git_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$git_dir" && builtin pwd -P)" || return 2
+  common_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$common_dir" && builtin pwd -P)" || return 2
+  [ "$git_dir" != "$common_dir" ]
+}
+
+# Linked worktrees may belong to another session, so only fetch into their
+# shared repository. Keep sync sequential because linked worktrees share refs
+# and objects. Preserve failures for callers that continue after a failed sync.
 pull-all() {
   local dev_dir
   dev_dir="$(_dev_dir)"
+  _pull_all_failures=""
   if [ ! -d "$dev_dir" ]; then
     echo "Dev directory not found: $dev_dir"
     return 1
@@ -42,17 +75,40 @@ pull-all() {
     name="$(basename "$repo")"
     if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
       failed=1
-      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+      _pull_all_failure "$name" "$(tail -1 <<< "$output")"
       continue
     fi
     if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
       failed=1
-      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$remote_output")"
+      _pull_all_failure "$name" "$(tail -1 <<< "$remote_output")"
       continue
     fi
     [ -n "$remote_output" ] || continue
-    if ! upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
-      printf "  %-20s%s\n" "$name" "No upstream branch; skipped"
+    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
+      || upstream=""
+    rc=0
+    _pull_all_is_linked_worktree "$repo" || rc=$?
+    if [ "$rc" -gt 1 ]; then
+      failed=1
+      _pull_all_failure "$name" "Cannot resolve Git worktree layout; not pulled"
+      continue
+    fi
+    if [ "$rc" -eq 0 ]; then
+      rc=0
+      # Detached or upstream-less linked worktrees still fetch their default
+      # remote; nothing here ever moves HEAD, the index, or the files.
+      output="$(git -C "$repo" fetch --prune 2>&1)" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        _pull_all_report "$name" \
+          "Fetched only (linked worktree${upstream:+ tracking $upstream}; not pulled)"
+      else
+        failed=1
+        _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
+      fi
+      continue
+    fi
+    if [ -z "$upstream" ]; then
+      _pull_all_report "$name" "No upstream branch; skipped"
       continue
     fi
     rc=0
@@ -63,19 +119,15 @@ pull-all() {
     # morning and then silently worked again.
     output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
-      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+      _pull_all_report "$name" "$(tail -1 <<< "$output")"
     elif grep -q 'no such ref was fetched' <<< "$output"; then
       # Nothing to pull: the checkout tracks a branch that no longer exists.
       # Same posture as "No upstream branch" — not a launch blocker.
-      printf "  %-20s%s\n" "$name" \
+      _pull_all_report "$name" \
         "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
     else
       failed=1
-      # tail -1 hides the real diagnostic on failure: an aborted --ff-only
-      # pull prints "error:/fatal:" first and ends on "Updating <a>..<b>",
-      # which reads as success while the launcher blocks (issue #280).
-      printf "  %-20s%s\n" "$name" \
-        "$(grep -m1 -E '^(error|fatal):' <<< "$output" || tail -1 <<< "$output")"
+      _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
     fi
   done
   return "$failed"
@@ -83,9 +135,13 @@ pull-all() {
 
 # Strict launcher health wrappers. Standalone checkers remain useful as
 # reporters, while launchers treat every actionable managed-config warning as
-# a stop condition.
+# a stop condition. Memory publication is not a config check: when sync-memory
+# refuses (no upstream, unsafe history, push failure) the session still has
+# its local memory, so the launcher warns and goes on to the real health gate.
 _check_claude_launch_health() {
-  sync-memory || return 1
+  if ! sync-memory; then
+    echo "⚠ Memory sync failed — continuing with local memory; run sync-memory after fixing the memory repo." >&2
+  fi
   "$(_dev_dir)/dotfiles/check-claude.sh" --heal
 }
 
@@ -435,8 +491,9 @@ _check_critical_symlinks() {
 }
 
 # Shared agent preflight: resume detection, project cd, and the "Syncing repos…"
-# sequence (pull-all + a per-tool health check). Keep cc/cx/agy on this path so
-# their machine-sync behavior cannot drift independently.
+# sequence (pull-all, which only warns, then a per-tool health check, which
+# blocks). Keep cc/cx/agy on this path so their machine-sync behavior cannot
+# drift independently.
 #   $1  — space-separated resume keywords (e.g. "--resume -r --continue -c")
 #   $2  — health-check command run inside the sync block (e.g. "sync-memory")
 #   $3… — the caller's original positional args ("$@")
@@ -491,9 +548,17 @@ _agent_preflight() {
 
   if [ "$_agent_resuming" -eq 0 ]; then
     echo "Syncing repos..."
+    # A repo that cannot sync is not a reason to withhold the agent: the
+    # checkout is still usable, just possibly stale. The warning repeats the
+    # failed repos so it stands on its own above the health output.
     if ! pull-all; then
-      echo "Repository sync failed — resolve the pull error before launching the agent." >&2
-      return 1
+      {
+        echo "⚠ Repository sync failed — continuing with local files:"
+        if [ -n "${_pull_all_failures:-}" ]; then
+          sed 's/^/    /' <<< "${_pull_all_failures%$'\n'}"
+        fi
+        echo "  Fix the repos above and re-run pull-all; the agent starts on their current checkouts."
+      } >&2
     fi
     echo ""
   fi
