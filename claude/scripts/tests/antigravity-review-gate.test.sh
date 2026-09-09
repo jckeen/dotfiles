@@ -36,6 +36,7 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 touch "$AGY_FAKE_DIR/invoked"
+[ ! -f "$AGY_FAKE_DIR/mutate" ] || bash "$AGY_FAKE_DIR/mutate"
 # Go's flag package treats -print/--print/-p and the =value forms as the same
 # flag, so the emulation must too (adversarial review of PR #243: an equals or
 # single-dash spelling regression must not pass the suite).
@@ -292,5 +293,293 @@ assert "agy invoked for the rename-laundered diff" "[ -e '$AGY_FAKE_DIR/invoked'
 rm -rf "$R"
 
 echo ""
+new_repo
+echo change >> "$R/code.txt"
+printf '%s\n' '- [P3] nit; [P1] auth bypass — code.txt:1' > "$AGY_FAKE_DIR/output"
+awk 'BEGIN { for (i=0; i<2000; i++) printf "- [P3] %0200d — code.txt:1\n", i }' >> "$AGY_FAKE_DIR/output"
+check "long output cannot SIGPIPE away an embedded priority" 2 "Stray [P#] token" --uncommitted
+rm -rf "$R"
+
+new_repo
+echo change >> "$R/code.txt"
+printf '%s\n' '- [P3] nit; [P1] authentication bypass — code.txt:1' > "$AGY_FAKE_DIR/output"
+check "embedded P1 on a recognized P3 line blocks" 2 "Stray [P#] token" --uncommitted
+rm -rf "$R"
+
+new_repo
+git -C "$R" checkout -qb feature
+echo committed >> "$R/code.txt"
+git -C "$R" commit -qam work
+echo steer > "$R/GEMINI.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "dirty Gemini instructions block committed review" 2 "instruction surface"
+assert "dirty Gemini instructions never dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+git -C "$R" checkout -qb feature
+echo committed >> "$R/code.txt"
+git -C "$R" commit -qam work
+printf 'git commit --allow-empty -qm concurrent\n' > "$AGY_FAKE_DIR/mutate"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
+rm -rf "$R"
+
+# The alternate lane must receive instruction bytes even with passive suffixes.
+for active_path in .codex/policy.lock .claude/hooks/check.lock LICENSE.py; do
+  for scope in committed uncommitted; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    mkdir -p "$R/$(dirname "$active_path")"
+    printf '#!/usr/bin/env python3\nprint("ACTIVE_REVIEW_MARKER")\n' > "$R/$active_path"
+    chmod +x "$R/$active_path"
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" add "$active_path"
+      git -C "$R" commit -qm 'active change with exempt filename'
+    fi
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    check "$scope $active_path requires alternate review" 0 "LGTB verdict" "--$scope" --require
+    assert "active content reaches alternate reviewer" "grep -q 'ACTIVE_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
+    assert "active receipt records actual alternate review" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+    rm -rf "$R"
+  done
+done
+
+for pathspec_setting in literal conflicting; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/.codex"
+  printf 'PATHSPEC_ALTERNATE_MARKER\n' > "$R/.codex/config.toml"
+  git -C "$R" add .codex/config.toml
+  git -C "$R" commit -qm 'pathspec environment fixture'
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  if [[ "$pathspec_setting" == literal ]]; then
+    export GIT_LITERAL_PATHSPECS=1
+  else
+    export GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1
+  fi
+  check "$pathspec_setting environment still dispatches alternate review" 0 "LGTB verdict" --committed --require
+  assert "pathspec environment preserves alternate prompt bytes" "grep -q 'PATHSPEC_ALTERNATE_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "pathspec environment cannot exempt alternate review" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+  rm -rf "$R"
+done
+
+for suffix in ' ' $'\n'; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam 'twin repository fixture'
+  sibling="$R"
+  R="$R$suffix"
+  cp -a "$sibling" "$R"
+  printf 'TWIN_ALTERNATE_MARKER\n' > "$R/code.txt"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "whitespace twin reviews its own alternate workspace" 0 "LGTB verdict" --uncommitted --require
+  assert "whitespace twin bytes reach alternate reviewer" "grep -q 'TWIN_ALTERNATE_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "whitespace twin cannot create sibling alternate receipt" "[ ! -e '$sibling/.git/review-receipts/antigravity.json' ]"
+  printf 'dirty twin instructions\n' > "$R/AGENTS.md"
+  rm -f "$AGY_FAKE_DIR/invoked"
+  check "whitespace twin blocks alternate committed review" 2 "dirty instruction surface" --committed --require
+  assert "whitespace twin dirty instructions prevent alternate dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+  rm -rf "$R" "$sibling"
+done
+
+new_repo
+echo source-directory >> "$R/code.txt"
+copied_scripts="$SHIM_DIR/scripts"$'\n'
+mkdir -p "$copied_scripts"
+cp "$SCRIPT_DIR/../antigravity-review-gate.sh" "$SCRIPT_DIR/../gate-lib.sh" "$SCRIPT_DIR/../review-receipt.py" "$copied_scripts/"
+original_gate="$GATE"
+GATE="$copied_scripts/antigravity-review-gate.sh"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "alternate gate source directory preserves trailing newline" 0 "LGTB verdict" --uncommitted --require
+assert "alternate gate from newline directory dispatches" "grep -q 'source-directory' '$AGY_FAKE_DIR/stdin'"
+GATE="$original_gate"
+rm -rf "$R"
+
+for checkout_state in staged-mode crlf sparse; do
+  new_repo
+  args=(--committed --require)
+  case "$checkout_state" in
+    staged-mode)
+      printf 'before\n' > "$R/image.png"
+      git -C "$R" add image.png
+      git -C "$R" commit -qm 'regular file'
+      git -C "$R" config core.filemode false
+      git -C "$R" update-index --chmod=+x image.png
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/image.png"
+      git -C "$R" add image.png
+      args=(--uncommitted --require)
+      ;;
+    crlf)
+      printf 'Known instructions.\n' > "$R/AGENTS.md"
+      git -C "$R" add AGENTS.md
+      git -C "$R" commit -qm 'instructions'
+      git -C "$R" config core.autocrlf true
+      rm "$R/AGENTS.md"
+      git -C "$R" checkout -- AGENTS.md
+      git -C "$R" checkout -qb feature
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/code.txt"
+      git -C "$R" commit -qam 'code change'
+      ;;
+    sparse)
+      mkdir -p "$R/docs" "$R/src"
+      printf 'Known instructions.\n' > "$R/docs/AGENTS.md"
+      printf 'before\n' > "$R/src/code.txt"
+      git -C "$R" add docs src
+      git -C "$R" commit -qm 'sparse fixture'
+      git -C "$R" sparse-checkout init --cone --sparse-index
+      git -C "$R" sparse-checkout set src
+      git -C "$R" checkout -qb feature
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/src/code.txt"
+      git -C "$R" commit -qam 'code change'
+      ;;
+  esac
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$checkout_state reaches required alternate review" 0 "LGTB verdict" "${args[@]}"
+  assert "native checkout state preserves alternate bytes" "grep -q 'NATIVE_STATE_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "native checkout state gets full alternate receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  rm -rf "$R"
+done
+
+for normalization in auto autocrlf; do
+  new_repo
+  printf '\v%.0s' {1..20} > "$R/AGENTS.md"
+  printf 'CRLF_BINARY_INSTRUCTION_MARKER\n' >> "$R/AGENTS.md"
+  : > "$R/.gitattributes"
+  [[ "$normalization" != auto ]] || printf 'AGENTS.md text=auto\n' > "$R/.gitattributes"
+  git -C "$R" add AGENTS.md .gitattributes
+  git -C "$R" commit -qm 'automatic binary classification'
+  [[ "$normalization" != autocrlf ]] || git -C "$R" config core.autocrlf true
+  python3 - "$R/AGENTS.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+PY
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$normalization binary instructions block committed alternate review" 2 "dirty instruction surface" --committed --require
+  assert "dirty binary instructions cannot dispatch committed alternate review" "[ ! -f '$AGY_FAKE_DIR/invoked' ]"
+  check "$normalization binary instructions require full alternate review" 0 "LGTB verdict" --uncommitted --require
+  assert "binary instruction CRLF change reaches alternate reviewer" "grep -q 'CRLF_BINARY_INSTRUCTION_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "binary instruction change cannot receive alternate no-diff evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  rm -rf "$R"
+done
+
+for normalization in text autocrlf; do
+  new_repo
+  ln -s $'SYMLINK_TARGET\nname' "$R/link.txt"
+  : > "$R/.gitattributes"
+  [[ "$normalization" != text ]] || printf 'link.txt text\n' > "$R/.gitattributes"
+  git -C "$R" add link.txt .gitattributes
+  git -C "$R" commit -qm 'symlink fixture'
+  [[ "$normalization" != autocrlf ]] || git -C "$R" config core.autocrlf true
+  rm "$R/link.txt"
+  ln -s $'SYMLINK_TARGET\r\nname' "$R/link.txt"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$normalization cannot hide a symlink from alternate review" 0 "LGTB verdict" --uncommitted --require
+  assert "symlink target bytes reach alternate reviewer" "grep -q 'SYMLINK_TARGET' '$AGY_FAKE_DIR/stdin'"
+  assert "symlink change gets a full alternate receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  rm -rf "$R"
+done
+
+for source_instruction in agents/skills/orchestrate/references/runtime-contracts.md agents/canon/fragments/shared.md claude/skills/example/reference.md claude/agents/reviewer.md agents/skills/example/references/policy.lock; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/$(dirname "$source_instruction")"
+  printf 'SOURCE_INSTRUCTION_REVIEW_MARKER\n' > "$R/$source_instruction"
+  git -C "$R" add "$source_instruction"
+  git -C "$R" commit -qm 'source instruction'
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$source_instruction requires alternate review" 0 "LGTB verdict" --committed --require
+  assert "source instruction reaches alternate reviewer" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "source instruction receives reviewed alternate evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  rm -rf "$R"
+done
+
+for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
+  for scope in explicit auto; do
+    new_repo
+    mkdir -p "$R/$(dirname "$instruction")"
+    printf '%s\n' "$instruction" > "$R/.git/info/exclude"
+    printf 'IGNORED_INSTRUCTION_MARKER\n' > "$R/$instruction"
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    args=(--require)
+    [[ "$scope" != explicit ]] || args+=(--uncommitted)
+    check "ignored $instruction receives $scope alternate review" 0 "LGTB verdict" "${args[@]}"
+    assert "ignored instruction bytes reach alternate review" "grep -q 'IGNORED_INSTRUCTION_MARKER' '$AGY_FAKE_DIR/stdin'"
+    rm -rf "$R"
+  done
+done
+
+for instruction in .claude/commands/check.md .gemini/commands/check.md .agents/example/guide.md; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/$(dirname "$instruction")"
+  printf 'AGENT_DOCUMENT_MARKER\n' > "$R/$instruction"
+  git -C "$R" add "$instruction"
+  git -C "$R" commit -qm 'agent command documentation'
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "committed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
+  assert "agent document reaches alternate reviewer" "grep -q 'AGENT_DOCUMENT_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "agent document receives valid alternate receipt" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  rm -rf "$R"
+done
+
+new_repo
+echo change >> "$R/code.txt"
+for private_path in .codex/auth.json .claude/.credentials.json .gemini/oauth_creds.json agents/skills/example/auth.json claude/skills/example/.credentials.json; do
+  mkdir -p "$R/$(dirname "$private_path")"
+  printf '%s\n' "$private_path" >> "$R/.git/info/exclude"
+  printf '{"access_token":"SYNTHETIC_PRIVATE_CREDENTIAL_MARKER"}\n' > "$R/$private_path"
+done
+for instruction in .claude/settings.json .agents/example/SKILL.md .codex/cache/AGENTS.md agents/skills/example/cache/policy.md; do
+  mkdir -p "$R/$(dirname "$instruction")"
+  printf '%s\n' "$instruction" >> "$R/.git/info/exclude"
+  printf 'REVIEW_AGENT_CONFIG_MARKER\n' > "$R/$instruction"
+done
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "ignored runtime credentials allow alternate review" 0 "LGTB verdict" --uncommitted --require
+assert "ignored runtime credentials stay out of Antigravity stdin" "[ -s '$AGY_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$AGY_FAKE_DIR/stdin'"
+assert "ignored agent config and skills still reach Antigravity" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$AGY_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$AGY_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$AGY_FAKE_DIR/stdin' && grep -q '.codex/cache/AGENTS.md' '$AGY_FAKE_DIR/stdin'"
+assert "source bundle cache reaches alternate reviewer" "grep -q 'agents/skills/example/cache/policy.md' '$AGY_FAKE_DIR/stdin'"
+rm -rf "$R"
+
+new_repo
+git -C "$R" checkout -qb feature
+seq 1 250 > "$R/notes.md"
+git -C "$R" add notes.md
+git -C "$R" commit -qm docs
+export GATE_TIER1_MAX_LINES=0500
+check "configured docs cap issues alternate receipt" 0 "tier-1 skip" --require
+assert "configured docs cap avoids alternate dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+unset GATE_TIER1_MAX_LINES
+assert "shipping accepts captured alternate cap" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+export GATE_TIER1_MAX_LINES=2
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "same committed docs above custom cap dispatch alternate review" 0 "LGTB verdict" --committed --require
+assert "small custom cap invokes Antigravity" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+unset GATE_TIER1_MAX_LINES
+rm -rf "$R"
+
+R="$(mktemp -d)"
+check "outside Git keeps advisory warning" 0 "not inside a git work tree"
+check "outside Git blocks required review" 3 "treating as a hard failure" --require
+rm -rf "$R"
+
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]

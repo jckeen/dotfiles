@@ -132,6 +132,7 @@ parse_args() {
     exit 1
   fi
 
-  # Resolve to absolute path
-  REPO_DIR=$(cd "$REPO_DIR" && pwd)
+  # Preserve path bytes while resolving the absolute directory.
+  REPO_DIR=$(cd -- "$REPO_DIR" && pwd && printf .) || return
+  REPO_DIR=${REPO_DIR%$'\n.'}
 }

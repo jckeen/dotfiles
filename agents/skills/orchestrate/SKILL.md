@@ -18,11 +18,11 @@ section for the current runtime and its actual tool surface.
 2. State the outcome and the single quality bar that matters most.
 3. Inventory relevant installed skills. Invoke process or domain skills only
    when they add a real constraint or capability.
-4. Scale ceremony to risk. Keep a narrow task single-agent unless the user
-   explicitly requires delegation; in that case, prefer one bounded read-only
-   verifier over manufactured parallel edits. Orchestrate when parallelism,
-   independent verification, or a long integration path improves quality or
-   elapsed time.
+4. Scale ceremony to risk. Keep a narrow task single-agent unless the user or
+   applicable instructions explicitly require delegation; prefer a bounded
+   read-only verifier over manufactured parallel edits. Orchestrate when
+   parallelism, independent verification, or a long integration path improves
+   quality or elapsed time.
 
 Do not create a plan or checklist file unless the repository explicitly uses
 one. GitHub issues remain the open-work tracker when project instructions say
@@ -137,20 +137,28 @@ cross-lineage review requirement. Route disputed claims back through the exact
 repro and prefer observed behavior over votes.
 
 For authentication, authorization, secrets, payments, destructive operations,
-schema changes, or public trust boundaries, add a focused security review.
+schema changes, or public trust boundaries, require a focused security review
+from a different model family than the implementer. Record evidence of the
+actual reviewer identity; a dispatch label alone does not prove it. A text-diff
+review does not establish browser or runtime behavior.
 
 ## Close The Loop
 
 1. Simplify the changed code without changing behavior.
-2. Re-run every check affected by integration or simplification.
-   If simplification changed the reviewed artifact, rebuild the packet and
-   repeat the fresh-context review before continuing.
-3. Inspect the final diff and working tree for unrelated or generated state.
-4. Update living documentation only when behavior or repository policy
+2. Complete intended documentation, changelog, and generated-file updates.
+   Update living documentation only when behavior or repository policy
    requires it. Do not create shadow trackers.
-5. Publish, comment, merge, or perform another outward-facing action only when
+3. Re-run every check affected by integration or simplification, then inspect
+   the final diff and working tree for unrelated or generated state.
+4. Build the final review packet and run the fresh-context review on that
+   artifact. Any subsequent artifact edit invalidates approval: repeat affected
+   verification and final review, including required cross-family review.
+5. For shipping, use the `commit-push-pr` gate and receipt checks after the last
+   commit and immediately before push. Gate exit 0 alone does not establish a
+   completed review; distinguish successful reviews from explicit exemptions.
+6. Publish, comment, merge, or perform another outward-facing action only when
    the user requested it or already approved that exact action.
-6. Persist a durable handoff or issue/PR verdict when project instructions
+7. Persist a durable handoff or issue/PR verdict when project instructions
    require one.
 
 ## Learn From Verified Work
@@ -163,9 +171,10 @@ remain hypotheses until then. Let `session-retro` own proposal selection,
 confirmation, unattended storage, and application.
 
 Keep completed history in the changelog, continuation context in the handoff,
-and unresolved work in GitHub issues. Create no learning ledger, orchestration
-receipt, checklist, or memory file. If no durable improvement is worth
-proposing, skip the retro instead of manufacturing one.
+and unresolved work in GitHub issues. Create no learning ledger, manual
+orchestration receipt, checklist, or memory file. Gate-generated private review
+receipts are shipping evidence, not an open-work tracker. If no durable
+improvement is worth proposing, skip the retro instead of manufacturing one.
 
 Finish with the outcome, verification evidence, review verdict, and any
 remaining risk. Do not end on a plan that could still be executed.

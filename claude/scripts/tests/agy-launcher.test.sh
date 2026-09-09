@@ -78,6 +78,20 @@ else
   fail "agy --help ran the launch preflight: $(tr '\n' '|' < "$CALLS")"
 fi
 
+_agent_preflight() {
+  printf 'unexpected preflight\n' >> "$CALLS"
+  return 1
+}
+for utility in mcp remote-control mic-serve; do
+  : > "$CALLS"
+  if agy "$utility" --help >/dev/null 2>&1 &&
+      [ "$(cat "$CALLS")" = "binary|$utility --help" ]; then
+    ok "agy $utility bypasses a failing workspace preflight"
+  else
+    fail "agy $utility entered workspace preflight: $(tr '\n' '|' < "$CALLS")"
+  fi
+done
+
 echo ""
 echo "agy-launcher: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

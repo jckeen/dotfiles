@@ -197,7 +197,7 @@
       "id": "skill:orchestrate",
       "type": "skill",
       "name": "orchestrate",
-      "description": "Full-lifecycle orchestration for comprehensive, no-compromise execution — roll-calls the right skills, fans out parallel/worktree agents, then closes the loop (verify, review, simplify, changelog, handoff, retro). Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.",
+      "description": "Full-lifecycle orchestration for comprehensive execution — selects relevant skills, delegates bounded work, then simplifies, completes documentation, verifies, reviews the final artifact, and delivers with a durable handoff. Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.",
       "path": "skills/orchestrate",
       "risk_level": "low",
       "permissions": [],

@@ -1,7 +1,8 @@
 # Branch Protection Setup
 
-This doc records the protection rules for `main`. Apply them once, then
-re-apply if GitHub resets anything or you spin up a fork.
+This doc describes the intended protection rules for `main`. Use the verification
+command below to inspect the live configuration before proposing or applying
+changes; this example is not evidence that every setting is enabled.
 
 > **Requires repo admin access.** `gh auth status` must show admin scope on
 > `jckeen/dotfiles`.
@@ -10,7 +11,7 @@ re-apply if GitHub resets anything or you spin up a fork.
 
 1. Require a pull request before merging
 2. Require **1 approving review**
-3. Require status checks to pass: `shellcheck`, `tsc`, `doc-truth`,
+3. Require status checks to pass: `shellcheck`, `tsc`, `doc-truth`, `checks`,
    `agentpack-generated`, and the two `smoke-install` matrix jobs
    (`setup.sh syntax + --help (ubuntu-latest)` and
    `setup.sh syntax + --help (macos-latest)`)
@@ -34,6 +35,7 @@ cat > /tmp/main-protection.json <<'JSON'
       "shellcheck",
       "tsc",
       "doc-truth",
+      "checks",
       "agentpack-generated",
       "setup.sh syntax + --help (ubuntu-latest)",
       "setup.sh syntax + --help (macos-latest)"
@@ -86,25 +88,25 @@ gh api repos/jckeen/dotfiles/branches/main/protection | jq '{
 }'
 ```
 
-Expected output:
+Target output for this configuration:
 
 ```json
 {
   "reviews": 1,
-  "checks": ["shellcheck", "tsc", "doc-truth", "agentpack-generated", "setup.sh syntax + --help (ubuntu-latest)", "setup.sh syntax + --help (macos-latest)"],
+  "checks": ["shellcheck", "tsc", "doc-truth", "checks", "agentpack-generated", "setup.sh syntax + --help (ubuntu-latest)", "setup.sh syntax + --help (macos-latest)"],
   "signed": true,
   "force_push": false,
   "admins": true
 }
 ```
 
-All six contexts went live 2026-07-10 (#203, #237) — the operator PATCH was
-applied and `Verify` above matches the live rule.
+Compare contexts as a set; GitHub may return them in a different order. Inspect
+any differences before changing the live rule.
 
 ## Notes
 
 - The status-check contexts must match the **job names**: `shellcheck`, `tsc`,
-  `doc-truth`, and `agentpack-generated` live in `.github/workflows/ci.yml`;
+  `doc-truth`, `checks`, and `agentpack-generated` live in `.github/workflows/ci.yml`;
   the two `setup.sh syntax + --help (...)` contexts are the matrix jobs of
   `.github/workflows/smoke-install.yml`. If you rename a job, update both this
   doc and the protection rule.
@@ -116,11 +118,12 @@ applied and `Verify` above matches the live rule.
   so it reports on every PR and is safe to require (#237) — a manifest-stale
   PR that edits `claude/skills/*/SKILL.md` or `claude/agents/*.md` without
   regenerating `claude/AGENTPACK.yaml` is blocked at merge, not noticed after.
-- The remaining CI jobs — `checks` (which bundles the doc-refs,
-  no-personal-data, agent-parity, skill-parity, install-integrity, and gate
-  self-test steps), `secret-scan`, and `commit-format` — run on every PR but
-  are **advisory**: a failure shows red on the PR and should be fixed, but
-  branch protection does not block the merge on them.
+- `checks` is required: it bundles the behavioral suites, gate self-tests,
+  parity checks, and install-integrity checks. It reports on every PR, so a
+  failing test must block merging even when the standalone lint jobs pass.
+- `secret-scan` and `commit-format` run on every PR. This example does not
+  require their contexts; consult the live protection rule before calling a
+  check advisory.
 - `required_signatures: true` rejects unsigned commits at the server. Configure
   `git config --global commit.gpgsign true` and `gpg.format ssh` (or GPG) on
   every machine that pushes to `main`.
