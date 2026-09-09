@@ -788,6 +788,89 @@ class ReceiptTests(unittest.TestCase):
         patch = (snapshot.parent / 'diff.patch').read_text()
         self.assertIn('-old\n\\ No newline at end of file\n+new', patch)
 
+    def assert_patch_round_trip(self, path, before, after, patch):
+        # Remove only the review annotations; Git consumes the actual headers
+        # and hunks without repairing their line structure or path quoting.
+        applicable = b'\n'.join(line for line in patch.split(b'\n')
+                                if not line.startswith((b'review state ', b'old mode ', b'new mode ')))
+        path.write_bytes(before)
+        for options in (('--check',), ()):
+            result = subprocess.run(['git', '-C', str(self.repo), 'apply', '--whitespace=nowarn', *options, '-'],
+                                    input=applicable, capture_output=True)
+            self.assertEqual(result.returncode, 0, repr(result.stderr) + '\n' + repr(applicable))
+        self.assertEqual(path.read_bytes(), after)
+
+    def test_patch_round_trip_preserves_non_lf_separators_and_eof(self):
+        self.git('config', 'core.autocrlf', 'false')
+        cases = [(repr(separator), ('value="one' + separator + 'before"\n').encode(),
+                  ('value="one' + separator + 'after"\n').encode())
+                 for separator in ('\v', '\f', '\r', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029')]
+        cases += [('lf', b'first\nbefore\nlast\n', b'first\nafter\nlast\n'),
+                  ('crlf', b'first\r\nbefore\r\n', b'first\r\nafter\r\n'),
+                  ('no-eof-lf', b'one\vbefore', b'one\vafter'),
+                  ('add-eof-lf', b'one\vbefore', b'one\vafter\n'),
+                  ('remove-eof-lf', b'one\vbefore\n', b'one\vafter'),
+                  ('empty', b'', b'\n'), ('to-empty', b'before\n', b''),
+                  ('blank-lines', b'\n\nbefore\n\n', b'\n\nafter\n\n')]
+        path = self.repo / 'code.txt'
+        for state in ('staged', 'worktree'):
+            for label, before, after in cases:
+                with self.subTest(state=state, case=label):
+                    self.git('reset', '--hard', 'main')
+                    path.write_bytes(before)
+                    self.git('commit', '-qam', 'physical line fixture')
+                    path.write_bytes(after)
+                    if state == 'staged':
+                        self.git('add', 'code.txt')
+                    snapshot = self.begin('uncommitted')
+                    patch = (snapshot.parent / 'diff.patch').read_bytes()
+                    self.assert_patch_round_trip(path, before, after, patch)
+                    if (not before or before.endswith(b'\n')) and (not after or after.endswith(b'\n')):
+                        self.assertNotIn(b'\\ No newline at end of file', patch)
+
+    def test_patch_round_trip_quotes_filename_bytes_for_git(self):
+        names = ('two\nlines.txt', 'two\tcolumns.txt', 'a"quote.txt', 'a\\backslash.txt',
+                 'a\rreturn.txt', 'a\vvertical.txt', 'a\fform.txt', 'a\aalert.txt',
+                 'a\bbackspace.txt', 'a\x1bescape.txt', 'a\x7fdelete.txt',
+                 'caf\u00e9-\u2028-\U0001f9ea.txt', ' spaces .txt')
+        for state in ('staged', 'worktree'):
+            for name in names:
+                with self.subTest(state=state, path=repr(name)):
+                    self.git('reset', '--hard', 'main')
+                    self.git('clean', '-fd')
+                    path = self.repo / name
+                    path.write_bytes(b'before\n')
+                    self.git('add', '--', name)
+                    self.git('commit', '-qm', 'filename fixture')
+                    path.write_bytes(b'after\n')
+                    if state == 'staged':
+                        self.git('add', '--', name)
+                    snapshot = self.begin('uncommitted')
+                    patch = (snapshot.parent / 'diff.patch').read_bytes()
+                    self.assert_patch_round_trip(path, b'before\n', b'after\n', patch)
+
+    def test_tier1_cap_counts_lf_physical_lines(self):
+        self.git('reset', '--hard', 'main')
+        path = self.repo / 'README.md'
+        path.write_bytes(b'one\rbefore\n')
+        self.git('add', 'README.md')
+        self.git('commit', '-qm', 'documentation base')
+        self.git('branch', '-f', 'main', 'HEAD')
+        for scope in ('uncommitted', 'committed'):
+            with self.subTest(scope=scope):
+                path.write_bytes(b'one\rafter\n')
+                if scope == 'committed':
+                    self.git('commit', '-qam', 'documentation update')
+                snapshot = self.begin(scope)
+                patch = (snapshot.parent / 'diff.patch').read_bytes()
+                count = int(subprocess.check_output(['wc', '-l'], input=patch))
+                snapshot = self.begin(scope, tier1_max_lines=str(count))
+                self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 1)
+                self.complete(snapshot, 'tier-1')
+                snapshot = self.begin(scope, tier1_max_lines=str(count - 1))
+                self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 2)
+                self.complete(snapshot, 'tier-1', ok=False)
+
     def test_staged_instruction_deletion_blocks(self):
         (self.repo / 'AGENTS.md').write_text('instructions\n')
         self.git('add', 'AGENTS.md')

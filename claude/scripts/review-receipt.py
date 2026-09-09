@@ -33,6 +33,23 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(',', ':')).encode()
 
 
+def physical_lines(text):
+    # Git's hunk coordinates count LF, not Unicode or other control separators.
+    parts = text.split('\n')
+    return [line + '\n' for line in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def quote_git_path(path):
+    data = path.encode('utf-8')
+    if all(32 < byte < 127 and byte not in (34, 92) for byte in data):
+        return path
+    escapes = {7: r'\a', 8: r'\b', 9: r'\t', 10: r'\n', 11: r'\v', 12: r'\f', 13: r'\r',
+               34: r'\"', 92: r'\\'}
+    # Git C quoting uses octal bytes, not JSON's Unicode escape sequences.
+    return '"' + ''.join(escapes.get(byte, chr(byte) if 32 <= byte < 127 else f'\\{byte:03o}')
+                         for byte in data) + '"'
+
+
 def git(repo, *args):
     env = dict(os.environ, GIT_OPTIONAL_LOCKS='0', GIT_NO_REPLACE_OBJECTS='1')
     # The helper supplies its own literal pathspecs; inherited switches can
@@ -294,8 +311,9 @@ def capture(repo, base, scope):
                 if not changed:
                     continue
                 before, after = before_bytes.decode('utf-8'), after_bytes.decode('utf-8')
-                header = f'diff --git a/{path} b/{path}\nreview state {label}\nold mode {before_mode}\nnew mode {after_mode}\n'
-                lines = difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile='a/' + path, tofile='b/' + path)
+                before_path, after_path = quote_git_path('a/' + path), quote_git_path('b/' + path)
+                header = f'diff --git {before_path} {after_path}\nreview state {label}\nold mode {before_mode}\nnew mode {after_mode}\n'
+                lines = difflib.unified_diff(physical_lines(before), physical_lines(after), fromfile=before_path, tofile=after_path)
                 body = ''.join(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n' for line in lines)
                 chunks.append((header + body).encode())
         patch = b'\n'.join(chunks)
@@ -372,7 +390,7 @@ def classify_tier(artifact, patch, policy):
         limit = int(max_lines)
     except ValueError:
         return {'tier': 2, 'reason': 'full pass (captured tier-1 cap is not supported)'}
-    lines = len(patch.splitlines())
+    lines = patch.count(b'\n')
     if lines > limit:
         return {'tier': 2, 'reason': f'full pass (diff is {lines} lines > tier-1 cap {max_lines})'}
     if not artifact['changed_paths']:
