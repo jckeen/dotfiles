@@ -545,6 +545,20 @@ for normalization in text autocrlf; do
   rm -rf "$R"
 done
 
+for source_instruction in agents/skills/orchestrate/references/runtime-contracts.md agents/canon/fragments/shared.md claude/skills/example/reference.md claude/agents/reviewer.md agents/skills/example/references/policy.lock; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/$(dirname "$source_instruction")"
+  printf 'SOURCE_INSTRUCTION_REVIEW_MARKER\n' > "$R/$source_instruction"
+  git -C "$R" add "$source_instruction"
+  git -C "$R" commit -qm 'source instruction'
+  approve_clean
+  check "$source_instruction requires full Codex review" 0 "Codex review passed" --committed --no-issues --require
+  assert "source instruction reaches Codex" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$CODEX_FAKE_DIR/stdin'"
+  assert "source instruction receives reviewed shipping evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  rm -rf "$R"
+done
+
 for mutation in head index worktree untracked base; do
   new_repo
   git -C "$R" checkout -qb feature
@@ -608,12 +622,12 @@ done
 
 new_repo
 echo change >> "$R/code.txt"
-for private_path in .codex/auth.json .claude/.credentials.json .gemini/oauth_creds.json; do
+for private_path in .codex/auth.json .claude/.credentials.json .gemini/oauth_creds.json agents/skills/example/auth.json claude/skills/example/.credentials.json; do
   mkdir -p "$R/$(dirname "$private_path")"
   printf '%s\n' "$private_path" >> "$R/.git/info/exclude"
   printf '{"access_token":"SYNTHETIC_PRIVATE_CREDENTIAL_MARKER"}\n' > "$R/$private_path"
 done
-for instruction in .claude/settings.json .agents/example/SKILL.md; do
+for instruction in .claude/settings.json .agents/example/SKILL.md agents/skills/example/cache/policy.md; do
   mkdir -p "$R/$(dirname "$instruction")"
   printf '%s\n' "$instruction" >> "$R/.git/info/exclude"
   printf 'REVIEW_AGENT_CONFIG_MARKER\n' > "$R/$instruction"
@@ -622,6 +636,7 @@ approve_clean
 check "ignored runtime credentials allow ordinary review" 0 "Codex review passed" --uncommitted --no-issues --require
 assert "ignored runtime credentials stay out of Codex stdin" "[ -s '$CODEX_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$CODEX_FAKE_DIR/stdin'"
 assert "ignored agent config and skill still reach Codex" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$CODEX_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$CODEX_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$CODEX_FAKE_DIR/stdin'"
+assert "source bundle cache remains instruction data" "grep -q 'agents/skills/example/cache/policy.md' '$CODEX_FAKE_DIR/stdin'"
 rm -rf "$R"
 
 new_repo

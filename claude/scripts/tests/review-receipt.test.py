@@ -1001,6 +1001,77 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                 self.complete(snapshot)
                 self.check()
 
+    def test_source_instruction_layouts_require_review_and_reject_dirty_inputs(self):
+        for name in ('agents/skills/orchestrate/references/runtime-contracts.md', 'agents/canon/fragments/shared.md',
+                     'claude/skills/example/reference.md', 'claude/agents/reviewer.md', 'claude/AgentPack.md',
+                     'claude/AGENTPACK.yaml', 'claude/agentpack-meta.json',
+                     'nested/agents/skills/example/references/policy.lock'):
+            with self.subTest(path=name):
+                self.git('reset', '--hard', 'main')
+                self.git('clean', '-fd')
+                path = self.repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('SOURCE_INSTRUCTION_MARKER\n')
+                self.git('add', name)
+                self.git('commit', '-qm', 'source instruction')
+                self.assert_full_review(self.begin(), 'SOURCE_INSTRUCTION_MARKER', 'committed', 'main')
+                path.write_text('DIRTY_SOURCE_INSTRUCTION_MARKER\n')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+
+    def test_ignored_source_skill_reference_changes_invalidate_review(self):
+        name = 'agents/skills/orchestrate/references/runtime-contracts.md'
+        skill = self.repo / 'agents/skills/orchestrate/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('Read references/runtime-contracts.md for runtime policy.\n')
+        self.git('add', 'agents/skills/orchestrate/SKILL.md')
+        self.git('commit', '-qm', 'existing skill')
+        (self.repo / '.git/info/exclude').write_text(name + '\n')
+        self.complete(self.begin())
+        self.check()
+        reference = self.repo / name
+        reference.parent.mkdir()
+        reference.write_text('IGNORED_SOURCE_REFERENCE_MARKER\n')
+        self.check(False)
+        self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+        snapshot = self.begin('uncommitted')
+        self.assertIn('IGNORED_SOURCE_REFERENCE_MARKER', (snapshot.parent / 'diff.patch').read_text())
+        reference.write_text('MUTATED_SOURCE_REFERENCE_MARKER\n')
+        self.complete(snapshot, ok=False)
+        snapshot = self.begin('uncommitted')
+        self.complete(snapshot)
+        reference.write_text('MUTATED_AGAIN_MARKER\n')
+        self.run_helper('verify', '--snapshot', str(snapshot), ok=False)
+
+    def test_source_instruction_credentials_remain_private(self):
+        for name in ('agents/skills/example/auth.json', 'agents/canon/credentials.json',
+                     'claude/skills/example/.credentials.json', 'claude/agents/oauth_creds.json'):
+            with self.subTest(path=name):
+                path = self.repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                (self.repo / '.git/info/exclude').write_text(name + '\n')
+                path.write_text('SYNTHETIC_SOURCE_CREDENTIAL_MARKER\n')
+                snapshot = self.begin()
+                path.write_text('MUTATED_SOURCE_CREDENTIAL_MARKER\n')
+                self.complete(snapshot)
+                self.check()
+                (self.repo / '.git/info/exclude').write_text('')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'uncommitted', '--reviewer', 'codex', ok=False)
+                for patch in (self.repo / '.git/review-receipts').glob('run-*/diff.patch'):
+                    self.assertNotIn(b'SOURCE_CREDENTIAL_MARKER', patch.read_bytes())
+                path.unlink()
+
+    def test_unrelated_source_documentation_keeps_docs_exemption(self):
+        for name in ('agents/README.md', 'claude/chrome/README.md', 'docs/agents/skills-guide.md'):
+            with self.subTest(path=name):
+                self.git('reset', '--hard', 'main')
+                path = self.repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('ordinary documentation\n')
+                self.git('add', name)
+                self.git('commit', '-qm', 'documentation')
+                self.complete(self.begin(), 'tier-1')
+                self.check()
+
     def test_arbitrary_head_base_cannot_launder_shipping(self):
         snapshot = Path(self.run_helper('begin', '--repo', str(self.repo), '--base', 'HEAD', '--scope', 'committed', '--reviewer', 'codex')) / 'snapshot.json'
         self.complete(snapshot, 'no-diff')

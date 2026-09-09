@@ -51,10 +51,19 @@ def named_instruction(path):
     return re.search(r'(AGENTS|CLAUDE|GEMINI|FABLE|MULTI-AGENT).*\.md$', name) is not None or name == 'SKILL.md'
 
 
+def source_instruction(path):
+    parts = Path(path).parts
+    layouts = (('agents', 'skills'), ('agents', 'canon'), ('claude', 'skills'), ('claude', 'agents'))
+    # Bundles include references/support files, not just their SKILL.md entrypoint.
+    return (any(pair in layouts for pair in zip(parts, parts[1:]))
+            or parts[-2:] in (('claude', 'AgentPack.md'), ('claude', 'AGENTPACK.yaml'), ('claude', 'agentpack-meta.json')))
+
+
 def instruction(path):
     parts = Path(path).parts
     name = parts[-1]
     return (any(p in AGENT_NAMESPACES for p in parts)
+            or source_instruction(path)
             or any(p in ('githooks', '.githooks') for p in parts)
             or ('claude', 'hooks') in zip(parts, parts[1:])
             or named_instruction(path)
@@ -64,7 +73,7 @@ def instruction(path):
 def private_agent_data(path):
     parts = Path(path).parts
     name = parts[-1]
-    if any(part in AGENT_NAMESPACES for part in parts[:-1]) and name in (
+    if (any(part in AGENT_NAMESPACES for part in parts[:-1]) or source_instruction(path)) and name in (
             'auth.json', '.credentials.json', 'credentials.json', 'oauth_creds.json', 'google_accounts.json'):
         return True
     if named_instruction(path):
