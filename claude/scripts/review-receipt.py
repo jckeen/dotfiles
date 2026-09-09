@@ -201,9 +201,14 @@ def crlf_normalized_paths(repo):
         if not entry:
             continue
         metadata, path = entry.split(b'\t', 1)
-        attrs = metadata.partition(b'attr/')[2].split()
-        if b'-text' not in attrs and (any(value in attrs for value in (b'text', b'text=auto', b'eol=lf', b'eol=crlf'))
-                                     or not attrs and autocrlf in ('true', 'input')):
+        info, _, attribute = metadata.partition(b'attr/')
+        attrs, eol = attribute.split(), info.split()
+        automatic = b'text=auto' in attrs or not attrs and autocrlf in ('true', 'input')
+        forced = b'text' in attrs or not automatic and any(value in attrs for value in (b'eol=lf', b'eol=crlf'))
+        # Automatic conversion obeys Git's content classification and normalized
+        # index; forced text can deliberately override native binary detection.
+        native_text = b'i/lf' in eol and any(value in eol for value in (b'w/crlf', b'w/mixed'))
+        if b'-text' not in attrs and (forced or automatic and native_text):
             paths.add(os.fsdecode(path))
     return paths
 

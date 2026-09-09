@@ -115,6 +115,103 @@ class ReceiptTests(unittest.TestCase):
                 self.assertFalse(marker.exists())
                 (self.repo / '.git/info/attributes').unlink()
 
+    def test_crlf_automatic_conversion_uses_native_text_classification(self):
+        base = self.git('rev-parse', 'main')
+        policies = ('text=auto', 'text=auto eol=lf', 'text=auto eol=crlf',
+                    'autocrlf=true', 'autocrlf=input', 'text', 'eol=lf', 'eol=crlf')
+        for policy in policies:
+            for binary in (True, False):
+                with self.subTest(policy=policy, binary=binary):
+                    self.git('config', 'core.autocrlf', 'false')
+                    self.git('reset', '--hard', base)
+                    self.git('clean', '-fd')
+                    path = self.repo / 'AGENTS.md'
+                    before = (b'\v' * 20 if binary else b'') + b'Known instructions.\n'
+                    path.write_bytes(before)
+                    if not policy.startswith('autocrlf='):
+                        (self.repo / '.gitattributes').write_text('AGENTS.md ' + policy + '\n')
+                    self.git('add', '.')
+                    self.git('commit', '-qm', 'native text classification')
+                    self.git('branch', '-f', 'main', 'HEAD')
+                    if policy.startswith('autocrlf='):
+                        self.git('config', 'core.autocrlf', policy.partition('=')[2])
+                    self.complete(self.begin(), 'no-diff')
+                    self.check()
+                    after = before.replace(b'\n', b'\r\n')
+                    path.write_bytes(after)
+                    eol = self.git('ls-files', '--eol', '--', 'AGENTS.md')
+                    self.assertIn('i/-text w/-text' if binary else 'i/lf    w/crlf', eol)
+                    automatic = policy.startswith(('text=auto', 'autocrlf='))
+                    dirty = binary and automatic
+                    # This native conversion oracle runs only in the fixture,
+                    # which has no configured filters; the helper must not run it.
+                    self.assertEqual(self.git('hash-object', '--path=AGENTS.md', 'AGENTS.md')
+                                     != self.git('rev-parse', 'HEAD:AGENTS.md'), dirty)
+                    self.check(False)  # Raw bytes always stale the old receipt.
+                    snapshot = self.begin('uncommitted')
+                    self.assertEqual('AGENTS.md' in json.loads(snapshot.read_text())['artifact']['changed_paths'], dirty)
+                    if dirty:
+                        patch = (snapshot.parent / 'diff.patch').read_bytes()
+                        self.assertIn(b'+' + after, patch)
+                        self.complete(snapshot, 'no-diff', ok=False)
+                        self.complete(snapshot, 'tier-1', ok=False)
+                        self.complete(snapshot)
+                        self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed',
+                                        '--reviewer', 'codex', ok=False)
+                    else:
+                        self.complete(snapshot, 'no-diff')
+                        self.complete(self.begin(), 'no-diff')
+                        self.check()
+
+    def test_crlf_uses_current_index_and_workspace_classification(self):
+        for staged_binary in (True, False):
+            with self.subTest(staged_binary=staged_binary):
+                self.git('config', 'core.autocrlf', 'false')
+                self.git('reset', '--hard', 'main')
+                self.git('clean', '-fd')
+                path = self.repo / 'code.txt'
+                before = (b'' if staged_binary else b'\v' * 20) + b'before\n'
+                staged = (b'\v' * 20 if staged_binary else b'') + b'after\nlast\n'
+                (self.repo / '.gitattributes').write_text('code.txt text=auto\n')
+                path.write_bytes(before)
+                self.git('add', '.')
+                self.git('commit', '-qm', 'index classification base')
+                path.write_bytes(staged)
+                self.git('add', 'code.txt')
+                after = staged.replace(b'\n', b'\r\n', 1)
+                path.write_bytes(after)
+                self.assertIn('i/-text w/-text' if staged_binary else 'i/lf    w/mixed',
+                              self.git('ls-files', '--eol', '--', 'code.txt'))
+                self.assertEqual(bool(self.git('diff', '--name-only', '--', 'code.txt')), staged_binary)
+                snapshot = self.begin('uncommitted')
+                patch = (snapshot.parent / 'diff.patch').read_bytes()
+                self.assertIn(b'review state staged\n', patch)
+                self.assertEqual(b'review state worktree\n' in patch, staged_binary)
+                if staged_binary:
+                    self.assertIn(b'+' + after.split(b'\n', 1)[0] + b'\n', patch)
+                self.complete(snapshot)
+                path.write_bytes(staged)
+                self.complete(snapshot, ok=False)
+
+    def test_binary_classified_executable_crlf_change_requires_review(self):
+        path = self.repo / 'check.sh'
+        before = b"#!/bin/sh\nprintf '%s\\n' '" + b'\v' * 20 + b"'\n"
+        path.write_bytes(before)
+        path.chmod(0o755)
+        (self.repo / '.gitattributes').write_text('check.sh text=auto\n')
+        self.git('add', 'check.sh', '.gitattributes')
+        self.git('commit', '-qm', 'binary-classified executable')
+        self.assertEqual(subprocess.run([str(path)], capture_output=True).returncode, 0)
+        after = before.replace(b'\n', b'\r\n')
+        path.write_bytes(after)
+        with self.assertRaises(FileNotFoundError):
+            subprocess.run([str(path)], capture_output=True)
+        snapshot = self.begin('uncommitted')
+        self.assertIn(b'+#!/bin/sh\r\n', (snapshot.parent / 'diff.patch').read_bytes())
+        self.complete(snapshot, 'no-diff', ok=False)
+        self.complete(snapshot, 'tier-1', ok=False)
+        self.complete(snapshot)
+
     def test_index_and_raw_workspace_modes_and_bytes_are_both_reviewed(self):
         path = self.repo / 'image.png'
         path.write_text('base\n')

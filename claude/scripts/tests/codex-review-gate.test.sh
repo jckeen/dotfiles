@@ -528,6 +528,31 @@ for checkout_state in staged-mode crlf sparse; do
   rm -rf "$R"
 done
 
+for normalization in auto autocrlf; do
+  new_repo
+  printf '\v%.0s' {1..20} > "$R/AGENTS.md"
+  printf 'CRLF_BINARY_INSTRUCTION_MARKER\n' >> "$R/AGENTS.md"
+  : > "$R/.gitattributes"
+  [[ "$normalization" != auto ]] || printf 'AGENTS.md text=auto\n' > "$R/.gitattributes"
+  git -C "$R" add AGENTS.md .gitattributes
+  git -C "$R" commit -qm 'automatic binary classification'
+  [[ "$normalization" != autocrlf ]] || git -C "$R" config core.autocrlf true
+  python3 - "$R/AGENTS.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+PY
+  approve_clean
+  check "$normalization binary instructions block committed Codex review" 2 "dirty instruction surface" --committed --no-issues --require
+  assert "dirty binary instructions cannot dispatch committed review" "[ ! -f '$CODEX_FAKE_DIR/invoked' ]"
+  check "$normalization binary instructions reach the Codex instruction guard" 2 "instruction" --uncommitted --no-issues --require
+  CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$normalization binary instructions require full Codex review" 0 "Codex review passed" --uncommitted --no-issues --require
+  assert "binary instruction CRLF change reaches Codex" "grep -q 'CRLF_BINARY_INSTRUCTION_MARKER' '$CODEX_FAKE_DIR/stdin'"
+  assert "binary instruction change cannot receive no-diff evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+  rm -rf "$R"
+done
+
 for normalization in text autocrlf; do
   new_repo
   ln -s $'SYMLINK_TARGET\nname' "$R/link.txt"

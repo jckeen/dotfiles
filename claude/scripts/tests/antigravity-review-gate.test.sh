@@ -449,6 +449,31 @@ for checkout_state in staged-mode crlf sparse; do
   rm -rf "$R"
 done
 
+for normalization in auto autocrlf; do
+  new_repo
+  printf '\v%.0s' {1..20} > "$R/AGENTS.md"
+  printf 'CRLF_BINARY_INSTRUCTION_MARKER\n' >> "$R/AGENTS.md"
+  : > "$R/.gitattributes"
+  [[ "$normalization" != auto ]] || printf 'AGENTS.md text=auto\n' > "$R/.gitattributes"
+  git -C "$R" add AGENTS.md .gitattributes
+  git -C "$R" commit -qm 'automatic binary classification'
+  [[ "$normalization" != autocrlf ]] || git -C "$R" config core.autocrlf true
+  python3 - "$R/AGENTS.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+PY
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$normalization binary instructions block committed alternate review" 2 "dirty instruction surface" --committed --require
+  assert "dirty binary instructions cannot dispatch committed alternate review" "[ ! -f '$AGY_FAKE_DIR/invoked' ]"
+  check "$normalization binary instructions require full alternate review" 0 "LGTB verdict" --uncommitted --require
+  assert "binary instruction CRLF change reaches alternate reviewer" "grep -q 'CRLF_BINARY_INSTRUCTION_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "binary instruction change cannot receive alternate no-diff evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  rm -rf "$R"
+done
+
 for normalization in text autocrlf; do
   new_repo
   ln -s $'SYMLINK_TARGET\nname' "$R/link.txt"
