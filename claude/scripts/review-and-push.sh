@@ -46,7 +46,12 @@ if [[ -z "$PUSH_URL" || "$PUSH_URL" == *$'\n'* ]]; then
 fi
 
 check_destination() {
-  local remote_head default_ref
+  local remote_head default_ref alias_status=0
+  git remote get-url --push --all -- "$PUSH_URL" >/dev/null 2>&1 || alias_status=$?
+  if [[ "$alias_status" != 2 ]]; then
+    echo "Cannot pin the push destination: it names a configured remote, or remote configuration could not be read. Use a direct destination." >&2
+    return 1
+  fi
   # get-url already applied one rewrite. A second invocation must use the
   # same endpoint, including rules from global, local, and included config.
   if ! python3 - "$PUSH_URL" <<'PY'
@@ -55,18 +60,29 @@ import subprocess
 import sys
 
 config = subprocess.run(
-    ["git", "config", "--null", "--get-regexp", r"^url\..*\.(insteadof|pushinsteadof)$"],
+    ["git", "config", "--null", "--name-only", "--get-regexp",
+     r"^(url\..*\.(insteadof|pushinsteadof)|remote\..*)$"],
     stdout=subprocess.PIPE,
 )
 if config.returncode not in (0, 1):
     sys.exit(1)
 destination = os.fsencode(sys.argv[1])
-for record in config.stdout.split(b"\0"):
-    if record and destination.startswith(record.split(b"\n", 1)[1]):
+for key in set(config.stdout.split(b"\0")) - {b""}:
+    if key.startswith(b"remote."):
+        if key.rsplit(b".", 1)[0] == b"remote." + destination:
+            sys.exit(1)
+        continue
+    values = subprocess.run(
+        ["git", "config", "--null", "--get-all", os.fsdecode(key)],
+        stdout=subprocess.PIPE,
+    )
+    if values.returncode != 0 or any(
+        destination.startswith(prefix) for prefix in values.stdout.split(b"\0")[:-1]
+    ):
         sys.exit(1)
 PY
   then
-    echo "Cannot pin the push destination: a Git URL rewrite still applies, or its configuration could not be read. Use a direct destination without further rewrites." >&2
+    echo "Cannot pin the push destination: a configured remote or Git URL rewrite may change it, or Git configuration could not be read. Use a direct destination without further rewrites." >&2
     return 1
   fi
   remote_head=$(git ls-remote --symref -- "$PUSH_URL" HEAD) || return 1

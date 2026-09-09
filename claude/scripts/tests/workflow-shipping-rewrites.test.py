@@ -26,10 +26,10 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
-    def destinations(self):
+    def destinations(self, redirected_name="redirected-remote"):
         t = self.fixture
         reviewed = t.root / "reviewed-remote"
-        redirected = t.root / "redirected-remote"
+        redirected = t.root / redirected_name
         for remote in (reviewed, redirected):
             self.git("clone", "--bare", str(t.remote), str(remote))
             self.git("--git-dir", str(remote), "update-ref", "refs/heads/feature", t.base)
@@ -37,12 +37,12 @@ class RewriteTests(unittest.TestCase):
         self.git("config", f"url.{reviewed}.pushInsteadOf", str(t.remote))
         return reviewed, redirected
 
-    def assert_rewrite_blocked(self, reviewed, redirected):
+    def assert_rewrite_blocked(self, reviewed, redirected, diagnostic="Git URL rewrite"):
         t = self.fixture
         (t.bin / "git").unlink()
         result = t.run_wrapper()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Git URL rewrite", result.stderr)
+        self.assertIn(diagnostic, result.stderr)
         self.assertEqual(self.git("--git-dir", str(redirected), "rev-parse", "refs/heads/feature"),
                          t.base, "a URL rewrite updated an unchecked default branch")
         self.assertEqual(self.git("--git-dir", str(reviewed), "rev-parse", "refs/heads/feature"),
@@ -83,6 +83,51 @@ git config --global "url.$REDIRECT_REMOTE.insteadOf" "$REVIEWED_REMOTE"
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.git("--git-dir", str(reviewed), "rev-parse", "refs/heads/feature"), t.head)
         self.assertEqual(self.git("--git-dir", str(redirected), "rev-parse", "refs/heads/feature"), t.base)
+
+    def test_newline_in_rewrite_subsection_fails_closed(self):
+        reviewed, redirected = self.destinations("redirected-\nremote")
+        with (self.fixture.repo / ".git/config").open("a") as config:
+            config.write(f'\n[url "{redirected}"]\n\tpushInsteadOf = {reviewed}\n')
+        t = self.fixture
+        (t.bin / "git").unlink()
+        result = t.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("push", t.events())
+
+    def test_resolved_url_cannot_name_another_remote(self):
+        reviewed, redirected = self.destinations()
+        self.git("config", "remote.origin.url", "destination")
+        self.git("config", "remote.destination.url", str(reviewed))
+        self.git("config", "remote.destination.pushurl", str(redirected))
+        self.assert_rewrite_blocked(reviewed, redirected, "configured remote")
+
+    def test_resolved_url_cannot_name_a_global_remote(self):
+        reviewed, redirected = self.destinations()
+        self.git("config", "remote.origin.url", "destination")
+        self.git("config", "--global", "remote.destination.url", str(reviewed))
+        self.git("config", "--global", "remote.destination.pushurl", str(redirected))
+        self.assert_rewrite_blocked(reviewed, redirected, "configured remote")
+
+    def test_remote_alias_added_during_review_cannot_change_the_endpoint(self):
+        reviewed, redirected = self.destinations()
+        t = self.fixture
+        (t.repo / "destination").symlink_to(reviewed, target_is_directory=True)
+        self.git("config", "remote.origin.url", "destination")
+        t.env.update(REVIEWED_REMOTE=str(reviewed), REDIRECT_REMOTE=str(redirected))
+        t.write(t.scripts / "codex-review-gate.sh", '''#!/bin/bash
+printf 'gate\\n' >> "$CALLS"
+git config --global remote.destination.url "$REVIEWED_REMOTE"
+git config --global remote.destination.pushurl "$REDIRECT_REMOTE"
+''')
+        self.assert_rewrite_blocked(reviewed, redirected, "configured remote")
+
+    def test_remote_alias_with_multiple_push_urls_is_rejected(self):
+        reviewed, redirected = self.destinations()
+        self.git("config", "remote.origin.url", "destination")
+        self.git("config", "remote.destination.url", str(reviewed))
+        self.git("config", "--add", "remote.destination.pushurl", str(reviewed))
+        self.git("config", "--add", "remote.destination.pushurl", str(redirected))
+        self.assert_rewrite_blocked(reviewed, redirected, "configured remote")
 
 
 if __name__ == "__main__":
