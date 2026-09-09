@@ -49,7 +49,7 @@ done
 
 What `review-and-push.sh` does:
 
-1. Inspects the current non-default branch, outgoing commits, and working tree.
+1. Inspects the non-default branch and working tree, then pins the current commit.
 2. Runs the detected test suite and stops on failure.
 3. Runs the Codex review gate with `--require --committed` on the committed artifact.
 4. Prompts for confirmation, unless `--auto-push` was selected.
@@ -60,7 +60,8 @@ Blocking findings, failed reviewer execution, and missing or stale receipts
 prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
 tier/no-diff exemptions are reported separately from successful reviews.
 Changing the artifact invalidates approval and requires affected verification
-and review again. `--auto-push` removes the prompt, not the checks. The pre-push
+and review again. The wrapper requires the pinned commit to remain current
+through tests, review, and confirmation. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
 secret scanner runs. For a PR explicitly targeting a nondefault base, run the
 gate and receipt check with `--base <ref>`, then use

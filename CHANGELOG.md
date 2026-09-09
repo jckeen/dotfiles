@@ -43,8 +43,9 @@
   Annotated tags validate the commit they reference; local replacement refs
   cannot alter validation or secret scanning.
 - The morning review script explicitly selects committed review scope even
-  when the fetch upstream is current and unrelated work is dirty. It uses the
-  required Codex gate, requires that reviewer's receipt after confirmation,
+  when the fetch upstream is current and unrelated work is dirty. It pins the
+  commit before tests, uses the required Codex gate, requires that reviewer's
+  receipt for the same commit after confirmation,
   and pushes the reviewed commit to a verified non-default
   branch at the actual push destination. Automatic tag pushes are disabled.
   Further URL rewrites and remote-name indirection fail closed; explicitly
