@@ -135,6 +135,9 @@ executable on `PATH`. The receipt records the executable used by that run.
 
 `CODEX_GATE_TIMEOUT` bounds reviewer execution; its default lives in
 `codex-review-gate.sh`. A timeout or failed process does not produce approval.
+Cleanup covers the session created for that review, including shell job-control
+groups. It requires stable process identity support and fails before reviewer
+dispatch if that support is unavailable.
 Failures report a diagnostic hint and a private temporary log path without
 printing raw reviewer stderr, which may contain reviewed content. Inspect that
 log when needed and keep it out of repositories.

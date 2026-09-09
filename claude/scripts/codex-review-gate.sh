@@ -312,41 +312,124 @@ trap cleanup EXIT
 set +e
 # Python is already required by receipts and bounds execution on both Linux
 # and macOS, including installations without GNU timeout. A separate process
-# group lets the deadline terminate tool subprocesses as well as the reviewer.
+# session lets the deadline terminate tool subprocesses across job-control groups.
 python3 -c '
+import ctypes
+import errno
 import os
 import signal
 import subprocess
 import sys
 import time
 
+if sys.platform == "darwin":
+    # Apple libproc: PROC_PIDUNIQIDENTIFIERINFO and proc_signal_with_audittoken
+    # bind delivery to pid + idversion rather than a recyclable PID alone.
+    class UniqueIdentifier(ctypes.Structure):
+        _fields_ = [("uuid", ctypes.c_byte * 16), ("uniqueid", ctypes.c_uint64),
+                    ("parent_uniqueid", ctypes.c_uint64), ("idversion", ctypes.c_int32),
+                    ("reserved2", ctypes.c_uint32), ("reserved3", ctypes.c_uint64),
+                    ("reserved4", ctypes.c_uint64)]
+    AuditToken = ctypes.c_uint32 * 8
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                     ctypes.c_void_p, ctypes.c_int]
+    libproc.proc_pidinfo.restype = ctypes.c_int
+    libproc.proc_signal_with_audittoken.argtypes = [ctypes.POINTER(AuditToken), ctypes.c_int]
+    libproc.proc_signal_with_audittoken.restype = ctypes.c_int
+elif sys.platform != "linux" or not all((hasattr(os, "pidfd_open"),
+                                        hasattr(signal, "pidfd_send_signal"))):
+    raise RuntimeError("Stable process identity signaling is unavailable; refusing review dispatch")
+
+def signal_member(pid, sid, signum):
+    try:
+        if sys.platform == "darwin":
+            identity = UniqueIdentifier()
+            size = ctypes.sizeof(identity)
+            if libproc.proc_pidinfo(pid, 17, 0, ctypes.byref(identity), size) != size:
+                error = ctypes.get_errno() or errno.EIO
+                raise OSError(error, os.strerror(error))
+            if os.getsid(pid) != sid:
+                return
+            token = AuditToken()
+            token[5], token[7] = pid, identity.idversion
+            # Unlike kill(2), this Darwin API rejects signal 0. Startup probes
+            # identity capture and symbol availability without delivering one.
+            if signum:
+                error = libproc.proc_signal_with_audittoken(ctypes.byref(token), signum)
+                if error:
+                    raise OSError(error, os.strerror(error))
+        else:
+            fd = os.pidfd_open(pid)
+            try:
+                if os.getsid(pid) == sid:
+                    signal.pidfd_send_signal(fd, signum)
+            finally:
+                os.close(fd)
+    except ProcessLookupError:
+        pass
+
+# Check stable identity support without delivering a signal, before launching.
+signal_member(os.getpid(), os.getsid(0), 0)
+interruption = None
+
 def interrupted(signum, _frame):
-    raise SystemExit(128 + signum)
+    global interruption
+    if interruption is None:
+        interruption = signum
 
 for signum in (signal.SIGTERM, signal.SIGINT):
     signal.signal(signum, interrupted)
 
 process = subprocess.Popen(sys.argv[2:], start_new_session=True)
-timed_out = False
+
+def signal_session(signum):
+    try:
+        pids = subprocess.check_output(["ps", "-A", "-o", "pid="], text=True, timeout=5)
+        for value in pids.split():
+            pid = int(value)
+            try:
+                if os.getsid(pid) == process.pid and os.getpgid(pid) != process.pid:
+                    signal_member(pid, process.pid, signum)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                print("Session member cleanup failed: " + str(error), file=sys.stderr)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print("Session enumeration failed: " + str(error), file=sys.stderr)
+    finally:
+        # The unreaped session leader pins the primary group ID until both
+        # scans and signals finish, including when TERM ends the leader early.
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
 try:
-    result = process.wait(timeout=int(sys.argv[1]))
-except subprocess.TimeoutExpired:
-    timed_out = True
+    deadline = time.monotonic() + int(sys.argv[1])
+    while interruption is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = process.wait(timeout=min(remaining, .1))
+            break
+        except subprocess.TimeoutExpired:
+            pass
 finally:
-    if timed_out or process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        # Keep the group leader unreaped until the final signal so its PID
-        # cannot be reused for a different process group during the grace.
+    # Handlers only record interruption, including during Popen construction.
+    # Repeated interrupts cannot abandon teardown before KILL and reaping.
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, signal.SIG_IGN)
+    if process.returncode is None:
+        signal_session(signal.SIGTERM)
         time.sleep(5)
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        signal_session(signal.SIGKILL)
         process.wait()
-sys.exit(124 if timed_out else result if result >= 0 else 128 - result)
+        result = 128 + interruption if interruption is not None else 124
+if interruption is not None:
+    result = 128 + interruption
+sys.exit(result if result >= 0 else 128 - result)
 ' "$REVIEW_TIMEOUT" "$GATE_CLI" exec - \
   -s read-only \
   --output-schema "$SCHEMA" \

@@ -243,6 +243,162 @@ assert "timeout kills the reviewer and its descendants" "python3 -c 'from pathli
 unset CODEX_GATE_TIMEOUT
 rm -rf "$R"
 
+# Job control creates another group in the same owned session.
+for lifecycle in job-control interrupt-cleanup interrupt-startup; do
+  new_repo
+  echo "change" >> "$R/code.txt"
+  approve_clean
+  if [[ "$lifecycle" == job-control ]]; then
+    cat > "$CODEX_FAKE_DIR/hang" <<'PYJOB'
+import os
+os.execv('/bin/bash', ['bash', '-c', 'set -m; sleep 12 & echo "$$ $!" > "$CODEX_FAKE_DIR/pids"; wait'])
+PYJOB
+  elif [[ "$lifecycle" == interrupt-startup ]]; then
+    cat > "$CODEX_FAKE_DIR/hang" <<'PYSTARTUP'
+import os
+from pathlib import Path
+import signal
+import time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path(os.environ['CODEX_FAKE_DIR'], 'pids').write_text(str(os.getpid()))
+time.sleep(12)
+PYSTARTUP
+    cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYSITE'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import time
+original = subprocess.Popen
+def popen(*args, **kwargs):
+    process = original(*args, **kwargs)
+    if kwargs.get('start_new_session'):
+        for _ in range(100):
+            if Path(os.environ['CODEX_FAKE_DIR'], 'pids').exists():
+                break
+            time.sleep(.01)
+        os.kill(os.getpid(), signal.SIGINT)
+    return process
+subprocess.Popen = popen
+PYSITE
+    export PYTHONPATH="$CODEX_FAKE_DIR"
+  else
+    cat > "$CODEX_FAKE_DIR/hang" <<'PYINTERRUPT'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+script = "import os,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(2); os.kill(int(__import__('sys').argv[1]), signal.SIGINT)"
+child = subprocess.Popen([sys.executable, '-c', script, str(os.getppid())])
+Path(os.environ['CODEX_FAKE_DIR'], 'pids').write_text(f'{os.getpid()} {child.pid}')
+time.sleep(12)
+PYINTERRUPT
+  fi
+  sleep 15 &
+  unrelated_pid=$!
+  export CODEX_GATE_TIMEOUT=1
+  fragment="timed out after 1 seconds"
+  [[ "$lifecycle" != interrupt-startup ]] || fragment="not trusting the result"
+  check "$lifecycle fails closed" 3 "$fragment" --uncommitted --no-issues
+  assert "$lifecycle does not issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+  assert "$lifecycle terminates owned descendants" "python3 -c 'from pathlib import Path; import subprocess,sys; pids=Path(sys.argv[1]).read_text().split(); assert pids; states=[subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip() for pid in pids]; assert all(not state or state.startswith(\"Z\") for state in states), states' '$CODEX_FAKE_DIR/pids'"
+  assert "$lifecycle preserves an unrelated process" "kill -0 '$unrelated_pid'"
+  kill "$unrelated_pid"
+  wait "$unrelated_pid" 2>/dev/null || true
+  unset CODEX_GATE_TIMEOUT PYTHONPATH
+  rm -rf "$R"
+done
+
+# An interrupt concurrent with successful wait must not mint approval.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYSUCCESS'
+import os
+import signal
+import subprocess
+original = subprocess.Popen
+def popen(*args, **kwargs):
+    process = original(*args, **kwargs)
+    if kwargs.get('start_new_session'):
+        original_wait = process.wait
+        def wait(*args, **kwargs):
+            result = original_wait(*args, **kwargs)
+            os.kill(os.getpid(), signal.SIGINT)
+            return result
+        process.wait = wait
+    return process
+subprocess.Popen = popen
+PYSUCCESS
+export PYTHONPATH="$CODEX_FAKE_DIR"
+check "interrupt concurrent with successful exit fails closed" 3 "not trusting the result" --uncommitted --no-issues
+assert "interrupted success cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+unset PYTHONPATH
+rm -rf "$R"
+
+# Stable handles must reject a recycled PID and preserve captured identity.
+cat > "$SHIM_DIR/check-signal-identity.py" <<'PYIDENTITY'
+import ast
+import ctypes
+import errno
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+source = Path(sys.argv[1]).read_text().split("python3 -c '\nimport ctypes", 1)[1]
+source = 'import ctypes' + source.split("' \"$REVIEW_TIMEOUT\"", 1)[0]
+tree = ast.parse(source)
+definitions = [node for node in ast.walk(tree)
+               if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+               and node.name in ('signal_member', 'UniqueIdentifier')]
+namespace = dict(ctypes=ctypes, errno=errno)
+exec(compile(ast.Module(body=definitions, type_ignores=[]), '<gate signaling>', 'exec'), namespace)
+received, closed = [], []
+namespace.update(sys=SimpleNamespace(platform='linux'),
+                 os=SimpleNamespace(pidfd_open=lambda pid: 42, getsid=lambda pid: 999,
+                                    close=closed.append, strerror=str),
+                 signal=SimpleNamespace(pidfd_send_signal=lambda fd, sig: received.append((fd, sig))))
+namespace['signal_member'](101, 202, 9)
+assert received == [] and closed == [42], 'recycled PID outside owned session was signaled'
+namespace['os'].getsid = lambda pid: 202
+namespace['signal_member'](101, 202, 9)
+assert received == [(42, 9)], 'Linux signal did not use the opened stable handle'
+
+def vanished(pid):
+    raise ProcessLookupError()
+namespace['os'].pidfd_open = vanished
+namespace['signal_member'](101, 202, 9)
+assert received == [(42, 9)], 'vanished PID fell back to unsafe delivery'
+
+UniqueIdentifier = namespace['UniqueIdentifier']
+assert ctypes.sizeof(UniqueIdentifier) == 56
+AuditToken = ctypes.c_uint32 * 8
+received.clear()
+def pidinfo(pid, flavor, arg, pointer, size):
+    assert flavor == 17 and size == 56
+    ctypes.cast(pointer, ctypes.POINTER(UniqueIdentifier)).contents.idversion = 303
+    return size
+
+def deliver(pointer, signum):
+    token = ctypes.cast(pointer, ctypes.POINTER(AuditToken)).contents
+    received.append((token[5], token[7], signum))
+    return errno.ESRCH  # The kernel rejects this vanished pidversion.
+namespace.update(sys=SimpleNamespace(platform='darwin'), AuditToken=AuditToken,
+                 libproc=SimpleNamespace(proc_pidinfo=pidinfo, proc_signal_with_audittoken=deliver))
+namespace['os'].getsid = lambda pid: 999
+namespace['signal_member'](101, 202, 9)
+assert received == [], 'Darwin reused PID outside the session was signaled'
+namespace['os'].getsid = lambda pid: 202
+namespace['signal_member'](101, 202, 0)
+assert received == [], 'Darwin startup called its signal API with invalid signal zero'
+namespace['signal_member'](101, 202, 9)
+assert received == [(101, 303, 9)], 'Darwin signal lost captured pidversion'
+PYIDENTITY
+assert "stable signals reject stale PIDs on Linux and Darwin" "python3 '$SHIM_DIR/check-signal-identity.py' '$GATE'"
+
 # ── fail CLOSED on unparseable / nonconforming JSON ───────────────────
 new_repo
 echo "change" >> "$R/code.txt"

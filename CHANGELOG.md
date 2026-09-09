@@ -12,6 +12,8 @@
 - The Codex review gate selects the managed standalone installation unless an
   explicit executable override is supplied, bounds review execution, and
   preserves private failure diagnostics. Receipts record the selected runtime.
+- Timeout cleanup covers the reviewer's session and finishes despite repeated
+  interrupts. Gate changes run offline portability fixtures on Linux and macOS.
 
 ## 2026-09-09 — fix: preserve shared Codex sessions during startup
 
