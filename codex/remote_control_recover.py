@@ -187,19 +187,58 @@ def _process_identity(
     }
 
 
-def _managed_executable(proc_root: Path, pid: int, home: Path) -> Path:
-    executable = (proc_root / str(pid) / "exe").resolve(strict=True)
-    releases = (home / ".codex/packages/standalone/releases").resolve(strict=True)
-    relative = executable.relative_to(releases)
-    if len(relative.parts) != 3 or relative.parts[1:] != ("bin", "codex"):
-        raise ValueError("executable is outside a managed release")
-    return executable
+def _managed_executable(
+    proc_root: Path, pid: int, home: Path, codex_home: Path, expected_uid: int
+) -> tuple[Path, Path]:
+    proc_exe = proc_root / str(pid) / "exe"
+    executable = proc_exe.resolve(strict=True)
+    running_metadata = proc_exe.stat()
+    if (
+        running_metadata.st_uid != expected_uid
+        or not stat.S_ISREG(running_metadata.st_mode)
+        or running_metadata.st_mode & 0o022
+    ):
+        raise ValueError("running executable ownership is invalid")
+    selected_home = codex_home.resolve(strict=True)
+    if selected_home.stat().st_uid != expected_uid:
+        raise ValueError("selected Codex home owner is invalid")
+
+    # Daemon state selects one installation; the login-home installation also
+    # remains valid when only daemon state has moved to a custom Codex home.
+    for candidate in (selected_home, home / ".codex"):
+        try:
+            root = candidate.resolve(strict=True)
+            installation = root / "packages/standalone"
+            releases = installation / "releases"
+            relative = executable.relative_to(releases)
+            if len(relative.parts) != 3 or relative.parts[1:] != ("bin", "codex"):
+                continue
+            paths = (
+                root, root / "packages", installation, releases,
+                executable.parent.parent, executable.parent, executable,
+            )
+            for path in paths:
+                metadata = path.stat()
+                expected_type = stat.S_ISREG if path == executable else stat.S_ISDIR
+                if (
+                    metadata.st_uid != expected_uid
+                    or not expected_type(metadata.st_mode)
+                    or metadata.st_mode & 0o022
+                    or path.resolve(strict=True) != path
+                    or (path == executable and not os.path.samestat(metadata, running_metadata))
+                ):
+                    raise ValueError("managed release ownership or path is invalid")
+            return executable, installation
+        except (OSError, ValueError):
+            continue
+    raise ValueError("executable is outside an owned managed release")
 
 
 def _validate_managed_process(
     *,
     proc_root: Path,
     home: Path,
+    codex_home: Path,
     pid: int,
     recorded_start: str | None,
     expected_uid: int,
@@ -213,7 +252,9 @@ def _validate_managed_process(
     if recorded_start is not None and identity["processStartTime"] != recorded_start:
         raise ValueError("process display time does not match")
 
-    executable = _managed_executable(proc_root, pid, home)
+    executable, installation = _managed_executable(
+        proc_root, pid, home, codex_home, expected_uid
+    )
     cmdline = _read_bounded(process_dir / "cmdline", MAX_CMDLINE_BYTES)
     if not cmdline.endswith(b"\0"):
         raise ValueError("process command line does not match")
@@ -221,11 +262,17 @@ def _validate_managed_process(
     if len(arguments) != len(role) + 1:
         raise ValueError("process argument count does not match")
     argv_zero = Path(os.fsdecode(arguments[0]))
-    current = home / ".codex/packages/standalone/current"
-    # A running release can outlive an update to the managed launcher symlink.
-    updated_launcher = argv_zero in (
-        current / "codex", current / "bin/codex"
-    )
+    # An updated launcher can name an older running release only within the
+    # same installation, including a selected-home alias to that installation.
+    updated_launcher = False
+    if argv_zero.is_absolute():
+        for suffix in (("current", "codex"), ("current", "bin", "codex")):
+            if (
+                argv_zero.parts[-len(suffix):] == suffix
+                and argv_zero.parents[len(suffix) - 1].resolve(strict=True) == installation
+            ):
+                updated_launcher = True
+                break
     if not argv_zero.is_absolute() or (
         not updated_launcher and argv_zero.resolve(strict=True) != executable
     ):
@@ -309,6 +356,7 @@ def snapshot_updater(
         identity = _validate_managed_process(
             proc_root=proc_root,
             home=home,
+            codex_home=pid_file.parent.parent,
             pid=pid,
             recorded_start=recorded_start,
             expected_uid=expected_uid,
@@ -358,6 +406,7 @@ def terminate_stale_updater(
         identity = _validate_managed_process(
             proc_root=proc_root,
             home=home,
+            codex_home=pid_file.parent.parent,
             pid=pid,
             recorded_start=recorded_start,
             expected_uid=expected_uid,
@@ -430,7 +479,8 @@ def repair_pid_records(
         updater_fd = pidfd_open(expected["pid"])
         pidfds.append(updater_fd)
         common = dict(
-            proc_root=proc_root, home=home, recorded_start=None,
+            proc_root=proc_root, home=home, codex_home=pid_file.parent.parent,
+            recorded_start=None,
             expected_uid=expected_uid, clock_ticks=clock_ticks,
         )
         updater = _validate_managed_process(pid=expected["pid"], **common)
