@@ -75,7 +75,7 @@ async def verify(binary, websockets):
         home.mkdir()
         codex_home.mkdir()
         (root / "dotfiles").symlink_to(repo, target_is_directory=True)
-        env = {"HOME": str(home), "CODEX_HOME": str(codex_home), "PATH": os.defpath,
+        env = {"HOME": str(home), "CODEX_HOME": str(codex_home), "PATH": os.environ.get("PATH", os.defpath),
                "LANG": "C.UTF-8", "TZ": "UTC", "HTTP_PROXY": "http://127.0.0.1:9",
                "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9",
                "NO_PROXY": "127.0.0.1,localhost"}
