@@ -18,7 +18,9 @@ Safety argument — why the SIGTERM path cannot hit the wrong process:
 
 Missing PID-record repair sends only signal 0: the saved updater fingerprint
 and a socket-provided pidfd establish ownership before native records are
-restored under Codex's own locks. Native commands then manage the restart.
+restored under Codex's own locks. The startup probe touches neither PID records
+nor process state: native management commands can discard live PID records
+after wall-clock drift.
 
 None of this is reproducible in a unit test: do not reorder ``pidfd_open``
 relative to the ``/proc`` reads, and do not remove the signal-0 call.
@@ -283,6 +285,22 @@ def _wait_for_exit(pidfd: int, timeout_seconds: int) -> bool:
     return bool(poller.poll(timeout_seconds * 1000))
 
 
+def probe_shared_server(socket_path: Path) -> int:
+    """Return 0 for listening, 3 for absent, and 2 for an uncertain socket."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            client.connect(str(socket_path))
+        # The native TUI owns protocol validation. Any listener at its configured
+        # socket must be left untouched, even when its relay or PID records fail.
+        return 0
+    except (FileNotFoundError, ConnectionRefusedError):
+        # Reserve exit 1 for interpreter/import failures, which are uncertain.
+        return 3
+    except OSError:
+        return 2
+
+
 def snapshot_updater(
     *,
     pid_file: Path,
@@ -484,6 +502,8 @@ def repair_pid_records(
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "probe":
+        return probe_shared_server(Path(argv[2]))
     if len(argv) not in (2, 4) or argv[1] not in ("recover", "snapshot", "repair"):
         return 2
     home = Path.home()

@@ -795,8 +795,7 @@ _codex_with_timeout() {
   fi
 
   # Let timeout own the child's process group so its TERM/KILL escalation
-  # reaches ordinary descendants. Session-escaping children are handled by
-  # the bounded capture in _codex_remote_run.
+  # reaches ordinary descendants.
   "$timeout_bin" --kill-after=1s "${timeout_seconds}s" "$@" && return 0
   rc=$?
   # GNU timeout exits 137 when its KILL escalation was needed. Normalize that
@@ -807,131 +806,30 @@ _codex_with_timeout() {
   return "$rc"
 }
 
-_codex_remote_run() (
-  local timeout_seconds="$1" output_file error_file="" error_collector rc started
-  local -a pipeline_status
-  shift
-  output_file="$(mktemp)" || return 125
-  trap 'rm -f "$output_file"; [ -z "$error_file" ] || rm -f "$error_file"' EXIT
-  error_file="$(mktemp)" || return 125
-  started=$SECONDS
-
-  # Separately timed collectors bound both streams even when an escaped child
-  # holds them open. Keep stdout JSON separate from harmless stderr warnings.
-  exec 3> >(_codex_with_timeout "$timeout_seconds" tail -c 8192 > "$error_file" 2>/dev/null)
-  error_collector=$!
-  _codex_with_timeout "$timeout_seconds" codex "$@" 2>&3 3>&- \
-    | _codex_with_timeout "$timeout_seconds" tail -c 8192 3>&- > "$output_file"
-  pipeline_status=("${PIPESTATUS[@]}")
-  exec 3>&-
-  wait "$error_collector" 2>/dev/null || true
-  rc="${pipeline_status[0]}"
-  # KILL escalation can take out timeout itself, and the closed collector pipe
-  # can then kill the codex stage with SIGPIPE before _codex_with_timeout's own
-  # 137→124 normalization runs. Past the deadline, both are the documented
-  # timeout status.
-  if { [ "$rc" -eq 137 ] || [ "$rc" -eq 141 ]; } \
-    && [ "$((SECONDS - started))" -ge "$timeout_seconds" ]; then
-    rc=124
-  fi
-  # Codex can exit successfully with status=connecting after its readiness wait.
-  if [ "$rc" -eq 0 ] && [ "$*" = "remote-control start --json" ] \
-    && ! jq -e -s 'length == 1 and .[0].status == "connected"' "$output_file" >/dev/null 2>&1; then
-    return 75
-  fi
-  if [ "$rc" -ne 0 ]; then
-    command cat "$output_file"
-    printf '\n'
-    command cat "$error_file"
-  fi
-  return "$rc"
-)
-
-_codex_remote_is_stale_socket_failure() {
-  local failure="$1"
-  grep -Fq 'app server did not become ready' <<< "$failure" \
-    && grep -Fq 'app-server-control.sock' <<< "$failure" \
-    && grep -Fq 'No such file or directory' <<< "$failure"
-}
-
-_codex_remote_identity() {
-  local action="$1"
-  local codex_home="${CODEX_HOME:-$HOME/.codex}"
-  local pid_file="$codex_home/app-server-daemon/app-server-updater.pid"
-  local identity_file="$codex_home/app-server-daemon/app-server-updater.identity.json"
-  local helper
+_codex_shared_server_status() {
+  local codex_home="${CODEX_HOME:-$HOME/.codex}" helper
   helper="$(_dev_dir)/dotfiles/codex/remote_control_recover.py"
-
-  command -v python3 >/dev/null 2>&1 || return 1
-  [ -f "$helper" ] || return 1
-  _codex_with_timeout 7 python3 "$helper" "$action" "$pid_file" "$identity_file" \
-    >/dev/null 2>&1
-}
-
-_codex_remote_snapshot_updater() {
-  _codex_remote_identity snapshot
-}
-
-_codex_remote_recover_stale_updater() {
-  _codex_remote_identity recover
+  command -v python3 >/dev/null 2>&1 && [ -f "$helper" ] || return 2
+  _codex_with_timeout 3 python3 "$helper" probe \
+    "$codex_home/app-server-control/app-server-control.sock" >/dev/null 2>&1
 }
 
 _codex_ensure_remote_control() {
-  local timeout_seconds=15 stop_timeout_seconds=8 failure rc
-  local recovery_message=""
+  local rc
 
-  if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
-    _codex_remote_snapshot_updater || true
+  # Even native start can discard a live PID record after clock drift. A
+  # listener can appear after a failed probe, so launches never manage daemons.
+  if _codex_shared_server_status; then
     return 0
   else
     rc=$?
   fi
-
-  if [ "$rc" -eq 125 ]; then
-    echo "⚠ Codex Remote Control auto-start skipped — no timeout command is available; using a local session." >&2
-    return "$rc"
-  fi
-
-  if _codex_remote_is_stale_socket_failure "$failure" \
-    && _codex_remote_recover_stale_updater; then
-    _codex_remote_run "$stop_timeout_seconds" remote-control stop --json \
-      >/dev/null 2>&1 || true
-    recovery_message="recovered a stale managed daemon"
-  elif [ "$rc" -eq 1 ] \
-    && {
-      grep -Eq '^Error: Remote control is enabled on .+ but the connection is errored\.$' <<< "$failure" \
-        || {
-          grep -Fxq 'Error: app server is running but is not managed by codex app-server daemon' <<< "$failure" \
-            && _codex_remote_identity repair
-        }
-    }; then
-    if failure="$(_codex_remote_run "$timeout_seconds" app-server daemon restart 2>&1)"; then
-      recovery_message="recovered an errored connection"
-    else
-      rc=$?
-    fi
-  fi
-
-  if [ -n "$recovery_message" ]; then
-    if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
-      _codex_remote_snapshot_updater || true
-      echo "⚠ Codex Remote Control $recovery_message." >&2
-      return 0
-    else
-      rc=$?
-    fi
-  fi
-
-  if [ "$rc" -eq 75 ]; then
-    echo "⚠ Codex Remote Control connection is not ready yet — local Codex will still launch." >&2
-  elif [ "$rc" -eq 124 ]; then
-    echo "⚠ Codex Remote Control timed out after $timeout_seconds seconds — mobile access is off for this session." >&2
+  if [ "$rc" -eq 3 ]; then
+    echo "⚠ No Codex shared server is listening — using a local session." >&2
+    echo "  To enable Remote Control explicitly: codex remote-control start --json" >&2
   else
-    echo "⚠ Codex Remote Control unavailable (exit $rc) — mobile access is off for this session." >&2
+    echo "⚠ Codex shared server could not be verified — leaving it untouched and using a local session." >&2
   fi
-  # Remote Control stderr can contain relay URLs, pairing codes, or tokens.
-  # Offer a direct diagnostic command without trying to redact unknown formats.
-  echo "  Run: codex remote-control start --json" >&2
   return "$rc"
 }
 
@@ -985,14 +883,13 @@ cx() {
     echo "⚠ Codex private defaults could not be applied — continuing with the existing local config." >&2
   fi
 
-  # Starting the daemon alone leaves the TUI's in-process sessions invisible
-  # remotely. Attach to its shared socket only after an opted-in start succeeds;
-  # pairing stays in Codex state, and failures preserve local CLI access.
+  # Reuse the opted-in shared socket without managing its daemon.
+  # Pairing stays in Codex state, and failures preserve local CLI access.
   local remote_settings="${CODEX_HOME:-$HOME/.codex}/app-server-daemon/settings.json"
   local -a remote_args=()
   if _codex_wants_shared_remote "$@" && [ -f "$remote_settings" ]; then
     if ! command -v jq >/dev/null 2>&1; then
-      echo "⚠ jq not installed — skipping the Remote Control auto-start check." >&2
+      echo "⚠ jq not installed — skipping the shared-server attachment check." >&2
     elif jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1 \
       && _codex_ensure_remote_control; then
       remote_args=(--remote unix://)

@@ -1,6 +1,22 @@
 # Changelog
 
+## 2026-09-09 — fix: preserve shared Codex sessions during startup
+
+- `cx` probes the control socket and reuses a listening server without running
+  daemon management commands. This avoids live PID-record cleanup after clock
+  drift and preserves terminals when mobile Remote Control is unavailable.
+- Missing or uncertain socket connections fall back locally. Daemon startup
+  and repair are now explicit maintenance actions: even a native start can
+  erase a live PID record when the listener appears after the socket probe.
+- Socket and launcher regression tests cover reuse, ambiguous socket failures,
+  conservative fallback, and a server becoming ready during startup.
+- An opt-in native test holds a turn against a local mock API and verifies
+  that repeated launches preserve attached clients without resending input.
+
 ## 2026-09-09 — fix: attach cx terminals to the shared Remote Control daemon
+
+> **Historical** — point-in-time record (2026-09-09). Do not act on this.
+> Automatic daemon management was retired by the shared-session fix above.
 
 - Interactive `cx` launches now connect with `--remote unix://` after the
   already-enabled daemon starts successfully. Fresh sessions, `resume`, `fork`,
@@ -200,6 +216,9 @@
   `dotfiles-update`.
 
 ## 2026-09-04 — fix: recover errored Codex Remote Control during startup
+
+> **Historical** — point-in-time record (2026-09-04). Do not act on this.
+> Automatic startup stops and restarts were retired by the shared-session fix above.
 
 ### What changed
 - `cx` attempts one timed managed-daemon restart for an errored Remote Control
