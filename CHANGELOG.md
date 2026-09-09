@@ -12,6 +12,8 @@
 - The morning review script uses the required Codex gate, validates its receipt
   after confirmation, and pushes the reviewed commit to a verified non-default
   branch at the actual push destination. Automatic tag pushes are disabled.
+  Further URL rewrites fail closed; explicitly selected PR review bases can
+  be carried through the push hook with a one-push setting.
 - Shared instructions assign coordination to the active session, preserve
   separate-family review for high-risk work, and require simplification,
   documentation, and verification before final review. Personal runtime

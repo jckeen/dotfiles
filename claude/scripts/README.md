@@ -67,6 +67,8 @@ gate and receipt check with `--base <ref>`, then use
 `REVIEW_RECEIPT_BASE=<ref> git push ...` for that push. The hook otherwise
 requires the repository's default base. The setting selects the expected
 base; it does not bypass artifact validation.
+The wrapper rejects URL rewrite rules that would transform its already
+resolved push destination again; use a direct destination in that case.
 
 Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
