@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-08 — fix: launchers reload a changed `.bash_aliases`; dev-dir stub `.git` and off-main dotfiles guards
+
+### What changed
+- `cc`, `cx` and `agy` re-source `~/.bash_aliases` when its mtime differs from
+  the one recorded at shell start, then re-enter themselves so the fresh
+  definitions run. Long-lived shells (WSL6 panes open for days) kept the
+  fail-closed "resolve the pull error before launching the agent" body for two
+  days after #363 replaced it on disk.
+- `_agent_preflight` removes an empty stub `.git` from the dev dir (seen
+  2026-07-17 and 2026-09-06; it makes Claude Code treat `~/dev` as a repo with
+  no HEAD). A non-empty non-repo `.git` is reported, never deleted.
+- After the repo sync, the preflight warns when the primary dotfiles checkout
+  is on a branch other than `main`/`master`: `~/.bash_aliases`, hooks and
+  skills symlink into that checkout, so the checked-out branch *is* the live
+  shell config. Feature work belongs in a worktree.
+- Regression coverage for all three in `agent-preflight.test.sh` (46 cases).
+
+### Decisions made
+- Reload rather than warn: the launcher is the one place every shell passes
+  through, so it heals itself instead of asking the operator to `exec bash`.
+- The primary dotfiles checkout stays on `main`; branch work uses `wt-claude`
+  or `git worktree add`.
+
 ## 2026-09-06 — fix: agent launchers continue after sync failures
 
 - `cc`, `cx`, and `agy` warn with repository errors and continue with local
