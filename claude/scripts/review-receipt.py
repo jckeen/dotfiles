@@ -45,7 +45,8 @@ def instruction(path):
     parts = Path(path).parts
     name = parts[-1]
     return (any(p in ('codex', '.codex', 'antigravity', '.antigravity', '.agents', '.claude', '.gemini') for p in parts)
-            or any(p.endswith('hooks') for p in parts)
+            or any(p in ('githooks', '.githooks') for p in parts)
+            or ('claude', 'hooks') in zip(parts, parts[1:])
             or re.search(r'(AGENTS|CLAUDE|GEMINI|FABLE|MULTI-AGENT).*\.md$', name) is not None
             or name in ('SKILL.md', 'gate-lib.sh', 'review-receipt.py', 'codex-review-gate.sh', 'antigravity-review-gate.sh'))
 
@@ -68,14 +69,16 @@ def file_bytes(repo, path):
         parent = parent / component
         try:
             mode = parent.lstat().st_mode
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             return 'missing', b''
         if stat.S_ISLNK(mode):
             raise ValueError('cannot snapshot through symlink ancestor: ' + path)
+        if not stat.S_ISDIR(mode):
+            return 'missing', b''
     file = repo / path
     try:
         info = file.lstat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return 'missing', b''
     if stat.S_ISLNK(info.st_mode):
         return '120000', os.fsencode(os.readlink(file))
@@ -103,7 +106,7 @@ def capture(repo, base, scope):
     base_commit = oid(repo, base) if base else None
     if scope == 'committed' and base_commit is None:
         raise ValueError('base could not be resolved')
-    merge = git(repo, 'merge-base', base_commit, head).decode().strip() if base_commit else None
+    merge = git(repo, 'merge-base', base_commit, head).decode().strip() if scope == 'committed' else None
     tree = git(repo, 'rev-parse', head + '^{tree}').decode().strip()
     index = git(repo, 'ls-files', '--stage', '-z')
     entries = {}
