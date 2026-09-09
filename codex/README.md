@@ -66,6 +66,14 @@ daemon. A failed daemon start warns and launches Codex locally; it does not
 generate a new pairing code. Existing local terminals need to finish active
 work and reopen with `cx resume <session-id>` to move onto the shared server.
 
+Recovery accepts managed standalone releases from the Codex home containing
+the selected daemon records, or from the default `~/.codex` installation when
+only state has moved. Installation paths and executables must belong to the
+current user, must not be writable by other users, and must stay inside that
+installation. Existing process identities and socket-peer checks still apply.
+An automatic recovery restart can interrupt other attached terminals; native
+multi-client restart behavior is tracked in [#388](https://github.com/jckeen/dotfiles/issues/388).
+
 ## Public Skills
 
 Public, reusable workflow skills live under `agents/skills/` (the

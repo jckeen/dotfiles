@@ -103,6 +103,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install zsh for launcher compatibility tests
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends zsh
+
       - name: doc-refs (self-test + checker)
         if: ${{ !cancelled() }}
         run: |
@@ -207,6 +210,18 @@ jobs:
       - name: shared agent launcher preflight
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/agent-preflight.test.sh
+
+      - name: launcher and shell compatibility regressions
+        if: ${{ !cancelled() }}
+        run: python3 claude/scripts/tests/launcher-regressions.test.py
+
+      - name: Codex comment harvest (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 claude/scripts/tests/harvest-codex-comments.test.py
+
+      - name: retired skill link migration (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 claude/scripts/tests/retired-skill-links.test.py
 
       - name: Antigravity launcher
         if: ${{ !cancelled() }}

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-09-09 — fix: reject malformed review results and reconcile docs
+## 2026-09-09 — fix: close launcher, cleanup, and review safety gaps
 
 ### What changed
 - Codex review results must satisfy the full structured-result contract before
@@ -10,6 +10,26 @@
 - Corrected local ShellCheck coverage instructions, the Antigravity health
   command, the pre-merge hook table, branch-protection status, and scanner
   descriptions. Backfilled omitted historical changes from their merged PRs.
+- Branch pruning stops on failed remote refresh, unknown activity, unique merge
+  commits, or a dirty checkout. Preview fetches happen in a disposable clone;
+  relative roots and changed remote defaults are handled consistently.
+- Bash and zsh launchers reload changed contents, including changes pulled during
+  preflight. Git diagnostics distinguish deleted upstreams from excluded refs
+  and report detached checkouts and dangling stub links. `cct` passes arguments
+  without writing their expanded contents into interactive history.
+- Setup audits the tmux link, and tmux tolerates unavailable passthrough options.
+  Launch health checks can retire exact known obsolete skill symlinks while
+  preserving custom files, restored sources, and ambiguous links.
+- Recovery recognizes standalone releases under the selected daemon-state home
+  or the default installation, checks ownership and executable identity, and
+  retains the existing process and socket safeguards.
+- Comment harvesting retries only confirmed label-validation failures; queue
+  freshness rejects impossible dates. Review instructions preserve the user's
+  checkout, debugging applies to faulty behavior, and Render stays project opt-in.
+
+### Decisions made
+- Retired-skill healing is an exact historical migration; unknown or custom
+  content remains report-only. No general automatic deletion is introduced.
 
 ## 2026-09-09 — fix: attach cx terminals to the shared Remote Control daemon
 
