@@ -96,6 +96,9 @@ Classification and exemption validation use the same policy implementation.
 Passive filename filters retain instruction files, executable files, and
 symlinks. Documentation exemptions require nonexecutable regular files with
 recognized documentation names.
+No-diff exemptions also validate the changed paths; an empty patch cannot
+exempt an active path. Review path selection uses a fixed literal policy,
+and repository and worktree paths retain their exact whitespace.
 
 ## Safety Tiers
 

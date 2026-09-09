@@ -24,7 +24,9 @@
   the selected docs-only size policy through completion and validation.
   Classification and exemption validation share one policy. Instruction files,
   executable files, and symlinks cannot bypass review through passive filename
-  filters or documentation exemptions. Known runtime
+  filters or documentation exemptions. Inherited Git pathspec settings cannot
+  change review selection, and exact path handling preserves repository identity.
+  No-diff exemptions validate changed paths as well as the patch. Known runtime
   credentials and state stay out of review prompts when ignored, and block
   review when explicitly included. Repository instruction symlinks and staged submodules fail
   closed instead of leaving their effective content outside the snapshot.
