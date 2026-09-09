@@ -206,6 +206,6 @@ if [[ "$(git symbolic-ref --quiet HEAD)" != "$BRANCH_REF" ]]; then
 fi
 check_destination
 REVIEWED_HEAD=$(git rev-parse HEAD)
-python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD"
+python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD" --reviewer codex
 git push --no-follow-tags "${PUSH_CREATION_LEASE[@]}" -- "$PUSH_URL" "$REVIEWED_HEAD:$BRANCH_REF"
 echo "Pushed."

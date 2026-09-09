@@ -4,7 +4,9 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
+import time
 import unittest
 
 
@@ -27,6 +29,66 @@ class RewriteTests(unittest.TestCase):
         result = self.fixture.command("git", list(args))
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
+
+    def test_failed_codex_retry_cannot_fall_back_to_an_older_alternate_receipt(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for name in ("codex-review-gate.sh", "antigravity-review-gate.sh", "gate-lib.sh",
+                     "review-receipt.py", "codex-review-schema.json"):
+            shutil.copy2(shipping.ROOT / "claude/scripts" / name, t.scripts / name)
+        self.git("config", "core.hooksPath", str(t.source / "githooks"))
+        self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+        failure_flag = t.root / "fail-codex"
+        t.env.update(ANTIGRAVITY_GATE_MODEL="", FAIL_CODEX=str(failure_flag))
+        t.write(t.bin / "agy", "#!/bin/bash\ncat >/dev/null\nprintf 'LGTB\\n'\n")
+        t.write(t.bin / "codex", '''#!/bin/bash
+cat >/dev/null
+if [[ -e "$FAIL_CODEX" ]]; then exit 42; fi
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -o ]]; then output=$2; shift; fi
+  shift
+done
+printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[]}' > "$output"
+''')
+        alternate = t.command("bash", [str(t.scripts / "antigravity-review-gate.sh"), "--require", "--committed"])
+        self.assertEqual(alternate.returncode, 0, alternate.stdout + alternate.stderr)
+        receipts = t.repo / ".git/review-receipts"
+        self.assertTrue((receipts / "antigravity.json").is_file())
+        transcript = t.root / "wrapper.log"
+        with transcript.open("w") as output:
+            wrapper = subprocess.Popen(["bash", str(t.scripts / "review-and-push.sh"), str(t.repo)],
+                                       cwd=t.repo, env=t.env, stdin=subprocess.PIPE,
+                                       stdout=output, stderr=subprocess.STDOUT, text=True)
+            try:
+                deadline = time.monotonic() + 15
+                while "Codex review passed" not in transcript.read_text():
+                    self.assertIsNone(wrapper.poll(), transcript.read_text())
+                    self.assertLess(time.monotonic(), deadline, transcript.read_text())
+                    time.sleep(0.01)
+                self.assertTrue((receipts / "codex.json").is_file())
+                failure_flag.touch()
+                retry = t.command("bash", [str(t.scripts / "codex-review-gate.sh"),
+                                           "--require", "--committed", "--no-issues"])
+                self.assertEqual(retry.returncode, 3, retry.stdout + retry.stderr)
+                self.assertIn("rc=42", retry.stdout + retry.stderr)
+                self.assertFalse((receipts / "codex.json").exists())
+                alternate_check = t.command("python3", [str(t.scripts / "review-receipt.py"), "check",
+                                                        "--repo", str(t.repo), "--head", t.head])
+                self.assertEqual(alternate_check.returncode, 0, alternate_check.stderr)
+                self.assertIn("Valid antigravity", alternate_check.stdout)
+                wrapper.communicate("y\n", timeout=15)
+                self.assertNotEqual(wrapper.returncode, 0, transcript.read_text())
+            finally:
+                if wrapper.poll() is None:
+                    wrapper.kill()
+                    wrapper.communicate()
+        self.assertIn("no valid committed review receipt", transcript.read_text())
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base)
+        self.assertNotIn("scan", t.events())
+        # The generic hook still accepts an explicitly used alternate receipt.
+        self.git("push", str(t.remote), t.head + ":refs/heads/feature")
+        self.assertIn("scan", t.events())
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.head)
 
     def test_symbolic_destination_branches_never_update_their_targets(self):
         t = self.fixture
