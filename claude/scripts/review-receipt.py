@@ -182,8 +182,8 @@ def crlf_normalized_paths(repo):
     return paths
 
 
-def same_content(path, original, content, crlf_paths):
-    return (content == original or path in crlf_paths and b'\r' not in original and b'\0' not in original
+def same_content(path, mode, original, content, crlf_paths):
+    return (content == original or mode in ('100644', '100755') and path in crlf_paths and b'\r' not in original and b'\0' not in original
             and content.replace(b'\r\n', b'\n') == original)
 
 
@@ -248,7 +248,7 @@ def capture(repo, base, scope):
     for path, (mode, content) in workspace.items():
         if instruction(path):
             original_mode, obj = entries.get(path, ('missing', None))
-            if path not in omitted and (mode != original_mode or not same_content(path, blob(obj), content, crlf_paths)):
+            if path not in omitted and (mode != original_mode or not same_content(path, mode, blob(obj), content, crlf_paths)):
                 dirty_instructions.append(path)
             if path in staged and entries.get(path) != staged[path]:
                 dirty_instructions.append(path)
@@ -272,7 +272,7 @@ def capture(repo, base, scope):
             original, staged_content = blob(obj), blob(staged_obj)
             mode, content = (staged_mode, staged_content) if path in omitted else workspace[path]
             staged_changed = (original_mode, obj) != (staged_mode, staged_obj)
-            worktree_changed = mode != staged_mode or not same_content(path, staged_content, content, crlf_paths)
+            worktree_changed = mode != staged_mode or not same_content(path, mode, staged_content, content, crlf_paths)
             if not staged_changed and not worktree_changed:
                 continue
             paths.append(path)

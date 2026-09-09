@@ -449,6 +449,24 @@ for checkout_state in staged-mode crlf sparse; do
   rm -rf "$R"
 done
 
+for normalization in text autocrlf; do
+  new_repo
+  ln -s $'SYMLINK_TARGET\nname' "$R/link.txt"
+  : > "$R/.gitattributes"
+  [[ "$normalization" != text ]] || printf 'link.txt text\n' > "$R/.gitattributes"
+  git -C "$R" add link.txt .gitattributes
+  git -C "$R" commit -qm 'symlink fixture'
+  [[ "$normalization" != autocrlf ]] || git -C "$R" config core.autocrlf true
+  rm "$R/link.txt"
+  ln -s $'SYMLINK_TARGET\r\nname' "$R/link.txt"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$normalization cannot hide a symlink from alternate review" 0 "LGTB verdict" --uncommitted --require
+  assert "symlink target bytes reach alternate reviewer" "grep -q 'SYMLINK_TARGET' '$AGY_FAKE_DIR/stdin'"
+  assert "symlink change gets a full alternate receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  rm -rf "$R"
+done
+
 for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo

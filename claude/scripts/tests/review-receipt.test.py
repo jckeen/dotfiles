@@ -286,6 +286,36 @@ class ReceiptTests(unittest.TestCase):
         self.assertIn('after.txt', patch)
         self.assertNotIn('OUTSIDE_PRIVATE_MARKER', patch)
 
+    def test_symlink_target_bytes_do_not_receive_regular_file_eol_normalization(self):
+        for normalization in ('text-attribute', 'autocrlf'):
+            for staged in (False, True):
+                with self.subTest(normalization=normalization, staged=staged):
+                    self.git('reset', '--hard', 'main')
+                    self.git('clean', '-fd')
+                    self.git('config', 'core.autocrlf', 'false')
+                    link = self.repo / 'link.txt'
+                    link.symlink_to('SYMLINK_TARGET\nname')
+                    if normalization == 'text-attribute':
+                        (self.repo / '.gitattributes').write_text('link.txt text\n')
+                        self.git('add', '.gitattributes')
+                    self.git('add', 'link.txt')
+                    self.git('commit', '-qm', 'symlink fixture')
+                    if normalization == 'autocrlf':
+                        self.git('config', 'core.autocrlf', 'true')
+                    link.unlink()
+                    link.symlink_to('SYMLINK_TARGET\r\nname')
+                    if staged:
+                        self.git('add', 'link.txt')
+                    snapshot = self.begin('uncommitted')
+                    self.assertEqual(json.loads(snapshot.read_text())['artifact']['changed_paths'], ['link.txt'])
+                    patch = (snapshot.parent / 'diff.patch').read_bytes()
+                    self.assertIn(b'-SYMLINK_TARGET\n', patch)
+                    self.assertIn(b'+SYMLINK_TARGET\r\n', patch)
+                    self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 2)
+                    self.complete(snapshot, 'no-diff', ok=False)
+                    self.complete(snapshot, 'tier-1', ok=False)
+                    self.complete(snapshot)
+
     def test_instruction_symlinks_fail_closed_in_each_scope(self):
         target = self.repo / 'local-policy.txt'
         target.write_text('local instruction target\n')

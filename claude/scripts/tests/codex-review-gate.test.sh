@@ -528,6 +528,23 @@ for checkout_state in staged-mode crlf sparse; do
   rm -rf "$R"
 done
 
+for normalization in text autocrlf; do
+  new_repo
+  ln -s $'SYMLINK_TARGET\nname' "$R/link.txt"
+  : > "$R/.gitattributes"
+  [[ "$normalization" != text ]] || printf 'link.txt text\n' > "$R/.gitattributes"
+  git -C "$R" add link.txt .gitattributes
+  git -C "$R" commit -qm 'symlink fixture'
+  [[ "$normalization" != autocrlf ]] || git -C "$R" config core.autocrlf true
+  rm "$R/link.txt"
+  ln -s $'SYMLINK_TARGET\r\nname' "$R/link.txt"
+  approve_clean
+  check "$normalization cannot normalize away a symlink target change" 0 "Codex review passed" --uncommitted --no-issues --require
+  assert "symlink target bytes reach Codex" "grep -q 'SYMLINK_TARGET' '$CODEX_FAKE_DIR/stdin'"
+  assert "symlink target change gets a full-review receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+  rm -rf "$R"
+done
+
 for mutation in head index worktree untracked base; do
   new_repo
   git -C "$R" checkout -qb feature
