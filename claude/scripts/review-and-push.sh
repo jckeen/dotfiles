@@ -153,7 +153,7 @@ echo ""
 
 # ─── Step 3: Review the committed artifact ──────────────────────
 
-"$SCRIPT_DIR/codex-review-gate.sh" --require
+"$SCRIPT_DIR/codex-review-gate.sh" --require --committed
 
 if [[ "$AUTO_PUSH" != "true" ]]; then
   read -rp "Push to remote? (Y/n): " CONFIRM

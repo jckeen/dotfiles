@@ -38,7 +38,7 @@
 # failures (exit 3). Unparseable-but-present output fails CLOSED (exit 2).
 #
 # Usage:
-#   codex-review-gate.sh [--base <branch>] [--uncommitted] [--no-issues]
+#   codex-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--no-issues]
 #                        [--dry-run] [--require] [--claim <text>] [--repro <cmd>]
 #
 # Exit codes:
@@ -64,6 +64,7 @@ SCHEMA="$SCRIPT_DIR/codex-review-schema.json"
 BASE=""
 FILE_ISSUES=true
 DRY_RUN=false
+FORCE_COMMITTED=false
 FORCE_UNCOMMITTED=false
 REQUIRED="${CODEX_GATE_REQUIRED:-0}"
 MAX_ISSUES="${CODEX_GATE_MAX_ISSUES:-10}"
@@ -71,10 +72,11 @@ MAX_DIFF_LINES="${CODEX_GATE_MAX_LINES:-5000}"
 CLAIM=""
 REPRO=""
 
-# shellcheck disable=SC2034  # FORCE_UNCOMMITTED is read by gate-lib.sh (sourced above)
+# shellcheck disable=SC2034  # FORCE_COMMITTED and FORCE_UNCOMMITTED are read by gate-lib.sh.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)        BASE="$2"; shift 2 ;;
+    --committed)   FORCE_COMMITTED=true; shift ;;
     --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
     --no-issues)   FILE_ISSUES=false; shift ;;
     --dry-run)     DRY_RUN=true; shift ;;
@@ -85,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
+
+if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
+  red "Options --committed and --uncommitted cannot be combined."
+  exit 2
+fi
 
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 degrade() {

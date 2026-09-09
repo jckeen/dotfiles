@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Keep real pushes on the endpoint whose default branch was checked."""
 import importlib.util
+import json
 from pathlib import Path
+import shutil
 import sys
 import unittest
 
@@ -39,6 +41,35 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("gate", t.events())
         self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.head)
+
+    def test_real_gate_ships_to_behind_fork_with_unrelated_work_in_progress(self):
+        t = self.fixture
+        fork = t.root / "fork"
+        self.git("clone", "--bare", str(t.remote), str(fork))
+        self.git("--git-dir", str(fork), "update-ref", "refs/heads/feature", t.base)
+        self.git("remote", "add", "fork", str(fork))
+        self.git("config", "branch.feature.pushRemote", "fork")
+        self.git("update-ref", "refs/remotes/origin/main", t.head)
+        notes = t.repo / "notes.md"
+        notes.write_text("Unrelated work in progress.\n")
+        status = self.git("status", "--porcelain")
+        for name in ("codex-review-gate.sh", "gate-lib.sh", "review-receipt.py",
+                     "codex-review-schema.json"):
+            shutil.copy2(shipping.ROOT / "claude/scripts" / name, t.scripts / name)
+        t.write(t.bin / "codex", '''#!/bin/bash
+printf 'model\\n' >> "$CALLS"
+exit 99
+''')
+        (t.bin / "git").unlink()
+        result = t.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.head)
+        self.assertEqual(notes.read_text(), "Unrelated work in progress.\n")
+        self.assertEqual(self.git("status", "--porcelain"), status)
+        receipt = json.loads((t.repo / ".git/review-receipts/codex.json").read_text())
+        self.assertEqual(receipt["artifact"]["scope"], "committed")
+        self.assertEqual(receipt["completion"]["outcome"], "no-diff")
+        self.assertNotIn("model", t.events())
 
     def destinations(self, redirected_name="redirected-remote"):
         t = self.fixture

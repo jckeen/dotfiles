@@ -56,7 +56,7 @@
 #     (gate_verify_agy_model): warning only, never blocks.
 #
 # Usage:
-#   antigravity-review-gate.sh [--base <branch>] [--uncommitted] [--require]
+#   antigravity-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--require]
 #                              [--model <display-label>]
 #
 # Exit codes:
@@ -85,6 +85,7 @@ REQUIRED="${ANTIGRAVITY_GATE_REQUIRED:-0}"
 
 # ─── Args ──────────────────────────────────────────────────────
 BASE=""
+FORCE_COMMITTED=false
 FORCE_UNCOMMITTED=false
 # Display LABEL, not a slug (#205). `${VAR-default}` (no colon): an explicitly
 # empty ANTIGRAVITY_GATE_MODEL disables pinning; unset gets the default. The
@@ -92,10 +93,11 @@ FORCE_UNCOMMITTED=false
 # the conversation records) on agy 1.1.1, 2026-07-10.
 MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 3.1 Pro (High)}"
 
-# shellcheck disable=SC2034  # BASE and FORCE_UNCOMMITTED are read by gate-lib.sh.
+# shellcheck disable=SC2034  # BASE, FORCE_COMMITTED, and FORCE_UNCOMMITTED are read by gate-lib.sh.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)        BASE="${2:-}"; shift 2 ;;
+    --committed)   FORCE_COMMITTED=true; shift ;;
     --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
     --require)     REQUIRED=1; shift ;;
     --model)       MODEL="${2:-}"; shift 2 ;;
@@ -103,6 +105,11 @@ while [[ $# -gt 0 ]]; do
     *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
+
+if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
+  red "Options --committed and --uncommitted cannot be combined."
+  exit 2
+fi
 
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 degrade() {
