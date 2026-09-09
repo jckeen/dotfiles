@@ -83,6 +83,11 @@ when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
 It covers both staged changes and later workspace edits.
+Instruction coverage includes shared skill bundles and canonical sources under
+`agents/skills/` and `agents/canon/`, Claude skill and agent sources under
+`claude/skills/` and `claude/agents/`, and the Claude AgentPack manifest,
+metadata, and policy files. Ignored references inside these bundles remain
+bound to the receipt; ordinary documentation outside them keeps its usual policy.
 Instruction checks recognize Git-managed CRLF text conversion for regular files
 and sparse checkout omissions while retaining raw workspace hashes.
 Known ignored agent runtime credentials and state are excluded from instruction

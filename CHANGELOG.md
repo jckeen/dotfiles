@@ -31,6 +31,8 @@
   filters or documentation exemptions, including staged executable modes when
   `core.filemode` is disabled. Inherited Git pathspec settings cannot
   change review selection, and exact path handling preserves repository identity.
+  Source skill bundles, canonical fragments, Claude agent definitions, and
+  AgentPack policy files retain instruction coverage, including ignored references.
   No-diff exemptions validate changed paths as well as the patch. Known runtime
   credentials and state stay out of review prompts when ignored, and block
   review when explicitly included. Repository instruction symlinks and staged submodules fail
