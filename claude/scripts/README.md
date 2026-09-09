@@ -69,6 +69,8 @@ requires the repository's default base. The setting selects the expected
 base; it does not bypass artifact validation.
 The wrapper rejects resolved destinations that name another remote or would
 be transformed by another URL rewrite; use a direct destination in that case.
+It selects the branch's `pushRemote`, then `remote.pushDefault`, then the
+branch's fetch remote, falling back to `origin` when none is configured.
 
 Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
