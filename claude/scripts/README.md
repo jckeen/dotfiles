@@ -92,6 +92,8 @@ metadata, and policy files. Ignored references inside these bundles remain
 bound to the receipt; ordinary documentation outside them keeps its usual policy.
 Instruction checks recognize Git-managed CRLF text conversion for regular files
 and sparse checkout omissions while retaining raw workspace hashes.
+Automatic text conversion respects Git's binary classification; explicitly
+forced text conversion retains Git's configured behavior.
 Known ignored agent runtime credentials and state are excluded from instruction
 discovery. Named instruction files inside runtime directories remain covered.
 Recognized runtime artifacts explicitly included in the review target block

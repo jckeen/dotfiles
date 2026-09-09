@@ -23,6 +23,7 @@
   files, and staged content followed by workspace edits. Instruction checks
   recognize Git-managed CRLF conversion for regular files and sparse checkout
   omissions; symlink targets retain exact comparison.
+  Automatic CRLF comparison respects Git's per-file binary classification.
   Uncommitted text diffs keep embedded control characters within their original
   physical lines and quote filenames in their headers.
   Receipt capture disables configured filesystem
