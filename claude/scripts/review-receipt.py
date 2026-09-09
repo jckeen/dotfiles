@@ -35,6 +35,10 @@ def encoded(value):
 
 def git(repo, *args):
     env = dict(os.environ, GIT_OPTIONAL_LOCKS='0', GIT_NO_REPLACE_OBJECTS='1')
+    # The helper supplies its own literal pathspecs; inherited switches can
+    # suppress their magic, expand their matches, or conflict with each other.
+    for name in ('GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS'):
+        env.pop(name, None)
     return subprocess.check_output(['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args], env=env, stderr=subprocess.PIPE)
 
 
@@ -135,9 +139,10 @@ def file_bytes(repo, path, directory_is_missing=False):
 
 
 def layout(repo):
-    repo = Path(git(repo, 'rev-parse', '--show-toplevel').decode().strip()).resolve()
-    directory = Path(git(repo, 'rev-parse', '--absolute-git-dir').decode().strip()).resolve()
-    receipts = Path(git(repo, 'rev-parse', '--git-path', 'review-receipts').decode().strip())
+    # Remove only Git's output delimiter: trailing whitespace belongs to paths.
+    repo = Path(os.fsdecode(git(repo, 'rev-parse', '--show-toplevel').removesuffix(b'\n'))).resolve()
+    directory = Path(os.fsdecode(git(repo, 'rev-parse', '--absolute-git-dir').removesuffix(b'\n'))).resolve()
+    receipts = Path(os.fsdecode(git(repo, 'rev-parse', '--git-path', 'review-receipts').removesuffix(b'\n')))
     if not receipts.is_absolute():
         receipts = repo / receipts
     receipts = receipts.absolute()
@@ -320,7 +325,8 @@ def classify_tier(artifact, patch, policy):
 
 def exemption(outcome, artifact, patch, policy):
     classification = classify_tier(artifact, patch, policy)
-    if outcome == 'no-diff' and patch.strip():
+    if outcome == 'no-diff' and (patch.strip() or any(not excluded(path, artifact['changed_modes'][path])
+                                                    for path in artifact['changed_paths'])):
         raise ValueError('no-diff exemption has reviewable content')
     if outcome == 'tier-1' and classification['tier'] != 1:
         raise ValueError('tier-1 exemption is not a small docs-only artifact')

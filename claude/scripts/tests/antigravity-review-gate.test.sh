@@ -347,6 +347,62 @@ for active_path in .codex/policy.lock .claude/hooks/check.lock LICENSE.py; do
   done
 done
 
+for pathspec_setting in literal conflicting; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/.codex"
+  printf 'PATHSPEC_ALTERNATE_MARKER\n' > "$R/.codex/config.toml"
+  git -C "$R" add .codex/config.toml
+  git -C "$R" commit -qm 'pathspec environment fixture'
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  if [[ "$pathspec_setting" == literal ]]; then
+    export GIT_LITERAL_PATHSPECS=1
+  else
+    export GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1
+  fi
+  check "$pathspec_setting environment still dispatches alternate review" 0 "LGTB verdict" --committed --require
+  assert "pathspec environment preserves alternate prompt bytes" "grep -q 'PATHSPEC_ALTERNATE_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "pathspec environment cannot exempt alternate review" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+  rm -rf "$R"
+done
+
+for suffix in ' ' $'\n'; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam 'twin repository fixture'
+  sibling="$R"
+  R="$R$suffix"
+  cp -a "$sibling" "$R"
+  printf 'TWIN_ALTERNATE_MARKER\n' > "$R/code.txt"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "whitespace twin reviews its own alternate workspace" 0 "LGTB verdict" --uncommitted --require
+  assert "whitespace twin bytes reach alternate reviewer" "grep -q 'TWIN_ALTERNATE_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "whitespace twin cannot create sibling alternate receipt" "[ ! -e '$sibling/.git/review-receipts/antigravity.json' ]"
+  printf 'dirty twin instructions\n' > "$R/AGENTS.md"
+  rm -f "$AGY_FAKE_DIR/invoked"
+  check "whitespace twin blocks alternate committed review" 2 "dirty instruction surface" --committed --require
+  assert "whitespace twin dirty instructions prevent alternate dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+  rm -rf "$R" "$sibling"
+done
+
+new_repo
+echo source-directory >> "$R/code.txt"
+copied_scripts="$SHIM_DIR/scripts"$'\n'
+mkdir -p "$copied_scripts"
+cp "$SCRIPT_DIR/../antigravity-review-gate.sh" "$SCRIPT_DIR/../gate-lib.sh" "$SCRIPT_DIR/../review-receipt.py" "$copied_scripts/"
+original_gate="$GATE"
+GATE="$copied_scripts/antigravity-review-gate.sh"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "alternate gate source directory preserves trailing newline" 0 "LGTB verdict" --uncommitted --require
+assert "alternate gate from newline directory dispatches" "grep -q 'source-directory' '$AGY_FAKE_DIR/stdin'"
+GATE="$original_gate"
+rm -rf "$R"
+
 for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo

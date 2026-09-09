@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Receipt fixtures exercise real Git objects without invoking a reviewer."""
 import json
+import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HELPER = Path(__file__).resolve().parents[1] / 'review-receipt.py'
 
@@ -244,6 +247,114 @@ class ReceiptTests(unittest.TestCase):
         self.assertIsNone(receipt['reviewer']['observed_model'])
         self.assertEqual(receipt['completion']['status'], 'completed')
         self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_whitespace_twin_repository_cannot_reuse_sibling_receipt(self):
+        self.complete(self.begin())
+        original = self.repo
+        head = self.git('rev-parse', 'HEAD')
+        for suffix in (' ', '\t', '\n'):
+            with self.subTest(suffix=repr(suffix)):
+                twin = Path(str(original) + suffix)
+                shutil.copytree(original, twin)
+                (twin / 'AGENTS.md').write_text('TWIN_DIRTY_INSTRUCTION_MARKER\n')
+                self.run_helper('check', '--repo', str(twin), '--head', head, ok=False)
+                self.run_helper('begin', '--repo', str(twin), '--base', 'main', '--scope', 'committed',
+                                '--reviewer', 'codex', ok=False)
+                # Rejection in the requested repository must not invalidate its sibling.
+                self.check()
+
+    def test_whitespace_repository_and_linked_worktree_paths_stay_exact(self):
+        original = self.repo
+        for linked in (False, True):
+            for suffix in (' ', '\t', '\n'):
+                with self.subTest(linked=linked, suffix=repr(suffix)):
+                    twin = Path(str(original) + ('-linked' if linked else '') + suffix)
+                    if linked:
+                        self.git('worktree', 'add', '--detach', str(twin), 'HEAD')
+                    else:
+                        shutil.copytree(original, twin)
+                    self.repo = twin
+                    try:
+                        directory = os.fsdecode(subprocess.check_output(['git', '-C', str(twin), 'rev-parse', '--absolute-git-dir']).removesuffix(b'\n'))
+                        snapshot = self.begin()
+                        record = json.loads(snapshot.read_text())
+                        self.assertEqual(record['repository'], str(twin))
+                        self.assertEqual(record['git_directory'], directory)
+                        self.complete(snapshot)
+                        self.check()
+                        (twin / 'code.txt').write_text('EXACT_WORKTREE_MARKER\n')
+                        snapshot = self.begin('uncommitted')
+                        self.assertIn('EXACT_WORKTREE_MARKER', (snapshot.parent / 'diff.patch').read_text())
+                        self.complete(snapshot)
+                    finally:
+                        self.repo = original
+
+    def test_separate_git_directory_whitespace_is_preserved(self):
+        directory = Path(self.tmp.name) / 'metadata \t'
+        self.git('init', '--separate-git-dir', str(directory))
+        snapshot = self.begin()
+        self.assertEqual(json.loads(snapshot.read_text())['git_directory'], str(directory))
+        self.assertEqual(snapshot.parent.parent, directory / 'review-receipts')
+        self.complete(snapshot)
+        self.check()
+
+    def test_native_unsupported_git_directory_path_fails_closed(self):
+        directory = Path(self.tmp.name) / 'metadata\n'
+        self.git('init', '--separate-git-dir', str(directory))
+        # Git's gitdir-file parser cannot reopen a metadata path ending in LF.
+        result = subprocess.run(['git', '-C', str(self.repo), 'rev-parse', '--absolute-git-dir'], capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed',
+                        '--reviewer', 'codex', ok=False)
+        self.assertFalse((directory / 'review-receipts').exists())
+
+    def test_inherited_pathspec_settings_cannot_hide_review_content(self):
+        settings = ({'GIT_LITERAL_PATHSPECS': '1'}, {'GIT_GLOB_PATHSPECS': '1'},
+                    {'GIT_NOGLOB_PATHSPECS': '1'}, {'GIT_ICASE_PATHSPECS': '1'},
+                    {'GIT_GLOB_PATHSPECS': '1', 'GIT_NOGLOB_PATHSPECS': '1'},
+                    {'GIT_LITERAL_PATHSPECS': '1', 'GIT_GLOB_PATHSPECS': '1',
+                     'GIT_NOGLOB_PATHSPECS': '1', 'GIT_ICASE_PATHSPECS': '1'})
+        (self.repo / '.codex').mkdir()
+        (self.repo / '.codex/config.toml').write_text('PATHSPEC_INSTRUCTION_MARKER\n')
+        (self.repo / 'active[1].lock').write_text('PATHSPEC_LITERAL_MARKER\n')
+        (self.repo / 'active[1].lock').chmod(0o755)
+        (self.repo / 'active1.lock').write_text('PATHSPEC_PASSIVE_MARKER\n')
+        (self.repo / 'ACTIVE[1].lock').write_text('PATHSPEC_CASE_PASSIVE_MARKER\n')
+        self.git('add', '.codex/config.toml', 'active[1].lock', 'active1.lock', 'ACTIVE[1].lock')
+        self.git('commit', '-qm', 'pathspec fixture')
+        head = self.git('rev-parse', 'HEAD')
+        for setting in settings:
+            with self.subTest(setting=setting), mock.patch.dict(os.environ, setting):
+                snapshot = self.begin()
+                patch = (snapshot.parent / 'diff.patch').read_text()
+                self.assertIn('PATHSPEC_INSTRUCTION_MARKER', patch)
+                self.assertIn('PATHSPEC_LITERAL_MARKER', patch)
+                self.assertNotIn('PATHSPEC_PASSIVE_MARKER', patch)
+                self.assertNotIn('PATHSPEC_CASE_PASSIVE_MARKER', patch)
+                self.complete(snapshot, 'no-diff', ok=False)
+                self.complete(snapshot)
+                self.run_helper('check', '--repo', str(self.repo), '--head', head)
+
+    def test_empty_extraction_cannot_exempt_reviewable_changed_paths(self):
+        shim = Path(self.tmp.name) / 'bin'
+        shim.mkdir()
+        real_git = shutil.which('git')
+        wrapper = shim / 'git'
+        wrapper.write_text(f'#!{sys.executable}\nimport os, sys\n'
+                           'if "diff" in sys.argv and "--text" in sys.argv: sys.exit(0)\n'
+                           f'os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n')
+        wrapper.chmod(0o755)
+        with mock.patch.dict(os.environ, {'PATH': str(shim) + os.pathsep + os.environ['PATH']}):
+            snapshot = self.begin()
+            self.assertEqual((snapshot.parent / 'diff.patch').read_bytes(), b'')
+            self.assertEqual(json.loads(snapshot.read_text())['artifact']['changed_paths'], ['code.txt'])
+            self.complete(snapshot, 'no-diff', ok=False)
+            self.complete(snapshot)
+            receipt = self.repo / '.git/review-receipts/codex.json'
+            record = json.loads(receipt.read_text())
+            record['completion']['outcome'] = 'no-diff'
+            receipt.write_text(json.dumps(record))
+            self.check(False)
 
     def test_missing_malformed_and_uncommitted_receipts_block(self):
         self.check(False)

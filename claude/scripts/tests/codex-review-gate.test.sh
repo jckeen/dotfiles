@@ -420,6 +420,69 @@ for scope in committed uncommitted; do
   rm -rf "$R"
 done
 
+for pathspec_setting in literal glob noglob icase conflicting all; do
+  for changed_path in code.txt .codex/config.toml; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    mkdir -p "$R/$(dirname "$changed_path")"
+    printf 'PATHSPEC_GATE_MARKER\n' > "$R/$changed_path"
+    git -C "$R" add "$changed_path"
+    git -C "$R" commit -qm 'pathspec environment fixture'
+    approve_clean
+    case "$pathspec_setting" in
+      literal) export GIT_LITERAL_PATHSPECS=1 ;;
+      glob) export GIT_GLOB_PATHSPECS=1 ;;
+      noglob) export GIT_NOGLOB_PATHSPECS=1 ;;
+      icase) export GIT_ICASE_PATHSPECS=1 ;;
+      conflicting) export GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 ;;
+      all) export GIT_LITERAL_PATHSPECS=1 GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 GIT_ICASE_PATHSPECS=1 ;;
+    esac
+    if [[ "$changed_path" == code.txt ]]; then
+      check "$pathspec_setting environment still reviews code" 0 "Codex review passed" --committed --no-issues --require
+      assert "pathspec environment preserves reviewer bytes" "grep -q 'PATHSPEC_GATE_MARKER' '$CODEX_FAKE_DIR/stdin'"
+      assert "pathspec environment cannot issue a no-diff receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+    else
+      check "$pathspec_setting environment preserves instruction guard" 2 "Diff touches the Codex reviewer's own instruction surface" --committed --no-issues --require
+      assert "pathspec environment cannot exempt instructions" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+    fi
+    unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+    rm -rf "$R"
+  done
+done
+
+for suffix in ' ' $'\n'; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam 'twin repository fixture'
+  sibling="$R"
+  R="$R$suffix"
+  cp -a "$sibling" "$R"
+  printf 'TWIN_WORKTREE_MARKER\n' > "$R/code.txt"
+  approve_clean
+  check "whitespace twin reviews its own workspace" 0 "Codex review passed" --uncommitted --no-issues --require
+  assert "whitespace twin bytes reach Codex" "grep -q 'TWIN_WORKTREE_MARKER' '$CODEX_FAKE_DIR/stdin'"
+  assert "whitespace twin cannot create sibling receipt" "[ ! -e '$sibling/.git/review-receipts/codex.json' ]"
+  printf 'dirty twin instructions\n' > "$R/AGENTS.md"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "whitespace twin dirty instructions block committed review" 2 "dirty instruction surface" --committed --no-issues --require
+  assert "whitespace twin instruction guard prevents dispatch" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+  rm -rf "$R" "$sibling"
+done
+
+new_repo
+echo source-directory >> "$R/code.txt"
+copied_scripts="$SHIM_DIR/scripts"$'\n'
+mkdir -p "$copied_scripts"
+cp "$SCRIPT_DIR/../codex-review-gate.sh" "$SCRIPT_DIR/../gate-lib.sh" "$SCRIPT_DIR/../review-receipt.py" "$SCRIPT_DIR/../codex-review-schema.json" "$copied_scripts/"
+original_gate="$GATE"
+GATE="$copied_scripts/codex-review-gate.sh"
+approve_clean
+check "gate source directory preserves trailing newline" 0 "Codex review passed" --uncommitted --no-issues --require
+assert "gate loaded from newline directory dispatches" "grep -q 'source-directory' '$CODEX_FAKE_DIR/stdin'"
+GATE="$original_gate"
+rm -rf "$R"
+
 for mutation in head index worktree untracked base; do
   new_repo
   git -C "$R" checkout -qb feature
