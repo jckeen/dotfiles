@@ -23,6 +23,8 @@
   files, and staged content followed by workspace edits. Instruction checks
   recognize Git-managed CRLF conversion for regular files and sparse checkout
   omissions; symlink targets retain exact comparison.
+  Uncommitted text diffs keep embedded control characters within their original
+  physical lines.
   Receipt capture disables configured filesystem
   monitors and preserves the selected docs-only size policy through completion
   and validation.
