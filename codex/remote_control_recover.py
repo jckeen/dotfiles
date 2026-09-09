@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Snapshot and recover only an exactly identified managed Codex updater.
+"""Snapshot and recover an exactly identified managed Codex daemon.
 
 Safety argument — why the SIGTERM path cannot hit the wrong process:
 
@@ -16,18 +16,25 @@ Safety argument — why the SIGTERM path cannot hit the wrong process:
   ``_wait_for_exit`` degrades safely.
 - Plain SIGTERM with no SIGKILL escalation is a deliberate fail-closed choice.
 
+Missing PID-record repair sends only signal 0: the saved updater fingerprint
+and a socket-provided pidfd establish ownership before native records are
+restored under Codex's own locks. Native commands then manage the restart.
+
 None of this is reproducible in a unit test: do not reorder ``pidfd_open``
 relative to the ``/proc`` reads, and do not remove the signal-0 call.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
 import select
 import signal
+import socket
 import stat
+import struct
 import sys
 import tempfile
 import time
@@ -194,15 +201,16 @@ def _validate_managed_process(
     proc_root: Path,
     home: Path,
     pid: int,
-    recorded_start: str,
+    recorded_start: str | None,
     expected_uid: int,
     clock_ticks: int,
+    role: tuple[bytes, ...] = (b"app-server", b"daemon", b"pid-update-loop"),
 ) -> dict[str, object]:
     process_dir = proc_root / str(pid)
     if process_dir.stat().st_uid != expected_uid:
         raise ValueError("process owner is invalid")
     identity = _process_identity(proc_root, pid, clock_ticks)
-    if identity["processStartTime"] != recorded_start:
+    if recorded_start is not None and identity["processStartTime"] != recorded_start:
         raise ValueError("process display time does not match")
 
     executable = _managed_executable(proc_root, pid, home)
@@ -210,18 +218,26 @@ def _validate_managed_process(
     if not cmdline.endswith(b"\0"):
         raise ValueError("process command line does not match")
     arguments = cmdline[:-1].split(b"\0")
-    if len(arguments) != 4:
+    if len(arguments) != len(role) + 1:
         raise ValueError("process argument count does not match")
     argv_zero = Path(os.fsdecode(arguments[0]))
-    if not argv_zero.is_absolute() or argv_zero.resolve(strict=True) != executable:
+    current = home / ".codex/packages/standalone/current"
+    # A running release can outlive an update to the managed launcher symlink.
+    updated_launcher = argv_zero in (
+        current / "codex", current / "bin/codex"
+    )
+    if not argv_zero.is_absolute() or (
+        not updated_launcher and argv_zero.resolve(strict=True) != executable
+    ):
         raise ValueError("process argv zero does not resolve to its executable")
-    if arguments[1:] != [b"app-server", b"daemon", b"pid-update-loop"]:
+    if tuple(arguments[1:]) != role:
         raise ValueError("process role arguments do not match")
     return identity
 
 
 def _write_identity(
-    identity_file: Path, identity: dict[str, object], expected_uid: int
+    identity_file: Path, identity: dict[str, object], expected_uid: int,
+    *, create_only: bool = False,
 ) -> None:
     parent = identity_file.parent
     parent_metadata = parent.stat()
@@ -248,7 +264,10 @@ def _write_identity(
             temp_file.write(payload)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_name, identity_file)
+        if create_only:
+            os.link(temp_name, identity_file)
+        else:
+            os.replace(temp_name, identity_file)
     finally:
         if temp_fd >= 0:
             os.close(temp_fd)
@@ -358,8 +377,114 @@ def terminate_stale_updater(
                 pass
 
 
+def _control_socket_peer(socket_path: Path) -> tuple[int, int, int]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(2)
+        client.connect(str(socket_path))
+        pid, uid, _ = struct.unpack(
+            "3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        )
+        # Linux SO_PEERPIDFD is 77 even on Python versions without the constant.
+        # Unsupported kernels fail closed; a PID lookup cannot replace this handle.
+        pidfd = client.getsockopt(socket.SOL_SOCKET, getattr(socket, "SO_PEERPIDFD", 77))
+        return pid, uid, pidfd
+
+
+def repair_pid_records(
+    *,
+    pid_file: Path,
+    identity_file: Path,
+    proc_root: Path,
+    home: Path,
+    expected_uid: int,
+    clock_ticks: int,
+    pidfd_open: Callable[[int], int] | None = None,
+    socket_peer: Callable[[Path], tuple[int, int, int]] | None = None,
+    pidfd_send_signal: Callable[[int, int], None] | None = None,
+    close_pidfd: Callable[[int], None] | None = None,
+) -> bool:
+    """Restore missing native records after clock drift, without signaling termination."""
+
+    pidfd_open = pidfd_open or getattr(os, "pidfd_open", None)
+    socket_peer = socket_peer or _control_socket_peer
+    pidfd_send_signal = pidfd_send_signal or getattr(signal, "pidfd_send_signal", None)
+    close_pidfd = close_pidfd or os.close
+    if pidfd_open is None or pidfd_send_signal is None:
+        return False
+    locks: list[int] = []
+    pidfds: list[int] = []
+    try:
+        # Match native lock order, including the PID locks used by stale-record cleanup.
+        for name in ("daemon.lock", "app-server.pid.lock", "app-server-updater.pid.lock"):
+            fd = os.open(
+                pid_file.parent / name,
+                os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
+            locks.append(fd)
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != expected_uid:
+                return False
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        expected = _load_exact_identity(identity_file, expected_uid)
+        updater_fd = pidfd_open(expected["pid"])
+        pidfds.append(updater_fd)
+        common = dict(
+            proc_root=proc_root, home=home, recorded_start=None,
+            expected_uid=expected_uid, clock_ticks=clock_ticks,
+        )
+        updater = _validate_managed_process(pid=expected["pid"], **common)
+        # Wall-clock text can drift under WSL; these kernel fields cannot.
+        if any(updater[key] != expected[key] for key in ("bootId", "pid", "startTicks")):
+            return False
+
+        server_pid, peer_uid, server_fd = socket_peer(
+            pid_file.parent.parent / "app-server-control/app-server-control.sock"
+        )
+        pidfds.append(server_fd)
+        if peer_uid != expected_uid or server_pid <= 1 or server_pid == expected["pid"]:
+            return False
+        server = _validate_managed_process(
+            pid=server_pid,
+            role=(b"app-server", b"--remote-control", b"--listen", b"unix://"),
+            **common,
+        )
+        missing: list[tuple[Path, dict[str, object]]] = []
+        for path, identity in (
+            (pid_file, updater), (pid_file.parent / "app-server.pid", server)
+        ):
+            record = {key: identity[key] for key in ("pid", "processStartTime")}
+            try:
+                existing = _load_pid_record(path, expected_uid)
+            except FileNotFoundError:
+                if path.is_symlink():
+                    return False
+                missing.append((path, record))
+            else:
+                if existing != (record["pid"], record["processStartTime"]):
+                    return False
+        if not missing:
+            return False
+        # Both held handles must still be alive after all /proc and record reads.
+        pidfd_send_signal(updater_fd, 0)
+        pidfd_send_signal(server_fd, 0)
+        for path, record in missing:
+            _write_identity(path, record, expected_uid, create_only=True)
+        return True
+    except (IndexError, KeyError, OSError, StopIteration, UnicodeError, ValueError):
+        return False
+    finally:
+        for fd in pidfds:
+            try:
+                close_pidfd(fd)
+            except OSError:
+                pass
+        for fd in reversed(locks):
+            os.close(fd)
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) not in (2, 4) or argv[1] not in ("recover", "snapshot"):
+    if len(argv) not in (2, 4) or argv[1] not in ("recover", "snapshot", "repair"):
         return 2
     home = Path.home()
     daemon_dir = home / ".codex/app-server-daemon"
@@ -381,11 +506,9 @@ def main(argv: list[str]) -> int:
         "expected_uid": os.getuid(),
         "clock_ticks": clock_ticks,
     }
-    succeeded = (
-        snapshot_updater(**common)
-        if argv[1] == "snapshot"
-        else terminate_stale_updater(**common)
-    )
+    actions = {"snapshot": snapshot_updater, "recover": terminate_stale_updater,
+               "repair": repair_pid_records}
+    succeeded = actions[argv[1]](**common)
     return 0 if succeeded else 1
 
 

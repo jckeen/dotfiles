@@ -199,6 +199,27 @@
 - The Windows-side copy is a manual `Copy-Item`; it does not refresh with
   `dotfiles-update`.
 
+## 2026-09-04 — fix: recover errored Codex Remote Control during startup
+
+### What changed
+- `cx` attempts one timed managed-daemon restart for an errored Remote Control
+  connection and requires `status: connected` in its startup result before
+  reporting recovery. A successful exit while still connecting remains a
+  visible readiness warning.
+- On Linux with peer process handles, startup can restore missing daemon PID
+  records after clock drift. Repair requires the previously saved updater's
+  exact kernel identity and the verified control-socket owner, holds Codex's
+  native locks, and leaves conflicting records or unverified processes alone.
+  The control socket follows the selected daemon state, keeping custom
+  `CODEX_HOME` records separate from the default home. Normal Codex commands
+  perform the restart after repair; restarting the shared daemon may interrupt
+  terminals already attached to it.
+- Restart failures, timeouts, and persistent connection errors still allow
+  local Codex to launch. Upstream output remains hidden to protect pairing
+  secrets, and hosts without Remote Control opt-in remain untouched.
+- Regression coverage exercises clock drift, launcher upgrades, reused PIDs,
+  ownership checks, native locks, failed restarts, and unsuccessful reconnection.
+
 ## 2026-09-04 — feat: opt-in tmux persistence via `cct`
 
 ### What changed
