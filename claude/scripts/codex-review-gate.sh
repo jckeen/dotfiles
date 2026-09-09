@@ -97,6 +97,12 @@ degrade() {
   exit 0
 }
 
+# shellcheck disable=SC2034  # Shared gate-lib.sh dispatch metadata.
+GATE_REVIEWER=codex GATE_CLI=codex
+# shellcheck disable=SC2034  # Do not invent an observed identity from config.
+GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
+gate_init_receipt
+
 command -v codex >/dev/null 2>&1 || degrade "codex CLI not found on PATH."
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
@@ -106,19 +112,18 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git
 # Resolve the base to a ref that actually exists (on feature branches / fresh
 # clones the local `main` is often absent while `origin/main` is present),
 # then prefer the committed delta vs that base — exactly what the PR will
-# contain. An unresolvable base with nothing else to review degrades inside
-# gate_select_diff_target rather than reporting a false "nothing to review".
+# contain. An unresolvable base fails closed before any working-tree fallback.
 gate_resolve_base
-gate_compute_deltas
 gate_select_diff_target
 
 # ─── Extract + filter the diff (the gate scopes; the reviewer never does) ──
-# Lockfiles and binary/minified assets are excluded, and untracked files are
-# appended for working-tree reviews — see gate_extract_diff. Both gates review
+# Lockfiles and passive assets are excluded; SVG and minified JavaScript stay
+# in coverage. Untracked files are appended for working-tree reviews — see gate_extract_diff. Both gates review
 # the same target because both consume this one implementation.
 gate_extract_diff
 
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
+  gate_record_pass no-diff
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
   exit 0
 fi
@@ -140,7 +145,7 @@ fi
 # gate-machinery diffs, human eyes specifically (the other gate shares the
 # same lib).
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)AGENTS(\.local)?\.md$|^codex/|(^|/)gate-lib\.sh$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex/|(^|/)(gate-lib\.sh|review-receipt\.py)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
   if [[ "${CODEX_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
     red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/)"
     red "  or the gate machinery (gate-lib.sh / *-review-gate.sh)."
@@ -165,6 +170,7 @@ if [[ -n "$CLAIM" || -n "$REPRO" ]]; then
   GATE_TIER_REASON="full pass (adversarial claim/repro provided)"
 fi
 if [[ "$GATE_TIER" -eq 1 ]]; then
+  gate_record_pass tier-1
   green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Codex review for this reduced-ceremony diff."
   echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
   exit 0
@@ -235,12 +241,12 @@ ${FENCE}"
 # ─── Run the review ────────────────────────────────────────────
 OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
 ERR_FILE="$(mktemp -t codex-review-err.XXXXXX.txt)"
-cleanup() { rm -f "$OUT_FILE" "$ERR_FILE"; }
+cleanup() { rm -f "$OUT_FILE" "$ERR_FILE"; gate_cleanup; }
 trap cleanup EXIT
 
 # `-s read-only`: the diff is untrusted input; a steered review must not be
-# able to write or execute beyond reads. `codex exec` may return non-zero when
-# it surfaces findings; don't let that abort us.
+# able to write or execute beyond reads. A nonzero exit is a failed run, even
+# if it left a partial structured result.
 set +e
 codex exec - \
   -s read-only \
@@ -248,6 +254,12 @@ codex exec - \
   -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
 CODEX_RC=$?
 set -e
+
+if [[ "$CODEX_RC" -ne 0 ]]; then
+  red "✖ Codex exited rc=$CODEX_RC — not trusting the result, even when findings were written."
+  exit 3
+fi
+gate_assert_unchanged
 
 if [[ ! -s "$OUT_FILE" ]]; then
   [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed -n '1,20{s/^/    /;p;}' "$ERR_FILE"; }
@@ -350,14 +362,7 @@ if [[ "$VERDICT" != "approve" && "$N_TOTAL" -eq 0 ]]; then
   exit 2
 fi
 
-# A clean approve is only trustworthy from a clean run: `codex exec` legitimately
-# exits non-zero when it SURFACES findings, but a non-zero exit alongside an
-# "approve with nothing to report" means the run itself failed and left JSON we
-# should not trust — treat as tool failure, not as a pass.
-if [[ "$CODEX_RC" -ne 0 && "$N_TOTAL" -eq 0 ]]; then
-  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed -n '1,20{s/^/    /;p;}' "$ERR_FILE"; }
-  degrade "codex exited rc=$CODEX_RC yet reported a clean approve — not trusting the result."
-fi
+gate_record_pass passed "$OUT_FILE"
 
 green "✓ Codex review passed — no blocking findings (verdict: $VERDICT). Safe to push."
 [[ "$N_LOW" -gt 0 ]] && echo "  ($N_LOW low finding(s) filed as issues.)"

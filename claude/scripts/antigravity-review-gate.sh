@@ -94,6 +94,7 @@ FORCE_UNCOMMITTED=false
 # the conversation records) on agy 1.1.1, 2026-07-10.
 MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 3.1 Pro (High)}"
 
+# shellcheck disable=SC2034  # BASE and FORCE_UNCOMMITTED are read by gate-lib.sh.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)        BASE="${2:-}"; shift 2 ;;
@@ -116,9 +117,50 @@ degrade() {
   exit 0
 }
 
+# shellcheck disable=SC2034  # Shared gate-lib.sh dispatch metadata.
+GATE_REVIEWER=antigravity GATE_CLI=agy GATE_REQUESTED_MODEL="$MODEL"
+gate_init_receipt
+command -v jq >/dev/null 2>&1 || { red "jq is required for artifact receipts."; exit 2; }
+
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 
-# ─── Step 1: local validation first ────────────────────────────
+# ─── Step 1: resolve base + pick the diff target ───────────────
+# Prefer the committed delta vs the base branch — that's what the PR will contain
+# — and fall back to the working tree only when there's no committed delta or
+# --uncommitted is forced. (Shared with codex-review-gate.sh via gate-lib.sh.)
+gate_resolve_base
+
+gate_select_diff_target
+
+# ─── Step 2: extract + filter the diff ─────────────────────────
+# Lockfiles and passive assets are excluded. SVG and minified JavaScript stay
+# in coverage; working-tree reviews also include untracked files.
+gate_extract_diff
+
+if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
+  gate_record_pass no-diff
+  green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
+  exit 0
+fi
+
+N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
+if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
+  degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."
+fi
+
+# ─── Proportionality valve (#212) ──────────────────────────────
+# Docs-only small diffs take a reduced pass; anything touching a risk surface
+# or above the size cap gets the full review, never downgradable. The valve
+# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
+gate_classify_tier
+if [[ "$GATE_TIER" -eq 1 ]]; then
+  gate_record_pass tier-1
+  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
+  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
+  exit 0
+fi
+
+# ─── Step 3: local validation before dispatch ────────────────────────────
 # Cheap, deterministic checks before spending plan quota. Fail HARD (exit 2) —
 # broken code should never reach the review step.
 echo "Running local compile/lint checks first..."
@@ -141,55 +183,6 @@ elif [[ -f Cargo.toml ]]; then
 elif [[ -f go.mod ]]; then
   echo "  → go vet"
   go vet ./... || { red "  go vet failed."; exit 2; }
-fi
-
-# ─── Step 2: resolve base + pick the diff target ───────────────
-# Prefer the committed delta vs the base branch — that's what the PR will contain
-# — and fall back to the working tree only when there's no committed delta or
-# --uncommitted is forced. (Shared with codex-review-gate.sh via gate-lib.sh.)
-gate_resolve_base
-
-# Unresolvable base → fail CLOSED (#153). The old fallback reviewed `git diff
-# HEAD`, which silently omits the committed delta — the very thing the PR will
-# contain. --uncommitted is exempt: it never uses the base at all.
-if [[ -z "$BASE_REF" ]] && [[ "$FORCE_UNCOMMITTED" != "true" ]]; then
-  red "✖ Base '$BASE' could not be resolved (neither origin/$BASE nor $BASE exists)."
-  red "  Refusing to fall back to a working-tree diff — that would skip the committed delta."
-  red "  Pass an existing ref with --base, or use --uncommitted to review only the working tree."
-  exit 2
-fi
-
-# The base is guaranteed resolved past this point (unresolvable bases exit 2
-# above, except under --uncommitted which never uses the base), so the
-# "nothing to review" exit inside gate_select_diff_target is genuine.
-gate_compute_deltas
-gate_select_diff_target
-
-# ─── Step 3: extract + filter the diff ─────────────────────────
-# Lockfiles and binary/minified assets are excluded (no review value, and they
-# burn quota + the line budget), and untracked files are appended for
-# working-tree reviews (#150) — see gate_extract_diff.
-gate_extract_diff
-
-if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
-  green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
-  exit 0
-fi
-
-N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
-if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
-  degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."
-fi
-
-# ─── Proportionality valve (#212) ──────────────────────────────
-# Docs-only small diffs take a reduced pass; anything touching a risk surface
-# or above the size cap gets the full review, never downgradable. The valve
-# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
-gate_classify_tier
-if [[ "$GATE_TIER" -eq 1 ]]; then
-  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
-  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
-  exit 0
 fi
 
 # ─── Step 4: run agy print mode, non-interactively and tool-locked ─
@@ -223,7 +216,7 @@ ${FENCE}"
 
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
 AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
-trap 'rm -f "$SUMMARY_FILE" "$AGY_LOG_FILE"' EXIT
+trap 'rm -f "$SUMMARY_FILE" "$AGY_LOG_FILE"; gate_cleanup' EXIT
 
 # Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
 # (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
@@ -298,6 +291,8 @@ if [[ -n "$MODEL" ]]; then
     red "  Use the exact display label from \`agy models\` (slugs are silently ignored; see MULTI-AGENT.md)."
     exit 2
   elif [[ "$label_rc" -ne 0 ]]; then
+    # shellcheck disable=SC2034  # Read by gate_record_pass.
+    GATE_RECEIPT_ELIGIBLE=0
     # Failing open here (outside --require) is by design — a log-format drift
     # must not wedge every push — so the warning has to be unmissable.
     yellow "⚠ ═══════════════════════════════════════════════════════════════════"
@@ -311,10 +306,16 @@ if [[ -n "$MODEL" ]]; then
       exit 3
     fi
   fi
+  if [[ "$label_rc" -eq 0 ]]; then
+    # shellcheck disable=SC2034  # Dispatch evidence, not actual model identity.
+    GATE_MODEL_EVIDENCE="agy propagated requested model label to backend; actual model unobserved"
+  fi
   # Secondary, best-effort ground truth: the conversation records. Warning
   # only — the log-line check above is authoritative for this run.
   gate_verify_agy_model "$MODEL" || yellow "  (DB spot-check is best-effort; the log-line check above is authoritative.)"
 fi
+
+gate_assert_unchanged
 
 # ─── Step 5: parse findings + gate ─────────────────────────────
 # Anchor to the finding-LINE shape so a priority label mentioned inside prose (or
@@ -342,7 +343,8 @@ if [[ "$N_TOTAL" -eq 0 ]]; then
   # tokens — a "clean" verdict under unparseable priority tokens is format drift.
   if [[ "$WHOLE_STRIPPED" == "LGTB" ]] ||
      { [[ "$LAST_LINE" == "LGTB" ]] && ! grep -qE '\[P[0-9]\]' "$SUMMARY_FILE"; }; then
-    green "✓ Antigravity review clean — LGTB verdict. Safe to push."
+    gate_record_pass passed "$SUMMARY_FILE"
+    green "✓ Antigravity review clean — LGTB verdict. Review completed."
     exit 0
   fi
   red "✖ Antigravity output not recognized as findings or a whole-verdict LGTB:"
@@ -368,14 +370,16 @@ fi
 
 # Same stray-token guard the clean-verdict path applies: a [P0]/[P1] phrased as
 # prose alongside a valid `- [P3]` line must not ride the P3-only pass path.
-# Strip the recognized finding lines first (they legitimately carry [P#]), then
-# any remaining [P#] token is format drift — fail closed.
-if grep -vE "$BLOCK_RE|$LOW_RE" "$SUMMARY_FILE" | grep -qE '\[P[0-9]\]'; then
+# Remove only each recognized leading marker: an embedded second priority
+# token must still fail closed, including one on a valid low-finding line.
+if sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/dev/null; then
   red "✖ Stray [P#] token outside recognized finding lines:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (possible format drift)."
   exit 2
 fi
 
-green "✓ Antigravity review clean of blocking findings — safe to push."
+gate_record_pass passed "$SUMMARY_FILE"
+
+green "✓ Antigravity review clean of blocking findings — review completed."
 exit 0

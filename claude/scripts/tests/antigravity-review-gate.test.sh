@@ -36,6 +36,7 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 touch "$AGY_FAKE_DIR/invoked"
+[ ! -f "$AGY_FAKE_DIR/mutate" ] || bash "$AGY_FAKE_DIR/mutate"
 # Go's flag package treats -print/--print/-p and the =value forms as the same
 # flag, so the emulation must too (adversarial review of PR #243: an equals or
 # single-dash spelling regression must not pass the suite).
@@ -292,5 +293,38 @@ assert "agy invoked for the rename-laundered diff" "[ -e '$AGY_FAKE_DIR/invoked'
 rm -rf "$R"
 
 echo ""
+new_repo
+echo change >> "$R/code.txt"
+printf '%s\n' '- [P3] nit; [P1] auth bypass — code.txt:1' > "$AGY_FAKE_DIR/output"
+awk 'BEGIN { for (i=0; i<2000; i++) printf "- [P3] %0200d — code.txt:1\n", i }' >> "$AGY_FAKE_DIR/output"
+check "long output cannot SIGPIPE away an embedded priority" 2 "Stray [P#] token" --uncommitted
+rm -rf "$R"
+
+new_repo
+echo change >> "$R/code.txt"
+printf '%s\n' '- [P3] nit; [P1] authentication bypass — code.txt:1' > "$AGY_FAKE_DIR/output"
+check "embedded P1 on a recognized P3 line blocks" 2 "Stray [P#] token" --uncommitted
+rm -rf "$R"
+
+new_repo
+git -C "$R" checkout -qb feature
+echo committed >> "$R/code.txt"
+git -C "$R" commit -qam work
+echo steer > "$R/GEMINI.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "dirty Gemini instructions block committed review" 2 "instruction surface"
+assert "dirty Gemini instructions never dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+new_repo
+git -C "$R" checkout -qb feature
+echo committed >> "$R/code.txt"
+git -C "$R" commit -qam work
+printf 'git commit --allow-empty -qm concurrent\n' > "$AGY_FAKE_DIR/mutate"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
+rm -rf "$R"
+
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]

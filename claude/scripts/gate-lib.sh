@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
 # gate-lib.sh — shared plumbing for the review gates (#200).
 #
-# Sourced (never executed) by codex-review-gate.sh and antigravity-review-gate.sh
-# to hold the logic that used to be maintained twice under "mirrors the other
-# gate" comments: base resolution, diff-target selection, the pathspec filters,
-# the untracked-file append, hash fencing, and the portable timeout wrapper.
-# A fix here lands in both gates at once.
-#
-# Locating this file: each gate sources it from its own directory —
-#   . "$(dirname "${BASH_SOURCE[0]}")/gate-lib.sh"
-# which resolves in BOTH install locations because setup.sh symlinks every
-# claude/scripts/*.sh (this file included) side-by-side into ~/.claude/scripts.
-#
-# Conventions: functions communicate through the caller's globals (BASE,
-# BASE_REF, DIFF_TARGET, TARGET_DESC, DIFF_CONTENT, …) — the same variables the
-# inline code used — and call the caller-defined degrade() for tool-can't-run
-# cases, so each gate keeps its own degrade-open policy and messaging.
+# Sourced by both gates for artifact capture, receipts, risk classification,
+# hash fences, model dispatch evidence, and the portable timeout wrapper.
+# Shared values intentionally live in the sourcing gate's globals.
 
 # shellcheck shell=bash
 
@@ -25,124 +13,76 @@ yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 
-# ─── Base resolution ───────────────────────────────────────────
-# gate_resolve_base — resolve the caller's $BASE (possibly empty) to $BASE_REF.
-# Empty BASE defaults to origin/HEAD's branch, then "main". BASE_REF prefers
-# the remote-tracking ref (a local `main` is often stale relative to
-# `origin/main`; reviewing against a stale base would diff in already-merged
-# commits or omit real ones) and falls back to the local ref for remote-less
-# repos. BASE_REF stays empty when neither exists — the caller decides whether
-# that degrades (codex gate) or fails closed (antigravity gate, #153).
+# ─── Artifact capture and receipts ─────────────────────────────
+# All content extraction belongs to the helper: even a normal worktree diff
+# can execute a configured clean filter before --no-textconv takes effect.
+gate_init_receipt() {
+  RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
+  command -v python3 >/dev/null 2>&1 || { red "Python 3 is required for artifact receipts."; exit 2; }
+  [[ -f "$RECEIPT_HELPER" ]] || { red "Review receipt helper missing: $RECEIPT_HELPER"; exit 2; }
+  python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer "$GATE_REVIEWER" || exit 2
+}
+
 gate_resolve_base() {
   if [[ -z "$BASE" ]]; then
-    # `|| true`: in clones without origin/HEAD the symbolic-ref pipeline fails,
-    # and under `set -euo pipefail` that would abort the gate before the `main`
-    # fallback below — so swallow it and let the fallback run.
     BASE="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
     [[ -z "$BASE" ]] && BASE="main"
   fi
   BASE_REF=""
-  if git rev-parse --verify --quiet "origin/$BASE" >/dev/null; then
+  if git rev-parse --verify --quiet --end-of-options "origin/$BASE^{commit}" >/dev/null; then
     BASE_REF="origin/$BASE"
-  elif git rev-parse --verify --quiet "$BASE" >/dev/null; then
+  elif git rev-parse --verify --quiet --end-of-options "$BASE^{commit}" >/dev/null; then
     BASE_REF="$BASE"
   fi
-  return 0
-}
-
-# ─── Delta detection ───────────────────────────────────────────
-# gate_compute_deltas — set has_committed_delta / has_uncommitted from BASE_REF.
-gate_compute_deltas() {
-  has_committed_delta=false
-  if [[ -n "$BASE_REF" ]] && [[ -n "$(git rev-list --max-count=1 "$BASE_REF..HEAD" 2>/dev/null)" ]]; then
-    has_committed_delta=true
+  if [[ -z "$BASE_REF" && "$FORCE_UNCOMMITTED" != "true" ]]; then
+    red "✖ Base '$BASE' could not be resolved; refusing a dirty fallback that omits committed work."
+    exit 2
   fi
-  has_uncommitted=false
-  [[ -n "$(git status --porcelain 2>/dev/null)" ]] && has_uncommitted=true
-  return 0
 }
 
-# ─── Diff-target selection ─────────────────────────────────────
-# gate_select_diff_target — set DIFF_TARGET + TARGET_DESC from the flags above.
-# Prefer the committed delta vs the base branch — that is exactly what the PR
-# will contain, and it ignores unrelated unstaged/untracked WIP left in the
-# tree (the workflow stages specific files, never `git add -A`). Fall back to
-# the working tree only when there's no committed delta yet, or when
-# --uncommitted was passed explicitly.
-# Exits 0 itself when there is genuinely nothing to review; calls the caller's
-# degrade() when the target can't be established.
 gate_select_diff_target() {
-  DIFF_TARGET=()
-  TARGET_DESC=""
-  if [[ "$FORCE_UNCOMMITTED" == "true" ]]; then
-    [[ "$has_uncommitted" == "true" ]] || degrade "no uncommitted changes to review."
-    DIFF_TARGET=("HEAD")
-    TARGET_DESC="uncommitted working-tree changes (forced)"
-  elif [[ "$has_committed_delta" == "true" ]]; then
-    DIFF_TARGET=("$BASE_REF...HEAD")
-    TARGET_DESC="committed changes vs $BASE_REF"
-  elif [[ "$has_uncommitted" == "true" ]]; then
-    DIFF_TARGET=("HEAD")
-    # shellcheck disable=SC2034  # TARGET_DESC is read by the gate scripts that source this lib
-    TARGET_DESC="uncommitted changes (no committed delta vs ${BASE_REF:-base})"
-  else
-    # Reached only with no uncommitted changes and no committed delta. That is
-    # genuinely "nothing to review" ONLY if the base actually resolved — if it
-    # didn't, has_committed_delta is false because we couldn't diff, not
-    # because the branch matches base, so reporting success would silently
-    # bypass the gate for committed work.
-    [[ -n "$BASE_REF" ]] || degrade "base '$BASE' could not be resolved; cannot verify the committed delta."
-    green "✓ HEAD matches $BASE_REF and no uncommitted changes — nothing to review."
-    exit 0
-  fi
+  GATE_SCOPE=auto
+  [[ "$FORCE_UNCOMMITTED" == true ]] && GATE_SCOPE=uncommitted
   return 0
 }
 
-# ─── Diff extraction + filtering ───────────────────────────────
-# gate_extract_diff — set DIFF_CONTENT for "${DIFF_TARGET[@]}". Excludes
-# dependency lockfiles and binary/minified assets via git pathspecs — no review
-# value, and they burn quota + the line budget. `git diff HEAD` omits untracked
-# files, so a brand-new file would go unreviewed in an uncommitted review
-# (#150) — append them as added-file diffs, respecting .gitignore and the same
-# asset/lockfile exclusions as the tracked diff.
-# --no-renames: rename detection would collapse `git mv risk-surface.sh
-# notes.md` into a near-empty R100 hunk listed only under the DESTINATION
-# path, letting a rename launder a risk surface past the tier valve and the
-# self-review guard while shrinking its content out of the review. Renames
-# are reviewed as full delete+add instead.
+gate_cleanup() {
+  [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
+}
+
 gate_extract_diff() {
-  DIFF_CONTENT="$(git diff --no-renames "${DIFF_TARGET[@]}" -- \
-    ':!*-lock.yaml' ':!*-lock.json' ':!package-lock.json' ':!*.lock' ':!bun.lockb' \
-    ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.svg' ':!*.ico' ':!*.pdf' \
-    ':!*.min.js' ':!*.min.css' ':!*.map' \
-    2>/dev/null)"
-  if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
-    local f ut
-    while IFS= read -r -d '' f; do
-      case "$f" in
-        *-lock.yaml|*-lock.json|*.lock|bun.lockb|\
-        *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.pdf|*.min.js|*.min.css|*.map) continue ;;
-      esac
-      # --no-index exits 1 when files differ (always, for a new file) — swallow it.
-      ut="$(git diff --no-index --no-color -- /dev/null "$f" 2>/dev/null || true)"
-      [[ -n "$ut" ]] && DIFF_CONTENT+="${DIFF_CONTENT:+$'\n'}$ut"
-    done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
-  fi
-  return 0
+  local args=(begin --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
+  [[ -z "$BASE_REF" ]] || args+=(--base "$BASE_REF")
+  args+=(--executable "$(command -v "$GATE_CLI" || true)")
+  GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
+  trap gate_cleanup EXIT
+  DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
+  GATE_SCOPE="$(jq -r '.artifact.scope' "$GATE_RUN_DIR/snapshot.json")"
+  # shellcheck disable=SC2034  # Read by the sourcing gates.
+  TARGET_DESC="$GATE_SCOPE changes (pinned HEAD, base ${BASE_REF:-unused})"
 }
 
-# gate_changed_paths — print the changed paths of "${DIFF_TARGET[@]}", one per
-# line, including untracked files when reviewing the working tree. Used by the
-# codex self-review guard and the tier valve. --no-renames so BOTH sides of a
-# rename are listed and classified — otherwise `git mv` shows only the
-# destination path and can launder a risk surface into a docs-only diff.
 gate_changed_paths() {
-  local p
-  p="$(git diff --no-renames --name-only "${DIFF_TARGET[@]}" 2>/dev/null || true)"
-  if [[ "${DIFF_TARGET[0]}" == "HEAD" ]]; then
-    p+="${p:+$'\n'}$(git ls-files --others --exclude-standard 2>/dev/null || true)"
+  jq -r '.artifact.changed_paths[]' "$GATE_RUN_DIR/snapshot.json"
+}
+
+gate_assert_unchanged() {
+  python3 "$RECEIPT_HELPER" verify --snapshot "$GATE_RUN_DIR/snapshot.json" || exit 2
+}
+
+gate_record_pass() {
+  local outcome="$1" output="${2:-}" args
+  gate_assert_unchanged
+  if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" != 1 ]]; then
+    yellow "⚠ No shipping receipt: reviewer dispatch identity was not verified."
+    return 0
   fi
-  printf '%s\n' "$p"
+  args=(complete --snapshot "$GATE_RUN_DIR/snapshot.json" --outcome "$outcome")
+  [[ -z "$output" ]] || args+=(--output "$output")
+  [[ -z "${GATE_REQUESTED_MODEL:-}" ]] || args+=(--requested-model "$GATE_REQUESTED_MODEL")
+  [[ -z "${GATE_OBSERVED_MODEL:-}" ]] || args+=(--observed-model "$GATE_OBSERVED_MODEL")
+  [[ -z "${GATE_MODEL_EVIDENCE:-}" ]] || args+=(--model-evidence "$GATE_MODEL_EVIDENCE")
+  python3 "$RECEIPT_HELPER" "${args[@]}" || exit 2
 }
 
 # ─── Hash fencing ──────────────────────────────────────────────
@@ -187,7 +127,7 @@ gate_fence() {
 # is what the docsafe allowlist below guards against.
 gate_path_is_risk() {
   case "$1" in
-    *AGENTS*.md|*CLAUDE*.md|*GEMINI*.md|*FABLE*.md|*MULTI-AGENT*.md|*SKILL.md|*AGENTPACK*) return 0 ;;
+    *AGENTS*.md|*CLAUDE*.md|*GEMINI*.md|*FABLE*.md|*MULTI-AGENT*.md|*SKILL.md|*AGENTPACK*|review-receipt.py|*/review-receipt.py) return 0 ;;
     codex/*|*/codex/*|antigravity/*|*/antigravity/*) return 0 ;;
     .github/*|*/.github/*|*hooks/*|*.githooks*|*scripts/*|setup.sh|*/setup.sh|install.sh|*/install.sh) return 0 ;;
     *schema*|*.sql|*migration*) return 0 ;;
@@ -210,7 +150,7 @@ gate_path_is_docsafe() {
 }
 
 # gate_classify_tier — set GATE_TIER (1 reduced / 2 full) + GATE_TIER_REASON
-# from DIFF_CONTENT and the changed paths of "${DIFF_TARGET[@]}". Always
+# from DIFF_CONTENT and the paths pinned in the artifact snapshot. Always
 # returns 0; GATE_TIER=2 is the starting state and every early exit keeps it.
 gate_classify_tier() {
   GATE_TIER=2
