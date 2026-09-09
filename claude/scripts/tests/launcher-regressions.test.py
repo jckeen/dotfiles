@@ -4,6 +4,7 @@ import os
 import pty
 import select
 import signal
+import shlex
 import time
 from pathlib import Path
 import shutil
@@ -127,19 +128,12 @@ pull-all > "$FIXTURE/output" || exit 1
 grep -q 'branch deleted' "$FIXTURE/output"
 ''')
 
-    def test_cct_preserves_project_and_private_arguments_in_persistent_shell(self):
-        for shell_name, project_arg in (("bash", "project"), ("bash", ""),
-                                        ("zsh", "project"), ("zsh", "")):
-            launch_shell = shutil.which(shell_name)
-            if not launch_shell:
-                continue
-            with self.subTest(shell=shell_name, project_arg=project_arg):
-                fixture = self.root / f"{shell_name}-{'named' if project_arg else 'cwd'}"
-                project = fixture / "dev" / "project"
-                project.mkdir(parents=True)
-                subprocess.run(["git", "init", "-q", "-b", "main", str(project)],
-                               env=self.env, check=True)
-                startup = r'''
+    def cct_fixture(self, fixture, project_name="project"):
+        project = fixture / "dev" / project_name
+        project.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(project)],
+                       env=self.env, check=True)
+        startup = r'''
 source "$ALIASES"
 _dev_dir() { printf '%s\n' "$HOME/dev"; }
 _check_critical_symlinks() { :; }
@@ -155,10 +149,21 @@ SAVEHIST=1000
 PS1='CCT_READY> '
 cd "$HOME/dev"
 '''
-                (fixture / ".bashrc").write_text(startup)
-                (fixture / ".bash_profile").write_text('source "$HOME/.bashrc"\n')
-                (fixture / ".zshrc").write_text(startup)
-                (fixture / ".zprofile").write_text('cd "$HOME/dev"\n')
+        (fixture / ".bashrc").write_text(startup)
+        (fixture / ".bash_profile").write_text('source "$HOME/.bashrc"\n')
+        (fixture / ".zshrc").write_text(startup)
+        (fixture / ".zprofile").write_text('cd "$HOME/dev"\n')
+        return project
+
+    def test_cct_preserves_project_and_private_arguments_in_persistent_shell(self):
+        for shell_name, project_arg in (("bash", "project"), ("bash", ""),
+                                        ("zsh", "project"), ("zsh", "")):
+            launch_shell = shutil.which(shell_name)
+            if not launch_shell:
+                continue
+            with self.subTest(shell=shell_name, project_arg=project_arg):
+                fixture = self.root / f"{shell_name}-{'named' if project_arg else 'cwd'}"
+                project = self.cct_fixture(fixture)
                 env = dict(self.env, HOME=str(fixture), FIXTURE=str(fixture),
                            SHELL=launch_shell, TERM="xterm", ZDOTDIR=str(fixture))
                 capture = r'''
@@ -176,7 +181,7 @@ cct "$@"
                 arguments = ["--append-system-prompt", 'PRIVATE_SENTINEL\nquoted " argument', ""]
                 if project_arg:
                     arguments.insert(0, project_arg)
-                result = subprocess.run(["bash", "-c", capture, "bash", *arguments],
+                result = subprocess.run([launch_shell, "-c", capture, shell_name, *arguments],
                                         cwd=fixture if project_arg else project,
                                         env=env, text=True, capture_output=True,
                                         timeout=30)
@@ -223,6 +228,88 @@ cct "$@"
                                  [b"--remote-control", b"--chrome", b"--append-system-prompt",
                                   b'PRIVATE_SENTINEL\nquoted " argument', b""])
                 self.assertNotIn("PRIVATE_SENTINEL", (fixture / "history").read_text())
+
+    def test_cct_native_tmux_preserves_semicolons_without_running_commands(self):
+        tmux_binary = shutil.which("tmux")
+        if not tmux_binary:
+            self.skipTest("tmux is unavailable")
+        for shell_name in ("bash", "zsh"):
+            launch_shell = shutil.which(shell_name)
+            if not launch_shell:
+                continue
+            for named in (True, False):
+                for case in ("bare", "trailing", "literal"):
+                    with self.subTest(shell=shell_name, named=named, case=case):
+                        fixture = self.root / f"{shell_name}-{named}-{case}"
+                        # Exercise terminal semicolons in -c and CCT_DIR too.
+                        project = self.cct_fixture(fixture, "project;" if case == "literal" else "project")
+                        marker = fixture / "PRIVATE_SENTINEL"
+                        touch_command = "touch -- " + shlex.quote(str(marker))
+                        if case == "bare":
+                            payload = [";", "run-shell", touch_command]
+                        elif case == "trailing":
+                            payload = ["literal;", "run-shell", touch_command]
+                        else:
+                            payload = ["; " + touch_command, ";;", "\\;", "\\\\;", "\\\\\\;",
+                                       "\\", "\\\\", 'PRIVATE_SENTINEL\nquoted " argument', "",
+                                       os.fsdecode(bytes(range(1, 256)) + b";")]
+                        arguments = ["--append-system-prompt", *payload]
+                        if named:
+                            arguments.insert(0, project.name)
+                        env = dict(self.env, HOME=str(fixture), FIXTURE=str(fixture),
+                                   SHELL=launch_shell, TERM="xterm", ZDOTDIR=str(fixture),
+                                   TMUX_BINARY=tmux_binary)
+                        socket = str(fixture / "tmux.sock")
+
+                        def tmux(*args):
+                            return subprocess.run([tmux_binary, "-S", socket, "-f", "/dev/null", *args],
+                                                  cwd=fixture, env=env, text=True,
+                                                  capture_output=True, timeout=10)
+
+                        def wait_until(predicate):
+                            deadline = time.monotonic() + 10
+                            while time.monotonic() < deadline:
+                                if predicate():
+                                    return
+                                time.sleep(0.05)
+                            self.fail("native tmux fixture did not reach expected state")
+
+                        script = r'''
+source "$ALIASES"
+_dev_dir() { printf '%s\n' "$HOME/dev"; }
+tmux() {
+  case "$1" in
+    attach-session) return 0 ;;
+    send-keys) printf '%s\n' "$4" > "$HOME/typed" ;;
+  esac
+  "$TMUX_BINARY" -S "$FIXTURE/tmux.sock" -f /dev/null "$@"
+}
+cct "$@"
+'''
+                        try:
+                            result = subprocess.run([launch_shell, "-c", script, shell_name, *arguments],
+                                                    cwd=fixture if named else project, env=env,
+                                                    text=True, capture_output=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            wait_until(lambda: (fixture / "agent-cwd").exists())
+                            target = "=project_:" if case == "literal" else "=project:"
+                            result = tmux("show-environment", "-t", target[:-1], "CCT_DIR")
+                            self.assertEqual(result.stdout.strip(), "CCT_DIR=" + str(project))
+                            probe = r'''printf '%s\n' "$PWD" > "$HOME/prompt-cwd"; printf '%s\n' "$#" > "$HOME/prompt-argc"; exit'''
+                            result = tmux("send-keys", "-t", target, probe, "Enter")
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            wait_until(lambda: tmux("has-session", "-t", target[:-1]).returncode != 0)
+                            self.assertFalse(marker.exists(), "argument executed as a tmux command")
+                            self.assertEqual((fixture / "received").read_bytes().split(b"\0")[:-1],
+                                             [b"--remote-control", b"--chrome", b"--append-system-prompt",
+                                              *map(os.fsencode, payload)])
+                            for name in ("agent-cwd", "prompt-cwd"):
+                                self.assertEqual((fixture / name).read_text().strip(), str(project))
+                            self.assertEqual((fixture / "prompt-argc").read_text().strip(), "0")
+                            for name in ("typed", "history"):
+                                self.assertNotIn("PRIVATE_SENTINEL", (fixture / name).read_text())
+                        finally:
+                            tmux("kill-server")
 
     def copy_setup_repo(self, destination):
         destination.mkdir(parents=True)

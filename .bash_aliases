@@ -788,9 +788,16 @@ cct() {
   # Keep one login shell so its startup cannot move the working directory
   # again after cc exits. Private values travel as argv; only a fixed command
   # referring to those parameters enters the interactive shell's history.
-  local launch_shell="${SHELL:-/bin/bash}"
-  tmux new-session -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" \
-    "$launch_shell" -lis -- "$PWD" "$@" || return 1
+  local launch_shell="${SHELL:-/bin/bash}" arg
+  local -a launch_args=()
+  # tmux splits commands at terminal semicolons, or removes one backslash
+  # immediately before them. Add that backslash even when one is present.
+  for arg in -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" \
+    "$launch_shell" -lis -- "$PWD" "$@"; do
+    case "$arg" in *';') arg="${arg%;}\\;" ;; esac
+    launch_args+=("$arg")
+  done
+  tmux new-session "${launch_args[@]}" || return 1
   tmux send-keys -t "=$name:" \
     'if cd -- "$1"; then shift; cc "$@"; fi; set --' Enter || return 1
   tmux attach-session -t "=$name"
