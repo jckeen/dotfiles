@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -163,9 +164,37 @@ INNER
 ''')
         self.assertNotIn("PRIVATE_SENTINEL", result.stdout)
 
+    def copy_setup_repo(self, destination):
+        destination.mkdir(parents=True)
+        for source in REPO.glob("*.sh"):
+            shutil.copy2(source, destination / source.name)
+        shutil.copy2(REPO / ".tmux.conf", destination / ".tmux.conf")
+        for name in ("claude", "codex", "agents", "antigravity"):
+            shutil.copytree(REPO / name, destination / name, symlinks=True,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        return destination
+
+    def test_setup_audit_never_invokes_source_checkout_private_bootstrap(self):
+        source_repo = self.copy_setup_repo(self.root / "source-dev" / "dotfiles")
+        private_repo = source_repo.parent / "claude-memory"
+        private_repo.mkdir()
+        (private_repo / "bootstrap.sh").write_text(
+            '#!/bin/sh\nprintf "invoked\\n" >> "$FIXTURE/bootstrap-invoked"\n')
+        with mock.patch(__name__ + ".REPO", source_repo):
+            self.test_tmux_link_is_audited_and_repaired()
+        self.assertFalse((self.root / "bootstrap-invoked").exists(),
+                         "setup audit invoked the source checkout's private bootstrap")
+
     def test_tmux_link_is_audited_and_repaired(self):
-        result = subprocess.run(['bash', str(REPO/'setup.sh'), '--check'],
-                                env=self.env, text=True, capture_output=True, timeout=30)
+        # setup derives private companion paths from its checkout, independently
+        # of HOME. Copy its public sources into a dev directory we own as well.
+        setup_repo = self.copy_setup_repo(self.root / "isolated-dev" / "dotfiles")
+        setup_env = dict(self.env, REPO=str(setup_repo),
+                         CODEX_MEMORY_REPO=str(setup_repo.parent / "codex-memory"),
+                         AGY_MEMORY_REPO=str(setup_repo.parent / "agy-memory"))
+        result = subprocess.run(['bash', str(setup_repo/'setup.sh'), '--check'],
+                                cwd=setup_repo, env=setup_env, text=True,
+                                capture_output=True, timeout=30)
         self.assertIn('.tmux.conf', result.stdout)
         for target in (None, self.root/'missing', self.aliases):
             destination=self.root/'.tmux.conf'
@@ -173,10 +202,11 @@ INNER
                 destination.unlink()
             if target is not None:
                 destination.symlink_to(target)
-            subprocess.run(['bash',str(REPO/'setup.sh'),'--repair'],env=self.env,
+            subprocess.run(['bash',str(setup_repo/'setup.sh'),'--repair'],
+                           cwd=setup_repo,env=setup_env,
                            capture_output=True,text=True,timeout=30)
             self.assertTrue(destination.is_symlink())
-            self.assertEqual(destination.resolve(), REPO/'.tmux.conf')
+            self.assertEqual(destination.resolve(), setup_repo/'.tmux.conf')
 
 
 if __name__ == '__main__':
