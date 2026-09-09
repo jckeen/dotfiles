@@ -135,9 +135,12 @@ executable on `PATH`. The receipt records the executable used by that run.
 
 `CODEX_GATE_TIMEOUT` bounds reviewer execution; its default lives in
 `codex-review-gate.sh`. A timeout or failed process does not produce approval.
-Cleanup covers the session created for that review, including shell job-control
-groups. It requires stable process identity support and fails before reviewer
-dispatch if that support is unavailable.
+Cleanup runs on every completion path and covers the session created for that
+review, including shell job-control groups. Cleanup failure blocks approval.
+The gate requires stable process identity support and non-reaping child
+observation; unavailable support fails before reviewer dispatch. On macOS,
+use at least the Python version selected by the
+[native portability workflow](../../.github/workflows/smoke-install.yml).
 Terminal hangup, quit, or stop cancels the review and runs cleanup; suspending
 the terminal must not leave the detached reviewer running.
 Failures report a diagnostic hint and a private temporary log path without

@@ -344,6 +344,139 @@ assert "interrupted success cannot issue a receipt" "[ ! -e '$R/.git/review-rece
 unset PYTHONPATH
 rm -rf "$R"
 
+# Natural success and failure still own session children until cleanup ends.
+for reviewer_rc in 0 1; do
+  new_repo
+  echo "change" >> "$R/code.txt"
+  approve_clean
+  echo "$reviewer_rc" > "$CODEX_FAKE_DIR/rc"
+  cat > "$CODEX_FAKE_DIR/mutate" <<'SHCHILD'
+set -m
+sleep 12 &
+echo "$!" > "$CODEX_FAKE_DIR/pids"
+SHCHILD
+  export CODEX_GATE_TIMEOUT=1
+  if [[ "$reviewer_rc" == 0 ]]; then
+    check "successful exit cleans remaining session children" 0 "Codex review passed" --uncommitted --no-issues
+  else
+    check "failed exit cleans remaining session children" 3 "not trusting the result" --uncommitted --no-issues
+  fi
+  assert "exit $reviewer_rc leaves no live session child" "python3 -c 'from pathlib import Path; import subprocess,sys; pid=Path(sys.argv[1]).read_text().strip(); state=subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip(); assert not state or state.startswith(\"Z\"), state' '$CODEX_FAKE_DIR/pids'"
+  unset CODEX_GATE_TIMEOUT
+  rm -rf "$R"
+done
+
+# A cancellation at the final exit boundary must never disappear into SIG_IGN.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYLATE'
+import os
+import signal
+import subprocess
+import sys
+original_popen, original_exit = subprocess.Popen, sys.exit
+is_supervisor = False
+def popen(*args, **kwargs):
+    global is_supervisor
+    process = original_popen(*args, **kwargs)
+    is_supervisor = is_supervisor or kwargs.get('start_new_session', False)
+    return process
+def finish(status=0):
+    if is_supervisor:
+        os.kill(os.getpid(), signal.SIGINT)
+    original_exit(status)
+subprocess.Popen, sys.exit = popen, finish
+PYLATE
+export PYTHONPATH="$CODEX_FAKE_DIR"
+check "late final-exit cancellation blocks approval" 3 "not trusting the result" --uncommitted --no-issues
+assert "late cancellation cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+unset PYTHONPATH
+rm -rf "$R"
+
+# An otherwise clean review cannot approve if cleanup cannot inspect ownership.
+for listing_rc in 1 0; do
+  new_repo
+  echo "change" >> "$R/code.txt"
+  approve_clean
+  printf '#!/usr/bin/env bash\nexit %s\n' "$listing_rc" > "$SHIM_DIR/ps"
+  chmod +x "$SHIM_DIR/ps"
+  check "failed or empty process listing blocks successful review" 3 "not trusting the result" --uncommitted --no-issues
+  assert "failed cleanup cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm "$SHIM_DIR/ps"
+  rm -rf "$R"
+done
+
+# Missing observation support must fail before any reviewer starts.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYNOWAIT'
+import os
+if hasattr(os, 'waitid'):
+    del os.waitid
+PYNOWAIT
+export PYTHONPATH="$CODEX_FAKE_DIR"
+check "missing non-reaping observation fails closed" 3 "waitid/WNOWAIT" --uncommitted --no-issues
+assert "missing waitid never dispatches reviewer" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+unset PYTHONPATH
+rm -rf "$R"
+
+# Cleanup signal errors persist even when the session subsequently empties.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+cat > "$CODEX_FAKE_DIR/mutate" <<'SHSIGNALCHILD'
+set -m
+sleep 12 &
+SHSIGNALCHILD
+cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYSIGNALFAIL'
+import os
+import signal
+original = os.killpg
+def killpg(pid, signum):
+    if signum == signal.SIGTERM:
+        raise PermissionError('synthetic cleanup signal failure')
+    return original(pid, signum)
+os.killpg = killpg
+PYSIGNALFAIL
+export PYTHONPATH="$CODEX_FAKE_DIR"
+check "cleanup signal failure blocks approval" 3 "not trusting the result" --uncommitted --no-issues
+assert "signal cleanup failure cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+unset PYTHONPATH
+rm -rf "$R"
+
+# Final reaping is bounded and cannot turn a failure into success.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYREAPFAIL'
+import subprocess
+original = subprocess.Popen
+def popen(*args, **kwargs):
+    process = original(*args, **kwargs)
+    if kwargs.get('start_new_session'):
+        def wait(timeout=None):
+            assert timeout is not None and timeout <= 2, 'final reap was unbounded'
+            raise subprocess.TimeoutExpired('synthetic reviewer', timeout)
+        process.wait = wait
+    return process
+subprocess.Popen = popen
+PYREAPFAIL
+export PYTHONPATH="$CODEX_FAKE_DIR"
+check "bounded final reap failure blocks approval" 3 "not trusting the result" --uncommitted --no-issues
+assert "reaping failure cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+unset PYTHONPATH
+rm -rf "$R"
+
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+started=$SECONDS
+check "clean completion avoids the cleanup grace" 0 "Codex review passed" --uncommitted --no-issues
+assert "clean success has no fixed five-second delay" "(( SECONDS - $started < 5 ))"
+rm -rf "$R"
+
 # Stable handles must reject a recycled PID and preserve captured identity.
 cat > "$SHIM_DIR/check-signal-identity.py" <<'PYIDENTITY'
 import ast

@@ -296,6 +296,8 @@ path.write_bytes(tail)
 message = tail.decode('utf-8', errors='replace').lower()
 if 'requires a newer version of codex' in message:
     print('  The configured model requires a newer Codex CLI; update the selected installation.')
+elif 'non-reaping child observation is unavailable' in message:
+    print('  Reviewer supervision needs waitid/WNOWAIT support (Python 3.13+ on macOS).')
 elif any(value in message for value in ('unauthorized', 'authentication', 'not logged in', '401')):
     print('  Codex reported an authentication failure; check login for the selected installation.')
 elif any(value in message for value in ('rate limit', '429', 'quota')):
@@ -371,12 +373,19 @@ def signal_member(pid, sid, signum):
 
 # Check stable identity support without delivering a signal, before launching.
 signal_member(os.getpid(), os.getsid(0), 0)
+if not all(hasattr(os, name) for name in ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT")):
+    raise RuntimeError("Non-reaping child observation is unavailable (macOS requires Python 3.13+); refusing review dispatch")
 interruption = None
+completion_ready = False
+outcome = "error"
 
 def interrupted(signum, _frame):
     global interruption
     if interruption is None:
         interruption = signum
+    # Raising is safe only after session cleanup and bounded reaping finish.
+    if completion_ready:
+        raise SystemExit(124 if outcome == "timeout" else 128 + interruption)
 
 stop_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT,
                 signal.SIGTSTP)
@@ -385,52 +394,101 @@ for signum in stop_signals:
 
 process = subprocess.Popen(sys.argv[2:], start_new_session=True)
 
-def signal_session(signum):
+errors = []
+
+def session_members(timeout=1):
     try:
-        pids = subprocess.check_output(["ps", "-A", "-o", "pid="], text=True, timeout=5)
-        for value in pids.split():
+        listing = subprocess.check_output(["ps", "-A", "-o", "pid=", "-o", "stat="],
+                                          text=True, timeout=timeout)
+        if not listing.strip():
+            raise ValueError("empty process listing")
+        members = {}
+        for line in listing.splitlines():
+            value, state = line.split()
             pid = int(value)
+            if state.startswith(("Z", "X")):
+                continue
             try:
-                if os.getsid(pid) == process.pid and os.getpgid(pid) != process.pid:
-                    signal_member(pid, process.pid, signum)
+                if os.getsid(pid) == process.pid:
+                    members[pid] = os.getpgid(pid)
             except ProcessLookupError:
                 pass
-            except OSError as error:
-                print("Session member cleanup failed: " + str(error), file=sys.stderr)
+        return members
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print("Session enumeration failed: " + str(error), file=sys.stderr)
-    finally:
-        # The unreaped session leader pins the primary group ID until both
-        # scans and signals finish, including when TERM ends the leader early.
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            pass
+        errors.append("Session enumeration failed: " + str(error))
+        return None
 
-try:
-    deadline = time.monotonic() + int(sys.argv[1])
-    while interruption is None:
+def signal_session(members, signum):
+    for pid, group in (members or {}).items():
+        if group != process.pid:
+            try:
+                signal_member(pid, process.pid, signum)
+            except OSError as error:
+                errors.append("Session member cleanup failed: " + str(error))
+    # WNOWAIT pins the session leader and its primary group ID through every
+    # exit path, including natural success with surviving background children.
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        errors.append("Primary group cleanup failed: " + str(error))
+
+def await_session(seconds):
+    deadline = time.monotonic() + seconds
+    while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            return session_members()
+        members = session_members(timeout=min(1, remaining))
+        if members is None or not members:
+            return members
+        time.sleep(min(.05, remaining))
+
+result = 125
+try:
+    deadline = time.monotonic() + int(sys.argv[1])
+    while True:
+        if interruption is not None:
+            outcome = "interrupted"
             break
-        try:
-            result = process.wait(timeout=min(remaining, .1))
+        if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            outcome = "exited"
             break
-        except subprocess.TimeoutExpired:
-            pass
+        if time.monotonic() >= deadline:
+            outcome = "timeout"
+            break
+        time.sleep(.05)
+except OSError as error:
+    errors.append("Reviewer observation failed: " + str(error))
 finally:
-    # Handlers only record interruption, including during Popen construction.
-    # Terminal exit/stop and repeated interrupts cannot abandon teardown.
-    for signum in stop_signals:
-        signal.signal(signum, signal.SIG_IGN)
-    if process.returncode is None:
-        signal_session(signal.SIGTERM)
-        time.sleep(5)
-        signal_session(signal.SIGKILL)
-        process.wait()
-        result = 128 + interruption if interruption is not None else 124
-if interruption is not None:
+    # Keep recording terminal interruptions until completion, without raising
+    # while cleanup owns the session. Empty sessions incur no grace delay.
+    members = session_members()
+    if members is None or members:
+        signal_session(members, signal.SIGTERM)
+        members = await_session(5)
+        if members is None or members:
+            signal_session(session_members(), signal.SIGKILL)
+            members = await_session(2)
+        if members:
+            errors.append("Live reviewer session members remain after cleanup")
+    try:
+        result = process.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        errors.append("Reviewer reaping failed: " + str(error))
+
+for error in errors:
+    print(error, file=sys.stderr)
+# This is the ownership-completion boundary. New signals can now exit directly
+# without abandoning children; previously recorded signals still veto approval.
+completion_ready = True
+if outcome == "timeout":
+    result = 124
+elif interruption is not None:
     result = 128 + interruption
+elif errors or outcome != "exited":
+    result = 125
 sys.exit(result if result >= 0 else 128 - result)
 ' "$REVIEW_TIMEOUT" "$GATE_CLI" exec - \
   -s read-only \
