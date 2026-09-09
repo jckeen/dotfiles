@@ -60,10 +60,15 @@ rendered="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_
   # none. Prefix, not whole-line: handoffs annotate dates in place
   # ("added: 2026-07-13 (re-verified 2026-09-02)"), and the leading date is
   # still the date.
-  function iso_days(s,    p) {
+  function iso_days(s,    p, y, m, d, last_day) {
     if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) return ""
     split(substr(s, 1, 10), p, "-")
-    return days_from_civil(p[1] + 0, p[2] + 0, p[3] + 0)
+    y = p[1] + 0; m = p[2] + 0; d = p[3] + 0
+    if (m < 1 || m > 12 || d < 1) return ""
+    last_day = (m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31
+    if (m == 2) last_day = 28 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))
+    if (d > last_day) return ""
+    return days_from_civil(y, m, d)
   }
   function flush(    key, flag, age, detail, d, v, fresh, is_stale) {
     if (slug == "") return

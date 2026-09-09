@@ -162,10 +162,30 @@ for rec in "${COMMENTS[@]}"; do
   # File via REST (POST /repos/{owner}/{repo}/issues), not `gh issue create`
   # (GraphQL). The `codex-finding` label is what the weekly janitor's issue-
   # custodian phase keys on to re-verify and close fixed findings; a REST create
-  # 422s when the label doesn't exist in the repo, so retry unlabeled rather
-  # than lose the finding. The body marker is what dedup relies on.
-  if url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" -f 'labels[]=codex-finding' --jq '.html_url' 2>/dev/null)" \
-     || url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" --jq '.html_url' 2>/dev/null)"; then
+  # may reject an unavailable label. Retry only a confirmed label validation
+  # response: a transport failure may follow a successful creation, and the
+  # body marker does not enforce server-side uniqueness.
+  create_status=0
+  response="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" -f 'labels[]=codex-finding' --include 2>/dev/null)" || create_status=$?
+  response_body="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
+  created=false
+  if [[ "$create_status" -eq 0 ]]; then
+    if url="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$response_body" 2>/dev/null)"; then
+      created=true
+    fi
+  elif [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
+    && jq -e '
+      (.errors | type == "array" and length > 0) and
+      all(.errors[];
+        ((.resource == "Issue" and .field == "labels") or
+         (.resource == "Label" and .field == "name")) and
+        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
+    ' <<<"$response_body" >/dev/null 2>&1; then
+    if url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" --jq '.html_url' 2>/dev/null)"; then
+      created=true
+    fi
+  fi
+  if [[ "$created" == "true" ]]; then
     echo "  ✓ filed: $url"
     filed=$((filed+1))
   else

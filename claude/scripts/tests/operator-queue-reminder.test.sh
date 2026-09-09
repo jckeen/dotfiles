@@ -147,6 +147,30 @@ assert "future deadline flag retained" "outgrep '[due $F10] due-later — later'
 assert "stale marker sits after the deadline flag" "outgrep '  $STALE no-deadline-old — old'"
 assert "header: 5 items, 1 stale" "outgrep '5 open item(s), 1 stale'"
 
+# ── calendar validity, including Gregorian leap-year rules ───────────────
+for invalid in 2026-99-99 2026-00-10 2026-09-00 2026-04-31 2100-02-29; do
+  run_hook "## invalid-date
+- added: $invalid
+- verified: $invalid
+- action: re-check the typo
+"
+  assert "invalid $invalid is stale" "line_for invalid-date | grep -qF -- '$STALE'"
+  assert "invalid $invalid has no normalized age" "line_for invalid-date | grep -qF 'added $invalid)'"
+done
+run_hook "## invalid-verification
+- added: $D90
+- verified: 9999-99-99
+- action: old item with a date typo
+"
+assert "invalid verified date cannot mask old added date" "line_for invalid-verification | grep -qF -- '$STALE'"
+for valid in 2400-02-29 2404-02-29; do
+  run_hook "## valid-leap-day
+- added: $valid (annotation retained)
+- action: valid future date
+"
+  assert "valid leap day $valid is parsed" "line_for valid-leap-day | grep -q 'added -[0-9]*d ago'"
+done
+
 # ── silence when empty / absent ─────────────────────────────────────────
 run_hook ""
 assert "empty queue: silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
