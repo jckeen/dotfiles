@@ -78,6 +78,29 @@ fi
 PUSH_CREATION_LEASE=()
 check_destination() {
   local remote_refs default_ref symbolic_destination destination_tip alias_status=0
+  # Some Git versions discard earlier URLs when an empty value resets the
+  # list. Validate raw values across config scopes before trusting that result.
+  if ! python3 - "$REMOTE" <<'PY'
+import subprocess
+import sys
+
+for field in ("pushurl", "url"):
+    configured = subprocess.run(
+        ["git", "config", "--null", "--get-all", f"remote.{sys.argv[1]}.{field}"],
+        stdout=subprocess.PIPE,
+    )
+    if configured.returncode == 1:
+        continue
+    values = configured.stdout.split(b"\0")
+    if (configured.returncode != 0 or len(values) != 2 or not values[0]
+            or values[-1] or b"\n" in values[0]):
+        sys.exit(1)
+    break
+PY
+  then
+    echo "Review and push requires one unambiguous push destination with no empty configured URLs." >&2
+    return 1
+  fi
   git remote get-url --push --all -- "$PUSH_URL" >/dev/null 2>&1 || alias_status=$?
   if [[ "$alias_status" != 2 ]]; then
     echo "Cannot pin the push destination: it names a configured remote, or remote configuration could not be read. Use a direct destination." >&2

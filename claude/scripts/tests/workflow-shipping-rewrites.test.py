@@ -494,6 +494,71 @@ exit 99
                 finally:
                     self.git("config", "--unset-all", "remote.origin.pushurl")
 
+    def test_raw_empty_url_resets_never_become_valid_destinations(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for field in ("url", "pushurl"):
+            key = "remote.origin." + field
+            for values in (("",), (str(t.remote), ""), ("", str(t.remote)),
+                           (str(t.remote), "", str(t.remote))):
+                with self.subTest(field=field, values=values):
+                    self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                    if field == "url":
+                        self.git("config", "--unset-all", key)
+                    for value in values:
+                        self.git("config", "--add", key, value)
+                    try:
+                        result = t.run_wrapper()
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assert_push_tips({"origin": t.remote})
+                    finally:
+                        self.git("config", "--unset-all", key)
+                        if field == "url":
+                            self.git("config", key, str(t.remote))
+
+    def test_empty_push_url_across_config_scopes_is_rejected(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for inherited, local in (("", str(t.remote)), (str(t.remote), "")):
+            with self.subTest(inherited=inherited, local=local):
+                self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                self.git("config", "--global", "remote.origin.pushurl", inherited)
+                self.git("config", "--local", "remote.origin.pushurl", local)
+                try:
+                    result = t.run_wrapper()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assert_push_tips({"origin": t.remote})
+                finally:
+                    for scope in ("--global", "--local"):
+                        self.git("config", scope, "--unset-all", "remote.origin.pushurl")
+
+    def test_empty_push_url_included_during_review_is_rejected(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+        t.env["RESET_CONFIG"] = str(t.root / "reset-config")
+        t.write(t.scripts / "codex-review-gate.sh", '''#!/bin/bash
+printf 'gate\\n' >> "$CALLS"
+git config --file "$RESET_CONFIG" remote.origin.pushurl ''
+git config --add include.path "$RESET_CONFIG"
+''')
+        result = t.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("unambiguous push destination", result.stderr)
+        self.assertIn("gate", t.events())
+        self.assert_push_tips({"origin": t.remote})
+
+    def test_empty_unselected_urls_do_not_block_the_selected_push_url(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+        self.git("config", "remote.origin.pushurl", str(t.remote))
+        self.git("config", "--add", "remote.origin.url", "")
+        self.git("config", "remote.unselected.pushurl", "")
+        result = t.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_push_tips({"origin": t.remote}, selected="origin")
+
     def test_push_remote_selection_precedence(self):
         remotes = self.push_remotes()
         self.git("config", "branch.feature.remote", "fetch")
