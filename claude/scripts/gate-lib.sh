@@ -43,6 +43,7 @@ gate_resolve_base() {
 gate_select_diff_target() {
   GATE_SCOPE=auto
   [[ "$FORCE_UNCOMMITTED" == true ]] && GATE_SCOPE=uncommitted
+  [[ "${FORCE_COMMITTED:-false}" == true ]] && GATE_SCOPE=committed
   return 0
 }
 
@@ -54,6 +55,7 @@ gate_extract_diff() {
   local args=(begin --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
   [[ -z "$BASE_REF" ]] || args+=(--base "$BASE_REF")
   args+=(--executable "$(command -v "$GATE_CLI" || true)")
+  args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
   trap gate_cleanup EXIT
   DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
@@ -159,7 +161,11 @@ gate_classify_tier() {
     GATE_TIER_REASON="full pass (GATE_FORCE_FULL=1)"
     return 0
   fi
-  local max="${GATE_TIER1_MAX_LINES:-200}" n paths f
+  local max n paths f
+  max="$(jq -er '.policy.tier1_max_lines | select(type == "string")' "$GATE_RUN_DIR/snapshot.json")" || {
+    GATE_TIER_REASON="full pass (could not read captured tier policy)"
+    return 0
+  }
   if ! [[ "$max" =~ ^[0-9]+$ ]]; then
     GATE_TIER_REASON="full pass (GATE_TIER1_MAX_LINES='$max' is not a number — escalating)"
     return 0
@@ -169,7 +175,7 @@ gate_classify_tier() {
     GATE_TIER_REASON="full pass (could not measure the diff — escalating)"
     return 0
   fi
-  if (( n > max )); then
+  if ! python3 -c 'import sys; sys.exit(int(sys.argv[1]) > int(sys.argv[2]))' "$n" "$max"; then
     GATE_TIER_REASON="full pass (diff is $n lines > tier-1 cap $max)"
     return 0
   fi

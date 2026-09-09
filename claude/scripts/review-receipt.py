@@ -34,7 +34,7 @@ def encoded(value):
 
 def git(repo, *args):
     env = dict(os.environ, GIT_OPTIONAL_LOCKS='0', GIT_NO_REPLACE_OBJECTS='1')
-    return subprocess.check_output(['git', '-C', str(repo), *args], env=env, stderr=subprocess.PIPE)
+    return subprocess.check_output(['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args], env=env, stderr=subprocess.PIPE)
 
 
 def oid(repo, ref):
@@ -63,7 +63,7 @@ def docsafe(path):
             and (path.endswith(('.md', '.markdown', '.rst')) or re.fullmatch(r'LICENSE(?:\..*)?', Path(path).name) is not None))
 
 
-def file_bytes(repo, path):
+def file_bytes(repo, path, directory_is_missing=False):
     parent = repo
     for component in Path(path).parts[:-1]:
         parent = parent / component
@@ -82,6 +82,8 @@ def file_bytes(repo, path):
         return 'missing', b''
     if stat.S_ISLNK(info.st_mode):
         return '120000', os.fsencode(os.readlink(file))
+    if stat.S_ISDIR(info.st_mode) and directory_is_missing:
+        return 'missing', b''
     if not stat.S_ISREG(info.st_mode):
         raise ValueError('cannot snapshot non-file: ' + path)
     return ('100755' if info.st_mode & 0o111 else '100644'), file.read_bytes()
@@ -118,12 +120,14 @@ def capture(repo, base, scope):
                 raise ValueError('submodule snapshots are unsupported; review separately')
             entries[os.fsdecode(path)] = (mode, obj)
     tracked = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0') if e}
+    tracked_files = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0')
+                     if e and e.split(b' ', 1)[0] in (b'100644', b'100755', b'120000')}
     untracked = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--exclude-standard', '-z').split(b'\0') if p}
     ignored_instructions = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z').split(b'\0') if p and instruction(os.fsdecode(p))}
     files = {}
     dirty_instructions = [p for p in entries if instruction(p) and p not in tracked]
     for path in sorted(set(entries) | tracked | untracked | ignored_instructions):
-        mode, content = file_bytes(repo, path)
+        mode, content = file_bytes(repo, path, path in entries or path in tracked_files)
         files[path] = (mode, digest(content))
         if instruction(path):
             original_mode, obj = entries.get(path, ('missing', None))
@@ -150,10 +154,10 @@ def capture(repo, base, scope):
         patch = git(repo, *args, '--text', merge, head, '--', '.', *(':!' + p for p in EXCLUDED))
     else:
         chunks, paths = [], []
-        for path in sorted(set(entries) | tracked | untracked):
+        for path in sorted(set(entries) | tracked | untracked | ignored_instructions):
             original_mode, obj = entries.get(path, ('missing', None))
             original = git(repo, 'cat-file', 'blob', obj) if obj else b''
-            mode, content = file_bytes(repo, path)
+            mode, content = file_bytes(repo, path, path in entries or path in tracked_files)
             if (mode, content) == (original_mode, original):
                 continue
             paths.append(path)
@@ -228,10 +232,14 @@ def validate_artifact(record):
     return patch
 
 
-def exemption(outcome, artifact, patch):
+def exemption(outcome, artifact, patch, policy):
+    max_lines = policy['tier1_max_lines']
+    if not isinstance(max_lines, str):
+        raise ValueError('malformed tier-1 policy')
     if outcome == 'no-diff' and patch.strip():
         raise ValueError('no-diff exemption has reviewable content')
-    if outcome == 'tier-1' and (not artifact['changed_paths'] or len(patch.splitlines()) > 200 or not all(docsafe(p) for p in artifact['changed_paths'])):
+    if outcome == 'tier-1' and (not re.fullmatch(r'[0-9]+', max_lines) or not artifact['changed_paths']
+                              or len(patch.splitlines()) > int(max_lines) or not all(docsafe(p) for p in artifact['changed_paths'])):
         raise ValueError('tier-1 exemption is not a small docs-only artifact')
 
 
@@ -265,6 +273,7 @@ def begin(args):
     (run / 'diff.patch').write_bytes(patch)
     os.chmod(run / 'diff.patch', 0o600)
     record = {'version': 1, 'attempt': attempt, 'repository': str(repo), 'git_directory': str(directory), 'artifact': artifact,
+              'policy': {'tier1_max_lines': args.tier1_max_lines},
               'reviewer': {'name': args.reviewer, 'executable': args.executable or None},
               'started_at': datetime.now(timezone.utc).isoformat()}
     atomic_json(run / 'snapshot.json', record)
@@ -277,7 +286,7 @@ def complete(args):
     patch = validate_artifact(record)
     if (snapshot.parent / 'diff.patch').read_bytes() != patch:
         raise ValueError('review diff changed during review')
-    exemption(args.outcome, record['artifact'], patch)
+    exemption(args.outcome, record['artifact'], patch, record['policy'])
     output = Path(args.output).read_text() if args.output else ''
     if args.outcome == 'passed' and not output.strip():
         raise ValueError('completed review must have output')
@@ -325,7 +334,7 @@ def check(args):
             if completion['outcome'] == 'passed' and not completion['output'].strip():
                 raise ValueError('completed review output is empty')
             patch = validate_artifact(record)
-            exemption(completion['outcome'], record['artifact'], patch)
+            exemption(completion['outcome'], record['artifact'], patch, record['policy'])
             print('Valid ' + lane + ' review receipt for ' + head)
             return
         except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
@@ -345,6 +354,7 @@ def main():
         if name == 'begin':
             sub.add_argument('--scope', choices=('auto', 'committed', 'uncommitted'), required=True)
             sub.add_argument('--executable')
+            sub.add_argument('--tier1-max-lines', default='200')
         if name == 'check':
             sub.add_argument('--head', required=True)
     sub = commands.add_parser('verify')

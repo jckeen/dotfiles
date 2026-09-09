@@ -397,6 +397,38 @@ for mutation in head index worktree untracked base; do
   rm -rf "$R"
 done
 
+for instruction in AGENTS.md .codex/config.toml; do
+  for scope in explicit auto; do
+    new_repo
+    mkdir -p "$R/$(dirname "$instruction")"
+    printf '%s\n' "$instruction" > "$R/.git/info/exclude"
+    printf 'IGNORED_INSTRUCTION_MARKER\n' > "$R/$instruction"
+    args=(--no-issues --require)
+    [[ "$scope" != explicit ]] || args+=(--uncommitted)
+    check "ignored $instruction blocks $scope self-review" 2 "Diff touches the Codex reviewer's own instruction surface" "${args[@]}"
+    assert "ignored instructions never dispatch" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+    rm -rf "$R"
+  done
+done
+
+new_repo
+git -C "$R" checkout -qb feature
+seq 1 250 > "$R/notes.md"
+git -C "$R" add notes.md
+git -C "$R" commit -qm docs
+export GATE_TIER1_MAX_LINES=0500
+check "configured docs cap issues a receipt" 0 "tier-1 skip" --no-issues --require
+assert "configured docs cap avoids reviewer dispatch" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+unset GATE_TIER1_MAX_LINES
+assert "shipping accepts the captured custom cap" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+export GATE_TIER1_MAX_LINES=--invalid
+approve_clean
+check "leading-dash invalid cap escalates to full review" 0 "Codex review passed" --no-issues --require
+unset GATE_TIER1_MAX_LINES
+rm -rf "$R"
+
+assert "explicit committed scope selects immutable objects" "(source '$SCRIPT_DIR/../gate-lib.sh'; FORCE_UNCOMMITTED=false; FORCE_COMMITTED=true; gate_select_diff_target; [[ \$GATE_SCOPE == committed ]])"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

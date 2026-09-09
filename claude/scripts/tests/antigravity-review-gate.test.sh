@@ -326,6 +326,34 @@ printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
 rm -rf "$R"
 
+for instruction in AGENTS.md .codex/config.toml; do
+  for scope in explicit auto; do
+    new_repo
+    mkdir -p "$R/$(dirname "$instruction")"
+    printf '%s\n' "$instruction" > "$R/.git/info/exclude"
+    printf 'IGNORED_INSTRUCTION_MARKER\n' > "$R/$instruction"
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    args=(--require)
+    [[ "$scope" != explicit ]] || args+=(--uncommitted)
+    check "ignored $instruction receives $scope alternate review" 0 "LGTB verdict" "${args[@]}"
+    assert "ignored instruction bytes reach alternate review" "grep -q 'IGNORED_INSTRUCTION_MARKER' '$AGY_FAKE_DIR/stdin'"
+    rm -rf "$R"
+  done
+done
+
+new_repo
+git -C "$R" checkout -qb feature
+seq 1 250 > "$R/notes.md"
+git -C "$R" add notes.md
+git -C "$R" commit -qm docs
+export GATE_TIER1_MAX_LINES=0500
+check "configured docs cap issues alternate receipt" 0 "tier-1 skip" --require
+assert "configured docs cap avoids alternate dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+unset GATE_TIER1_MAX_LINES
+assert "shipping accepts captured alternate cap" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+rm -rf "$R"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

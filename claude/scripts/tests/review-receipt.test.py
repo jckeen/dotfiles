@@ -37,8 +37,9 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(p.returncode == 0, ok, p.stdout + p.stderr)
         return p.stdout.strip()
 
-    def begin(self, scope='committed', base='main'):
-        return Path(self.run_helper('begin', '--repo', str(self.repo), '--base', base, '--scope', scope, '--reviewer', 'codex')) / 'snapshot.json'
+    def begin(self, scope='committed', base='main', tier1_max_lines=None):
+        policy = ('--tier1-max-lines=' + tier1_max_lines,) if tier1_max_lines is not None else ()
+        return Path(self.run_helper('begin', '--repo', str(self.repo), '--base', base, '--scope', scope, '--reviewer', 'codex', *policy)) / 'snapshot.json'
 
     def complete(self, snapshot, outcome='passed', ok=True):
         return self.run_helper('complete', '--snapshot', str(snapshot), '--outcome', outcome, '--output', str(self.result), ok=ok)
@@ -118,6 +119,39 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(patch.count('-tracked child'), 2)
         self.assertEqual(patch.count('+replacement file'), 2)
         self.complete(snapshot)
+
+    def test_file_to_directory_replacement_reviews_deletion_and_children(self):
+        replaced = self.repo / 'code.txt'
+        replaced.unlink()
+        replaced.mkdir()
+        (replaced / 'child.txt').write_text('new child\n')
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                if staged:
+                    self.git('add', 'code.txt')
+                snapshot = self.begin('uncommitted')
+                artifact = json.loads(snapshot.read_text())['artifact']
+                self.assertEqual(artifact['changed_paths'], ['code.txt', 'code.txt/child.txt'])
+                patch = (snapshot.parent / 'diff.patch').read_text()
+                self.assertIn('-changed', patch)
+                self.assertIn('+new child', patch)
+                self.complete(snapshot)
+
+    def test_file_replaced_by_empty_directory_reviews_deletion(self):
+        replaced = self.repo / 'code.txt'
+        replaced.unlink()
+        replaced.mkdir()
+        snapshot = self.begin('uncommitted')
+        artifact = json.loads(snapshot.read_text())['artifact']
+        self.assertEqual(artifact['changed_paths'], ['code.txt'])
+        self.assertIn('-changed', (snapshot.parent / 'diff.patch').read_text())
+
+    def test_untracked_nested_repository_is_not_silently_treated_as_missing(self):
+        nested = self.repo / 'nested'
+        nested.mkdir()
+        self.git('init', '-q', str(nested))
+        (nested / 'code.txt').write_text('nested implementation\n')
+        self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'uncommitted', '--reviewer', 'codex', ok=False)
 
     def test_uncommitted_review_does_not_require_related_base_history(self):
         unrelated = self.git('commit-tree', self.git('rev-parse', 'HEAD^{tree}'), '-m', 'unrelated root')
@@ -218,6 +252,24 @@ class ReceiptTests(unittest.TestCase):
                 self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
                 path.unlink()
 
+    def test_ignored_instructions_are_in_uncommitted_review_and_auto_fallback(self):
+        self.git('checkout', '-B', 'feature', 'main')
+        (self.repo / '.git/info/exclude').write_text('AGENTS.md\n.codex/\n')
+        (self.repo / 'AGENTS.md').write_text('AGENT_INSTRUCTION_MARKER\n')
+        (self.repo / '.codex').mkdir()
+        (self.repo / '.codex/config.toml').write_text('CODEX_CONFIG_MARKER\n')
+        for scope in ('uncommitted', 'auto'):
+            with self.subTest(scope=scope):
+                snapshot = self.begin(scope)
+                artifact = json.loads(snapshot.read_text())['artifact']
+                self.assertEqual(artifact['scope'], 'uncommitted')
+                self.assertEqual(artifact['changed_paths'], ['.codex/config.toml', 'AGENTS.md'])
+                patch = (snapshot.parent / 'diff.patch').read_text()
+                self.assertIn('+AGENT_INSTRUCTION_MARKER', patch)
+                self.assertIn('+CODEX_CONFIG_MARKER', patch)
+                self.complete(snapshot, 'no-diff', ok=False)
+                self.complete(snapshot)
+
     def test_external_diff_textconv_and_clean_filters_never_run(self):
         marker = Path(self.tmp.name) / 'EXECUTED'
         command = f'touch {marker}'
@@ -226,6 +278,10 @@ class ReceiptTests(unittest.TestCase):
         self.git('config', 'diff.evil.textconv', command)
         self.git('config', 'filter.evil.clean', command)
         self.git('config', 'filter.evil.required', 'true')
+        fsmonitor = Path(self.tmp.name) / 'fsmonitor'
+        fsmonitor.write_text(f'#!/bin/sh\ntouch "{marker}"\nprintf "clock\\0"\n')
+        fsmonitor.chmod(0o755)
+        self.git('config', 'core.fsmonitor', str(fsmonitor))
         snapshot = self.begin()
         self.complete(snapshot)
         self.check()
@@ -286,6 +342,34 @@ class ReceiptTests(unittest.TestCase):
                 self.git('commit', '-qm', 'exempt artifact')
                 self.complete(self.begin(), outcome)
                 self.check()
+
+    def test_tier1_receipt_uses_captured_configured_limit(self):
+        self.git('checkout', '-B', 'feature', 'main')
+        (self.repo / 'notes.md').write_text('documentation\n' * 250)
+        self.git('add', 'notes.md')
+        self.git('commit', '-qm', 'larger documentation change')
+        self.complete(self.begin(), 'tier-1', ok=False)
+        snapshot = self.begin(tier1_max_lines='0500')
+        self.assertEqual(json.loads(snapshot.read_text())['policy']['tier1_max_lines'], '0500')
+        self.complete(snapshot, 'tier-1')
+        self.check()
+        receipt_path = self.repo / '.git/review-receipts/codex.json'
+        record = json.loads(receipt_path.read_text())
+        for limit in ('200', 'invalid', None, [], 500):
+            with self.subTest(limit=limit):
+                record['policy']['tier1_max_lines'] = limit
+                receipt_path.write_text(json.dumps(record))
+                self.check(False)
+
+    def test_invalid_tier1_limit_requires_full_review(self):
+        self.git('checkout', '-B', 'feature', 'main')
+        (self.repo / 'notes.md').write_text('documentation\n')
+        self.git('add', 'notes.md')
+        self.git('commit', '-qm', 'documentation change')
+        snapshot = self.begin(tier1_max_lines='invalid')
+        self.complete(snapshot, 'tier-1', ok=False)
+        self.complete(snapshot)
+        self.check()
 
     def test_arbitrary_head_base_cannot_launder_shipping(self):
         snapshot = Path(self.run_helper('begin', '--repo', str(self.repo), '--base', 'HEAD', '--scope', 'committed', '--reviewer', 'codex')) / 'snapshot.json'
