@@ -21,7 +21,8 @@
   Application hooks remain ordinary code; uncommitted capture supports
   unrelated base history, file/directory replacements, ignored instruction
   files, and staged content followed by workspace edits. Instruction checks
-  recognize Git-managed CRLF text conversion and sparse checkout omissions.
+  recognize Git-managed CRLF conversion for regular files and sparse checkout
+  omissions; symlink targets retain exact comparison.
   Receipt capture disables configured filesystem
   monitors and preserves the selected docs-only size policy through completion
   and validation.
@@ -43,8 +44,8 @@
   cannot alter validation or secret scanning.
 - The morning review script explicitly selects committed review scope even
   when the fetch upstream is current and unrelated work is dirty. It uses the
-  required Codex gate, validates its receipt
-  after confirmation, and pushes the reviewed commit to a verified non-default
+  required Codex gate, requires that reviewer's receipt after confirmation,
+  and pushes the reviewed commit to a verified non-default
   branch at the actual push destination. Automatic tag pushes are disabled.
   Further URL rewrites and remote-name indirection fail closed; explicitly
   selected PR review bases can be carried through the push hook with a

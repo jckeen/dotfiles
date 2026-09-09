@@ -53,7 +53,7 @@ What `review-and-push.sh` does:
 2. Runs the detected test suite and stops on failure.
 3. Runs the Codex review gate with `--require --committed` on the committed artifact.
 4. Prompts for confirmation, unless `--auto-push` was selected.
-5. Validates the private receipt after confirmation, immediately before push.
+5. Validates the Codex receipt after confirmation, immediately before push.
 6. Pushes the reviewed commit to the current branch with an explicit refspec.
 
 Blocking findings, failed reviewer execution, and missing or stale receipts
@@ -82,8 +82,8 @@ when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
 It covers both staged changes and later workspace edits.
-Instruction checks recognize Git-managed CRLF text conversion and sparse
-checkout omissions while retaining raw workspace hashes.
+Instruction checks recognize Git-managed CRLF text conversion for regular files
+and sparse checkout omissions while retaining raw workspace hashes.
 Known ignored agent runtime credentials and state are excluded from instruction
 discovery. Named instruction files inside runtime directories remain covered.
 Recognized runtime artifacts explicitly included in the review target block
