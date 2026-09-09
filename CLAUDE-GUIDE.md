@@ -122,7 +122,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `sync-memory` | Commit and push pending memory changes; nonzero when publication is refused (no upstream, non-memory paths in the commit, push failure). Inside `cc` that refusal is a warning, not a launch blocker |
 | `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |
 | `check-codex` | Verify public-safe Codex symlinks; warn about private/generated state |
-| `check-antigravity` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
+| `check-antigravity.sh` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
 | `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
@@ -173,6 +173,7 @@ is present but not registered — the drift that once left every hook inert.
 | `OperatorQueueReminder.hook.sh` | SessionStart | ✅ | Prints open items from `~/.claude/operator-queue.md` (USER ACTION queue appended by the handoff skills) with age, deadline-first, past-due flagged; items whose newest `verified:`/`added:` date is >30 days old (or undated) get `[stale — re-verify]` and the header counts them; capped at 20 items / 64KB queue; silent when empty or absent |
 | `ntfy-awaiting-input.sh` | PreToolUse (`AskUserQuestion`) | ✅ | Pushes an ntfy.sh notification when Claude asks a question (`NTFY_TOPIC` in settings env). Overlaps Claude Code's built-in push notifs — drop whichever proves noisier |
 | `PrePushStaleSHACheck.hook.ts` | PreToolUse (`Bash`) | ✅ | Warns on `git push` when a reviewer's last-reviewed SHA ≠ HEAD (stderr only; the old PAI queue emission was removed 2026-06-10) |
+| `PreMergeCodexHarvest.hook.sh` | PreToolUse (`Bash` on `gh pr merge`) | ✅ | Harvests Codex review comments into issues before merge; warn-only and always exits successfully |
 | `worktree-guard.sh` | PreToolUse (`Bash`) | ✅ | Blocks `git checkout -b`/`git switch` in the **primary** checkout when >1 worktree exists — prevents a branch switch from clobbering another active session's working tree. Always allows `git worktree` commands and ops inside linked worktrees. Fail-open (exits 0 on any error) |
 
 > Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.

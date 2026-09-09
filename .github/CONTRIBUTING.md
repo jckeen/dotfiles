@@ -27,6 +27,15 @@ If your PR touches `setup.sh`:
   in the PR description, e.g. *"I ran `./setup.sh --check` on macOS 14
   (Apple Silicon) — passes."*
 
+To check the full shell surface, including the extension-less pre-push hook:
+
+```bash
+git ls-files -z '*.sh' 'githooks/pre-push' | xargs -0 shellcheck --severity=warning
+```
+
+The ShellCheck action and its configuration are maintained in
+[`ci.yml`](workflows/ci.yml); use that source when matching the CI environment.
+
 If your PR touches `claude/hooks/*.hook.ts`:
 
 - Run `bunx tsc --noEmit` in `claude/hooks/` — it must pass.

@@ -69,7 +69,7 @@ new_repo() {
 }
 
 approve_clean() {
-  printf '%s' '{"verdict":"approve","summary":"looks fine","findings":[]}' > "$CODEX_FAKE_DIR/output"
+  printf '%s' '{"verdict":"approve","summary":"looks fine","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 }
 
 # check <name> <expected-exit> [<required output fragment>] [gate args...]
@@ -138,20 +138,65 @@ rm -rf "$R"
 # ── whole-verdict handling ─────────────────────────────────────────────
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"bug","findings":[{"severity":"high","title":"real bug","file":"code.txt","line_start":1,"body":"boom","recommendation":"fix"}]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"bug","findings":[{"severity":"high","title":"real bug","file":"code.txt","line_start":1,"line_end":1,"confidence":1,"body":"boom","recommendation":"fix"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "high finding blocks" 2 "BLOCKING findings" --uncommitted --no-issues
 rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"something is off","findings":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"something is off","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "needs-attention with zero findings fails closed" 2 "(fail closed)" --uncommitted --no-issues
 rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1,"body":"minor","recommendation":"maybe"}]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1,"line_end":1,"confidence":0,"body":"minor","recommendation":""}],"next_steps":["Consider the nit"]}' > "$CODEX_FAKE_DIR/output"
 check "low-only findings do not block" 0 "Codex review passed" --uncommitted --no-issues
+rm -rf "$R"
+
+# Schema-invalid responses must neither retain nor create shipping approval.
+new_repo
+git -C "$R" checkout -qb feature
+echo committed >> "$R/code.txt"
+git -C "$R" commit -qam work
+approve_clean
+check "schema fixture starts with a valid receipt" 0 "Review receipt recorded" --no-issues --require
+valid_result='{"verdict":"approve","summary":"nit","findings":[{"severity":"low","title":"nit","body":"minor","file":"code.txt","line_start":1,"line_end":1,"confidence":0.5,"recommendation":""}],"next_steps":[]}'
+while IFS= read -r mutation; do
+  jq -c "$mutation" <<<"$valid_result" > "$CODEX_FAKE_DIR/output"
+  check "schema rejects $mutation" 2 "not the expected JSON shape" --no-issues --require
+  assert "schema failure leaves no receipt: $mutation" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+done <<'EOF'
+.findings = {}
+.findings = null
+.summary = false
+.summary = ""
+del(.summary)
+del(.next_steps)
+.next_steps = {}
+.next_steps = [null]
+.next_steps = [""]
+.unexpected = true
+[.]
+.findings = [null]
+.findings[0].title = null
+.findings[0].body = ""
+.findings[0].file = null
+.findings[0].line_start = null
+.findings[0].line_start = "1"
+.findings[0].line_start = 0
+.findings[0].line_start = 1.5
+.findings[0].line_end = false
+.findings[0].line_end = 0
+del(.findings[0].line_end)
+.findings[0].confidence = "0.5"
+.findings[0].confidence = -0.1
+.findings[0].confidence = 1.1
+del(.findings[0].confidence)
+.findings[0].recommendation = null
+.findings[0].extra = "unexpected"
+., .
+EOF
 rm -rf "$R"
 
 # ── rc-vs-approve guard: non-zero exit + clean approve is distrusted ──

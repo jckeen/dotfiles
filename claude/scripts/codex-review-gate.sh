@@ -277,21 +277,33 @@ if [[ ! -s "$OUT_FILE" ]]; then
 fi
 
 # ─── Parse the structured result ───────────────────────────────
-# The schema guarantees shape when Codex honors it. Validate STRICTLY: the
-# verdict must be a known value and every finding's severity must be in the
-# enum — otherwise findings could exist that our severity buckets never count,
-# and the gate would pass with unread findings. Anything nonconforming fails
-# CLOSED, never waved through.
+# Enforce codex-review-schema.json locally before rendering or recording a
+# receipt; the CLI's schema request alone does not establish valid output.
 # (Plain equality chains, not jq's IN() — IN needs jq >= 1.6 and this gate
 # must not misreport on older jq installs.)
-if ! jq -e '
-    (has("verdict") and has("findings"))
+if ! jq -se '
+    def nonempty_string: type == "string" and length >= 1;
+    def positive_integer: type == "number" and . >= 1 and . == floor;
+    length == 1 and (.[0] |
+    type == "object"
+    and (keys == ["findings", "next_steps", "summary", "verdict"])
     and ((.verdict == "approve") or (.verdict == "needs-attention"))
-    and ((.findings // []) | all(
-      (has("severity") and has("title") and has("file") and has("line_start"))
+    and (.summary | nonempty_string)
+    and (.next_steps | type == "array" and all(nonempty_string))
+    and (.findings | type == "array" and all(
+      type == "object"
+      and (keys == ["body", "confidence", "file", "line_end", "line_start",
+                    "recommendation", "severity", "title"])
       and ((.severity == "critical") or (.severity == "high")
            or (.severity == "medium") or (.severity == "low"))
-    ))' "$OUT_FILE" >/dev/null 2>&1; then
+      and (.title | nonempty_string)
+      and (.body | nonempty_string)
+      and (.file | nonempty_string)
+      and (.line_start | positive_integer)
+      and (.line_end | positive_integer)
+      and (.confidence | type == "number" and . >= 0 and . <= 1)
+      and (.recommendation | type == "string")
+    )))' "$OUT_FILE" >/dev/null 2>&1; then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
   sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
   red "Push blocked: cannot confirm review is clean."

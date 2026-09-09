@@ -54,8 +54,9 @@ Details in [`CHANGELOG.md`](CHANGELOG.md).
 
 - **Done 2026-07 (#203):** `smoke-install.yml` flipped to gating early —
   `continue-on-error` removed and the workflow made always-run so it can be a
-  required check. **Open:** adding its two contexts to the protection rule is a
-  one-command operator action (see `docs/BRANCH_PROTECTION.md`).
+  required check. Its platform checks are required by branch protection;
+  see [the protection contract](docs/BRANCH_PROTECTION.md) for the current
+  required contexts and the command to verify the live rule.
 
 ---
 

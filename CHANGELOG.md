@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-09 — fix: reject malformed review results and reconcile docs
+
+### What changed
+- Codex review results must satisfy the full structured-result contract before
+  rendering, issue creation, or approval receipts. Malformed objects, field
+  values, and multiple JSON documents fail closed; valid clean and low-only
+  responses remain supported.
+- Corrected local ShellCheck coverage instructions, the Antigravity health
+  command, the pre-merge hook table, branch-protection status, and scanner
+  descriptions. Backfilled omitted historical changes from their merged PRs.
+
 ## 2026-09-09 — fix: attach cx terminals to the shared Remote Control daemon
 
 - Interactive `cx` launches now connect with `--remote unix://` after the
@@ -343,6 +354,39 @@
   git-hygiene timer happened to prune it.
 - Regression coverage in `agent-preflight.test.sh` for the deleted-upstream
   case, including that the pull is invoked with `--prune`.
+
+## 2026-08-28 — chore: declare the Render plugin
+
+- [#326](https://github.com/jckeen/dotfiles/pull/326) added Render to the
+  manifest's per-project section. The section was descriptive; installer
+  scope is addressed separately by [#327](https://github.com/jckeen/dotfiles/issues/327).
+
+## 2026-08-10 — docs: correct hook source paths
+
+- [#317](https://github.com/jckeen/dotfiles/pull/317) corrected repository-relative
+  paths in the README's files and symlinks table.
+
+## 2026-07-30 — fix: review, installation, launcher, and checker boundaries
+
+### What changed
+- [#299](https://github.com/jckeen/dotfiles/pull/299) bounded review-packet size
+  arguments and escaped terminal controls when reporting fixture failures.
+- [#300](https://github.com/jckeen/dotfiles/pull/300) refused symlinked Codex
+  runtime roots and skill-bundle directory links, checked gitleaks Git-mode
+  support, and placed npm's global executables on the configured local PATH.
+- [#301](https://github.com/jckeen/dotfiles/pull/301) corrected image-option
+  resume parsing, bypassed launch preflight for Antigravity utility commands,
+  and surfaced the actual Git error after failed pulls.
+- [#302](https://github.com/jckeen/dotfiles/pull/302) inspected symlinked deployed
+  roots, reported legacy PAI links, and included review schemas in session-start
+  symlink repair.
+- [#303](https://github.com/jckeen/dotfiles/pull/303) corrected the then-current
+  PR-review, delegation, optional-team, and Antigravity migration instructions.
+
+## 2026-07-29 — docs: correct skill and agent source paths
+
+- [#298](https://github.com/jckeen/dotfiles/pull/298) corrected the README's
+  repository-relative paths for Claude skill and agent sources.
 
 ## 2026-07-20 — fix: self-heal Codex skill links before launch
 
