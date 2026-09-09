@@ -38,7 +38,9 @@ BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
   exit 1
 }
 BRANCH=${BRANCH_REF#refs/heads/}
-REMOTE=$(git config --get "branch.$BRANCH.remote" || printf '%s\n' origin)
+REMOTE=$(git config --get "branch.$BRANCH.pushRemote" ||
+  git config --get remote.pushDefault ||
+  git config --get "branch.$BRANCH.remote" || printf '%s\n' origin)
 PUSH_URL=$(git remote get-url --push --all -- "$REMOTE")
 if [[ -z "$PUSH_URL" || "$PUSH_URL" == *$'\n'* ]]; then
   echo "Review and push requires one unambiguous push destination." >&2

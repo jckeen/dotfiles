@@ -48,6 +48,85 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(self.git("--git-dir", str(reviewed), "rev-parse", "refs/heads/feature"),
                          t.base, "the wrapper pushed despite ambiguous URL rewrites")
 
+    def push_remotes(self):
+        t = self.fixture
+        remotes = {"origin": t.remote}
+        for name in ("fetch", "default-push", "branch-push"):
+            remote = t.root / name
+            self.git("clone", "--bare", str(t.remote), str(remote))
+            self.git("remote", "add", name, str(remote))
+            remotes[name] = remote
+        for remote in remotes.values():
+            self.git("--git-dir", str(remote), "update-ref", "refs/heads/feature", t.base)
+        (t.bin / "git").unlink()
+        return remotes
+
+    def assert_push_tips(self, remotes, selected=None):
+        t = self.fixture
+        for name, remote in remotes.items():
+            self.assertEqual(
+                self.git("--git-dir", str(remote), "rev-parse", "refs/heads/feature"),
+                t.head if name == selected else t.base, name)
+
+    def test_push_remote_selection_precedence(self):
+        remotes = self.push_remotes()
+        self.git("config", "branch.feature.remote", "fetch")
+        self.git("config", "remote.pushDefault", "default-push")
+        self.git("config", "branch.feature.pushRemote", "branch-push")
+        cases = ((None, "branch-push"),
+                 ("branch.feature.pushRemote", "default-push"),
+                 ("remote.pushDefault", "fetch"),
+                 ("branch.feature.remote", "origin"))
+        for unset, selected in cases:
+            with self.subTest(selected=selected):
+                if unset:
+                    self.git("config", "--unset", unset)
+                for remote in remotes.values():
+                    self.git("--git-dir", str(remote), "update-ref", "refs/heads/feature",
+                             self.fixture.base)
+                result = self.fixture.run_wrapper()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_push_tips(remotes, selected)
+
+    def test_invalid_selected_push_remote_never_falls_back(self):
+        remotes = self.push_remotes()
+        for key in ("branch.feature.pushRemote", "remote.pushDefault", "branch.feature.remote"):
+            for value in ("missing-remote", ""):
+                with self.subTest(key=key, value=value):
+                    for remote in remotes.values():
+                        self.git("--git-dir", str(remote), "update-ref", "refs/heads/feature",
+                                 self.fixture.base)
+                    self.git("config", key, value)
+                    try:
+                        result = self.fixture.run_wrapper()
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assert_push_tips(remotes)
+                    finally:
+                        self.git("config", "--unset", key)
+
+    def test_selected_pushurl_default_branch_is_checked(self):
+        remotes = self.push_remotes()
+        self.git("config", "branch.feature.pushRemote", "branch-push")
+        self.git("config", "remote.branch-push.pushurl", str(remotes["default-push"]))
+        self.git("--git-dir", str(remotes["default-push"]), "symbolic-ref", "HEAD",
+                 "refs/heads/feature")
+        result = self.fixture.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("does not push the default branch", result.stderr)
+        self.assert_push_tips(remotes)
+
+    def test_selected_push_remote_still_rejects_further_url_rewrites(self):
+        remotes = self.push_remotes()
+        self.git("config", "remote.pushDefault", "default-push")
+        self.git("config", f"url.{remotes['branch-push']}.pushInsteadOf",
+                 str(remotes["default-push"]))
+        self.git("config", f"url.{remotes['fetch']}.pushInsteadOf",
+                 str(remotes["branch-push"]))
+        result = self.fixture.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Git URL rewrite", result.stderr)
+        self.assert_push_tips(remotes)
+
     def test_local_push_rewrite_cannot_redirect_the_resolved_url(self):
         reviewed, redirected = self.destinations()
         self.git("config", f"url.{redirected}.pushInsteadOf", str(reviewed))
