@@ -275,7 +275,7 @@ ${FENCE}"
 OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
 # Failure stderr can contain the full prompt. Retain only a private, bounded
 # tail in the system temp directory; never echo its untrusted bytes to the user.
-ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX.txt)"
+ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX)"
 KEEP_DIAGNOSTIC=false
 cleanup() {
   rm -f "$OUT_FILE"

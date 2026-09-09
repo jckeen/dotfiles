@@ -179,6 +179,40 @@ check "empty output also gives safe diagnostic context" 3 "requires a newer Code
 assert "empty-output diagnostic never dumps stderr secrets" "[[ \$CHECK_OUTPUT != *PRIVATE_PROMPT_MARKER* && \$CHECK_OUTPUT != *PRIVATE_TOKEN_MARKER* ]]"
 rm -rf "$R"
 
+# BSD mktemp passes explicit templates directly to mkstemp, which requires
+# trailing Xs. Exercise that interface on Linux too, where GNU mktemp accepts
+# a suffix that would fail on macOS.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+export CODEX_TEST_REAL_MKTEMP
+CODEX_TEST_REAL_MKTEMP="$(type -P mktemp)"
+cat > "$SHIM_DIR/mktemp" <<'PYMKTEMP'
+#!/usr/bin/env python3
+import ctypes
+import os
+import sys
+args = sys.argv[1:]
+if len(args) == 1 and args[0].startswith('/'):
+    template = ctypes.create_string_buffer(os.fsencode(args[0]))
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.mkstemp(template)
+    if fd < 0:
+        sys.exit('mkstemp: ' + os.strerror(ctypes.get_errno()))
+    os.close(fd)
+    print(os.fsdecode(template.value))
+else:
+    os.execv(os.environ['CODEX_TEST_REAL_MKTEMP'], ['mktemp', *args])
+PYMKTEMP
+chmod +x "$SHIM_DIR/mktemp"
+check "BSD explicit tempfile templates permit a clean review" 0 "Codex review passed" --uncommitted --no-issues
+echo 1 > "$CODEX_FAKE_DIR/rc"
+echo 'private diagnostic' > "$CODEX_FAKE_DIR/stderr"
+check "BSD explicit tempfile templates retain failure diagnostics" 3 "Private Codex diagnostic:" --uncommitted --no-issues
+rm -f "$SHIM_DIR/mktemp"
+unset CODEX_TEST_REAL_MKTEMP
+rm -rf "$R"
+
 # ── bounded timeout terminates the reviewer and stubborn descendants ─────
 new_repo
 echo "change" >> "$R/code.txt"
