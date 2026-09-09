@@ -14,31 +14,32 @@ instruction layer + skills (loaded identically via the pack), GitHub issues (the
 only open-work tracker), `handoff` notes + `CHANGELOG.md`, and git itself. Keep
 those honest and the team works even though the agents never talk to each other.
 
-## Lanes
+## Roles
 
-The value is not three workers — it's **independent model lineages
-disagreeing**. Codex (GPT-5.x) and Antigravity earn their keep when they
-*refute*, not when they rubber-stamp. Assign the refuter role explicitly.
+The active session is the conductor: it owns the outcome, dependency order,
+integration, verification, authorized delivery, and handoff. Assign other
+roles explicitly for the task. Any runtime can conduct or implement; personal
+model and operator defaults belong in private preferences.
 
-Lineage honesty (#205): the Antigravity lane counts as an independent *lineage*
-only when the model pin verifiably held for that run. `--model` takes the exact
-**display label** from `agy models` (e.g. `"Gemini 3.1 Pro (High)"` — verified
-honored 2026-07-10); slug forms silently fall back to the flash tier. The check
-is automated: the gate pins a label (`ANTIGRAVITY_GATE_MODEL`, default
-`Gemini 3.1 Pro (High)`; empty string disables), captures the agy log, and
-hard-fails when the propagated label differs (`gate_verify_agy_label` in
-`claude/scripts/gate-lib.sh`), with a best-effort conversation-records
-spot-check as secondary (`gate_verify_agy_model`). A run whose pin could not be
-verified is **runtime/browser evidence, model-agnostic** — not Gemini-lineage
-refutation.
+| Role | Owns |
+|------|------|
+| **Conductor** | Planning, workstream boundaries, integration, final verification, delivery, and durable records |
+| **Implementer** | A bounded change in an owned worktree, with named acceptance criteria and verification |
+| **Independent reviewer** | Refutation of the final artifact from a fresh context, with a claim to disprove and exact repro |
+| **Runtime/browser verifier** | Exercising the actual flow and reporting observable behavior with runtime evidence |
 
-| Agent | Lane | Owns |
-|-------|------|------|
-| **Claude Code** (Opus, 1M ctx) | **Conductor** | Plan/decompose, hold the through-line, drive the main implementation, write the failing test first, own handoffs + issues + changelog |
-| **Codex** (GPT-5.x) | **Independent verifier + rescue** | Adversarial refutation of the conductor's fix, from-scratch reimplementation to cross-check, deep root-cause when the conductor is stuck |
-| **Antigravity** (model verified per run — see above) | **Runtime/browser verification + front-end** | Prove it actually runs end-to-end, own UI-heavy surfaces and in-browser verification artifacts |
+A fresh context reduces inherited assumptions. It does not establish a different
+model lineage. High-risk changes involving authentication, authorization,
+secrets, payments, destructive operations, schemas, or public trust boundaries
+require a reviewer from a different model family than the implementer. Record
+actual reviewer identity evidence before claiming that requirement is satisfied.
 
-Lanes are defaults, not walls — whoever holds the working tree does the edit.
+An Antigravity model label and its propagation log establish what was dispatched;
+they do not prove which model served a particular run. The gate's best-effort
+conversation-record spot-check is corroboration, not per-run attestation. If
+actual identity cannot be established, report it as unverified and obtain the
+required separate-family review elsewhere. A text-diff review is not browser or
+runtime evidence, regardless of the tool or model that produced it.
 
 ## The two hard rules
 
@@ -48,18 +49,18 @@ Lanes are defaults, not walls — whoever holds the working tree does the edit.
    lint/test/build between rounds. Parallelize freely only on read-only work
    (review, research) and non-overlapping new files.
 
-2. **Verification is adversarial, never an echo chamber.** Three agents agreeing
-   can be one correlated blind spot voted three times. The chain: the conductor
-   implements → Codex tries to refute on a fresh checkout → Antigravity proves it
-   in the browser/runtime. Disagreement is the signal — route it to a fix, not a
-   tie-break. Re-run any "verified via X" claim that contradicts what you can
-   check directly; empirical beats confident assertion.
+2. **Verification is adversarial, never an echo chamber.** Ask a fresh-context
+   reviewer to refute the final artifact; use a different model family when
+   required above. Assign actual runtime/browser verification when the changed
+   behavior needs it. Disagreement is a reason to reproduce and investigate,
+   not a vote to break. Re-run any agent claim that contradicts directly
+   observable evidence.
 
-   Match reasoning effort to the job: run the correctness review at **low**
-   effort on purpose — a fast, literal read of the diff, not a high-effort pass
-   that invents problems or rewrites the design. Reserve high effort for the
-   work itself and for the judgment (coach) pass. A correctness reviewer
-   straining for findings is as costly as one that skims.
+Complete simplification, documentation, changelog, and generated-file updates
+before affected verification and final review. Any later artifact edit
+invalidates approval. Repeat affected checks and review after fixes, then
+validate the private review receipt immediately before shipping. Exit 0 alone
+is not proof of completed review; report tier/no-diff exemptions separately.
 
 ## Proportionality: gate tiers (#212)
 
@@ -86,7 +87,7 @@ notes.md` is classified under both paths and reviewed as a full delete+add.
 
 ## Handoff payload
 
-When the conductor hands work to Codex or Antigravity, the handoff (a `handoff`
+When the conductor hands verification to another agent, the handoff (a `handoff`
 note or an issue) carries the **claim to disprove** and the **exact command to
 reproduce** — not just "please review." A verifier with a falsifiable target and
 a repro is worth three that were asked to nod.
@@ -106,74 +107,37 @@ Mechanically:
 
 ## Dispatch mechanics
 
-**Codex: route through the companion script, never the forwarder agent (#179).**
-The `codex:codex-rescue` plugin agent is fire-and-forget only — it is Bash-only
-(no channel to return results), makes exactly one companion call, prefers
-`--background` for anything substantial (detaching the job into a handle it is
-forbidden to poll), and prompting it to "analyze" makes its wrapper model do the
-work instead of Codex. Anything that needs a result back MUST call the companion
-directly:
+Use the active runtime's native agent controls and obey its actual delegation
+authorization rules. When applicable user or instruction requirements authorize
+agents, assign useful bounded tasks; keep one editing owner per worktree and
+sequence overlapping changes. The shared orchestrate runtime contract documents
+the supported workflow in `agents/skills/orchestrate/references/runtime-contracts.md`.
+
+When calling a Codex companion from another runtime, use a result-returning
+interface and inspect the completed artifact. Resolve installed executable or
+plugin paths instead of embedding a cache version. The local Codex review gate
+provides the shipping review interface; a detached forwarder without a result
+channel is not evidence that review completed.
+
+For Antigravity, use the gate's configured model label from the current
+`ANTIGRAVITY_GATE_MODEL` setting and verify dispatch against its log. Keep the
+review prompt on stdin, bound execution time, and preserve the gate's permission
+and sandbox settings. Consult `claude/scripts/antigravity-review-gate.sh` and
+`claude/scripts/gate-lib.sh` for the executable invocation and validation rules.
+A matching dispatch label does not establish actual per-run model identity.
+
+Shipping uses the applicable `commit-push-pr` skill. Run the chosen gate with
+`--require` after the last commit; degraded or failed execution supplies no
+approval. Immediately before push, check the receipt against the outgoing HEAD:
 
 ```sh
-node "$(fd codex-companion.mjs ~/.claude/plugins/cache | head -1)" \
-  task|adversarial-review [--wait|--background] [--base <ref>]
-# background jobs: ... status | result | cancel
+python3 ~/.claude/scripts/review-receipt.py check --repo . \
+  --head "$(git rev-parse HEAD)" --reviewer codex
 ```
 
-Version-pin gotcha: the plugin cache path embeds the plugin version and moves on
-every plugin update — always resolve it via `fd` (or `find -name` where fd isn't
-installed), never hardcode the versioned path. Squash-merge gotcha: after a
-squash merge, `git merge-base --is-ancestor` is always false for the source
-branch — verify a change landed with `git grep <symbol> origin/main`, not commit
-ancestry.
-
-**Antigravity: dispatch non-interactively by model LABEL, then verify the pin
-(#177, #205).** `--model` takes the exact display label from `agy models` —
-**not a slug**. The verified Gemini-tier dispatch (agy 1.1.1, 2026-07-10):
-
-```sh
-timeout 300 agy -p "<prompt>" --model "Gemini 3.1 Pro (High)" --log-file /tmp/agy-run.log
-```
-
-- **Slugs are globally untrustworthy.** Every slug form (`gemini-3.1-pro*`,
-  `claude-sonnet-4-6-thinking`, …) is silently ignored — exit 0, flash-tier
-  fallback. `claude-opus-4-6-thinking` appearing to work was a coincidence
-  (that slug equals its backend ID), not evidence the slug form resolves.
-- **Verify the pin from the log**: the line `Propagating selected model
-  override to backend: label="…"` must quote the requested label. Gate runs
-  check it automatically (`gate_verify_agy_label` — hard failure on mismatch);
-  the conversation records under `~/.gemini/antigravity-cli/conversations/`
-  are the post-hoc ground truth (`gate_verify_agy_model`, best-effort — scan
-  the `.db-wal` files too, a fresh run's records sit there before SQLite
-  checkpoints).
-- Always wrap `agy` in `timeout` — print mode has a history of hangs and
-  silent failures. agy 1.1.1 fixes print-mode silent success on server
-  errors, but it also stopped reading stdin *when a prompt flag is present*
-  (`--print ""` now errors "empty prompt"), which broke the review gate's
-  original secret-safe channel (#227).
-- **Secret-safe stdin dispatch (agy ≥1.1.1):** pipe the prompt to stdin with
-  NO prompt flag at all — non-TTY stdin selects print mode and agy reads the
-  prompt from it. Verified live on 1.1.1 (2026-07-10), including `--model`
-  label propagation in the log:
-
-  ```sh
-  timeout 300 agy --mode plan --sandbox --model "Gemini 3.1 Pro (High)" \
-    --log-file /tmp/agy-run.log <<<"<prompt>"
-  ```
-
-  The channel is undocumented upstream (no `--prompt-file` or `-` sentinel
-  exists as of 1.1.1), so treat any empty-output run as a possible
-  regression — the gate's canary and self-test guard it. Both upstream
-  reports are filed (2026-07-10): the slug-fallback bug as
-  google-antigravity/antigravity-cli#581 and the stdin-sentinel /
-  `--prompt-file` feature request as antigravity-cli#582 (codex's
-  `exec [PROMPT | -]` cited as prior art). The gate migration is tied to
-  #582 ONLY: move onto the documented prompt channel and drop this pin note
-  when #582 lands. #581 is unrelated to the prompt channel — when it lands,
-  just relax the model-label pin guidance; do not move the gate off the
-  verified no-argv stdin path for it. The argv
-  `-p "<prompt>"` form stays acceptable only for secret-free prompts.
-- Evidence status: the label pin + propagation-line verification was proven
-  live (2026-07-10) on both the argv form and the no-prompt-flag stdin form
-  the gate now uses (#227 fix), so the gate's dispatch→log→verify pipeline
-  matches a live-verified invocation shape.
+Use `--reviewer antigravity` for an independently approved alternate gate and
+pass the same `--base <ref>` if one was selected. Successful review receipts and
+explicit current tier/no-diff exemptions are distinct evidence. Missing or stale
+evidence blocks shipping. A receipt records artifact review; it does not itself
+prove different model lineage or real runtime/browser verification. Never bypass
+hooks to evade a missing review or receipt.

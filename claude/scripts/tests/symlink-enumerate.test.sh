@@ -39,6 +39,7 @@ mkdir -p "$FIX/claude/scripts"
 : >"$FIX/claude/nolink.txt"
 printf '#!/usr/bin/env bash\n' >"$FIX/claude/scripts/gate.sh"
 printf '{}\n' >"$FIX/claude/scripts/gate-schema.json"
+printf '#!/usr/bin/env python3\n' >"$FIX/claude/scripts/review-receipt.py"
 printf '# docs\n' >"$FIX/claude/scripts/README.md"
 
 out="$(symlink_enumerate "$FIX/claude" "$HOME/.claude")"
@@ -50,6 +51,9 @@ check "scripts/*.sh enumerated executable" $((1 - $?))
 # gate-schema.json linked, WITHOUT the executable flag
 awk -F'\t' '$3 == "scripts/gate-schema.json" && $4 == "" { found = 1 } END { exit !found }' <<<"$out"
 check "scripts/*.json enumerated plain (gate schema reachable at runtime)" $((1 - $?))
+
+awk -F'\t' '$3 == "scripts/review-receipt.py" && $4 == "" { found = 1 } END { exit !found }' <<<"$out"
+check "scripts/*.py enumerated plain (receipt helper reachable at runtime)" $((1 - $?))
 
 # README.md under scripts/ must not be linked
 ! grep -q "scripts/README\.md" <<<"$out"

@@ -53,18 +53,20 @@ coordinating through artifacts — instructions + skills (loaded identically via
 the AgentPack), GitHub issues, `handoff` notes, and git — not a shared chat.
 Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
 
-- **Lanes (defaults, not walls):** Claude Code is the conductor — plan/decompose,
-  hold the through-line, drive the main implementation, own handoffs + issues +
-  changelog. My lane as Codex is independent verifier + rescue: refute the
-  conductor's fix on a fresh checkout, reimplement to cross-check, deep
-  root-cause when it's stuck. Antigravity owns runtime/browser verification and
-  front-end surfaces. The value is independent lineages *disagreeing* — refute,
-  don't rubber-stamp.
+- **Assign roles explicitly:** the active session is the conductor and owns
+  planning, integration, verification, delivery, and handoffs. Assign bounded
+  implementation, independent review, or runtime/browser verification to
+  agents with the needed capabilities. Any runtime can conduct or implement;
+  personal defaults belong in private preferences. Refute, don't rubber-stamp.
 - **One owner of the working tree at a time** — never edit the same files as
   another agent concurrently. Use a separate worktree, or sequence the edits.
 - **Verification is adversarial, not an echo chamber** — three agents agreeing
   can be one blind spot voted thrice. When handed a "verify X" task, try to
   break it; report the disagreement rather than confirming by default.
+- **Review independence:** a fresh context reduces inherited assumptions;
+  high-risk changes also require a reviewer from a different model family.
+  Record the actual reviewer evidence; a requested model label alone does not
+  establish the model used, and a text-diff review is not browser evidence.
 - **Handoff payload:** a handoff to me should carry the *claim to disprove* and
   the *exact repro command*. If it doesn't, ask for them before "reviewing."
 

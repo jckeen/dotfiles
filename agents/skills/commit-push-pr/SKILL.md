@@ -16,8 +16,8 @@ make a pull request.
    - `git diff`
 2. Determine which files belong to the requested change. Leave unrelated user
    changes alone.
-3. Run the smallest useful verification command if one exists and has not
-   already run.
+3. Finish simplification, intended documentation, changelog, and generated-file
+   updates. Run the smallest useful verification affected by the final changes.
 4. Stage only relevant files.
 5. Commit with a conventional message:
    - `feat: ...`
@@ -26,33 +26,55 @@ make a pull request.
    - `refactor: ...`
    - `test: ...`
    - `chore: ...`
-6. Run the Codex review gate — `~/.claude/scripts/codex-review-gate.sh` (the
-   same script `cc` uses; it runs `codex exec --output-schema` over a
-   gate-computed, injection-fenced diff and parses structured JSON findings).
-   Run it **after the commit, before the push**, so it reviews the committed
-   delta vs the base branch — exactly the PR contents — and ignores unrelated
-   WIP in the tree. This is the ADR-0003 stop-gate made concrete:
-   - Exit 2 → STOP: critical/high/medium findings, unreadable output, or a
-     diff touching the reviewer's own instruction files (AGENTS*.md / codex/ —
-     self-review is untrusted; use the Antigravity gate + human eyes, or
-     `CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` after reading those changes). Fix in
-     a follow-up commit, re-run the gate, then continue. Do not push past it.
-   - Exit 0 → clean, or only low findings (already filed as GitHub issues).
-     Proceed.
-   - Exit 3 / loud warning → Codex could not run; the gate degrades open. Note
-     it and continue, or set `CODEX_GATE_REQUIRED=1` to hard-require the review.
-7. Run `~/.claude/scripts/antigravity-review-gate.sh` as an advisory,
-   cross-lineage second opinion for runtime, frontend, or boundary-sensitive
-   changes. Skip it for pure docs/config when it adds no signal. Treat real
-   findings as actionable, but do not make this advisory gate authoritative
-   over the Codex stop-gate and CI.
-8. Push the current non-default branch, setting upstream if needed.
+6. Run `~/.claude/scripts/codex-review-gate.sh --require` **after the last
+   commit, before the push**. Supply `--base <ref>` when needed to identify the
+   PR base. The gate reviews the committed delta and records private evidence
+   bound to that artifact.
+   - Blocking findings, unreadable output, or an unavailable reviewer stop
+     shipping. Fix in a follow-up commit and repeat affected verification and
+     final review. Do not treat a degraded run as approval.
+   - Exit 0 alone does not mean review completed. Distinguish a successful
+     review receipt from an explicit tier/no-diff exemption; record an
+     exemption as an exemption, never as a reviewer verdict.
+   - For the self-instruction guard, independently read the affected
+     instructions and route refutation through a different model family.
+     A scoped `CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` override may follow that
+     independent review; record the reason and evidence. Alternatively use
+     the Antigravity gate with `--require` and its receipt when it provides the
+     independent review. Never bypass hooks to evade the guard.
+7. Require a review from a different model family than the implementer for
+   authentication, authorization, secrets, payments, destructive operations,
+   schemas, or public trust boundaries. A fresh Codex reviewer of Codex work
+   supplies context independence only. Use a suitable separate-family reviewer
+   and verify its actual identity; an Antigravity dispatch label alone does
+   not prove the model used. For other relevant runtime/frontend changes,
+   `~/.claude/scripts/antigravity-review-gate.sh` can add an advisory opinion.
+   A text-diff review is not runtime/browser verification.
+8. Immediately before pushing, validate the artifact evidence:
+
+   ```bash
+   python3 ~/.claude/scripts/review-receipt.py check --repo . \
+     --head "$(git rev-parse HEAD)" --reviewer codex
+   ```
+
+   Use `--reviewer antigravity` for the independently approved alternate gate
+   and the same `--base <ref>` if one was selected. A missing, stale, or
+   mismatched receipt blocks the push; only a checker-accepted current
+   exemption may replace completed review under the applicable gate policy.
+   Any subsequent artifact edit invalidates approval. Recommit intended edits,
+   rerun affected verification and required reviews, and recheck the receipt.
+   Push the current non-default branch, setting upstream if needed.
+   For an explicitly selected nondefault PR base, scope that same base to the
+   push with `REVIEW_RECEIPT_BASE=<ref> git push ...` so the hook checks the
+   intended receipt. Without this one-push setting the hook requires the
+   repository's default base; never select a narrower base just to pass it.
 9. Create a PR with `gh pr create`:
    - title under 70 characters
    - body covering what changed, why, and how it was tested
    - issue links such as `Fixes #123` when applicable
-10. Inspect `gh pr checks` and report pending or failed checks. The merge gate is
-    the Codex review plus CI green (see ADR-0003).
+10. Inspect `gh pr checks` and report pending or failed checks. Require the
+    applicable artifact review evidence and required CI checks to be green
+    before enabling auto-merge (see ADR-0003).
 11. Enable auto-merge only when an applicable standing order explicitly grants
     that authority and the required review/CI conditions are satisfied.
     Otherwise return the PR URL and verification state without merging.

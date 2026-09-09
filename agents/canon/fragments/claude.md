@@ -152,17 +152,21 @@ through artifacts — instructions + skills (loaded identically via the AgentPac
 GitHub issues, `handoff` notes, and git — not a shared chat. Full role table and
 rationale: `MULTI-AGENT.md`. The operative rules:
 
-- **Lanes (defaults, not walls):** I'm the conductor — plan/decompose, hold the
-  through-line, drive the main implementation, own handoffs + issues + changelog.
-  Codex is the independent verifier + rescue (refute my fix on a fresh checkout,
-  reimplement to cross-check, deep root-cause when I'm stuck). Antigravity owns
-  runtime/browser verification and front-end surfaces.
+- **Assign roles explicitly:** the active session is the conductor and owns
+  planning, integration, verification, delivery, and handoffs. Assign bounded
+  implementation, independent review, or runtime/browser verification to
+  agents with the needed capabilities. Any runtime can conduct or implement;
+  personal defaults belong in private preferences. Refute, don't rubber-stamp.
 - **One owner of the working tree at a time** — the Parallel agents rule applies
   across tools too. Each agent gets its own worktree, or edits are sequenced.
 - **Verification is adversarial, not an echo chamber** — three agents agreeing
   can be one blind spot voted thrice. Assign the refuter role explicitly; route
   disagreement to a fix, not a tie-break.
-- **Handoff payload:** when I hand to Codex/Antigravity, the note carries the
+- **Review independence:** a fresh context reduces inherited assumptions;
+  high-risk changes also require a reviewer from a different model family.
+  Record the actual reviewer evidence; a requested model label alone does not
+  establish the model used, and a text-diff review is not browser evidence.
+- **Handoff payload:** when I hand work to another agent, the note carries the
   *claim to disprove* and the *exact repro command*, not just "please review."
   For gate-mediated refutation, pass them directly:
   `codex-review-gate.sh --claim "<claim>" --repro "<cmd>"`.

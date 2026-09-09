@@ -36,13 +36,11 @@ coordinating through artifacts — instructions + skills (loaded identically via
 the AgentPack), GitHub issues, `handoff` notes, and git — not a shared chat.
 Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
 
-- **Lanes (defaults, not walls):** Claude Code is the conductor — plan/decompose,
-  hold the through-line, drive the main implementation, own handoffs + issues +
-  changelog. My lane as Codex is independent verifier + rescue: refute the
-  conductor's fix on a fresh checkout, reimplement to cross-check, deep
-  root-cause when it's stuck. Antigravity owns runtime/browser verification and
-  front-end surfaces. The value is independent lineages *disagreeing* — refute,
-  don't rubber-stamp.
+- **Assign roles explicitly:** the active session is the conductor and owns
+  planning, integration, verification, delivery, and handoffs. Assign bounded
+  implementation, independent review, or runtime/browser verification to
+  agents with the needed capabilities. Any runtime can conduct or implement;
+  personal defaults belong in private preferences. Refute, don't rubber-stamp.
 <!-- include:team-hard-rules -->
 
 ## Public Safety

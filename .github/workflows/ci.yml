@@ -92,13 +92,11 @@ jobs:
       - name: AGENTPACK.yaml matches skill/agent frontmatter
         run: claude/scripts/gen-agentpack.sh --check
 
-  # The remaining pure-bash checkers (none of them required status checks) share
-  # one runner + one checkout instead of paying a spin-up each — each finishes in
-  # well under a second. `if: ${{ !cancelled() }}` runs every step even after an
-  # earlier one fails, so a single run surfaces all failures at once (as separate
-  # parallel jobs used to). Do NOT fold doc-truth/shellcheck/tsc/
-  # agentpack-generated in here — those are (or are slated to become) required
-  # checks and must report under their own names.
+  # `checks` is a required status context for the bundled behavioral suites and
+  # policy checks. Keep its name in sync with docs/BRANCH_PROTECTION.md and the
+  # live rule. `if: ${{ !cancelled() }}` runs every step after earlier failures
+  # so one run surfaces all failures. The other required contexts retain their
+  # own job names; do not fold them into this job.
   checks:
     name: checks
     runs-on: ubuntu-latest
@@ -140,8 +138,8 @@ jobs:
           claude/scripts/check-install-integrity.sh
 
       # Self-test only: enumeration is pure (fixture tree in), no live
-      # ~/.claude needed. Guards the scripts/*.json category — gate schemas
-      # must be linked beside their gate scripts or the gates degrade open.
+      # ~/.claude needed. Gate schemas and Python receipt helpers must be
+      # linked beside their gate scripts.
       - name: symlink-enumerate (self-test)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/symlink-enumerate.test.sh
@@ -168,6 +166,12 @@ jobs:
       - name: codex-review-gate (self-test)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/codex-review-gate.test.sh
+      - name: review receipts and shipping boundaries
+        if: ${{ !cancelled() }}
+        run: |
+          python3 claude/scripts/tests/review-receipt.test.py
+          python3 claude/scripts/tests/workflow-shipping.test.py
+          python3 claude/scripts/tests/workflow-shipping-rewrites.test.py
       # setup.sh --dry-run must never write to $HOME (issue #133). The test
       # runs the installer against a throwaway HOME and asserts a
       # byte-identical before/after snapshot.

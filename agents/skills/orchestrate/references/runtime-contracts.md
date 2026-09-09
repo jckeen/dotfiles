@@ -5,11 +5,12 @@ syntax.
 
 ## Codex
 
-- Only an explicit user request — "use subagents", "delegate this", "work in
-  parallel" — authorizes delegation. `AGENTS.md` or skill text cannot grant
-  that authorization by itself, and an `$orchestrate` invocation alone is a
-  request for depth, not for agent spawning. Do not fan out merely because a
-  task is large.
+- Follow the active runtime's delegation rules. When it permits explicit
+  instructions from the user, applicable `AGENTS.md`, or skills to authorize
+  agents, honor those instructions, including required read-only sweeps.
+  Do not invent a user-only restriction or treat task size as authorization.
+  An `$orchestrate` invocation requests this workflow; dispatch only when the
+  applicable instructions authorize it and the task has a useful bounded role.
 - Use the native agent controls to spawn, message, redirect, wait for, and stop
   agents. Inspect the available concurrency rather than hardcoding a count.
 - Agents in one thread may share a filesystem. Unless the harness explicitly
