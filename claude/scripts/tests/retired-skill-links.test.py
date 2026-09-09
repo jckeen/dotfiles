@@ -222,6 +222,63 @@ class RetirementTests(unittest.TestCase):
                     self.assertTrue(destination.is_symlink())
                     self.assertEqual(os.readlink(destination), str(repo / target))
 
+    def test_target_trailing_newlines_are_not_stripped_before_comparison(self):
+        for runtime in LINKS:
+            for suffix in ["\n", "\n\n"]:
+                with self.subTest(runtime=runtime, suffix=suffix), fixture(runtime) as (repo, home, run):
+                    for dest, source in LINKS[runtime]:
+                        link = home / dest
+                        link.unlink()
+                        link.symlink_to(str(repo / source) + suffix)
+                    before = snapshot(home)
+                    result = run("--heal", "--strict")
+                    self.assertEqual(snapshot(home), before)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_failed_readlink_cannot_authorize_retirement(self):
+        with fixture("claude") as (repo, home, _):
+            link = home / LINKS["claude"][0][0]
+            source = repo / LINKS["claude"][0][1]
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
+                 'green() { :; }; red() { :; }; '
+                 'readlink() { printf "%s\\n" "$READLINK_TEST_TARGET"; return 1; }; '
+                 'heal_retired_skill_link "$2" "$3" "$4"',
+                 "readlink-failure-test", str(repo / "claude/scripts/retired-skill-links.sh"),
+                 str(link), str(source), str(source.parent)],
+                env={**os.environ, "READLINK_TEST_TARGET": str(source)},
+                text=True, capture_output=True, timeout=3,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(link.is_symlink())
+
+    def test_newline_named_symlink_ancestors_are_not_traversed(self):
+        for runtime in LINKS:
+            for boundary in ["source", "home"]:
+                with self.subTest(runtime=runtime, boundary=boundary), fixture(runtime) as (repo, home, _):
+                    command_repo, command_home = repo, home
+                    alias = repo.parent / (boundary + "\n")
+                    if boundary == "home":
+                        alias.symlink_to(home)
+                        command_home = alias
+                    else:
+                        alias.symlink_to(repo.parent)
+                        command_repo = alias / repo.name
+                        for dest, entry in snapshot(home).items():
+                            if entry[0] == "link":
+                                path = home / dest
+                                path.unlink()
+                                path.symlink_to(str(command_repo) + entry[1][len(str(repo)):])
+                    before = snapshot(home)
+                    subprocess.run(
+                        ["bash", str(command_repo / f"check-{runtime}.sh"), "--heal", "--strict"],
+                        env={**os.environ, "HOME": str(command_home),
+                             "CODEX_MEMORY_REPO": str(repo.parent / "no-memory"),
+                             "AGY_MEMORY_REPO": str(repo.parent / "no-memory")},
+                        text=True, capture_output=True, timeout=3,
+                    )
+                    self.assertEqual(snapshot(home), before)
+
     def test_reintroduced_sources_are_not_retired(self):
         for runtime in LINKS:
             with self.subTest(runtime=runtime), fixture(runtime) as (repo, home, run):
