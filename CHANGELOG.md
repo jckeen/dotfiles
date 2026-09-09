@@ -58,6 +58,8 @@
   one-push setting.
   Multiline push destinations are rejected before shell output handling can
   change their meaning.
+  Empty or multiple configured destination URLs are rejected even when Git
+  normalizes them to a single effective URL.
   Protocol v2 destination checks reject advertised symbolic branch aliases.
   Unadvertised destinations require an empty expected object ID at push time
   instead of risking an overwrite through a hidden alias.

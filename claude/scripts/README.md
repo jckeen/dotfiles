@@ -68,6 +68,9 @@ gate and receipt check with `--base <ref>`, then use
 `REVIEW_RECEIPT_BASE=<ref> git push ...` for that push. The hook otherwise
 requires the repository's default base. The setting selects the expected
 base; it does not bypass artifact validation.
+The selected remote must have exactly one nonempty configured push URL, or
+one nonempty configured fetch URL when no push URL is set. Empty or multiple
+values are rejected even when Git normalizes them to a single destination.
 The wrapper rejects resolved destinations that name another remote or would
 be transformed by another URL rewrite; use a direct destination in that case.
 It requires Git protocol v2 with server-option support to inspect branch aliases
