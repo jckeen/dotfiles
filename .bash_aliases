@@ -785,13 +785,14 @@ cct() {
     return
   fi
 
-  # Multiple command arguments make tmux exec the shell directly. Passing the
-  # user's arguments as argv keeps expanded private content out of interactive
-  # shell history and avoids another round of shell parsing.
+  # Keep one login shell so its startup cannot move the working directory
+  # again after cc exits. Private values travel as argv; only a fixed command
+  # referring to those parameters enters the interactive shell's history.
   local launch_shell="${SHELL:-/bin/bash}"
   tmux new-session -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" \
-    "$launch_shell" -lic 'cd -- "$1" || exit; shift; cc "$@"; exec "$0" -l' \
-    "$launch_shell" "$PWD" "$@" || return 1
+    "$launch_shell" -lis -- "$PWD" "$@" || return 1
+  tmux send-keys -t "=$name:" \
+    'if cd -- "$1"; then shift; cc "$@"; fi; set --' Enter || return 1
   tmux attach-session -t "=$name"
 }
 

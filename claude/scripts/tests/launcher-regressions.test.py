@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Isolated regressions for launcher reload, Git diagnostics, and tmux handoff."""
 import os
+import pty
+import select
+import signal
+import time
 from pathlib import Path
 import shutil
 import subprocess
@@ -123,46 +127,102 @@ pull-all > "$FIXTURE/output" || exit 1
 grep -q 'branch deleted' "$FIXTURE/output"
 ''')
 
-    def test_cct_arguments_do_not_enter_interactive_history(self):
-        result = self.shell(r'''
+    def test_cct_preserves_project_and_private_arguments_in_persistent_shell(self):
+        for shell_name, project_arg in (("bash", "project"), ("bash", ""),
+                                        ("zsh", "project"), ("zsh", "")):
+            launch_shell = shutil.which(shell_name)
+            if not launch_shell:
+                continue
+            with self.subTest(shell=shell_name, project_arg=project_arg):
+                fixture = self.root / f"{shell_name}-{'named' if project_arg else 'cwd'}"
+                project = fixture / "dev" / "project"
+                project.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", "-b", "main", str(project)],
+                               env=self.env, check=True)
+                startup = r'''
 source "$ALIASES"
-export SHELL=/bin/bash
-_dev_dir() { printf '%s\n' "$FIXTURE"; }
-# Record tmux's argument vector without starting a server or invoking a real CLI.
+_dev_dir() { printf '%s\n' "$HOME/dev"; }
+_check_critical_symlinks() { :; }
+_check_claude_launch_health() { :; }
+pull-all() { :; }
+claude() {
+  printf '%s\0' "$@" > "$HOME/received"
+  printf '%s\n' "$PWD" > "$HOME/agent-cwd"
+}
+HISTFILE="$HOME/history"
+HISTSIZE=1000
+SAVEHIST=1000
+PS1='CCT_READY> '
+cd "$HOME/dev"
+'''
+                (fixture / ".bashrc").write_text(startup)
+                (fixture / ".bash_profile").write_text('source "$HOME/.bashrc"\n')
+                (fixture / ".zshrc").write_text(startup)
+                (fixture / ".zprofile").write_text('cd "$HOME/dev"\n')
+                env = dict(self.env, HOME=str(fixture), FIXTURE=str(fixture),
+                           SHELL=launch_shell, TERM="xterm", ZDOTDIR=str(fixture))
+                capture = r'''
+source "$ALIASES"
+_dev_dir() { printf '%s\n' "$HOME/dev"; }
 tmux() {
   case "$1" in
     has-session) return 1 ;;
-    send-keys) printf '%s\n' "$4" > "$FIXTURE/typed" ;;
-    new-session) printf '%s\0' "$@" > "$FIXTURE/new-session" ;;
+    send-keys) printf '%s\n' "$4" > "$HOME/typed" ;;
+    new-session) printf '%s\0' "$@" > "$HOME/new-session" ;;
   esac
 }
-cct --append-system-prompt $'PRIVATE_SENTINEL\nquoted " argument' ''
-python3 - <<'INNER'
-import os, pathlib, subprocess
-root=pathlib.Path(os.environ['FIXTURE'])
-if (root/'typed').exists():
-    command=(root/'typed').read_text()
-    env=dict(os.environ,HISTFILE=str(root/'history'))
-    subprocess.run(['bash','--noprofile','--norc','-i'],input=command+'\nexit\n',text=True,
-                   env=env,capture_output=True)
-    assert 'PRIVATE_SENTINEL' not in (root/'history').read_text(), 'private argument entered shell history'
-else:
-    args=(root/'new-session').read_bytes().split(b'\0')[:-1]
-    shell_at=args.index(b'/bin/bash')
-    command=[os.fsdecode(arg) for arg in args[shell_at:]]
-    assert command[-3:] == ['--append-system-prompt','PRIVATE_SENTINEL\nquoted " argument','']
-    # Startup files are replaced by harmless functions; login startup itself is
-    # covered by setup's existing contract, so this probe avoids system profiles.
-    (root/'.bashrc').write_text('cc() { printf "%s\\0" "$@" > "$HOME/received"; }; HISTFILE="$HOME/history"\n')
-    script=command[2].replace('exec "$0" -l', 'exit')
-    command=[command[0], '--noprofile', '--rcfile', str(root/'.bashrc'), '-ic', script, *command[3:]]
-    subprocess.run(command,env=os.environ,input='exit\n',text=True,capture_output=True,timeout=5,check=True)
-    assert (root/'received').read_bytes().split(b'\0')[:-1] == [b'--append-system-prompt',b'PRIVATE_SENTINEL\nquoted " argument',b'']
-    if (root/'history').exists():
-        assert 'PRIVATE_SENTINEL' not in (root/'history').read_text()
-INNER
-''')
-        self.assertNotIn("PRIVATE_SENTINEL", result.stdout)
+cct "$@"
+'''
+                arguments = ["--append-system-prompt", 'PRIVATE_SENTINEL\nquoted " argument', ""]
+                if project_arg:
+                    arguments.insert(0, project_arg)
+                result = subprocess.run(["bash", "-c", capture, "bash", *arguments],
+                                        cwd=fixture if project_arg else project,
+                                        env=env, text=True, capture_output=True,
+                                        timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = (fixture / "new-session").read_bytes().split(b"\0")[:-1]
+                command = [os.fsdecode(arg) for arg in args[args.index(os.fsencode(launch_shell)):]]
+                env["CCT_DIR"] = str(project)
+                pid, master = pty.fork()
+                if pid == 0:
+                    os.chdir(fixture)
+                    os.execvpe(command[0], command, env)
+                output = bytearray()
+                exited = False
+                probed = False
+                try:
+                    if (fixture / "typed").exists():
+                        typed = (fixture / "typed").read_bytes()
+                        self.assertNotIn(b"PRIVATE_SENTINEL", typed)
+                        os.write(master, typed)
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if not probed and (fixture / "agent-cwd").exists():
+                            os.write(master, b'''printf '%s\\n' "$PWD" > "$HOME/prompt-cwd"; printf '%s\\n' "$#" > "$HOME/prompt-argc"; exit\n''')
+                            probed = True
+                        ready, _, _ = select.select([master], [], [], 0.05)
+                        if ready:
+                            try:
+                                output.extend(os.read(master, 4096))
+                            except OSError:
+                                pass
+                        if os.waitpid(pid, os.WNOHANG)[0]:
+                            exited = True
+                            break
+                    self.assertTrue(exited, output.decode(errors="replace"))
+                finally:
+                    if not exited:
+                        os.kill(pid, signal.SIGKILL)
+                        os.waitpid(pid, 0)
+                    os.close(master)
+                self.assertEqual((fixture / "agent-cwd").read_text().strip(), str(project))
+                self.assertEqual((fixture / "prompt-cwd").read_text().strip(), str(project))
+                self.assertEqual((fixture / "prompt-argc").read_text().strip(), "0")
+                self.assertEqual((fixture / "received").read_bytes().split(b"\0")[:-1],
+                                 [b"--remote-control", b"--chrome", b"--append-system-prompt",
+                                  b'PRIVATE_SENTINEL\nquoted " argument', b""])
+                self.assertNotIn("PRIVATE_SENTINEL", (fixture / "history").read_text())
 
     def copy_setup_repo(self, destination):
         destination.mkdir(parents=True)
