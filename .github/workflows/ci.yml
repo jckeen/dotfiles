@@ -26,6 +26,7 @@ jobs:
           # `# shellcheck disable=SCxxxx` comments with reasons.
           SHELLCHECK_OPTS: --severity=warning
         with:
+          version: v0.11.0
           severity: warning
           scandir: "."
           # Shipped scripts carry a .sh extension, so the action's built-in
