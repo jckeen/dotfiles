@@ -93,6 +93,9 @@ Reviewer dispatch information and observed identity are recorded separately.
 The configured docs-only size limit is captured with the review policy and
 checked again when its exemption is completed or used for shipping.
 Classification and exemption validation use the same policy implementation.
+Passive filename filters retain instruction files, executable files, and
+symlinks. Documentation exemptions require nonexecutable regular files with
+recognized documentation names.
 
 ## Safety Tiers
 

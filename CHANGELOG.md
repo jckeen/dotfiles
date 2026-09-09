@@ -22,7 +22,9 @@
   unrelated base history, file/directory replacements, and ignored instruction
   files. Receipt capture disables configured filesystem monitors and preserves
   the selected docs-only size policy through completion and validation.
-  Classification and exemption validation share one policy. Known runtime
+  Classification and exemption validation share one policy. Instruction files,
+  executable files, and symlinks cannot bypass review through passive filename
+  filters or documentation exemptions. Known runtime
   credentials and state stay out of review prompts when ignored, and block
   review when explicitly included. Repository instruction symlinks and staged submodules fail
   closed instead of leaving their effective content outside the snapshot.
@@ -40,6 +42,8 @@
   Further URL rewrites and remote-name indirection fail closed; explicitly
   selected PR review bases can be carried through the push hook with a
   one-push setting.
+  Multiline push destinations are rejected before shell output handling can
+  change their meaning.
   Push-remote selection follows Git's configured precedence, and a current
   fetch upstream does not suppress delivery to a behind push fork.
 - Shared instructions assign coordination to the active session, preserve

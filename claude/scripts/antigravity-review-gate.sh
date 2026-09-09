@@ -9,7 +9,7 @@
 #
 # Flow:
 #   1. Snapshot the committed delta vs base, or the working tree when requested.
-#   2. Filter lockfiles and passive assets; preserve executable SVG/minified JS.
+#   2. Filter passive files; preserve instructions, executables, and symlinks.
 #      Explicit no-diff/docs exemptions get receipts; tool failures do not.
 #   3. Run local validation before dispatch. Failure → exit 2.
 #   4. Run agy print mode NON-interactively (prompt piped to stdin, no prompt
@@ -138,8 +138,9 @@ gate_resolve_base
 gate_select_diff_target
 
 # ─── Step 2: extract + filter the diff ─────────────────────────
-# Lockfiles and passive assets are excluded. SVG and minified JavaScript stay
-# in coverage; working-tree reviews also include untracked files.
+# Passive filename filters retain instructions, executables, and symlinks.
+# SVG and minified JavaScript stay in coverage; working-tree reviews include
+# untracked files.
 gate_extract_diff
 
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then

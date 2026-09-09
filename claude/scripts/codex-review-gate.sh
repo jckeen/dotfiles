@@ -124,9 +124,9 @@ gate_resolve_base
 gate_select_diff_target
 
 # ─── Extract + filter the diff (the gate scopes; the reviewer never does) ──
-# Lockfiles and passive assets are excluded; SVG and minified JavaScript stay
-# in coverage. Untracked files are appended for working-tree reviews — see gate_extract_diff. Both gates review
-# the same target because both consume this one implementation.
+# Passive filename filters retain instructions, executables, and symlinks.
+# SVG and minified JavaScript stay in coverage. Working-tree reviews include
+# untracked files. Both gates consume the same capture implementation.
 gate_extract_diff
 
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
