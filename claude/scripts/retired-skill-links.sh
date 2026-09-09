@@ -11,6 +11,10 @@ heal_retired_skill_link() {
   for ancestor in "$(dirname "$link")" "$(dirname "$bundle")"; do
     while [ "$ancestor" != / ]; do
       [ ! -L "$ancestor" ] || return 0
+      # An inaccessible ancestor makes an existing bundle look absent to -e.
+      if [ -e "$ancestor" ] && { [ ! -d "$ancestor" ] || [ ! -x "$ancestor" ]; }; then
+        return 0
+      fi
       ancestor="$(dirname "$ancestor")"
     done
   done

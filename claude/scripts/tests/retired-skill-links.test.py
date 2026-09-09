@@ -257,6 +257,29 @@ class RetirementTests(unittest.TestCase):
                 for dest, _ in LINKS[runtime]:
                     self.assertTrue((home / dest).is_symlink())
 
+    def test_inaccessible_source_ancestors_are_not_treated_as_absent(self):
+        for runtime in LINKS:
+            for restored in [False, True]:
+                with self.subTest(runtime=runtime, restored=restored), fixture(runtime) as (repo, home, run):
+                    source_root = repo / ("claude/skills" if runtime == "claude" else "agents/skills")
+                    source_root.mkdir(parents=True)
+                    if restored:
+                        bundle = source_root / "fable-mode"
+                        bundle.mkdir()
+                        (bundle / "SKILL.md").write_text("restored operator source\n")
+                    source_root.chmod(0)
+                    try:
+                        if os.access(source_root, os.X_OK):
+                            self.skipTest("permission-denied fixture requires an unprivileged user")
+                        result = run("--heal", "--strict")
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        for dest, _ in LINKS[runtime]:
+                            self.assertTrue((home / dest).is_symlink(), dest)
+                    finally:
+                        source_root.chmod(0o700)
+                    if restored:
+                        self.assertEqual((bundle / "SKILL.md").read_text(), "restored operator source\n")
+
     def test_symlinked_ancestors_are_never_traversed_for_healing(self):
         roots = {
             "claude": [".claude", ".claude/skills", ".claude/skills/fable-mode"],
