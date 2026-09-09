@@ -47,6 +47,28 @@ fi
 
 check_destination() {
   local remote_head default_ref
+  # get-url already applied one rewrite. A second invocation must use the
+  # same endpoint, including rules from global, local, and included config.
+  if ! python3 - "$PUSH_URL" <<'PY'
+import os
+import subprocess
+import sys
+
+config = subprocess.run(
+    ["git", "config", "--null", "--get-regexp", r"^url\..*\.(insteadof|pushinsteadof)$"],
+    stdout=subprocess.PIPE,
+)
+if config.returncode not in (0, 1):
+    sys.exit(1)
+destination = os.fsencode(sys.argv[1])
+for record in config.stdout.split(b"\0"):
+    if record and destination.startswith(record.split(b"\n", 1)[1]):
+        sys.exit(1)
+PY
+  then
+    echo "Cannot pin the push destination: a Git URL rewrite still applies, or its configuration could not be read. Use a direct destination without further rewrites." >&2
+    return 1
+  fi
   remote_head=$(git ls-remote --symref -- "$PUSH_URL" HEAD) || return 1
   default_ref=$(awk '$1 == "ref:" && $3 == "HEAD" && $2 ~ /^refs\/heads\// {print $2}' <<< "$remote_head")
   if [[ -z "$default_ref" || "$default_ref" == *$'\n'* ]]; then
