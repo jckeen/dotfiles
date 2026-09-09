@@ -83,7 +83,8 @@ when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
 It covers both staged changes and later workspace edits.
-Text diffs preserve physical lines, including embedded control characters.
+Text diffs preserve physical lines, including embedded control characters,
+and quote filenames in their headers.
 Instruction coverage includes shared skill bundles and canonical sources under
 `agents/skills/` and `agents/canon/`, Claude skill and agent sources under
 `claude/skills/` and `claude/agents/`, and the Claude AgentPack manifest,

@@ -24,7 +24,7 @@
   recognize Git-managed CRLF conversion for regular files and sparse checkout
   omissions; symlink targets retain exact comparison.
   Uncommitted text diffs keep embedded control characters within their original
-  physical lines.
+  physical lines and quote filenames in their headers.
   Receipt capture disables configured filesystem
   monitors and preserves the selected docs-only size policy through completion
   and validation.
