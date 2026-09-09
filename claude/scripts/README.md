@@ -51,7 +51,7 @@ What `review-and-push.sh` does:
 
 1. Inspects the current non-default branch, outgoing commits, and working tree.
 2. Runs the detected test suite and stops on failure.
-3. Runs the Codex review gate with `--require` on the committed artifact.
+3. Runs the Codex review gate with `--require --committed` on the committed artifact.
 4. Prompts for confirmation, unless `--auto-push` was selected.
 5. Validates the private receipt after confirmation, immediately before push.
 6. Pushes the reviewed commit to the current branch with an explicit refspec.
@@ -71,6 +71,10 @@ The wrapper rejects resolved destinations that name another remote or would
 be transformed by another URL rewrite; use a direct destination in that case.
 It selects the branch's `pushRemote`, then `remote.pushDefault`, then the
 branch's fetch remote, falling back to `origin` when none is configured.
+Committed scope keeps unrelated working changes out of the push review even
+when the fetch upstream is current and the selected push fork is behind.
+Dirty instruction surfaces still block committed review. An explicit
+`--uncommitted` review includes ignored instruction files in its review target.
 
 Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
@@ -78,6 +82,8 @@ requires the outgoing commit to be that worktree's current HEAD and rejects
 unsupported submodule or non-UTF-8 review content. Review another branch in
 its own worktree; resolve unsupported content explicitly before shipping.
 Reviewer dispatch information and observed identity are recorded separately.
+The configured docs-only size limit is captured with the review policy and
+checked again when its exemption is completed or used for shipping.
 
 ## Safety Tiers
 

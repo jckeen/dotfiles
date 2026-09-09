@@ -19,14 +19,18 @@
   Outside Git repositories, advisory runs retain their warning behavior;
   required runs still fail without issuing review evidence.
   Application hooks remain ordinary code; uncommitted capture supports
-  unrelated base history and directory replacements.
+  unrelated base history, file/directory replacements, and ignored instruction
+  files. Receipt capture disables configured filesystem monitors and preserves
+  the selected docs-only size policy through completion and validation.
 - Private review receipts bind completed results to the base, commit, tree,
   diff, index, and workspace state. Changed artifacts and superseded attempts
   invalidate approval. The push hook checks each outgoing commit independently
   of secret-scanner availability; receipt helpers are installed beside gates.
   Annotated tags validate the commit they reference; local replacement refs
   cannot alter validation or secret scanning.
-- The morning review script uses the required Codex gate, validates its receipt
+- The morning review script explicitly selects committed review scope even
+  when the fetch upstream is current and unrelated work is dirty. It uses the
+  required Codex gate, validates its receipt
   after confirmation, and pushes the reviewed commit to a verified non-default
   branch at the actual push destination. Automatic tag pushes are disabled.
   Further URL rewrites and remote-name indirection fail closed; explicitly
