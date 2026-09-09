@@ -138,6 +138,18 @@ def layout(repo):
     return repo, directory, receipts
 
 
+def tree_files(repo, ref):
+    entries = {}
+    for entry in git(repo, 'ls-tree', '-rz', '--full-tree', ref).split(b'\0'):
+        if entry:
+            meta, path = entry.split(b'\t', 1)
+            mode, kind, obj = meta.decode().split()
+            if kind != 'blob':
+                raise ValueError('submodule snapshots are unsupported; review separately')
+            entries[os.fsdecode(path)] = (mode, obj)
+    return entries
+
+
 def capture(repo, base, scope):
     head = oid(repo, 'HEAD')
     base_commit = oid(repo, base) if base else None
@@ -148,21 +160,16 @@ def capture(repo, base, scope):
     index = git(repo, 'ls-files', '--stage', '-z')
     if any(entry.startswith(b'160000 ') for entry in index.split(b'\0')):
         raise ValueError('submodule snapshots are unsupported; review separately')
-    entries = {}
-    for entry in git(repo, 'ls-tree', '-rz', '--full-tree', head).split(b'\0'):
-        if entry:
-            meta, path = entry.split(b'\t', 1)
-            mode, kind, obj = meta.decode().split()
-            if kind != 'blob':
-                raise ValueError('submodule snapshots are unsupported; review separately')
-            entries[os.fsdecode(path)] = (mode, obj)
+    entries = tree_files(repo, head)
+    if scope == 'committed':
+        tree_files(repo, merge)
     tracked = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0') if e}
     tracked_files = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0')
                      if e and e.split(b' ', 1)[0] in (b'100644', b'100755', b'120000')}
     untracked = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--exclude-standard', '-z').split(b'\0') if p}
     paths = []
     if scope == 'committed':
-        args = ('diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color')
+        args = ('diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', '--ignore-submodules=none')
         paths = [os.fsdecode(p) for p in git(repo, *args, '--name-only', '-z', merge, head, '--').split(b'\0') if p]
     private_inputs = [path for path in set(entries) | tracked | untracked | set(paths) if private_agent_data(path)]
     if private_inputs:

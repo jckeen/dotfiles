@@ -397,6 +397,22 @@ for mutation in head index worktree untracked base; do
   rm -rf "$R"
 done
 
+for ignore_submodules in none all; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  git -C "$R" update-index --add --cacheinfo 160000 "$(git -C "$R" rev-parse HEAD)" vendor
+  git -C "$R" commit -qm 'base gitlink'
+  git -C "$R" update-ref refs/heads/main HEAD
+  git -C "$R" update-index --force-remove vendor
+  git -C "$R" commit -qm 'delete gitlink'
+  git -C "$R" config diff.ignoreSubmodules "$ignore_submodules"
+  approve_clean
+  check "base gitlink deletion blocks with ignoreSubmodules=$ignore_submodules" 2 "submodule snapshots are unsupported" --committed --no-issues --require
+  assert "unsupported base gitlink never dispatches a reviewer" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+  assert "unsupported base gitlink cannot issue an exemption receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
 for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo

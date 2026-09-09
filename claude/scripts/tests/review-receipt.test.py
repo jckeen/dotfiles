@@ -193,6 +193,27 @@ class ReceiptTests(unittest.TestCase):
                 self.assertIn('submodule snapshots are unsupported', result.stderr)
                 self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
 
+    def test_base_only_gitlink_deletion_cannot_receive_committed_review(self):
+        self.git('update-index', '--add', '--cacheinfo', '160000', self.git('rev-parse', 'HEAD'), 'vendor')
+        self.git('commit', '-qm', 'base gitlink')
+        self.git('update-ref', 'refs/heads/main', 'HEAD')
+        self.git('update-index', '--force-remove', 'vendor')
+        self.git('commit', '-qm', 'delete gitlink')
+        for ignore in ('none', 'all'):
+            self.git('config', 'diff.ignoreSubmodules', ignore)
+            for scope in ('committed', 'auto'):
+                with self.subTest(ignore_submodules=ignore, scope=scope):
+                    result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', 'main',
+                                             '--scope', scope, '--reviewer', 'codex'], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('submodule snapshots are unsupported', result.stderr)
+                    self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
+        (self.repo / 'code.txt').write_text('unrelated workspace edit\n')
+        snapshot = self.begin('uncommitted')
+        self.assertEqual(json.loads(snapshot.read_text())['artifact']['changed_paths'], ['code.txt'])
+        self.assertIn('+unrelated workspace edit', (snapshot.parent / 'diff.patch').read_text())
+        self.complete(snapshot)
+
     def test_uncommitted_review_does_not_require_related_base_history(self):
         unrelated = self.git('commit-tree', self.git('rev-parse', 'HEAD^{tree}'), '-m', 'unrelated root')
         self.git('update-ref', 'refs/heads/unrelated', unrelated)
