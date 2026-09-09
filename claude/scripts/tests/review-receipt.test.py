@@ -84,6 +84,26 @@ class ReceiptTests(unittest.TestCase):
         self.assertIn('after.txt', patch)
         self.assertNotIn('OUTSIDE_PRIVATE_MARKER', patch)
 
+    def test_instruction_symlinks_fail_closed_in_each_scope(self):
+        target = self.repo / 'local-policy.txt'
+        target.write_text('local instruction target\n')
+        (self.repo / '.git/info/exclude').write_text('local-policy.txt\n')
+        for name in ('AGENTS.md', '.codex/config.toml', '.claude/commands/check.md'):
+            alias = self.repo / name
+            alias.parent.mkdir(parents=True, exist_ok=True)
+            alias.symlink_to('local-policy.txt' if name == 'AGENTS.md' else target)
+            self.git('add', name)
+            self.git('commit', '-qm', 'instruction alias')
+            for scope, base in (('committed', 'main'), ('uncommitted', 'main'), ('auto', 'main'), ('auto', 'HEAD')):
+                with self.subTest(path=name, scope=scope, base=base):
+                    result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', base,
+                                             '--scope', scope, '--reviewer', 'codex'], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('instruction symlink targets are unsupported', result.stderr)
+                    self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
+            self.git('rm', name)
+            self.git('commit', '-qm', 'remove instruction alias')
+
     def test_deleted_parent_directory_remains_reviewable(self):
         nested = self.repo / 'nested'
         nested.mkdir()
@@ -152,6 +172,26 @@ class ReceiptTests(unittest.TestCase):
         self.git('init', '-q', str(nested))
         (nested / 'code.txt').write_text('nested implementation\n')
         self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'uncommitted', '--reviewer', 'codex', ok=False)
+
+    def test_staged_gitlink_replacing_tracked_file_is_rejected(self):
+        replaced = self.repo / 'code.txt'
+        replaced.unlink()
+        replaced.mkdir()
+        self.git('init', '-q', str(replaced))
+        self.git('-C', str(replaced), 'config', 'user.name', 'fixture')
+        self.git('-C', str(replaced), 'config', 'user.email', 'fixture@example.test')
+        (replaced / 'nested.py').write_text('nested implementation\n')
+        self.git('-C', str(replaced), 'add', 'nested.py')
+        self.git('-C', str(replaced), 'commit', '-qm', 'nested implementation')
+        self.git('add', 'code.txt')
+        self.assertTrue(self.git('ls-files', '--stage', 'code.txt').startswith('160000 '))
+        for scope in ('committed', 'uncommitted', 'auto'):
+            with self.subTest(scope=scope):
+                result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', 'main',
+                                         '--scope', scope, '--reviewer', 'codex'], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('submodule snapshots are unsupported', result.stderr)
+                self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
 
     def test_uncommitted_review_does_not_require_related_base_history(self):
         unrelated = self.git('commit-tree', self.git('rev-parse', 'HEAD^{tree}'), '-m', 'unrelated root')
@@ -270,6 +310,77 @@ class ReceiptTests(unittest.TestCase):
                 self.complete(snapshot, 'no-diff', ok=False)
                 self.complete(snapshot)
 
+    def test_ignored_agent_credentials_and_state_are_not_review_inputs(self):
+        private_paths = ('.codex/auth.json', '.codex/.credentials.json', '.codex/state_5.sqlite-wal',
+                         '.codex/sessions/run.jsonl', '.claude/.credentials.json', '.claude/projects/run.jsonl',
+                         '.gemini/oauth_creds.json', '.gemini/antigravity-cli/brain/transcript.jsonl',
+                         '.agents/codex/auth.json', '.antigravity/.credentials.json', 'codex/auth.json', 'antigravity/auth.json')
+        (self.repo / '.git/info/exclude').write_text('\n'.join(private_paths) + '\n')
+        for name in private_paths:
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('SYNTHETIC_PRIVATE_STATE_MARKER\n')
+        for scope in ('committed', 'uncommitted', 'auto'):
+            with self.subTest(scope=scope):
+                snapshot = self.begin(scope)
+                self.assertNotIn('SYNTHETIC_PRIVATE_STATE_MARKER', (snapshot.parent / 'diff.patch').read_text())
+                self.assertFalse(set(private_paths) & set(json.loads(snapshot.read_text())['artifact']['changed_paths']))
+                self.complete(snapshot)
+
+    def test_runtime_cache_keeps_named_instructions_visible(self):
+        (self.repo / '.git/info/exclude').write_text('.codex/cache/\n')
+        cache = self.repo / '.codex/cache'
+        cache.mkdir(parents=True)
+        (cache / 'state.json').write_text('SYNTHETIC_PRIVATE_CACHE_MARKER\n')
+        (cache / 'AGENTS.md').write_text('CACHE_INSTRUCTION_MARKER\n')
+        snapshot = self.begin('uncommitted')
+        patch = (snapshot.parent / 'diff.patch').read_text()
+        self.assertIn('+CACHE_INSTRUCTION_MARKER', patch)
+        self.assertNotIn('SYNTHETIC_PRIVATE_CACHE_MARKER', patch)
+        self.assertEqual(json.loads(snapshot.read_text())['artifact']['changed_paths'], ['.codex/cache/AGENTS.md'])
+
+    def test_explicit_agent_credentials_block_before_patch_generation(self):
+        for name in ('.codex/auth.json', '.claude/.credentials.json', '.gemini/oauth_creds.json',
+                     '.agents/codex/auth.json', '.antigravity/.credentials.json', 'codex/auth.json', 'antigravity/auth.json'):
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('SYNTHETIC_CREDENTIAL_MARKER\n')
+            for staged in (False, True):
+                if staged:
+                    self.git('add', name)
+                for scope in ('committed', 'uncommitted', 'auto'):
+                    with self.subTest(path=name, staged=staged, scope=scope):
+                        result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', 'main',
+                                                 '--scope', scope, '--reviewer', 'codex'], capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn('private agent runtime data', result.stderr)
+                        self.assertNotIn('SYNTHETIC_CREDENTIAL_MARKER', result.stdout + result.stderr)
+                        self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
+            self.git('rm', '--cached', name)
+            path.unlink()
+
+    def test_committed_credential_deletions_and_renames_block_before_old_blob_read(self):
+        credential = self.repo / '.codex/auth.json'
+        credential.parent.mkdir()
+        credential.write_text('SYNTHETIC_OLD_CREDENTIAL_MARKER\n')
+        self.git('add', '.codex/auth.json')
+        self.git('commit', '-qm', 'old credential fixture')
+        self.git('update-ref', 'refs/heads/main', 'HEAD')
+        for operation in ('delete', 'rename'):
+            with self.subTest(operation=operation):
+                self.git('checkout', '-B', 'feature', 'main')
+                if operation == 'delete':
+                    self.git('rm', '.codex/auth.json')
+                else:
+                    self.git('mv', '.codex/auth.json', 'notes.txt')
+                self.git('commit', '-qm', operation)
+                result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', 'main',
+                                         '--scope', 'committed', '--reviewer', 'codex'], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('private agent runtime data', result.stderr)
+                self.assertNotIn('SYNTHETIC_OLD_CREDENTIAL_MARKER', result.stdout + result.stderr)
+                self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
+
     def test_external_diff_textconv_and_clean_filters_never_run(self):
         marker = Path(self.tmp.name) / 'EXECUTED'
         command = f'touch {marker}'
@@ -351,6 +462,7 @@ class ReceiptTests(unittest.TestCase):
         self.complete(self.begin(), 'tier-1', ok=False)
         snapshot = self.begin(tier1_max_lines='0500')
         self.assertEqual(json.loads(snapshot.read_text())['policy']['tier1_max_lines'], '0500')
+        self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 1)
         self.complete(snapshot, 'tier-1')
         self.check()
         receipt_path = self.repo / '.git/review-receipts/codex.json'
@@ -367,9 +479,27 @@ class ReceiptTests(unittest.TestCase):
         self.git('add', 'notes.md')
         self.git('commit', '-qm', 'documentation change')
         snapshot = self.begin(tier1_max_lines='invalid')
+        self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 2)
         self.complete(snapshot, 'tier-1', ok=False)
         self.complete(snapshot)
         self.check()
+
+    def test_classification_and_exemption_share_instruction_policy(self):
+        for name in ('.claude/commands/check.md', '.gemini/agents/check.md', 'nested/.agents/check.md'):
+            with self.subTest(path=name):
+                self.git('checkout', '-B', 'feature', 'main')
+                path = self.repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('instruction fixture\n')
+                self.git('add', name)
+                self.git('commit', '-qm', 'instruction change')
+                snapshot = self.begin()
+                classification = json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))
+                self.assertEqual(classification['tier'], 2)
+                self.assertIsInstance(classification['reason'], str)
+                self.complete(snapshot, 'tier-1', ok=False)
+                self.complete(snapshot)
+                self.check()
 
     def test_arbitrary_head_base_cannot_launder_shipping(self):
         snapshot = Path(self.run_helper('begin', '--repo', str(self.repo), '--base', 'HEAD', '--scope', 'committed', '--reviewer', 'codex')) / 'snapshot.json'

@@ -20,6 +20,7 @@ import uuid
 from datetime import datetime, timezone
 
 LANES = ('codex', 'antigravity')
+AGENT_NAMESPACES = ('codex', '.codex', 'antigravity', '.antigravity', '.agents', '.claude', '.gemini')
 EXCLUDED = ('*-lock.yaml', '*-lock.json', 'package-lock.json', '*.lock', 'bun.lockb',
             '*.png', '*.jpg', '*.jpeg', '*.gif', '*.ico', '*.pdf', '*.min.css', '*.map')
 
@@ -41,14 +42,46 @@ def oid(repo, ref):
     return git(repo, 'rev-parse', '--verify', '--end-of-options', ref + '^{commit}').decode().strip()
 
 
+def named_instruction(path):
+    name = Path(path).name
+    return re.search(r'(AGENTS|CLAUDE|GEMINI|FABLE|MULTI-AGENT).*\.md$', name) is not None or name == 'SKILL.md'
+
+
 def instruction(path):
     parts = Path(path).parts
     name = parts[-1]
-    return (any(p in ('codex', '.codex', 'antigravity', '.antigravity', '.agents', '.claude', '.gemini') for p in parts)
+    return (any(p in AGENT_NAMESPACES for p in parts)
             or any(p in ('githooks', '.githooks') for p in parts)
             or ('claude', 'hooks') in zip(parts, parts[1:])
-            or re.search(r'(AGENTS|CLAUDE|GEMINI|FABLE|MULTI-AGENT).*\.md$', name) is not None
-            or name in ('SKILL.md', 'gate-lib.sh', 'review-receipt.py', 'codex-review-gate.sh', 'antigravity-review-gate.sh'))
+            or named_instruction(path)
+            or name in ('gate-lib.sh', 'review-receipt.py', 'codex-review-gate.sh', 'antigravity-review-gate.sh'))
+
+
+def private_agent_data(path):
+    parts = Path(path).parts
+    name = parts[-1]
+    if any(part in AGENT_NAMESPACES for part in parts[:-1]) and name in (
+            'auth.json', '.credentials.json', 'credentials.json', 'oauth_creds.json', 'google_accounts.json'):
+        return True
+    if named_instruction(path):
+        return False
+    state_directories = {
+        '.codex': ('sessions', 'log', 'logs', 'cache', 'tmp', 'shell_snapshots'),
+        '.claude': ('sessions', 'projects', 'session-env', 'debug', 'cache', 'tmp', 'telemetry', 'statsig'),
+        '.gemini': ('tmp', 'cache'),
+    }
+    for index, part in enumerate(parts[:-1]):
+        if part not in state_directories:
+            continue
+        relative = parts[index + 1:]
+        if relative[0] in state_directories[part] or name == 'history.jsonl':
+            return True
+        if part == '.codex' and fnmatch.fnmatchcase(name, 'state*.sqlite*'):
+            return True
+        if part == '.gemini' and len(relative) > 1 and relative[:2] in (
+                ('antigravity-cli', 'conversations'), ('antigravity-cli', 'brain'), ('antigravity-cli', 'logs')):
+            return True
+    return False
 
 
 def excluded(path):
@@ -81,6 +114,8 @@ def file_bytes(repo, path, directory_is_missing=False):
     except (FileNotFoundError, NotADirectoryError):
         return 'missing', b''
     if stat.S_ISLNK(info.st_mode):
+        if instruction(path):
+            raise ValueError('instruction symlink targets are unsupported; review separately: ' + path)
         return '120000', os.fsencode(os.readlink(file))
     if stat.S_ISDIR(info.st_mode) and directory_is_missing:
         return 'missing', b''
@@ -111,6 +146,8 @@ def capture(repo, base, scope):
     merge = git(repo, 'merge-base', base_commit, head).decode().strip() if scope == 'committed' else None
     tree = git(repo, 'rev-parse', head + '^{tree}').decode().strip()
     index = git(repo, 'ls-files', '--stage', '-z')
+    if any(entry.startswith(b'160000 ') for entry in index.split(b'\0')):
+        raise ValueError('submodule snapshots are unsupported; review separately')
     entries = {}
     for entry in git(repo, 'ls-tree', '-rz', '--full-tree', head).split(b'\0'):
         if entry:
@@ -123,7 +160,15 @@ def capture(repo, base, scope):
     tracked_files = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0')
                      if e and e.split(b' ', 1)[0] in (b'100644', b'100755', b'120000')}
     untracked = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--exclude-standard', '-z').split(b'\0') if p}
-    ignored_instructions = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z').split(b'\0') if p and instruction(os.fsdecode(p))}
+    paths = []
+    if scope == 'committed':
+        args = ('diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color')
+        paths = [os.fsdecode(p) for p in git(repo, *args, '--name-only', '-z', merge, head, '--').split(b'\0') if p]
+    private_inputs = [path for path in set(entries) | tracked | untracked | set(paths) if private_agent_data(path)]
+    if private_inputs:
+        raise ValueError('private agent runtime data cannot be sent for review: ' + ', '.join(sorted(private_inputs)))
+    ignored_instructions = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z').split(b'\0')
+                            if p and not private_agent_data(os.fsdecode(p)) and instruction(os.fsdecode(p))}
     files = {}
     dirty_instructions = [p for p in entries if instruction(p) and p not in tracked]
     for path in sorted(set(entries) | tracked | untracked | ignored_instructions):
@@ -147,9 +192,7 @@ def capture(repo, base, scope):
     if scope == 'committed' and dirty_instructions:
         raise ValueError('dirty instruction surface outside committed target: ' + ', '.join(sorted(set(dirty_instructions))))
     if scope == 'committed':
-        args = ('diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color')
         full = git(repo, *args, '--binary', merge, head, '--')
-        paths = [os.fsdecode(p) for p in git(repo, *args, '--name-only', '-z', merge, head, '--').split(b'\0') if p]
         # --text keeps executable text covered even when attributes call it binary.
         patch = git(repo, *args, '--text', merge, head, '--', '.', *(':!' + p for p in EXCLUDED))
     else:
@@ -232,15 +275,42 @@ def validate_artifact(record):
     return patch
 
 
-def exemption(outcome, artifact, patch, policy):
+def classify_tier(artifact, patch, policy):
     max_lines = policy['tier1_max_lines']
     if not isinstance(max_lines, str):
         raise ValueError('malformed tier-1 policy')
+    if not re.fullmatch(r'[0-9]+', max_lines):
+        return {'tier': 2, 'reason': 'full pass (captured tier-1 cap is not a number)'}
+    try:
+        limit = int(max_lines)
+    except ValueError:
+        return {'tier': 2, 'reason': 'full pass (captured tier-1 cap is not supported)'}
+    lines = len(patch.splitlines())
+    if lines > limit:
+        return {'tier': 2, 'reason': f'full pass (diff is {lines} lines > tier-1 cap {max_lines})'}
+    if not artifact['changed_paths']:
+        return {'tier': 2, 'reason': 'full pass (could not enumerate changed paths)'}
+    for path in artifact['changed_paths']:
+        if not docsafe(path):
+            return {'tier': 2, 'reason': 'full pass (risk or unclassified path: ' + path + ')'}
+    return {'tier': 1, 'reason': f'docs-only diff, {lines} lines ≤ {max_lines}'}
+
+
+def exemption(outcome, artifact, patch, policy):
+    classification = classify_tier(artifact, patch, policy)
     if outcome == 'no-diff' and patch.strip():
         raise ValueError('no-diff exemption has reviewable content')
-    if outcome == 'tier-1' and (not re.fullmatch(r'[0-9]+', max_lines) or not artifact['changed_paths']
-                              or len(patch.splitlines()) > int(max_lines) or not all(docsafe(p) for p in artifact['changed_paths'])):
+    if outcome == 'tier-1' and classification['tier'] != 1:
         raise ValueError('tier-1 exemption is not a small docs-only artifact')
+
+
+def classify(args):
+    snapshot = Path(args.snapshot)
+    record = read_json(snapshot)
+    patch = validate_artifact(record)
+    if (snapshot.parent / 'diff.patch').read_bytes() != patch:
+        raise ValueError('review diff changed during review')
+    print(json.dumps(classify_tier(record['artifact'], patch, record['policy'])))
 
 
 def resolve_base(repo, requested=None):
@@ -357,8 +427,9 @@ def main():
             sub.add_argument('--tier1-max-lines', default='200')
         if name == 'check':
             sub.add_argument('--head', required=True)
-    sub = commands.add_parser('verify')
-    sub.add_argument('--snapshot', required=True)
+    for name in ('verify', 'classify'):
+        sub = commands.add_parser(name)
+        sub.add_argument('--snapshot', required=True)
     sub = commands.add_parser('complete')
     sub.add_argument('--snapshot', required=True)
     sub.add_argument('--outcome', choices=('passed', 'tier-1', 'no-diff'), required=True)
