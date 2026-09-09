@@ -27,10 +27,10 @@ class SharedServerProbeTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_missing_socket_allows_cold_start(self):
+    def test_missing_socket_is_reported_absent(self):
         self.assertEqual(RECOVER.probe_shared_server(self.path), 3)
 
-    def test_refused_socket_allows_cold_start(self):
+    def test_refused_socket_is_reported_absent(self):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
             listener.bind(str(self.path))
         self.assertEqual(RECOVER.probe_shared_server(self.path), 3)
@@ -46,7 +46,7 @@ class SharedServerProbeTest(unittest.TestCase):
                 self.assertEqual(client.recv(1), b"")
         self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
-    def test_denied_or_timed_out_probe_never_allows_startup(self):
+    def test_denied_or_timed_out_probe_is_uncertain(self):
         for error in [PermissionError(), TimeoutError(), OSError("unknown")]:
             with self.subTest(error=type(error).__name__):
                 with patch.object(socket.socket, "connect", side_effect=error):

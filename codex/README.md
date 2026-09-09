@@ -61,16 +61,17 @@ and `agents` then use the same app server. The socket check avoids native
 daemon management commands, which can discard live PID records after clock
 drift. A mobile relay error does not require restarting the local server.
 
-If the socket is missing or refuses connections, `cx` attempts a bounded
-daemon start. An uncertain socket connection leaves the server untouched and
-launches locally. Relay and daemon-ownership errors never trigger an automatic
-restart or stop. Stale-updater failures also fall back locally; repairing them
-is an explicit maintenance action after active work is finished.
+If the socket is missing, refuses connections, or cannot be verified, `cx`
+launches locally. It never starts, stops, restarts, or repairs a daemon during
+launch. Even a native start can discard a live PID record if a server becomes
+available after the probe. When no shared server is running, start Remote
+Control explicitly with `codex remote-control start --json`, then reopen with
+`cx`. Repairing stale daemon metadata is an explicit maintenance action after
+active work is finished.
 
 Explicit `--remote` and remote authentication options pass through unchanged.
-Utility subcommands and help/version requests do not auto-start or attach the
-daemon. A failed daemon start warns and launches Codex locally; it does not
-generate a new pairing code. Python is required for the socket check; if it is
+Utility subcommands and help/version requests do not attach the daemon.
+Python is required for the socket check; if it is
 unavailable, `cx` launches locally. Existing local terminals need to finish active
 work and reopen with `cx resume <session-id>` to move onto the shared server.
 
@@ -83,7 +84,8 @@ python3 codex/tests/test_shared_server_native.py --codex /path/to/codex
 
 It requires a native Codex binary and Python's `websockets` package. Runtime
 state stays in a temporary directory; the test uses no account credentials or
-external model requests. The regular launcher and socket tests run through
+external model requests. It also simulates a listener appearing after an
+absent-socket probe. The regular launcher and socket tests run through
 `claude/scripts/tests/cx-remote-control.test.sh` and
 `claude/scripts/tests/codex-remote-recovery.test.sh`.
 

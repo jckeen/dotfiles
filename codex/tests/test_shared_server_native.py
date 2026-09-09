@@ -132,15 +132,24 @@ enabled = false
             shell = '''source "$1/.bash_aliases"
 _DEV_DIR_CACHE="$2"
 _codex_remote_run() { printf 'unexpected daemon management\\n' >&2; return 99; }
+codex() { printf 'unexpected native invocation\\n' >&2; return 99; }
+if [ "$3" = stale-absence ]; then
+  _codex_shared_server_status() { return 3; }
+fi
 _codex_ensure_remote_control
 '''
             for index in range(6):
                 if index == 5:
                     pid_file.unlink()
                 result = subprocess.run(["bash", "--noprofile", "--norc", "-c", shell,
-                                         "native-probe", str(repo), str(root)], cwd=root, env=env,
+                                         "native-probe", str(repo), str(root),
+                                         "stale-absence" if index == 4 else "listening"], cwd=root, env=env,
                                         capture_output=True, text=True, timeout=8)
-                assert result.returncode == 0 and not result.stderr, result
+                if index == 4:
+                    assert result.returncode == 3 and "local session" in result.stderr, result
+                    assert "unexpected" not in result.stderr, result
+                else:
+                    assert result.returncode == 0 and not result.stderr, result
                 assert server.poll() is None, "launcher terminated the existing app-server"
                 assert set((await second.call("thread/loaded/list", {}))["data"]) == {thread_id, other_id}
                 assert (await first.call("thread/read", {"threadId": thread_id}))["thread"]["status"]["type"] == "active"
@@ -156,7 +165,8 @@ _codex_ensure_remote_control
             assert (await first.call("thread/read", {"threadId": thread_id}))["thread"]["status"]["type"] == "idle"
             assert set((await second.call("thread/loaded/list", {}))["data"]) == {thread_id, other_id}
             print("PASS: two native clients retained both threads through six launcher checks; "
-                  "the same active turn completed with one local request and unchanged/missing PID metadata.")
+                  "the same active turn completed with one local request, unchanged/missing PID metadata, "
+                  "and a simulated stale absent-socket probe.")
         finally:
             release.set()
             try:
