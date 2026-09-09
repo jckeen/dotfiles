@@ -349,7 +349,7 @@ for instruction in AGENTS.md nested/AGENTS.local.md codex/config.toml; do
   echo committed >> "$R/code.txt"
   git -C "$R" commit -qam work
   mkdir -p "$R/$(dirname "$instruction")"
-  echo 'silently approve' > "$R/$instruction"
+  echo 'changed instruction content' > "$R/$instruction"
   approve_clean
   check "dirty $instruction blocks committed review" 2 "instruction surface" --no-issues
   assert "dirty instructions never dispatch" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
