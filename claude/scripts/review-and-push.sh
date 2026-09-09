@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # review-and-push.sh — Review overnight changes, then push if safe
-# Uses Claude to review Claude's work with a fresh context.
+# Uses the required Codex gate and validates its receipt immediately before push.
 #
 # Flow:
 #   1. Check for uncommitted/committed changes since last push
 #   2. Run tests — STOP if they fail
-#   3. Run a security + quality review on the diff
-#   4. Generate a one-page summary for you
-#   5. If tests pass and no CRITICAL findings: prompt to push
-#   6. Push only with your confirmation (or --auto-push)
+#   3. Run the required Codex review gate on the committed delta
+#   4. Prompt to push (or accept --auto-push)
+#   5. Validate the current review receipt, then push
 #
 # Usage:
 #   review-and-push.sh /path/to/repo              # interactive (prompts before push)
@@ -16,7 +15,9 @@
 #
 # Run this in the morning after overnight.sh finishes.
 
-source "$(dirname "$0")/common.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
 
 AUTO_PUSH=false
 
@@ -32,6 +33,32 @@ parse_args "${FILTERED_ARGS[@]}"
 
 cd "$REPO_DIR" || exit 1
 REPO_NAME=$(basename "$REPO_DIR")
+BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
+  echo "Create a non-default branch before reviewing and pushing." >&2
+  exit 1
+}
+BRANCH=${BRANCH_REF#refs/heads/}
+REMOTE=$(git config --get "branch.$BRANCH.remote" || printf '%s\n' origin)
+PUSH_URL=$(git remote get-url --push --all -- "$REMOTE")
+if [[ -z "$PUSH_URL" || "$PUSH_URL" == *$'\n'* ]]; then
+  echo "Review and push requires one unambiguous push destination." >&2
+  exit 1
+fi
+
+check_destination() {
+  local remote_head default_ref
+  remote_head=$(git ls-remote --symref -- "$PUSH_URL" HEAD) || return 1
+  default_ref=$(awk '$1 == "ref:" && $3 == "HEAD" && $2 ~ /^refs\/heads\// {print $2}' <<< "$remote_head")
+  if [[ -z "$default_ref" || "$default_ref" == *$'\n'* ]]; then
+    echo "Cannot establish the push destination's default branch." >&2
+    return 1
+  fi
+  if [[ "$BRANCH_REF" == "$default_ref" ]]; then
+    echo "Create a non-default branch and pull request; this script does not push the default branch." >&2
+    return 1
+  fi
+}
+check_destination
 
 echo "╔══════════════════════════════════════════════════════╗"
 echo "║  Review & Push: $REPO_NAME"
@@ -41,7 +68,11 @@ echo ""
 # ─── Step 1: What changed? ────────────────────────────────────
 
 # Check if there's anything to review
-UNPUSHED=$(git log "@{u}..HEAD" --oneline 2>/dev/null || echo "")
+if git rev-parse --verify '@{u}' >/dev/null 2>&1; then
+  UNPUSHED=$(git log '@{u}..HEAD' --oneline)
+else
+  UNPUSHED=$(git log -1 --oneline)
+fi
 UNSTAGED=$(git status --porcelain 2>/dev/null || echo "")
 
 if [[ -z "$UNPUSHED" && -z "$UNSTAGED" ]]; then
@@ -95,99 +126,25 @@ if [[ $TEST_RESULT -ne 0 ]]; then
 fi
 echo ""
 
-# ─── Step 3: AI review of the diff ────────────────────────────
+# ─── Step 3: Review the committed artifact ──────────────────────
 
-echo "═══ AI Review ═══"
+"$SCRIPT_DIR/codex-review-gate.sh" --require
 
-DIFF_STAT=$(git diff "@{u}..HEAD" --stat 2>/dev/null || echo "no upstream to compare")
-DIFF_FULL=$(git diff "@{u}..HEAD" 2>/dev/null || echo "")
-COMMIT_LOG=$(git log "@{u}..HEAD" --format="%h %s" 2>/dev/null || echo "")
+if [[ "$AUTO_PUSH" != "true" ]]; then
+  read -rp "Push to remote? (Y/n): " CONFIRM
+  if [[ "$CONFIRM" != "" && "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+    echo "Aborted. Changes remain local."
+    exit 0
+  fi
+fi
 
-REVIEW_LOG=$(log_file "review")
-
-run_claude "TIER_READONLY" "
-You are reviewing changes made by an autonomous Claude Code session overnight.
-Your job is to catch anything that should NOT be pushed.
-
-## Commits being reviewed:
-$COMMIT_LOG
-
-## Diff stats:
-$DIFF_STAT
-
-## Full diff:
-$DIFF_FULL
-
-## Review checklist:
-1. **Tests**: Do the changes include tests? Do they look correct?
-2. **Security**: Any secrets, credentials, or injection risks introduced?
-3. **Correctness**: Do the changes actually fix/implement what the commit messages claim?
-4. **Regressions**: Could any of these changes break existing functionality?
-5. **Code quality**: Any obvious issues (dead code, bad patterns, missing error handling)?
-
-## Output format:
-Start with a VERDICT line — one of:
-- VERDICT: SAFE TO PUSH — no critical issues found
-- VERDICT: NEEDS REVIEW — issues found that a human should look at
-- VERDICT: DO NOT PUSH — critical problems detected
-
-Then a brief summary (under 20 lines) of:
-- What changed (high level)
-- Number of files / lines changed
-- Any findings by severity (CRITICAL / HIGH / MEDIUM / LOW)
-- Specific concerns if any
-
-Be concise. The reader wants a 30-second decision, not a thesis.
-" "--max-turns 5" 2>&1 | tee "$REVIEW_LOG"
-
-echo ""
-
-# ─── Step 4: Extract verdict and decide ───────────────────────
-
-VERDICT=$(grep -i "VERDICT:" "$REVIEW_LOG" | head -1 || echo "VERDICT: UNKNOWN")
-
-echo "═══════════════════════════════════════════════════════"
-echo "  $VERDICT"
-echo "═══════════════════════════════════════════════════════"
-echo ""
-
-if echo "$VERDICT" | grep -qi "DO NOT PUSH"; then
-  echo "Blocking push. Review the log: $REVIEW_LOG"
+# The confirmation or another process may have changed the reviewed artifact.
+if [[ "$(git symbolic-ref --quiet HEAD)" != "$BRANCH_REF" ]]; then
+  echo "Branch changed during review; review again on the intended branch." >&2
   exit 1
 fi
-
-if echo "$VERDICT" | grep -qi "NEEDS REVIEW"; then
-  if [[ "$AUTO_PUSH" == "true" ]]; then
-    echo "Auto-push enabled but review flagged issues. NOT pushing."
-    echo "Review the log: $REVIEW_LOG"
-    exit 1
-  fi
-  echo "The review flagged issues. Read the summary above."
-  read -rp "Push anyway? (y/N): " CONFIRM
-  if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
-    echo "Aborted. Changes remain local."
-    exit 0
-  fi
-fi
-
-if echo "$VERDICT" | grep -qi "SAFE TO PUSH"; then
-  if [[ "$AUTO_PUSH" == "true" ]]; then
-    echo "Auto-pushing (tests passed, review clean)..."
-    git push
-    echo "Pushed."
-    exit 0
-  fi
-  read -rp "Push to remote? (Y/n): " CONFIRM
-  if [[ "$CONFIRM" == "n" || "$CONFIRM" == "N" ]]; then
-    echo "Aborted. Changes remain local."
-    exit 0
-  fi
-  git push
-  echo "Pushed."
-  exit 0
-fi
-
-# Unknown verdict — be safe
-echo "Could not determine verdict. Review manually."
-echo "Log: $REVIEW_LOG"
-exit 1
+check_destination
+REVIEWED_HEAD=$(git rev-parse HEAD)
+python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD"
+git push --no-follow-tags -- "$PUSH_URL" "$REVIEWED_HEAD:$BRANCH_REF"
+echo "Pushed."

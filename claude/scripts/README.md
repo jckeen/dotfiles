@@ -62,7 +62,18 @@ tier/no-diff exemptions are reported separately from successful reviews.
 Changing the artifact invalidates approval and requires affected verification
 and review again. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
-secret scanner runs.
+secret scanner runs. For a PR explicitly targeting a nondefault base, run the
+gate and receipt check with `--base <ref>`, then use
+`REVIEW_RECEIPT_BASE=<ref> git push ...` for that push. The hook otherwise
+requires the repository's default base. The setting selects the expected
+base; it does not bypass artifact validation.
+
+Receipts live in the worktree's Git metadata, outside tracked files. They are
+local evidence, not signatures against the filesystem owner. The checker
+requires the outgoing commit to be that worktree's current HEAD and rejects
+unsupported submodule or non-UTF-8 review content. Review another branch in
+its own worktree; resolve unsupported content explicitly before shipping.
+Reviewer dispatch information and observed identity are recorded separately.
 
 ## Safety Tiers
 

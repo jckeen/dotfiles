@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-08 — fix: bind workflow reviews to the code being shipped
+
+- Review gates reject unresolved bases, dirty instruction surfaces outside the
+  committed target, failed reviewer runs, and embedded blocking priorities.
+  Executable SVG and minified JavaScript remain in review coverage.
+- Private review receipts bind completed results to the base, commit, tree,
+  diff, index, and workspace state. Changed artifacts and superseded attempts
+  invalidate approval. The push hook checks each outgoing commit independently
+  of secret-scanner availability; receipt helpers are installed beside gates.
+- The morning review script uses the required Codex gate, validates its receipt
+  after confirmation, and pushes the reviewed commit to a verified non-default
+  branch at the actual push destination. Automatic tag pushes are disabled.
+- Shared instructions assign coordination to the active session, preserve
+  separate-family review for high-risk work, and require simplification,
+  documentation, and verification before final review. Personal runtime
+  preferences remain private.
+- The branch-protection example includes behavioral tests in required checks.
+  Antigravity diagnostic commands bypass unrelated workspace preflight.
+
 ## 2026-09-08 — fix: launchers reload a changed `.bash_aliases`; dev-dir stub `.git` and off-main dotfiles guards
 
 ### What changed

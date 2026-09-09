@@ -64,6 +64,10 @@ make a pull request.
    Any subsequent artifact edit invalidates approval. Recommit intended edits,
    rerun affected verification and required reviews, and recheck the receipt.
    Push the current non-default branch, setting upstream if needed.
+   For an explicitly selected nondefault PR base, scope that same base to the
+   push with `REVIEW_RECEIPT_BASE=<ref> git push ...` so the hook checks the
+   intended receipt. Without this one-push setting the hook requires the
+   repository's default base; never select a narrower base just to pass it.
 9. Create a PR with `gh pr create`:
    - title under 70 characters
    - body covering what changed, why, and how it was tested

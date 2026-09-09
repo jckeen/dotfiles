@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-push — gitleaks secret scan on outgoing commits (issue #204).
+# pre-push — verify review evidence and scan outgoing commits for secrets.
 #
 # Installed by setup.sh as a symlink at <git-dir>/hooks/pre-push for this
 # repo. CI runs gitleaks too, but a secret is public the moment it's pushed —
@@ -13,9 +13,24 @@
 #   GITLEAKS_SKIP=1 git push
 set -uo pipefail
 
+hook_source="${BASH_SOURCE[0]}"
+while [ -L "$hook_source" ]; do
+  hook_dir="$(cd -P "$(dirname "$hook_source")" && pwd)" || exit 1
+  hook_source="$(readlink "$hook_source")" || exit 1
+  case "$hook_source" in /*) ;; *) hook_source="$hook_dir/$hook_source" ;; esac
+done
+source_root="$(cd -P "$(dirname "$hook_source")/.." && pwd)" || exit 1
+receipt_checker="$source_root/claude/scripts/review-receipt.py"
+repo_root="$(git rev-parse --show-toplevel)" || exit 1
+receipt_base=()
+if [ -n "${REVIEW_RECEIPT_BASE:-}" ]; then
+  receipt_base=(--base "$REVIEW_RECEIPT_BASE")
+fi
+
+scan=true
 if [ "${GITLEAKS_SKIP:-0}" = "1" ]; then
   echo "[pre-push] GITLEAKS_SKIP=1 — gitleaks scan skipped for this push" >&2
-  exit 0
+  scan=false
 fi
 
 # Missing scanner ≠ blocked push: this hook only exists on machines that ran
@@ -23,7 +38,7 @@ fi
 # instead of bricking every push on a machine where the install failed.
 if ! command -v gitleaks &>/dev/null; then
   echo "[pre-push] WARNING: gitleaks not found — secret scan skipped (./setup.sh installs it)" >&2
-  exit 0
+  scan=false
 fi
 
 zero=0000000000000000000000000000000000000000
@@ -31,6 +46,12 @@ status=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
   # Deleting a remote ref pushes no commits.
   [ "$local_sha" = "$zero" ] && continue
+  if ! python3 "$receipt_checker" check --repo "$repo_root" --head "$local_sha" "${receipt_base[@]}"; then
+    echo "[pre-push] BLOCKED: outgoing commit has no current review evidence. Run a required review gate before pushing." >&2
+    status=1
+    continue
+  fi
+  [ "$scan" = true ] || continue
   if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
     # New remote ref — or a remote sha that doesn't resolve locally (unfetched
     # remote ref, force-push over unfetched work). The latter MUST take this
@@ -42,17 +63,9 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     range="$remote_sha..$local_sha"
   fi
   if ! gitleaks git --redact --exit-code 1 --log-opts="$range" .; then
+    echo "[pre-push] BLOCKED: gitleaks found potential secrets in outgoing commits." >&2
     status=1
   fi
 done
 
-if [ "$status" -ne 0 ]; then
-  cat >&2 <<'EOF'
-
-[pre-push] BLOCKED: gitleaks found potential secret(s) in the commits above.
-  - Remove the secret and rewrite the unpushed commit(s), or
-  - allowlist a confirmed false positive in .gitleaks.toml, or
-  - bypass ONCE with: GITLEAKS_SKIP=1 git push
-EOF
-fi
 exit "$status"

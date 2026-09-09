@@ -83,7 +83,7 @@ symlink_enumerate() {
     printf '%s\t%s\t%s\t\n' "$f" "$claude_dst/agents/$name" "agents/$name"
   done
 
-  # 5. Scripts (*.sh, executable) + their data files (*.json, plain). Gate
+  # 5. Scripts (*.sh, executable), Python helpers and JSON data (plain). Gate
   # scripts resolve sibling files via plain dirname (no readlink -f), so a
   # schema not linked beside the script symlink is invisible to it —
   # codex-review-gate.sh degraded open for exactly this reason.
@@ -92,7 +92,7 @@ symlink_enumerate() {
     name="$(basename "$f")"
     printf '%s\t%s\t%s\texecutable\n' "$f" "$claude_dst/scripts/$name" "scripts/$name"
   done
-  for f in "$claude_src/scripts/"*.json; do
+  for f in "$claude_src/scripts/"*.json "$claude_src/scripts/"*.py; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
     printf '%s\t%s\t%s\t\n' "$f" "$claude_dst/scripts/$name" "scripts/$name"

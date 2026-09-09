@@ -44,7 +44,7 @@
 # Exit codes:
 #   0  clean, or only low findings (filed as issues)
 #   2  blocking findings present (critical/high/medium), or output unreadable
-#   3  tool could not run AND CODEX_GATE_REQUIRED / --require was set
+#   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
 

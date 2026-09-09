@@ -951,7 +951,7 @@ agy() {
   # them straight to the binary. Checked before project selection, so a
   # ~/dev dir named e.g. "models" cannot shadow a documented subcommand.
   case "${1:-}" in
-    -h|--help|--version|agent|agents|changelog|help|install|models|plugin|plugins|update)
+    -h|--help|--version|agent|agents|changelog|help|install|mcp|mic-serve|models|plugin|plugins|remote-control|update)
       command agy "$@"
       return
       ;;

@@ -24,6 +24,7 @@ Commit, push, and create a PR for the current work. $ARGUMENTS
    ```
 
    Use `--reviewer antigravity` for the independently approved alternate gate and the same `--base <ref>` if one was selected. Missing, stale, or mismatched evidence blocks shipping; only a checker-accepted current exemption may replace review under the applicable gate policy. Any subsequent artifact edit invalidates approval: commit the intended edits, rerun affected verification and required reviews, then recheck. Push the current non-default branch, creating its upstream if needed.
+   For an explicitly selected nondefault PR base, use `REVIEW_RECEIPT_BASE=<ref> git push ...` with the same reviewed base. Without this one-push setting the hook requires the repository's default base; never select a narrower base just to pass it.
 9. Create a PR with `gh pr create`:
    - Title: concise, under 70 characters
    - Body: what changed, why, how it was tested

@@ -8,12 +8,10 @@
 # runtime / boundary-condition bias). Run either or both.
 #
 # Flow:
-#   1. Local validation first (tsc --noEmit / project lint) so we never spend plan
-#      quota reviewing code that doesn't even compile. Failure → exit 2.
-#   2. Pick the diff to review: committed delta vs base (the PR contents), or the
-#      working tree when --uncommitted / no committed delta.
-#   3. Filter out lockfiles and binary/minified assets via git pathspecs, and skip
-#      (degrade open) when the diff exceeds MAX_DIFF_LINES to conserve plan quota.
+#   1. Snapshot the committed delta vs base, or the working tree when requested.
+#   2. Filter lockfiles and passive assets; preserve executable SVG/minified JS.
+#      Explicit no-diff/docs exemptions get receipts; tool failures do not.
+#   3. Run local validation before dispatch. Failure → exit 2.
 #   4. Run agy print mode NON-interactively (prompt piped to stdin, no prompt
 #      flag — the agy ≥1.1.1 stdin form, #227) and gate on the findings.
 #        - [P0]/[P1]/[P2] → BLOCK (exit 2).
@@ -310,8 +308,8 @@ if [[ -n "$MODEL" ]]; then
     # shellcheck disable=SC2034  # Dispatch evidence, not actual model identity.
     GATE_MODEL_EVIDENCE="agy propagated requested model label to backend; actual model unobserved"
   fi
-  # Secondary, best-effort ground truth: the conversation records. Warning
-  # only — the log-line check above is authoritative for this run.
+  # Secondary conversation-record corroboration is best-effort only.
+  # Neither it nor the dispatch log establishes actual per-run identity.
   gate_verify_agy_model "$MODEL" || yellow "  (DB spot-check is best-effort; the log-line check above is authoritative.)"
 fi
 
