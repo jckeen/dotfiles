@@ -559,6 +559,20 @@ git config --add include.path "$RESET_CONFIG"
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assert_push_tips({"origin": t.remote}, selected="origin")
 
+    def test_remote_urls_removed_during_review_are_rejected(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+        t.write(t.scripts / "codex-review-gate.sh", '''#!/bin/bash
+printf 'gate\\n' >> "$CALLS"
+git config --remove-section remote.origin
+''')
+        result = t.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("unambiguous push destination", result.stderr)
+        self.assertIn("gate", t.events())
+        self.assert_push_tips({"origin": t.remote})
+
     def test_push_remote_selection_precedence(self):
         remotes = self.push_remotes()
         self.git("config", "branch.feature.remote", "fetch")

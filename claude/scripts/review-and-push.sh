@@ -96,6 +96,8 @@ for field in ("pushurl", "url"):
             or values[-1] or b"\n" in values[0]):
         sys.exit(1)
     break
+else:
+    sys.exit(1)
 PY
   then
     echo "Review and push requires one unambiguous push destination with no empty configured URLs." >&2
