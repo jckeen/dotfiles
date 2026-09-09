@@ -229,6 +229,13 @@ if [ "${1:-}" = "-C" ]; then
 fi
 name="$(basename "$repo")"
 case "${1:-} ${2:-}" in
+  "config --get")
+    case "${3:-}" in *.remote) echo origin ;; *.merge) echo refs/heads/feature ;; esac
+    ;;
+  "ls-remote --exit-code")
+    [ "$name" = gone ] && exit 2
+    echo 'fixture refs/heads/feature'
+    ;;
   "rev-parse --is-inside-work-tree")
     if [ "$name" = "broken" ] && [ "${BROKEN_REPO_HEALTHY:-0}" != "1" ]; then
       echo "fatal: simulated repository discovery failure" >&2
@@ -421,7 +428,7 @@ exit "${CHECK_RC:-9}"
 EOF
 cat > "$TEST_DEV/dotfiles/check-antigravity.sh" <<'EOF'
 #!/usr/bin/env bash
-[ "${1:-}" = "--strict" ] || exit 8
+[ "$*" = "--heal --strict" ] || exit 8
 exit "${CHECK_RC:-9}"
 EOF
 cat > "$TEST_DEV/dotfiles/claude/scripts/sync-plugins.sh" <<'EOF'
@@ -665,17 +672,17 @@ cp "$REPO_ROOT/.bash_aliases" "$TEST_HOME/.bash_aliases"
   printf 'sync-memory() { return 0; }\n'
 } >> "$TEST_HOME/.bash_aliases"
 _BASH_ALIASES_PATH="$TEST_HOME/.bash_aliases"
-_BASH_ALIASES_MTIME=0
+_BASH_ALIASES_FINGERPRINT=0
 export CHECK_RC=0
 : > "$RUNTIME_CALLS"
 cc --model test >/dev/null 2>"$TEST_HOME/reload.err"
 reload_rc=$?
 if [ "$reload_rc" -eq 0 ] && grep -q 'reloading launcher definitions' "$TEST_HOME/reload.err" \
   && [ "$(grep -c '^claude|' "$RUNTIME_CALLS")" -eq 1 ] \
-  && [ "${_BASH_ALIASES_MTIME:-0}" != "0" ]; then
+  && [ "${_BASH_ALIASES_FINGERPRINT:-0}" != "0" ]; then
   ok "cc reloads a changed .bash_aliases once, then launches exactly once"
 else
-  fail "reload rc=$reload_rc, mtime=${_BASH_ALIASES_MTIME:-unset}, runtime calls: $(tr '\n' '|' < "$RUNTIME_CALLS"), stderr: $(cat "$TEST_HOME/reload.err")"
+  fail "reload rc=$reload_rc, fingerprint=${_BASH_ALIASES_FINGERPRINT:-unset}, runtime calls: $(tr '\n' '|' < "$RUNTIME_CALLS"), stderr: $(cat "$TEST_HOME/reload.err")"
 fi
 : > "$RUNTIME_CALLS"
 cc --model test >/dev/null 2>"$TEST_HOME/reload.err"

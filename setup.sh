@@ -141,6 +141,8 @@ run_health_audit() {
     done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
   fi
 
+  alink "$DOTFILES_DIR/.tmux.conf" "$HOME_DIR/.tmux.conf" ".tmux.conf" "$mode"
+
   # Bin scripts (top-level dotfiles helpers → ~/.local/bin) — kept separate from
   # the claude/ tree (they land outside ~/.claude). `executable` tells audit_link
   # to also enforce the +x bit so an un-executable source script doesn't pass
