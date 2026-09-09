@@ -12,8 +12,16 @@ export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 # pull-all replaced it on disk — the fail-closed sync message outlived its own
 # fix that way. GNU and BSD stat spell the query differently; -L follows the
 # ~/.bash_aliases symlink into the dotfiles checkout either way.
-_file_mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1" 2>/dev/null; }
+# Detect GNU vs BSD stat by capability, not by trying one and falling back:
+# on GNU, `stat -f %m` is filesystem mode and prints a mount point, not a time.
+if stat --version >/dev/null 2>&1; then
+  _file_mtime() { stat -L -c %Y "$1" 2>/dev/null; }
+else
+  _file_mtime() { stat -L -f %m "$1" 2>/dev/null; }
+fi
+# Anchored to an absolute path so a later `cd` cannot redirect the reload.
 _BASH_ALIASES_PATH="${BASH_SOURCE[0]}"
+case "$_BASH_ALIASES_PATH" in /*) ;; *) _BASH_ALIASES_PATH="$PWD/$_BASH_ALIASES_PATH" ;; esac
 _BASH_ALIASES_MTIME="$(_file_mtime "$_BASH_ALIASES_PATH")"
 
 # Re-source this file when it changed since the shell loaded it. Succeeds only
