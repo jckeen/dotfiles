@@ -397,5 +397,10 @@ for mutation in head index worktree untracked base; do
   rm -rf "$R"
 done
 
+R="$(mktemp -d)"
+check "outside Git keeps advisory warning" 0 "not inside a git work tree"
+check "outside Git blocks required review" 3 "treating as a hard failure" --require
+rm -rf "$R"
+
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]

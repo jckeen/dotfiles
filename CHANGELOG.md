@@ -16,6 +16,8 @@
 - Review gates reject unresolved bases, dirty instruction surfaces outside the
   committed target, failed reviewer runs, and embedded blocking priorities.
   Executable SVG and minified JavaScript remain in review coverage.
+  Outside Git repositories, advisory runs retain their warning behavior;
+  required runs still fail without issuing review evidence.
 - Private review receipts bind completed results to the base, commit, tree,
   diff, index, and workspace state. Changed artifacts and superseded attempts
   invalidate approval. The push hook checks each outgoing commit independently

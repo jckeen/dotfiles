@@ -326,5 +326,10 @@ printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
 rm -rf "$R"
 
+R="$(mktemp -d)"
+check "outside Git keeps advisory warning" 0 "not inside a git work tree"
+check "outside Git blocks required review" 3 "treating as a hard failure" --require
+rm -rf "$R"
+
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]

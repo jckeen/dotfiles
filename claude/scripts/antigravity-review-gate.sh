@@ -117,10 +117,10 @@ degrade() {
 
 # shellcheck disable=SC2034  # Shared gate-lib.sh dispatch metadata.
 GATE_REVIEWER=antigravity GATE_CLI=agy GATE_REQUESTED_MODEL="$MODEL"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 gate_init_receipt
 command -v jq >/dev/null 2>&1 || { red "jq is required for artifact receipts."; exit 2; }
 
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 
 # ─── Step 1: resolve base + pick the diff target ───────────────
 # Prefer the committed delta vs the base branch — that's what the PR will contain

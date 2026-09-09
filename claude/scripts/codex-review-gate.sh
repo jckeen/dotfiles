@@ -101,11 +101,11 @@ degrade() {
 GATE_REVIEWER=codex GATE_CLI=codex
 # shellcheck disable=SC2034  # Do not invent an observed identity from config.
 GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 gate_init_receipt
 
 command -v codex >/dev/null 2>&1 || degrade "codex CLI not found on PATH."
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
 # ─── Pick the review target (shared plumbing from gate-lib.sh) ─
