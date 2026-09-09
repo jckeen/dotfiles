@@ -58,6 +58,7 @@ gate_extract_diff() {
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
   trap gate_cleanup EXIT
+  # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.
   DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
   GATE_SCOPE="$(jq -r '.artifact.scope' "$GATE_RUN_DIR/snapshot.json")"
   # shellcheck disable=SC2034  # Read by the sourcing gates.
