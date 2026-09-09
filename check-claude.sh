@@ -69,10 +69,10 @@ if ! symlink_require_manifest "$CLAUDE_SRC"; then
   exit 1
 fi
 
+# Preserve existing audits of symlinked roots, but never heal through them.
 for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
   if [ -L "$root" ]; then
-    red "UNSAFE  $root is a directory symlink; refusing to audit or heal through it"
-    exit 1
+    HEAL=0
   fi
 done
 heal_retired_skill_link "$CLAUDE_DST/skills/fable-mode/SKILL.md" \

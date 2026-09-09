@@ -4,6 +4,7 @@
 heal_retired_skill_link() {
   local link="$1" source="$2" bundle="$3" ancestor
   [ "${HEAL:-0}" -eq 1 ] || return 0
+  [[ "$link" == /* && "$source" == /* && "$bundle" == /* ]] || return 0
   # A restored bundle is current again, even if one historical file is absent.
   [ ! -e "$bundle" ] && [ ! -L "$bundle" ] || return 0
   [ -L "$link" ] && [ "$(readlink "$link")" = "$source" ] || return 0
