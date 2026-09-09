@@ -12,6 +12,8 @@
 # to allowlist):
 #   GITLEAKS_SKIP=1 git push
 set -uo pipefail
+# Validate and scan the objects Git will transmit, never local replacements.
+export GIT_NO_REPLACE_OBJECTS=1
 
 hook_source="${BASH_SOURCE[0]}"
 while [ -L "$hook_source" ]; do

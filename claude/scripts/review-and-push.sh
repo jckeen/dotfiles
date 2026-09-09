@@ -107,25 +107,10 @@ echo ""
 
 # ─── Step 1: What changed? ────────────────────────────────────
 
-# Check if there's anything to review
-if git rev-parse --verify '@{u}' >/dev/null 2>&1; then
-  UNPUSHED=$(git log '@{u}..HEAD' --oneline)
-else
-  UNPUSHED=$(git log -1 --oneline)
-fi
 UNSTAGED=$(git status --porcelain 2>/dev/null || echo "")
 
-if [[ -z "$UNPUSHED" && -z "$UNSTAGED" ]]; then
-  echo "Nothing to review — repo is clean and up to date."
-  exit 0
-fi
-
-echo "═══ Unpushed commits ═══"
-if [[ -n "$UNPUSHED" ]]; then
-  echo "$UNPUSHED"
-else
-  echo "(none)"
-fi
+echo "═══ Current commit ═══"
+git --no-replace-objects log -1 --oneline
 echo ""
 
 if [[ -n "$UNSTAGED" ]]; then

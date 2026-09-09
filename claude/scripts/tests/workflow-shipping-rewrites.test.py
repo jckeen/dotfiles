@@ -26,6 +26,20 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_current_fetch_upstream_does_not_skip_a_behind_push_fork(self):
+        t = self.fixture
+        fork = t.root / "fork"
+        self.git("clone", "--bare", str(t.remote), str(fork))
+        self.git("--git-dir", str(fork), "update-ref", "refs/heads/feature", t.base)
+        self.git("remote", "add", "fork", str(fork))
+        self.git("config", "branch.feature.pushRemote", "fork")
+        self.git("update-ref", "refs/remotes/origin/main", t.head)
+        (t.bin / "git").unlink()
+        result = t.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("gate", t.events())
+        self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.head)
+
     def destinations(self, redirected_name="redirected-remote"):
         t = self.fixture
         reviewed = t.root / "reviewed-remote"

@@ -24,14 +24,16 @@
   diff, index, and workspace state. Changed artifacts and superseded attempts
   invalidate approval. The push hook checks each outgoing commit independently
   of secret-scanner availability; receipt helpers are installed beside gates.
-  Annotated tags validate the commit they reference.
+  Annotated tags validate the commit they reference; local replacement refs
+  cannot alter validation or secret scanning.
 - The morning review script uses the required Codex gate, validates its receipt
   after confirmation, and pushes the reviewed commit to a verified non-default
   branch at the actual push destination. Automatic tag pushes are disabled.
   Further URL rewrites and remote-name indirection fail closed; explicitly
   selected PR review bases can be carried through the push hook with a
   one-push setting.
-  Push-remote selection follows Git's configured precedence.
+  Push-remote selection follows Git's configured precedence, and a current
+  fetch upstream does not suppress delivery to a behind push fork.
 - Shared instructions assign coordination to the active session, preserve
   separate-family review for high-risk work, and require simplification,
   documentation, and verification before final review. Personal runtime
