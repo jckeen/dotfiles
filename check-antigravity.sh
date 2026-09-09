@@ -16,10 +16,13 @@ ERRORS=0
 WARNINGS=0
 FIXED=0
 FIX=0
+HEAL=0
+HEALED=0
 STRICT=0
 for arg in "$@"; do
   case "$arg" in
     --fix) FIX=1 ;;
+    --heal) HEAL=1 ;;
     --strict) STRICT=1 ;;
   esac
 done
@@ -34,6 +37,12 @@ if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
 fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+if [ ! -f "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh" ]; then
+  echo "FATAL: retired-skill-links.sh is missing (broken checkout)" >&2
+  exit 1
+fi
+# shellcheck source=claude/scripts/retired-skill-links.sh
+source "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.gemini/config/"
 
@@ -61,6 +70,10 @@ else
     red "        Managed skill ancestors must be real directories."
     ERRORS=$((ERRORS + 1))
     AGY_SKILLS_UNSAFE=1
+  fi
+  if [ "$AGY_SKILLS_UNSAFE" -eq 0 ]; then
+    heal_retired_skill_link "$AGY_DST/skills/fable-mode" \
+      "$DOTFILES_DIR/agents/skills/fable-mode" "$DOTFILES_DIR/agents/skills/fable-mode"
   fi
 
   # Shared workflow skills: dir-level symlinks into the agent-neutral set
@@ -137,6 +150,7 @@ else
 fi
 
 echo ""
+[ "$HEALED" -gt 0 ] && green "Self-healed $HEALED missing link(s)."
 if [ $ERRORS -eq 0 ]; then
   if [ $WARNINGS -eq 0 ]; then
     green "All good. Antigravity public config is in sync."

@@ -20,6 +20,8 @@ trap 'rm -rf "$R" "$H" "$EXTERNAL"; rm -f "$OUT"' EXIT
 
 mkdir -p "$R/antigravity"
 cp "$REPO_ROOT/check-antigravity.sh" "$REPO_ROOT/lib-checks.sh" "$R/"
+mkdir -p "$R/claude/scripts"
+cp "$REPO_ROOT/claude/scripts/retired-skill-links.sh" "$R/claude/scripts/"
 cp "$REPO_ROOT/antigravity/GEMINI.md" "$REPO_ROOT/antigravity/hooks.json" \
   "$R/antigravity/"
 

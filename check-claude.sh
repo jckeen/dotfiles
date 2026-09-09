@@ -15,7 +15,7 @@ CLAUDE_DST="$HOME/.claude"
 # script is invoked via its real path), not the cwd. Hard-fail if a lib is
 # missing: under `set +e` a failed source would otherwise keep going and
 # "pass" with no checks run.
-for _lib in lib-symlinks.sh lib-checks.sh; do
+for _lib in lib-symlinks.sh lib-checks.sh claude/scripts/retired-skill-links.sh; do
   if [ ! -f "$DOTFILES_DIR/$_lib" ]; then
     echo "FATAL: $DOTFILES_DIR/$_lib is missing (broken checkout — restore it with 'git checkout $_lib')" >&2
     exit 1
@@ -27,6 +27,8 @@ source "$DOTFILES_DIR/lib-symlinks.sh"
 # with check-codex.sh, check-antigravity.sh, and setup.sh's audit path.
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+# shellcheck source=claude/scripts/retired-skill-links.sh
+source "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.claude/"
 
@@ -37,11 +39,11 @@ HEALED=0
 
 # Flags:
 #   --fix    auto-clean orphaned symlinks and stale backups (existing behavior)
-#   --heal   auto-create MISSING links whose source exists. Guardrail: MISSING
-#            only — nothing exists at the destination, so creating the link
+#   --heal   auto-create MISSING links and retire exact historical fable-mode
+#            links. Creating a link requires an absent destination, so it
 #            clobbers nothing and the source is guaranteed present (callers only
 #            iterate existing source files). Ambiguous states (NOT LINKED regular
-#            file, WRONG target, orphan) stay report-only, since those can be
+#            file, WRONG target, unknown orphan) stay report-only, since those can be
 #            intentional divergence. `cc` passes --heal at launch so startup
 #            self-heals the safe case without prompting; standalone runs stay
 #            pure reporters.
@@ -66,6 +68,15 @@ if ! symlink_require_manifest "$CLAUDE_SRC"; then
   red "claude/nolink.txt missing at $CLAUDE_SRC/nolink.txt — cannot audit"
   exit 1
 fi
+
+for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
+  if [ -L "$root" ]; then
+    red "UNSAFE  $root is a directory symlink; refusing to audit or heal through it"
+    exit 1
+  fi
+done
+heal_retired_skill_link "$CLAUDE_DST/skills/fable-mode/SKILL.md" \
+  "$CLAUDE_SRC/skills/fable-mode/SKILL.md" "$CLAUDE_SRC/skills/fable-mode"
 
 # Memory repo check
 echo "Checking memory repo..."
