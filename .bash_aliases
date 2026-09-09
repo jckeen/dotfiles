@@ -847,13 +847,6 @@ _codex_remote_run() (
   return "$rc"
 )
 
-_codex_remote_is_stale_socket_failure() {
-  local failure="$1"
-  grep -Fq 'app server did not become ready' <<< "$failure" \
-    && grep -Fq 'app-server-control.sock' <<< "$failure" \
-    && grep -Fq 'No such file or directory' <<< "$failure"
-}
-
 _codex_remote_identity() {
   local action="$1"
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
@@ -872,15 +865,30 @@ _codex_remote_snapshot_updater() {
   _codex_remote_identity snapshot
 }
 
-_codex_remote_recover_stale_updater() {
-  _codex_remote_identity recover
+_codex_shared_server_status() {
+  local codex_home="${CODEX_HOME:-$HOME/.codex}" helper
+  helper="$(_dev_dir)/dotfiles/codex/remote_control_recover.py"
+  command -v python3 >/dev/null 2>&1 && [ -f "$helper" ] || return 2
+  _codex_with_timeout 3 python3 "$helper" probe \
+    "$codex_home/app-server-control/app-server-control.sock" >/dev/null 2>&1
 }
 
 _codex_ensure_remote_control() {
-  local timeout_seconds=15 stop_timeout_seconds=8 failure rc
-  local recovery_message=""
+  local timeout_seconds=15 rc probe_rc
 
-  if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
+  # Native daemon queries can discard live PID records after clock drift.
+  # Connecting directly avoids management commands for an existing listener.
+  if _codex_shared_server_status; then
+    return 0
+  else
+    probe_rc=$?
+  fi
+  if [ "$probe_rc" -ne 3 ]; then
+    echo "⚠ Codex shared server could not be verified — leaving it untouched and using a local session." >&2
+    return "$probe_rc"
+  fi
+
+  if _codex_remote_run "$timeout_seconds" remote-control start --json >/dev/null 2>&1; then
     _codex_remote_snapshot_updater || true
     return 0
   else
@@ -892,36 +900,9 @@ _codex_ensure_remote_control() {
     return "$rc"
   fi
 
-  if _codex_remote_is_stale_socket_failure "$failure" \
-    && _codex_remote_recover_stale_updater; then
-    _codex_remote_run "$stop_timeout_seconds" remote-control stop --json \
-      >/dev/null 2>&1 || true
-    recovery_message="recovered a stale managed daemon"
-  elif [ "$rc" -eq 1 ] \
-    && {
-      grep -Eq '^Error: Remote control is enabled on .+ but the connection is errored\.$' <<< "$failure" \
-        || {
-          grep -Fxq 'Error: app server is running but is not managed by codex app-server daemon' <<< "$failure" \
-            && _codex_remote_identity repair
-        }
-    }; then
-    if failure="$(_codex_remote_run "$timeout_seconds" app-server daemon restart 2>&1)"; then
-      recovery_message="recovered an errored connection"
-    else
-      rc=$?
-    fi
+  if _codex_shared_server_status; then
+    return 0
   fi
-
-  if [ -n "$recovery_message" ]; then
-    if failure="$(_codex_remote_run "$timeout_seconds" remote-control start --json 2>&1)"; then
-      _codex_remote_snapshot_updater || true
-      echo "⚠ Codex Remote Control $recovery_message." >&2
-      return 0
-    else
-      rc=$?
-    fi
-  fi
-
   if [ "$rc" -eq 75 ]; then
     echo "⚠ Codex Remote Control connection is not ready yet — local Codex will still launch." >&2
   elif [ "$rc" -eq 124 ]; then
@@ -985,9 +966,8 @@ cx() {
     echo "⚠ Codex private defaults could not be applied — continuing with the existing local config." >&2
   fi
 
-  # Starting the daemon alone leaves the TUI's in-process sessions invisible
-  # remotely. Attach to its shared socket only after an opted-in start succeeds;
-  # pairing stays in Codex state, and failures preserve local CLI access.
+  # Reuse the opted-in shared socket before starting a missing daemon.
+  # Pairing stays in Codex state, and failures preserve local CLI access.
   local remote_settings="${CODEX_HOME:-$HOME/.codex}/app-server-daemon/settings.json"
   local -a remote_args=()
   if _codex_wants_shared_remote "$@" && [ -f "$remote_settings" ]; then

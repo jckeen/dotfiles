@@ -18,10 +18,11 @@ ok()   { pass=$((pass + 1)); echo "ok   - $1"; }
 fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 
 CALLS="$(mktemp)"
+PROBES="$(mktemp)"
 TEST_HOME="$(mktemp -d)"
 TEST_DEV="$(mktemp -d)"
 TEST_BIN="$(mktemp -d)"
-trap 'rm -f "$CALLS"; rm -rf "$TEST_HOME" "$TEST_DEV" "$TEST_BIN"' EXIT
+trap 'rm -f "$CALLS" "$PROBES"; rm -rf "$TEST_HOME" "$TEST_DEV" "$TEST_BIN"' EXIT
 export HOME="$TEST_HOME"
 export CODEX_MEMORY_REPO="$TEST_DEV/private-codex-memory"
 mkdir -p "$HOME/.codex/app-server-daemon"
@@ -146,6 +147,14 @@ _codex_remote_identity() {
   return "${REMOTE_REPAIR_RC:-0}"
 }
 
+_codex_shared_server_status() {
+  printf 'probe\n' >> "$PROBES"
+  if [ -n "${REMOTE_PROBE_RETRY_RC:-}" ] && [ "$(wc -l < "$PROBES")" -gt 1 ]; then
+    return "$REMOTE_PROBE_RETRY_RC"
+  fi
+  return "${REMOTE_PROBE_RC:-3}"
+}
+
 codex() {
   printf '%s\n' "$*" >> "$CALLS"
   [ "${1:-}" != "--strict-config" ] || return "${STRICT_CONFIG_RC:-0}"
@@ -159,6 +168,29 @@ if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
 else
   fail "cx call order was: $(tr '\n' '|' < "$CALLS")"
 fi
+
+: > "$CALLS"
+: > "$PROBES"
+REMOTE_PROBE_RC=0
+cx >/dev/null 2>&1
+if [ "$(cat "$CALLS")" = $'bootstrap\n--strict-config --remote unix://' ] \
+  && [ "$(wc -l < "$PROBES")" -eq 1 ]; then
+  ok "a responding shared server is reused without native daemon commands"
+else
+  fail "cx touched a responding shared daemon: $(tr '\n' '|' < "$CALLS")"
+fi
+
+for REMOTE_PROBE_RC in 1 2 124 125; do
+  : > "$CALLS"
+  if output="$(cx 2>&1)" \
+    && [ "$(cat "$CALLS")" = $'bootstrap\n--strict-config' ] \
+    && grep -q 'could not be verified' <<< "$output"; then
+    ok "an uncertain or failed probe leaves the existing server alone (exit $REMOTE_PROBE_RC)"
+  else
+    fail "cx tried daemon management after an uncertain probe: $output"
+  fi
+done
+unset REMOTE_PROBE_RC
 
 # The launcher must parse flags without mistaking their values or a literal
 # prompt for a subcommand or an explicit remote address.
@@ -268,119 +300,52 @@ fi
 REMOTE_START_RC=1
 REMOTE_START_OUTPUT="Error: app server did not become ready on $HOME/.codex/app-server-control/app-server-control.sock
 Caused by: No such file or directory (os error 2)"
-REMOTE_RETRY_RC=0
-REMOTE_RECOVERY_RC=0
-
-if output="$(cx --model recovered 2>&1)" \
-  && grep -q 'recovered a stale managed daemon' <<< "$output"; then
-  ok "cx recovers the exact stale managed updater once"
+if output="$(cx --model stale-updater 2>&1)" \
+  && [ "$(cat "$CALLS")" = $'bootstrap\nbounded:15:remote-control start --json\n--strict-config --model stale-updater' ]; then
+  ok "stale updater failure falls back without stopping processes or retrying"
 else
-  fail "cx did not recover the stale managed updater: $output"
+  fail "cx attempted destructive stale-updater recovery: $output; $(tr '\n' '|' < "$CALLS")"
 fi
 
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\npidfd-recovery\nbounded:8:remote-control stop --json\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// --model recovered'
-if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
-  ok "stale updater recovery is bounded and retries only once"
-else
-  fail "cx recovery calls were: $(tr '\n' '|' < "$CALLS")"
-fi
 
-: > "$CALLS"
-REMOTE_RECOVERY_RC=1
-REMOTE_RETRY_RC=0
-if output="$(cx --model foreign-pid 2>&1)" \
-  && [ "$(grep -c '^pidfd-recovery$' "$CALLS")" -eq 1 ] \
-  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ] \
-  && [ "$(tail -1 "$CALLS")" = '--strict-config --model foreign-pid' ]; then
-  ok "cx never retries when atomic updater validation refuses recovery"
-else
-  fail "cx retried after updater identity validation failed: $output"
-fi
-
-: > "$CALLS"
-REMOTE_START_RC=1
-REMOTE_START_OUTPUT='Error: Remote control is enabled on Test Host but the connection is errored.'
-REMOTE_RESTART_RC=0
-REMOTE_RESTART_OUTPUT='restart details: token=super-secret-value https://relay.example/path'
-REMOTE_RETRY_RC=0
-if output="$(cx --model reconnected 2>&1)" \
-  && grep -q 'recovered an errored connection' <<< "$output" \
-  && ! grep -qE 'super-secret-value|relay.example|unavailable' <<< "$output"; then
-  ok "cx reconnects an errored daemon without exposing restart output"
-else
-  fail "cx did not reconnect the errored daemon safely: $output"
-fi
-
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nbounded:15:app-server daemon restart\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// --model reconnected'
-if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
-  ok "connection recovery restarts once and verifies Remote Control before launching Codex"
-else
-  fail "cx connection recovery calls were: $(tr '\n' '|' < "$CALLS")"
-fi
-
-for REMOTE_RESTART_RC in 7 124; do
+for REMOTE_START_OUTPUT in \
+  'Error: Remote control is enabled on Test Host but the connection is errored.' \
+  'Error: app server is running but is not managed by codex app-server daemon'; do
   : > "$CALLS"
-  if output="$(cx --model restart-failed 2>&1)" \
-    && grep -qE 'Remote Control (unavailable|timed out)' <<< "$output" \
-    && ! grep -qE 'recovered|super-secret-value|relay.example' <<< "$output" \
-    && [ "$(grep -c '^bounded:15:app-server daemon restart$' "$CALLS")" -eq 1 ] \
-    && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ] \
-    && [ "$(tail -1 "$CALLS")" = '--strict-config --model restart-failed' ]; then
-    ok "failed or timed-out restart still launches local Codex (exit $REMOTE_RESTART_RC)"
+  : > "$PROBES"
+  REMOTE_START_RC=1
+  if output="$(cx --model interrupted-relay 2>&1)" \
+    && [ "$(cat "$CALLS")" = $'bootstrap\nbounded:15:remote-control start --json\n--strict-config --model interrupted-relay' ] \
+    && ! grep -q 'recovered' <<< "$output"; then
+    ok "relay or ownership errors never restart a shared server"
   else
-    fail "cx mishandled daemon restart exit $REMOTE_RESTART_RC: $output"
+    fail "cx restarted or repaired a potentially live server: $output; $(tr '\n' '|' < "$CALLS")"
   fi
+
+  : > "$CALLS"
+  : > "$PROBES"
+  REMOTE_PROBE_RETRY_RC=0
+  if cx --model became-ready >/dev/null 2>&1 \
+    && [ "$(cat "$CALLS")" = $'bootstrap\nbounded:15:remote-control start --json\n--strict-config --remote unix:// --model became-ready' ]; then
+    ok "a server responding after startup failure is reused without recovery"
+  else
+    fail "cx did not reuse the server that became ready: $(tr '\n' '|' < "$CALLS")"
+  fi
+  unset REMOTE_PROBE_RETRY_RC
 done
 
 : > "$CALLS"
-REMOTE_RESTART_RC=0
-REMOTE_RETRY_RC=1
-REMOTE_RETRY_OUTPUT="$REMOTE_START_OUTPUT"
-if output="$(cx --model still-errored 2>&1)" \
-  && grep -q 'Remote Control unavailable (exit 1)' <<< "$output" \
-  && ! grep -q 'recovered' <<< "$output" \
-  && [ "$(grep -c '^bounded:15:app-server daemon restart$' "$CALLS")" -eq 1 ] \
-  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 2 ] \
-  && [ "$(tail -1 "$CALLS")" = '--strict-config --model still-errored' ]; then
-  ok "persistent connection errors do not cause a restart loop or block local Codex"
+: > "$PROBES"
+REMOTE_START_OUTPUT="Error: app server did not become ready on $HOME/.codex/app-server-control/app-server-control.sock
+Caused by: No such file or directory (os error 2)"
+REMOTE_PROBE_RETRY_RC=2
+if output="$(cx --model uncertain-recovery 2>&1)" \
+  && ! grep -qE 'pidfd-recovery|remote-control stop|daemon restart' "$CALLS"; then
+  ok "an uncertain second probe blocks stale-updater termination"
 else
-  fail "cx mishandled an unsuccessful reconnection: $output"
+  fail "cx attempted destructive recovery after an uncertain second probe: $output"
 fi
-
-: > "$CALLS"
-REMOTE_START_OUTPUT='Error: authentication failed; Remote control is enabled on Test Host but the connection is errored.'
-if output="$(cx --model auth-error 2>&1)" \
-  && ! grep -q 'app-server daemon restart' "$CALLS" \
-  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ]; then
-  ok "cx only restarts for the exact enabled-but-errored diagnostic"
-else
-  fail "cx restarted for an unrelated error containing similar text: $output"
-fi
-
-: > "$CALLS"
-REMOTE_START_OUTPUT='Error: app server is running but is not managed by codex app-server daemon'
-REMOTE_RETRY_RC=0
-REMOTE_REPAIR_RC=0
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nidentity:repair\nbounded:15:app-server daemon restart\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// --model repaired'
-if output="$(cx --model repaired 2>&1)" \
-  && grep -q 'recovered' <<< "$output" \
-  && [ "$(cat "$CALLS")" = "$expected_calls" ]; then
-  ok "cx repairs verified missing daemon records before restarting and reconnecting"
-else
-  fail "cx did not recover lost daemon ownership: $output; $(tr '\n' '|' < "$CALLS")"
-fi
-
-: > "$CALLS"
-REMOTE_REPAIR_RC=1
-if output="$(cx --model unmanaged 2>&1)" \
-  && grep -q 'Remote Control unavailable' <<< "$output" \
-  && [ "$(grep -c '^identity:repair$' "$CALLS")" -eq 1 ] \
-  && ! grep -q 'app-server daemon restart' "$CALLS" \
-  && [ "$(tail -1 "$CALLS")" = '--strict-config --model unmanaged' ]; then
-  ok "cx leaves an unverified unmanaged server alone and launches local Codex"
-else
-  fail "cx mishandled refused daemon ownership repair: $output"
-fi
+unset REMOTE_PROBE_RETRY_RC
 
 : > "$CALLS"
 STRICT_CONFIG_RC=9
