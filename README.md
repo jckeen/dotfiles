@@ -238,7 +238,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line); deliberately not symlinked (listed in `claude/nolink.txt`) |
 | **Skills** | `claude/skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `claude/agents/*.md` | 18 specialized review agents |
-| **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
+| **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts; launchers re-source this file when it changed since the shell started |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
 | **Codex config examples** | `codex/*.toml.example` | Templates only; live `~/.codex/config.toml` stays local |

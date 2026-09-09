@@ -262,6 +262,9 @@ case "${1:-} ${2:-}" in
   "remote -v")
     printf 'origin\thttps://example.invalid/repo.git (fetch)\n'
     ;;
+  "symbolic-ref --short")
+    printf '%s\n' "${DOTFILES_BRANCH:-main}"
+    ;;
   "fetch --prune")
     case "$name" in
       linked-*) ;;
@@ -529,6 +532,49 @@ else
 fi
 sync-memory() { return 0; }
 
+# ── Stray stub .git in the dev dir ─────────────────────────────────────
+# The dev dir is a directory of repositories, not a repository. An empty
+# `.git` appeared there twice (2026-07-17, 2026-09-06) and made Claude Code
+# treat it as a repo with no HEAD. Empty → removed; anything else → reported.
+mkdir "$TEST_DEV/.git"
+: > "$HEALTH_CALLS"
+stub_err="$( { _agent_preflight "resume" health_probe --model test >/dev/null; } 2>&1 )"
+if [ ! -e "$TEST_DEV/.git" ] && grep -q 'Removed empty stub' <<< "$stub_err" \
+  && [ -s "$HEALTH_CALLS" ]; then
+  ok "preflight removes an empty stub .git from the dev dir and says so"
+else
+  fail "empty stub .git survived preflight or went unreported: $stub_err"
+fi
+
+mkdir -p "$TEST_DEV/.git/info"
+stub_err="$( { _agent_preflight "resume" health_probe --model test >/dev/null; } 2>&1 )"
+if [ -d "$TEST_DEV/.git/info" ] && grep -q 'is not a repository' <<< "$stub_err"; then
+  ok "a non-empty non-repo .git in the dev dir is reported, never deleted"
+else
+  fail "non-empty stub: present=$([ -d "$TEST_DEV/.git/info" ] && echo yes || echo no), stderr: $stub_err"
+fi
+rmdir "$TEST_DEV/.git/info" "$TEST_DEV/.git"
+
+# ── Primary dotfiles checkout must sit on its default branch ───────────
+# ~/.bash_aliases, hooks and skills are symlinks into the primary dotfiles
+# checkout, so a feature branch left checked out there silently becomes the
+# live shell config (and hid the sync fix from every shell for two days).
+mkdir -p "$TEST_DEV/dotfiles/.git" "$FAKE_GITDIRS/dotfiles"
+export DOTFILES_BRANCH=fix/thing
+branch_err="$( { _agent_preflight "resume" health_probe --model test >/dev/null; } 2>&1 )"
+unset DOTFILES_BRANCH
+if grep -q "dotfiles checkout is on 'fix/thing'" <<< "$branch_err"; then
+  ok "preflight warns when the primary dotfiles checkout is off its default branch"
+else
+  fail "no warning for an off-main dotfiles checkout: $branch_err"
+fi
+branch_err="$( { _agent_preflight "resume" health_probe --model test >/dev/null; } 2>&1 )"
+if ! grep -q 'dotfiles checkout is on' <<< "$branch_err"; then
+  ok "a dotfiles checkout on main draws no branch warning"
+else
+  fail "spurious branch warning: $branch_err"
+fi
+
 # ── Resume classification (unchanged behavior) ─────────────────────────
 : > "$HEALTH_CALLS"
 HEALTH_RC=0
@@ -608,6 +654,38 @@ if _codex_is_resume_invocation --image /tmp/example.png resume --last \
 else
   fail "a separated --image value hid the resume subcommand from the parser"
 fi
+
+# ── A changed .bash_aliases reloads before launch ──────────────────────
+# Long-lived shells keep whatever launcher body they sourced days ago; the
+# fail-closed sync message outlived its own fix that way. Last, because the
+# reload redefines every function in this shell from the copy.
+cp "$REPO_ROOT/.bash_aliases" "$TEST_HOME/.bash_aliases"
+{
+  printf '\n_dev_dir() { printf "%%s\\n" "%s"; }\n' "$TEST_DEV"
+  printf 'sync-memory() { return 0; }\n'
+} >> "$TEST_HOME/.bash_aliases"
+_BASH_ALIASES_PATH="$TEST_HOME/.bash_aliases"
+_BASH_ALIASES_MTIME=0
+export CHECK_RC=0
+: > "$RUNTIME_CALLS"
+cc --model test >/dev/null 2>"$TEST_HOME/reload.err"
+reload_rc=$?
+if [ "$reload_rc" -eq 0 ] && grep -q 'reloading launcher definitions' "$TEST_HOME/reload.err" \
+  && [ "$(grep -c '^claude|' "$RUNTIME_CALLS")" -eq 1 ] \
+  && [ "${_BASH_ALIASES_MTIME:-0}" != "0" ]; then
+  ok "cc reloads a changed .bash_aliases once, then launches exactly once"
+else
+  fail "reload rc=$reload_rc, mtime=${_BASH_ALIASES_MTIME:-unset}, runtime calls: $(tr '\n' '|' < "$RUNTIME_CALLS"), stderr: $(cat "$TEST_HOME/reload.err")"
+fi
+: > "$RUNTIME_CALLS"
+cc --model test >/dev/null 2>"$TEST_HOME/reload.err"
+if ! grep -q 'reloading launcher definitions' "$TEST_HOME/reload.err" \
+  && [ "$(grep -c '^claude|' "$RUNTIME_CALLS")" -eq 1 ]; then
+  ok "an unchanged .bash_aliases is not reloaded"
+else
+  fail "spurious reload: $(cat "$TEST_HOME/reload.err")"
+fi
+unset CHECK_RC
 
 echo ""
 echo "agent-preflight: $pass passed, $failed failed"

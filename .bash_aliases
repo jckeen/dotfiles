@@ -7,6 +7,28 @@
 # even on a fresh install whose login shell hasn't already added it to PATH.
 export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 
+# Where this file lives and its mtime as loaded. Shells outlive edits to this
+# file by days (WSL6 panes), so a launcher keeps the body it sourced long after
+# pull-all replaced it on disk — the fail-closed sync message outlived its own
+# fix that way. GNU and BSD stat spell the query differently; -L follows the
+# ~/.bash_aliases symlink into the dotfiles checkout either way.
+_file_mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1" 2>/dev/null; }
+_BASH_ALIASES_PATH="${BASH_SOURCE[0]}"
+_BASH_ALIASES_MTIME="$(_file_mtime "$_BASH_ALIASES_PATH")"
+
+# Re-source this file when it changed since the shell loaded it. Succeeds only
+# when a reload happened, so a launcher can re-enter itself and run the fresh
+# definitions instead of the body already executing. The reload resets
+# _BASH_ALIASES_MTIME, which is what stops the re-entry from repeating.
+_launcher_reloaded() {
+  local now
+  now="$(_file_mtime "$_BASH_ALIASES_PATH")"
+  [ -n "$now" ] && [ "$now" != "$_BASH_ALIASES_MTIME" ] || return 1
+  echo "ℹ ~/.bash_aliases changed since this shell loaded it — reloading launcher definitions." >&2
+  # shellcheck source=/dev/null
+  source "$_BASH_ALIASES_PATH"
+}
+
 # Claude Code aliases
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
@@ -502,12 +524,41 @@ _check_critical_symlinks() {
 #   _agent_resuming — 1 if a resume/session arg was detected (sync was skipped)
 #   _agent_shifted  — 1 if $3 was a <project> dir the caller should `shift` out
 #                     so it never reaches the tool as a positional prompt arg
+# The dev dir is a directory of repositories, not a repository. A stray empty
+# `.git` there (2026-07-17 and 2026-09-06, creator unidentified) makes Claude
+# Code treat it as a repo with no HEAD. Remove it only while it is empty;
+# anything else is reported and left for a human.
+_dev_dir_stub_gitdir() {
+  local dev_dir="$1" top
+  [ -e "$dev_dir/.git" ] || return 0
+  if top="$(git -C "$dev_dir" rev-parse --show-toplevel 2>/dev/null)" && [ "$top" -ef "$dev_dir" ]; then
+    return 0
+  fi
+  if [ -d "$dev_dir/.git" ] && rmdir "$dev_dir/.git" 2>/dev/null; then
+    echo "ℹ Removed empty stub $dev_dir/.git (the dev dir is not a repository)." >&2
+  else
+    echo "⚠ $dev_dir/.git exists but is not a repository — Claude Code misreads the dev dir until it is removed." >&2
+  fi
+}
+
+# ~/.bash_aliases, hooks and skills are symlinks into the primary dotfiles
+# checkout, so whatever branch is checked out there IS the live shell config.
+# Feature work belongs in a worktree (wt-claude); the primary stays on main.
+_dotfiles_branch_check() {
+  local repo="$1/dotfiles" branch
+  [ -e "$repo/.git" ] || return 0
+  branch="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)" || return 0
+  case "$branch" in main|master|"") return 0 ;; esac
+  echo "⚠ dotfiles checkout is on '$branch' — ~/.bash_aliases, hooks and skills follow it. Finish that work in a worktree and return $repo to main." >&2
+}
+
 _agent_preflight() {
   local resume_keys="$1" health_cmd="$2"
   shift 2
 
   local dev_dir
   dev_dir="$(_dev_dir)"
+  _dev_dir_stub_gitdir "$dev_dir"
 
   # Detect resume-style invocation anywhere in the args. resume_keys is left
   # unquoted so it word-splits into the individual keywords to match against.
@@ -562,6 +613,7 @@ _agent_preflight() {
     fi
     echo ""
   fi
+  _dotfiles_branch_check "$dev_dir"
   if ! "$health_cmd"; then
     echo "Agent health check failed — repair the reported drift before launch." >&2
     return 1
@@ -579,6 +631,7 @@ _agent_preflight() {
 # no repository pulls, but memory publication and runtime health still run.
 # shellcheck disable=SC2120  # args come from interactive use, not in-file callers
 cc() {
+  if _launcher_reloaded; then cc "$@"; return $?; fi
   # Quick critical symlink validation (fast — just 2 stat calls; cwd-independent,
   # so running it before the preflight cd is equivalent to running it after).
   _check_critical_symlinks
@@ -842,6 +895,7 @@ _codex_ensure_remote_control() {
 }
 
 cx() {
+  if _launcher_reloaded; then cx "$@"; return $?; fi
   _agent_force_resuming=0
   _codex_is_resume_invocation "$@" && _agent_force_resuming=1
   # Shared preflight: resume/fork detection, project cd, and the repo sync +
@@ -882,6 +936,7 @@ cx() {
 #        agy --continue|-c           — continue without the sync preflight
 #        agy --conversation <id>     — resume by id without the sync preflight
 agy() {
+  if _launcher_reloaded; then agy "$@"; return $?; fi
   # Utility subcommands (agy models, plugin list, update…) and help/version
   # are plain CLI calls, not workspace launches — the repo-sync + strict
   # config preflight would block them on unrelated drift (issue #277). Pass
