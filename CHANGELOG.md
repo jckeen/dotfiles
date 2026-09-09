@@ -12,11 +12,13 @@
   descriptions. Backfilled omitted historical changes from their merged PRs.
 - Branch pruning stops on failed remote refresh, unknown activity, unique merge
   commits, or a dirty checkout. Preview fetches happen in a disposable clone;
-  relative roots and changed remote defaults are handled consistently.
+  effective transport settings, relative roots, and changed remote defaults are
+  preserved. Hidden untracked files and dirty submodules still block cleanup.
 - Bash and zsh launchers reload changed contents, including changes pulled during
   preflight. Git diagnostics distinguish deleted upstreams from excluded refs
   and report detached checkouts and dangling stub links. `cct` passes arguments
-  without writing their expanded contents into interactive history.
+  without writing their expanded contents into interactive history and keeps
+  the project directory when the agent exits.
 - Setup audits the tmux link, and tmux tolerates unavailable passthrough options.
   Launch health checks can retire exact known obsolete skill symlinks while
   preserving custom files, restored sources, and ambiguous links.

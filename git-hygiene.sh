@@ -57,6 +57,10 @@
 #     fetched into a temporary shared bare clone, discarded at exit; source
 #     branch activity and worktree protections still apply. A failed fetch or
 #     unavailable default branch keeps every branch in that repository.
+#     Effective transport settings and source-relative commands are preserved;
+#     hooks and unrelated Git configuration are disabled in the snapshot.
+#     Custom transport helpers that invoke Git can observe that isolation and
+#     cause a preview to refuse cleanup that a real fetch would allow.
 #   - Requires: git, gh (optional; used by clean's check (c) and prune --gh).
 
 set -euo pipefail
