@@ -63,6 +63,15 @@ def docsafe(path):
 
 
 def file_bytes(repo, path):
+    parent = repo
+    for component in Path(path).parts[:-1]:
+        parent = parent / component
+        try:
+            mode = parent.lstat().st_mode
+        except FileNotFoundError:
+            return 'missing', b''
+        if stat.S_ISLNK(mode):
+            raise ValueError('cannot snapshot through symlink ancestor: ' + path)
     file = repo / path
     try:
         info = file.lstat()

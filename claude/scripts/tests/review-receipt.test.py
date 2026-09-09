@@ -46,6 +46,56 @@ class ReceiptTests(unittest.TestCase):
     def check(self, ok=True, *args):
         return self.run_helper('check', '--repo', str(self.repo), '--head', self.git('rev-parse', 'HEAD'), *args, ok=ok)
 
+    def test_symlinked_parent_cannot_export_outside_content(self):
+        nested = self.repo / 'nested'
+        nested.mkdir()
+        (nested / 'data.txt').write_text('tracked content\n')
+        self.git('add', 'nested/data.txt')
+        self.git('commit', '-qm', 'nested file')
+        (nested / 'data.txt').unlink()
+        nested.rmdir()
+        outside = Path(self.tmp.name) / 'private'
+        outside.mkdir()
+        (outside / 'data.txt').write_text('OUTSIDE_PRIVATE_MARKER\n')
+        nested.symlink_to(outside, target_is_directory=True)
+        result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'uncommitted', '--reviewer', 'codex'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('symlink ancestor', result.stderr)
+        self.assertNotIn('OUTSIDE_PRIVATE_MARKER', result.stdout + result.stderr)
+        self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
+
+    def test_tracked_leaf_symlink_reviews_link_text_only(self):
+        outside = Path(self.tmp.name) / 'private'
+        outside.mkdir()
+        for name in ('before.txt', 'after.txt'):
+            (outside / name).write_text('OUTSIDE_PRIVATE_MARKER\n')
+        leaf = self.repo / 'link.txt'
+        leaf.symlink_to(outside / 'before.txt')
+        self.git('add', 'link.txt')
+        self.git('commit', '-qm', 'leaf symlink')
+        leaf.unlink()
+        leaf.symlink_to(outside / 'after.txt')
+        snapshot = self.begin('uncommitted')
+        patch = (snapshot.parent / 'diff.patch').read_text()
+        self.assertIn('old mode 120000', patch)
+        self.assertIn('new mode 120000', patch)
+        self.assertIn('before.txt', patch)
+        self.assertIn('after.txt', patch)
+        self.assertNotIn('OUTSIDE_PRIVATE_MARKER', patch)
+
+    def test_deleted_parent_directory_remains_reviewable(self):
+        nested = self.repo / 'nested'
+        nested.mkdir()
+        (nested / 'data.txt').write_text('tracked content\n')
+        self.git('add', 'nested/data.txt')
+        self.git('commit', '-qm', 'nested file')
+        (nested / 'data.txt').unlink()
+        nested.rmdir()
+        snapshot = self.begin('uncommitted')
+        patch = (snapshot.parent / 'diff.patch').read_text()
+        self.assertIn('-tracked content', patch)
+        self.assertIn('new mode missing', patch)
+
     def test_committed_pass_is_private_and_bound(self):
         snapshot = self.begin()
         self.complete(snapshot)
