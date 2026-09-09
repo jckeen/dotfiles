@@ -99,6 +99,33 @@ exit "${SCAN_RC:-0}"
     def run_hook(self, refs=None):
         return self.command("bash", [str(self.hook)], self.ref() if refs is None else refs)
 
+    def record_real_review(self, base="main"):
+        shutil.copy2(ROOT / "claude/scripts/review-receipt.py", self.scripts / "review-receipt.py")
+        helper = str(self.scripts / "review-receipt.py")
+        begun = self.command("python3", [helper, "begin", "--repo", str(self.repo),
+                             "--base", base, "--scope", "committed", "--reviewer", "codex"])
+        self.assertEqual(begun.returncode, 0, begun.stderr)
+        output = self.root / "review.json"
+        output.write_text('{"verdict":"approve","findings":[]}')
+        completed = self.command("python3", [helper, "complete", "--snapshot",
+                                 str(Path(begun.stdout.strip()) / "snapshot.json"),
+                                 "--outcome", "passed", "--output", str(output)])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_annotated_tag_requires_a_reviewed_current_commit(self):
+        self.record_real_review()
+        self.command("git", ["tag", "-a", "reviewed", "-m", "release", self.head])
+        tag = self.command("git", ["rev-parse", "refs/tags/reviewed"]).stdout.strip()
+        result = self.run_hook(f"refs/tags/reviewed {tag} refs/tags/reviewed {ZERO}\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.command("git", ["tag", "-a", "unreviewed", "-m", "older release", self.base])
+        tag = self.command("git", ["rev-parse", "refs/tags/unreviewed"]).stdout.strip()
+        self.assertNotEqual(self.run_hook(f"refs/tags/unreviewed {tag} refs/tags/unreviewed {ZERO}\n").returncode, 0)
+        blob = self.command("git", ["rev-parse", "HEAD:code.txt"]).stdout.strip()
+        self.command("git", ["tag", "-a", "blob", "-m", "non-commit", blob])
+        tag = self.command("git", ["rev-parse", "refs/tags/blob"]).stdout.strip()
+        self.assertNotEqual(self.run_hook(f"refs/tags/blob {tag} refs/tags/blob {ZERO}\n").returncode, 0)
+
     def test_hook_checks_receipt_before_scan(self):
         result = self.run_hook()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -114,20 +141,10 @@ exit "${SCAN_RC:-0}"
         self.assertIn(self.base, receipts[1])
 
     def test_hook_accepts_only_the_explicitly_selected_review_base(self):
-        shutil.copy2(ROOT / "claude/scripts/review-receipt.py", self.scripts / "review-receipt.py")
         tree = self.command("git", ["rev-parse", "main^{tree}"]).stdout.strip()
         release = self.command("git", ["commit-tree", tree, "-p", self.base], "release\n").stdout.strip()
         self.command("git", ["update-ref", "refs/heads/release", release])
-        helper = str(self.scripts / "review-receipt.py")
-        begun = self.command("python3", [helper, "begin", "--repo", str(self.repo),
-                             "--base", "release", "--scope", "committed", "--reviewer", "codex"])
-        self.assertEqual(begun.returncode, 0, begun.stderr)
-        output = self.root / "review.json"
-        output.write_text('{"verdict":"approve","findings":[]}')
-        completed = self.command("python3", [helper, "complete", "--snapshot",
-                                 str(Path(begun.stdout.strip()) / "snapshot.json"),
-                                 "--outcome", "passed", "--output", str(output)])
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.record_real_review("release")
         self.assertNotEqual(self.run_hook().returncode, 0)
         self.env["REVIEW_RECEIPT_BASE"] = "release"
         accepted = self.run_hook()
