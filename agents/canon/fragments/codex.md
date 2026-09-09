@@ -7,12 +7,9 @@ set of working-style defaults I want every Codex session to share, regardless
 of which machine I'm on. Personal identity, project context, tokens, and
 machine paths stay out of here — they live in `~/dev/codex-memory`.
 
-## Conduct Layer
-
-<!-- include:conduct-layer -->
-
 ## Working Style
 
+<!-- include:authorized-work -->
 <!-- include:working-style-core -->
 <!-- include:two-floor -->
 - Doc contract: a repo's Markdown surfaces are declared in a root

@@ -37,6 +37,8 @@ cat > "$SHIM_DIR/codex" <<'EOF'
 printf '%s\n' "$@" > "$CODEX_FAKE_DIR/argv"
 cat > "$CODEX_FAKE_DIR/stdin"
 touch "$CODEX_FAKE_DIR/invoked"
+printf '%s\n' "$0" > "$CODEX_FAKE_DIR/executable"
+[ ! -f "$CODEX_FAKE_DIR/hang" ] || exec python3 "$CODEX_FAKE_DIR/hang"
 [ ! -f "$CODEX_FAKE_DIR/mutate" ] || bash "$CODEX_FAKE_DIR/mutate"
 prev=""
 for a in "$@"; do
@@ -51,6 +53,13 @@ EOF
 chmod +x "$SHIM_DIR/codex"
 export PATH="$SHIM_DIR:$PATH"
 export CODEX_FAKE_DIR=""
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+unset CODEX_GATE_TIMEOUT
+TEST_HOME="$SHIM_DIR/home"
+mkdir -p "$TEST_HOME"
+CHECK_OUTPUT=""
+CHECK_DIAGNOSTIC=""
+trap 'rm -f -- "$CHECK_DIAGNOSTIC"; rm -rf -- "$SHIM_DIR"' EXIT
 unset CODEX_GATE_REQUIRED
 unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 unset GATE_FORCE_FULL
@@ -77,8 +86,12 @@ check() {
   local name="$1" want="$2" frag="${3:-}"
   shift 3 || shift $#
   local out rc
-  out="$(cd "$R" && "$GATE" "$@" 2>&1)"
+  rm -f -- "$CHECK_DIAGNOSTIC"
+  out="$(cd "$R" && env HOME="$TEST_HOME" "$GATE" "$@" 2>&1)"
   rc=$?
+  # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+  CHECK_OUTPUT="$out"
+  CHECK_DIAGNOSTIC="$(sed -n 's/^  Private Codex diagnostic: //p' <<<"$out")"
   local ok=1
   [ "$rc" -eq "$want" ] || ok=0
   if [ -n "$frag" ] && ! grep -qF -- "$frag" <<<"$out"; then ok=0; fi
@@ -114,6 +127,86 @@ assert "diff absent from codex argv" "! grep -q 'SECRET_MARKER_XYZ' '$CODEX_FAKE
 assert "fence preamble absent from codex argv" "! grep -q 'UNTRUSTED' '$CODEX_FAKE_DIR/argv'"
 assert "structured schema requested" "grep -q -- '--output-schema' '$CODEX_FAKE_DIR/argv'"
 assert "review runs sandboxed read-only" "grep -qx 'read-only' '$CODEX_FAKE_DIR/argv'"
+rm -rf "$R"
+
+# ── installed runtime preference and explicit override ─────────────────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+managed="$TEST_HOME/.codex/packages/standalone/current/bin/codex"
+mkdir -p "$(dirname "$managed")" "$SHIM_DIR/release/bin"
+cp "$SHIM_DIR/codex" "$SHIM_DIR/release/bin/codex"
+ln -s "$SHIM_DIR/release/bin/codex" "$managed"
+unset CODEX_GATE_BIN
+check "managed standalone wins over an older PATH CLI" 0 "Codex review passed" --uncommitted --no-issues
+assert "receipt and invocation pin the managed executable" "jq -e --arg exe '$SHIM_DIR/release/bin/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/release/bin/codex' '$CODEX_FAKE_DIR/executable'"
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+check "explicit binary overrides the managed installation" 0 "Codex review passed" --uncommitted --no-issues
+assert "receipt and invocation agree on explicit binary" "jq -e --arg exe '$SHIM_DIR/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
+export CODEX_GATE_BIN=codex
+check "explicit command name intentionally uses PATH" 0 "Codex review passed" --uncommitted --no-issues
+assert "explicit PATH selection wins over managed CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
+for invalid in "$SHIM_DIR/missing" "$SHIM_DIR" ''; do
+  export CODEX_GATE_BIN="$invalid"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "invalid explicit binary fails closed" 3 "CODEX_GATE_BIN" --uncommitted --no-issues
+  assert "invalid override never falls back or leaves a receipt" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+done
+unset CODEX_GATE_BIN
+rm "$managed"
+check "PATH remains the fallback without a standalone install" 0 "Codex review passed" --uncommitted --no-issues
+assert "fallback invokes the fixture CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+rm -rf "$R"
+
+# ── failures expose a safe hint and a bounded private diagnostic ─────────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+echo 1 > "$CODEX_FAKE_DIR/rc"
+python3 - "$CODEX_FAKE_DIR/stderr" <<'PYERR'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_text('PRIVATE_PROMPT_MARKER' * 2000 + '\nERROR: The configured model requires a newer version of Codex. PRIVATE_TOKEN_MARKER\n')
+PYERR
+check "runtime failure explains incompatible CLI" 3 "requires a newer Codex CLI" --uncommitted --no-issues
+assert "failure output never dumps stderr secrets" "[[ \$CHECK_OUTPUT != *PRIVATE_PROMPT_MARKER* && \$CHECK_OUTPUT != *PRIVATE_TOKEN_MARKER* ]]"
+assert "private diagnostic retains bounded error details" "python3 -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); assert p.is_file() and 0 < p.stat().st_size <= 16384; assert p.stat().st_mode & 0o777 == 0o600; assert b\"PRIVATE_TOKEN_MARKER\" in p.read_bytes()' \"\$CHECK_DIAGNOSTIC\""
+assert "failed runtime cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+: > "$CODEX_FAKE_DIR/output"
+echo 0 > "$CODEX_FAKE_DIR/rc"
+check "empty output also gives safe diagnostic context" 3 "requires a newer Codex CLI" --uncommitted --no-issues --require
+assert "empty-output diagnostic never dumps stderr secrets" "[[ \$CHECK_OUTPUT != *PRIVATE_PROMPT_MARKER* && \$CHECK_OUTPUT != *PRIVATE_TOKEN_MARKER* ]]"
+rm -rf "$R"
+
+# ── bounded timeout terminates the reviewer and stubborn descendants ─────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+for invalid in 0 -1 invalid; do
+  export CODEX_GATE_TIMEOUT="$invalid"
+  check "invalid timeout fails closed before dispatch" 3 "CODEX_GATE_TIMEOUT" --uncommitted --no-issues
+  assert "invalid timeout never dispatches reviewer" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+done
+cat > "$CODEX_FAKE_DIR/hang" <<'PYHANG'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)'])
+Path(os.environ['CODEX_FAKE_DIR'], 'pids').write_text(f'{os.getpid()} {child.pid}')
+time.sleep(10)
+PYHANG
+export CODEX_GATE_TIMEOUT=1
+started=$SECONDS
+check "hung review fails closed at the deadline" 3 "timed out after 1 seconds" --uncommitted --no-issues
+assert "timeout and kill grace stay bounded" "(( SECONDS - $started < 9 ))"
+assert "timeout does not issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+assert "timeout kills the reviewer and its descendants" "python3 -c 'from pathlib import Path; import subprocess,sys; pids=Path(sys.argv[1]).read_text().split(); assert len(pids) == 2; states=[subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip() for pid in pids]; assert all(not state or state.startswith(\"Z\") for state in states), states' '$CODEX_FAKE_DIR/pids'"
+unset CODEX_GATE_TIMEOUT
 rm -rf "$R"
 
 # ── fail CLOSED on unparseable / nonconforming JSON ───────────────────

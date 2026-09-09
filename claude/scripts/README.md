@@ -127,6 +127,20 @@ and repository and worktree paths retain their exact whitespace.
 
 ## Safety Tiers
 
+### Codex review runtime
+
+The Codex gate honors `CODEX_GATE_BIN` when explicitly set. Otherwise it prefers
+the managed standalone installation under `~/.codex` and falls back to `PATH`. Set `CODEX_GATE_BIN=codex` to deliberately select the
+executable on `PATH`. The receipt records the executable used by that run.
+
+`CODEX_GATE_TIMEOUT` bounds reviewer execution; its default lives in
+`codex-review-gate.sh`. A timeout or failed process does not produce approval.
+Failures report a diagnostic hint and a private temporary log path without
+printing raw reviewer stderr, which may contain reviewed content. Inspect that
+log when needed and keep it out of repositories.
+
+### Claude script tiers
+
 Each script uses scoped `--allowedTools` to limit what Claude can do:
 
 | Tier | Can do | Can't do |

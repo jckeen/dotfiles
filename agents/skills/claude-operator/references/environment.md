@@ -28,7 +28,6 @@ path on any machine that ran setup.
 | --- | --- |
 | Global Claude rules | `~/.claude/CLAUDE.md` |
 | Private preferences and standing orders | `<dev-dir>/claude-memory/CLAUDE.md` (optional private repo) |
-| Conduct and communication contract | `<dev-dir>/dotfiles/claude/FABLE.md` |
 | Daily workflow and command reference | `<dev-dir>/dotfiles/CLAUDE-GUIDE.md` |
 | Interactive launchers (`cc`, `cct`, `cx`) | `<dev-dir>/dotfiles/.bash_aliases` |
 | Claude workflow skills | `~/.claude/skills/<skill>/SKILL.md` |

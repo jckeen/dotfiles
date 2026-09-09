@@ -72,6 +72,7 @@ FORCE_UNCOMMITTED=false
 REQUIRED="${CODEX_GATE_REQUIRED:-0}"
 MAX_ISSUES="${CODEX_GATE_MAX_ISSUES:-10}"
 MAX_DIFF_LINES="${CODEX_GATE_MAX_LINES:-5000}"
+REVIEW_TIMEOUT="${CODEX_GATE_TIMEOUT-600}"
 CLAIM=""
 REPRO=""
 
@@ -114,7 +115,28 @@ GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 gate_init_receipt
 
-command -v codex >/dev/null 2>&1 || degrade "codex CLI not found on PATH."
+# Interactive shells already prefer the managed standalone release. Pin the
+# same executable here so login-shell PATH order cannot select an older CLI.
+# CODEX_GATE_BIN=codex intentionally requests PATH; invalid overrides fail closed.
+if [[ "${CODEX_GATE_BIN+x}" == x ]]; then
+  GATE_CLI="$(type -P -- "$CODEX_GATE_BIN" || true)"
+  if [[ ! -f "$GATE_CLI" || ! -x "$GATE_CLI" ]]; then
+    red "✖ CODEX_GATE_BIN must name an executable file or a command on PATH."
+    exit 3
+  fi
+elif [[ -f "${HOME:-}/.codex/packages/standalone/current/bin/codex" && -x "${HOME:-}/.codex/packages/standalone/current/bin/codex" ]]; then
+  GATE_CLI="${HOME}/.codex/packages/standalone/current/bin/codex"
+else
+  GATE_CLI="$(type -P codex || true)"
+  [[ -f "$GATE_CLI" && -x "$GATE_CLI" ]] || degrade "codex CLI not found on PATH."
+fi
+# Resolve the launcher before artifact capture so the receipt names the file
+# actually invoked even if the managed release symlink changes during review.
+GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI")"
+if [[ ! "$REVIEW_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+  red "✖ CODEX_GATE_TIMEOUT must be a positive whole number of seconds."
+  exit 3
+fi
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
@@ -188,6 +210,7 @@ fi
 
 bold "→ Codex review gate"
 echo "  Reviewing: $TARGET_DESC ($N_LINES lines)"
+printf '  Codex executable: %s\n' "$GATE_CLI"
 [[ -n "$CLAIM" ]] && echo "  Adversarial claim: $CLAIM"
 echo ""
 
@@ -250,15 +273,81 @@ ${FENCE}"
 
 # ─── Run the review ────────────────────────────────────────────
 OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
-ERR_FILE="$(mktemp -t codex-review-err.XXXXXX.txt)"
-cleanup() { rm -f "$OUT_FILE" "$ERR_FILE"; gate_cleanup; }
+# Failure stderr can contain the full prompt. Retain only a private, bounded
+# tail in the system temp directory; never echo its untrusted bytes to the user.
+ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX.txt)"
+KEEP_DIAGNOSTIC=false
+cleanup() {
+  rm -f "$OUT_FILE"
+  [[ "$KEEP_DIAGNOSTIC" == true ]] || rm -f "$ERR_FILE"
+  gate_cleanup
+}
+report_diagnostic() {
+  [[ -s "$ERR_FILE" ]] || return 0
+  python3 - "$ERR_FILE" <<'PYERR'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+with path.open('rb') as stream:
+    stream.seek(0, 2)
+    stream.seek(max(0, stream.tell() - 16384))
+    tail = stream.read()
+path.write_bytes(tail)
+message = tail.decode('utf-8', errors='replace').lower()
+if 'requires a newer version of codex' in message:
+    print('  The configured model requires a newer Codex CLI; update the selected installation.')
+elif any(value in message for value in ('unauthorized', 'authentication', 'not logged in', '401')):
+    print('  Codex reported an authentication failure; check login for the selected installation.')
+elif any(value in message for value in ('rate limit', '429', 'quota')):
+    print('  Codex reported a rate or usage limit; review the private diagnostic before retrying.')
+PYERR
+  KEEP_DIAGNOSTIC=true
+  printf '  Private Codex diagnostic: %s\n' "$ERR_FILE"
+}
 trap cleanup EXIT
 
 # `-s read-only`: the diff is untrusted input; a steered review must not be
 # able to write or execute beyond reads. A nonzero exit is a failed run, even
 # if it left a partial structured result.
 set +e
-codex exec - \
+# Python is already required by receipts and bounds execution on both Linux
+# and macOS, including installations without GNU timeout. A separate process
+# group lets the deadline terminate tool subprocesses as well as the reviewer.
+python3 -c '
+import os
+import signal
+import subprocess
+import sys
+import time
+
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
+
+for signum in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(signum, interrupted)
+
+process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+timed_out = False
+try:
+    result = process.wait(timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    timed_out = True
+finally:
+    if timed_out or process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        # Keep the group leader unreaped until the final signal so its PID
+        # cannot be reused for a different process group during the grace.
+        time.sleep(5)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+sys.exit(124 if timed_out else result if result >= 0 else 128 - result)
+' "$REVIEW_TIMEOUT" "$GATE_CLI" exec - \
   -s read-only \
   --output-schema "$SCHEMA" \
   -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
@@ -266,13 +355,15 @@ CODEX_RC=$?
 set -e
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
+  [[ "$CODEX_RC" -ne 124 ]] || red "✖ Codex review timed out after $REVIEW_TIMEOUT seconds."
+  report_diagnostic
   red "✖ Codex exited rc=$CODEX_RC — not trusting the result, even when findings were written."
   exit 3
 fi
 gate_assert_unchanged
 
 if [[ ! -s "$OUT_FILE" ]]; then
-  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed -n '1,20{s/^/    /;p;}' "$ERR_FILE"; }
+  report_diagnostic
   degrade "Codex produced no review output (rc=$CODEX_RC)."
 fi
 
