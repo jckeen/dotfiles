@@ -81,6 +81,9 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
+It covers both staged changes and later workspace edits.
+Instruction checks recognize Git-managed CRLF text conversion and sparse
+checkout omissions while retaining raw workspace hashes.
 Known ignored agent runtime credentials and state are excluded from instruction
 discovery. Named instruction files inside runtime directories remain covered.
 Recognized runtime artifacts explicitly included in the review target block
@@ -89,8 +92,10 @@ rules are not a general secret scanner.
 
 Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
-requires the outgoing commit to be that worktree's current HEAD and rejects
-submodules, repository instruction symlinks, and non-UTF-8 review content.
+uses artifact identity and attempt tokens for freshness; clock adjustments
+do not invalidate a completed review. It requires the outgoing commit to be
+that worktree's current HEAD and rejects submodules, repository instruction
+symlinks, and non-UTF-8 review content.
 Use regular instruction files inside the reviewed repository; installed global
 instruction links outside it are unaffected. Ordinary leaf symlinks remain
 reviewable as link text. Review another branch in its own worktree; resolve
@@ -100,7 +105,8 @@ The configured docs-only size limit is captured with the review policy and
 checked again when its exemption is completed or used for shipping.
 Classification and exemption validation use the same policy implementation.
 Passive filename filters retain instruction files, executable files, and
-symlinks. Documentation exemptions require nonexecutable regular files with
+symlinks, including staged executable modes when `core.filemode` is disabled.
+Documentation exemptions require nonexecutable regular files with
 recognized documentation names.
 No-diff exemptions also validate the changed paths; an empty patch cannot
 exempt an active path. Review path selection uses a fixed literal policy,

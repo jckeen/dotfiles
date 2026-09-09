@@ -19,12 +19,16 @@
   Outside Git repositories, advisory runs retain their warning behavior;
   required runs still fail without issuing review evidence.
   Application hooks remain ordinary code; uncommitted capture supports
-  unrelated base history, file/directory replacements, and ignored instruction
-  files. Receipt capture disables configured filesystem monitors and preserves
-  the selected docs-only size policy through completion and validation.
+  unrelated base history, file/directory replacements, ignored instruction
+  files, and staged content followed by workspace edits. Instruction checks
+  recognize Git-managed CRLF text conversion and sparse checkout omissions.
+  Receipt capture disables configured filesystem
+  monitors and preserves the selected docs-only size policy through completion
+  and validation.
   Classification and exemption validation share one policy. Instruction files,
   executable files, and symlinks cannot bypass review through passive filename
-  filters or documentation exemptions. Inherited Git pathspec settings cannot
+  filters or documentation exemptions, including staged executable modes when
+  `core.filemode` is disabled. Inherited Git pathspec settings cannot
   change review selection, and exact path handling preserves repository identity.
   No-diff exemptions validate changed paths as well as the patch. Known runtime
   credentials and state stay out of review prompts when ignored, and block
@@ -32,8 +36,9 @@
   closed instead of leaving their effective content outside the snapshot.
 - Private review receipts bind completed results to the base, commit, tree,
   diff, index, and workspace state. Changed artifacts and superseded attempts
-  invalidate approval. The push hook checks each outgoing commit independently
-  of secret-scanner availability; receipt helpers are installed beside gates.
+  invalidate approval; wall-clock adjustments do not. The push hook checks
+  each outgoing commit independently of secret-scanner availability; receipt
+  helpers are installed beside gates.
   Annotated tags validate the commit they reference; local replacement refs
   cannot alter validation or secret scanning.
 - The morning review script explicitly selects committed review scope even
