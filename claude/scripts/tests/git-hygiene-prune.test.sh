@@ -4,7 +4,8 @@
 # mktemp with one branch per classification (merged, squash-merged with and
 # without a confirming merged PR, gone upstream, unique work, worktree,
 # checked-out, recently touched) and asserts exactly which branches survive.
-# `gh` and `curl` are PATH shims, so no network and no plan quota. Run
+# `gh` and `curl` are PATH shims; HTTP fixtures use loopback, with no external
+# network and no plan quota. Run
 # directly; exit 1 on any failure. Mirrors antigravity-review-gate.test.sh.
 set -uo pipefail
 
@@ -484,6 +485,100 @@ EOF
   rm -rf "$FIX" "$snapshot"
 done
 unset HYGIENE_SSH_EXPECT_CWD HYGIENE_SSH_ORIGIN HYGIENE_SSH_CALLS HYGIENE_SSH_EXPECT_CONFIG
+
+# HTTP stays on loopback. Existing jars are required authentication input;
+# absent jars exercise cookies received and reused within the HTTP session.
+cat > "$SHIM_DIR/cookie-server.py" <<'PY'
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from pathlib import Path
+import sys
+from urllib.parse import urlsplit
+
+root, cookie_state = Path(sys.argv[1]), sys.argv[2]
+
+
+class CookieHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(root), **kwargs)
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        cookies = self.headers.get("Cookie", "")
+        if cookie_state == "existing":
+            allowed = "fixture_auth=present" in cookies
+            evidence = "input-cookie accepted"
+        else:
+            allowed = (urlsplit(self.path).path.endswith("/info/refs") or
+                       "review_cookie=received" in cookies)
+            evidence = "session-cookie accepted" if "review_cookie=received" in cookies else "bootstrap"
+        if not allowed:
+            self.send_error(403, "fixture cookie required")
+            return
+        with (root / "http-requests").open("a") as stream:
+            stream.write(evidence + "\n")
+        super().do_GET()
+
+    def end_headers(self):
+        self.send_header("Set-Cookie", "review_cookie=received; Path=/")
+        super().end_headers()
+
+
+server = HTTPServer(("127.0.0.1", 0), CookieHandler)
+(root / "http-port").write_text(str(server.server_port))
+server.serve_forever()
+PY
+for cookie_scope in generic url; do
+  for cookie_state in existing absent; do
+    build_small_fixture
+    C="$FIX/dev/repo"
+    git -C "$FIX/origin.git" update-server-info
+    python3 "$SHIM_DIR/cookie-server.py" "$FIX" "$cookie_state" > "$FIX/http-server.log" 2>&1 &
+    cookie_server_pid=$!
+    trap 'kill "$cookie_server_pid" 2>/dev/null || true; wait "$cookie_server_pid" 2>/dev/null || true' EXIT
+    for _ in {1..50}; do
+      [[ -s "$FIX/http-port" ]] && break
+      sleep 0.1
+    done
+    if [[ ! -s "$FIX/http-port" ]]; then
+      cat "$FIX/http-server.log" >&2
+      assert "HTTP fixture starts" false
+      kill "$cookie_server_pid" 2>/dev/null || true
+      wait "$cookie_server_pid" 2>/dev/null || true
+      trap - EXIT
+      break
+    fi
+    cookie_url="http://127.0.0.1:$(cat "$FIX/http-port")/origin.git"
+    git -C "$C" remote set-url origin "$cookie_url"
+    cookie_prefix=http
+    [[ "$cookie_scope" == url ]] && cookie_prefix="http.$cookie_url"
+    git -C "$C" config "$cookie_prefix.cookieFile" .git/review-cookies
+    git -C "$C" config --add "$cookie_prefix.saveCookies" false
+    git -C "$C" config --add "$cookie_prefix.saveCookies" true
+    if [[ "$cookie_state" == existing ]]; then
+      printf '# Netscape HTTP Cookie File\n127.0.0.1\tFALSE\t/\tFALSE\t0\tfixture_auth\tpresent\n' > "$C/.git/review-cookies"
+    fi
+    snapshot="$(mktemp -d)"
+    cp -a "$C/.git" "$snapshot/git"
+    out="$("$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
+    assert "HTTP cookies ($cookie_scope/$cookie_state): preview preserves source Git metadata" \
+      "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
+    assert "HTTP cookies ($cookie_scope/$cookie_state): preview authenticates and classifies candidate" \
+      "outgrep 'would delete candidate' && has_branch candidate"
+    cookie_evidence='input-cookie accepted'
+    [[ "$cookie_state" == absent ]] && cookie_evidence='session-cookie accepted'
+    assert "HTTP cookies ($cookie_scope/$cookie_state): transport uses expected cookie input" \
+      "grep -qx '$cookie_evidence' '$FIX/http-requests'"
+    out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+    assert "HTTP cookies ($cookie_scope/$cookie_state): real prune agrees and saves received cookies" \
+      "! has_branch candidate && outgrep 'deleted candidate' && grep -q review_cookie '$C/.git/review-cookies'"
+    kill "$cookie_server_pid"
+    wait "$cookie_server_pid" 2>/dev/null || true
+    trap - EXIT
+    rm -rf "$FIX" "$snapshot"
+  done
+done
 
 # A fresh clone and preview must agree even when neither default ref exists.
 for preview in true false; do

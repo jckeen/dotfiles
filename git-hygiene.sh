@@ -362,6 +362,11 @@ git_with_fetch_config() (
     else
       value=true
     fi
+    # Keep cookieFile as authentication input, but never write the source jar.
+    # Rewrite URL-scoped values too: they can outrank a generic -c override.
+    case "$key" in
+      http.savecookies|http.*.savecookies) value=false ;;
+    esac
     export "GIT_CONFIG_KEY_$count=$key" "GIT_CONFIG_VALUE_$count=$value"
     count=$((count + 1))
   done < "$config_file"
