@@ -405,6 +405,86 @@ for prune_setting in fetch.prune remote.origin.prune; do
   rm -rf "$FIX" "$snapshot"
 done
 
+# SSH stays local: the configured transport serves a fixture bare repository.
+unset GIT_SSH GIT_SSH_COMMAND GIT_SSH_VARIANT
+# Its relative script path must resolve from the source checkout in both modes.
+cat > "$SHIM_DIR/ssh" <<'EOF'
+#!/usr/bin/env bash
+exit 99
+EOF
+chmod +x "$SHIM_DIR/ssh"
+for transport_scope in local conditional; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  export HYGIENE_SSH_EXPECT_CWD="$C" HYGIENE_SSH_ORIGIN="$FIX/origin.git"
+  export HYGIENE_SSH_CALLS="$FIX/ssh-calls" HYGIENE_SSH_EXPECT_CONFIG="$FIX/expected"
+  mkdir -p "$C/.git/probe-hooks"
+  cat > "$C/.git/probe-hooks/reference-transaction" <<'EOF'
+#!/usr/bin/env bash
+printf 'hook ran\n' >> "$HYGIENE_SSH_CALLS.hooks"
+EOF
+  chmod +x "$C/.git/probe-hooks/reference-transaction"
+  cat > "$C/.git/fixture-ssh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$PWD" == "$HYGIENE_SSH_EXPECT_CWD" ]] || exit 91
+printf 'transport ran\n' >> "$HYGIENE_SSH_CALLS"
+exec git-upload-pack "$HYGIENE_SSH_ORIGIN"
+EOF
+  global_config="$FIX/global.config"
+  conditional_config="$FIX/conditional.config"
+  git config --file "$global_config" core.hooksPath "$C/.git/probe-hooks"
+  git config --file "$global_config" --add credential.helper first
+  git config --file "$global_config" --add http.extraHeader 'X-Global: first'
+  git -C "$C" config core.worktree "$C"
+  if [[ "$transport_scope" == local ]]; then
+    transport_config="$C/.git/config"
+  else
+    git config --file "$global_config" "includeIf.gitdir:$C/.git.path" "$conditional_config"
+    transport_config="$conditional_config"
+  fi
+  git config --file "$transport_config" core.sshCommand 'bash .git/fixture-ssh'
+  git config --file "$transport_config" ssh.variant ssh
+  git config --file "$transport_config" --add credential.helper ''
+  git config --file "$transport_config" --add credential.helper $'second\n'
+  git config --file "$transport_config" --add http.extraHeader ''
+  git config --file "$transport_config" --add http.extraHeader 'X-Transport: second'
+  git -C "$C" config --add credential.helper third
+  git -C "$C" config --add http.extraHeader 'X-Local: third'
+  git -C "$C" remote set-url origin 'ssh://fixture.invalid/repository'
+  for key in credential.helper http.extraheader; do
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$global_config" \
+      git -C "$C" config --null --get-all "$key" > "$HYGIENE_SSH_EXPECT_CONFIG.$key"
+  done
+  snapshot="$(mktemp -d)"
+  cp -a "$C/.git" "$snapshot/git"
+  out="$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$global_config" \
+    GIT_TRACE2_EVENT="$FIX/preview-trace.jsonl" \
+    GIT_TRACE2_CONFIG_PARAMS=credential.helper,http.extraheader \
+    "$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
+  assert "transport ($transport_scope): preview uses configured relative SSH command" \
+    "outgrep 'would delete candidate' && [ -s '$HYGIENE_SSH_CALLS' ]"
+  for key in credential.helper http.extraheader; do
+    jq -cRs 'split("\u0000")[:-1]' "$HYGIENE_SSH_EXPECT_CONFIG.$key" > "$FIX/expected-values.json"
+    jq -cs --arg key "$key" '
+      [.[] | select(.event == "start" and (.argv | index("fetch"))) | .sid] as $fetches |
+      [.[] | select(.event == "def_param" and .param == $key and
+        (.sid as $sid | $fetches | index($sid))) | .value]
+    ' "$FIX/preview-trace.jsonl" > "$FIX/fetched-values.json"
+    assert "transport ($transport_scope): effective $key preserves repeated and empty values" \
+      "cmp -s '$FIX/expected-values.json' '$FIX/fetched-values.json'"
+  done
+  assert "transport ($transport_scope): preview preserves source Git metadata" \
+    "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
+  assert "transport ($transport_scope): preview does not run source hooks" \
+    "[ ! -e '$HYGIENE_SSH_CALLS.hooks' ]"
+  out="$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$global_config" \
+    "$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+  assert "transport ($transport_scope): real prune agrees with preview" \
+    "! has_branch candidate && outgrep 'deleted candidate'"
+  rm -rf "$FIX" "$snapshot"
+done
+unset HYGIENE_SSH_EXPECT_CWD HYGIENE_SSH_ORIGIN HYGIENE_SSH_CALLS HYGIENE_SSH_EXPECT_CONFIG
+
 # A fresh clone and preview must agree even when neither default ref exists.
 for preview in true false; do
   build_small_fixture

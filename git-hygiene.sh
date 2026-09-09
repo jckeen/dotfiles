@@ -343,6 +343,33 @@ delete_branch() {
   fi
 }
 
+# Replay only effective fetch settings. Keeping cwd at the source preserves
+# relative transport commands and paths; explicit Git storage stays temporary.
+git_with_fetch_config() (
+  local source="$1" evidence="$2" config_file="$3" record key value count=0
+  shift 3
+  unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+  unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null
+  while IFS= read -r -d '' record; do
+    key="${record%%$'\n'*}"
+    if [[ "$record" == *$'\n'* ]]; then
+      value="${record#*$'\n'}"
+    else
+      value=true
+    fi
+    export "GIT_CONFIG_KEY_$count=$key" "GIT_CONFIG_VALUE_$count=$value"
+    count=$((count + 1))
+  done < "$config_file"
+  export GIT_CONFIG_COUNT="$count"
+  local git_dir=()
+  if [[ -n "$evidence" ]]; then
+    export GIT_DIR="$evidence"
+    git_dir=(--git-dir="$evidence")
+  fi
+  git -C "$source" "${git_dir[@]}" -c core.bare=true -c core.hooksPath=/dev/null "$@"
+)
+
 audit_repo() (
   local d="$1"
   local repo
@@ -372,6 +399,7 @@ audit_repo() (
   fi
 
   local evidence="$d" scratch="" fetched pruned old_default="$default"
+  local remote_git=(git -C "$d")
   if [[ "$MODE" == "audit" ]]; then
     [[ -n "$default" ]] || warn "origin/HEAD not set — run \`git remote set-head origin -a\`"
   else
@@ -379,21 +407,21 @@ audit_repo() (
       scratch=$(mktemp -d)
       trap 'rm -rf -- "$scratch"' EXIT
       evidence="$scratch/evidence.git"
-      if ! git clone -q --mirror --shared "$d" "$evidence" 2>/dev/null; then
+      if ! git_with_fetch_config "$d" "" /dev/null clone -q --mirror --shared "$d" "$evidence" 2>/dev/null; then
         warn "cannot snapshot repository — branches kept"
         return 0
       fi
-      local url refspec
-      url=$(git remote get-url origin)
-      [[ "$url" == /* || "$url" == *:* ]] || url="$d/$url"
-      git -C "$evidence" remote set-url origin "$url"
-      git -C "$evidence" config remote.origin.mirror false
-      git -C "$evidence" config --unset-all remote.origin.fetch
-      while IFS= read -r refspec; do
-        git -C "$evidence" config --add remote.origin.fetch "$refspec"
-      done < <(git config --get-all remote.origin.fetch)
+      # Flatten includes in the source context, retaining repeated/empty values.
+      # System/global config is disabled during replay to avoid adding it twice.
+      local fetch_keys='^(core\.(sshcommand|gitproxy|askpass)|ssh\.variant|http\..*|credential\..*|url\..*\.(insteadof|pushinsteadof)|protocol\..*|remote\.origin\.(url|fetch|uploadpack|proxy|proxyauthmethod|vcs|promisor|partialclonefilter|serveroption|tagopt|prunetags))$'
+      if ! git config --includes --null --get-regexp "$fetch_keys" > "$scratch/fetch-config"; then
+        warn "fetch configuration unavailable — branches kept"
+        return 0
+      fi
+      git_with_fetch_config "$d" "$evidence" /dev/null config --remove-section remote.origin
+      remote_git=(git_with_fetch_config "$d" "$evidence" "$scratch/fetch-config")
     fi
-    if ! fetched=$(git -C "$evidence" -c remote.origin.followRemoteHEAD=never fetch --prune origin 2>&1); then
+    if ! fetched=$("${remote_git[@]}" -c remote.origin.followRemoteHEAD=never fetch --prune origin 2>&1); then
       warn "fetch failed — skipping repository; branches kept"
       return 0
     fi
@@ -405,7 +433,7 @@ audit_repo() (
         ok "pruned $pruned stale remote-tracking refs"
       fi
     fi
-    if ! git -C "$evidence" remote set-head origin -a >/dev/null 2>&1; then
+    if ! "${remote_git[@]}" remote set-head origin -a >/dev/null 2>&1; then
       warn "remote default unavailable — skipping repository; branches kept"
       return 0
     fi
