@@ -326,6 +326,27 @@ printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
 rm -rf "$R"
 
+# The alternate lane must receive instruction bytes even with passive suffixes.
+for active_path in .codex/policy.lock .claude/hooks/check.lock LICENSE.py; do
+  for scope in committed uncommitted; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    mkdir -p "$R/$(dirname "$active_path")"
+    printf '#!/usr/bin/env python3\nprint("ACTIVE_REVIEW_MARKER")\n' > "$R/$active_path"
+    chmod +x "$R/$active_path"
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" add "$active_path"
+      git -C "$R" commit -qm 'active change with exempt filename'
+    fi
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    check "$scope $active_path requires alternate review" 0 "LGTB verdict" "--$scope" --require
+    assert "active content reaches alternate reviewer" "grep -q 'ACTIVE_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
+    assert "active receipt records actual alternate review" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+    rm -rf "$R"
+  done
+done
+
 for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo

@@ -380,6 +380,46 @@ for asset in image.svg bundle.min.js; do
   done
 done
 
+# Filename exemptions cannot hide executable hooks or code named like docs/assets.
+for active_path in .claude/hooks/check.lock LICENSE.py preview.png; do
+  for scope in committed uncommitted; do
+    new_repo
+    mkdir -p "$R/$(dirname "$active_path")" "$R/.claude"
+    printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"python3 .claude/hooks/check.lock"}]}]}}\n' > "$R/.claude/settings.json"
+    printf '#!/usr/bin/env python3\nprint("before")\n' > "$R/$active_path"
+    chmod +x "$R/$active_path"
+    git -C "$R" add .claude/settings.json "$active_path"
+    git -C "$R" commit -qm 'existing executable'
+    git -C "$R" checkout -qb feature
+    printf '#!/usr/bin/env python3\nprint("EXECUTABLE_REVIEW_MARKER")\n' > "$R/$active_path"
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" commit -qam 'changed executable behavior'
+    fi
+    approve_clean
+    check "$scope $active_path requires full review" 0 "Codex review passed" "--$scope" --no-issues --require
+    assert "executable content reaches Codex" "grep -q 'EXECUTABLE_REVIEW_MARKER' '$CODEX_FAKE_DIR/stdin'"
+    assert "executable receipt records actual review" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+    if [[ "$scope" == committed ]]; then
+      assert "reviewed executable receipt can ship" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+    fi
+    rm -rf "$R"
+  done
+done
+
+for scope in committed uncommitted; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/.codex"
+  printf 'CODEX_POLICY_MARKER\n' > "$R/.codex/policy.lock"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" add .codex/policy.lock
+    git -C "$R" commit -qm 'instruction with passive suffix'
+  fi
+  check "$scope passive suffix cannot hide Codex instructions" 2 "Diff touches the Codex reviewer's own instruction surface" "--$scope" --no-issues --require
+  assert "guarded instruction cannot issue an exemption receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
 for mutation in head index worktree untracked base; do
   new_repo
   git -C "$R" checkout -qb feature

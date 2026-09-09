@@ -84,16 +84,26 @@ def private_agent_data(path):
     return False
 
 
-def excluded(path):
-    return any(fnmatch.fnmatchcase(Path(path).name, pattern) for pattern in EXCLUDED)
+def risk(path):
+    lower = path.lower()
+    risk_patterns = ('*AGENTPACK*', '.github/*', '*/.github/*', '*hooks/*', '*.githooks*', '*scripts/*')
+    return (instruction(path) or any(fnmatch.fnmatchcase(path, pattern) for pattern in risk_patterns)
+            or any(word in lower for word in ('auth', 'token', 'secret', 'credential', 'password', 'session', 'sso', 'crypt', 'hash', 'host', 'schema', 'migration')))
+
+
+def passive_modes(modes):
+    # Both sides matter: deletion, chmod, or replacement must not hide active files.
+    return all(mode in ('missing', '100644') for mode in modes)
+
+
+def excluded(path, modes):
+    return (not risk(path) and passive_modes(modes)
+            and any(fnmatch.fnmatchcase(Path(path).name, pattern) for pattern in EXCLUDED))
 
 
 def docsafe(path):
-    lower = path.lower()
-    risk_patterns = ('*AGENTPACK*', '.github/*', '*/.github/*', '*hooks/*', '*.githooks*', '*scripts/*')
-    return (not instruction(path) and not any(fnmatch.fnmatchcase(path, pattern) for pattern in risk_patterns)
-            and not any(word in lower for word in ('auth', 'token', 'secret', 'credential', 'password', 'session', 'sso', 'crypt', 'hash', 'host', 'schema', 'migration'))
-            and (path.endswith(('.md', '.markdown', '.rst')) or re.fullmatch(r'LICENSE(?:\..*)?', Path(path).name) is not None))
+    return (not risk(path)
+            and (path.endswith(('.md', '.markdown', '.rst')) or Path(path).name in ('LICENSE', 'LICENSE.txt')))
 
 
 def file_bytes(repo, path, directory_is_missing=False):
@@ -161,8 +171,7 @@ def capture(repo, base, scope):
     if any(entry.startswith(b'160000 ') for entry in index.split(b'\0')):
         raise ValueError('submodule snapshots are unsupported; review separately')
     entries = tree_files(repo, head)
-    if scope == 'committed':
-        tree_files(repo, merge)
+    base_entries = tree_files(repo, merge) if scope == 'committed' else entries
     tracked = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0') if e}
     tracked_files = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0')
                      if e and e.split(b' ', 1)[0] in (b'100644', b'100755', b'120000')}
@@ -198,10 +207,14 @@ def capture(repo, base, scope):
             dirty_instructions.append(path)
     if scope == 'committed' and dirty_instructions:
         raise ValueError('dirty instruction surface outside committed target: ' + ', '.join(sorted(set(dirty_instructions))))
+    changed_modes = {}
     if scope == 'committed':
+        changed_modes = {path: [base_entries.get(path, ('missing', None))[0], entries.get(path, ('missing', None))[0]]
+                         for path in paths}
         full = git(repo, *args, '--binary', merge, head, '--')
         # --text keeps executable text covered even when attributes call it binary.
-        patch = git(repo, *args, '--text', merge, head, '--', '.', *(':!' + p for p in EXCLUDED))
+        review_paths = [path for path in paths if not excluded(path, changed_modes[path])]
+        patch = git(repo, *args, '--text', merge, head, '--', *(':(literal)' + path for path in review_paths)) if review_paths else b''
     else:
         chunks, paths = [], []
         for path in sorted(set(entries) | tracked | untracked | ignored_instructions):
@@ -211,7 +224,8 @@ def capture(repo, base, scope):
             if (mode, content) == (original_mode, original):
                 continue
             paths.append(path)
-            if excluded(path):
+            changed_modes[path] = [original_mode, mode]
+            if excluded(path, changed_modes[path]):
                 continue
             before = original.decode('utf-8')
             after = content.decode('utf-8')
@@ -227,7 +241,8 @@ def capture(repo, base, scope):
     artifact = {'head': head, 'tree': tree, 'base': {'ref': base, 'commit': base_commit, 'merge_base': merge},
                 'scope': scope, 'index_sha256': digest(index), 'worktree_sha256': digest(encoded(files)),
                 'untracked_sha256': digest(encoded(sorted(untracked | ignored_instructions))),
-                'diff_sha256': digest(full), 'review_diff_sha256': digest(patch), 'changed_paths': paths}
+                'diff_sha256': digest(full), 'review_diff_sha256': digest(patch), 'changed_paths': paths,
+                'changed_modes': changed_modes}
     return artifact, patch
 
 
@@ -298,8 +313,8 @@ def classify_tier(artifact, patch, policy):
     if not artifact['changed_paths']:
         return {'tier': 2, 'reason': 'full pass (could not enumerate changed paths)'}
     for path in artifact['changed_paths']:
-        if not docsafe(path):
-            return {'tier': 2, 'reason': 'full pass (risk or unclassified path: ' + path + ')'}
+        if not passive_modes(artifact['changed_modes'][path]) or not docsafe(path):
+            return {'tier': 2, 'reason': 'full pass (active, risk, or unclassified path: ' + path + ')'}
     return {'tier': 1, 'reason': f'docs-only diff, {lines} lines ≤ {max_lines}'}
 
 

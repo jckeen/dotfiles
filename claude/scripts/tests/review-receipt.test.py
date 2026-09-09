@@ -466,7 +466,8 @@ class ReceiptTests(unittest.TestCase):
 
     def test_real_docs_and_filtered_exemptions_can_ship(self):
         self.git('checkout', '-B', 'feature', 'main')
-        for filename, outcome in (('README.md', 'tier-1'), ('image.png', 'no-diff')):
+        for filename, outcome in (('README.md', 'tier-1'), ('LICENSE', 'tier-1'), ('LICENSE.txt', 'tier-1'),
+                                  ('LICENSE.md', 'tier-1'), ('image.png', 'no-diff'), ('package-lock.json', 'no-diff')):
             with self.subTest(filename=filename):
                 self.git('checkout', '-B', 'feature', 'main')
                 (self.repo / filename).write_text('fixture\n')
@@ -474,6 +475,95 @@ class ReceiptTests(unittest.TestCase):
                 self.git('commit', '-qm', 'exempt artifact')
                 self.complete(self.begin(), outcome)
                 self.check()
+
+    def assert_full_review(self, snapshot, marker, scope, base):
+        self.assertIn(marker, (snapshot.parent / 'diff.patch').read_text())
+        self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 2)
+        self.complete(snapshot, 'no-diff', ok=False)
+        self.complete(snapshot, 'tier-1', ok=False)
+        self.complete(snapshot)
+        if scope == 'committed':
+            self.check(True, '--base', base)
+
+    def test_risk_paths_precede_passive_filename_exclusions(self):
+        for name in ('.codex/policy.lock', '.claude/hooks/check.lock', '.github/workflows/check.map',
+                     'scripts/check.min.css', 'schema.lock'):
+            for scope in ('committed', 'uncommitted'):
+                with self.subTest(path=name, scope=scope):
+                    self.git('reset', '--hard', 'main')
+                    self.git('clean', '-fd')
+                    path = self.repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('RISK_PATH_MARKER\n')
+                    if scope == 'committed':
+                        self.git('add', name)
+                        self.git('commit', '-qm', 'risk with passive filename')
+                    self.assert_full_review(self.begin(scope), 'RISK_PATH_MARKER', scope, 'main')
+
+    def test_code_named_license_does_not_get_docs_exemption(self):
+        for executable in (False, True):
+            for scope in ('committed', 'uncommitted'):
+                with self.subTest(executable=executable, scope=scope):
+                    self.git('reset', '--hard', 'main')
+                    self.git('clean', '-fd')
+                    path = self.repo / 'LICENSE.py'
+                    path.write_text('print("LICENSE_CODE_MARKER")\n')
+                    path.chmod(0o755 if executable else 0o644)
+                    if scope == 'committed':
+                        self.git('add', 'LICENSE.py')
+                        self.git('commit', '-qm', 'code with license filename')
+                    self.assert_full_review(self.begin(scope), 'LICENSE_CODE_MARKER', scope, 'main')
+
+    def test_passive_and_docs_exemptions_check_both_file_modes(self):
+        transitions = (('missing', 'exec'), ('plain', 'exec'), ('exec', 'plain'), ('exec', 'missing'),
+                       ('missing', 'link'), ('plain', 'link'), ('link', 'plain'), ('link', 'missing'))
+        for name in ('image.png', 'README.md'):
+            for before, after in transitions:
+                for scope in ('committed', 'uncommitted'):
+                    with self.subTest(path=name, before=before, after=after, scope=scope):
+                        self.git('reset', '--hard', 'main')
+                        self.git('clean', '-fd')
+                        path = self.repo / name
+
+                        def materialize(kind):
+                            path.unlink(missing_ok=True)
+                            if kind == 'link':
+                                path.symlink_to('MODE_REVIEW_MARKER')
+                            elif kind != 'missing':
+                                path.write_text('MODE_REVIEW_MARKER\n')
+                                path.chmod(0o755 if kind == 'exec' else 0o644)
+
+                        materialize(before)
+                        if before != 'missing':
+                            self.git('add', name)
+                            self.git('commit', '-qm', 'mode before')
+                        base = self.git('rev-parse', 'HEAD')
+                        materialize(after)
+                        if scope == 'committed':
+                            self.git('add', name)
+                            self.git('commit', '-qm', 'mode after')
+                        snapshot = self.begin(scope, base)
+                        # Pure executable-bit changes carry modes without a content hunk.
+                        marker = name if (before, after) in (('plain', 'exec'), ('exec', 'plain')) else 'MODE_REVIEW_MARKER'
+                        self.assert_full_review(snapshot, marker, scope, base)
+
+    def test_filtered_paths_are_literal_even_with_glob_characters(self):
+        for scope in ('committed', 'uncommitted'):
+            with self.subTest(scope=scope):
+                self.git('reset', '--hard', 'main')
+                self.git('clean', '-fd')
+                active = self.repo / 'active[1].lock'
+                active.write_text('ACTIVE_LITERAL_MARKER\n')
+                active.chmod(0o755)
+                (self.repo / 'active1.lock').write_text('PASSIVE_LITERAL_MARKER\n')
+                if scope == 'committed':
+                    self.git('add', 'active[1].lock', 'active1.lock')
+                    self.git('commit', '-qm', 'literal filename selection')
+                snapshot = self.begin(scope)
+                patch = (snapshot.parent / 'diff.patch').read_text()
+                self.assertIn('ACTIVE_LITERAL_MARKER', patch)
+                self.assertNotIn('PASSIVE_LITERAL_MARKER', patch)
+                self.complete(snapshot)
 
     def test_tier1_receipt_uses_captured_configured_limit(self):
         self.git('checkout', '-B', 'feature', 'main')
