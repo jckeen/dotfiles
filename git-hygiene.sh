@@ -362,7 +362,7 @@ audit_repo() (
   local default current dirty extras=0
   default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' || echo "")
   current=$(git branch --show-current 2>/dev/null || echo "(detached)")
-  dirty=$(git --no-optional-locks status --porcelain --untracked-files=all | wc -l)
+  dirty=$(git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none | wc -l)
 
   echo "${c_blue}┌── $repo${c_reset}  ${c_dim}(on $current; default: ${default:-?})${c_reset}"
 

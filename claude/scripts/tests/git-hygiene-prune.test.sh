@@ -333,6 +333,33 @@ for dirt in tracked untracked dangling-link hidden-untracked; do
   rm -rf "$FIX"
 done
 
+# User display settings cannot hide modified or untracked submodule work.
+for ignore_setting in diff.ignoreSubmodules submodule.module.ignore; do
+  for dirt in tracked untracked; do
+    build_small_fixture
+    C="$FIX/dev/repo"
+    g init -q --bare -b main "$FIX/module-origin.git"
+    g init -q -b main "$FIX/module-seed"
+    commit_file "$FIX/module-seed" tracked.txt module
+    g -C "$FIX/module-seed" remote add origin "$FIX/module-origin.git"
+    g -C "$FIX/module-seed" push -q origin main
+    g -c protocol.file.allow=always -C "$C" submodule add -q "$FIX/module-origin.git" module
+    g -C "$C" commit -qm 'add module'
+    g -C "$C" push -q origin main
+    git -C "$C" config "$ignore_setting" all
+    if [[ "$dirt" == tracked ]]; then
+      echo changed >> "$C/module/tracked.txt"
+    else
+      echo private > "$C/module/untracked.txt"
+    fi
+    out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+    assert "dirty submodule ($ignore_setting/$dirt): candidate kept" "has_branch candidate"
+    assert "dirty submodule ($ignore_setting/$dirt): warning explains retention" \
+      "outgrep 'dirty/untracked file(s)'"
+    rm -rf "$FIX"
+  done
+done
+
 # Relative roots must classify every repo using the same absolute paths.
 build_small_fixture
 g clone -q "$FIX/origin.git" "$FIX/dev/z-later"
