@@ -279,12 +279,10 @@ fi
 # ─── Parse the structured result ───────────────────────────────
 # Enforce codex-review-schema.json locally before rendering or recording a
 # receipt; the CLI's schema request alone does not establish valid output.
-# (Plain equality chains, not jq's IN() — IN needs jq >= 1.6 and this gate
-# must not misreport on older jq installs.)
-if ! {
-  # jq normalizes duplicate keys and accepts non-JSON numeric constants.
-  # Reject ambiguous or invalid bytes before it can discard review evidence.
-  python3 - "$OUT_FILE" <<'PY' &&
+# Decode decimal literals exactly: rounding must not turn a fractional line
+# number or out-of-range confidence into a valid approval.
+if ! python3 - "$OUT_FILE" >/dev/null 2>&1 <<'PY'
+from decimal import Decimal
 import json
 import sys
 
@@ -297,34 +295,45 @@ def unique_object(pairs):
 def reject_constant(value):
     raise ValueError("invalid JSON constant: " + value)
 
+def nonempty_string(value):
+    return type(value) is str and len(value) >= 1
+
+def positive_integer(value):
+    if type(value) is int:
+        return value >= 1
+    return (type(value) is Decimal and value.is_finite() and value >= 1
+            and value == value.to_integral_value())
+
+def valid_finding(value):
+    return (
+        type(value) is dict
+        and set(value) == {"body", "confidence", "file", "line_end", "line_start",
+                           "recommendation", "severity", "title"}
+        and value["severity"] in ("critical", "high", "medium", "low")
+        and all(nonempty_string(value[key]) for key in ("title", "body", "file"))
+        and positive_integer(value["line_start"])
+        and positive_integer(value["line_end"])
+        and type(value["confidence"]) in (int, Decimal)
+        and 0 <= value["confidence"] <= 1
+        and type(value["recommendation"]) is str
+    )
+
 with open(sys.argv[1], encoding="utf-8") as source:
-    json.load(source, object_pairs_hook=unique_object,
-              parse_constant=reject_constant)
+    result = json.load(source, object_pairs_hook=unique_object,
+                       parse_constant=reject_constant, parse_float=Decimal)
+if not (
+    type(result) is dict
+    and set(result) == {"findings", "next_steps", "summary", "verdict"}
+    and result["verdict"] in ("approve", "needs-attention")
+    and nonempty_string(result["summary"])
+    and type(result["next_steps"]) is list
+    and all(nonempty_string(step) for step in result["next_steps"])
+    and type(result["findings"]) is list
+    and all(valid_finding(finding) for finding in result["findings"])
+):
+    raise ValueError("review does not match codex-review-schema.json")
 PY
-  jq -se '
-    def nonempty_string: type == "string" and length >= 1;
-    def positive_integer: type == "number" and . >= 1 and . == floor;
-    length == 1 and (.[0] |
-    type == "object"
-    and (keys == ["findings", "next_steps", "summary", "verdict"])
-    and ((.verdict == "approve") or (.verdict == "needs-attention"))
-    and (.summary | nonempty_string)
-    and (.next_steps | type == "array" and all(nonempty_string))
-    and (.findings | type == "array" and all(
-      type == "object"
-      and (keys == ["body", "confidence", "file", "line_end", "line_start",
-                    "recommendation", "severity", "title"])
-      and ((.severity == "critical") or (.severity == "high")
-           or (.severity == "medium") or (.severity == "low"))
-      and (.title | nonempty_string)
-      and (.body | nonempty_string)
-      and (.file | nonempty_string)
-      and (.line_start | positive_integer)
-      and (.line_end | positive_integer)
-      and (.confidence | type == "number" and . >= 0 and . <= 1)
-      and (.recommendation | type == "string")
-    )))' "$OUT_FILE"
-} >/dev/null 2>&1; then
+then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
   sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
   red "Push blocked: cannot confirm review is clean."

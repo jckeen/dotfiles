@@ -210,14 +210,22 @@ variants = {
     "infinity": valid.replace('"line_start":1', '"line_start":Infinity').encode(),
     "nan": valid.replace('"confidence":0.5', '"confidence":NaN').encode(),
     "invalid-utf8": valid.encode().replace(b'"nit"', b'"\xff"', 1),
+    "fractional-line": valid.replace('"line_start":1', '"line_start":1.0000000000000001').encode(),
+    "excess-confidence": valid.replace('"confidence":0.5', '"confidence":1.0000000000000001').encode(),
+    "integral-decimal": valid.replace('"line_start":1', '"line_start":1.0').encode(),
+    "integral-exponent": valid.replace('"line_start":1', '"line_start":1e2').encode(),
 }
 for name, payload in variants.items():
     (root / name).write_bytes(payload)
 PY
-for variant in duplicate-findings duplicate-severity infinity nan invalid-utf8; do
+for variant in duplicate-findings duplicate-severity infinity nan invalid-utf8 fractional-line excess-confidence; do
   cp "$CODEX_FAKE_DIR/$variant" "$CODEX_FAKE_DIR/output"
   check "strict JSON rejects $variant" 2 "not the expected JSON shape" --no-issues --require
   assert "invalid JSON leaves no receipt: $variant" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+done
+for variant in integral-decimal integral-exponent; do
+  cp "$CODEX_FAKE_DIR/$variant" "$CODEX_FAKE_DIR/output"
+  check "numeric validation accepts $variant" 0 "Review receipt recorded" --no-issues --require
 done
 rm -rf "$R"
 
