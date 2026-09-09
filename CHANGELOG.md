@@ -22,6 +22,10 @@
   unrelated base history, file/directory replacements, and ignored instruction
   files. Receipt capture disables configured filesystem monitors and preserves
   the selected docs-only size policy through completion and validation.
+  Classification and exemption validation share one policy. Ignored runtime
+  credentials stay out of review prompts; explicitly included credential files
+  block review. Repository instruction symlinks and staged submodules fail
+  closed instead of leaving their effective content outside the snapshot.
 - Private review receipts bind completed results to the base, commit, tree,
   diff, index, and workspace state. Changed artifacts and superseded attempts
   invalidate approval. The push hook checks each outgoing commit independently

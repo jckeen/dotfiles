@@ -75,15 +75,22 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
+Ignored agent runtime credentials are excluded from instruction discovery.
+Credential files explicitly included in the review target block review before
+their contents can reach a reviewer.
 
 Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
 requires the outgoing commit to be that worktree's current HEAD and rejects
-unsupported submodule or non-UTF-8 review content. Review another branch in
-its own worktree; resolve unsupported content explicitly before shipping.
+submodules, repository instruction symlinks, and non-UTF-8 review content.
+Use regular instruction files inside the reviewed repository; installed global
+instruction links outside it are unaffected. Ordinary leaf symlinks remain
+reviewable as link text. Review another branch in its own worktree; resolve
+unsupported content explicitly before shipping.
 Reviewer dispatch information and observed identity are recorded separately.
 The configured docs-only size limit is captured with the review policy and
 checked again when its exemption is completed or used for shipping.
+Classification and exemption validation use the same policy implementation.
 
 ## Safety Tiers
 
