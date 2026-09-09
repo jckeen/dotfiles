@@ -13,7 +13,7 @@
 # GraphQL is blocked (REST is the only hard dependency — see dedup note below).
 #
 # Two callers, one logic:
-#   - PreMergeCodexHarvest.hook.ts  — in-session, warn-only, at `gh pr merge` time.
+#   - PreMergeCodexHarvest.hook.sh  — in-session, warn-only, at `gh pr merge` time.
 #   - nightly-docs-steward routine  — cloud backstop for comments that land later.
 #
 # Usage:

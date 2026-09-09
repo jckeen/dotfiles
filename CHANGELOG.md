@@ -210,7 +210,10 @@
   records after clock drift. Repair requires the previously saved updater's
   exact kernel identity and the verified control-socket owner, holds Codex's
   native locks, and leaves conflicting records or unverified processes alone.
-  Normal Codex commands perform the restart after repair.
+  The control socket follows the selected daemon state, keeping custom
+  `CODEX_HOME` records separate from the default home. Normal Codex commands
+  perform the restart after repair; restarting the shared daemon may interrupt
+  terminals already attached to it.
 - Restart failures, timeouts, and persistent connection errors still allow
   local Codex to launch. Upstream output remains hidden to protect pairing
   secrets, and hosts without Remote Control opt-in remain untouched.

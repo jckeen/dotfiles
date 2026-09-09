@@ -241,6 +241,28 @@ class RemoteControlRecoverTest(unittest.TestCase):
         args.update(overrides)
         return RECOVER.repair_pid_records(**args)
 
+    def test_repair_uses_control_socket_beside_selected_daemon_state(self):
+        self.prepare_repair()
+        custom_home = self.home / "custom-codex-home"
+        custom_home.mkdir()
+        daemon = custom_home / "app-server-daemon"
+        self.pid_file.parent.rename(daemon)
+        self.pid_file = daemon / "app-server-updater.pid"
+        self.identity_file = daemon / "app-server-updater.identity.json"
+        self.server_pid_file = daemon / "app-server.pid"
+        expected_socket = custom_home / "app-server-control/app-server-control.sock"
+        sockets = []
+
+        def custom_peer(path):
+            sockets.append(path)
+            if path != expected_socket:
+                raise FileNotFoundError(path)
+            return self.server_pid, os.getuid(), 98
+
+        self.assertTrue(self.repair(socket_peer=custom_peer))
+        self.assertEqual(sockets, [expected_socket])
+        self.assertEqual(json.loads(self.server_pid_file.read_text())["pid"], self.server_pid)
+
     def test_repair_survives_clock_drift_and_updated_current_symlink(self):
         self.prepare_repair()
         (self.proc / "stat").write_text(f"btime {self.boot_time + 300}\n")

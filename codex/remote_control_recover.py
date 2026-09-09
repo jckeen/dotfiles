@@ -439,7 +439,7 @@ def repair_pid_records(
             return False
 
         server_pid, peer_uid, server_fd = socket_peer(
-            home / ".codex/app-server-control/app-server-control.sock"
+            pid_file.parent.parent / "app-server-control/app-server-control.sock"
         )
         pidfds.append(server_fd)
         if peer_uid != expected_uid or server_pid <= 1 or server_pid == expected["pid"]:
