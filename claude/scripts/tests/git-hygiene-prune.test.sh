@@ -316,13 +316,16 @@ assert "missing reflog: explains unavailable activity" "outgrep 'activity unavai
 rm -rf "$FIX"
 
 # Git's dirty inventory includes untracked dangling links as well as files.
-for dirt in tracked untracked dangling-link; do
+for dirt in tracked untracked dangling-link hidden-untracked; do
   build_small_fixture
   C="$FIX/dev/repo"
   case "$dirt" in
     tracked) echo changed >> "$C/seed.txt" ;;
     untracked) echo private > "$C/untracked.txt" ;;
     dangling-link) ln -s missing-target "$C/untracked-link" ;;
+    hidden-untracked)
+      git -C "$C" config status.showUntrackedFiles no
+      echo private > "$C/untracked.txt" ;;
   esac
   out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
   assert "dirty repo ($dirt): candidate kept" "has_branch candidate"
