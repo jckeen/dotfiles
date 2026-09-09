@@ -567,6 +567,55 @@ class ReceiptTests(unittest.TestCase):
         (self.repo / '.git/info/exclude').write_text('AGENTS.md\n')
         self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
 
+    def test_backward_wall_clock_preserves_validity_and_stale_checks(self):
+        def at_time(timestamp, *args):
+            result = subprocess.run([sys.executable, '-c', '''
+import runpy, sys
+from datetime import datetime
+from unittest.mock import patch
+fixed = datetime.fromisoformat(sys.argv.pop(1))
+sys.argv = sys.argv[1:]
+with patch('datetime.datetime', wraps=datetime) as clock:
+    clock.now.return_value = fixed
+    runpy.run_path(sys.argv[0], run_name='__main__')
+''', timestamp, str(HELPER), *args], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout.strip()
+
+        started = '2026-09-09T12:00:00.500000+00:00'
+        completed = '2026-09-09T12:00:00.067000+00:00'
+        snapshot = Path(at_time(started, 'begin', '--repo', str(self.repo), '--base', 'main',
+                                '--scope', 'committed', '--reviewer', 'codex')) / 'snapshot.json'
+        at_time(completed, 'complete', '--snapshot', str(snapshot), '--outcome', 'passed',
+                '--output', str(self.result))
+        receipt_path = self.repo / '.git/review-receipts/codex.json'
+        original = receipt_path.read_text()
+        receipt = json.loads(original)
+        self.assertEqual(receipt['started_at'], started)
+        self.assertEqual(receipt['completion']['completed_at'], completed)
+        self.check()
+        code = self.repo / 'code.txt'
+        code.write_text('unreviewed work\n')
+        self.check(False)
+        code.write_text('changed\n')
+        self.check()
+        self.begin()
+        receipt_path.write_text(original)
+        self.check(False)
+
+    def test_timestamp_format_and_timezone_remain_required(self):
+        self.complete(self.begin())
+        path = self.repo / '.git/review-receipts/codex.json'
+        original = path.read_text()
+        for field in ('started_at', 'completed_at'):
+            for invalid in ('invalid', '2026-09-09T12:00:00', None, 42):
+                with self.subTest(field=field, invalid=invalid):
+                    record = json.loads(original)
+                    container = record if field == 'started_at' else record['completion']
+                    container[field] = invalid
+                    path.write_text(json.dumps(record))
+                    self.check(False)
+
     def test_missing_completion_timestamp_is_malformed(self):
         self.complete(self.begin())
         path = self.repo / '.git/review-receipts/codex.json'

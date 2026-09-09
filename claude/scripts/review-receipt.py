@@ -425,7 +425,9 @@ def check(args):
             completion = record['completion']
             started = datetime.fromisoformat(record['started_at'])
             completed = datetime.fromisoformat(completion['completed_at'])
-            if started.tzinfo is None or completed.tzinfo is None or completed < started:
+            # Wall time is audit metadata; attempt and artifact checks establish
+            # freshness even when the system clock steps backward during review.
+            if started.tzinfo is None or completed.tzinfo is None:
                 raise ValueError('malformed completion timestamps')
             if digest(completion['output'].encode()) != completion['output_sha256']:
                 raise ValueError('malformed review output')
