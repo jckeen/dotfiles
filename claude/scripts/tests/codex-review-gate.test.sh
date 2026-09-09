@@ -197,6 +197,28 @@ del(.findings[0].confidence)
 .findings[0].extra = "unexpected"
 ., .
 EOF
+python3 - "$CODEX_FAKE_DIR" "$valid_result" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+valid = sys.argv[2]
+blocking = valid.replace('"severity":"low"', '"severity":"high"')
+variants = {
+    "duplicate-findings": blocking.replace('"next_steps":[]', '"findings":[],"next_steps":[]').encode(),
+    "duplicate-severity": valid.replace('"severity":"low"', '"severity":"high","severity":"low"').encode(),
+    "infinity": valid.replace('"line_start":1', '"line_start":Infinity').encode(),
+    "nan": valid.replace('"confidence":0.5', '"confidence":NaN').encode(),
+    "invalid-utf8": valid.encode().replace(b'"nit"', b'"\xff"', 1),
+}
+for name, payload in variants.items():
+    (root / name).write_bytes(payload)
+PY
+for variant in duplicate-findings duplicate-severity infinity nan invalid-utf8; do
+  cp "$CODEX_FAKE_DIR/$variant" "$CODEX_FAKE_DIR/output"
+  check "strict JSON rejects $variant" 2 "not the expected JSON shape" --no-issues --require
+  assert "invalid JSON leaves no receipt: $variant" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+done
 rm -rf "$R"
 
 # ── rc-vs-approve guard: non-zero exit + clean approve is distrusted ──

@@ -281,7 +281,27 @@ fi
 # receipt; the CLI's schema request alone does not establish valid output.
 # (Plain equality chains, not jq's IN() — IN needs jq >= 1.6 and this gate
 # must not misreport on older jq installs.)
-if ! jq -se '
+if ! {
+  # jq normalizes duplicate keys and accepts non-JSON numeric constants.
+  # Reject ambiguous or invalid bytes before it can discard review evidence.
+  python3 - "$OUT_FILE" <<'PY' &&
+import json
+import sys
+
+def unique_object(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("duplicate JSON key")
+    return value
+
+def reject_constant(value):
+    raise ValueError("invalid JSON constant: " + value)
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    json.load(source, object_pairs_hook=unique_object,
+              parse_constant=reject_constant)
+PY
+  jq -se '
     def nonempty_string: type == "string" and length >= 1;
     def positive_integer: type == "number" and . >= 1 and . == floor;
     length == 1 and (.[0] |
@@ -303,7 +323,8 @@ if ! jq -se '
       and (.line_end | positive_integer)
       and (.confidence | type == "number" and . >= 0 and . <= 1)
       and (.recommendation | type == "string")
-    )))' "$OUT_FILE" >/dev/null 2>&1; then
+    )))' "$OUT_FILE"
+} >/dev/null 2>&1; then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
   sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
   red "Push blocked: cannot confirm review is clean."
