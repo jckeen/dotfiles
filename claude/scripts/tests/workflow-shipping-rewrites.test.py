@@ -113,6 +113,65 @@ exit 99
                 self.git("--git-dir", str(remote), "rev-parse", "refs/heads/feature"),
                 t.head if name == selected else t.base, name)
 
+    def test_multiline_destination_values_never_push_to_a_trimmed_path(self):
+        t = self.fixture
+        remotes = {"plain": t.remote}
+        for suffix in ("\n", "\n\n", "\nextra"):
+            remote = t.root / ("remote" + suffix)
+            self.git("clone", "--bare", str(t.remote), str(remote))
+            remotes[suffix] = remote
+        (t.bin / "git").unlink()
+        for key in ("remote.origin.url", "remote.origin.pushurl"):
+            for suffix in ("\n", "\n\n", "\nextra"):
+                with self.subTest(key=key, suffix=suffix):
+                    for remote in remotes.values():
+                        self.git("--git-dir", str(remote), "update-ref", "refs/heads/feature", t.base)
+                    self.git("config", key, str(remotes[suffix]))
+                    try:
+                        result = t.run_wrapper()
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("unambiguous push destination", result.stderr)
+                        self.assert_push_tips(remotes)
+                    finally:
+                        if key == "remote.origin.url":
+                            self.git("config", key, str(t.remote))
+                        else:
+                            self.git("config", "--unset", key)
+
+    def test_multiline_selected_remote_names_are_not_trimmed(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for key in ("branch.feature.pushRemote", "remote.pushDefault", "branch.feature.remote"):
+            for value in ("origin\n", "origin\n\n", "ori\ngin"):
+                with self.subTest(key=key, value=value):
+                    self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                    self.git("config", key, value)
+                    try:
+                        result = t.run_wrapper()
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assert_push_tips({"origin": t.remote})
+                    finally:
+                        if key == "branch.feature.remote":
+                            self.git("config", key, "origin")
+                        else:
+                            self.git("config", "--unset", key)
+
+    def test_empty_additional_push_url_is_still_ambiguous(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for values in ((str(t.remote), ""), ("", str(t.remote))):
+            with self.subTest(values=values):
+                self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                for value in values:
+                    self.git("config", "--add", "remote.origin.pushurl", value)
+                try:
+                    result = t.run_wrapper()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("unambiguous push destination", result.stderr)
+                    self.assert_push_tips({"origin": t.remote})
+                finally:
+                    self.git("config", "--unset-all", "remote.origin.pushurl")
+
     def test_push_remote_selection_precedence(self):
         remotes = self.push_remotes()
         self.git("config", "branch.feature.remote", "fetch")

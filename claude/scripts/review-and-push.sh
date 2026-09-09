@@ -38,10 +38,23 @@ BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
   exit 1
 }
 BRANCH=${BRANCH_REF#refs/heads/}
-REMOTE=$(git config --get "branch.$BRANCH.pushRemote" ||
-  git config --get remote.pushDefault ||
-  git config --get "branch.$BRANCH.remote" || printf '%s\n' origin)
-PUSH_URL=$(git remote get-url --push --all -- "$REMOTE")
+# Preserve configured newline bytes; remove only the sentinel and Git's terminator.
+REMOTE=$(
+  {
+    git config --get "branch.$BRANCH.pushRemote" ||
+      git config --get remote.pushDefault ||
+      git config --get "branch.$BRANCH.remote" || printf '%s\n' origin
+  } && printf .
+)
+REMOTE=${REMOTE%.}
+REMOTE=${REMOTE%$'\n'}
+if [[ -z "$REMOTE" || "$REMOTE" == *$'\n'* ]]; then
+  echo "Review and push requires one unambiguous push remote." >&2
+  exit 1
+fi
+PUSH_URL=$(git remote get-url --push --all -- "$REMOTE" && printf .)
+PUSH_URL=${PUSH_URL%.}
+PUSH_URL=${PUSH_URL%$'\n'}
 if [[ -z "$PUSH_URL" || "$PUSH_URL" == *$'\n'* ]]; then
   echo "Review and push requires one unambiguous push destination." >&2
   exit 1
