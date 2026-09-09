@@ -15,7 +15,11 @@
 #
 # Run this in the morning after overnight.sh finishes.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Preserve path bytes while removing only each command's output terminator.
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}" && printf .)" || exit 1
+SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
+SCRIPT_DIR="$(cd -- "$SCRIPT_DIR" && pwd && printf .)" || exit 1
+SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 

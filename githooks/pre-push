@@ -15,15 +15,24 @@ set -uo pipefail
 # Validate and scan the objects Git will transmit, never local replacements.
 export GIT_NO_REPLACE_OBJECTS=1
 
+# Preserve path bytes from line-oriented filesystem and Git commands.
 hook_source="${BASH_SOURCE[0]}"
 while [ -L "$hook_source" ]; do
-  hook_dir="$(cd -P "$(dirname "$hook_source")" && pwd)" || exit 1
-  hook_source="$(readlink "$hook_source")" || exit 1
+  hook_dir="$(dirname "$hook_source" && printf .)" || exit 1
+  hook_dir=${hook_dir%$'\n.'}
+  hook_dir="$(cd -P -- "$hook_dir" && pwd && printf .)" || exit 1
+  hook_dir=${hook_dir%$'\n.'}
+  hook_source="$(readlink "$hook_source" && printf .)" || exit 1
+  hook_source=${hook_source%$'\n.'}
   case "$hook_source" in /*) ;; *) hook_source="$hook_dir/$hook_source" ;; esac
 done
-source_root="$(cd -P "$(dirname "$hook_source")/.." && pwd)" || exit 1
+hook_dir="$(dirname "$hook_source" && printf .)" || exit 1
+hook_dir=${hook_dir%$'\n.'}
+source_root="$(cd -P -- "$hook_dir/.." && pwd && printf .)" || exit 1
+source_root=${source_root%$'\n.'}
 receipt_checker="$source_root/claude/scripts/review-receipt.py"
-repo_root="$(git rev-parse --show-toplevel)" || exit 1
+repo_root="$(git rev-parse --show-toplevel && printf .)" || exit 1
+repo_root=${repo_root%$'\n.'}
 receipt_base=()
 if [ -n "${REVIEW_RECEIPT_BASE:-}" ]; then
   receipt_base=(--base "$REVIEW_RECEIPT_BASE")

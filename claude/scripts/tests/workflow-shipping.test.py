@@ -195,6 +195,27 @@ exit "${SCAN_RC:-0}"
         return self.command("bash", [str(self.scripts / "review-and-push.sh"),
                             str(self.repo), *(["--auto-push"] if auto else [])], stdin)
 
+    def test_common_parser_preserves_repository_path_and_other_options(self):
+        for suffix in (" ", "\n"):
+            with self.subTest(suffix=suffix):
+                repo = self.root / ("repo" + suffix)
+                repo.mkdir()
+                logs = self.root / ("logs" + suffix)
+                result = self.command("bash", ["-c", '''source "$1"
+shift
+parse_args "$@"
+printf '%s\\0' "$REPO_DIR" "$LOG_DIR" "$MAX_TURNS" "$FULL_AUTO"
+''', "parser-fixture", str(self.scripts / "common.sh"), "--log-dir", str(logs),
+                    "--max-turns", "7", str(repo), "--full-auto"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.split("\0"), [str(repo), str(logs), "7", "true", ""])
+
+    def test_common_parser_reports_resolution_failure_in_a_conditional(self):
+        result = self.command("bash", ["-c", '''source "$1"
+if parse_args "$2"; then exit 0; else exit 7; fi
+''', "parser-fixture", str(self.scripts / "common.sh"), str(self.root / "missing")])
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+
     def test_wrapper_checks_receipt_immediately_before_push(self):
         result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -28,6 +28,81 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_wrapper_pushes_from_the_exact_repository_path(self):
+        t = self.fixture
+        plain = t.repo
+        (t.bin / "git").unlink()
+        for label, suffix in (("space", " "), ("newline", "\n")):
+            with self.subTest(suffix=suffix):
+                twin = t.root / ("repo" + suffix)
+                remote = t.root / ("target-remote-" + label)
+                self.git("clone", "--bare", str(t.remote), str(remote))
+                self.git("clone", "--no-hardlinks", str(plain), str(twin))
+                for destination in (t.remote, remote):
+                    self.git("--git-dir", str(destination), "update-ref", "refs/heads/feature", t.base)
+                t.repo = twin
+                try:
+                    self.git("config", "remote.origin.url", str(remote))
+                    result = t.run_wrapper()
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.git("--git-dir", str(remote), "rev-parse", "refs/heads/feature"), t.head)
+                    self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base)
+                finally:
+                    t.repo = plain
+
+    def test_actual_push_cannot_use_a_sibling_repository_receipt(self):
+        t = self.fixture
+        plain = t.repo
+        t.record_real_review()
+        (t.bin / "git").unlink()
+        for suffix in (" ", "\n"):
+            with self.subTest(suffix=suffix):
+                twin = t.root / ("repo" + suffix)
+                self.git("clone", "--no-hardlinks", str(plain), str(twin))
+                self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                t.repo = twin
+                try:
+                    self.git("config", "core.hooksPath", str(t.source / "githooks"))
+                    result = t.command("git", ["push", str(t.remote), f"{t.head}:refs/heads/feature"])
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("no current review evidence", result.stderr)
+                    self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base)
+                finally:
+                    t.repo = plain
+
+    def test_wrapper_cannot_load_a_sibling_script_directory(self):
+        t = self.fixture
+        plain = t.scripts
+        (t.bin / "git").unlink()
+        for suffix in (" ", "\n"):
+            with self.subTest(suffix=suffix):
+                twin = plain.with_name("scripts" + suffix)
+                shutil.copytree(plain, twin)
+                t.write(twin / "codex-review-gate.sh", "#!/bin/bash\nexit 2\n")
+                self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                t.scripts = twin
+                try:
+                    result = t.run_wrapper()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base)
+                finally:
+                    t.scripts = plain
+
+    def test_actual_hook_cannot_load_a_sibling_receipt_checker(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for suffix in (" ", "\n"):
+            with self.subTest(suffix=suffix):
+                twin = t.source.with_name("source" + suffix)
+                shutil.copytree(t.source, twin)
+                (twin / "claude/scripts/review-receipt.py").write_text("raise SystemExit(2)\n")
+                self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                self.git("config", "core.hooksPath", str(twin / "githooks"))
+                result = t.command("git", ["push", str(t.remote), f"{t.head}:refs/heads/feature"])
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("no current review evidence", result.stderr)
+                self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base)
+
     def test_current_fetch_upstream_does_not_skip_a_behind_push_fork(self):
         t = self.fixture
         fork = t.root / "fork"

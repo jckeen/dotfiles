@@ -52,7 +52,10 @@ set -euo pipefail
 # (the repo's claude/scripts/ and the ~/.claude/scripts symlink farm), so a
 # plain dirname is sufficient and portable — no readlink -f (absent on stock
 # macOS).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}" && printf .)" || exit 2
+SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
+SCRIPT_DIR="$(cd -- "$SCRIPT_DIR" && pwd && printf .)" || exit 2
+SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 SCHEMA="$SCRIPT_DIR/codex-review-schema.json"
 
 # Shared gate plumbing: colors, base resolution, diff-target selection, diff
