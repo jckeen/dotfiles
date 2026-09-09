@@ -397,7 +397,7 @@ for mutation in head index worktree untracked base; do
   rm -rf "$R"
 done
 
-for instruction in AGENTS.md .codex/config.toml; do
+for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo
     mkdir -p "$R/$(dirname "$instruction")"
@@ -411,6 +411,38 @@ for instruction in AGENTS.md .codex/config.toml; do
   done
 done
 
+for instruction in .claude/commands/check.md .gemini/commands/check.md .agents/example/guide.md; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/$(dirname "$instruction")"
+  printf 'AGENT_DOCUMENT_MARKER\n' > "$R/$instruction"
+  git -C "$R" add "$instruction"
+  git -C "$R" commit -qm 'agent command documentation'
+  approve_clean
+  check "committed $instruction dispatches full review" 0 "Codex review passed" --committed --no-issues --require
+  assert "agent document reaches reviewer" "grep -q 'AGENT_DOCUMENT_MARKER' '$CODEX_FAKE_DIR/stdin'"
+  assert "agent document receives valid committed receipt" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  rm -rf "$R"
+done
+
+new_repo
+echo change >> "$R/code.txt"
+for private_path in .codex/auth.json .claude/.credentials.json .gemini/oauth_creds.json; do
+  mkdir -p "$R/$(dirname "$private_path")"
+  printf '%s\n' "$private_path" >> "$R/.git/info/exclude"
+  printf '{"access_token":"SYNTHETIC_PRIVATE_CREDENTIAL_MARKER"}\n' > "$R/$private_path"
+done
+for instruction in .claude/settings.json .agents/example/SKILL.md; do
+  mkdir -p "$R/$(dirname "$instruction")"
+  printf '%s\n' "$instruction" >> "$R/.git/info/exclude"
+  printf 'REVIEW_AGENT_CONFIG_MARKER\n' > "$R/$instruction"
+done
+approve_clean
+check "ignored runtime credentials allow ordinary review" 0 "Codex review passed" --uncommitted --no-issues --require
+assert "ignored runtime credentials stay out of Codex stdin" "[ -s '$CODEX_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$CODEX_FAKE_DIR/stdin'"
+assert "ignored agent config and skill still reach Codex" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$CODEX_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$CODEX_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$CODEX_FAKE_DIR/stdin'"
+rm -rf "$R"
+
 new_repo
 git -C "$R" checkout -qb feature
 seq 1 250 > "$R/notes.md"
@@ -421,11 +453,31 @@ check "configured docs cap issues a receipt" 0 "tier-1 skip" --no-issues --requi
 assert "configured docs cap avoids reviewer dispatch" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
 unset GATE_TIER1_MAX_LINES
 assert "shipping accepts the captured custom cap" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+export GATE_TIER1_MAX_LINES=2
+approve_clean
+check "same committed docs above custom cap dispatch review" 0 "Codex review passed" --committed --no-issues --require
+assert "small custom cap invokes Codex" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+unset GATE_TIER1_MAX_LINES
 export GATE_TIER1_MAX_LINES=--invalid
 approve_clean
 check "leading-dash invalid cap escalates to full review" 0 "Codex review passed" --no-issues --require
 unset GATE_TIER1_MAX_LINES
 rm -rf "$R"
+
+cat > "$SHIM_DIR/classify.py" <<'PY'
+import os
+import sys
+print(os.environ['CLASSIFY_OUTPUT'])
+sys.exit(int(os.environ.get('CLASSIFY_RC', '0')))
+PY
+export CLASSIFY_OUTPUT='{"tier":1,"reason":"captured docs policy"}' CLASSIFY_RC=0
+assert "shared classifier accepts helper tier and reason" "(source '$SCRIPT_DIR/../gate-lib.sh'; RECEIPT_HELPER='$SHIM_DIR/classify.py'; GATE_RUN_DIR='$SHIM_DIR'; gate_classify_tier; [[ \$GATE_TIER == 1 && \$GATE_TIER_REASON == 'captured docs policy' ]])"
+for CLASSIFY_OUTPUT in 'broken' '{}' '{"tier":1}' '{"tier":"1","reason":"docs"}' '{"tier":1,"reason":null}' '{"tier":0,"reason":"docs"}' $'{"tier":1,"reason":"docs"}\n{"tier":1,"reason":"docs"}'; do
+  assert "malformed helper classification keeps full review" "(source '$SCRIPT_DIR/../gate-lib.sh'; RECEIPT_HELPER='$SHIM_DIR/classify.py'; GATE_RUN_DIR='$SHIM_DIR'; gate_classify_tier; [[ \$GATE_TIER == 2 ]])"
+done
+export CLASSIFY_OUTPUT='{"tier":1,"reason":"docs"}' CLASSIFY_RC=1
+assert "failed helper classification keeps full review" "(source '$SCRIPT_DIR/../gate-lib.sh'; RECEIPT_HELPER='$SHIM_DIR/classify.py'; GATE_RUN_DIR='$SHIM_DIR'; gate_classify_tier; [[ \$GATE_TIER == 2 ]])"
+unset CLASSIFY_OUTPUT CLASSIFY_RC
 
 assert "explicit committed scope selects immutable objects" "(source '$SCRIPT_DIR/../gate-lib.sh'; FORCE_UNCOMMITTED=false; FORCE_COMMITTED=true; gate_select_diff_target; [[ \$GATE_SCOPE == committed ]])"
 

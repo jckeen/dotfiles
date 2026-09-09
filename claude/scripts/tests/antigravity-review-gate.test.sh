@@ -326,7 +326,7 @@ printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
 rm -rf "$R"
 
-for instruction in AGENTS.md .codex/config.toml; do
+for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo
     mkdir -p "$R/$(dirname "$instruction")"
@@ -342,6 +342,40 @@ for instruction in AGENTS.md .codex/config.toml; do
   done
 done
 
+for instruction in .claude/commands/check.md .gemini/commands/check.md .agents/example/guide.md; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/$(dirname "$instruction")"
+  printf 'AGENT_DOCUMENT_MARKER\n' > "$R/$instruction"
+  git -C "$R" add "$instruction"
+  git -C "$R" commit -qm 'agent command documentation'
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "committed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
+  assert "agent document reaches alternate reviewer" "grep -q 'AGENT_DOCUMENT_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "agent document receives valid alternate receipt" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  rm -rf "$R"
+done
+
+new_repo
+echo change >> "$R/code.txt"
+for private_path in .codex/auth.json .claude/.credentials.json .gemini/oauth_creds.json; do
+  mkdir -p "$R/$(dirname "$private_path")"
+  printf '%s\n' "$private_path" >> "$R/.git/info/exclude"
+  printf '{"access_token":"SYNTHETIC_PRIVATE_CREDENTIAL_MARKER"}\n' > "$R/$private_path"
+done
+for instruction in .claude/settings.json .agents/example/SKILL.md .codex/cache/AGENTS.md; do
+  mkdir -p "$R/$(dirname "$instruction")"
+  printf '%s\n' "$instruction" >> "$R/.git/info/exclude"
+  printf 'REVIEW_AGENT_CONFIG_MARKER\n' > "$R/$instruction"
+done
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "ignored runtime credentials allow alternate review" 0 "LGTB verdict" --uncommitted --require
+assert "ignored runtime credentials stay out of Antigravity stdin" "[ -s '$AGY_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$AGY_FAKE_DIR/stdin'"
+assert "ignored agent config and skills still reach Antigravity" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$AGY_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$AGY_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$AGY_FAKE_DIR/stdin' && grep -q '.codex/cache/AGENTS.md' '$AGY_FAKE_DIR/stdin'"
+rm -rf "$R"
+
 new_repo
 git -C "$R" checkout -qb feature
 seq 1 250 > "$R/notes.md"
@@ -352,6 +386,12 @@ check "configured docs cap issues alternate receipt" 0 "tier-1 skip" --require
 assert "configured docs cap avoids alternate dispatch" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
 unset GATE_TIER1_MAX_LINES
 assert "shipping accepts captured alternate cap" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+export GATE_TIER1_MAX_LINES=2
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "same committed docs above custom cap dispatch alternate review" 0 "LGTB verdict" --committed --require
+assert "small custom cap invokes Antigravity" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+unset GATE_TIER1_MAX_LINES
 rm -rf "$R"
 
 R="$(mktemp -d)"

@@ -104,56 +104,9 @@ gate_fence() {
   printf '%s_%s' "$prefix" "$(printf '%s' "$*" | _hash | tr -cd '0-9a-f' | cut -c1-16)"
 }
 
-# ─── #212: proportionality valve ───────────────────────────────
-# Not every diff earns the full adversarial pass. A cheap classifier — diff
-# size + changed-path match against risk surfaces — picks the tier BEFORE any
-# reviewer is dispatched:
-#
-#   Tier 1 (reduced): docs-only AND small (≤ GATE_TIER1_MAX_LINES, default
-#     200). The gate may skip with a logged "tier-1 skip" line. Override with
-#     GATE_FORCE_FULL=1 to run the full pass anyway.
-#   Tier 2 (full): anything touching a risk surface, above the size cap, or
-#     not positively classified. NEVER downgradable — no knob skips a tier-2
-#     review.
-#
-# NAMED FAILURE MODE: the valve fails toward the FULL pass. Any classification
-# error — unmeasurable diff, unenumerable changed paths, an unparseable size
-# cap, an unknown file class — escalates to tier 2; nothing ever falls back to
-# the skip.
-
-# gate_path_is_risk <path> — 0 when the path is a risk surface: gate/hook/
-# instruction/CI files (the surfaces that steer reviews — aligned with the
-# codex self-review guard), plus the CLAUDE.md risk list (auth, path/host
-# handling, file IO, schemas, hash chains) matched by path segment and
-# filename keyword. Over-matching is fine (it only escalates); under-matching
-# is what the docsafe allowlist below guards against.
-gate_path_is_risk() {
-  case "$1" in
-    *AGENTS*.md|*CLAUDE*.md|*GEMINI*.md|*FABLE*.md|*MULTI-AGENT*.md|*SKILL.md|*AGENTPACK*|review-receipt.py|*/review-receipt.py) return 0 ;;
-    codex/*|*/codex/*|antigravity/*|*/antigravity/*) return 0 ;;
-    .github/*|*/.github/*|*hooks/*|*.githooks*|*scripts/*|setup.sh|*/setup.sh|install.sh|*/install.sh) return 0 ;;
-    *schema*|*.sql|*migration*) return 0 ;;
-  esac
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    # oauth is covered by *auth* (SC2221/SC2222), so it is not listed separately.
-    *auth*|*token*|*secret*|*credential*|*password*|*session*|*sso*|*crypt*|*hash*|*host*) return 0 ;;
-  esac
-  return 1
-}
-
-# gate_path_is_docsafe <path> — 0 only for file classes with no runtime
-# surface. Deliberately narrow: anything not on this allowlist is an unknown
-# class and escalates to the full pass.
-gate_path_is_docsafe() {
-  case "$1" in
-    *.md|*.markdown|*.rst|LICENSE|LICENSE.*|*/LICENSE|*/LICENSE.*) return 0 ;;
-  esac
-  return 1
-}
-
-# gate_classify_tier — set GATE_TIER (1 reduced / 2 full) + GATE_TIER_REASON
-# from DIFF_CONTENT and the paths pinned in the artifact snapshot. Always
-# returns 0; GATE_TIER=2 is the starting state and every early exit keeps it.
+# A reduced pass must use the same captured policy as receipt validation.
+# Classification errors keep the full pass; only validated helper output
+# can select a docs-only exemption.
 gate_classify_tier() {
   GATE_TIER=2
   GATE_TIER_REASON="full pass (default)"
@@ -161,44 +114,21 @@ gate_classify_tier() {
     GATE_TIER_REASON="full pass (GATE_FORCE_FULL=1)"
     return 0
   fi
-  local max n paths f
-  max="$(jq -er '.policy.tier1_max_lines | select(type == "string")' "$GATE_RUN_DIR/snapshot.json")" || {
-    GATE_TIER_REASON="full pass (could not read captured tier policy)"
-    return 0
-  }
-  if ! [[ "$max" =~ ^[0-9]+$ ]]; then
-    GATE_TIER_REASON="full pass (GATE_TIER1_MAX_LINES='$max' is not a number — escalating)"
+  local classification
+  if ! classification="$(python3 "$RECEIPT_HELPER" classify --snapshot "$GATE_RUN_DIR/snapshot.json" 2>/dev/null)"; then
+    GATE_TIER_REASON="full pass (artifact classification failed)"
     return 0
   fi
-  n="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ' || true)"
-  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
-    GATE_TIER_REASON="full pass (could not measure the diff — escalating)"
+  if ! jq -se 'length == 1 and (.[0] | type == "object" and
+      (.tier == 1 or .tier == 2) and (.reason | type == "string"))' \
+      <<< "$classification" >/dev/null 2>&1; then
+    GATE_TIER_REASON="full pass (invalid artifact classification)"
     return 0
   fi
-  if ! python3 -c 'import sys; sys.exit(int(sys.argv[1]) > int(sys.argv[2]))' "$n" "$max"; then
-    GATE_TIER_REASON="full pass (diff is $n lines > tier-1 cap $max)"
-    return 0
-  fi
-  paths="$(gate_changed_paths)"
-  if [[ -z "${paths//[[:space:]]/}" ]]; then
-    GATE_TIER_REASON="full pass (could not enumerate changed paths — escalating)"
-    return 0
-  fi
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    if gate_path_is_risk "$f"; then
-      GATE_TIER_REASON="full pass (risk surface: $f)"
-      return 0
-    fi
-    if ! gate_path_is_docsafe "$f"; then
-      GATE_TIER_REASON="full pass (unclassified file: $f)"
-      return 0
-    fi
-  done <<<"$paths"
   # shellcheck disable=SC2034  # GATE_TIER/GATE_TIER_REASON are read by the sourcing gate scripts
-  GATE_TIER=1
+  GATE_TIER="$(jq -r '.tier' <<< "$classification")"
   # shellcheck disable=SC2034
-  GATE_TIER_REASON="docs-only diff, $n lines ≤ $max"
+  GATE_TIER_REASON="$(jq -r '.reason' <<< "$classification")"
   return 0
 }
 
