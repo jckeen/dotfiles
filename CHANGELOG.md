@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-09 — fix: attach cx terminals to the shared Remote Control daemon
+
+- Interactive `cx` launches now connect with `--remote unix://` after the
+  already-enabled daemon starts successfully. Fresh sessions, `resume`, `fork`,
+  and `agents` share the app server visible through Remote Control.
+- Explicit remote options, utility subcommands, and help/version requests keep
+  their native routing. Startup failures retain local access without re-pairing.
+- Remote opt-in and updater identity paths follow the active `CODEX_HOME`.
+- Regression coverage exercises attachment, argument routing, bounded failure
+  fallback, and isolation between Codex homes.
+
 ## 2026-09-08 — fix: launchers reload a changed `.bash_aliases`; dev-dir stub `.git` and off-main dotfiles guards
 
 ### What changed
