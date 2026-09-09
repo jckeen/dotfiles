@@ -59,7 +59,7 @@ the concepts stay present in all three generated files.
 
 The lane contract from `claude/MULTI-AGENT.md`: one owner of the working
 tree, adversarial verification, and the claim-to-disprove handoff payload.
-Claude Code carries the conductor-voice equivalent in its fragment.
+Claude Code carries the same ownership and verification rules in its fragment.
 
 <!-- canon:team-hard-rules -->
 - **One owner of the working tree at a time** — never edit the same files as
@@ -67,6 +67,10 @@ Claude Code carries the conductor-voice equivalent in its fragment.
 - **Verification is adversarial, not an echo chamber** — three agents agreeing
   can be one blind spot voted thrice. When handed a "verify X" task, try to
   break it; report the disagreement rather than confirming by default.
+- **Review independence:** a fresh context reduces inherited assumptions;
+  high-risk changes also require a reviewer from a different model family.
+  Record the actual reviewer evidence; a requested model label alone does not
+  establish the model used, and a text-diff review is not browser evidence.
 - **Handoff payload:** a handoff to me should carry the *claim to disprove* and
   the *exact repro command*. If it doesn't, ask for them before "reviewing."
 <!-- /canon:team-hard-rules -->

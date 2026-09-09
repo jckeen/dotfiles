@@ -117,7 +117,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | Command | What it does |
 |---------|-------------|
 | `cc [project]` | Pull repos, sync memory, health check, heal plugin drift, launch Claude (optionally in `~/dev/<project>`). A failed pull or memory sync warns and continues on local state; a failed `check-claude` blocks. Reloads `~/.bash_aliases` first if it changed since the shell started (so do `cx`/`agy`); removes an empty stub `.git` from the dev dir; warns when the primary dotfiles checkout is off `main` |
-| `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead); reconnects already-enabled Remote Control, repairs verified missing daemon records on supported Linux hosts, and attempts one timed restart for recovery |
+| `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead); attaches interactive sessions to the shared Remote Control daemon when already enabled; repairs verified missing daemon records on supported Linux hosts and attempts a timed recovery restart; preserves explicit endpoints and falls back locally if startup fails |
 | `pull-all` | Fast-forward pull on every ordinary checkout in dev dir; linked worktrees fetch only. Nonzero when any repo fails, with the repo name and first git error per line |
 | `sync-memory` | Commit and push pending memory changes; nonzero when publication is refused (no upstream, non-memory paths in the commit, push failure). Inside `cc` that refusal is a warning, not a launch blocker |
 | `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |

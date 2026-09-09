@@ -195,7 +195,7 @@ _codex_is_resume_invocation() {
       resume|fork) return 0 ;;
       --|-h|--help|-V|--version) return 1 ;;
       --image=*|-i?*) shift ;;
-      --strict-config|--oss|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--search|--no-alt-screen)
+      --strict-config|--oss|--approve-for-me|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--search|--no-alt-screen)
         shift
         ;;
       --config=*|--enable=*|--disable=*|--remote=*|--remote-auth-token-env=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|--cd=*|--add-dir=*|--ask-for-approval=*)
@@ -856,8 +856,9 @@ _codex_remote_is_stale_socket_failure() {
 
 _codex_remote_identity() {
   local action="$1"
-  local pid_file="$HOME/.codex/app-server-daemon/app-server-updater.pid"
-  local identity_file="$HOME/.codex/app-server-daemon/app-server-updater.identity.json"
+  local codex_home="${CODEX_HOME:-$HOME/.codex}"
+  local pid_file="$codex_home/app-server-daemon/app-server-updater.pid"
+  local identity_file="$codex_home/app-server-daemon/app-server-updater.identity.json"
   local helper
   helper="$(_dev_dir)/dotfiles/codex/remote_control_recover.py"
 
@@ -887,8 +888,8 @@ _codex_ensure_remote_control() {
   fi
 
   if [ "$rc" -eq 125 ]; then
-    echo "⚠ Codex Remote Control auto-start skipped — no timeout command is available." >&2
-    return 0
+    echo "⚠ Codex Remote Control auto-start skipped — no timeout command is available; using a local session." >&2
+    return "$rc"
   fi
 
   if _codex_remote_is_stale_socket_failure "$failure" \
@@ -931,6 +932,39 @@ _codex_ensure_remote_control() {
   # Remote Control stderr can contain relay URLs, pairing codes, or tokens.
   # Offer a direct diagnostic command without trying to redact unknown formats.
   echo "  Run: codex remote-control start --json" >&2
+  return "$rc"
+}
+
+# Only interactive invocations without an explicit endpoint should inherit the
+# host's Remote Control connection. Inspect option values and stop at `--` so
+# prompts cannot accidentally change the launcher's routing.
+_codex_wants_shared_remote() {
+  local positional=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 0 ;;
+      -h|--help|-V|--version|--remote|--remote=*|--remote-auth-token-env|--remote-auth-token-env=*)
+        return 1
+        ;;
+      --strict-config|--oss|--approve-for-me|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--search|--no-alt-screen|--last|--all|--include-non-interactive)
+        shift
+        ;;
+      --config=*|--enable=*|--disable=*|--image=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|--cd=*|--add-dir=*|--ask-for-approval=*|-c?*|-m?*|-p?*|-s?*|-C?*|-a?*|-i?*)
+        shift
+        ;;
+      -c|-m|-p|-s|-C|-a|-i|--image|--config|--enable|--disable|--model|--local-provider|--profile|--sandbox|--cd|--add-dir|--ask-for-approval)
+        [ "$#" -ge 2 ] || return 1
+        shift 2
+        ;;
+      exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help)
+        [ "$positional" -eq 1 ] || return 1
+        shift
+        ;;
+      -*) return 1 ;;
+      *) positional=1; shift ;;
+    esac
+  done
+  return 0
 }
 
 cx() {
@@ -951,21 +985,21 @@ cx() {
     echo "⚠ Codex private defaults could not be applied — continuing with the existing local config." >&2
   fi
 
-  # Idempotently restore mobile access after a reboot or WSL shutdown, but only
-  # on hosts where the user already enabled it. Pairing persists in Codex state,
-  # so reconnecting does not create a new pairing code on every launch.
-  local remote_settings="$HOME/.codex/app-server-daemon/settings.json"
-  if [ -f "$remote_settings" ]; then
+  # Starting the daemon alone leaves the TUI's in-process sessions invisible
+  # remotely. Attach to its shared socket only after an opted-in start succeeds;
+  # pairing stays in Codex state, and failures preserve local CLI access.
+  local remote_settings="${CODEX_HOME:-$HOME/.codex}/app-server-daemon/settings.json"
+  local -a remote_args=()
+  if _codex_wants_shared_remote "$@" && [ -f "$remote_settings" ]; then
     if ! command -v jq >/dev/null 2>&1; then
       echo "⚠ jq not installed — skipping the Remote Control auto-start check." >&2
-    elif jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1; then
-      # Remote Control is optional: bounded recovery failures never prevent the
-      # local CLI from launching.
-      _codex_ensure_remote_control
+    elif jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1 \
+      && _codex_ensure_remote_control; then
+      remote_args=(--remote unix://)
     fi
   fi
 
-  codex --strict-config "$@"
+  codex --strict-config "${remote_args[@]}" "$@"
 }
 
 # Launch Antigravity with the same project-selection and sync ergonomics as
@@ -982,7 +1016,7 @@ agy() {
   # them straight to the binary. Checked before project selection, so a
   # ~/dev dir named e.g. "models" cannot shadow a documented subcommand.
   case "${1:-}" in
-    -h|--help|--version|agent|agents|changelog|help|install|models|plugin|plugins|update)
+    -h|--help|--version|agent|agents|changelog|help|install|mcp|mic-serve|models|plugin|plugins|remote-control|update)
       command agy "$@"
       return
       ;;

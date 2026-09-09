@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-09-09 — fix: attach cx terminals to the shared Remote Control daemon
+
+- Interactive `cx` launches now connect with `--remote unix://` after the
+  already-enabled daemon starts successfully. Fresh sessions, `resume`, `fork`,
+  and `agents` share the app server visible through Remote Control.
+- Explicit remote options, utility subcommands, and help/version requests keep
+  their native routing. Startup failures retain local access without re-pairing.
+- Remote opt-in and updater identity paths follow the active `CODEX_HOME`.
+- Regression coverage exercises attachment, argument routing, bounded failure
+  fallback, and isolation between Codex homes.
+
+## 2026-09-08 — fix: bind workflow reviews to the code being shipped
+
+- Review gates reject unresolved bases, dirty instruction surfaces outside the
+  committed target, failed reviewer runs, and embedded blocking priorities.
+  Executable SVG and minified JavaScript remain in review coverage.
+  Outside Git repositories, advisory runs retain their warning behavior;
+  required runs still fail without issuing review evidence.
+  Application hooks remain ordinary code; uncommitted capture supports
+  unrelated base history, file/directory replacements, ignored instruction
+  files, and staged content followed by workspace edits. Instruction checks
+  recognize Git-managed CRLF conversion for regular files and sparse checkout
+  omissions; symlink targets retain exact comparison.
+  Automatic CRLF comparison respects Git's per-file binary classification.
+  Uncommitted text diffs keep embedded control characters within their original
+  physical lines and quote filenames in their headers.
+  Receipt capture disables configured filesystem
+  monitors and preserves the selected docs-only size policy through completion
+  and validation.
+  Classification and exemption validation share one policy. Instruction files,
+  executable files, and symlinks cannot bypass review through passive filename
+  filters or documentation exemptions, including staged executable modes when
+  `core.filemode` is disabled. Inherited Git pathspec settings cannot
+  change review selection, and exact path handling preserves repository identity.
+  Source skill bundles, canonical fragments, Claude agent definitions, and
+  AgentPack policy files retain instruction coverage, including ignored references.
+  No-diff exemptions validate changed paths as well as the patch. Known runtime
+  credentials and state stay out of review prompts when ignored, and block
+  review when explicitly included. Repository instruction symlinks and staged submodules fail
+  closed instead of leaving their effective content outside the snapshot.
+- Private review receipts bind completed results to the base, commit, tree,
+  diff, index, and workspace state. Changed artifacts and superseded attempts
+  invalidate approval; wall-clock adjustments do not. The push hook checks
+  each outgoing commit independently of secret-scanner availability; receipt
+  helpers are installed beside gates.
+  Annotated tags validate the commit they reference; local replacement refs
+  cannot alter validation or secret scanning.
+- The morning review script explicitly selects committed review scope even
+  when the fetch upstream is current and unrelated work is dirty. It pins the
+  commit before tests, uses the required Codex gate, requires that reviewer's
+  receipt for the same commit after confirmation,
+  and pushes the reviewed commit to a verified non-default
+  branch at the actual push destination. Automatic tag pushes are disabled.
+  Further URL rewrites and remote-name indirection fail closed; explicitly
+  selected PR review bases can be carried through the push hook with a
+  one-push setting.
+  Multiline push destinations are rejected before shell output handling can
+  change their meaning.
+  Empty or multiple configured destination URLs are rejected even when Git
+  normalizes them to a single effective URL.
+  Protocol v2 destination checks reject advertised symbolic branch aliases.
+  Unadvertised destinations require an empty expected object ID at push time
+  instead of risking an overwrite through a hidden alias.
+  Push-remote selection follows Git's configured precedence, and a current
+  fetch upstream does not suppress delivery to a behind push fork.
+- Shared instructions assign coordination to the active session, preserve
+  separate-family review for high-risk work, and require simplification,
+  documentation, and verification before final review. Personal runtime
+  preferences remain private.
+- The branch-protection example includes behavioral tests in required checks.
+  Antigravity diagnostic commands bypass unrelated workspace preflight.
+
 ## 2026-09-08 — fix: launchers reload a changed `.bash_aliases`; dev-dir stub `.git` and off-main dotfiles guards
 
 ### What changed

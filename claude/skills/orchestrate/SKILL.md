@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Full-lifecycle orchestration for comprehensive, no-compromise execution — roll-calls the right skills, fans out parallel/worktree agents, then closes the loop (verify, review, simplify, changelog, handoff, retro). Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.
+description: Full-lifecycle orchestration for comprehensive execution — selects relevant skills, delegates bounded work, then simplifies, completes documentation, verifies, reviews the final artifact, and delivers with a durable handoff. Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.
 ---
 
 # Orchestrate (Maximum-Effort Mode)
@@ -103,12 +103,20 @@ When the work is done, run these in order — skip only what genuinely doesn't
 apply. The point of max effort is that the wrap-up happens automatically, not
 that the user has to remember each skill:
 
-1. `/verify` — drive the real change end-to-end (the app/flow, not just tests).
-2. `/code-review` (and `/security-review` for auth, RLS, payments, or data
-   handling), then `/simplify`; then a **coach pass** (see the `review` skill) —
-   the single highest-leverage quality lift, not more bug-hunting.
-3. If anything changed: `/changelog`; then `/handoff` if the session is ending.
-4. On success: `/session-retro` — leave the toolset better than you found it.
+1. `/simplify`, then complete intended documentation, `/changelog`, and
+   generated-file updates.
+2. Re-run affected tests and `/verify` — drive the real change end-to-end.
+3. Review the final artifact with `/code-review` and a read-only **coach pass**
+   (see the `review` skill). For auth, secrets, payments, destructive operations,
+   schema changes, or public trust boundaries, require `/security-review` from
+   a different model family than the implementer. A fresh context alone is not
+   a different family; record actual reviewer evidence, not only a model label.
+4. Any subsequent artifact edit invalidates approval. Repeat affected
+   verification and final review, including required cross-family review.
+   Use `/commit-push-pr` for authorized delivery: require the shipping gate
+   after the last commit and check its private receipt immediately before push.
+   Gate exit 0 alone does not prove review completed; report exemptions as such.
+5. `/handoff` if the session is ending, then `/session-retro` on success.
 
 ## What NOT to Do
 

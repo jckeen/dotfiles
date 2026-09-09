@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cx-remote-control.test.sh — cx starts Codex Remote Control before the CLI,
+# cx-remote-control.test.sh — cx attaches interactive sessions to Remote Control,
 # while preserving local Codex access when the experimental daemon is
 # unavailable.
 set -uo pipefail
@@ -9,6 +9,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"
+unset CODEX_HOME
 
 pass=0
 failed=0
@@ -152,12 +153,63 @@ codex() {
 }
 
 cx resume session-123 >/dev/null 2>&1
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config resume session-123'
+expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// resume session-123'
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
-  ok "cx starts Remote Control before launching Codex"
+  ok "cx starts Remote Control and attaches the interactive session"
 else
   fail "cx call order was: $(tr '\n' '|' < "$CALLS")"
 fi
+
+# The launcher must parse flags without mistaking their values or a literal
+# prompt for a subcommand or an explicit remote address.
+assert_launch() {
+  local name="$1" expected="$2"
+  shift 2
+  : > "$CALLS"
+  cx "$@" >/dev/null 2>&1
+  if [ "$(cat "$CALLS")" = "$expected" ]; then
+    ok "$name"
+  else
+    fail "$name: $(tr '\n' '|' < "$CALLS")"
+  fi
+}
+
+shared_prefix=$'bootstrap\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix://'
+local_prefix=$'bootstrap\n--strict-config'
+assert_launch "fresh sessions attach to the shared server" "$shared_prefix"
+assert_launch "agents uses the shared server" "$shared_prefix agents" agents
+assert_launch "explicit agents endpoint is preserved" \
+  "$local_prefix agents --remote=unix:///custom.sock" agents --remote=unix:///custom.sock
+assert_launch "fork keeps the remote option ahead of the command" \
+  "$shared_prefix fork --last" fork --last
+assert_launch "global options before resume keep their ordering" \
+  "$shared_prefix --approve-for-me -m example resume --last" --approve-for-me -m example resume --last
+assert_launch "a flag value is not a utility command" \
+  "$shared_prefix --model exec" --model exec
+assert_launch "a flag value is not an explicit remote" \
+  "$shared_prefix --config --remote=literal" --config --remote=literal
+assert_launch "literal prompts stop option interpretation" \
+  "$shared_prefix -- --remote=literal" -- --remote=literal
+assert_launch "resume prompts may name a utility command" \
+  "$shared_prefix resume session-123 exec" resume session-123 exec
+assert_launch "explicit remote is preserved without local daemon startup" \
+  "$local_prefix --remote wss://example.invalid resume session-123" --remote wss://example.invalid resume session-123
+assert_launch "explicit remote after resume is preserved" \
+  "$local_prefix resume session-123 --remote=unix:///custom.sock" resume session-123 --remote=unix:///custom.sock
+assert_launch "explicit remote after a prompt is preserved" \
+  "$local_prefix inspect --remote unix:///custom.sock" inspect --remote unix:///custom.sock
+assert_launch "remote authentication options do not attach the local daemon" \
+  "$local_prefix --remote-auth-token-env EXAMPLE_REMOTE_TOKEN" --remote-auth-token-env EXAMPLE_REMOTE_TOKEN
+for utility in exec e review login logout mcp plugin mcp-server app-server remote-control completion update doctor sandbox debug apply a queue archive delete migrate-rollouts unarchive cloud exec-server features help; do
+  assert_launch "$utility stays a native utility invocation" \
+    "$local_prefix --config example=true $utility" --config example=true "$utility"
+done
+for help_args in '--help' '-h' '--version' '-V' 'resume --help' 'fork -h'; do
+  # Intentional splitting of these fixed, non-user test inputs.
+  # shellcheck disable=SC2086
+  assert_launch "$help_args does not start or attach the daemon" \
+    "$local_prefix $help_args" $help_args
+done
 
 : > "$CALLS"
 REMOTE_START_RC=42
@@ -193,9 +245,10 @@ fi
 : > "$CALLS"
 REMOTE_START_RC=124
 unset REMOTE_START_OUTPUT
-if output="$(cx exec --help 2>&1)" \
+if output="$(cx --model timeout-test 2>&1)" \
   && grep -q 'timed out after 15 seconds' <<< "$output" \
-  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ]; then
+  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ] \
+  && [ "$(tail -1 "$CALLS")" = '--strict-config --model timeout-test' ]; then
   ok "Remote Control start has a visible deadline and does not loop"
 else
   fail "cx did not handle a bounded Remote Control timeout: $output"
@@ -225,7 +278,7 @@ else
   fail "cx did not recover the stale managed updater: $output"
 fi
 
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\npidfd-recovery\nbounded:8:remote-control stop --json\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --model recovered'
+expected_calls=$'bootstrap\nbounded:15:remote-control start --json\npidfd-recovery\nbounded:8:remote-control stop --json\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// --model recovered'
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "stale updater recovery is bounded and retries only once"
 else
@@ -237,7 +290,8 @@ REMOTE_RECOVERY_RC=1
 REMOTE_RETRY_RC=0
 if output="$(cx --model foreign-pid 2>&1)" \
   && [ "$(grep -c '^pidfd-recovery$' "$CALLS")" -eq 1 ] \
-  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ]; then
+  && [ "$(grep -c '^bounded:15:remote-control start --json$' "$CALLS")" -eq 1 ] \
+  && [ "$(tail -1 "$CALLS")" = '--strict-config --model foreign-pid' ]; then
   ok "cx never retries when atomic updater validation refuses recovery"
 else
   fail "cx retried after updater identity validation failed: $output"
@@ -257,7 +311,7 @@ else
   fail "cx did not reconnect the errored daemon safely: $output"
 fi
 
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nbounded:15:app-server daemon restart\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --model reconnected'
+expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nbounded:15:app-server daemon restart\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// --model reconnected'
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "connection recovery restarts once and verifies Remote Control before launching Codex"
 else
@@ -307,7 +361,7 @@ fi
 REMOTE_START_OUTPUT='Error: app server is running but is not managed by codex app-server daemon'
 REMOTE_RETRY_RC=0
 REMOTE_REPAIR_RC=0
-expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nidentity:repair\nbounded:15:app-server daemon restart\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --model repaired'
+expected_calls=$'bootstrap\nbounded:15:remote-control start --json\nidentity:repair\nbounded:15:app-server daemon restart\nbounded:15:remote-control start --json\nexact-snapshot\n--strict-config --remote unix:// --model repaired'
 if output="$(cx --model repaired 2>&1)" \
   && grep -q 'recovered' <<< "$output" \
   && [ "$(cat "$CALLS")" = "$expected_calls" ]; then
@@ -344,13 +398,40 @@ fi
 unset REMOTE_START_RC REMOTE_RETRY_RC STRICT_CONFIG_RC
 printf '{"nested":{"remoteControlEnabled":true},"remoteControlEnabled":false}\n' \
   > "$HOME/.codex/app-server-daemon/settings.json"
-cx exec --help >/dev/null 2>&1
-expected_calls=$'bootstrap\n--strict-config exec --help'
+cx >/dev/null 2>&1
+expected_calls=$'bootstrap\n--strict-config'
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "cx requires top-level Remote Control opt-in"
 else
   fail "cx accepted nested Remote Control opt-in: $(tr '\n' '|' < "$CALLS")"
 fi
+
+assert_launch "disabled Remote Control leaves interactive sessions local" "$local_prefix"
+printf 'invalid-json\n' > "$HOME/.codex/app-server-daemon/settings.json"
+assert_launch "malformed opt-in never enables Remote Control" "$local_prefix"
+
+printf '{"remoteControlEnabled":true}\n' \
+  > "$HOME/.codex/app-server-daemon/settings.json"
+STRICT_CONFIG_RC=9
+if cx >/dev/null 2>&1; then
+  fail "cx ignored the remote CLI exit status"
+else
+  ok "remote attachment preserves the actual CLI exit status"
+fi
+unset STRICT_CONFIG_RC
+assert_launch "unknown CLI options are passed through without auto-attachment" \
+  "$local_prefix --future-option value" --future-option value
+
+REMOTE_START_RC=125
+assert_launch "missing timeout support falls back to a local session" \
+  $'bootstrap\nbounded:15:remote-control start --json\n--strict-config'
+unset REMOTE_START_RC
+
+export CODEX_HOME="$TEST_HOME/custom codex home"
+mkdir -p "$CODEX_HOME/app-server-daemon"
+assert_launch "custom CODEX_HOME never inherits the default home opt-in" "$local_prefix"
+printf '{"remoteControlEnabled":true}\n' > "$CODEX_HOME/app-server-daemon/settings.json"
+assert_launch "custom CODEX_HOME uses its own remote opt-in" "$shared_prefix"
 
 echo ""
 echo "cx-remote-control: $pass passed, $failed failed"
