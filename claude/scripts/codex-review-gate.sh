@@ -378,7 +378,9 @@ def interrupted(signum, _frame):
     if interruption is None:
         interruption = signum
 
-for signum in (signal.SIGTERM, signal.SIGINT):
+stop_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT,
+                signal.SIGTSTP)
+for signum in stop_signals:
     signal.signal(signum, interrupted)
 
 process = subprocess.Popen(sys.argv[2:], start_new_session=True)
@@ -418,8 +420,8 @@ try:
             pass
 finally:
     # Handlers only record interruption, including during Popen construction.
-    # Repeated interrupts cannot abandon teardown before KILL and reaping.
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    # Terminal exit/stop and repeated interrupts cannot abandon teardown.
+    for signum in stop_signals:
         signal.signal(signum, signal.SIG_IGN)
     if process.returncode is None:
         signal_session(signal.SIGTERM)

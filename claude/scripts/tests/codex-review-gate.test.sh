@@ -244,7 +244,7 @@ unset CODEX_GATE_TIMEOUT
 rm -rf "$R"
 
 # Job control creates another group in the same owned session.
-for lifecycle in job-control interrupt-cleanup interrupt-startup; do
+for lifecycle in job-control interrupt-cleanup interrupt-startup hangup-startup quit-startup stop-startup; do
   new_repo
   echo "change" >> "$R/code.txt"
   approve_clean
@@ -253,7 +253,11 @@ for lifecycle in job-control interrupt-cleanup interrupt-startup; do
 import os
 os.execv('/bin/bash', ['bash', '-c', 'set -m; sleep 12 & echo "$$ $!" > "$CODEX_FAKE_DIR/pids"; wait'])
 PYJOB
-  elif [[ "$lifecycle" == interrupt-startup ]]; then
+  elif [[ "$lifecycle" == *-startup ]]; then
+    export CODEX_TEST_INTERRUPT_SIGNAL=SIGINT
+    [[ "$lifecycle" != hangup-startup ]] || CODEX_TEST_INTERRUPT_SIGNAL=SIGHUP
+    [[ "$lifecycle" != quit-startup ]] || CODEX_TEST_INTERRUPT_SIGNAL=SIGQUIT
+    [[ "$lifecycle" != stop-startup ]] || CODEX_TEST_INTERRUPT_SIGNAL=SIGTSTP
     cat > "$CODEX_FAKE_DIR/hang" <<'PYSTARTUP'
 import os
 from pathlib import Path
@@ -277,7 +281,7 @@ def popen(*args, **kwargs):
             if Path(os.environ['CODEX_FAKE_DIR'], 'pids').exists():
                 break
             time.sleep(.01)
-        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), getattr(signal, os.environ['CODEX_TEST_INTERRUPT_SIGNAL']))
     return process
 subprocess.Popen = popen
 PYSITE
@@ -302,14 +306,14 @@ PYINTERRUPT
   unrelated_pid=$!
   export CODEX_GATE_TIMEOUT=1
   fragment="timed out after 1 seconds"
-  [[ "$lifecycle" != interrupt-startup ]] || fragment="not trusting the result"
+  [[ "$lifecycle" != *-startup ]] || fragment="not trusting the result"
   check "$lifecycle fails closed" 3 "$fragment" --uncommitted --no-issues
   assert "$lifecycle does not issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
   assert "$lifecycle terminates owned descendants" "python3 -c 'from pathlib import Path; import subprocess,sys; pids=Path(sys.argv[1]).read_text().split(); assert pids; states=[subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip() for pid in pids]; assert all(not state or state.startswith(\"Z\") for state in states), states' '$CODEX_FAKE_DIR/pids'"
   assert "$lifecycle preserves an unrelated process" "kill -0 '$unrelated_pid'"
   kill "$unrelated_pid"
   wait "$unrelated_pid" 2>/dev/null || true
-  unset CODEX_GATE_TIMEOUT PYTHONPATH
+  unset CODEX_GATE_TIMEOUT PYTHONPATH CODEX_TEST_INTERRUPT_SIGNAL
   rm -rf "$R"
 done
 
