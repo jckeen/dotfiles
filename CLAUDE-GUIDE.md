@@ -116,10 +116,10 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 | Command | What it does |
 |---------|-------------|
-| `cc [project]` | Pull repos, sync memory, health check, heal plugin drift, launch Claude (optionally in `~/dev/<project>`) |
+| `cc [project]` | Pull repos, sync memory, health check, heal plugin drift, launch Claude (optionally in `~/dev/<project>`). A failed pull or memory sync warns and continues on local state; a failed `check-claude` blocks. Reloads `~/.bash_aliases` first if it changed since the shell started (so do `cx`/`agy`); removes an empty stub `.git` from the dev dir; warns when the primary dotfiles checkout is off `main` |
 | `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead); reconnects already-enabled Remote Control, repairs verified missing daemon records on supported Linux hosts, and attempts one timed restart for recovery |
-| `pull-all` | Fast-forward pull on every repo in dev dir |
-| `sync-memory` | Commit and push pending memory changes |
+| `pull-all` | Fast-forward pull on every ordinary checkout in dev dir; linked worktrees fetch only. Nonzero when any repo fails, with the repo name and first git error per line |
+| `sync-memory` | Commit and push pending memory changes; nonzero when publication is refused (no upstream, non-memory paths in the commit, push failure). Inside `cc` that refusal is a warning, not a launch blocker |
 | `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |
 | `check-codex` | Verify public-safe Codex symlinks; warn about private/generated state |
 | `check-antigravity` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
@@ -144,6 +144,12 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 > From inside a Claude session: `! cc-pane <project>` opens another project
 > alongside without leaving Claude.
+
+> **The primary dotfiles checkout stays on `main`.** `~/.bash_aliases`, hooks,
+> skills and agents are symlinks into `~/dev/dotfiles`, so whatever branch is
+> checked out there is the live shell config for every new shell. Do dotfiles
+> branch work in a worktree (`wt-claude <name>` from `~/dev/dotfiles`); the
+> `cc`/`cx`/`agy` preflight warns while the primary is off `main`.
 
 ---
 

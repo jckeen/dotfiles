@@ -160,9 +160,12 @@ for rec in "${COMMENTS[@]}"; do
   fi
 
   # File via REST (POST /repos/{owner}/{repo}/issues), not `gh issue create`
-  # (GraphQL). No label: a REST create with a non-existent label 422s, and the
-  # body marker is what dedup relies on. --jq pulls the new issue URL.
-  if url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" --jq '.html_url' 2>/dev/null)"; then
+  # (GraphQL). The `codex-finding` label is what the weekly janitor's issue-
+  # custodian phase keys on to re-verify and close fixed findings; a REST create
+  # 422s when the label doesn't exist in the repo, so retry unlabeled rather
+  # than lose the finding. The body marker is what dedup relies on.
+  if url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" -f 'labels[]=codex-finding' --jq '.html_url' 2>/dev/null)" \
+     || url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" --jq '.html_url' 2>/dev/null)"; then
     echo "  ✓ filed: $url"
     filed=$((filed+1))
   else

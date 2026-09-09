@@ -68,6 +68,25 @@ Keep these skills generic and public-safe. Put personal preferences, private
 project context, and machine-specific instructions in `~/dev/codex-memory`
 instead.
 
+## Operating Claude Code From Codex
+
+`agents/skills/claude-operator/` ([SKILL.md](../agents/skills/claude-operator/SKILL.md))
+lets Codex drive a native Claude Code install as the implementer: Codex writes
+the brief, runs Claude through a small Python runner that records every
+streamed event and the exact session ID, verifies the diff and checks itself,
+sends follow-ups into the same session, and finishes only the delivery you
+authorized. It installs with the rest of the shared set (`setup.sh` links it
+into `~/.agents/skills/claude-operator`) but is **opt-in**: nothing here makes
+Claude the default implementer. To make it your default, add one line to your
+private `~/dev/codex-memory/AGENTS.local.md`, not to this repo.
+
+The runner keeps your configured model, auth, hooks, and permissions, exposes
+no bypass mode, and is not a sandbox. Its mock suite runs in CI
+(`claude/scripts/tests/claude-operator-runner.test.py`). Windows Codex reads a
+separate config root from the WSL one `setup.sh` manages; see
+[docs/WINDOWS.md](../docs/WINDOWS.md#codex-on-windows-as-the-claude-operator)
+for installing the skill there.
+
 ## Long-Running Work
 
 Use Codex Goal mode (`/goal`) when a task explicitly needs persistent,

@@ -124,6 +124,58 @@ $env:CC_DEV_DIR    = '~/code'         # default: ~/dev
 . "$env:USERPROFILE\.cc-functions.ps1"
 ```
 
+## Codex on Windows as the Claude operator
+
+A Windows-native Codex can drive the WSL Claude Code install through the
+shared [`claude-operator` skill](../agents/skills/claude-operator/SKILL.md).
+Two things differ from the WSL setup:
+
+- **Separate config root.** Windows Codex reads `%USERPROFILE%\.codex\`
+  (auth, `config.toml`, `AGENTS.md`, sessions) and `%USERPROFILE%\.agents\skills\`.
+  That is not the WSL `~/.codex` / `~/.agents` that `setup.sh` manages, and
+  nothing is shared automatically. Log in on each side; never copy
+  `auth.json`, sessions, or sqlite state between the two roots.
+- **The runner executes inside WSL.** Claude, the project, and the dotfiles
+  checkout all live in WSL, so the skill invokes
+  `wsl.exe -d <distro> --exec python3 /home/<you>/.agents/skills/claude-operator/scripts/claude_run.py …`
+  and keeps prompt files and run directories in a private Windows workspace
+  (visible in WSL as `/mnt/c/…`).
+
+Install the skill into the Windows root by copying the maintained bundle from
+the WSL checkout (Windows symlinks into `\\wsl.localhost` are unreliable), and
+re-run the copy after `dotfiles-update`:
+
+```powershell
+$src = "\\wsl.localhost\Ubuntu\home\<you>\dev\dotfiles\agents\skills\claude-operator"
+$dst = "$env:USERPROFILE\.agents\skills\claude-operator"
+# Create the destination root and copy the source CONTENTS into it. Copying
+# the directory itself would nest a second claude-operator\ on every re-run.
+New-Item -Type Directory -Path $dst -Force | Out-Null
+Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force
+```
+
+Older Codex builds read `%USERPROFILE%\.codex\skills\` instead; copy to that
+path if `/skills` does not list it.
+
+The skill is opt-in. To make Claude your default implementer on that machine,
+append a short private instruction to your **existing** global
+`%USERPROFILE%\.codex\AGENTS.md` (created only if absent, never replaced):
+
+```powershell
+$agents = "$env:USERPROFILE\.codex\AGENTS.md"
+if (-not (Test-Path $agents)) { New-Item -Type File -Path $agents -Force | Out-Null }
+if (-not (Select-String -Path $agents -Pattern 'claude-operator' -Quiet)) {
+  Add-Content $agents @'
+
+## Claude operator default (private)
+For implementation work in my WSL repositories, use $claude-operator: Claude Code
+implements; Codex owns the brief, independent verification, and authorized delivery.
+'@
+}
+```
+
+Keep that paragraph private; it is a personal preference, not part of this repo.
+
 ## Example
 
 Five repos in a split-pane grid, one command:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Operator"
+  short_description: "Drive Claude Code as the implementer while you own the outcome"
+  default_prompt: "Use $claude-operator to have Claude Code implement this: write the brief, run it through the evidence-recording runner, verify the result independently, and finish only the delivery I authorized."

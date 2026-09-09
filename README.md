@@ -21,7 +21,7 @@ Best practices sourced from [Boris Cherny](https://howborisusesclaudecode.com) (
 
 After setup, you don't have to remember much. Open a terminal and:
 
-- **`cc` / `cx` / `agy`** — the three launchers share project selection, fast-forward-only repo sync, and runtime health checks. `cc` safely publishes approved Claude memory paths; `cx` reapplies portable Codex defaults and reconnects opted-in Remote Control; `agy` launches the Gemini-powered Antigravity CLI. Any failed pull or health check stops the launch instead of opening an agent on stale state.
+- **`cc` / `cx` / `agy`** — the three launchers share project selection, fast-forward-only repo sync, and runtime health checks. `cc` safely publishes approved Claude memory paths; `cx` reapplies portable Codex defaults and reconnects opted-in Remote Control; `agy` launches the Gemini-powered Antigravity CLI. Ordinary checkouts fast-forward; linked worktrees are fetched, never pulled. Repository and Claude memory sync failures warn and continue with local state. Required runtime health checks still stop the launch on failure.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
 - **16 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/antigravity-review` (Gemini second-opinion review gate). Type the verb, get the workflow.
 - **An 18-agent review orchestra** — `qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and 10 more. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
@@ -238,7 +238,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line); deliberately not symlinked (listed in `claude/nolink.txt`) |
 | **Skills** | `claude/skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `claude/agents/*.md` | 18 specialized review agents |
-| **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts |
+| **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts; launchers re-source this file when it changed since the shell started |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
 | **Codex config examples** | `codex/*.toml.example` | Templates only; live `~/.codex/config.toml` stays local |

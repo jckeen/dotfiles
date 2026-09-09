@@ -183,6 +183,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/codex-config.test.sh
 
+      # Offline mock suite for the claude-operator runner: a stub `claude`,
+      # a throwaway HOME with a crafted ~/.bashrc, and a from-scratch child
+      # environment. Never launches the real CLI or needs auth.
+      - name: claude-operator runner (mock suite)
+        if: ${{ !cancelled() }}
+        run: python3 claude/scripts/tests/claude-operator-runner.test.py
+
       # cx reconnects an already-enabled Codex Remote Control daemon without
       # opting unconfigured hosts into remote access.
       - name: cx Remote Control startup

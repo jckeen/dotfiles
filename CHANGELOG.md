@@ -1,5 +1,132 @@
 # Changelog
 
+## 2026-09-08 — fix: launchers reload a changed `.bash_aliases`; dev-dir stub `.git` and off-main dotfiles guards
+
+### What changed
+- `cc`, `cx` and `agy` re-source `~/.bash_aliases` when its mtime differs from
+  the one recorded at shell start, then re-enter themselves so the fresh
+  definitions run. Long-lived shells (WSL6 panes open for days) kept the
+  fail-closed "resolve the pull error before launching the agent" body for two
+  days after #363 replaced it on disk.
+- `_agent_preflight` removes an empty stub `.git` from the dev dir (seen
+  2026-07-17 and 2026-09-06; it makes Claude Code treat `~/dev` as a repo with
+  no HEAD). A non-empty non-repo `.git` is reported, never deleted.
+- After the repo sync, the preflight warns when the primary dotfiles checkout
+  is on a branch other than `main`/`master`: `~/.bash_aliases`, hooks and
+  skills symlink into that checkout, so the checked-out branch *is* the live
+  shell config. Feature work belongs in a worktree.
+- Regression coverage for all three in `agent-preflight.test.sh` (46 cases).
+
+### Decisions made
+- Reload rather than warn: the launcher is the one place every shell passes
+  through, so it heals itself instead of asking the operator to `exec bash`.
+- The primary dotfiles checkout stays on `main`; branch work uses `wt-claude`
+  or `git worktree add`.
+
+## 2026-09-06 — fix: agent launchers continue after sync failures
+
+- `cc`, `cx`, and `agy` warn with repository errors and continue with local
+  files when sync fails. Claude memory publication failures also warn and
+  continue; required configuration health checks still block startup.
+- Linked worktrees fetch without changing their branches or files. Ordinary
+  checkouts keep fast-forward pulls; unresolved Git layouts are reported and
+  skipped. Standalone sync commands still return failures to their callers.
+- Regression coverage exercises real Git worktrees, checkout classification,
+  failed syncs, and launcher runtime reachability with passing or failing health.
+
+## 2026-09-06 — feat: harvested Codex findings carry `codex-finding` so the janitor can expire them
+
+### What changed
+- `claude/scripts/harvest-codex-comments.sh` files each Codex-bot review comment
+  with the `codex-finding` label (retrying unlabeled on a 422 so a repo without
+  the label still gets the issue). The label exists in every owned repo.
+- Pairs with jw-routines: the nightly docs steward now keeps one rolling
+  `Docs needing review — consolidated tracker` per repo instead of a dated issue
+  per night, the weekly repo janitor re-verifies every `codex-finding` against
+  the default branch and closes fixed/obsolete ones with evidence, and the
+  Monday fleet digest reports backlog pressure per repo.
+
+### Decisions made
+- Findings expire by evidence, not by age: a bot never closes a human-filed
+  issue, and a codex finding is only closed with a sha or current file:line
+  showing the concern is gone.
+- Fleet-wide triage on 2026-09-06 took open issues from 317 to 233; the 84
+  closed were bot-filed duplicates or already-fixed findings.
+
+## 2026-09-05 — feat: shared `claude-operator` skill drives Claude Code from Codex
+
+### What changed
+- New agent-only skill `agents/skills/claude-operator/` (SKILL.md, two
+  references, `agents/openai.yaml`, and `scripts/claude_run.py`). An operator
+  agent briefs Claude from a prompt file, runs one native print-mode turn,
+  gets streamed events plus the exact session ID in a fresh run directory,
+  resumes that exact session for follow-ups, and stops only the process
+  group it owns. Exit codes separate a completed turn (0), a failure (1), and
+  a turn that ended on permission denials (2). Installed by the existing
+  `setup.sh` shared-skill links; nothing new to run.
+- Runner behavior, hardened through Codex and Antigravity review rounds
+  before merge. Launch: interactive Bash loads startup files with stdout on
+  `stderr.log` and stdin on `/dev/null`, then attaches the prompt, `cd`s,
+  and execs Claude, so banners cannot pollute `events.jsonl`, a startup
+  `read` cannot eat the prompt, and a `cd` cannot move Claude; the
+  executable is `~/.local/bin/claude` or `--claude-bin`, never a `PATH`
+  lookup (on WSL that is the Windows npm shim); option-shaped
+  `--allow-tool`/`--tools`/`--model` values are rejected before launch;
+  the runner refuses to nest inside a Claude Code session. Evidence: the
+  prompt is validated as UTF-8 and sent byte-exact; a dangling symlink at
+  the output path is rejected before it can be created through; a success
+  result with a missing or different session ID is `session_mismatch`; a
+  rejected CLI flag is named rather than retried with weaker settings;
+  usage errors exit 64, including NaN/infinite/non-positive `--timeout`.
+  Input reads are bounded: the prompt is read only up to its limit before
+  rejection, and the stderr diagnostic scan reads only its prefix, so a
+  wrongly chosen huge file cannot exhaust memory. Completion: a turn ends when Claude itself exits
+  (peeked without reaping), not when the events pipe closes or goes quiet,
+  with the drain bounded to the bytes queued at that moment, so an
+  inherited or chatty descendant can neither hang the turn nor turn it into
+  a timeout; a nonzero exit is `failed` (raw code in `claude_exit_code`)
+  even with denials present; `needs_permission` is a completed exit-0 turn
+  with denials. Ownership (Linux/WSL only, via `/proc`): the exited Claude
+  process stays unreaped until the last stop signal so its zombie pins the
+  group id; teardown is SIGTERM, a grace period, then SIGKILL for the whole
+  group, runs on every path including normal completion, records
+  `stop_errors`/`stop_survivors` instead of aborting the final `run.json`,
+  turns a completed turn (success or denials) with survivors into `failed`
+  so nothing resumes over a live run, ignores repeated signals
+  once entered, retries if a signal lands before it can enter, and defers
+  a signal that arrives between `Popen` and the group being recorded. The
+  boundary is the owned Linux session: job-control groups created by a
+  startup `set -m; job &` are signalled through pidfds with membership
+  re-verified (Python 3.9+, kernel 5.3+); a `setsid` daemon is outside it.
+  The prompt and events descriptors are attached only on the final exec, so
+  a startup-defined `cd` function or DEBUG trap cannot read the prompt or
+  write into the events; and both JSON surfaces are ASCII-escaped so an
+  escaped lone surrogate in Claude's stream round-trips instead of raising.
+- Offline mock suite `claude/scripts/tests/claude-operator-runner.test.py`
+  (stdlib Python, stub `claude`, throwaway HOME with a crafted `~/.bashrc`,
+  from-scratch child env) wired into the CI `checks` job; cases cover
+  success, failure, denial, exact resume, missing or mismatched session ID, literal prompt,
+  cwd restoration, dry-run, existing-output and dangling-link preservation,
+  native-only executable selection, bypass-flag rejection, SIGINT and
+  timeout cleanup, leader-exited group cleanup with a bystander check,
+  launch- and teardown-boundary signal injection, inherited-pipe and
+  continuously-writing descendants, denial-with-nonzero-exit precedence,
+  and in-process syscall observation of group signalling and teardown
+  failure.
+- Docs: `agents/skill-coverage.tsv` row (agent-only, rationale),
+  `codex/README.md` section, `docs/WINDOWS.md` section on the separate
+  Windows Codex config root and installing the skill there.
+
+### Decisions made
+- Opt-in only: the public skill never makes Claude the default implementer;
+  that preference stays in the private memory layer.
+- The wrapper is documented as not an isolation boundary and exposes no
+  `bypassPermissions`, `--dangerously-skip-permissions`, or `--bare`.
+
+### Known issues
+- The Windows-side copy is a manual `Copy-Item`; it does not refresh with
+  `dotfiles-update`.
+
 ## 2026-09-04 — fix: recover errored Codex Remote Control during startup
 
 ### What changed

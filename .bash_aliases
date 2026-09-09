@@ -7,6 +7,36 @@
 # even on a fresh install whose login shell hasn't already added it to PATH.
 export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 
+# Where this file lives and its mtime as loaded. Shells outlive edits to this
+# file by days (WSL6 panes), so a launcher keeps the body it sourced long after
+# pull-all replaced it on disk — the fail-closed sync message outlived its own
+# fix that way. GNU and BSD stat spell the query differently; -L follows the
+# ~/.bash_aliases symlink into the dotfiles checkout either way.
+# Detect GNU vs BSD stat by capability, not by trying one and falling back:
+# on GNU, `stat -f %m` is filesystem mode and prints a mount point, not a time.
+if stat --version >/dev/null 2>&1; then
+  _file_mtime() { stat -L -c %Y "$1" 2>/dev/null; }
+else
+  _file_mtime() { stat -L -f %m "$1" 2>/dev/null; }
+fi
+# Anchored to an absolute path so a later `cd` cannot redirect the reload.
+_BASH_ALIASES_PATH="${BASH_SOURCE[0]}"
+case "$_BASH_ALIASES_PATH" in /*) ;; *) _BASH_ALIASES_PATH="$PWD/$_BASH_ALIASES_PATH" ;; esac
+_BASH_ALIASES_MTIME="$(_file_mtime "$_BASH_ALIASES_PATH")"
+
+# Re-source this file when it changed since the shell loaded it. Succeeds only
+# when a reload happened, so a launcher can re-enter itself and run the fresh
+# definitions instead of the body already executing. The reload resets
+# _BASH_ALIASES_MTIME, which is what stops the re-entry from repeating.
+_launcher_reloaded() {
+  local now
+  now="$(_file_mtime "$_BASH_ALIASES_PATH")"
+  [ -n "$now" ] && [ "$now" != "$_BASH_ALIASES_MTIME" ] || return 1
+  echo "ℹ ~/.bash_aliases changed since this shell loaded it — reloading launcher definitions." >&2
+  # shellcheck source=/dev/null
+  source "$_BASH_ALIASES_PATH"
+}
+
 # Claude Code aliases
 alias claude-server='claude remote-control --spawn worktree'
 alias claude-rc='claude --remote-control'
@@ -25,12 +55,45 @@ _dev_dir() {
   printf '%s\n' "$_DEV_DIR_CACHE"
 }
 
-# Pull latest for all git repos under dev directory. Pulls are intentionally
-# sequential: linked worktrees share fetch/object state, so parallel pulls can
-# contend even though their checked-out branches are different.
+_pull_all_report() {
+  printf '  %-20s  %s\n' "$1" "$2"
+}
+
+_pull_all_failure() {
+  _pull_all_failures+="$1: $2"$'\n'
+  _pull_all_report "$1" "$2"
+}
+
+# First error:/fatal: line of a git transcript. tail -1 hides the real
+# diagnostic: an aborted --ff-only pull prints the error first and ends on
+# "Updating <a>..<b>", which reads as success (issue #280).
+_pull_all_git_error() {
+  grep -m1 -E '^(error|fatal):' <<< "$1" || tail -1 <<< "$1"
+}
+
+# A linked worktree's own git dir (<common>/worktrees/<name>) differs from the
+# repository's common dir; in every other layout — plain .git directory,
+# --separate-git-dir gitfile, submodule gitfile — the two resolve to the same
+# path. Both are canonicalized physically because git realpaths one and not
+# the other, and a symlinked dev dir would otherwise misclassify every repo.
+# Return 2 when metadata cannot be resolved; callers must not assume ordinary.
+_pull_all_is_linked_worktree() {
+  local repo="$1" git_dir common_dir
+  local CDPATH=""
+  git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)" || return 2
+  common_dir="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 2
+  git_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$git_dir" && builtin pwd -P)" || return 2
+  common_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$common_dir" && builtin pwd -P)" || return 2
+  [ "$git_dir" != "$common_dir" ]
+}
+
+# Linked worktrees may belong to another session, so only fetch into their
+# shared repository. Keep sync sequential because linked worktrees share refs
+# and objects. Preserve failures for callers that continue after a failed sync.
 pull-all() {
   local dev_dir
   dev_dir="$(_dev_dir)"
+  _pull_all_failures=""
   if [ ! -d "$dev_dir" ]; then
     echo "Dev directory not found: $dev_dir"
     return 1
@@ -42,17 +105,40 @@ pull-all() {
     name="$(basename "$repo")"
     if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
       failed=1
-      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+      _pull_all_failure "$name" "$(tail -1 <<< "$output")"
       continue
     fi
     if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
       failed=1
-      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$remote_output")"
+      _pull_all_failure "$name" "$(tail -1 <<< "$remote_output")"
       continue
     fi
     [ -n "$remote_output" ] || continue
-    if ! upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
-      printf "  %-20s%s\n" "$name" "No upstream branch; skipped"
+    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
+      || upstream=""
+    rc=0
+    _pull_all_is_linked_worktree "$repo" || rc=$?
+    if [ "$rc" -gt 1 ]; then
+      failed=1
+      _pull_all_failure "$name" "Cannot resolve Git worktree layout; not pulled"
+      continue
+    fi
+    if [ "$rc" -eq 0 ]; then
+      rc=0
+      # Detached or upstream-less linked worktrees still fetch their default
+      # remote; nothing here ever moves HEAD, the index, or the files.
+      output="$(git -C "$repo" fetch --prune 2>&1)" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        _pull_all_report "$name" \
+          "Fetched only (linked worktree${upstream:+ tracking $upstream}; not pulled)"
+      else
+        failed=1
+        _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
+      fi
+      continue
+    fi
+    if [ -z "$upstream" ]; then
+      _pull_all_report "$name" "No upstream branch; skipped"
       continue
     fi
     rc=0
@@ -63,19 +149,15 @@ pull-all() {
     # morning and then silently worked again.
     output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
-      printf "  %-20s%s\n" "$name" "$(tail -1 <<< "$output")"
+      _pull_all_report "$name" "$(tail -1 <<< "$output")"
     elif grep -q 'no such ref was fetched' <<< "$output"; then
       # Nothing to pull: the checkout tracks a branch that no longer exists.
       # Same posture as "No upstream branch" — not a launch blocker.
-      printf "  %-20s%s\n" "$name" \
+      _pull_all_report "$name" \
         "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
     else
       failed=1
-      # tail -1 hides the real diagnostic on failure: an aborted --ff-only
-      # pull prints "error:/fatal:" first and ends on "Updating <a>..<b>",
-      # which reads as success while the launcher blocks (issue #280).
-      printf "  %-20s%s\n" "$name" \
-        "$(grep -m1 -E '^(error|fatal):' <<< "$output" || tail -1 <<< "$output")"
+      _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
     fi
   done
   return "$failed"
@@ -83,9 +165,13 @@ pull-all() {
 
 # Strict launcher health wrappers. Standalone checkers remain useful as
 # reporters, while launchers treat every actionable managed-config warning as
-# a stop condition.
+# a stop condition. Memory publication is not a config check: when sync-memory
+# refuses (no upstream, unsafe history, push failure) the session still has
+# its local memory, so the launcher warns and goes on to the real health gate.
 _check_claude_launch_health() {
-  sync-memory || return 1
+  if ! sync-memory; then
+    echo "⚠ Memory sync failed — continuing with local memory; run sync-memory after fixing the memory repo." >&2
+  fi
   "$(_dev_dir)/dotfiles/check-claude.sh" --heal
 }
 
@@ -435,8 +521,9 @@ _check_critical_symlinks() {
 }
 
 # Shared agent preflight: resume detection, project cd, and the "Syncing repos…"
-# sequence (pull-all + a per-tool health check). Keep cc/cx/agy on this path so
-# their machine-sync behavior cannot drift independently.
+# sequence (pull-all, which only warns, then a per-tool health check, which
+# blocks). Keep cc/cx/agy on this path so their machine-sync behavior cannot
+# drift independently.
 #   $1  — space-separated resume keywords (e.g. "--resume -r --continue -c")
 #   $2  — health-check command run inside the sync block (e.g. "sync-memory")
 #   $3… — the caller's original positional args ("$@")
@@ -445,12 +532,41 @@ _check_critical_symlinks() {
 #   _agent_resuming — 1 if a resume/session arg was detected (sync was skipped)
 #   _agent_shifted  — 1 if $3 was a <project> dir the caller should `shift` out
 #                     so it never reaches the tool as a positional prompt arg
+# The dev dir is a directory of repositories, not a repository. A stray empty
+# `.git` there (2026-07-17 and 2026-09-06, creator unidentified) makes Claude
+# Code treat it as a repo with no HEAD. Remove it only while it is empty;
+# anything else is reported and left for a human.
+_dev_dir_stub_gitdir() {
+  local dev_dir="$1" top
+  [ -e "$dev_dir/.git" ] || return 0
+  if top="$(git -C "$dev_dir" rev-parse --show-toplevel 2>/dev/null)" && [ "$top" -ef "$dev_dir" ]; then
+    return 0
+  fi
+  if [ -d "$dev_dir/.git" ] && rmdir "$dev_dir/.git" 2>/dev/null; then
+    echo "ℹ Removed empty stub $dev_dir/.git (the dev dir is not a repository)." >&2
+  else
+    echo "⚠ $dev_dir/.git exists but is not a repository — Claude Code misreads the dev dir until it is removed." >&2
+  fi
+}
+
+# ~/.bash_aliases, hooks and skills are symlinks into the primary dotfiles
+# checkout, so whatever branch is checked out there IS the live shell config.
+# Feature work belongs in a worktree (wt-claude); the primary stays on main.
+_dotfiles_branch_check() {
+  local repo="$1/dotfiles" branch
+  [ -e "$repo/.git" ] || return 0
+  branch="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)" || return 0
+  case "$branch" in main|master|"") return 0 ;; esac
+  echo "⚠ dotfiles checkout is on '$branch' — ~/.bash_aliases, hooks and skills follow it. Finish that work in a worktree and return $repo to main." >&2
+}
+
 _agent_preflight() {
   local resume_keys="$1" health_cmd="$2"
   shift 2
 
   local dev_dir
   dev_dir="$(_dev_dir)"
+  _dev_dir_stub_gitdir "$dev_dir"
 
   # Detect resume-style invocation anywhere in the args. resume_keys is left
   # unquoted so it word-splits into the individual keywords to match against.
@@ -491,12 +607,21 @@ _agent_preflight() {
 
   if [ "$_agent_resuming" -eq 0 ]; then
     echo "Syncing repos..."
+    # A repo that cannot sync is not a reason to withhold the agent: the
+    # checkout is still usable, just possibly stale. The warning repeats the
+    # failed repos so it stands on its own above the health output.
     if ! pull-all; then
-      echo "Repository sync failed — resolve the pull error before launching the agent." >&2
-      return 1
+      {
+        echo "⚠ Repository sync failed — continuing with local files:"
+        if [ -n "${_pull_all_failures:-}" ]; then
+          sed 's/^/    /' <<< "${_pull_all_failures%$'\n'}"
+        fi
+        echo "  Fix the repos above and re-run pull-all; the agent starts on their current checkouts."
+      } >&2
     fi
     echo ""
   fi
+  _dotfiles_branch_check "$dev_dir"
   if ! "$health_cmd"; then
     echo "Agent health check failed — repair the reported drift before launch." >&2
     return 1
@@ -514,6 +639,7 @@ _agent_preflight() {
 # no repository pulls, but memory publication and runtime health still run.
 # shellcheck disable=SC2120  # args come from interactive use, not in-file callers
 cc() {
+  if _launcher_reloaded; then cc "$@"; return $?; fi
   # Quick critical symlink validation (fast — just 2 stat calls; cwd-independent,
   # so running it before the preflight cd is equivalent to running it after).
   _check_critical_symlinks
@@ -808,6 +934,7 @@ _codex_ensure_remote_control() {
 }
 
 cx() {
+  if _launcher_reloaded; then cx "$@"; return $?; fi
   _agent_force_resuming=0
   _codex_is_resume_invocation "$@" && _agent_force_resuming=1
   # Shared preflight: resume/fork detection, project cd, and the repo sync +
@@ -848,6 +975,7 @@ cx() {
 #        agy --continue|-c           — continue without the sync preflight
 #        agy --conversation <id>     — resume by id without the sync preflight
 agy() {
+  if _launcher_reloaded; then agy "$@"; return $?; fi
   # Utility subcommands (agy models, plugin list, update…) and help/version
   # are plain CLI calls, not workspace launches — the repo-sync + strict
   # config preflight would block them on unrelated drift (issue #277). Pass
