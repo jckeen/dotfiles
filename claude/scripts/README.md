@@ -75,9 +75,11 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
-Ignored agent runtime credentials are excluded from instruction discovery.
-Credential files explicitly included in the review target block review before
-their contents can reach a reviewer.
+Known ignored agent runtime credentials and state are excluded from instruction
+discovery. Named instruction files inside runtime directories remain covered.
+Recognized runtime artifacts explicitly included in the review target block
+review before their contents can reach a reviewer. These filename and directory
+rules are not a general secret scanner.
 
 Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
