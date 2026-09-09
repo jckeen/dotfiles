@@ -30,6 +30,84 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_wrapper_keeps_the_commit_selected_before_tests(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for name in ("codex-review-gate.sh", "gate-lib.sh", "review-receipt.py",
+                     "codex-review-schema.json"):
+            shutil.copy2(shipping.ROOT / "claude/scripts" / name, t.scripts / name)
+        self.git("config", "core.hooksPath", str(t.source / "githooks"))
+        (t.repo / "pyproject.toml").write_text('[project]\nname="fixture"\n')
+        self.git("add", "pyproject.toml")
+        self.git("commit", "-qm", "test fixture")
+        intended = self.git("rev-parse", "HEAD")
+        mutate = t.root / "replace-commit"
+        t.write(mutate, '''#!/bin/bash
+printf 'BROKEN_AFTER_TESTS\\n' > code.txt
+git commit -qam 'replacement commit'
+''')
+        actual_gate = t.scripts / "actual-codex-review-gate.sh"
+        shutil.copy2(t.scripts / "codex-review-gate.sh", actual_gate)
+        t.env.update(MUTATE_COMMIT=str(mutate), ACTUAL_GATE=str(actual_gate))
+        t.write(t.scripts / "codex-review-gate.sh", '''#!/bin/bash
+if [[ "$REPLACE_DURING" == review ]]; then "$MUTATE_COMMIT"; fi
+exec "$ACTUAL_GATE" "$@"
+''')
+        t.write(t.bin / "pytest", '''#!/bin/bash
+printf 'tested:%s\\n' "$(git rev-parse HEAD)" >> "$CALLS"
+if grep -q BROKEN_AFTER_TESTS code.txt; then exit 1; fi
+if [[ "$REPLACE_DURING" == tests ]]; then "$MUTATE_COMMIT"; fi
+exit 0
+''')
+        t.write(t.bin / "codex", '''#!/bin/bash
+cat >/dev/null
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -o ]]; then output=$2; shift; fi
+  shift
+done
+printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[]}' > "$output"
+''')
+        for phase in ("tests", "review", "confirmation"):
+            with self.subTest(phase=phase):
+                self.git("reset", "--hard", intended)
+                self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", t.base)
+                t.calls.unlink(missing_ok=True)
+                t.env["REPLACE_DURING"] = phase
+                transcript = t.root / (phase + ".log")
+                with transcript.open("w") as output:
+                    wrapper = subprocess.Popen(["bash", str(t.scripts / "review-and-push.sh"), str(t.repo)],
+                                               cwd=t.repo, env=t.env, stdin=subprocess.PIPE,
+                                               stdout=output, stderr=subprocess.STDOUT, text=True)
+                    try:
+                        if phase == "confirmation":
+                            deadline = time.monotonic() + 15
+                            while "Codex review passed" not in transcript.read_text():
+                                self.assertIsNone(wrapper.poll(), transcript.read_text())
+                                self.assertLess(time.monotonic(), deadline, transcript.read_text())
+                                time.sleep(0.01)
+                            changed = t.command("bash", [str(mutate)])
+                            self.assertEqual(changed.returncode, 0, changed.stderr)
+                            retry = t.command("bash", [str(actual_gate), "--require", "--committed", "--no-issues"])
+                            self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+                        wrapper.communicate("y\n", timeout=15)
+                        self.assertNotEqual(wrapper.returncode, 0, transcript.read_text())
+                    finally:
+                        if wrapper.poll() is None:
+                            wrapper.kill()
+                            wrapper.communicate()
+                self.assertIn("Commit changed", transcript.read_text())
+                self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base)
+                self.assertEqual(t.events(), ["tested:" + intended])
+                replacement = self.git("rev-parse", "HEAD")
+                self.assertNotEqual(replacement, intended)
+                if phase != "tests":
+                    receipt = json.loads((t.repo / ".git/review-receipts/codex.json").read_text())
+                    self.assertEqual(receipt["artifact"]["head"], replacement)
+                    checked = t.command("python3", [str(t.scripts / "review-receipt.py"), "check",
+                                                    "--repo", str(t.repo), "--head", replacement, "--reviewer", "codex"])
+                    self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertEqual(t.command("pytest", []).returncode, 1)
+
     def test_failed_codex_retry_cannot_fall_back_to_an_older_alternate_receipt(self):
         t = self.fixture
         (t.bin / "git").unlink()

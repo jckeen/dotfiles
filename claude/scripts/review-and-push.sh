@@ -41,6 +41,17 @@ BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
   echo "Create a non-default branch before reviewing and pushing." >&2
   exit 1
 }
+REVIEWED_HEAD=$(git rev-parse HEAD)
+check_review_target() {
+  if [[ "$(git symbolic-ref --quiet HEAD)" != "$BRANCH_REF" ]]; then
+    echo "Branch changed during tests or review; run tests and review again on the intended branch." >&2
+    return 1
+  fi
+  if [[ "$(git rev-parse HEAD)" != "$REVIEWED_HEAD" ]]; then
+    echo "Commit changed during tests or review; run tests and review again on the intended commit." >&2
+    return 1
+  fi
+}
 BRANCH=${BRANCH_REF#refs/heads/}
 # Preserve configured newline bytes; remove only the sentinel and Git's terminator.
 REMOTE=$(
@@ -146,7 +157,7 @@ echo ""
 UNSTAGED=$(git status --porcelain 2>/dev/null || echo "")
 
 echo "═══ Current commit ═══"
-git --no-replace-objects log -1 --oneline
+git --no-replace-objects log -1 --oneline "$REVIEWED_HEAD"
 echo ""
 
 if [[ -n "$UNSTAGED" ]]; then
@@ -189,7 +200,9 @@ echo ""
 
 # ─── Step 3: Review the committed artifact ──────────────────────
 
+check_review_target
 "$SCRIPT_DIR/codex-review-gate.sh" --require --committed
+check_review_target
 
 if [[ "$AUTO_PUSH" != "true" ]]; then
   read -rp "Push to remote? (Y/n): " CONFIRM
@@ -200,12 +213,8 @@ if [[ "$AUTO_PUSH" != "true" ]]; then
 fi
 
 # The confirmation or another process may have changed the reviewed artifact.
-if [[ "$(git symbolic-ref --quiet HEAD)" != "$BRANCH_REF" ]]; then
-  echo "Branch changed during review; review again on the intended branch." >&2
-  exit 1
-fi
+check_review_target
 check_destination
-REVIEWED_HEAD=$(git rev-parse HEAD)
 python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD" --reviewer codex
 git push --no-follow-tags "${PUSH_CREATION_LEASE[@]}" -- "$PUSH_URL" "$REVIEWED_HEAD:$BRANCH_REF"
 echo "Pushed."
