@@ -103,3 +103,10 @@ where a phase names them) are invoked ad hoc rather than as part of a phase.
 **Agents:** qa-lead, perf-accessibility, launch-operator, code-simplifier
 **Goal:** Make sure it works, performs, and is ready to ship.
 **Mode:** All parallel (review), then apply fixes in dependency order.
+
+Complete simplification, documentation, and generated-file updates before
+rerunning affected verification and reviewing the final artifact. Applying any
+recommendation after that review invalidates approval and requires a fresh
+review. Read-only review reports, including `full-review.sh`, do not authorize
+shipping later edits. For high-risk changes, use a reviewer from a different
+model family than the implementer and record its actual identity evidence.

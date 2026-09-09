@@ -92,13 +92,11 @@ jobs:
       - name: AGENTPACK.yaml matches skill/agent frontmatter
         run: claude/scripts/gen-agentpack.sh --check
 
-  # The remaining pure-bash checkers (none of them required status checks) share
-  # one runner + one checkout instead of paying a spin-up each — each finishes in
-  # well under a second. `if: ${{ !cancelled() }}` runs every step even after an
-  # earlier one fails, so a single run surfaces all failures at once (as separate
-  # parallel jobs used to). Do NOT fold doc-truth/shellcheck/tsc/
-  # agentpack-generated in here — those are (or are slated to become) required
-  # checks and must report under their own names.
+  # `checks` is a required status context for the bundled behavioral suites and
+  # policy checks. Keep its name in sync with docs/BRANCH_PROTECTION.md and the
+  # live rule. `if: ${{ !cancelled() }}` runs every step after earlier failures
+  # so one run surfaces all failures. The other required contexts retain their
+  # own job names; do not fold them into this job.
   checks:
     name: checks
     runs-on: ubuntu-latest

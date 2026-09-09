@@ -24,7 +24,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `test-coverage.sh` | Writes tests for uncovered code | Fix (edit + test) | Yes — review with `git diff` |
 | `fix-issues.sh` | Picks up GitHub issues, creates fix branches | Commit (edit + commit) | Yes — review branches |
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
-| `review-and-push.sh` | AI-reviews overnight changes, pushes if safe | Read-only review + push | Only pushes after validation |
+| `review-and-push.sh` | Reviews committed changes with the required Codex gate, validates the receipt, and pushes the current branch | Artifact review + push | Only pushes after validation |
 | `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift | Install (calls `claude plugin install`) | No file edits — updates plugin state |
 | `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`. Tests: `tests/doc-truth.test.sh` | Read-only | No |
 | `gen-instruction-files.sh` | Builds the three global instruction files (`claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md`) from the canonical sources in `agents/canon/` (ADR 0007) — shared rule blocks in `CANON.md`, per-tool voice in `fragments/`. `--check` verifies the committed artifacts are byte-current (run in CI via `check-agent-parity.sh`). Tests: `tests/agent-parity.test.sh` | Build (writes the three generated files) | Yes — regenerates committed artifacts |
@@ -43,19 +43,26 @@ for repo in ~/dev/atlas ~/dev/stringer ~/dev/smss; do
   ./review-and-push.sh "$repo"
 done
 
-# Auto-push if tests pass and review is clean (no prompt)
+# Auto-push after tests, the required review gate, and receipt validation
 ./review-and-push.sh ~/dev/atlas --auto-push
 ```
 
 What `review-and-push.sh` does:
-1. Checks for unpushed commits and uncommitted changes
-2. Runs the test suite — **stops if tests fail**
-3. Sends the full diff to a fresh Claude review (read-only, separate context)
-4. Extracts a verdict: **SAFE TO PUSH** / **NEEDS REVIEW** / **DO NOT PUSH**
-5. Shows you a 20-line summary instead of a 500-line diff
-6. Prompts for confirmation (or auto-pushes with `--auto-push` if verdict is SAFE)
 
-The `--auto-push` flag will NOT push if the review flags issues — it only pushes on a clean SAFE verdict.
+1. Inspects the current non-default branch, outgoing commits, and working tree.
+2. Runs the detected test suite and stops on failure.
+3. Runs the Codex review gate with `--require` on the committed artifact.
+4. Prompts for confirmation, unless `--auto-push` was selected.
+5. Validates the private receipt after confirmation, immediately before push.
+6. Pushes the reviewed commit to the current branch with an explicit refspec.
+
+Blocking findings, failed reviewer execution, and missing or stale receipts
+prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
+tier/no-diff exemptions are reported separately from successful reviews.
+Changing the artifact invalidates approval and requires affected verification
+and review again. `--auto-push` removes the prompt, not the checks. The pre-push
+hook validates each pushed ref's commit receipt independently of whether the
+secret scanner runs.
 
 ## Safety Tiers
 
@@ -67,7 +74,9 @@ Each script uses scoped `--allowedTools` to limit what Claude can do:
 | **TIER_FIX** | Above + edit + write files + run tests | Commit, push |
 | **TIER_COMMIT** | Above + git add/commit/branch/checkout | Push, run arbitrary commands |
 
-`review-and-push.sh` itself uses `TIER_READONLY` for the AI review, then performs the `git push` directly from bash only after the review clears.
+`review-and-push.sh` uses the required Codex gate and its artifact receipt, then
+performs `git push` from bash after the confirmation and evidence checks. The
+tiers above describe scripts that invoke Claude through `common.sh`.
 
 ## Full Auto Mode
 
@@ -112,7 +121,7 @@ All scripts accept:
 |------|--------|---------|
 | `--full-auto` | Bypass all permission checks (prints warning banner) | All scripts |
 | `--max-turns N` | Override max Claude turns (default: 15, full-review: 25) | All scripts |
-| `--auto-push` | Push without prompting if verdict is SAFE TO PUSH | `review-and-push.sh` only |
+| `--auto-push` | Push without prompting after tests, the required review gate, and current receipt validation | `review-and-push.sh` only |
 | `--deep` | Enable test coverage + issue fixing phases | `overnight.sh` only |
 
 Environment variables:
