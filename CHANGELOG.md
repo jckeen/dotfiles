@@ -46,6 +46,9 @@
   one-push setting.
   Multiline push destinations are rejected before shell output handling can
   change their meaning.
+  Protocol v2 destination checks reject advertised symbolic branch aliases.
+  Unadvertised destinations require an empty expected object ID at push time
+  instead of risking an overwrite through a hidden alias.
   Push-remote selection follows Git's configured precedence, and a current
   fetch upstream does not suppress delivery to a behind push fork.
 - Shared instructions assign coordination to the active session, preserve

@@ -69,6 +69,12 @@ requires the repository's default base. The setting selects the expected
 base; it does not bypass artifact validation.
 The wrapper rejects resolved destinations that name another remote or would
 be transformed by another URL rewrite; use a direct destination in that case.
+It requires Git protocol v2 with server-option support to inspect branch aliases
+and rejects advertised symbolic destination refs. An unadvertised destination
+must have no resolved object when the push occurs, so it cannot overwrite an
+existing branch. Git cannot distinguish an absent ref from a hidden dangling
+alias: such an alias may create its missing nondefault target. These checks
+cannot guard server-side ref changes after validation.
 It selects the branch's `pushRemote`, then `remote.pushDefault`, then the
 branch's fetch remote, falling back to `origin` when none is configured.
 Committed scope keeps unrelated working changes out of the push review even
