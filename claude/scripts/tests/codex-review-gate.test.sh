@@ -483,6 +483,51 @@ assert "gate loaded from newline directory dispatches" "grep -q 'source-director
 GATE="$original_gate"
 rm -rf "$R"
 
+for checkout_state in staged-mode crlf sparse; do
+  new_repo
+  args=(--committed --no-issues --require)
+  case "$checkout_state" in
+    staged-mode)
+      printf 'before\n' > "$R/image.png"
+      git -C "$R" add image.png
+      git -C "$R" commit -qm 'regular file'
+      git -C "$R" config core.filemode false
+      git -C "$R" update-index --chmod=+x image.png
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/image.png"
+      git -C "$R" add image.png
+      args=(--uncommitted --no-issues --require)
+      ;;
+    crlf)
+      printf 'Known instructions.\n' > "$R/AGENTS.md"
+      git -C "$R" add AGENTS.md
+      git -C "$R" commit -qm 'instructions'
+      git -C "$R" config core.autocrlf true
+      rm "$R/AGENTS.md"
+      git -C "$R" checkout -- AGENTS.md
+      git -C "$R" checkout -qb feature
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/code.txt"
+      git -C "$R" commit -qam 'code change'
+      ;;
+    sparse)
+      mkdir -p "$R/docs" "$R/src"
+      printf 'Known instructions.\n' > "$R/docs/AGENTS.md"
+      printf 'before\n' > "$R/src/code.txt"
+      git -C "$R" add docs src
+      git -C "$R" commit -qm 'sparse fixture'
+      git -C "$R" sparse-checkout init --cone --sparse-index
+      git -C "$R" sparse-checkout set src
+      git -C "$R" checkout -qb feature
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/src/code.txt"
+      git -C "$R" commit -qam 'code change'
+      ;;
+  esac
+  approve_clean
+  check "$checkout_state reaches required Codex review" 0 "Codex review passed" "${args[@]}"
+  assert "native checkout state preserves review bytes" "grep -q 'NATIVE_STATE_REVIEW_MARKER' '$CODEX_FAKE_DIR/stdin'"
+  assert "native checkout state gets full-review receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+  rm -rf "$R"
+done
+
 for mutation in head index worktree untracked base; do
   new_repo
   git -C "$R" checkout -qb feature

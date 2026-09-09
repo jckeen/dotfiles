@@ -165,6 +165,28 @@ def tree_files(repo, ref):
     return entries
 
 
+def crlf_normalized_paths(repo):
+    autocrlf = git(repo, 'config', '--default', 'false', '--get', 'core.autocrlf').decode().strip().lower()
+    if autocrlf != 'input':
+        autocrlf = git(repo, 'config', '--type=bool', '--default', 'false', '--get', 'core.autocrlf').decode().strip()
+    paths = set()
+    # Native EOL metadata applies attributes without invoking clean filters.
+    for entry in git(repo, 'ls-files', '--eol', '-z').split(b'\0'):
+        if not entry:
+            continue
+        metadata, path = entry.split(b'\t', 1)
+        attrs = metadata.partition(b'attr/')[2].split()
+        if b'-text' not in attrs and (any(value in attrs for value in (b'text', b'text=auto', b'eol=lf', b'eol=crlf'))
+                                     or not attrs and autocrlf in ('true', 'input')):
+            paths.add(os.fsdecode(path))
+    return paths
+
+
+def same_content(path, original, content, crlf_paths):
+    return (content == original or path in crlf_paths and b'\r' not in original and b'\0' not in original
+            and content.replace(b'\r\n', b'\n') == original)
+
+
 def capture(repo, base, scope):
     head = oid(repo, 'HEAD')
     base_commit = oid(repo, base) if base else None
@@ -172,14 +194,29 @@ def capture(repo, base, scope):
         raise ValueError('base could not be resolved')
     merge = git(repo, 'merge-base', base_commit, head).decode().strip() if scope == 'committed' else None
     tree = git(repo, 'rev-parse', head + '^{tree}').decode().strip()
-    index = git(repo, 'ls-files', '--stage', '-z')
-    if any(entry.startswith(b'160000 ') for entry in index.split(b'\0')):
-        raise ValueError('submodule snapshots are unsupported; review separately')
+    index = git(repo, 'ls-files', '--stage', '-t', '-z')
+    staged, skipped = {}, set()
+    for entry in index.split(b'\0'):
+        if not entry:
+            continue
+        metadata, path_bytes = entry.split(b'\t', 1)
+        tag, mode, obj, stage = metadata.decode().split()
+        path = os.fsdecode(path_bytes)
+        if mode == '160000':
+            raise ValueError('submodule snapshots are unsupported; review separately')
+        if stage != '0':
+            raise ValueError('unmerged index cannot be reviewed')
+        staged[path] = (mode, obj)
+        if tag == 'S':
+            skipped.add(path)
+    sparse = git(repo, 'config', '--type=bool', '--default', 'false', '--get', 'core.sparseCheckout').strip() == b'true'
     entries = tree_files(repo, head)
+    for path, (mode, _) in list(entries.items()) + list(staged.items()):
+        if mode == '120000' and instruction(path):
+            raise ValueError('instruction symlink targets are unsupported; review separately: ' + path)
     base_entries = tree_files(repo, merge) if scope == 'committed' else entries
-    tracked = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0') if e}
-    tracked_files = {os.fsdecode(e.split(b'\t', 1)[1]) for e in index.split(b'\0')
-                     if e and e.split(b' ', 1)[0] in (b'100644', b'100755', b'120000')}
+    tracked = set(staged)
+    tracked_files = {path for path, (mode, _) in staged.items() if mode in ('100644', '100755', '120000')}
     untracked = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--exclude-standard', '-z').split(b'\0') if p}
     paths = []
     if scope == 'committed':
@@ -190,26 +227,31 @@ def capture(repo, base, scope):
         raise ValueError('private agent runtime data cannot be sent for review: ' + ', '.join(sorted(private_inputs)))
     ignored_instructions = {os.fsdecode(p) for p in git(repo, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z').split(b'\0')
                             if p and not private_agent_data(os.fsdecode(p)) and instruction(os.fsdecode(p))}
-    files = {}
+    files, workspace, omitted, blobs = {}, {}, set(), {}
+
+    def blob(obj):
+        if obj is None:
+            return b''
+        if obj not in blobs:
+            blobs[obj] = git(repo, 'cat-file', 'blob', obj)
+        return blobs[obj]
+
     dirty_instructions = [p for p in entries if instruction(p) and p not in tracked]
     for path in sorted(set(entries) | tracked | untracked | ignored_instructions):
         mode, content = file_bytes(repo, path, path in entries or path in tracked_files)
         files[path] = (mode, digest(content))
+        workspace[path] = (mode, content)
+        if mode == 'missing' and sparse and path in skipped:
+            omitted.add(path)
+    # Keep semantic cleanliness separate from the raw bytes bound above.
+    crlf_paths = crlf_normalized_paths(repo) if any(b'\r\n' in data for mode, data in workspace.values()) else set()
+    for path, (mode, content) in workspace.items():
         if instruction(path):
             original_mode, obj = entries.get(path, ('missing', None))
-            original = git(repo, 'cat-file', 'blob', obj) if obj else b''
-            if (mode, content) != (original_mode, original):
+            if path not in omitted and (mode != original_mode or not same_content(path, blob(obj), content, crlf_paths)):
                 dirty_instructions.append(path)
-    for entry in index.split(b'\0'):
-        if not entry:
-            continue
-        meta, path_bytes = entry.split(b'\t', 1)
-        mode, obj, stage = meta.decode().split()
-        path = os.fsdecode(path_bytes)
-        if stage != '0':
-            raise ValueError('unmerged index cannot be reviewed')
-        if instruction(path) and entries.get(path) != (mode, obj):
-            dirty_instructions.append(path)
+            if path in staged and entries.get(path) != staged[path]:
+                dirty_instructions.append(path)
     if scope == 'committed' and dirty_instructions:
         raise ValueError('dirty instruction surface outside committed target: ' + ', '.join(sorted(set(dirty_instructions))))
     changed_modes = {}
@@ -222,22 +264,31 @@ def capture(repo, base, scope):
         patch = git(repo, *args, '--text', merge, head, '--', *(':(literal)' + path for path in review_paths)) if review_paths else b''
     else:
         chunks, paths = [], []
-        for path in sorted(set(entries) | tracked | untracked | ignored_instructions):
+        for path in sorted(workspace):
             original_mode, obj = entries.get(path, ('missing', None))
-            original = git(repo, 'cat-file', 'blob', obj) if obj else b''
-            mode, content = file_bytes(repo, path, path in entries or path in tracked_files)
-            if (mode, content) == (original_mode, original):
+            staged_mode, staged_obj = staged.get(path, ('missing', None))
+            if path in omitted and (original_mode, obj) == (staged_mode, staged_obj):
+                continue
+            original, staged_content = blob(obj), blob(staged_obj)
+            mode, content = (staged_mode, staged_content) if path in omitted else workspace[path]
+            staged_changed = (original_mode, obj) != (staged_mode, staged_obj)
+            worktree_changed = mode != staged_mode or not same_content(path, staged_content, content, crlf_paths)
+            if not staged_changed and not worktree_changed:
                 continue
             paths.append(path)
-            changed_modes[path] = [original_mode, mode]
+            changed_modes[path] = [original_mode, staged_mode, mode]
             if excluded(path, changed_modes[path]):
                 continue
-            before = original.decode('utf-8')
-            after = content.decode('utf-8')
-            header = f'diff --git a/{path} b/{path}\nold mode {original_mode}\nnew mode {mode}\n'
-            lines = difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile='a/' + path, tofile='b/' + path)
-            body = ''.join(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n' for line in lines)
-            chunks.append((header + body).encode())
+            for label, changed, before_mode, before_bytes, after_mode, after_bytes in (
+                    ('staged', staged_changed, original_mode, original, staged_mode, staged_content),
+                    ('worktree', worktree_changed, staged_mode, staged_content, mode, content)):
+                if not changed:
+                    continue
+                before, after = before_bytes.decode('utf-8'), after_bytes.decode('utf-8')
+                header = f'diff --git a/{path} b/{path}\nreview state {label}\nold mode {before_mode}\nnew mode {after_mode}\n'
+                lines = difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile='a/' + path, tofile='b/' + path)
+                body = ''.join(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n' for line in lines)
+                chunks.append((header + body).encode())
         patch = b'\n'.join(chunks)
         full = encoded({'head': head, 'files': files, 'index': digest(index)})
     if b'\0' in patch:

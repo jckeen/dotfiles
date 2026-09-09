@@ -403,6 +403,52 @@ assert "alternate gate from newline directory dispatches" "grep -q 'source-direc
 GATE="$original_gate"
 rm -rf "$R"
 
+for checkout_state in staged-mode crlf sparse; do
+  new_repo
+  args=(--committed --require)
+  case "$checkout_state" in
+    staged-mode)
+      printf 'before\n' > "$R/image.png"
+      git -C "$R" add image.png
+      git -C "$R" commit -qm 'regular file'
+      git -C "$R" config core.filemode false
+      git -C "$R" update-index --chmod=+x image.png
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/image.png"
+      git -C "$R" add image.png
+      args=(--uncommitted --require)
+      ;;
+    crlf)
+      printf 'Known instructions.\n' > "$R/AGENTS.md"
+      git -C "$R" add AGENTS.md
+      git -C "$R" commit -qm 'instructions'
+      git -C "$R" config core.autocrlf true
+      rm "$R/AGENTS.md"
+      git -C "$R" checkout -- AGENTS.md
+      git -C "$R" checkout -qb feature
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/code.txt"
+      git -C "$R" commit -qam 'code change'
+      ;;
+    sparse)
+      mkdir -p "$R/docs" "$R/src"
+      printf 'Known instructions.\n' > "$R/docs/AGENTS.md"
+      printf 'before\n' > "$R/src/code.txt"
+      git -C "$R" add docs src
+      git -C "$R" commit -qm 'sparse fixture'
+      git -C "$R" sparse-checkout init --cone --sparse-index
+      git -C "$R" sparse-checkout set src
+      git -C "$R" checkout -qb feature
+      printf 'NATIVE_STATE_REVIEW_MARKER\n' > "$R/src/code.txt"
+      git -C "$R" commit -qam 'code change'
+      ;;
+  esac
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$checkout_state reaches required alternate review" 0 "LGTB verdict" "${args[@]}"
+  assert "native checkout state preserves alternate bytes" "grep -q 'NATIVE_STATE_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
+  assert "native checkout state gets full alternate receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  rm -rf "$R"
+done
+
 for instruction in AGENTS.md .codex/config.toml .codex/cache/AGENTS.md; do
   for scope in explicit auto; do
     new_repo

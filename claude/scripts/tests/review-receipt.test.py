@@ -50,6 +50,205 @@ class ReceiptTests(unittest.TestCase):
     def check(self, ok=True, *args):
         return self.run_helper('check', '--repo', str(self.repo), '--head', self.git('rev-parse', 'HEAD'), *args, ok=ok)
 
+    def test_staged_executable_modes_survive_disabled_filesystem_tracking(self):
+        for name in ('image.png', 'README.md'):
+            for change_content in (False, True):
+                with self.subTest(path=name, content=change_content):
+                    self.git('reset', '--hard', 'main')
+                    path = self.repo / name
+                    path.write_text('before\n')
+                    path.chmod(0o644)
+                    self.git('add', name)
+                    self.git('commit', '-qm', 'regular file')
+                    self.git('config', 'core.filemode', 'false')
+                    self.git('update-index', '--chmod=+x', name)
+                    if change_content:
+                        path.write_text('STAGED_EXECUTABLE_MARKER\n')
+                        self.git('add', name)
+                    self.assertIn('100755', self.git('ls-files', '--stage', '--', name))
+                    self.assertFalse(path.stat().st_mode & 0o111)
+                    snapshot = self.begin('uncommitted')
+                    patch = (snapshot.parent / 'diff.patch').read_text()
+                    self.assertIn('100755', patch)
+                    if change_content:
+                        self.assertIn('STAGED_EXECUTABLE_MARKER', patch)
+                    self.assertEqual(json.loads(self.run_helper('classify', '--snapshot', str(snapshot)))['tier'], 2)
+                    self.complete(snapshot, 'no-diff', ok=False)
+                    self.complete(snapshot, 'tier-1', ok=False)
+                    self.complete(snapshot)
+                    self.git('config', 'core.filemode', 'true')
+
+    def test_clean_crlf_instructions_remain_bound_to_raw_bytes(self):
+        for normalization in ('autocrlf', 'eol-attribute'):
+            with self.subTest(normalization=normalization):
+                self.git('reset', '--hard', 'main')
+                self.git('clean', '-fd')
+                self.git('config', 'core.autocrlf', 'false')
+                path = self.repo / 'AGENTS.md'
+                path.write_bytes(b'Known instructions.\n')
+                if normalization == 'eol-attribute':
+                    (self.repo / '.gitattributes').write_text('AGENTS.md text eol=crlf\n')
+                    self.git('add', '.gitattributes')
+                self.git('add', 'AGENTS.md')
+                self.git('commit', '-qm', 'instruction fixture')
+                if normalization == 'autocrlf':
+                    self.git('config', 'core.autocrlf', 'true')
+                path.unlink()
+                self.git('checkout', '--', 'AGENTS.md')
+                self.assertEqual(path.read_bytes(), b'Known instructions.\r\n')
+                self.assertEqual(self.git('status', '--porcelain'), '')
+                marker = Path(self.tmp.name) / 'CRLF_FILTER_EXECUTED'
+                self.git('config', 'filter.unsafe.clean', f'touch {marker}')
+                (self.repo / '.git/info/attributes').write_text('AGENTS.md filter=unsafe\n')
+                snapshot = self.begin()
+                self.complete(snapshot)
+                self.check()
+                clean = self.begin('uncommitted')
+                self.assertNotIn('AGENTS.md', json.loads(clean.read_text())['artifact']['changed_paths'])
+                path.write_bytes(b'Known instructions.\n')
+                self.complete(clean, ok=False)
+                path.write_bytes(b'Known instructions.\r\nDIRTY_CRLF_MARKER\r\n')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+                dirty = self.begin('uncommitted')
+                self.assertIn('DIRTY_CRLF_MARKER', (dirty.parent / 'diff.patch').read_text())
+                self.complete(dirty)
+                self.assertFalse(marker.exists())
+                (self.repo / '.git/info/attributes').unlink()
+
+    def test_index_and_raw_workspace_modes_and_bytes_are_both_reviewed(self):
+        path = self.repo / 'image.png'
+        path.write_text('base\n')
+        self.git('add', 'image.png')
+        self.git('commit', '-qm', 'regular base')
+        self.git('config', 'core.filemode', 'false')
+        path.write_text('STAGED_ONLY_MARKER\n')
+        self.git('add', 'image.png')
+        self.git('update-index', '--chmod=+x', 'image.png')
+        path.write_text('RAW_WORKSPACE_MARKER\n')
+        snapshot = self.begin('uncommitted')
+        patch = (snapshot.parent / 'diff.patch').read_text()
+        self.assertIn('STAGED_ONLY_MARKER', patch)
+        self.assertIn('RAW_WORKSPACE_MARKER', patch)
+        self.complete(snapshot)
+        self.git('commit', '-qm', 'staged executable')
+        self.git('update-index', '--chmod=-x', 'image.png')
+        snapshot = self.begin('uncommitted')
+        self.assertIn('100755', (snapshot.parent / 'diff.patch').read_text())
+        self.complete(snapshot, 'no-diff', ok=False)
+        self.git('rm', '--cached', 'image.png')
+        snapshot = self.begin('uncommitted')
+        self.assertIn('STAGED_ONLY_MARKER', (snapshot.parent / 'diff.patch').read_text())
+        self.complete(snapshot, 'no-diff', ok=False)
+        self.git('reset', '--hard', 'main')
+        path.write_text('RAW_EXECUTABLE_MARKER\n')
+        path.chmod(0o755)
+        snapshot = self.begin('uncommitted')
+        self.assertIn('RAW_EXECUTABLE_MARKER', (snapshot.parent / 'diff.patch').read_text())
+        self.complete(snapshot, 'no-diff', ok=False)
+
+    def test_unmanaged_crlf_and_filters_cannot_hide_instruction_changes(self):
+        path = self.repo / 'AGENTS.md'
+        path.write_bytes(b'Known instructions.\n')
+        self.git('add', 'AGENTS.md')
+        self.git('commit', '-qm', 'instruction fixture')
+        marker = Path(self.tmp.name) / 'FILTER_EXECUTED'
+        self.git('config', 'filter.unsafe.clean', f'touch {marker}')
+        for attribute, autocrlf in (('-text', 'true'), ('filter=unsafe', 'false')):
+            with self.subTest(attribute=attribute):
+                self.git('config', 'core.autocrlf', autocrlf)
+                (self.repo / '.gitattributes').write_text('AGENTS.md ' + attribute + '\n')
+                path.write_bytes(b'Known instructions.\r\n')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+                self.assertFalse(marker.exists())
+
+    def test_sparse_omissions_are_virtual_but_present_instructions_are_checked(self):
+        original = self.git('rev-parse', 'HEAD')
+        for sparse_index in (False, True):
+            with self.subTest(sparse_index=sparse_index):
+                self.git('sparse-checkout', 'disable')
+                self.git('reset', '--hard', original)
+                self.git('clean', '-fd')
+                for name in ('src/app.py', 'src/AGENTS.md', 'docs/AGENTS.md', 'docs/notes.md'):
+                    path = self.repo / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('sparse fixture\n')
+                self.git('add', 'src', 'docs')
+                self.git('commit', '-qm', 'sparse fixture')
+                self.git('sparse-checkout', 'init', '--cone', *(('--sparse-index',) if sparse_index else ()))
+                self.git('sparse-checkout', 'set', 'src')
+                self.assertFalse((self.repo / 'docs/AGENTS.md').exists())
+                self.assertEqual(self.git('status', '--porcelain'), '')
+                snapshot = self.begin()
+                self.complete(snapshot)
+                self.check()
+                snapshot = self.begin('uncommitted')
+                self.assertEqual(json.loads(snapshot.read_text())['artifact']['changed_paths'], [])
+                self.complete(snapshot, 'no-diff')
+                original_instruction = self.git('rev-parse', 'HEAD:docs/AGENTS.md')
+                (self.repo / 'src/app.py').write_text('STAGED_SPARSE_POLICY_MARKER\n')
+                staged_instruction = self.git('hash-object', '-w', 'src/app.py')
+                self.git('checkout', '--', 'src/app.py')
+                self.git('update-index', '--cacheinfo', '100644', staged_instruction, 'docs/AGENTS.md')
+                self.git('update-index', '--skip-worktree', 'docs/AGENTS.md')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+                snapshot = self.begin('uncommitted')
+                self.assertIn('STAGED_SPARSE_POLICY_MARKER', (snapshot.parent / 'diff.patch').read_text())
+                self.git('update-index', '--cacheinfo', '100644', original_instruction, 'docs/AGENTS.md')
+                self.git('update-index', '--skip-worktree', 'docs/AGENTS.md')
+                included = self.repo / 'src/AGENTS.md'
+                included.unlink()
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+                self.git('checkout', '--', 'src/AGENTS.md')
+                present = self.repo / 'docs/AGENTS.md'
+                present.parent.mkdir(parents=True, exist_ok=True)
+                ignored = present.parent / 'AGENTS.local.md'
+                (self.repo / '.git/info/exclude').write_text('docs/AGENTS.local.md\n')
+                ignored.write_text('IGNORED_SPARSE_POLICY_MARKER\n')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+                snapshot = self.begin('uncommitted')
+                self.assertIn('IGNORED_SPARSE_POLICY_MARKER', (snapshot.parent / 'diff.patch').read_text())
+                ignored.unlink()
+                present.write_text('SPARSE_DIRTY_INSTRUCTION_MARKER\n')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+                snapshot = self.begin('uncommitted')
+                self.assertIn('SPARSE_DIRTY_INSTRUCTION_MARKER', (snapshot.parent / 'diff.patch').read_text())
+                present.unlink()
+
+    def test_instruction_symlinks_in_sparse_head_or_index_stay_unsupported(self):
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                self.git('reset', '--hard', 'main')
+                self.git('clean', '-fd')
+                path = self.repo / 'docs/AGENTS.md'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('original instructions\n')
+                self.git('add', 'docs/AGENTS.md')
+                self.git('commit', '-qm', 'instructions')
+                path.unlink()
+                path.symlink_to('ignored-policy.txt')
+                self.git('add', 'docs/AGENTS.md')
+                if sparse:
+                    self.git('commit', '-qm', 'instruction alias')
+                    self.git('sparse-checkout', 'init', '--cone', '--sparse-index')
+                    self.git('sparse-checkout', 'set', 'src')
+                    self.assertFalse(path.is_symlink())
+                else:
+                    path.unlink()
+                    path.write_text('original instructions\n')
+                for scope in ('committed', 'uncommitted'):
+                    self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', scope, '--reviewer', 'codex', ok=False)
+
+    def test_skip_flag_without_sparse_checkout_cannot_hide_instruction_deletion(self):
+        path = self.repo / 'AGENTS.md'
+        path.write_text('instructions\n')
+        self.git('add', 'AGENTS.md')
+        self.git('commit', '-qm', 'instructions')
+        self.git('update-index', '--skip-worktree', 'AGENTS.md')
+        path.unlink()
+        self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+        snapshot = self.begin('uncommitted')
+        self.assertIn('-instructions', (snapshot.parent / 'diff.patch').read_text())
+
     def test_symlinked_parent_cannot_export_outside_content(self):
         nested = self.repo / 'nested'
         nested.mkdir()
