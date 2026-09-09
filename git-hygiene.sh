@@ -34,7 +34,8 @@
 #   never:  the default branch, the checked-out branch, a worktree's branch,
 #           or anything touched (commit or ref update) within the last
 #           HYGIENE_MIN_AGE_HOURS (default 24).
-#   delete: no unique commits vs origin/<default> (`git cherry` shows no '+'),
+#   delete: merged into origin/<default>, or no unique merge commits and
+#           no unique patches (`git cherry` shows no '+'),
 #           reported as "merged into", "upstream gone" or "cherry-equivalent";
 #     or, with --gh: upstream gone (or never set) AND a PR merged INTO THE
 #           DEFAULT BRANCH on GitHub has this branch as head ref and the local
@@ -52,13 +53,10 @@
 # Notes:
 #   - Every deletion prints the full SHA and a recovery command; the SHA also
 #     lives in `git reflog` for ~90 days.
-#   - --dry-run touches no local state. It still runs `git fetch origin`
-#     (updates remote-tracking refs, deletes none) so the classification sees
-#     the remote's current tips, learns which refs a real run would drop via
-#     `git fetch --prune --dry-run`, and resolves a missing origin/HEAD with
-#     `git ls-remote --symref` instead of `remote set-head`. A branch whose
-#     upstream would be pruned is classified as "upstream gone", so the
-#     preview matches what the real run deletes.
+#   - --dry-run leaves scanned repositories unchanged. Remote evidence is
+#     fetched into a temporary shared bare clone, discarded at exit; source
+#     branch activity and worktree protections still apply. A failed fetch or
+#     unavailable default branch keeps every branch in that repository.
 #   - Requires: git, gh (optional; used by clean's check (c) and prune --gh).
 
 set -euo pipefail
@@ -109,6 +107,7 @@ ROOT="${ROOT:-$HOME/dev}"
 
 # A ROOT that doesn't exist would silently scan zero repos (#196) — fail loudly.
 [[ -d "$ROOT" ]] || { echo "error: no such directory: $ROOT" >&2; usage >&2; exit 1; }
+ROOT="$(cd "$ROOT" && pwd -P)"
 [[ "$MIN_AGE_HOURS" =~ ^[0-9]+$ ]] || { echo "error: HYGIENE_MIN_AGE_HOURS must be an integer: $MIN_AGE_HOURS" >&2; exit 1; }
 if $GH_CHECK && [[ "$MODE" != "prune" ]]; then
   echo "error: --gh only applies to prune" >&2; usage >&2; exit 1
@@ -153,12 +152,12 @@ origin_slug() {
 
 # Returns 0 if branch is safe to delete, 1 otherwise. Sets REASON.
 is_branch_safely_merged() {
-  local repo="$1" br="$2" default="$3"
+  local repo="$1" br="$2" default="$3" evidence="${4:-$1}"
   REASON=""
 
   # Cherry: '-' = patch-equivalent on default, '+' = unique
   local cherry_unique
-  cherry_unique=$(git -C "$repo" cherry "origin/$default" "$br" 2>/dev/null | grep -c '^+' || true)
+  cherry_unique=$(git -C "$evidence" cherry "origin/$default" "$br" 2>/dev/null | grep -c '^+' || true)
   if [[ "$cherry_unique" == "0" ]]; then
     REASON="cherry-equivalent to origin/$default"
     return 0
@@ -169,7 +168,7 @@ is_branch_safely_merged() {
   # `git log origin/<default>` for every unique commit, re-walking the entire
   # default history per commit (O(branch_commits × default_commits)).
   local default_subjects
-  default_subjects=$(git -C "$repo" log --format='%s' "origin/$default" 2>/dev/null || true)
+  default_subjects=$(git -C "$evidence" log --format='%s' "origin/$default" 2>/dev/null || true)
   local missing=0 total=0
   while IFS= read -r subject; do
     [[ -z "$subject" ]] && continue
@@ -179,7 +178,7 @@ is_branch_safely_merged() {
     if ! printf '%s\n' "$default_subjects" | grep -qF "$(printf '%s' "$subject" | head -c 40)"; then
       missing=$((missing + 1))
     fi
-  done < <(git -C "$repo" log --format='%s' "origin/$default..$br" 2>/dev/null)
+  done < <(git -C "$evidence" log --format='%s' "origin/$default..$br" 2>/dev/null)
 
   if [[ "$total" -gt 0 && "$missing" -eq 0 ]]; then
     REASON="all $total commit subjects found on origin/$default (squash-merged)"
@@ -206,10 +205,10 @@ is_branch_safely_merged() {
 # a fresh branch.
 branch_last_touched() {
   local repo="$1" br="$2" commit_t reflog_t
-  commit_t=$(git -C "$repo" log -1 --format=%ct "refs/heads/$br" 2>/dev/null || echo 0)
+  commit_t=$(git -C "$repo" log -1 --format=%ct "refs/heads/$br" 2>/dev/null) || return 1
   reflog_t=$(git -C "$repo" log -g -1 --date=unix --format=%gd "refs/heads/$br" 2>/dev/null \
-             | sed -nE 's/.*@\{([0-9]+)\}$/\1/p')
-  reflog_t="${reflog_t:-0}"
+             | sed -nE 's/.*@\{([0-9]+)\}$/\1/p') || return 1
+  [[ "$commit_t" =~ ^[0-9]+$ && "$reflog_t" =~ ^[0-9]+$ ]] || return 1
   echo $(( commit_t > reflog_t ? commit_t : reflog_t ))
 }
 
@@ -222,7 +221,7 @@ branch_last_touched() {
 # on origin/<default> and the branch must stay. Any gh failure returns 1
 # (keep). Sets GH_REASON.
 gh_confirms_merged() {
-  local repo="$1" br="$2" tip="$3" default="$4" out line num head
+  local repo="$1" br="$2" tip="$3" default="$4" evidence="${5:-$1}" out line num head
   GH_REASON=""
   out=$(gh -R "$(origin_slug "$repo")" pr list --state merged --head "$br" --base "$default" --limit 10 \
           --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' 2>/dev/null) || return 1
@@ -233,8 +232,8 @@ gh_confirms_merged() {
       GH_REASON="PR #$num merged into $default on GitHub with this exact tip"
       return 0
     fi
-    if git -C "$repo" cat-file -e "$head^{commit}" 2>/dev/null \
-       && git -C "$repo" merge-base --is-ancestor "$tip" "$head" 2>/dev/null; then
+    if git -C "$evidence" cat-file -e "$head^{commit}" 2>/dev/null \
+       && git -C "$evidence" merge-base --is-ancestor "$tip" "$head" 2>/dev/null; then
       GH_REASON="PR #$num merged into $default on GitHub; local tip is an ancestor of its head ${head:0:7}"
       return 0
     fi
@@ -244,40 +243,57 @@ gh_confirms_merged() {
 
 # Returns 0 if the branch is in prune's SAFE class, 1 otherwise. Sets REASON.
 is_branch_safely_dead() {
-  local repo="$1" br="$2" default="$3"
+  local repo="$1" br="$2" default="$3" evidence="${4:-$1}"
   REASON=""
 
   # `git cherry` against a missing ref prints nothing, which would read as
   # "no unique commits" — refuse to evaluate without the remote-tracking ref.
-  if ! git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$default" >/dev/null 2>&1; then
+  if ! git -C "$evidence" rev-parse --verify -q "refs/remotes/origin/$default" >/dev/null 2>&1; then
     REASON="origin/$default not fetched — cannot evaluate, keep"
     return 1
   fi
 
   local now touched age_h
   now=$(date +%s)
-  touched=$(branch_last_touched "$repo" "$br")
+  if ! touched=$(branch_last_touched "$repo" "$br"); then
+    REASON="activity unavailable — cannot establish branch age, keep"
+    return 1
+  fi
   age_h=$(( (now - touched) / 3600 ))
   if (( now - touched < MIN_AGE_HOURS * 3600 )); then
     REASON="touched ${age_h}h ago (< ${MIN_AGE_HOURS}h) — keep"
     return 1
   fi
 
-  local upstream track
-  IFS=$'\t' read -r upstream track < <(git -C "$repo" for-each-ref \
-      --format='%(upstream)%09%(upstream:track)' "refs/heads/$br")
-  # Under --dry-run nothing was pruned, so a ref the real run would drop is
-  # still present; WOULD_PRUNE (filled by audit_repo) makes it count as gone.
+  local upstream
+  upstream=$(git -C "$repo" for-each-ref --format='%(upstream)' "refs/heads/$br")
   local gone=false
-  [[ "$track" == "[gone]" ]] && gone=true
-  [[ -n "$upstream" && -n "$WOULD_PRUNE" ]] && grep -qxF "$upstream" <<<"$WOULD_PRUNE" && gone=true
+  if [[ -n "$upstream" ]] && ! git -C "$evidence" show-ref --verify -q "$upstream"; then
+    gone=true
+  fi
 
-  local cherry_unique
-  cherry_unique=$(git -C "$repo" cherry "origin/$default" "$br" 2>/dev/null | grep -c '^+' || true)
+  if git -C "$evidence" merge-base --is-ancestor "$br" "origin/$default" 2>/dev/null; then
+    REASON="merged into origin/$default"
+    return 0
+  fi
+
+  # git cherry omits merges, including unique conflict-resolution changes.
+  local merges cherry cherry_unique
+  if ! merges=$(git -C "$evidence" rev-list --merges "origin/$default..$br" 2>/dev/null); then
+    REASON="merge history unavailable — keep"
+    return 1
+  fi
+  if [[ -n "$merges" ]]; then
+    REASON="unique merge commits not on origin/$default — keep"
+    return 1
+  fi
+  if ! cherry=$(git -C "$evidence" cherry "origin/$default" "$br" 2>/dev/null); then
+    REASON="patch history unavailable — keep"
+    return 1
+  fi
+  cherry_unique=$(grep -c '^+' <<<"$cherry" || true)
   if [[ "$cherry_unique" == "0" ]]; then
-    if git -C "$repo" merge-base --is-ancestor "$br" "origin/$default" 2>/dev/null; then
-      REASON="merged into origin/$default"
-    elif $gone; then
+    if $gone; then
       REASON="upstream gone, cherry-equivalent to origin/$default"
     else
       REASON="cherry-equivalent to origin/$default"
@@ -291,7 +307,7 @@ is_branch_safely_dead() {
   if $GH_OK && { $gone || [[ -z "$upstream" ]]; }; then
     local tip
     tip=$(git -C "$repo" rev-parse "refs/heads/$br")
-    if gh_confirms_merged "$repo" "$br" "$tip" "$default"; then
+    if gh_confirms_merged "$repo" "$br" "$tip" "$default" "$evidence"; then
       REASON="$GH_REASON"
       return 0
     fi
@@ -327,7 +343,7 @@ delete_branch() {
   fi
 }
 
-audit_repo() {
+audit_repo() (
   local d="$1"
   local repo
   repo=$(basename "$d")
@@ -346,45 +362,61 @@ audit_repo() {
   local default current dirty extras=0
   default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' || echo "")
   current=$(git branch --show-current 2>/dev/null || echo "(detached)")
-  dirty=$(git status --porcelain | wc -l)
+  dirty=$(git --no-optional-locks status --porcelain | wc -l)
 
   echo "${c_blue}┌── $repo${c_reset}  ${c_dim}(on $current; default: ${default:-?})${c_reset}"
 
-  if [[ -z "$default" ]]; then
-    if [[ "$MODE" == "audit" ]]; then
-      warn "origin/HEAD not set — run \`git remote set-head origin -a\`"
-    elif $DRY_RUN; then
-      # Read-only lookup of the remote's HEAD; the real run writes it.
-      default=$(git ls-remote --symref origin HEAD 2>/dev/null \
-                | sed -nE 's|^ref: refs/heads/(.+)\tHEAD$|\1|p')
-      [[ -n "$default" ]] && info "would set origin/HEAD -> $default [dry-run]"
-    else
-      git remote set-head origin -a >/dev/null 2>&1 && ok "set origin/HEAD"
-      default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||' || echo "")
-    fi
-  fi
-
-  # WOULD_PRUNE: refs/remotes/origin/<x> lines that a real run's --prune would
-  # drop; only populated under --dry-run, read by is_branch_safely_dead.
-  WOULD_PRUNE=""
-  if [[ "$MODE" != "audit" ]]; then
-    local pruned
-    if $DRY_RUN; then
-      # git >= 2.48 creates a missing origin/HEAD on any fetch
-      # (remote.<name>.followRemoteHEAD=create); a dry-run must not.
-      git -c remote.origin.followRemoteHEAD=never fetch origin >/dev/null 2>&1 || true
-      WOULD_PRUNE=$(git -c remote.origin.followRemoteHEAD=never fetch --prune --dry-run origin 2>&1 \
-                    | sed -nE 's|^ - \[deleted\].*-> (origin/.+)$|refs/remotes/\1|p')
-      pruned=$(grep -c . <<<"$WOULD_PRUNE" || true)
-      [[ "$pruned" -gt 0 ]] && info "would prune $pruned stale remote-tracking ref(s) [dry-run]"
-    else
-      pruned=$(git fetch --prune origin 2>&1 | grep -c '\[deleted\]' || true)
-      [[ "$pruned" -gt 0 ]] && ok "pruned $pruned stale remote-tracking refs"
-    fi
-  fi
-
   if [[ "$dirty" -gt 0 ]]; then
     warn "$dirty dirty/untracked file(s) — leaving as-is"
+    return 0
+  fi
+
+  local evidence="$d" scratch="" fetched pruned old_default="$default"
+  if [[ "$MODE" == "audit" ]]; then
+    [[ -n "$default" ]] || warn "origin/HEAD not set — run \`git remote set-head origin -a\`"
+  else
+    if $DRY_RUN; then
+      scratch=$(mktemp -d)
+      trap 'rm -rf -- "$scratch"' EXIT
+      evidence="$scratch/evidence.git"
+      if ! git clone -q --mirror --shared "$d" "$evidence" 2>/dev/null; then
+        warn "cannot snapshot repository — branches kept"
+        return 0
+      fi
+      local url refspec
+      url=$(git remote get-url origin)
+      [[ "$url" == /* || "$url" == *:* ]] || url="$d/$url"
+      git -C "$evidence" remote set-url origin "$url"
+      git -C "$evidence" config remote.origin.mirror false
+      git -C "$evidence" config --unset-all remote.origin.fetch
+      while IFS= read -r refspec; do
+        git -C "$evidence" config --add remote.origin.fetch "$refspec"
+      done < <(git config --get-all remote.origin.fetch)
+    fi
+    if ! fetched=$(git -C "$evidence" -c remote.origin.followRemoteHEAD=never fetch --prune origin 2>&1); then
+      warn "fetch failed — skipping repository; branches kept"
+      return 0
+    fi
+    pruned=$(grep -c '\[deleted\]' <<<"$fetched" || true)
+    if [[ "$pruned" -gt 0 ]]; then
+      if $DRY_RUN; then
+        info "would prune $pruned stale remote-tracking ref(s) [dry-run]"
+      else
+        ok "pruned $pruned stale remote-tracking refs"
+      fi
+    fi
+    if ! git -C "$evidence" remote set-head origin -a >/dev/null 2>&1; then
+      warn "remote default unavailable — skipping repository; branches kept"
+      return 0
+    fi
+    default=$(git -C "$evidence" symbolic-ref --short refs/remotes/origin/HEAD | sed 's|origin/||')
+    if [[ "$default" != "$old_default" ]]; then
+      if $DRY_RUN; then
+        info "would set origin/HEAD -> $default [dry-run]"
+      else
+        ok "set origin/HEAD -> $default"
+      fi
+    fi
   fi
 
   # Iterate non-default branches
@@ -409,19 +441,19 @@ audit_repo() {
 
     case "$MODE" in
       prune)
-        if is_branch_safely_dead "$d" "$br" "$default"; then
+        if is_branch_safely_dead "$d" "$br" "$default" "$evidence"; then
           delete_branch "$d" "$repo" "$br"
         else
           info "$br — kept: $REASON"
         fi ;;
       clean)
-        if is_branch_safely_merged "$d" "$br" "$default"; then
+        if is_branch_safely_merged "$d" "$br" "$default" "$evidence"; then
           delete_branch "$d" "$repo" "$br"
         else
           warn "$br — has unique work: $REASON"
         fi ;;
       *)
-        if is_branch_safely_merged "$d" "$br" "$default"; then
+        if is_branch_safely_merged "$d" "$br" "$default" "$evidence"; then
           ok "$br — safely deletable: $REASON"
         else
           warn "$br — has unique work: $REASON"
@@ -431,7 +463,7 @@ audit_repo() {
 
   [[ "$extras" -eq 0 ]] && ok "no extra local branches"
   echo
-}
+)
 
 main() {
   local repo_count=0

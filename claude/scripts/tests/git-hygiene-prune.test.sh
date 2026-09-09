@@ -257,6 +257,143 @@ assert "MIN_AGE=0: recent deleted" "! has_branch recent"
 assert "MIN_AGE=0: unique-work still kept" "has_branch unique-work"
 rm -rf "$FIX" "$GH_FAKE_DIR" "$report"
 
+# Small local-origin fixtures exercise failures without network or GitHub shims.
+build_small_fixture() {
+  FIX="$(mktemp -d)"
+  mkdir -p "$FIX/dev"
+  g init -q --bare -b main "$FIX/origin.git"
+  g init -q -b main "$FIX/seed"
+  commit_file "$FIX/seed" seed.txt seed
+  g -C "$FIX/seed" remote add origin "$FIX/origin.git"
+  g -C "$FIX/seed" push -q -u origin main
+  g clone -q "$FIX/origin.git" "$FIX/dev/repo"
+  g -C "$FIX/dev/repo" branch candidate
+}
+
+# Failed remote evidence must retain this repo and still visit later repos.
+for preview in false true; do
+  build_small_fixture
+  g clone -q "$FIX/origin.git" "$FIX/dev/z-later"
+  g -C "$FIX/dev/z-later" branch later-candidate
+  g -C "$FIX/dev/repo" remote set-url origin "$FIX/unavailable.git"
+  flags=()
+  $preview && flags=(--dry-run)
+  out="$("$HYGIENE" prune "$FIX/dev" --yes "${flags[@]}" 2>&1)"
+  assert "fetch failure (dry=$preview): candidate survives" "has_branch candidate"
+  assert "fetch failure (dry=$preview): warning names failure" "outgrep 'fetch failed'"
+  assert "fetch failure (dry=$preview): later repo inspected" "outgrep z-later && outgrep 'scanned 2 repos'"
+  rm -rf "$FIX"
+done
+
+# An empty git cherry output says nothing about unique merge resolutions.
+build_small_fixture
+C="$FIX/dev/repo"
+base="$(git -C "$C" rev-parse HEAD)"
+commit_file "$C" main.txt main
+parent="$(git -C "$C" rev-parse HEAD)"
+g -C "$C" push -q origin main
+commit_file "$C" unique-merge.txt resolution
+tree="$(git -C "$C" rev-parse 'HEAD^{tree}')"
+merge="$(printf 'unique resolution\n' | g -C "$C" commit-tree "$tree" -p "$parent" -p "$base")"
+g -C "$C" update-ref refs/heads/candidate "$merge"
+g -C "$C" reset -q --hard "$parent"
+out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+assert "unique merge: empty cherry does not delete branch" "has_branch candidate"
+assert "unique merge: preserved tree has its resolution" "git -C '$C' cat-file -e candidate:unique-merge.txt"
+rm -rf "$FIX"
+
+# Missing activity history cannot establish that a branch is old enough.
+build_small_fixture
+C="$FIX/dev/repo"
+git -C "$C" config core.logAllRefUpdates false
+git -C "$C" branch no-reflog
+git -C "$C" branch malformed-reflog
+printf 'invalid reflog\n' > "$C/.git/logs/refs/heads/malformed-reflog"
+out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+assert "missing reflog: new branch off old commit survives" "has_branch no-reflog"
+assert "malformed reflog: branch survives" "has_branch malformed-reflog"
+assert "missing reflog: explains unavailable activity" "outgrep 'activity unavailable'"
+rm -rf "$FIX"
+
+# Git's dirty inventory includes untracked dangling links as well as files.
+for dirt in tracked untracked dangling-link; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  case "$dirt" in
+    tracked) echo changed >> "$C/seed.txt" ;;
+    untracked) echo private > "$C/untracked.txt" ;;
+    dangling-link) ln -s missing-target "$C/untracked-link" ;;
+  esac
+  out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+  assert "dirty repo ($dirt): candidate kept" "has_branch candidate"
+  assert "dirty repo ($dirt): warning explains retention" "outgrep 'dirty/untracked file(s)'"
+  rm -rf "$FIX"
+done
+
+# Relative roots must classify every repo using the same absolute paths.
+build_small_fixture
+g clone -q "$FIX/origin.git" "$FIX/dev/z-later"
+g -C "$FIX/dev/z-later" branch later-candidate
+out="$(cd "$FIX" && "$HYGIENE" prune dev --yes 2>&1)"
+assert "relative root: candidate deleted" "! has_branch candidate"
+assert "relative root: later repo inspected" "outgrep 'deleted later-candidate' && outgrep 'scanned 2 repos'"
+rm -rf "$FIX"
+
+# The server's HEAD wins over a dangling or merely stale local origin/HEAD.
+for delete_old in false true; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$FIX/seed" checkout -q -b trunk
+  commit_file "$FIX/seed" trunk.txt trunk
+  g -C "$FIX/seed" push -q origin trunk
+  git -C "$FIX/origin.git" symbolic-ref HEAD refs/heads/trunk
+  $delete_old && g -C "$FIX/seed" push -q origin --delete main
+  out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+  assert "changed default (old deleted=$delete_old): origin/HEAD refreshed" \
+    "[ \"\$(git -C '$C' symbolic-ref refs/remotes/origin/HEAD)\" = refs/remotes/origin/trunk ]"
+  assert "changed default (old deleted=$delete_old): candidate evaluated against trunk" \
+    "! has_branch candidate && outgrep 'merged into origin/trunk'"
+  rm -rf "$FIX"
+done
+
+# Preview fetches must not write refs, reflogs, objects, FETCH_HEAD or index.
+for prune_setting in fetch.prune remote.origin.prune; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$C" push -q -u origin candidate
+  g -C "$FIX/seed" push -q origin --delete candidate
+  commit_file "$FIX/seed" advance.txt advance
+  g -C "$FIX/seed" push -q origin main
+  git -C "$C" config "$prune_setting" true
+  git -C "$C" symbolic-ref -d refs/remotes/origin/HEAD
+  snapshot="$(mktemp -d)"
+  cp -a "$C/.git" "$snapshot/git"
+  out="$("$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
+  assert "dry-run ($prune_setting): Git state byte-for-byte unchanged" "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
+  assert "dry-run ($prune_setting): current remote evidence still classifies candidate" \
+    "outgrep 'would delete candidate' && outgrep 'would prune 1 stale remote-tracking ref'"
+  rm -rf "$FIX" "$snapshot"
+done
+
+# A fresh clone and preview must agree even when neither default ref exists.
+for preview in true false; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  git -C "$C" symbolic-ref -d refs/remotes/origin/HEAD
+  git -C "$C" update-ref -d refs/remotes/origin/main
+  flags=()
+  $preview && flags=(--dry-run)
+  out="$("$HYGIENE" prune "$FIX/dev" --yes "${flags[@]}" 2>&1)"
+  if $preview; then
+    assert "missing default refs: preview resolves deletion" "outgrep 'would delete candidate' && has_branch candidate"
+    assert "missing default refs: preview leaves tracking ref absent" "! has_remote_ref main"
+  else
+    assert "missing default refs: real run agrees with preview" "! has_branch candidate"
+    assert "missing default refs: real run installs origin/HEAD" "has_remote_ref HEAD"
+  fi
+  rm -rf "$FIX"
+done
+
 # ── flag hygiene ────────────────────────────────────────────────────────
 out="$("$HYGIENE" clean "$HOME" --gh 2>&1)"; rc=$?
 assert "--gh rejected outside prune" "[ $rc -ne 0 ] && outgrep 'only applies to prune'"
