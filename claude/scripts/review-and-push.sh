@@ -64,8 +64,9 @@ if [[ -z "$PUSH_URL" || "$PUSH_URL" == *$'\n'* ]]; then
   exit 1
 fi
 
+PUSH_CREATION_LEASE=()
 check_destination() {
-  local remote_head default_ref alias_status=0
+  local remote_refs default_ref symbolic_destination destination_tip alias_status=0
   git remote get-url --push --all -- "$PUSH_URL" >/dev/null 2>&1 || alias_status=$?
   if [[ "$alias_status" != 2 ]]; then
     echo "Cannot pin the push destination: it names a configured remote, or remote configuration could not be read. Use a direct destination." >&2
@@ -104,8 +105,13 @@ PY
     echo "Cannot pin the push destination: a configured remote or Git URL rewrite may change it, or Git configuration could not be read. Use a direct destination without further rewrites." >&2
     return 1
   fi
-  remote_head=$(git ls-remote --symref -- "$PUSH_URL" HEAD) || return 1
-  default_ref=$(awk '$1 == "ref:" && $3 == "HEAD" && $2 ~ /^refs\/heads\// {print $2}' <<< "$remote_head")
+  # Only protocol v2 advertises non-HEAD symrefs. An empty server option
+  # makes Git reject a silent fallback to an older protocol.
+  remote_refs=$(git -c protocol.version=2 ls-remote --symref --server-option= -- "$PUSH_URL" HEAD "$BRANCH_REF") || {
+    echo "Cannot inspect destination branches: Git protocol v2 with server-option support is required." >&2
+    return 1
+  }
+  default_ref=$(awk '$1 == "ref:" && $3 == "HEAD" && $2 ~ /^refs\/heads\// {print $2}' <<< "$remote_refs")
   if [[ -z "$default_ref" || "$default_ref" == *$'\n'* ]]; then
     echo "Cannot establish the push destination's default branch." >&2
     return 1
@@ -113,6 +119,19 @@ PY
   if [[ "$BRANCH_REF" == "$default_ref" ]]; then
     echo "Create a non-default branch and pull request; this script does not push the default branch." >&2
     return 1
+  fi
+  symbolic_destination=$(awk -v branch="$BRANCH_REF" '$1 == "ref:" && $3 == branch {print $2}' <<< "$remote_refs")
+  if [[ -n "$symbolic_destination" ]]; then
+    echo "Cannot push to a symbolic destination branch; use a direct branch ref." >&2
+    return 1
+  fi
+  destination_tip=$(awk -v branch="$BRANCH_REF" '$1 != "ref:" && $2 == branch {print $1}' <<< "$remote_refs")
+  PUSH_CREATION_LEASE=()
+  if [[ -z "$destination_tip" ]]; then
+    # A ref hidden by upload-pack may still exist at receive-pack. The empty
+    # expectation rejects any existing resolved OID; advertised refs keep
+    # normal FF rules. Git cannot distinguish absent and dangling symrefs.
+    PUSH_CREATION_LEASE=("--force-with-lease=$BRANCH_REF:")
   fi
 }
 check_destination
@@ -188,5 +207,5 @@ fi
 check_destination
 REVIEWED_HEAD=$(git rev-parse HEAD)
 python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD"
-git push --no-follow-tags -- "$PUSH_URL" "$REVIEWED_HEAD:$BRANCH_REF"
+git push --no-follow-tags "${PUSH_CREATION_LEASE[@]}" -- "$PUSH_URL" "$REVIEWED_HEAD:$BRANCH_REF"
 echo "Pushed."

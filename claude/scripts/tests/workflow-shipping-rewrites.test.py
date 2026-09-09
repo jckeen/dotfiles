@@ -28,6 +28,113 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_symbolic_destination_branches_never_update_their_targets(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for target in ("main", "other"):
+            for chained in (False, True):
+                for protocol in ("0", "1", "2"):
+                    with self.subTest(target=target, chained=chained, protocol=protocol):
+                        self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/" + target, t.base)
+                        destination = "refs/heads/" + target
+                        if chained:
+                            self.git("--git-dir", str(t.remote), "symbolic-ref", "refs/heads/alias", destination)
+                            destination = "refs/heads/alias"
+                        self.git("--git-dir", str(t.remote), "symbolic-ref", "refs/heads/feature", destination)
+                        self.git("config", "protocol.version", protocol)
+                        result = t.run_wrapper()
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("symbolic destination branch", result.stderr)
+                        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/" + target), t.base)
+                        self.assertEqual(self.git("--git-dir", str(t.remote), "symbolic-ref", "--no-recurse", "refs/heads/feature"), destination)
+                        self.assertNotIn("gate", t.events())
+
+    def test_symbolic_branch_added_during_real_review_blocks_after_confirmation(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for name in ("codex-review-gate.sh", "gate-lib.sh", "review-receipt.py",
+                     "codex-review-schema.json"):
+            shutil.copy2(shipping.ROOT / "claude/scripts" / name, t.scripts / name)
+        self.git("config", "core.hooksPath", str(t.source / "githooks"))
+        t.env["DESTINATION_REMOTE"] = str(t.remote)
+        t.write(t.bin / "codex", '''#!/bin/bash
+printf 'model\\n' >> "$CALLS"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -o ]]; then output=$2; shift; fi
+  shift
+done
+cat >/dev/null
+git --git-dir "$DESTINATION_REMOTE" symbolic-ref refs/heads/feature refs/heads/main
+printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[]}' > "$output"
+''')
+        result = t.run_wrapper(auto=False, stdin="y\n")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("symbolic destination branch", result.stderr)
+        self.assertIn("model", t.events())
+        receipt = json.loads((t.repo / ".git/review-receipts/codex.json").read_text())
+        self.assertEqual(receipt["completion"]["outcome"], "passed")
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/main"), t.base)
+
+    def test_hidden_symbolic_destination_cannot_be_treated_as_a_new_branch(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        self.git("--git-dir", str(t.remote), "symbolic-ref", "refs/heads/feature", "refs/heads/main")
+        self.git("--git-dir", str(t.remote), "config", "uploadpack.hideRefs", "refs/heads/feature")
+        self.assertEqual(self.git("ls-remote", "--symref", str(t.remote), "refs/heads/feature"), "")
+        result = t.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/main"), t.base)
+
+    def test_server_without_branch_symref_metadata_is_rejected(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        self.git("--git-dir", str(t.remote), "symbolic-ref", "refs/heads/feature", "refs/heads/main")
+        t.write(t.bin / "local-ssh", '''#!/bin/bash
+unset GIT_PROTOCOL
+exec bash -c "${!#}"
+''')
+        t.env.update(GIT_SSH_COMMAND=str(t.bin / "local-ssh"), GIT_SSH_VARIANT="ssh")
+        self.git("config", "remote.origin.url", "ssh://fixture" + str(t.remote))
+        result = t.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("protocol v2", result.stderr)
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/main"), t.base)
+        self.assertNotIn("gate", t.events())
+
+    def test_unresolved_symbolic_destination_preserves_the_existing_default(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        self.git("--git-dir", str(t.remote), "symbolic-ref", "refs/heads/feature", "refs/heads/unborn")
+        self.git("--git-dir", str(t.remote), "config", "uploadpack.hideRefs", "refs/heads/feature")
+        self.assertEqual(self.git("ls-remote", "--symref", str(t.remote), "refs/heads/feature"), "")
+        result = t.run_wrapper()
+        # Git's absent-ref lease cannot distinguish this from a new branch.
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/unborn"), t.head)
+        self.assertEqual(self.git("--git-dir", str(t.remote), "symbolic-ref", "refs/heads/feature"), "refs/heads/unborn")
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/main"), t.base)
+
+    def test_direct_destination_branches_allow_creation_and_fast_forward_only(self):
+        t = self.fixture
+        (t.bin / "git").unlink()
+        for previous in (None, t.base):
+            with self.subTest(previous=previous):
+                if previous is None:
+                    self.git("--git-dir", str(t.remote), "update-ref", "-d", "refs/heads/feature")
+                else:
+                    self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", previous)
+                result = t.run_wrapper()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.head)
+                self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/main"), t.base)
+        tree = self.git("rev-parse", "main^{tree}")
+        divergent = self.git("commit-tree", tree, "-p", t.base, "-m", "divergent")
+        self.git("push", str(t.remote), divergent + ":refs/heads/other")
+        self.git("--git-dir", str(t.remote), "update-ref", "refs/heads/feature", divergent)
+        result = t.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), divergent)
+
     def test_wrapper_pushes_from_the_exact_repository_path(self):
         t = self.fixture
         plain = t.repo
