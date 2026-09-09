@@ -52,6 +52,20 @@ The `cx` agent launcher applies `--strict-config` to the real Codex invocation
 after the private defaults bootstrap, so unknown config keys fail before agent
 work starts. Use `codex` directly for CLI management commands.
 
+## Remote Terminal Sessions
+
+When Remote Control is already enabled for the active `CODEX_HOME` (default
+`~/.codex`), interactive `cx` launches start the managed daemon and connect with
+`--remote unix://`. Fresh sessions, `resume`, `fork`, and `agents` then use the
+same app server that Remote Control exposes. Starting the daemon without
+attaching the terminal leaves that terminal's conversation local.
+
+Explicit `--remote` and remote authentication options pass through unchanged.
+Utility subcommands and help/version requests do not auto-start or attach the
+daemon. A failed daemon start warns and launches Codex locally; it does not
+generate a new pairing code. Existing local terminals need to finish active
+work and reopen with `cx resume <session-id>` to move onto the shared server.
+
 ## Public Skills
 
 Public, reusable workflow skills live under `agents/skills/` (the
