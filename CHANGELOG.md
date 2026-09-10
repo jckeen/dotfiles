@@ -6,7 +6,8 @@
 - Worktree retirement keeps the actual directory in locked recovery quarantine,
   preserving late ignored files and writes through open descriptors. Interrupted
   moves retain Git metadata and recovery paths; retirement no longer deletes
-  worktree contents or reclaims disk space.
+  worktree contents or reclaims disk space. Explicit Git working-directory
+  overrides require separate handling, and repaired locations are verified.
 - Normal Claude healing removes the exact retired FABLE document link while
   preserving custom replacements, restored sources, and symlinked ancestors.
 - Review-and-push refuses uncommitted input before tests and at later shipping

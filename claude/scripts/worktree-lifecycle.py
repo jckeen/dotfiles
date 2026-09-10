@@ -386,12 +386,21 @@ def assess(repo, path):
     return item, admin, dict(record, merge=merge, default_head=base, default_branch=default)
 
 
+def check_relocatable_worktree(path):
+    # Repair updates Git's worktree links, not configured working-directory
+    # overrides. Retain those checkouts without rewriting operator settings.
+    keys = git(path, 'config', '--null', '--name-only', '--list').split(b'\0')
+    if any(key.lower() == b'core.worktree' for key in keys):
+        raise ValueError('core.worktree overrides require separate retirement; retain worktree')
+
+
 def retire(repo, path, apply, archive_dir):
     item, admin, record = assess(repo, path)
     if not apply:
         return dict(disposition='ready', path=item['path'], owner=record['owner'], head=item['HEAD'])
     if archive_dir is None:
         raise ValueError('--apply requires an explicit private --archive-dir')
+    check_relocatable_worktree(path)
     archive_dir = archive_dir.resolve()
     common = Path(text(git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))).resolve(strict=True)
     invoking_admin = Path(text(git(repo, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
@@ -448,6 +457,7 @@ def retire(repo, path, apply, archive_dir):
     try:
         if not archived_metadata_matches(admin, archive / 'worktree-metadata.tar'):
             raise ValueError('metadata differs from archive')
+        check_relocatable_worktree(path)
     except (OSError, ValueError, tarfile.TarError) as error:
         raise ValueError(f'Git metadata changed or could not be verified; retained; archive: {archive}') from error
     # Git removal discards ignored files, including writes after the final
@@ -463,6 +473,10 @@ def retire(repo, path, apply, archive_dir):
     try:
         os.rename(path, quarantine)
         git(repo, 'worktree', 'repair', str(quarantine))
+        actual_path = Path(text(git(quarantine, 'rev-parse', '--show-toplevel'))).resolve(strict=True)
+        actual_admin = Path(text(git(quarantine, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
+        if actual_path != quarantine or actual_admin != admin.resolve(strict=True):
+            raise ValueError('repaired Git worktree points outside the retained checkout')
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise ValueError(f'quarantine interrupted; files and locked metadata retained; archive: {archive}') from error
     return dict(disposition='quarantined', path=item['path'], quarantine=str(quarantine),

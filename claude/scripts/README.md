@@ -355,13 +355,19 @@ reports `quarantined` and the retained path. Late files and writes through open
 descriptors remain there, including ignored content that Git removal would
 discard. Retirement never deletes the retained directory or reclaims its disk
 space. Stashes, branch refs, and locked worktree metadata stay in the source
-repository. Cross-filesystem destinations are refused.
+repository. Cross-filesystem destinations and checkouts with an explicit
+`core.worktree` override are retained for separate handling. Other per-worktree
+settings are preserved, and Git's resolved directory and metadata location are
+verified after repair before reporting success.
 
 The recovery record includes the original path, quarantine path and Git
 metadata path before the rename starts. If interruption leaves the tree in
 quarantine but Git still points at the original path, run
 `git -C /path/to/repo worktree repair /path/to/private/archive/retired-DIR/worktree`
-after inspecting those paths. The lock remains in place across interruption
+after inspecting those paths. Before other recovery commands, verify that
+`git -C /path/to/quarantine rev-parse --show-toplevel --absolute-git-dir` identifies
+the retained checkout and recorded metadata; repair alone does not migrate
+custom working-directory overrides. The lock remains in place across interruption
 and successful repair. Keep it until an authorized owner has inspected the
 retained files and decided their disposition; no automatic purge is provided.
 
