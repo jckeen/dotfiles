@@ -358,6 +358,115 @@ for protected in GEMINI.md .gemini/commands/check.md .antigravity/policy.lock; d
   rm -rf "$R"
 done
 
+# The reviewer output schema is itself a runtime review input.
+original_gate="$GATE"
+for scope in committed uncommitted; do
+  new_repo
+  mkdir -p "$R/claude/scripts"
+  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json; do
+    cp "$SCRIPT_DIR/../$source_file" "$R/claude/scripts/"
+  done
+  git -C "$R" add claude/scripts
+  git -C "$R" commit -qm 'baseline gate and schema'
+  git -C "$R" checkout -qb feature
+  jq '.properties.verdict.enum = ["approve"] | .properties.findings.maxItems = 0 | .description = "RESTRICTED_REVIEW_SCHEMA_MARKER"' "$SCRIPT_DIR/../codex-review-schema.json" > "$R/claude/scripts/codex-review-schema.json"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" commit -qam 'restrict the review schema'
+  fi
+  GATE="$R/claude/scripts/antigravity-review-gate.sh"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$scope output schema cannot authorize antigravity review" 2 "instruction surface" "--$scope" --require
+  assert "changed schema cannot dispatch or issue antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+  ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope schema permits antigravity override" 0 "Instruction-surface diff allowed" "--$scope" --require
+  assert "schema override reviews the restricting input in full" "grep -q 'RESTRICTED_REVIEW_SCHEMA_MARKER' '$AGY_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+
+  rm -rf "$R"
+done
+GATE="$original_gate"
+
+# Gate ancestor symlinks also redirect the installed helper symlink farm.
+original_gate="$GATE"
+for ancestor in claude claude/scripts .claude .claude/scripts; do
+  for route in direct installed; do
+    new_repo
+    versions="$(mktemp -d "$SHIM_DIR/gate-ancestors.XXXXXX")"
+    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json)
+    for version in before after; do
+      source_scripts="$versions/$version"
+      [[ "$ancestor" == */scripts ]] || source_scripts+=/scripts
+      mkdir -p "$source_scripts"
+      for source_file in "${gate_files[@]}"; do
+        cp "$SCRIPT_DIR/../$source_file" "$source_scripts/"
+      done
+      if [[ "$version" == after ]]; then
+        printf '\ntouch "$AGY_FAKE_DIR/helper-evidence"\n' >> "$source_scripts/gate-lib.sh"
+      fi
+    done
+    mkdir -p "$R/$(dirname "$ancestor")"
+    ln -s "$versions/before" "$R/$ancestor"
+    git -C "$R" add "$ancestor"
+    git -C "$R" commit -qm 'baseline gate ancestor'
+    git -C "$R" checkout -qb feature
+    rm "$R/$ancestor"
+    ln -s "$versions/after" "$R/$ancestor"
+    git -C "$R" add "$ancestor"
+    git -C "$R" commit -qm 'redirect gate ancestor'
+    source_scripts="$R/${ancestor%%/*}/scripts"
+    if [[ "$route" == installed ]]; then
+      installed_scripts="$versions/home/.claude/scripts"
+      mkdir -p "$installed_scripts"
+      for source_file in "${gate_files[@]}"; do
+        ln -s "$source_scripts/$source_file" "$installed_scripts/$source_file"
+      done
+      GATE="$installed_scripts/antigravity-review-gate.sh"
+    else
+      GATE="$source_scripts/antigravity-review-gate.sh"
+    fi
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    check "$route $ancestor retarget blocks antigravity self-review" 2 "instruction" --committed --require
+    assert "retargeted helper was loaded through $route $ancestor" "[ -e '$AGY_FAKE_DIR/helper-evidence' ]"
+    assert "gate ancestor cannot dispatch or issue antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$route $ancestor still requires a supported instruction snapshot" 2 "instruction symlink" --committed --require
+    assert "unsupported ancestor override cannot issue antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    rm -rf "$R"
+  done
+done
+GATE="$original_gate"
+
+# Every protected runtime root must also reject a tracked ancestor retarget.
+for ancestor in antigravity .antigravity .gemini agents agents/skills; do
+  new_repo
+  versions="$(mktemp -d "$SHIM_DIR/runtime-ancestors.XXXXXX")"
+  case "$ancestor" in
+    agents|.agents) runtime_input=skills/review/SKILL.md ;;
+    agents/skills|.agents/skills) runtime_input=review/SKILL.md ;;
+    codex|.codex) runtime_input=AGENTS.md ;;
+    .gemini) runtime_input=config/GEMINI.md ;;
+    *) runtime_input=GEMINI.md ;;
+  esac
+  for version in before after; do
+    mkdir -p "$versions/$version/$(dirname "$runtime_input")"
+    printf '%s runtime input\n' "$version" > "$versions/$version/$runtime_input"
+  done
+  mkdir -p "$R/$(dirname "$ancestor")"
+  ln -s "$versions/before" "$R/$ancestor"
+  git -C "$R" add "$ancestor"
+  git -C "$R" commit -qm 'baseline runtime ancestor'
+  git -C "$R" checkout -qb feature
+  rm "$R/$ancestor"
+  ln -s "$versions/after" "$R/$ancestor"
+  git -C "$R" add "$ancestor"
+  git -C "$R" commit -qm 'redirect runtime ancestor'
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "$ancestor retarget blocks antigravity runtime self-review" 2 "instruction" --committed --require
+  assert "$ancestor actually redirects the runtime input" "grep -q 'after runtime input' '$R/$ancestor/$runtime_input'"
+  assert "runtime ancestor cannot dispatch or issue antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+  rm -rf "$R"
+done
+
 # setup.sh installs agents/skills directly into Antigravity's managed skills.
 for protected in agents/skills/review/SKILL.md agents/skills/review/references/policy.lock; do
   for scope in committed uncommitted; do
@@ -398,7 +507,7 @@ for scope in committed uncommitted; do
   fi
   printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
   printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-  HOME="$skill_home" check "$scope shared source root blocks Antigravity self-review" 2 "instruction surface" "--$scope" --require
+  HOME="$skill_home" check "$scope shared source root blocks Antigravity self-review" 2 "instruction" "--$scope" --require
   assert "shared source root cannot issue Antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
   rm -f "$skill_home/.gemini/config/skills/review"
   rm -rf "$R"

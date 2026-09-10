@@ -606,6 +606,112 @@ unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 assert "codex invoked once the guard is overridden" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# The reviewer output schema is itself a runtime review input.
+original_gate="$GATE"
+for scope in committed uncommitted; do
+  new_repo
+  mkdir -p "$R/claude/scripts"
+  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json; do
+    cp "$SCRIPT_DIR/../$source_file" "$R/claude/scripts/"
+  done
+  git -C "$R" add claude/scripts
+  git -C "$R" commit -qm 'baseline gate and schema'
+  git -C "$R" checkout -qb feature
+  jq '.properties.verdict.enum = ["approve"] | .properties.findings.maxItems = 0 | .description = "RESTRICTED_REVIEW_SCHEMA_MARKER"' "$SCRIPT_DIR/../codex-review-schema.json" > "$R/claude/scripts/codex-review-schema.json"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" commit -qam 'restrict the review schema'
+  fi
+  GATE="$R/claude/scripts/codex-review-gate.sh"
+  approve_clean
+  check "$scope output schema cannot authorize codex review" 2 "instruction surface" "--$scope" --require --no-issues
+  assert "changed schema cannot dispatch or issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope schema permits codex override" 0 "Instruction-surface diff allowed" "--$scope" --require --no-issues
+  assert "schema override reviews the restricting input in full" "grep -q 'RESTRICTED_REVIEW_SCHEMA_MARKER' '$CODEX_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+  assert "candidate schema is the one supplied to Codex" "grep -qxF '$R/claude/scripts/codex-review-schema.json' '$CODEX_FAKE_DIR/argv'"
+  rm -rf "$R"
+done
+GATE="$original_gate"
+
+# Gate ancestor symlinks also redirect the installed helper symlink farm.
+original_gate="$GATE"
+for ancestor in claude claude/scripts .claude .claude/scripts; do
+  for route in direct installed; do
+    new_repo
+    versions="$(mktemp -d "$SHIM_DIR/gate-ancestors.XXXXXX")"
+    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json)
+    for version in before after; do
+      source_scripts="$versions/$version"
+      [[ "$ancestor" == */scripts ]] || source_scripts+=/scripts
+      mkdir -p "$source_scripts"
+      for source_file in "${gate_files[@]}"; do
+        cp "$SCRIPT_DIR/../$source_file" "$source_scripts/"
+      done
+      if [[ "$version" == after ]]; then
+        printf '\ntouch "$CODEX_FAKE_DIR/helper-evidence"\n' >> "$source_scripts/gate-lib.sh"
+      fi
+    done
+    mkdir -p "$R/$(dirname "$ancestor")"
+    ln -s "$versions/before" "$R/$ancestor"
+    git -C "$R" add "$ancestor"
+    git -C "$R" commit -qm 'baseline gate ancestor'
+    git -C "$R" checkout -qb feature
+    rm "$R/$ancestor"
+    ln -s "$versions/after" "$R/$ancestor"
+    git -C "$R" add "$ancestor"
+    git -C "$R" commit -qm 'redirect gate ancestor'
+    source_scripts="$R/${ancestor%%/*}/scripts"
+    if [[ "$route" == installed ]]; then
+      installed_scripts="$versions/home/.claude/scripts"
+      mkdir -p "$installed_scripts"
+      for source_file in "${gate_files[@]}"; do
+        ln -s "$source_scripts/$source_file" "$installed_scripts/$source_file"
+      done
+      GATE="$installed_scripts/codex-review-gate.sh"
+    else
+      GATE="$source_scripts/codex-review-gate.sh"
+    fi
+    approve_clean
+    check "$route $ancestor retarget blocks codex self-review" 2 "instruction" --committed --require --no-issues
+    assert "retargeted helper was loaded through $route $ancestor" "[ -e '$CODEX_FAKE_DIR/helper-evidence' ]"
+    assert "gate ancestor cannot dispatch or issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+    CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$route $ancestor still requires a supported instruction snapshot" 2 "instruction symlink" --committed --require --no-issues
+    assert "unsupported ancestor override cannot issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+    rm -rf "$R"
+  done
+done
+GATE="$original_gate"
+
+# Every protected runtime root must also reject a tracked ancestor retarget.
+for ancestor in codex .codex agents agents/skills .agents .agents/skills; do
+  new_repo
+  versions="$(mktemp -d "$SHIM_DIR/runtime-ancestors.XXXXXX")"
+  case "$ancestor" in
+    agents|.agents) runtime_input=skills/review/SKILL.md ;;
+    agents/skills|.agents/skills) runtime_input=review/SKILL.md ;;
+    codex|.codex) runtime_input=AGENTS.md ;;
+    .gemini) runtime_input=config/GEMINI.md ;;
+    *) runtime_input=GEMINI.md ;;
+  esac
+  for version in before after; do
+    mkdir -p "$versions/$version/$(dirname "$runtime_input")"
+    printf '%s runtime input\n' "$version" > "$versions/$version/$runtime_input"
+  done
+  mkdir -p "$R/$(dirname "$ancestor")"
+  ln -s "$versions/before" "$R/$ancestor"
+  git -C "$R" add "$ancestor"
+  git -C "$R" commit -qm 'baseline runtime ancestor'
+  git -C "$R" checkout -qb feature
+  rm "$R/$ancestor"
+  ln -s "$versions/after" "$R/$ancestor"
+  git -C "$R" add "$ancestor"
+  git -C "$R" commit -qm 'redirect runtime ancestor'
+  approve_clean
+  check "$ancestor retarget blocks codex runtime self-review" 2 "instruction" --committed --require --no-issues
+  assert "$ancestor actually redirects the runtime input" "grep -q 'after runtime input' '$R/$ancestor/$runtime_input'"
+  assert "runtime ancestor cannot dispatch or issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
 # setup.sh installs shared bundles into both managed runtime skill roots.
 for protected in agents/skills/review/SKILL.md agents/skills/review/references/policy.lock .agents/skills/review/SKILL.md; do
   for scope in committed uncommitted; do
@@ -644,7 +750,7 @@ for scope in committed uncommitted; do
     git -C "$R" commit -qm 'shared source root replacement'
   fi
   approve_clean
-  check "$scope shared source root blocks Codex self-review" 2 "instruction surface" "--$scope" --no-issues --require
+  check "$scope shared source root blocks Codex self-review" 2 "instruction" "--$scope" --no-issues --require
   assert "shared source root cannot issue Codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
   rm -f "$TEST_HOME/.agents/skills/review"
   rm -rf "$R"

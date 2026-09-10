@@ -219,16 +219,18 @@ fi
 # ~/.agents/skills and legacy ~/.codex/skills. Changing those runtime inputs
 # could steer the very review that judges them, so a codex
 # self-review of those files is not trustworthy. The same applies to the gate
-# machinery itself (gate-lib.sh, both *-review-gate.sh): the running gate has
+# machinery itself (helpers, output schema, both *-review-gate.sh): the gate has
 # already sourced the working-tree copy of that code, so a review of an edit
 # to it is a review conducted BY the edited code. Shared skill and gate changes
 # require review outside both configured gates. Include bare namespace roots:
-# replacing `agents` with a symlink also redirects installed skill links.
+# replacing `agents` redirects installed skill links; replacing `claude` or
+# `claude/scripts` redirects gate files, including ~/.claude/scripts per-file
+# links installed by setup.sh. Guard the installed .claude ancestors too.
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)(gate-lib\.sh|review-receipt\.py)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
   if [[ "${CODEX_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
     red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/ / agents/skills/ / .agents/skills/)"
-    red "  or the gate machinery (gate-lib.sh / *-review-gate.sh)."
+    red "  or gate machinery (helpers / output schema / *-review-gate.sh) and its ancestors."
     red "  A self-review under possibly-modified instructions or gate code is not trustworthy."
     echo "  Obtain independent review of these changes first. For shared skills or gate"
     echo "  machinery, use human review or a reviewer outside both configured gates."
