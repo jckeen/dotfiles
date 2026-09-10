@@ -2,6 +2,7 @@
 """Guard workflow semantics while allowing runtime-specific prose and tools."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -68,6 +69,58 @@ class WorkflowInvariantTests(unittest.TestCase):
     def test_runtime_override_is_checked(self):
         self.write_skill('antigravity', 'Run focused checks.\n')
         self.assert_failure('simplify/antigravity: missing invariant preserve-behavior')
+
+    def test_present_override_bundle_cannot_fall_back_after_entrypoint_removal(self):
+        for runtime in ('codex', 'antigravity'):
+            with self.subTest(runtime=runtime):
+                override = self.write_skill(runtime, 'No shared invariants here.\n')
+                self.assert_failure('simplify/' + runtime + ': missing invariant preserve-behavior')
+                (override.parent / 'reference.md').write_text('Runtime-specific support material.\n')
+                override.unlink()
+                self.assert_failure('simplify/' + runtime + ': skill body missing or unreadable')
+
+    def test_empty_override_bundle_is_not_absent(self):
+        bundle = self.root / 'antigravity/skills/simplify'
+        bundle.mkdir(parents=True)
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+
+    def test_dangling_override_bundle_is_not_absent(self):
+        bundle = self.root / 'antigravity/skills/simplify'
+        bundle.parent.mkdir(parents=True)
+        bundle.symlink_to(self.root / 'missing-bundle', target_is_directory=True)
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+
+    def test_override_bundle_cannot_be_a_regular_file(self):
+        bundle = self.root / 'antigravity/skills/simplify'
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text('This path is not a skill bundle.\n')
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+
+    def test_dangling_override_entrypoint_is_rejected(self):
+        entrypoint = self.write_skill('antigravity', 'Unused.\n')
+        entrypoint.unlink()
+        entrypoint.symlink_to(entrypoint.parent / 'missing.md')
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can read mode-zero skill bundles')
+    def test_unreadable_override_bundle_or_entrypoint_is_rejected(self):
+        entrypoint = self.write_skill('antigravity', 'Keep behavior unchanged. Run focused checks.\n')
+        for path in (entrypoint.parent, entrypoint):
+            with self.subTest(path=path.name):
+                mode = path.stat().st_mode & 0o777
+                path.chmod(0)
+                try:
+                    self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+                finally:
+                    path.chmod(mode)
+
+    def test_invalid_override_entrypoint_is_rejected(self):
+        entrypoint = self.write_skill('antigravity', 'Unused.\n')
+        entrypoint.write_bytes(b'\xff')
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+        entrypoint.unlink()
+        entrypoint.mkdir()
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
 
     def test_unclosed_comment_cannot_supply_instruction(self):
         self.write_skill('claude', 'Run the project tests.\n<!-- Preserve observable behavior.\n')

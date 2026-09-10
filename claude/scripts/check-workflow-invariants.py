@@ -71,10 +71,15 @@ def check(root):
                     errors.append(skill + ': ' + name + ': invalid ' + side + ' pattern')
         for runtime, side in (('claude', 'claude'), ('codex', 'agents'), ('antigravity', 'agents')):
             path = root / runtime / 'skills' / skill / 'SKILL.md'
-            # A broken override must fail instead of silently falling back.
-            if runtime != 'claude' and not path.exists() and not path.is_symlink():
-                path = root / 'agents/skills' / skill / 'SKILL.md'
             try:
+                if runtime != 'claude':
+                    # Overrides are bundles: a missing/broken entrypoint must
+                    # fail when its bundle exists, including a dangling link.
+                    # Only a genuinely absent bundle permits shared fallback.
+                    try:
+                        path.parent.lstat()
+                    except FileNotFoundError:
+                        path = root / 'agents/skills' / skill / 'SKILL.md'
                 text = body(path, root)
             except (ValueError, OSError, RuntimeError):
                 errors.append(skill + '/' + runtime + ': skill body missing or unreadable')
