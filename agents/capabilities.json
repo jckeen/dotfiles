@@ -737,19 +737,19 @@
         "scope": "optional",
         "owner": "private",
         "status": "advisory",
-        "provider": ".claude/CLAUDE.local.md",
-        "compatibility_floor": "Optional private companion repository installs the runtime memory/instruction file.",
-        "reason": "The operator owns private content. Public CI validates only this disposition; the live probe checks presence without reading memory contents.",
+        "provider": "dev/claude-memory/CLAUDE.md",
+        "compatibility_floor": "Default public Claude instructions import @~/dev/claude-memory/CLAUDE.md from the optional private companion repository.",
+        "reason": "Only the default public import location is checked. Customized companion paths and per-project auto-memory mappings are outside this probe; private content is never read.",
         "probe": [
           {
             "kind": "file",
-            "path": ".claude/CLAUDE.local.md"
+            "path": "dev/claude-memory/CLAUDE.md"
           }
         ],
         "live_probe": [
           {
             "kind": "file",
-            "path": ".claude/CLAUDE.local.md"
+            "path": "dev/claude-memory/CLAUDE.md"
           }
         ]
       },

@@ -3,6 +3,7 @@
 import copy
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -155,6 +156,31 @@ class CapabilityParityTests(unittest.TestCase):
                     self.reject('review/codex')
                 finally:
                     row[field] = original
+
+    def test_private_memory_paths_follow_public_runtime_instructions(self):
+        declared = json.loads((ROOT / 'agents/capabilities.json').read_text())
+        for runtime, row in declared['capabilities']['private-memory'].items():
+            with self.subTest(runtime=runtime):
+                fragment = (ROOT / 'agents/canon/fragments' / (runtime + '.md')).read_text()
+                self.assertIn('~/' + row['provider'], fragment)
+                self.assertEqual(row['probe'], [dict(kind='file', path=row['provider'])])
+                self.assertEqual(row['live_probe'], row['probe'])
+
+    def test_claude_default_companion_import_is_present_without_local_alias(self):
+        fragment = (ROOT / 'agents/canon/fragments/claude.md').read_text()
+        imports = re.findall(r'^@~/(.+)$', fragment, re.M)
+        self.assertEqual(len(imports), 1, 'Update this fixture if Claude changes its default import contract')
+        companion = self.home / imports[0]
+        companion.parent.mkdir(parents=True)
+        # Invalid UTF-8 also proves the presence probe does not read private content.
+        companion.write_bytes(b'\xff')
+        declared = json.loads((ROOT / 'agents/capabilities.json').read_text())
+        self.manifest['capabilities']['private-memory']['claude'] = declared['capabilities']['private-memory']['claude']
+        result = self.run_check('--live-home', str(self.home))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        row = next(row for row in json.loads(result.stdout)['live']
+                   if row['capability'] == 'private-memory' and row['runtime'] == 'claude')
+        self.assertEqual(row['status'], 'present', row)
 
 
 if __name__ == '__main__':
