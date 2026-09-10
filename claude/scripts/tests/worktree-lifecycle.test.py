@@ -427,11 +427,13 @@ if kind == 'writer':
         admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
         (admin / 'evidence/empty').mkdir(parents=True)
         (admin / 'evidence/notes').write_bytes(b'private regular metadata\x00\n')
+        os.link(admin / 'evidence/notes', admin / 'evidence/linked-notes')
         outside = self.root / 'outside-metadata'
         outside.mkdir()
         os.mkfifo(outside / 'live-fifo')
         (admin / 'external').symlink_to(outside, target_is_directory=True)
-        (admin / 'broken').symlink_to('missing-target')
+        broken_target = os.fsdecode(b'missing-target-\xff')
+        (admin / 'broken').symlink_to(broken_target)
         result = self.release()
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
@@ -439,12 +441,92 @@ if kind == 'writer':
         archive = Path(json.loads(result.stdout)['archive'])
         with tarfile.open(archive / 'worktree-metadata.tar') as stream:
             self.assertEqual(stream.extractfile('worktree-metadata/evidence/notes').read(), b'private regular metadata\x00\n')
+            self.assertEqual(stream.extractfile('worktree-metadata/evidence/linked-notes').read(), b'private regular metadata\x00\n')
+            self.assertTrue(any(stream.getmember('worktree-metadata/evidence/' + name).islnk()
+                                for name in ('notes', 'linked-notes')))
             self.assertTrue(stream.getmember('worktree-metadata/evidence/empty').isdir())
             for name in ('external', 'broken'):
                 self.assertTrue(stream.getmember('worktree-metadata/' + name).issym())
             self.assertEqual(stream.getmember('worktree-metadata/external').linkname, str(outside))
+            self.assertEqual(os.fsencode(stream.getmember('worktree-metadata/broken').linkname), os.fsencode(broken_target))
             self.assertNotIn('worktree-metadata/external/live-fifo', stream.getnames())
         self.assertTrue((outside / 'live-fifo').exists())
+
+    def assert_completed_metadata_change_retained(self, mutation):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        evidence = admin / 'evidence.txt'
+        evidence.write_bytes(b'original metadata\n')
+        evidence.chmod(0o600)
+        (admin / 'empty').mkdir(mode=0o700)
+        (admin / 'pointer').symlink_to('missing-target')
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        # Keep the actual scanner, including a live native process, while the
+        # writer closes its descriptor and exits before the final assessment.
+        (self.proc / str(os.getpid())).symlink_to(Path('/proc') / str(os.getpid()), target_is_directory=True)
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original_assess = lifecycle.assess
+        assessments = []
+
+        def assess_after_completed_writer(repo, path):
+            assessments.append(path)
+            if len(assessments) == 2:
+                subprocess.run([sys.executable, '-c',
+                    'import os,pathlib,sys; admin=pathlib.Path(sys.argv[1]); '
+                    'evidence=admin/"evidence.txt"; ' + mutation,
+                    str(admin)], check=True, timeout=5)
+            return original_assess(repo, path)
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle, 'assess', assess_after_completed_writer):
+            with self.assertRaisesRegex(ValueError, 'metadata changed.*retained.*archive:'):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        self.assertEqual(len(assessments), 2)
+        self.assertTrue(self.worktree.is_dir())
+        archive, = (self.root / 'archive').iterdir()
+        with tarfile.open(archive / 'worktree-metadata.tar') as stream:
+            self.assertEqual(stream.extractfile('worktree-metadata/evidence.txt').read(), b'original metadata\n')
+        self.assertTrue((archive / 'repository.bundle').is_file())
+        self.assertTrue((archive / 'recovery.json').is_file())
+        return admin
+
+    def test_completed_metadata_writer_after_archive_retains_worktree(self):
+        admin = self.assert_completed_metadata_change_retained('evidence.write_bytes(b"NEW PRIVATE EVIDENCE\\n")')
+        self.assertEqual((admin / 'evidence.txt').read_bytes(), b'NEW PRIVATE EVIDENCE\n')
+
+    def test_metadata_same_size_write_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained(
+            'before=evidence.stat(); evidence.write_bytes(b"changed! metadata\\n"); '
+            'os.utime(evidence, ns=(before.st_atime_ns, before.st_mtime_ns))')
+
+    def test_metadata_file_created_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained('(admin/"new-evidence").write_bytes(b"new evidence")')
+
+    def test_metadata_file_deleted_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained('evidence.unlink()')
+
+    def test_metadata_mode_changed_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained('evidence.chmod(0o700)')
+
+    def test_metadata_directory_mode_changed_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained('(admin/"empty").chmod(0o500)')
+
+    def test_metadata_directory_created_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained('(admin/"new-empty").mkdir()')
+
+    def test_metadata_directory_deleted_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained('(admin/"empty").rmdir()')
+
+    def test_metadata_symlink_changed_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained(
+            '(admin/"pointer").unlink(); (admin/"pointer").symlink_to("other-missing-target")')
+
+    def test_metadata_type_changed_after_archive_retains_worktree(self):
+        self.assert_completed_metadata_change_retained(
+            'empty=admin/"empty"; empty.rmdir(); empty.write_bytes(b""); empty.chmod(0o700)')
 
     def test_scanner_itself_has_complete_descriptor_evidence(self):
         module, _ = self.process_fixture()

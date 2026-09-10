@@ -163,6 +163,49 @@ def check_admin_metadata(admin):
                 raise ValueError('special Git metadata must be retained: ' + str(entry.relative_to(admin)))
 
 
+def archived_metadata_matches(admin, archive):
+    """Compare saved metadata with the final tree without following symlinks."""
+    def scan_error(error):
+        raise error
+
+    paths = {'worktree-metadata': admin}
+    for directory, dirs, files in os.walk(admin, followlinks=False, onerror=scan_error):
+        for name in dirs + files:
+            path = Path(directory) / name
+            paths['worktree-metadata/' + path.relative_to(admin).as_posix()] = path
+    with tarfile.open(archive) as saved:
+        members = saved.getmembers()
+        if {member.name for member in members} != paths.keys():
+            return False
+        for member in members:
+            path = paths[member.name]
+            info = path.lstat()
+            if stat.S_IMODE(info.st_mode) != member.mode:
+                return False
+            if member.isdir():
+                if not stat.S_ISDIR(info.st_mode): return False
+            elif member.issym():
+                if not stat.S_ISLNK(info.st_mode) or os.fsencode(os.readlink(path)) != os.fsencode(member.linkname):
+                    return False
+            elif member.isfile() or member.islnk():
+                if not stat.S_ISREG(info.st_mode): return False
+                # Hardlink entries resolve within the archive. The current
+                # path must still be a regular file, opened without following
+                # a replacement symlink or blocking on a replacement FIFO.
+                with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as current:
+                    opened = os.fstat(current.fileno())
+                    if not stat.S_ISREG(opened.st_mode) or stat.S_IMODE(opened.st_mode) != member.mode:
+                        return False
+                    with saved.extractfile(member) as original:
+                        while True:
+                            chunk = original.read(1024 * 1024)
+                            if current.read(1024 * 1024) != chunk: return False
+                            if not chunk: break
+            else:
+                return False
+    return True
+
+
 def thread_exited(entry):
     """A dead task establishes only that thread's exit, never its group's."""
     try:
@@ -363,6 +406,14 @@ def retire(repo, path, apply, archive_dir):
     again, _, current = assess(repo, path)
     if current != {k: v for k, v in record.items() if k != 'files'} or again != item:
         raise ValueError(f'worktree changed during archival; retained; archive: {archive}')
+    # A completed writer no longer appears in process evidence. Bind the
+    # final source state to the actual saved bytes, including archive hardlinks;
+    # ignore access/modify timestamps that do not change recoverable content.
+    try:
+        if not archived_metadata_matches(admin, archive / 'worktree-metadata.tar'):
+            raise ValueError('metadata differs from archive')
+    except (OSError, ValueError, tarfile.TarError) as error:
+        raise ValueError(f'Git metadata changed or could not be verified; retained; archive: {archive}') from error
     git(repo, 'worktree', 'remove', str(path))
     return dict(disposition='removed', path=item['path'], head=item['HEAD'], archive=str(archive),
                 branch='retained for normal branch hygiene')
