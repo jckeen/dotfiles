@@ -126,3 +126,6 @@ is wasted parallelism. Front-load context:
   `{userId, role}`, (3) set `req.user = {userId, role}`, (4) call `next()`. On
   failure, return 401 with `{error: 'Invalid token'}`. Do not change the
   rate-limiting logic on lines 30-42."
+
+For verification or rescue work, require a falsifiable claim to disprove and
+an exact repro command or deterministic flow before assigning review.

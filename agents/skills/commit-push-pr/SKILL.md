@@ -86,3 +86,22 @@ make a pull request.
 - Never push implementation directly to a default or protected branch.
 - Never force-push, bypass hooks, or amend published history under this skill.
 - If verification fails, stop and fix or report the failure before pushing.
+
+## Worktree disposition
+
+Finish delivery by recording the disposition of every task worktree. Follow
+`claude/scripts/README.md` → Worktree lifecycle for the shared release,
+preview, and retirement commands. Stop its reviewer/runtime processes first
+and run lifecycle commands from outside the target worktree.
+
+After verified integration, retire released worktrees only when the user or
+applicable standing authorization permits cleanup. Archive recovery data and
+review evidence before non-force removal. Preserve primary/current/locked
+worktrees, unique work, dirty/untracked/ignored content, and stashes. Never use
+branch names or commit subjects as merge evidence.
+
+If the PR is pending, record a release for the exact completed artifact when
+appropriate, retain the worktree with its owner and PR, and give the next
+session the retirement command. A later merge does not grant deletion rights.
+The hygiene timer inventories these releases but never removes worktrees.
+Unknown ownership or unavailable remote evidence means retained with a reason.

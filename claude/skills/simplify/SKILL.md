@@ -13,4 +13,6 @@ When the user runs /simplify, do the following:
    - **Low confidence** — optional improvements
 4. Apply the high-confidence simplifications automatically
 5. Ask about medium-confidence ones before applying
-6. Commit the simplifications as `refactor: simplify [area]`
+6. Preserve behavior and public interfaces unless the user explicitly requests a change.
+7. Run the smallest useful formatter, typecheck, lint, or test command after edits; report checks that could not run.
+8. Commit the simplifications as `refactor: simplify [area]`

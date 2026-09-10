@@ -131,6 +131,13 @@ jobs:
           claude/scripts/tests/skill-parity.test.sh
           claude/scripts/check-skill-parity.sh
 
+      - name: capability and workflow contracts
+        if: ${{ !cancelled() }}
+        run: |
+          python3 claude/scripts/tests/capability-parity.test.py
+          python3 claude/scripts/tests/workflow-invariants.test.py
+          python3 claude/scripts/check-capability-parity.py
+
       - name: orchestrate review packet
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/orchestrate-review-packet.test.sh
@@ -245,6 +252,10 @@ jobs:
 
       # SessionStart reminder: deadline-first ordering, past-due flags, and the
       # verified/added freshness rule are pinned against crafted queues.
+      - name: released worktree lifecycle (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 claude/scripts/tests/worktree-lifecycle.test.py
+
       - name: operator-queue reminder (self-test)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh

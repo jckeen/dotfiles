@@ -29,6 +29,17 @@
   freshness rejects impossible dates. Review instructions preserve the user's
   checkout, debugging applies to faulty behavior, and Render stays project opt-in.
 
+- Retired-link migration captures entries before deletion and preserves concurrent
+  replacements, with recovery diagnostics when restoration cannot be automatic.
+- Review receipts bind unchanged in-repository canonical instruction links and
+  their targets; unsupported or changed instruction aliases still fail closed.
+- Shared capability and workflow contracts detect missing providers and safety
+  instructions across runtimes, with passive installed-state reporting.
+- Delivery and handoff record worktree ownership and disposition. A targeted,
+  opt-in collector verifies merged artifacts, preserves hidden work and reflog
+  history, and archives review evidence before removal; the timer only reports
+  worktree inventory separately from repository-settings drift.
+
 ### Decisions made
 - Retired-skill healing is an exact historical migration; unknown or custom
   content remains report-only. No general automatic deletion is introduced.

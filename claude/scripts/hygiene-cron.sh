@@ -90,6 +90,19 @@ drift_count=${#drifted[@]}
 } > "$STATE_FILE"
 echo "wrote $STATE_FILE (drift_count=$drift_count)"
 
+# Worktree disposition is separate from GitHub settings drift. Inventory is
+# read-only: the timer never releases or removes another session's worktree.
+worktree_helper="$SCRIPT_DIR/claude/scripts/worktree-lifecycle.py"
+if [[ -f "$worktree_helper" ]] && command -v python3 >/dev/null 2>&1; then
+  if python3 "$worktree_helper" inventory --root "$DEV_DIR" > "$LOG_DIR/worktrees.json.tmp"; then
+    mv "$LOG_DIR/worktrees.json.tmp" "$LOG_DIR/worktrees.json"
+    echo "wrote $LOG_DIR/worktrees.json (worktree disposition inventory)"
+  else
+    rm -f "$LOG_DIR/worktrees.json.tmp"
+    echo "worktree inventory unavailable; previous snapshot retained"
+  fi
+fi
+
 # Layer B — daily safe prune
 if [[ "${HYGIENE_DELETE:-1}" == "0" ]]; then
   echo "── HYGIENE_DELETE=0 — skipping git-hygiene prune ──"
