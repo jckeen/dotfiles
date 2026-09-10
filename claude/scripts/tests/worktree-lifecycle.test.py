@@ -5,10 +5,12 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'worktree-lifecycle.py'
@@ -100,7 +102,158 @@ class LifecycleTests(unittest.TestCase):
         (entry / 'fd').mkdir()
         (entry / 'fd/3').symlink_to(self.root / 'unrelated')
         (entry / 'maps').write_text('1000-2000 rw-p 00000000 00:00 0 [heap]\n')
+        (entry / 'task').mkdir()
+        (entry / 'task/123').symlink_to(entry, target_is_directory=True)
         return module, entry
+
+    @contextmanager
+    def threaded_worker(self, topology, kind='fd', target=None):
+        compiler = shutil.which('cc')
+        if not compiler or not Path('/proc/self/task').is_dir():
+            self.skipTest('native thread fixture requires a C compiler and Linux /proc')
+        target = target or self.worktree / 'file'
+        source = self.root / 'threads.c'
+        source.write_text(r'''
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static char **arguments;
+static void *worker(void *unused) {
+    int fd = -1;
+    if (!strcmp(arguments[2], "cwd")) {
+        if (chdir(arguments[3])) _exit(2);
+    } else {
+        fd = open(arguments[3], O_RDONLY);
+        if (fd < 0) _exit(3);
+        if (!strcmp(arguments[2], "mapping")) {
+            struct stat info;
+            if (fstat(fd, &info)) _exit(4);
+            if (mmap(NULL, info.st_size, PROT_READ, MAP_PRIVATE, fd, 0) == MAP_FAILED) _exit(5);
+            close(fd);
+            fd = -1;
+        }
+    }
+    printf("%ld %d\n", syscall(SYS_gettid), fd);
+    fflush(stdout);
+    char byte;
+    if (read(STDIN_FILENO, &byte, 1) < 0) _exit(6);
+    return NULL;
+}
+static int private_worker(void *unused) { worker(unused); return 0; }
+int main(int argc, char **argv) {
+    arguments = argv;
+    if (!strcmp(argv[1], "private")) {
+        // Share the thread group and memory, but give the worker its own
+        // descriptor table and filesystem context from creation onward.
+        char *stack = malloc(1024 * 1024);
+        if (!stack || clone(private_worker, stack + 1024 * 1024,
+                CLONE_VM | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM, NULL) < 0) return 7;
+    } else {
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, worker, NULL)) return 8;
+        if (!strcmp(argv[1], "leader-exit")) pthread_exit(NULL);
+    }
+    for (;;) pause();
+}
+''')
+        executable = self.root / 'threads'
+        subprocess.run([compiler, '-pthread', str(source), '-o', str(executable)],
+                       check=True, capture_output=True, timeout=15)
+        child = subprocess.Popen([str(executable), topology, kind,
+            str(target.parent if kind == 'cwd' else target)], cwd=self.root,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        entry = self.proc / str(child.pid)
+        try:
+            self.assertTrue(select.select([child.stdout], [], [], 5)[0], 'thread readiness timeout')
+            tid, descriptor = map(int, child.stdout.readline().split())
+            entry.symlink_to(Path('/proc') / str(child.pid), target_is_directory=True)
+            thread = entry / 'task' / str(tid)
+            if topology == 'leader-exit':
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    if b'State:\tZ' in (entry / 'status').read_bytes(): break
+                    time.sleep(0.01)
+                self.assertIn(b'State:\tZ', (entry / 'status').read_bytes())
+            if kind == 'fd':
+                self.assertEqual(os.readlink(thread / 'fd' / str(descriptor)), str(target))
+            if topology == 'private':
+                self.assertEqual(Path(os.readlink(entry / 'cwd')), self.root.resolve())
+                self.assertNotIn(str(target), [os.readlink(fd) for fd in (entry / 'fd').iterdir()])
+            if kind == 'mapping':
+                self.assertNotIn(str(target), [os.readlink(fd) for fd in (thread / 'fd').iterdir()])
+                self.assertIn(str(target), (thread / 'maps').read_text())
+            yield child, thread
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+            for stream in (child.stdin, child.stdout, child.stderr): stream.close()
+            entry.unlink(missing_ok=True)
+
+    def assert_thread_reference_retained(self, topology, kind, after_release):
+        self.merged()
+        if after_release:
+            self.assertEqual(self.release().returncode, 0)
+        with self.threaded_worker(topology, kind) as (child, thread):
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive')) if after_release else self.release()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('active process', result.stderr)
+            self.assertTrue(self.worktree.exists())
+            self.assertIsNone(child.poll())
+            self.assertNotIn(b'State:\tZ', (thread / 'status').read_bytes())
+            self.assertFalse((self.root / 'archive').exists())
+
+    def test_exited_leader_cannot_hide_live_thread_references_from_release(self):
+        for kind in ('fd', 'mapping', 'cwd'):
+            with self.subTest(surface=kind):
+                with self.threaded_worker('leader-exit', kind):
+                    result = self.release()
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('active process', result.stderr)
+
+    def test_exited_leader_thread_descriptor_refuses_retirement(self):
+        self.assert_thread_reference_retained('leader-exit', 'fd', True)
+
+    def test_exited_leader_thread_mapping_refuses_retirement(self):
+        self.assert_thread_reference_retained('leader-exit', 'mapping', True)
+
+    def test_exited_leader_thread_cwd_refuses_retirement(self):
+        self.assert_thread_reference_retained('leader-exit', 'cwd', True)
+
+    def test_private_thread_filesystem_and_descriptors_refuse_release(self):
+        for kind in ('fd', 'cwd'):
+            with self.subTest(surface=kind):
+                with self.threaded_worker('private', kind):
+                    result = self.release()
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('active process', result.stderr)
+                    self.assertTrue(self.worktree.exists())
+
+    def test_private_thread_descriptors_refuse_retirement(self):
+        self.assert_thread_reference_retained('private', 'fd', True)
+
+    def test_private_thread_cwd_refuses_retirement(self):
+        self.assert_thread_reference_retained('private', 'cwd', True)
+
+    def test_readable_unrelated_multithreaded_process_is_safe(self):
+        self.merged()
+        unrelated = self.root / 'unrelated'
+        unrelated.write_text('outside the task\n')
+        with self.threaded_worker('shared', target=unrelated) as (child, thread):
+            self.assertGreaterEqual(len(list(thread.parent.iterdir())), 2)
+            result = self.release()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(child.poll())
+            self.assertEqual(unrelated.read_text(), 'outside the task\n')
 
     @contextmanager
     def worker(self, kind, target=None):
@@ -489,12 +642,14 @@ sys.stdin.buffer.read(1)
     def test_unknown_process_visibility_refuses_retirement(self):
         from unittest.mock import patch
         module, entry = self.process_fixture()
+        thread = entry / 'task/456'
+        shutil.copytree(entry, thread, symlinks=True, ignore=shutil.ignore_patterns('task'))
         with self.assertRaisesRegex(ValueError, 'process inspection'):
             module.active_processes(self.worktree, self.root / 'no-proc')
         for error in (PermissionError, FileNotFoundError):
             for name in ('cwd', 'root', 'exe', 'fd/3', 'fd', 'maps', 'status'):
                 with self.subTest(error=error.__name__, surface=name):
-                    target = entry / name
+                    target = thread / name
                     attribute = 'readlink' if name in ('cwd', 'root', 'exe', 'fd/3') else (
                         'scandir' if name == 'fd' else 'open')
                     owner = module.os if attribute in ('readlink', 'scandir') else module.Path
@@ -506,6 +661,37 @@ sys.stdin.buffer.read(1)
                         return original(candidate, *args, **kwargs)
 
                     with patch.object(owner, attribute, new=unavailable):
+                        with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                            module.active_processes(self.worktree, self.proc)
+
+    def test_missing_and_changing_thread_enumeration_retains_even_with_dead_leader(self):
+        from unittest.mock import patch
+        module, entry = self.process_fixture()
+        tasks = entry / 'task'
+        original = module.Path.iterdir
+        for state in ('S', 'Z'):
+            (entry / 'status').write_text(f'State:\t{state}\n')
+            for error in (PermissionError, FileNotFoundError):
+                with self.subTest(state=state, error=error.__name__):
+                    def unavailable(candidate):
+                        if candidate == tasks: raise error('task enumeration unavailable')
+                        return original(candidate)
+                    with patch.object(module.Path, 'iterdir', new=unavailable):
+                        with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                            module.active_processes(self.worktree, self.proc)
+            for change in ('empty', 'added', 'removed'):
+                with self.subTest(state=state, change=change):
+                    observations = 0
+                    def changing(candidate):
+                        nonlocal observations
+                        if candidate != tasks: return original(candidate)
+                        observations += 1
+                        if change == 'empty' or (change == 'removed' and observations > 1):
+                            return iter(())
+                        names = [tasks / '123']
+                        if change == 'added' and observations > 1: names.append(tasks / '456')
+                        return iter(names)
+                    with patch.object(module.Path, 'iterdir', new=changing):
                         with self.assertRaisesRegex(ValueError, 'cannot inspect'):
                             module.active_processes(self.worktree, self.proc)
 

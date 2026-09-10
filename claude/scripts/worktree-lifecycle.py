@@ -149,8 +149,8 @@ def clean(path):
             raise ValueError('active content filters require separate retirement')
 
 
-def process_exited(entry):
-    """Only disappearance or a kernel-reported dead state establishes exit."""
+def thread_exited(entry):
+    """A dead task establishes only that thread's exit, never its group's."""
     try:
         status = (entry / 'status').read_bytes()
     except FileNotFoundError:
@@ -177,45 +177,65 @@ def process_path_within(target, path):
     return False
 
 
+def inspect_thread(path, entry):
+    try:
+        if thread_exited(entry): return
+        identity = f'{entry.parent.parent.name} thread {entry.name}'
+        for name in ('cwd', 'root', 'exe'):
+            if process_path_within(os.readlink(entry / name), path):
+                raise ValueError(f'active process {identity} uses this worktree ({name})')
+        # Keep enumeration open: scanning our own descriptors otherwise
+        # lists a temporary directory FD that is closed before readlink.
+        with os.scandir(entry / 'fd') as descriptors:
+            for descriptor in descriptors:
+                if process_path_within(os.readlink(descriptor.path), path):
+                    raise ValueError(f'active process {identity} uses this worktree (open descriptor)')
+        # /proc maps escapes pathname newlines as literal \012. Compare
+        # the encoded worktree path too, without decoding ambiguous names.
+        mapped_path = Path(str(path).replace('\n', r'\012'))
+        observed_mapping = False
+        with (entry / 'maps').open('rb') as mappings:
+            for line in mappings:
+                fields = line.removesuffix(b'\n').split(maxsplit=5)
+                if len(fields) < 5:
+                    raise OSError('invalid process mapping evidence')
+                observed_mapping = True
+                if len(fields) == 6 and process_path_within(os.fsdecode(fields[5]), mapped_path):
+                    raise ValueError(f'active process {identity} uses this worktree (memory mapping)')
+        if not observed_mapping:
+            raise OSError('process mapping evidence unavailable')
+    except FileNotFoundError:
+        if not thread_exited(entry): raise
+
+
 def active_processes(path, proc_root=Path('/proc')):
-    """Retain visible process references; missing live-process evidence is unsafe."""
+    """Retain visible thread references; missing live-task evidence is unsafe."""
     if not proc_root.is_dir():
         raise ValueError('automatic process inspection requires /proc; retain on this platform')
     for entry in proc_root.iterdir():
         if not entry.name.isdigit(): continue
         try:
             if entry.stat().st_uid != os.getuid(): continue
-            if process_exited(entry): continue
-            for name in ('cwd', 'root', 'exe'):
-                if process_path_within(os.readlink(entry / name), path):
-                    raise ValueError(f'active process {entry.name} uses this worktree ({name})')
-            # Keep enumeration open: scanning our own descriptors otherwise
-            # lists a temporary directory FD that is closed before readlink.
-            with os.scandir(entry / 'fd') as descriptors:
-                for descriptor in descriptors:
-                    if process_path_within(os.readlink(descriptor.path), path):
-                        raise ValueError(f'active process {entry.name} uses this worktree (open descriptor)')
-            # /proc maps escapes pathname newlines as literal \012. Compare
-            # the encoded worktree path too, without decoding ambiguous names.
-            mapped_path = Path(str(path).replace('\n', r'\012'))
-            observed_mapping = False
-            with (entry / 'maps').open('rb') as mappings:
-                for line in mappings:
-                    fields = line.removesuffix(b'\n').split(maxsplit=5)
-                    if len(fields) < 5:
-                        raise OSError('invalid process mapping evidence')
-                    observed_mapping = True
-                    if len(fields) == 6 and process_path_within(os.fsdecode(fields[5]), mapped_path):
-                        raise ValueError(f'active process {entry.name} uses this worktree (memory mapping)')
-            if not observed_mapping:
-                raise OSError('process mapping evidence unavailable')
-        except FileNotFoundError as error:
-            try:
-                if process_exited(entry): continue
-            except OSError:
-                pass
-            raise ValueError('cannot inspect a same-user process; retain worktree') from error
+            # The leader may be a zombie while workers still hold references.
+            # Threads can also have private cwd/root and descriptor tables.
+            tasks = entry / 'task'
+            threads = {thread.name for thread in tasks.iterdir() if thread.name.isdigit()}
+            if not threads:
+                raise OSError('process thread evidence unavailable')
+            for name in sorted(threads):
+                inspect_thread(path, tasks / name)
+            if threads != {thread.name for thread in tasks.iterdir() if thread.name.isdigit()}:
+                raise OSError('process threads changed during inspection')
         except OSError as error:
+            # Only disappearance of the group directory establishes group exit.
+            # A zombie leader cannot excuse missing live-worker evidence.
+            if isinstance(error, FileNotFoundError):
+                try:
+                    entry.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass
             raise ValueError('cannot inspect a same-user process; retain worktree') from error
 
 
