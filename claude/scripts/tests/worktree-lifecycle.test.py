@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Exercise lifecycle decisions on real disposable Git worktrees."""
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import select
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -82,6 +85,114 @@ class LifecycleTests(unittest.TestCase):
 
     def retire(self, *args):
         return self.cli('retire', '--worktree', str(self.worktree), *args)
+
+    def process_fixture(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('lifecycle_visibility', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        entry = self.proc / '123'
+        entry.mkdir()
+        (entry / 'status').write_text('Name:\tfixture\nState:\tS (sleeping)\n')
+        (entry / 'cwd').symlink_to(self.root)
+        (entry / 'root').symlink_to('/')
+        (entry / 'exe').symlink_to(sys.executable)
+        (entry / 'fd').mkdir()
+        (entry / 'fd/3').symlink_to(self.root / 'unrelated')
+        (entry / 'maps').write_text('1000-2000 rw-p 00000000 00:00 0 [heap]\n')
+        return module, entry
+
+    @contextmanager
+    def worker(self, kind, target=None):
+        target = target or self.worktree / 'file'
+        program = r'''
+import ctypes, mmap, os, sys
+kind, path = sys.argv[1:]
+if kind == 'cwd':
+    os.chdir(os.path.dirname(path))
+else:
+    descriptor = os.open(path, os.O_RDONLY)
+    if kind == 'mapping':
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.mmap.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                             ctypes.c_int, ctypes.c_int, ctypes.c_long)
+        libc.mmap.restype = ctypes.c_void_p
+        address = libc.mmap(None, os.fstat(descriptor).st_size, mmap.PROT_READ,
+                            mmap.MAP_PRIVATE, descriptor, 0)
+        if address == ctypes.c_void_p(-1).value:
+            raise OSError(ctypes.get_errno(), 'mmap failed')
+        os.close(descriptor)
+print('ready', flush=True)
+sys.stdin.buffer.read(1)
+'''
+        child = subprocess.Popen([sys.executable, '-B', '-c', program, kind, str(target)],
+            cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        entry = self.proc / str(child.pid)
+        try:
+            self.assertTrue(select.select([child.stdout], [], [], 5)[0], 'worker readiness timeout')
+            self.assertEqual(child.stdout.readline(), b'ready\n')
+            entry.symlink_to(Path('/proc') / str(child.pid), target_is_directory=True)
+            if kind != 'cwd':
+                self.assertEqual(Path(os.readlink(entry / 'cwd')), self.root.resolve())
+            if kind == 'mapping':
+                targets = [os.readlink(fd) for fd in (entry / 'fd').iterdir()]
+                self.assertNotIn(str(target), targets, 'mapping fixture retained a backing descriptor')
+            yield child
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+            for stream in (child.stdin, child.stdout, child.stderr): stream.close()
+            entry.unlink(missing_ok=True)
+
+    def assert_process_reference_retained(self, kind, after_release):
+        self.merged()
+        if after_release:
+            self.assertEqual(self.release().returncode, 0)
+        with self.worker(kind) as child:
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive')) if after_release else self.release()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('active process', result.stderr)
+            self.assertTrue(self.worktree.exists())
+            self.assertIsNone(child.poll())
+            self.assertFalse((self.root / 'archive').exists())
+
+    def test_open_descriptor_refuses_release(self):
+        self.assert_process_reference_retained('fd', False)
+
+    def test_open_descriptor_refuses_retirement(self):
+        self.assert_process_reference_retained('fd', True)
+
+    def test_closed_descriptor_mapping_refuses_release(self):
+        self.assert_process_reference_retained('mapping', False)
+
+    def test_closed_descriptor_mapping_refuses_retirement(self):
+        self.assert_process_reference_retained('mapping', True)
+
+    def test_cwd_refuses_release(self):
+        self.assert_process_reference_retained('cwd', False)
+
+    def test_mapping_in_newline_worktree_path_refuses_release(self):
+        moved = self.root / 'task\nwith space'
+        self.run_git(self.repo, 'worktree', 'move', str(self.worktree), str(moved))
+        self.worktree = moved
+        self.assert_process_reference_retained('mapping', False)
+
+    def test_unrelated_worker_does_not_block_retirement(self):
+        self.merged()
+        unrelated = self.root / 'unrelated'
+        unrelated.write_text('outside the task\n')
+        with self.worker('fd', unrelated) as child:
+            result = self.release()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(child.poll())
+            self.assertEqual(unrelated.read_text(), 'outside the task\n')
+
+    def test_scanner_itself_has_complete_descriptor_evidence(self):
+        module, _ = self.process_fixture()
+        (self.proc / str(os.getpid())).symlink_to(Path('/proc') / str(os.getpid()), target_is_directory=True)
+        module.active_processes(self.worktree, self.proc)
 
     def test_inventory_distinguishes_unreleased_work_from_settings_drift(self):
         result = self.cli('inventory')
@@ -376,19 +487,65 @@ class LifecycleTests(unittest.TestCase):
             thread.join(timeout=3)
 
     def test_unknown_process_visibility_refuses_retirement(self):
-        import importlib.util
         from unittest.mock import patch
-        spec = importlib.util.spec_from_file_location('lifecycle_visibility', SCRIPT)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module, entry = self.process_fixture()
         with self.assertRaisesRegex(ValueError, 'process inspection'):
             module.active_processes(self.worktree, self.root / 'no-proc')
-        entry = self.proc / '123'
-        entry.mkdir()
-        (entry / 'cwd').symlink_to(self.root)
-        with patch.object(module.os, 'readlink', side_effect=PermissionError('fixture denied')):
-            with self.assertRaisesRegex(ValueError, 'cannot inspect'):
-                module.active_processes(self.worktree, self.proc)
+        for error in (PermissionError, FileNotFoundError):
+            for name in ('cwd', 'root', 'exe', 'fd/3', 'fd', 'maps', 'status'):
+                with self.subTest(error=error.__name__, surface=name):
+                    target = entry / name
+                    attribute = 'readlink' if name in ('cwd', 'root', 'exe', 'fd/3') else (
+                        'scandir' if name == 'fd' else 'open')
+                    owner = module.os if attribute in ('readlink', 'scandir') else module.Path
+                    original = getattr(owner, attribute)
+
+                    def unavailable(candidate, *args, **kwargs):
+                        if Path(candidate) == target:
+                            raise error('fixture evidence unavailable')
+                        return original(candidate, *args, **kwargs)
+
+                    with patch.object(owner, attribute, new=unavailable):
+                        with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                            module.active_processes(self.worktree, self.proc)
+
+    def test_executable_root_and_deleted_mapping_references_are_active(self):
+        module, entry = self.process_fixture()
+        for name in ('root', 'exe'):
+            with self.subTest(surface=name):
+                link = entry / name
+                target = os.readlink(link)
+                link.unlink()
+                link.symlink_to(self.worktree if name == 'root' else self.worktree / 'file')
+                with self.assertRaisesRegex(ValueError, 'active process.*' + name):
+                    module.active_processes(self.worktree, self.proc)
+                link.unlink()
+                link.symlink_to(target)
+        (entry / 'maps').write_text(f'1000-2000 r--p 00000000 00:01 1 {self.worktree}/file (deleted)\n')
+        with self.assertRaisesRegex(ValueError, 'active process.*memory mapping'):
+            module.active_processes(self.worktree, self.proc)
+
+    def test_non_filesystem_descriptors_and_confirmed_exit_are_safe(self):
+        module, entry = self.process_fixture()
+        for number, target in enumerate(('pipe:[123]', 'socket:[456]', 'anon_inode:[eventpoll]'), 4):
+            (entry / 'fd' / str(number)).symlink_to(target)
+        module.active_processes(self.worktree, self.proc)
+        (entry / 'cwd').unlink()
+        with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+            module.active_processes(self.worktree, self.proc)
+        (entry / 'status').write_text('State:\tZ (zombie)\n')
+        module.active_processes(self.worktree, self.proc)
+        # A process that vanished after enumeration is also definitively gone.
+        (self.proc / '456').symlink_to(self.root / 'vanished-process')
+        module.active_processes(self.worktree, self.proc)
+
+    def test_empty_or_malformed_live_mapping_evidence_is_retained(self):
+        module, entry = self.process_fixture()
+        for data in ('', 'incomplete mapping\n'):
+            with self.subTest(maps=data):
+                (entry / 'maps').write_text(data)
+                with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                    module.active_processes(self.worktree, self.proc)
 
     def test_stashes_survive_retirement(self):
         (self.repo / 'file').write_text('private stash\n')

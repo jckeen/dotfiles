@@ -149,21 +149,74 @@ def clean(path):
             raise ValueError('active content filters require separate retirement')
 
 
+def process_exited(entry):
+    """Only disappearance or a kernel-reported dead state establishes exit."""
+    try:
+        status = (entry / 'status').read_bytes()
+    except FileNotFoundError:
+        try:
+            entry.stat()
+        except FileNotFoundError:
+            return True
+        raise
+    state = next((line.split()[1:2] for line in status.split(b'\n') if line.startswith(b'State:')), [])
+    if not state:
+        raise OSError('process state unavailable')
+    return state[0] in (b'Z', b'X')
+
+
+def process_path_within(target, path):
+    # Inspect link text only. Opening pipe/socket/anon-inode targets can block,
+    # and resolving them as paths would invent filesystem evidence.
+    if not target.startswith('/'):
+        return False
+    for candidate in (target, target.removesuffix(' (deleted)')):
+        reference = Path(candidate)
+        if reference == path or path in reference.parents:
+            return True
+    return False
+
+
 def active_processes(path, proc_root=Path('/proc')):
-    """Fail closed when process cwd visibility cannot establish inactivity."""
+    """Retain visible process references; missing live-process evidence is unsafe."""
     if not proc_root.is_dir():
         raise ValueError('automatic process inspection requires /proc; retain on this platform')
     for entry in proc_root.iterdir():
         if not entry.name.isdigit(): continue
         try:
             if entry.stat().st_uid != os.getuid(): continue
-            cwd = Path(os.readlink(entry / 'cwd'))
-        except FileNotFoundError:
-            continue  # Process exited or has no cwd (e.g. zombie).
+            if process_exited(entry): continue
+            for name in ('cwd', 'root', 'exe'):
+                if process_path_within(os.readlink(entry / name), path):
+                    raise ValueError(f'active process {entry.name} uses this worktree ({name})')
+            # Keep enumeration open: scanning our own descriptors otherwise
+            # lists a temporary directory FD that is closed before readlink.
+            with os.scandir(entry / 'fd') as descriptors:
+                for descriptor in descriptors:
+                    if process_path_within(os.readlink(descriptor.path), path):
+                        raise ValueError(f'active process {entry.name} uses this worktree (open descriptor)')
+            # /proc maps escapes pathname newlines as literal \012. Compare
+            # the encoded worktree path too, without decoding ambiguous names.
+            mapped_path = Path(str(path).replace('\n', r'\012'))
+            observed_mapping = False
+            with (entry / 'maps').open('rb') as mappings:
+                for line in mappings:
+                    fields = line.removesuffix(b'\n').split(maxsplit=5)
+                    if len(fields) < 5:
+                        raise OSError('invalid process mapping evidence')
+                    observed_mapping = True
+                    if len(fields) == 6 and process_path_within(os.fsdecode(fields[5]), mapped_path):
+                        raise ValueError(f'active process {entry.name} uses this worktree (memory mapping)')
+            if not observed_mapping:
+                raise OSError('process mapping evidence unavailable')
+        except FileNotFoundError as error:
+            try:
+                if process_exited(entry): continue
+            except OSError:
+                pass
+            raise ValueError('cannot inspect a same-user process; retain worktree') from error
         except OSError as error:
             raise ValueError('cannot inspect a same-user process; retain worktree') from error
-        if cwd == path or path in cwd.parents:
-            raise ValueError(f'active process {entry.name} uses this worktree')
 
 
 def release(repo, path, head, owner, pr, slug):
