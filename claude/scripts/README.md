@@ -162,7 +162,9 @@ log when needed and keep it out of repositories.
 ### Review of reviewer instructions and gates
 
 The Codex and Antigravity gates refuse changes to their own instruction
-surfaces and the shared review machinery before dispatch or exemptions.
+surfaces, the shared skill bundles installed from `agents/skills`, and the
+shared review machinery before dispatch or exemptions. Supporting files in
+those installed skill bundles need the same independent review as `SKILL.md`.
 Use independent review before setting a scoped
 `CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` or
 `ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1` override. Changes to the shared
