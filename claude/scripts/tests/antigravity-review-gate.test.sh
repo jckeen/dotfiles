@@ -69,6 +69,7 @@ chmod +x "$SHIM_DIR/agy"
 export PATH="$SHIM_DIR:$PATH"
 export AGY_FAKE_DIR=""
 unset ANTIGRAVITY_GATE_REQUIRED
+unset ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF
 unset ANTIGRAVITY_GATE_MODEL
 unset GATE_FORCE_FULL
 unset GATE_TIER1_MAX_LINES
@@ -325,6 +326,37 @@ printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
 rm -rf "$R"
+
+# Own instructions and shared gate code cannot authorize their own review.
+for protected in GEMINI.md nested/GEMINI.local.md .gemini/commands/check.md antigravity/policy.lock .antigravity/settings.json claude/scripts/gate-lib.sh claude/scripts/review-receipt.py claude/scripts/codex-review-gate.sh claude/scripts/antigravity-review-gate.sh; do
+  for scope in committed uncommitted; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    mkdir -p "$R/$(dirname "$protected")"
+    printf 'SELF_REVIEW_INSTRUCTION_MARKER\n' > "$R/$protected"
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" add "$protected"
+      git -C "$R" commit -qm 'protected review input'
+    fi
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    check "$scope $protected blocks Antigravity self-review" 2 "Diff touches the Antigravity reviewer's own instruction surface" "--$scope" --require
+    assert "protected input never dispatches or issues a receipt" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope $protected permits explicit override" 0 "Instruction-surface diff allowed" "--$scope" --require
+    assert "override still reviews protected input in full" "grep -q 'SELF_REVIEW_INSTRUCTION_MARKER' '$AGY_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+    rm -rf "$R"
+  done
+done
+
+for protected in GEMINI.md .gemini/commands/check.md .antigravity/policy.lock; do
+  new_repo
+  mkdir -p "$R/$(dirname "$protected")"
+  printf '%s\n' "$protected" > "$R/.git/info/exclude"
+  printf 'IGNORED_SELF_REVIEW_MARKER\n' > "$R/$protected"
+  check "ignored $protected blocks Antigravity self-review" 2 "Diff touches the Antigravity reviewer's own instruction surface" --uncommitted --require
+  assert "ignored own instruction cannot dispatch or receive a receipt" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+  rm -rf "$R"
+done
 
 # Unchanged canonical instruction links can be reviewed; both identities stay bound.
 for mutation in target-worktree target-index target-commit link-worktree link-index link-commit; do
@@ -596,7 +628,11 @@ for instruction in .claude/commands/check.md .gemini/commands/check.md .agents/e
   git -C "$R" commit -qm 'agent command documentation'
   printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
   printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-  check "committed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
+  if [[ "$instruction" == .gemini/* ]]; then
+    ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
+  else
+    check "committed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
+  fi
   assert "agent document reaches alternate reviewer" "grep -q 'AGENT_DOCUMENT_MARKER' '$AGY_FAKE_DIR/stdin'"
   assert "agent document receives valid alternate receipt" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"

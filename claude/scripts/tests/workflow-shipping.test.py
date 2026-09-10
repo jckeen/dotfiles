@@ -65,9 +65,13 @@ sys.exit(0 if head == os.environ["VALID_HEAD"] and os.environ.get("RECEIPT_FAIL"
         self.write(self.scripts / "codex-review-gate.sh", '''#!/bin/bash
 printf 'gate\\n' >> "$CALLS"
 if [ "${SWITCH_BRANCH:-0}" = 1 ]; then git switch -qc another-feature; fi
+if [ "${DIRTY_DURING_REVIEW:-0}" = 1 ]; then echo changed-during-review >> code.txt; fi
 exit "${GATE_RC:-0}"
 ''')
         self.write(self.bin / "git", '''#!/bin/bash
+for arg in "$@"; do
+  if [ "$arg" = status ] && [ "${STATUS_FAIL:-0}" = 1 ]; then exit 128; fi
+done
 if [ "${1:-}" = push ]; then
   printf 'push\\n' >> "$CALLS"
   printf '%s\\n' "$@" > "$CALLS.push-args"
@@ -223,6 +227,56 @@ if parse_args "$2"; then exit 0; else exit 7; fi
         self.assertIn("gate", self.events())
         self.assertEqual(self.events()[-1], "push")
         self.assertEqual(json.loads(self.events()[-2])[0], "receipt")
+
+    def enable_test_runner(self):
+        (self.repo / "package.json").write_text('{"scripts":{"test":"fixture"}}\n')
+        self.command("git", ["add", "package.json"])
+        self.command("git", ["commit", "-qm", "test fixture"])
+        self.head = self.command("git", ["rev-parse", "HEAD"]).stdout.strip()
+        self.env["VALID_HEAD"] = self.head
+        self.write(self.bin / "npm", '''#!/bin/bash
+printf 'tests\\n' >> "$CALLS"
+if [ "${DIRTY_DURING_TESTS:-0}" = 1 ]; then echo changed-during-tests >> code.txt; fi
+''')
+
+    def test_wrapper_refuses_uncommitted_input_before_tests(self):
+        self.enable_test_runner()
+        # User config must not hide untracked inputs from the preflight.
+        self.command("git", ["config", "status.showUntrackedFiles", "no"])
+        for state in ("unstaged", "staged", "untracked"):
+            with self.subTest(state=state):
+                self.command("git", ["reset", "--hard", "HEAD"])
+                (self.repo / "extra.txt").unlink(missing_ok=True)
+                self.calls.unlink(missing_ok=True)
+                path = self.repo / ("extra.txt" if state == "untracked" else "code.txt")
+                path.write_text("local fix absent from the pushed commit\n")
+                if state == "staged":
+                    self.command("git", ["add", "code.txt"])
+                result = self.run_wrapper()
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("uncommitted changes", result.stdout + result.stderr)
+                self.assertEqual(self.events(), [])
+
+    def test_wrapper_blocks_files_changed_by_tests(self):
+        self.enable_test_runner()
+        self.env["DIRTY_DURING_TESTS"] = "1"
+        result = self.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), ["tests"])
+        self.assertIn("uncommitted changes", result.stdout + result.stderr)
+
+    def test_wrapper_blocks_files_changed_by_review(self):
+        self.env["DIRTY_DURING_REVIEW"] = "1"
+        result = self.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), ["gate"])
+        self.assertIn("uncommitted changes", result.stdout + result.stderr)
+
+    def test_wrapper_cannot_treat_failed_status_as_clean(self):
+        self.env["STATUS_FAIL"] = "1"
+        result = self.run_wrapper()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events(), [])
 
     def test_wrapper_pins_the_reviewed_commit_and_destination(self):
         self.assertEqual(self.run_wrapper().returncode, 0)

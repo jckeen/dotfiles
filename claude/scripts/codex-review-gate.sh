@@ -174,6 +174,8 @@ if [[ "${CODEX_GATE_BIN+x}" == x ]]; then
   fi
 elif [[ -f "${HOME:-}/.codex/packages/standalone/current/bin/codex" && -x "${HOME:-}/.codex/packages/standalone/current/bin/codex" ]]; then
   GATE_CLI="${HOME}/.codex/packages/standalone/current/bin/codex"
+elif [[ -f "${HOME:-}/.codex/packages/standalone/current/codex" && -x "${HOME:-}/.codex/packages/standalone/current/codex" ]]; then
+  GATE_CLI="${HOME}/.codex/packages/standalone/current/codex"
 else
   GATE_CLI="$(type -P codex && printf .)" || GATE_CLI=""
   GATE_CLI=${GATE_CLI%$'\n.'}

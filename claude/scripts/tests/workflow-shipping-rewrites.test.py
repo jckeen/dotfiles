@@ -364,7 +364,7 @@ exec bash -c "${!#}"
         self.assertIn("gate", t.events())
         self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.head)
 
-    def test_real_gate_ships_to_behind_fork_with_unrelated_work_in_progress(self):
+    def test_real_gate_requires_clean_tree_before_shipping_to_behind_fork(self):
         t = self.fixture
         fork = t.root / "fork"
         self.git("clone", "--bare", str(t.remote), str(fork))
@@ -384,10 +384,16 @@ exit 99
 ''')
         (t.bin / "git").unlink()
         result = t.run_wrapper()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.head)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("uncommitted changes", result.stderr)
+        self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.base)
         self.assertEqual(notes.read_text(), "Unrelated work in progress.\n")
         self.assertEqual(self.git("status", "--porcelain"), status)
+        self.assertFalse((t.repo / ".git/review-receipts/codex.json").exists())
+        notes.unlink()
+        clean = t.run_wrapper()
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertEqual(self.git("--git-dir", str(fork), "rev-parse", "refs/heads/feature"), t.head)
         receipt = json.loads((t.repo / ".git/review-receipts/codex.json").read_text())
         self.assertEqual(receipt["artifact"]["scope"], "committed")
         self.assertEqual(receipt["completion"]["outcome"], "no-diff")
@@ -696,6 +702,10 @@ git config --global "url.$REDIRECT_REMOTE.insteadOf" "$REVIEWED_REMOTE"
         reviewed, redirected = self.destinations()
         t = self.fixture
         (t.repo / "destination").symlink_to(reviewed, target_is_directory=True)
+        self.git("add", "destination")
+        self.git("commit", "-qm", "destination fixture")
+        t.head = self.git("rev-parse", "HEAD")
+        t.env["VALID_HEAD"] = t.head
         self.git("config", "remote.origin.url", "destination")
         t.env.update(REVIEWED_REMOTE=str(reviewed), REDIRECT_REMOTE=str(redirected))
         t.write(t.scripts / "codex-review-gate.sh", '''#!/bin/bash

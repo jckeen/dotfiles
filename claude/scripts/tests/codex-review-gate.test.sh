@@ -139,6 +139,9 @@ managed="$TEST_HOME/.codex/packages/standalone/current/bin/codex"
 mkdir -p "$(dirname "$managed")" "$SHIM_DIR/release/bin"
 cp "$SHIM_DIR/codex" "$SHIM_DIR/release/bin/codex"
 ln -s "$SHIM_DIR/release/bin/codex" "$managed"
+managed_root="$TEST_HOME/.codex/packages/standalone/current/codex"
+cp "$SHIM_DIR/codex" "$SHIM_DIR/release/codex"
+ln -s "$SHIM_DIR/release/codex" "$managed_root"
 unset CODEX_GATE_BIN
 check "managed standalone wins over an older PATH CLI" 0 "Codex review passed" --uncommitted --no-issues
 assert "receipt and invocation pin the managed executable" "jq -e --arg exe '$SHIM_DIR/release/bin/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/release/bin/codex' '$CODEX_FAKE_DIR/executable'"
@@ -156,6 +159,13 @@ for invalid in "$SHIM_DIR/missing" "$SHIM_DIR" ''; do
 done
 unset CODEX_GATE_BIN
 rm "$managed"
+check "managed root layout wins over an older PATH CLI" 0 "Codex review passed" --uncommitted --no-issues
+assert "root layout receipt pins the invoked executable" "jq -e --arg exe '$SHIM_DIR/release/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/release/codex' '$CODEX_FAKE_DIR/executable'"
+# A missing/non-executable bin layout must not hide a working root layout.
+ln -s "$SHIM_DIR/missing" "$managed"
+check "broken bin layout falls through to managed root" 0 "Codex review passed" --uncommitted --no-issues
+assert "broken bin layout still invokes managed root" "grep -qxF '$SHIM_DIR/release/codex' '$CODEX_FAKE_DIR/executable'"
+rm "$managed" "$managed_root"
 check "PATH remains the fallback without a standalone install" 0 "Codex review passed" --uncommitted --no-issues
 assert "fallback invokes the fixture CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
 export CODEX_GATE_BIN="$SHIM_DIR/codex"
