@@ -469,6 +469,113 @@ if kind == 'writer':
         self.assertEqual(data['released'], 0)
         self.assertEqual(len(data['worktrees']), 2)
 
+    def root_inventory(self, root=None):
+        result = subprocess.run(['python3', str(SCRIPT), 'inventory', '--root', str(root or self.root)],
+            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def separate_git_directory(self):
+        # Only the disposable fixture is removed; its committed topic survives.
+        self.run_git(self.repo, 'worktree', 'remove', '--force', str(self.worktree))
+        metadata = self.root / 'metadata.git'
+        self.run_git(self.repo, 'init', '-q', '--separate-git-dir', str(metadata))
+        self.run_git(self.repo, 'worktree', 'add', '-q', str(self.worktree), 'topic')
+        self.assertTrue((self.repo / '.git').is_file())
+        return metadata
+
+    def test_inventory_root_finds_primary_with_separate_git_directory(self):
+        self.separate_git_directory()
+        direct = self.cli('inventory')
+        self.assertEqual(direct.returncode, 0, direct.stderr)
+        expected = json.loads(direct.stdout)['worktrees']
+        self.assertEqual(len(expected), 2)
+        actual = self.root_inventory()
+        self.assertEqual(actual['errors'], [])
+        self.assertEqual(actual['worktrees'], expected)
+
+    def test_inventory_root_deduplicates_common_directory_and_skips_linked_children(self):
+        metadata = self.separate_git_directory()
+        alias = self.root / 'aaa-primary-alias'
+        alias.mkdir()
+        # A second Git-file spelling of the same common directory must not
+        # duplicate its inventory, even when encountered before the checkout.
+        (alias / '.git').write_text('gitdir: ../metadata.git\n')
+        self.assertEqual(Path(self.run_git(alias, 'rev-parse', '--absolute-git-dir').strip()).resolve(), metadata)
+        data = self.root_inventory()
+        self.assertEqual(data['errors'], [])
+        self.assertEqual(len(data['worktrees']), 2)
+        self.assertEqual(len({item['path'] for item in data['worktrees']}), 2)
+        linked_only = self.root / 'linked-only'
+        linked_only.mkdir()
+        self.run_git(self.repo, 'worktree', 'move', str(self.worktree), str(linked_only / 'task'))
+        self.assertEqual(self.root_inventory(linked_only)['worktrees'], [])
+
+    def test_inventory_root_skips_symlinked_children_and_does_not_recurse(self):
+        (self.root / 'aaa-symlink').symlink_to(self.repo, target_is_directory=True)
+        nested = self.root / 'nested'
+        nested.mkdir()
+        self.run_git(nested, 'init', '-q', str(nested / 'unrelated'))
+        data = self.root_inventory()
+        self.assertEqual(data['errors'], [])
+        self.assertEqual(len(data['worktrees']), 2)
+
+    def test_inventory_root_reports_malformed_or_dangling_git_files(self):
+        invalid = self.root / 'invalid'
+        invalid.mkdir()
+        for content in ('not a gitdir pointer\n', 'gitdir: ../missing-metadata\n'):
+            with self.subTest(content=content):
+                (invalid / '.git').write_text(content)
+                data = self.root_inventory()
+                self.assertEqual(len(data['worktrees']), 2)
+                self.assertEqual([error['repo'] for error in data['errors']], [str(invalid)])
+                self.assertTrue(data['errors'][0]['reason'])
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can read mode-zero Git files')
+    def test_inventory_root_reports_unreadable_git_file(self):
+        self.separate_git_directory()
+        pointer = self.repo / '.git'
+        mode = pointer.stat().st_mode & 0o777
+        pointer.chmod(0)
+        try:
+            data = self.root_inventory()
+            self.assertEqual([error['repo'] for error in data['errors']], [str(self.repo)])
+            self.assertEqual(data['worktrees'], [])
+        finally:
+            pointer.chmod(mode)
+
+    def test_inventory_retains_release_after_same_head_branch_change(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.run_git(self.worktree, 'switch', '-qc', 'different-topic')
+        self.assertEqual(self.run_git(self.worktree, 'rev-parse', 'HEAD').strip(), self.head)
+        result = self.cli('inventory')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        task = next(item for item in json.loads(result.stdout)['worktrees'] if item['path'] == str(self.worktree))
+        self.assertEqual(task['disposition'], 'retained')
+        self.assertIn('branch changed since release', task['reason'])
+
+    def test_inventory_retains_release_after_same_head_move(self):
+        self.assertEqual(self.release().returncode, 0)
+        moved = self.root / 'moved'
+        self.run_git(self.repo, 'worktree', 'move', str(self.worktree), str(moved))
+        self.assertEqual(self.run_git(moved, 'rev-parse', 'HEAD').strip(), self.head)
+        result = self.cli('inventory')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        task = next(item for item in json.loads(result.stdout)['worktrees'] if item['path'] == str(moved))
+        self.assertEqual(task['disposition'], 'retained')
+        self.assertIn('path or branch changed since release', task['reason'])
+
+    def test_inventory_checks_current_release_without_remote_calls(self):
+        self.assertEqual(self.release().returncode, 0)
+        called = self.root / 'remote-called'
+        (self.bin / 'gh').write_text('#!/usr/bin/env python3\nfrom pathlib import Path\n'
+            f'Path({str(called)!r}).touch()\nraise SystemExit(1)\n')
+        result = self.cli('inventory')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        task = next(item for item in json.loads(result.stdout)['worktrees'] if item['path'] == str(self.worktree))
+        self.assertEqual(task['disposition'], 'released')
+        self.assertFalse(called.exists())
+
     def test_hygiene_status_reports_worktrees_separately(self):
         home = self.root / 'home'
         folder = home / '.local/state/hygiene'

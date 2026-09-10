@@ -367,8 +367,9 @@ def inventory(repo):
             _, admin = selected(repo, Path(item['path']))
             data = marker(admin)
             result.update(owner=data['owner'], pr=data['pr'])
-            if data.get('head') != item.get('HEAD'):
-                result['reason'] = 'HEAD changed since release'
+            if (data.get('head'), data.get('path'), data.get('branch')) != (
+                    item.get('HEAD'), item['path'], item.get('branch')):
+                result['reason'] = 'HEAD, path or branch changed since release'
             else:
                 result.update(disposition='released', reason='owner finished; verify merged PR before retirement')
         except FileNotFoundError:
@@ -384,10 +385,26 @@ def inventory(repo):
 
 def inventory_root(root):
     output, errors = [], []
+    seen = set()
     for repo in sorted(root.resolve(strict=True).iterdir()):
-        if repo.is_symlink() or not (repo / '.git').is_dir():
+        if repo.is_symlink():
             continue
         try:
+            if not repo.is_dir(): continue
+            try:
+                info = (repo / '.git').lstat()
+            except FileNotFoundError:
+                continue
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ValueError('.git is not a regular file or directory')
+            # Both primary separate-git-dir checkouts and linked worktrees
+            # use Git files. Their canonical admin/common identities differ
+            # only for linked worktrees; discover each primary repository once.
+            admin = Path(text(git(repo, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
+            common = Path(text(git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))).resolve(strict=True)
+            if admin != common or common in seen:
+                continue
+            seen.add(common)
             output.extend(inventory(repo)['worktrees'])
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             errors.append(dict(repo=str(repo), reason=str(error)))
