@@ -3,7 +3,7 @@
 #
 # Usage:
 #   git-hygiene audit [DIR]                       # report only (default DIR: ~/dev)
-#   git-hygiene clean [DIR] [--yes] [--dry-run]   # heuristic cleanup (below)
+#   git-hygiene clean [DIR] [--yes] [--dry-run]   # proven-integration cleanup
 #   git-hygiene prune [DIR] [--yes] [--gh] [--dry-run]
 #                                                 # strict "safely dead" cleanup —
 #                                                 # what the daily timer runs
@@ -18,19 +18,12 @@
 #               locally-present descendant of it). Needs `gh auth status` to
 #               pass; any gh error keeps the branch (fail closed).
 #
-# What "clean" does (heuristic — squash-merge detection by commit subject):
-#   1. git fetch --prune        (drops stale remote-tracking refs)
-#   2. git remote set-head origin -a  (sets origin/HEAD if missing)
-#   3. For each non-default local branch: delete IF
-#        a) cherry vs origin/<default> shows all '-' (patch-equivalent), OR
-#        b) every commit's subject is found in origin/<default>'s history
-#           (catches squash-merged branches that cherry misses), OR
-#        c) the branch's PR into origin/<default> is MERGED on GitHub (via gh)
-#   4. Never touches: dirty working trees, current branch, branches checked
-#      out in worktrees, branches with unique unmerged work.
+# "clean" and "prune" share the strict classifier below, after a successful
+# fetch --prune and remote set-head refresh. "audit" reports the same local
+# proof and age checks against cached remote refs, without fetching or deleting.
+# All modes preserve dirty repositories and branches with unavailable evidence.
 #
-# What "prune" deletes — the SAFE class, evaluated per branch after the same
-# fetch --prune / set-head steps:
+# Strict branch eligibility:
 #   never:  the default branch, the checked-out branch, a worktree's branch,
 #           or anything touched (commit or ref update) within the last
 #           HYGIENE_MIN_AGE_HOURS (default 24).
@@ -42,11 +35,11 @@
 #           tip as its head SHA (or as an ancestor of a head SHA present
 #           locally). A PR merged into a release/feature branch that never
 #           reached the default does not count.
-#   A squash-merged branch with unique commits and no confirming PR is kept —
-#   subject matching is a heuristic, and prune runs unattended.
+#   A squash-merged branch with unique commits is kept unless prune --gh
+#   confirms it. Commit subjects and branch names alone never authorize deletion.
 #
 # Env:
-#   HYGIENE_MIN_AGE_HOURS   prune's "recently touched" window (default 24)
+#   HYGIENE_MIN_AGE_HOURS   all modes' "recently touched" window (default 24)
 #   HYGIENE_REPORT=FILE     append "repo<TAB>branch<TAB>sha<TAB>reason" per
 #                           deletion (the timer turns this into a summary)
 #
@@ -61,7 +54,7 @@
 #     hooks and unrelated Git configuration are disabled in the snapshot.
 #     Custom transport helpers that invoke Git can observe that isolation and
 #     cause a preview to refuse cleanup that a real fetch would allow.
-#   - Requires: git, gh (optional; used by clean's check (c) and prune --gh).
+#   - Requires: git, gh (optional; used only by prune --gh).
 
 set -euo pipefail
 
@@ -77,10 +70,11 @@ REPORT_FILE="${HYGIENE_REPORT:-}"
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [audit|clean|prune] [DIR] [--yes] [--dry-run] [--gh]
-  audit   report only (default)
-  clean   heuristic cleanup: cherry-equivalent, subject-matched squash merges, merged PRs
-  prune   strict cleanup: no unique commits (or --gh: a merged PR carries this tip),
-          untouched for HYGIENE_MIN_AGE_HOURS (24); never default/current/worktree branches
+  audit   report strict eligibility against cached refs (default)
+  clean   strict cleanup: ancestry or equivalent patches, with no unique merge commits
+  prune   same as clean, with optional --gh proof for squash-merged branches
+          All modes require HYGIENE_MIN_AGE_HOURS (24) without activity and preserve
+          dirty repositories and default/current/worktree branches.
   --yes      no prompt
   --dry-run  write nothing: no deletions, no fetch --prune, no remote set-head
   --gh       prune only: also delete when a PR into the default branch merged with this tip
@@ -154,56 +148,6 @@ origin_slug() {
   git -C "$1" remote get-url origin | sed -E 's#\.git$##; s#.*[:/]([^/]+/[^/]+)$#\1#'
 }
 
-# Returns 0 if branch is safe to delete, 1 otherwise. Sets REASON.
-is_branch_safely_merged() {
-  local repo="$1" br="$2" default="$3" evidence="${4:-$1}"
-  REASON=""
-
-  # Cherry: '-' = patch-equivalent on default, '+' = unique
-  local cherry_unique
-  cherry_unique=$(git -C "$evidence" cherry "origin/$default" "$br" 2>/dev/null | grep -c '^+' || true)
-  if [[ "$cherry_unique" == "0" ]]; then
-    REASON="cherry-equivalent to origin/$default"
-    return 0
-  fi
-
-  # Subject-search: each unique commit's subject must appear in origin/<default>
-  # history. Read the default-branch subjects ONCE — the previous version re-ran
-  # `git log origin/<default>` for every unique commit, re-walking the entire
-  # default history per commit (O(branch_commits × default_commits)).
-  local default_subjects
-  default_subjects=$(git -C "$evidence" log --format='%s' "origin/$default" 2>/dev/null || true)
-  local missing=0 total=0
-  while IFS= read -r subject; do
-    [[ -z "$subject" ]] && continue
-    total=$((total + 1))
-    # Match on the first 40 chars: squash-merge appends " (#NN)", so a prefix
-    # match catches the commit even after the PR suffix is added.
-    if ! printf '%s\n' "$default_subjects" | grep -qF "$(printf '%s' "$subject" | head -c 40)"; then
-      missing=$((missing + 1))
-    fi
-  done < <(git -C "$evidence" log --format='%s' "origin/$default..$br" 2>/dev/null)
-
-  if [[ "$total" -gt 0 && "$missing" -eq 0 ]]; then
-    REASON="all $total commit subjects found on origin/$default (squash-merged)"
-    return 0
-  fi
-
-  # PR check via gh
-  if command -v gh >/dev/null 2>&1; then
-    local pr_state
-    pr_state=$(gh -R "$(origin_slug "$repo")" \
-               pr list --state all --head "$br" --base "$default" --json state --jq '.[0].state' 2>/dev/null || echo "")
-    if [[ "$pr_state" == "MERGED" ]]; then
-      REASON="PR into $default is MERGED on GitHub"
-      return 0
-    fi
-  fi
-
-  REASON="$cherry_unique unique patch(es) not found on origin/$default — keep"
-  return 1
-}
-
 # Epoch of the branch's newest activity: tip committer date or latest reflog
 # entry, whichever is later — a fresh `git branch` off an old commit is still
 # a fresh branch.
@@ -245,7 +189,7 @@ gh_confirms_merged() {
   return 1
 }
 
-# Returns 0 if the branch is in prune's SAFE class, 1 otherwise. Sets REASON.
+# Shared strict classification for every mode. Sets REASON; unknown means keep.
 is_branch_safely_dead() {
   local repo="$1" br="$2" default="$3" evidence="${4:-$1}"
   REASON=""
@@ -477,23 +421,17 @@ audit_repo() (
     fi
 
     case "$MODE" in
-      prune)
+      prune|clean)
         if is_branch_safely_dead "$d" "$br" "$default" "$evidence"; then
           delete_branch "$d" "$repo" "$br"
         else
           info "$br — kept: $REASON"
         fi ;;
-      clean)
-        if is_branch_safely_merged "$d" "$br" "$default" "$evidence"; then
-          delete_branch "$d" "$repo" "$br"
-        else
-          warn "$br — has unique work: $REASON"
-        fi ;;
       *)
-        if is_branch_safely_merged "$d" "$br" "$default" "$evidence"; then
+        if is_branch_safely_dead "$d" "$br" "$default" "$evidence"; then
           ok "$br — safely deletable: $REASON"
         else
-          warn "$br — has unique work: $REASON"
+          warn "$br — kept: $REASON"
         fi ;;
     esac
   done < <(git for-each-ref --format='%(refname:short)' refs/heads/)

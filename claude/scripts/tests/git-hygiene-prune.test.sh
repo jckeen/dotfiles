@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# git-hygiene-prune.test.sh — fixture tests for `git-hygiene.sh prune` and the
+# git-hygiene-prune.test.sh — fixture tests for git-hygiene branch decisions and the
 # hygiene-cron.sh wrapper around it. Builds a throwaway origin + clone under
 # mktemp with one branch per classification (merged, squash-merged with and
 # without a confirming merged PR, gone upstream, unique work, worktree,
@@ -287,21 +287,62 @@ for preview in false true; do
 done
 
 # An empty git cherry output says nothing about unique merge resolutions.
-build_small_fixture
-C="$FIX/dev/repo"
-base="$(git -C "$C" rev-parse HEAD)"
-commit_file "$C" main.txt main
-parent="$(git -C "$C" rev-parse HEAD)"
-g -C "$C" push -q origin main
-commit_file "$C" unique-merge.txt resolution
-tree="$(git -C "$C" rev-parse 'HEAD^{tree}')"
-merge="$(printf 'unique resolution\n' | g -C "$C" commit-tree "$tree" -p "$parent" -p "$base")"
-g -C "$C" update-ref refs/heads/candidate "$merge"
-g -C "$C" reset -q --hard "$parent"
-out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
-assert "unique merge: empty cherry does not delete branch" "has_branch candidate"
-assert "unique merge: preserved tree has its resolution" "git -C '$C' cat-file -e candidate:unique-merge.txt"
-rm -rf "$FIX"
+for mode in prune clean audit; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  base="$(git -C "$C" rev-parse HEAD)"
+  commit_file "$C" main.txt main
+  parent="$(git -C "$C" rev-parse HEAD)"
+  g -C "$C" push -q origin main
+  commit_file "$C" unique-merge.txt resolution
+  tree="$(git -C "$C" rev-parse 'HEAD^{tree}')"
+  merge="$(printf 'unique resolution\n' | g -C "$C" commit-tree "$tree" -p "$parent" -p "$base")"
+  g -C "$C" update-ref refs/heads/candidate "$merge"
+  g -C "$C" reset -q --hard "$parent"
+  out="$("$HYGIENE" "$mode" "$FIX/dev" --yes 2>&1)"
+  assert "unique merge ($mode): empty cherry does not delete branch" "has_branch candidate"
+  assert "unique merge ($mode): preserved tree has its resolution" "git -C '$C' cat-file -e candidate:unique-merge.txt"
+  assert "unique merge ($mode): no safe-deletion recommendation" "! outgrep 'candidate — safely deletable'"
+  rm -rf "$FIX"
+done
+
+# A matching subject does not establish that another commit contains the work.
+for mode in clean audit; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$C" checkout -q candidate
+  commit_file "$C" unique.txt 'matching subject'
+  g -C "$C" checkout -q main
+  commit_file "$C" unrelated.txt 'matching subject'
+  g -C "$C" push -q origin main
+  out="$("$HYGIENE" "$mode" "$FIX/dev" --yes 2>&1)"
+  assert "duplicate subject ($mode): unique branch kept" "has_branch candidate"
+  assert "duplicate subject ($mode): no safe-deletion recommendation" "! outgrep 'candidate — safely deletable'"
+  rm -rf "$FIX"
+done
+
+# Conservative classification still recognizes ancestry and equivalent patches.
+for mode in clean audit; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$C" checkout -qb equivalent
+  commit_file "$C" patch.txt patch
+  g -C "$C" checkout -q main
+  commit_file "$C" advance.txt advance
+  g -C "$C" cherry-pick equivalent >/dev/null
+  g -C "$C" push -q origin main
+  git -C "$C" branch recent
+  out="$("$HYGIENE" "$mode" "$FIX/dev" --yes 2>&1)"
+  if [[ "$mode" == clean ]]; then
+    assert "proven integration ($mode): ancestor deleted" "! has_branch candidate"
+    assert "proven integration ($mode): equivalent patch deleted" "! has_branch equivalent"
+  else
+    assert "proven integration ($mode): ancestor eligible without deleting" "has_branch candidate && outgrep 'candidate — safely deletable'"
+    assert "proven integration ($mode): equivalent patch eligible without deleting" "has_branch equivalent && outgrep 'equivalent — safely deletable'"
+  fi
+  assert "proven integration ($mode): recent branch kept" "has_branch recent && ! outgrep 'recent — safely deletable'"
+  rm -rf "$FIX"
+done
 
 # Missing activity history cannot establish that a branch is old enough.
 build_small_fixture
