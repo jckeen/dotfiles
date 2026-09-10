@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-10 — fix: preserve late writes and verify shipped artifacts
+
+### What changed
+- Worktree retirement keeps the actual directory in locked recovery quarantine,
+  preserving late ignored files and writes through open descriptors. Interrupted
+  moves retain Git metadata and recovery paths; retirement no longer deletes
+  worktree contents or reclaims disk space.
+- Normal Claude healing removes the exact retired FABLE document link while
+  preserving custom replacements, restored sources, and symlinked ancestors.
+- Review-and-push refuses uncommitted input before tests and at later shipping
+  checkpoints. Antigravity requires independent review of its own instruction
+  surfaces and shared review machinery.
+- The Codex gate recognizes both managed standalone launcher layouts before
+  falling back to the executable on PATH.
+
 ## 2026-09-09 — fix: close launcher, cleanup, and review safety gaps
 
 ### What changed

@@ -49,7 +49,7 @@ done
 
 What `review-and-push.sh` does:
 
-1. Inspects the non-default branch and working tree, then pins the current commit.
+1. Requires a clean non-default branch, then pins the current commit.
 2. Runs the detected test suite and stops on failure.
 3. Runs the Codex review gate with `--require --committed` on the committed artifact.
 4. Prompts for confirmation, unless `--auto-push` was selected.
@@ -61,7 +61,9 @@ prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
 tier/no-diff exemptions are reported separately from successful reviews.
 Changing the artifact invalidates approval and requires affected verification
 and review again. The wrapper requires the pinned commit to remain current
-through tests, review, and confirmation. `--auto-push` removes the prompt, not the checks. The pre-push
+through tests, review, and confirmation. Staged, unstaged, and untracked changes
+stop the wrapper before testing and at each later checkpoint, so verification
+cannot rely on uncommitted fixes. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
 secret scanner runs. For a PR explicitly targeting a nondefault base, run the
 gate and receipt check with `--base <ref>`, then use
@@ -134,8 +136,10 @@ and repository and worktree paths retain their exact whitespace.
 
 ### Codex review runtime
 
-The Codex gate honors `CODEX_GATE_BIN` when explicitly set. Otherwise it prefers
-the managed standalone installation under `~/.codex` and falls back to `PATH`. Set `CODEX_GATE_BIN=codex` to deliberately select the
+The Codex gate honors `CODEX_GATE_BIN` when explicitly set. Otherwise it probes
+`~/.codex/packages/standalone/current/bin/codex`, then the root-level
+`~/.codex/packages/standalone/current/codex`, before falling back to `PATH`.
+Set `CODEX_GATE_BIN=codex` to deliberately select the
 executable on `PATH`. The receipt records the executable used by that run.
 
 The gate runs Codex in the foreground and validates its exit status, structured
@@ -152,6 +156,17 @@ silently imply a deadline. Offline fixtures run in required Linux CI and the
 Failures report a diagnostic hint and a private temporary log path without
 printing raw reviewer stderr, which may contain reviewed content. Inspect that
 log when needed and keep it out of repositories.
+
+### Review of reviewer instructions and gates
+
+The Codex and Antigravity gates refuse changes to their own instruction
+surfaces and the shared review machinery before dispatch or exemptions.
+Use independent review before setting a scoped
+`CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` or
+`ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1` override. Changes to the shared
+machinery require review outside both gates, because they load the same code.
+An override records no independent approval by itself; retain the actual
+review evidence and validate the final artifact receipt before shipping.
 
 ### Claude script tiers
 

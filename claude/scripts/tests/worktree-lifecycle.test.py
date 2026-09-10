@@ -879,6 +879,44 @@ if kind == 'writer':
             for stream in streams:
                 stream.close()
 
+    def test_failed_quarantine_rename_retains_original_and_lock(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        with patch.dict(os.environ, self.env), patch.object(lifecycle.os, 'rename', side_effect=OSError('rename refused')):
+            with self.assertRaisesRegex(ValueError, 'retained.*archive:'):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        self.assertEqual((self.worktree / 'file').read_text(), 'feature\n')
+        self.assertTrue((admin / 'locked').is_file())
+        archive, = (self.root / 'archive').iterdir()
+        self.assertFalse((archive / 'worktree').exists())
+        self.assertEqual(json.loads((archive / 'recovery.json').read_text())['quarantine'], str(archive / 'worktree'))
+
+    def test_recreated_original_path_survives_quarantine_repair(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.os.rename
+
+        def recreate_after_move(source, destination):
+            original(source, destination)
+            source.mkdir()
+            (source / 'new-session').write_text('new operator work\n')
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle.os, 'rename', recreate_after_move):
+            result = lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        self.assertEqual((self.worktree / 'new-session').read_text(), 'new operator work\n')
+        self.assertEqual((Path(result['quarantine']) / 'file').read_text(), 'feature\n')
+
     def test_archive_rejects_actual_primary_with_separate_git_directory(self):
         self.separate_git_directory()
         self.merged()

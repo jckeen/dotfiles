@@ -152,8 +152,9 @@ codex login            # Optional
 ```
 
 The launchers run their health checker with `--heal --strict`. Healing creates
-missing managed links and removes only exact obsolete `fable-mode` symlinks
-whose original source bundle is gone. It preserves custom files, unexpected
+missing managed links and removes only exact obsolete `fable-mode` skill links
+and the retired Claude `FABLE.md` link when their original source is gone.
+It preserves custom files, unexpected
 targets, restored bundles, and symlinked ancestors. Running a checker without
 a repair flag is read-only.
 
