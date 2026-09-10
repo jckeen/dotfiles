@@ -47,6 +47,8 @@
 #   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
+# Bootstrap has no owned processes or receipt state to clean up yet.
+trap 'exit 3' INT TERM HUP QUIT TSTP
 
 # The schema and gate-lib.sh ship beside this script in BOTH install locations
 # (the repo's claude/scripts/ and the ~/.claude/scripts symlink farm), so a
@@ -113,6 +115,49 @@ GATE_REVIEWER=codex GATE_CLI=codex
 # shellcheck disable=SC2034  # Do not invent an observed identity from config.
 GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
+WRAPPER_CANCELLED=0
+WRAPPER_CANCEL_GENERATION=0
+WRAPPER_REVIEW_RUNNING=false
+WRAPPER_CANCEL_FILE=""
+GATE_RUN_DIR=""
+OUT_FILE=""
+ERR_FILE=""
+KEEP_DIAGNOSTIC=false
+RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
+
+# The shared capture helper installs gate_cleanup as its EXIT trap, including
+# exemption paths. Keep wrapper state in that same cleanup contract.
+gate_cleanup() {
+  [[ -z "${OUT_FILE:-}" ]] || rm -f "$OUT_FILE"
+  if [[ -n "${ERR_FILE:-}" && "${KEEP_DIAGNOSTIC:-false}" != true ]]; then
+    rm -f "$ERR_FILE"
+  fi
+  [[ -z "$WRAPPER_CANCEL_FILE" ]] || rm -f "$WRAPPER_CANCEL_FILE"
+  [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
+}
+
+cancel_review() {
+  WRAPPER_CANCELLED=1
+  WRAPPER_CANCEL_GENERATION=$((WRAPPER_CANCEL_GENERATION + 1))
+  if [[ "$WRAPPER_REVIEW_RUNNING" == true ]]; then
+    printf '1\n' > "$WRAPPER_CANCEL_FILE"
+    return
+  fi
+  # Cancellation is already final. Repeated signals must not interrupt receipt
+  # invalidation or cleanup. The existing receipt API invalidates the whole lane.
+  trap '' INT TERM HUP QUIT TSTP
+  if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
+    [[ -z "${GATE_RUN_DIR:-}" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
+  fi
+  if [[ -n "${ERR_FILE:-}" ]] && declare -F report_diagnostic >/dev/null; then
+    report_diagnostic || true
+  fi
+  gate_cleanup
+  red "✖ Codex review cancelled; no approval from this attempt may be used."
+  exit 3
+}
+trap cancel_review INT TERM HUP QUIT TSTP
+trap gate_cleanup EXIT
 gate_init_receipt
 
 # Interactive shells already prefer the managed standalone release. Pin the
@@ -277,14 +322,10 @@ OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
 # tail in the system temp directory; never echo its untrusted bytes to the user.
 ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX)"
 KEEP_DIAGNOSTIC=false
-cleanup() {
-  rm -f "$OUT_FILE"
-  [[ "$KEEP_DIAGNOSTIC" == true ]] || rm -f "$ERR_FILE"
-  gate_cleanup
-}
+WRAPPER_CANCEL_FILE="$(mktemp /tmp/codex-review-cancel.XXXXXX)"
 report_diagnostic() {
   [[ -s "$ERR_FILE" ]] || return 0
-  python3 - "$ERR_FILE" <<'PYERR'
+  python3 - "$ERR_FILE" <<'PYERR' || return 1
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
@@ -306,7 +347,7 @@ PYERR
   KEEP_DIAGNOSTIC=true
   printf '  Private Codex diagnostic: %s\n' "$ERR_FILE"
 }
-trap cleanup EXIT
+trap gate_cleanup EXIT
 
 # `-s read-only`: the diff is untrusted input; a steered review must not be
 # able to write or execute beyond reads. A nonzero exit is a failed run, even
@@ -315,6 +356,7 @@ set +e
 # Python is already required by receipts and bounds execution on both Linux
 # and macOS, including installations without GNU timeout. A separate process
 # session lets the deadline terminate tool subprocesses across job-control groups.
+WRAPPER_REVIEW_RUNNING=true
 python3 -c '
 import ctypes
 import errno
@@ -379,7 +421,7 @@ interruption = None
 completion_ready = False
 outcome = "error"
 
-def interrupted(signum, _frame):
+def interrupted(signum, _frame=None):
     global interruption
     if interruption is None:
         interruption = signum
@@ -392,7 +434,17 @@ stop_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT,
 for signum in stop_signals:
     signal.signal(signum, interrupted)
 
-process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+cancel_file = sys.argv[2]
+
+def wrapper_cancelled():
+    try:
+        return os.stat(cancel_file).st_size != 0
+    except OSError:
+        return True
+
+if wrapper_cancelled():
+    sys.exit(143)
+process = subprocess.Popen(sys.argv[3:], start_new_session=True)
 
 errors = []
 
@@ -449,6 +501,8 @@ result = 125
 try:
     deadline = time.monotonic() + int(sys.argv[1])
     while True:
+        if wrapper_cancelled():
+            interrupted(signal.SIGTERM)
         if interruption is not None:
             outcome = "interrupted"
             break
@@ -478,6 +532,8 @@ finally:
     except (OSError, subprocess.TimeoutExpired) as error:
         errors.append("Reviewer reaping failed: " + str(error))
 
+if wrapper_cancelled():
+    interrupted(signal.SIGTERM)
 for error in errors:
     print(error, file=sys.stderr)
 # This is the ownership-completion boundary. New signals can now exit directly
@@ -490,12 +546,22 @@ elif interruption is not None:
 elif errors or outcome != "exited":
     result = 125
 sys.exit(result if result >= 0 else 128 - result)
-' "$REVIEW_TIMEOUT" "$GATE_CLI" exec - \
+' "$REVIEW_TIMEOUT" "$WRAPPER_CANCEL_FILE" "$GATE_CLI" exec - \
   -s read-only \
   --output-schema "$SCHEMA" \
-  -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
-CODEX_RC=$?
+  -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE" &
+SUPERVISOR_PID=$!
+# A trapped signal interrupts Bash wait before its child has finished. Retry
+# by trap generation, never by probing or signaling a potentially reused PID.
+while true; do
+  wait_generation="$WRAPPER_CANCEL_GENERATION"
+  wait "$SUPERVISOR_PID"
+  CODEX_RC=$?
+  [[ "$wait_generation" == "$WRAPPER_CANCEL_GENERATION" ]] && break
+done
+WRAPPER_REVIEW_RUNNING=false
 set -e
+[[ "$WRAPPER_CANCELLED" == 0 ]] || cancel_review
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
   [[ "$CODEX_RC" -ne 124 ]] || red "✖ Codex review timed out after $REVIEW_TIMEOUT seconds."

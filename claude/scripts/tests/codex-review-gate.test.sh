@@ -477,6 +477,165 @@ check "clean completion avoids the cleanup grace" 0 "Codex review passed" --unco
 assert "clean success has no fixed five-second delay" "(( SECONDS - $started < 5 ))"
 rm -rf "$R"
 
+# Exercise cancellation at the public Bash PID, with default signal dispositions.
+cat > "$SHIM_DIR/check-wrapper-cancel.py" <<'PYWRAPPER'
+import json
+import os
+from pathlib import Path
+import signal
+import shutil
+import subprocess
+import sys
+import time
+
+gate, repo, home, scenario = sys.argv[1:]
+fixture = Path(os.environ['CODEX_FAKE_DIR'])
+(fixture / 'hang').write_text('''
+import json, os, sys, time
+from pathlib import Path
+fixture = Path(os.environ['CODEX_FAKE_DIR'])
+print('WRAPPER_DIAGNOSTIC_MARKER', file=sys.stderr, flush=True)
+(fixture / 'owned-pids').write_text(json.dumps([(os.getpid(), os.getsid(0)), (os.getppid(), os.getsid(os.getppid()))]))
+time.sleep(3)
+args = (fixture / 'argv').read_text().splitlines()
+Path(args[args.index('-o') + 1]).write_text((fixture / 'output').read_text())
+''')
+if scenario.startswith('receipt'):
+    (fixture / 'sitecustomize.py').write_text('''
+import os, time
+from pathlib import Path
+original = os.replace
+def replace(source, target, *args, **kwargs):
+    result = original(source, target, *args, **kwargs)
+    if str(target).endswith('/codex.json'):
+        Path(os.environ['CODEX_FAKE_DIR'], 'receipt-written').touch()
+        time.sleep(.3)
+    return result
+os.replace = replace
+original_open = Path.open
+def open_path(path, *args, **kwargs):
+    if os.environ.get('WRAPPER_FAIL_DIAGNOSTIC') == '1' and path.name.startswith('codex-review-err.'):
+        Path(os.environ['CODEX_FAKE_DIR'], 'diagnostic-failed').touch()
+        raise OSError('fixture diagnostic read failure')
+    return original_open(path, *args, **kwargs)
+Path.open = open_path
+''')
+environment = dict(os.environ, HOME=home)
+if scenario.startswith('receipt'):
+    environment['PYTHONPATH'] = str(fixture)
+if scenario == 'receipt-diagnostic-failure':
+    environment['WRAPPER_FAIL_DIAGNOSTIC'] = '1'
+if scenario == 'bootstrap':
+    environment['REAL_GIT'] = shutil.which('git')
+    environment['PATH'] = str(fixture) + os.pathsep + environment['PATH']
+    (fixture / 'git').write_text('''#!/usr/bin/env bash
+if [[ "$1" == rev-parse && "${2:-}" == --is-inside-work-tree ]]; then
+  kill -INT "$PPID"
+fi
+exec "$REAL_GIT" "$@"
+''')
+    (fixture / 'git').chmod(0o700)
+stop_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGTSTP)
+def default_signals():
+    for signum in stop_signals:
+        signal.signal(signum, signal.SIG_DFL)
+diagnostics = []
+scope = '--committed' if scenario == 'receipt-diagnostic-failure' else '--uncommitted'
+process = subprocess.Popen([gate, scope, '--no-issues'], cwd=repo, env=environment,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           start_new_session=True, preexec_fn=default_signals)
+try:
+    if scenario == 'bootstrap':
+        output, _ = process.communicate(timeout=8)
+        assert process.returncode == 3, f'bootstrap cancellation returned {process.returncode}: {output}'
+        assert not (fixture / 'invoked').exists(), 'bootstrap cancellation dispatched a reviewer'
+        assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation approved a receipt'
+        sys.exit(0)
+    deadline = time.monotonic() + 8
+    while True:
+        if scenario.startswith('receipt'):
+            ready = (fixture / 'receipt-written').exists()
+        elif scenario == 'startup':
+            ready = bool(list(Path(repo, '.git', 'review-receipts').glob('run-*/snapshot.json')))
+        else:
+            ready = (fixture / 'owned-pids').exists()
+        if ready:
+            break
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError('public wrapper never reached the requested cancellation phase')
+        time.sleep(.01)
+    signum = getattr(signal, scenario) if scenario.startswith('SIG') else signal.SIGINT
+    process.send_signal(signum)
+    if scenario == 'repeated':
+        for _ in range(3):
+            time.sleep(.03)
+            process.send_signal(signal.SIGTERM)
+    output, _ = process.communicate(timeout=10)
+    failures = []
+    diagnostics = [Path(line.removeprefix('  Private Codex diagnostic: ')) for line in output.splitlines() if line.startswith('  Private Codex diagnostic: ')]
+    for diagnostic in diagnostics:
+        details = diagnostic.read_bytes()
+        if b'Traceback' in details or b'TypeError' in details:
+            failures.append('supervisor diagnostic contains an unexpected Python failure')
+    if scenario == 'receipt-diagnostic-failure':
+        if not (fixture / 'diagnostic-failed').exists():
+            failures.append('diagnostic failure injection was not exercised')
+    elif (fixture / 'owned-pids').exists() and not diagnostics:
+        failures.append('cancelled reviewer diagnostic was discarded')
+    if process.returncode != 3:
+        failures.append(f'expected exit 3, got {process.returncode}')
+    if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
+        failures.append('cancelled wrapper left a review receipt')
+    if (fixture / 'owned-pids').exists():
+        for pid, sid in json.loads((fixture / 'owned-pids').read_text()):
+            state = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+            if state and not state.startswith('Z'):
+                failures.append(f'owned process still alive: {pid} {state}')
+    assert not failures, '; '.join(failures) + '\n' + output
+finally:
+    # Clean failed fixtures through the same stable-ID primitive, never a raw
+    # recyclable PID. This prefix defines identity helpers without dispatching.
+    if (fixture / 'owned-pids').exists():
+        source = Path(gate).read_text().split("python3 -c '\nimport ctypes", 1)[1]
+        source = 'import ctypes' + source.split('# Check stable identity support', 1)[0]
+        namespace = {}
+        exec(source, namespace)
+        for pid, sid in json.loads((fixture / 'owned-pids').read_text()):
+            namespace['signal_member'](pid, sid, signal.SIGKILL)
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=2)
+    for diagnostic in diagnostics:
+        diagnostic.unlink(missing_ok=True)
+PYWRAPPER
+for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP repeated bootstrap startup receipt receipt-tier1 receipt-no-diff receipt-diagnostic-failure; do
+  new_repo
+  if [[ "$cancellation" == receipt-tier1 ]]; then
+    echo '# Documentation' > "$R/README.md"
+  elif [[ "$cancellation" != receipt-no-diff ]]; then
+    echo "change" >> "$R/code.txt"
+  fi
+  if [[ "$cancellation" == receipt-diagnostic-failure ]]; then
+    git -C "$R" checkout -qb feature
+    git -C "$R" commit -qam 'reviewable committed change'
+  fi
+  approve_clean
+  assert "public Bash PID cancellation: $cancellation" "python3 '$SHIM_DIR/check-wrapper-cancel.py' '$GATE' '$R' '$TEST_HOME' '$cancellation'"
+  rm -rf "$R"
+done
+
+# Early traps may remove only paths initialized by this invocation.
+new_repo
+sentinel="$SHIM_DIR/inherited-cleanup"
+mkdir -p "$sentinel/run"
+printf 'preserve\n' > "$sentinel/run/owned-by-caller"
+printf 'preserve\n' > "$sentinel/stdout"
+printf 'preserve\n' > "$sentinel/stderr"
+GATE_RUN_DIR="$sentinel/run" OUT_FILE="$sentinel/stdout" ERR_FILE="$sentinel/stderr" KEEP_DIAGNOSTIC=false CODEX_GATE_TIMEOUT=0 \
+  check "invalid startup fails before review capture" 3 "CODEX_GATE_TIMEOUT" --uncommitted --no-issues
+assert "early cleanup preserves inherited caller paths" "[ -f '$sentinel/run/owned-by-caller' ] && [ -f '$sentinel/stdout' ] && [ -f '$sentinel/stderr' ]"
+rm -rf "$R"
+
 # Stable handles must reject a recycled PID and preserve captured identity.
 cat > "$SHIM_DIR/check-signal-identity.py" <<'PYIDENTITY'
 import ast
