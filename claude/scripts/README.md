@@ -326,12 +326,27 @@ hosts require an explicit platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.
 
-Before non-force removal, the collector verifies a recovery Git bundle
-including reflog-reachable commits,
-archives worktree metadata including review receipts, and records identities
-and file hashes in a private recovery record. Stashes and branch refs stay in
-the source repository. The timer never releases or deletes worktrees; the next
-session owns follow-up for pending releases. User authorization and release
-ownership remain prerequisites for mutation, including when a standing order
-covers cleanup. This is not a lock against a filesystem owner starting new work
-after releasing a task.
+The collector verifies a recovery Git bundle including reflog-reachable
+commits, archives worktree metadata including review receipts, and records
+identities and file hashes in a private recovery record. It then locks the
+worktree against Git pruning and renames the actual directory to
+`worktree` inside that recovery directory, on the same filesystem. The result
+reports `quarantined` and the retained path. Late files and writes through open
+descriptors remain there, including ignored content that Git removal would
+discard. Retirement never deletes the retained directory or reclaims its disk
+space. Stashes, branch refs, and locked worktree metadata stay in the source
+repository. Cross-filesystem destinations are refused.
+
+The recovery record includes the original path, quarantine path and Git
+metadata path before the rename starts. If interruption leaves the tree in
+quarantine but Git still points at the original path, run
+`git -C /path/to/repo worktree repair /path/to/private/archive/retired-DIR/worktree`
+after inspecting those paths. The lock remains in place across interruption
+and successful repair. Keep it until an authorized owner has inspected the
+retained files and decided their disposition; no automatic purge is provided.
+
+The timer never releases or deletes worktrees; the next session owns follow-up
+for pending releases. User authorization and release ownership remain
+prerequisites for mutation, including when a standing order covers cleanup.
+Quarantine retains late writes; it does not prevent a filesystem owner from
+resuming work or creating a new directory at the original path.
