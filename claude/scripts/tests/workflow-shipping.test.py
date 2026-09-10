@@ -33,10 +33,10 @@ class ShippingTests(unittest.TestCase):
         shutil.copy2(ROOT / "githooks/pre-push", self.hook)
         self.calls = self.root / "calls"
         self.env = dict(os.environ, PATH=f"{self.bin}:/usr/bin:/bin", CALLS=str(self.calls),
-                        CODEX_GATE_BIN=str(self.bin / "codex"), CODEX_GATE_TIMEOUT="10",
+                        CODEX_GATE_BIN=str(self.bin / "codex"),
                         REAL_GIT=REAL_GIT, LOG_DIR=str(self.root / "logs"))
         for key in list(self.env):
-            if key.startswith("BASH_FUNC_") or key.startswith("GIT_") or key in ("GITLEAKS_SKIP", "REVIEW_RECEIPT_BASE"):
+            if key.startswith("BASH_FUNC_") or key.startswith("GIT_") or key in ("GITLEAKS_SKIP", "REVIEW_RECEIPT_BASE", "CODEX_GATE_TIMEOUT"):
                 del self.env[key]
         self.command("git", ["init", "-qb", "main"])
         self.command("git", ["config", "user.email", "test@example.test"])
