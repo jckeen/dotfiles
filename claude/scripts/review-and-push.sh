@@ -52,6 +52,24 @@ check_review_target() {
     echo "Commit changed during tests or review; run tests and review again on the intended commit." >&2
     return 1
   fi
+  # Status trusts index hints that can hide tracked edits. Inspect NUL-delimited
+  # records without changing the index or interpreting filename bytes as tags.
+  if ! python3 - <<'PY_INDEX'
+import subprocess
+import sys
+
+listing = subprocess.run(["git", "ls-files", "-v", "-z"], stdout=subprocess.PIPE)
+entries = listing.stdout.split(b'\0')
+if listing.returncode != 0 or any(
+    entry and (entry[:1].islower() or entry[:1] == b'S') for entry in entries
+):
+    sys.exit(1)
+PY_INDEX
+  then
+    echo "Cannot verify tracked input: index flags may hide changes, or index inspection failed." >&2
+    echo "Clear assume-unchanged/skip-worktree flags before running tests and review." >&2
+    return 1
+  fi
   if ! uncommitted=$(git -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all --ignore-submodules=none); then
     echo "Cannot verify a clean working tree; not running tests, review, or push." >&2
     return 1

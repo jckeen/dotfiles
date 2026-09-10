@@ -257,6 +257,44 @@ if [ "${DIRTY_DURING_TESTS:-0}" = 1 ]; then echo changed-during-tests >> code.tx
                 self.assertIn("uncommitted changes", result.stdout + result.stderr)
                 self.assertEqual(self.events(), [])
 
+    def test_wrapper_refuses_index_flags_hiding_uncommitted_input(self):
+        self.enable_test_runner()
+        path = self.repo / "code.txt"
+        for flag in ("assume-unchanged", "skip-worktree"):
+            with self.subTest(flag=flag):
+                flagged = self.command("git", ["update-index", "--" + flag, "code.txt"])
+                self.assertEqual(flagged.returncode, 0, flagged.stderr)
+                path.write_text("local fix absent from the pushed commit\n")
+                self.assertEqual(self.command("git", ["status", "--porcelain"]).stdout, "")
+                index_before = (self.repo / ".git/index").read_bytes()
+                try:
+                    result = self.run_wrapper()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("index flags", result.stdout + result.stderr)
+                    self.assertEqual(self.events(), [])
+                    self.assertEqual(path.read_text(), "local fix absent from the pushed commit\n")
+                    self.assertEqual((self.repo / ".git/index").read_bytes(), index_before)
+                finally:
+                    self.command("git", ["update-index", "--no-" + flag, "code.txt"])
+                    self.command("git", ["restore", "code.txt"])
+                    self.calls.unlink(missing_ok=True)
+
+    def test_wrapper_allows_ignored_artifacts_and_unusual_clean_paths(self):
+        # Newlines and undecodable filename bytes must not become ls-files tags.
+        name = os.fsdecode(b"code\nS artifact-\xff.txt")
+        (self.repo / name).write_text("tracked input\n")
+        self.command("git", ["add", "--", name])
+        self.command("git", ["commit", "-qm", "unusual filename fixture"])
+        self.head = self.command("git", ["rev-parse", "HEAD"]).stdout.strip()
+        self.env["VALID_HEAD"] = self.head
+        (self.repo / ".git/info/exclude").write_text("node_modules/\n.cache/\n")
+        for directory in ("node_modules", ".cache"):
+            (self.repo / directory).mkdir()
+            (self.repo / directory / "artifact").write_text("ordinary ignored artifact\n")
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.events()[-1], "push")
+
     def test_wrapper_blocks_files_changed_by_tests(self):
         self.enable_test_runner()
         self.env["DIRTY_DURING_TESTS"] = "1"
