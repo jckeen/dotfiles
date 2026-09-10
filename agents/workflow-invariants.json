@@ -1,0 +1,260 @@
+{
+  "version": 1,
+  "workflows": {
+    "branch-hygiene": {
+      "preview-without-writes": {
+        "description": "A dry-run preview makes no filesystem or remote changes.",
+        "claude": [
+          "--dry-run.{0,100}writes nothing"
+        ],
+        "agents": [
+          "--dry-run.{0,100}writes nothing"
+        ]
+      },
+      "protect-active-worktrees": {
+        "description": "Current and worktree-checked-out branches are protected.",
+        "claude": [
+          "current branch.{0,80}worktree.{0,80}always skipped"
+        ],
+        "agents": [
+          "current branch.{0,80}worktree.{0,80}always skipped"
+        ]
+      }
+    },
+    "changelog": {
+      "ground-in-history": {
+        "description": "Inspect relevant history before recording completed work.",
+        "claude": [
+          "Run git log"
+        ],
+        "agents": [
+          "Inspect recent relevant commits or diffs"
+        ]
+      }
+    },
+    "commit-push-pr": {
+      "verify-final-changes": {
+        "description": "Run relevant checks after completing the final intended changes.",
+        "claude": [
+          "Run affected build/test/lint checks on the final changes"
+        ],
+        "agents": [
+          "Run the smallest useful verification affected by the final changes"
+        ]
+      },
+      "stage-scoped-files": {
+        "description": "Stage only files belonging to the requested change.",
+        "claude": [
+          "Stage only relevant files"
+        ],
+        "agents": [
+          "Stage only relevant files"
+        ]
+      },
+      "current-review-receipt": {
+        "description": "Check current artifact review evidence immediately before push.",
+        "claude": [
+          "Check the receipt immediately before push",
+          "review-receipt.py check"
+        ],
+        "agents": [
+          "Immediately before pushing, validate the artifact evidence",
+          "review-receipt.py check"
+        ]
+      }
+    },
+    "decompose": {
+      "isolate-concurrent-edits": {
+        "description": "Concurrent editing agents require worktree isolation.",
+        "claude": [
+          "isolation: \"worktree\" for any that mutate files concurrently"
+        ],
+        "agents": [
+          "Parallel edits require separate worktrees"
+        ]
+      },
+      "observable-acceptance": {
+        "description": "Acceptance criteria must be atomic and observable.",
+        "claude": [
+          "Each criterion should be atomic and independently verifiable"
+        ],
+        "agents": [
+          "Write atomic, observable criteria"
+        ]
+      },
+      "claim-and-repro": {
+        "description": "Verification work requires a falsifiable claim and exact reproduction.",
+        "claude": [
+          "claim to disprove",
+          "exact repro"
+        ],
+        "agents": [
+          "claim to disprove",
+          "exact repro"
+        ]
+      }
+    },
+    "drift-sweep": {
+      "declare-doc-truth": {
+        "description": "Documentation truth surfaces use the canonical tier contract.",
+        "claude": [
+          "LIVING",
+          "GENERATED",
+          "SOURCE",
+          "HISTORICAL"
+        ],
+        "agents": [
+          "LIVING",
+          "GENERATED",
+          "SOURCE",
+          "HISTORICAL"
+        ]
+      },
+      "github-tracker": {
+        "description": "Move shadow open-work trackers into GitHub issues.",
+        "claude": [
+          "Shadow trackers get migrated, not tiered",
+          "GitHub issues are the only open-work tracker"
+        ],
+        "agents": [
+          "Migrate shadow trackers.{0,160}GitHub issues"
+        ]
+      }
+    },
+    "fix-issue": {
+      "reproduce-before-fix": {
+        "description": "Bugs get a failing test where applicable.",
+        "claude": [
+          "Write a failing test that reproduces the issue"
+        ],
+        "agents": [
+          "Add or run a failing test for bugs"
+        ]
+      },
+      "verification-required": {
+        "description": "Run affected verification after implementation.",
+        "claude": [
+          "Run the project.s test suite"
+        ],
+        "agents": [
+          "Run the focused new test first"
+        ]
+      }
+    },
+    "handoff": {
+      "session-continuity": {
+        "description": "Carry runtime session continuity into the handoff.",
+        "claude": [
+          "Session continuity"
+        ],
+        "agents": [
+          "Session continuity"
+        ]
+      },
+      "operator-queue-persists": {
+        "description": "Unfinished operator actions retain their queue blocks.",
+        "claude": [
+          "remove the block only when done"
+        ],
+        "agents": [
+          "remove the block only when done"
+        ]
+      }
+    },
+    "orchestrate": {
+      "isolate-concurrent-edits": {
+        "description": "Concurrent edits use isolated worktrees.",
+        "claude": [
+          "isolation: \"worktree\" so they work on isolated copies"
+        ],
+        "agents": [
+          "Before parallel edits, require both a separate worktree"
+        ]
+      },
+      "verification-required": {
+        "description": "Completion requires tool evidence.",
+        "claude": [
+          "Never claim done without evidence"
+        ],
+        "agents": [
+          "Run the smallest focused verification first"
+        ]
+      },
+      "claim-and-repro": {
+        "description": "Verification work requires a falsifiable claim and exact reproduction.",
+        "claude": [
+          "claim to disprove",
+          "exact repro"
+        ],
+        "agents": [
+          "claim to disprove",
+          "exact repro"
+        ]
+      }
+    },
+    "review": {
+      "security-boundaries": {
+        "description": "Review secrets, injection, and sensitive output boundaries.",
+        "claude": [
+          "hardcoded secrets",
+          "injection risks",
+          "Sensitive data in logs or responses"
+        ],
+        "agents": [
+          "hardcoded secrets",
+          "injection risks",
+          "Sensitive data in logs or responses"
+        ]
+      },
+      "cite-findings": {
+        "description": "Findings carry source locations.",
+        "claude": [
+          "Cite file:line"
+        ],
+        "agents": [
+          "cite file paths and line numbers"
+        ]
+      }
+    },
+    "session-retro": {
+      "confirmation-before-edit": {
+        "description": "Proposals do not authorize their own application.",
+        "claude": [
+          "Default to applying nothing until they choose"
+        ],
+        "agents": [
+          "Apply nothing until the user confirms"
+        ]
+      },
+      "generated-source-only": {
+        "description": "Edit canonical sources instead of generated global instructions.",
+        "claude": [
+          "target the sources in agents/canon/ instead and regenerate"
+        ],
+        "agents": [
+          "Do not edit generated.{0,100}directly"
+        ]
+      }
+    },
+    "simplify": {
+      "preserve-behavior": {
+        "description": "Simplification preserves observable behavior and interfaces.",
+        "claude": [
+          "Preserve behavior and public interfaces"
+        ],
+        "agents": [
+          "preserving behavior and public interfaces"
+        ]
+      },
+      "verification-required": {
+        "description": "Run relevant checks after simplification.",
+        "claude": [
+          "Run the smallest useful formatter, typecheck, lint, or test command"
+        ],
+        "agents": [
+          "Run the smallest useful formatter, typecheck, lint, or test command"
+        ]
+      }
+    }
+  }
+}

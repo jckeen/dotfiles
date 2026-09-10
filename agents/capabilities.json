@@ -1,0 +1,800 @@
+{
+  "version": 1,
+  "capabilities": {
+    "review": {
+      "claude": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/skills/review/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/skills/review/SKILL.md",
+            "contains": "name: review"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".claude/skills/review/SKILL.md",
+            "contains": "name: review"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/review/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/review/SKILL.md",
+            "contains": "name: review"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".agents/skills/review/SKILL.md",
+            "contains": "name: review"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/review/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/review/SKILL.md",
+            "contains": "name: review"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".gemini/config/skills/review/SKILL.md",
+            "contains": "name: review"
+          }
+        ]
+      }
+    },
+    "simplify": {
+      "claude": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/skills/simplify/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/skills/simplify/SKILL.md",
+            "contains": "name: simplify"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".claude/skills/simplify/SKILL.md",
+            "contains": "name: simplify"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/simplify/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/simplify/SKILL.md",
+            "contains": "name: simplify"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".agents/skills/simplify/SKILL.md",
+            "contains": "name: simplify"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/simplify/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/simplify/SKILL.md",
+            "contains": "name: simplify"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".gemini/config/skills/simplify/SKILL.md",
+            "contains": "name: simplify"
+          }
+        ]
+      }
+    },
+    "commit-pr": {
+      "claude": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/skills/commit-push-pr/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/skills/commit-push-pr/SKILL.md",
+            "contains": "name: commit-push-pr"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".claude/skills/commit-push-pr/SKILL.md",
+            "contains": "name: commit-push-pr"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/commit-push-pr/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/commit-push-pr/SKILL.md",
+            "contains": "name: commit-push-pr"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".agents/skills/commit-push-pr/SKILL.md",
+            "contains": "name: commit-push-pr"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "skill",
+        "scope": "required",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/commit-push-pr/SKILL.md",
+        "compatibility_floor": "Runtime loads Agent Skills SKILL.md and provides a shell for repository checks.",
+        "reason": "The shared workflow is required; instructions alone do not enforce acceptance or prove reviewer availability.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/commit-push-pr/SKILL.md",
+            "contains": "name: commit-push-pr"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".gemini/config/skills/commit-push-pr/SKILL.md",
+            "contains": "name: commit-push-pr"
+          }
+        ]
+      }
+    },
+    "github": {
+      "claude": {
+        "kind": "cli",
+        "scope": "required",
+        "owner": "public",
+        "status": "supported",
+        "provider": "gh-bootstrap.sh",
+        "compatibility_floor": "GitHub CLI with repository and API commands; an authenticated account is needed for remote operations.",
+        "reason": "All runtimes can use the shared shell adapter. PATH lookup proves presence only and does not authenticate or contact GitHub.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "gh-bootstrap.sh",
+            "contains": "gh api"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "gh"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "cli",
+        "scope": "required",
+        "owner": "public",
+        "status": "supported",
+        "provider": "gh-bootstrap.sh",
+        "compatibility_floor": "GitHub CLI with repository and API commands; an authenticated account is needed for remote operations.",
+        "reason": "All runtimes can use the shared shell adapter. PATH lookup proves presence only and does not authenticate or contact GitHub.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "gh-bootstrap.sh",
+            "contains": "gh api"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "gh"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "cli",
+        "scope": "required",
+        "owner": "public",
+        "status": "supported",
+        "provider": "gh-bootstrap.sh",
+        "compatibility_floor": "GitHub CLI with repository and API commands; an authenticated account is needed for remote operations.",
+        "reason": "All runtimes can use the shared shell adapter. PATH lookup proves presence only and does not authenticate or contact GitHub.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "gh-bootstrap.sh",
+            "contains": "gh api"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "gh"
+          }
+        ]
+      }
+    },
+    "browser-runtime": {
+      "claude": {
+        "kind": "plugin",
+        "scope": "project",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/plugins.txt",
+        "compatibility_floor": "Project enables the playwright plugin and provides an accessible development app.",
+        "reason": "The public install list includes a project-scoped browser provider; project enablement and real flow evidence are still required.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/plugins.txt",
+            "contains": "playwright@claude-plugins-official"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "json-key",
+            "path": ".claude/plugins/installed_plugins.json",
+            "key": [
+              "plugins",
+              "playwright@claude-plugins-official"
+            ]
+          }
+        ]
+      },
+      "codex": {
+        "kind": "skill",
+        "scope": "project",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/orchestrate/SKILL.md",
+        "compatibility_floor": "A working browser/runtime tool or an available teammate capable of exercising the app.",
+        "reason": "The workflow requires actual runtime evidence, but the public Codex configuration provisions no browser tool; the operator must provide one or route verification.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/orchestrate/SKILL.md",
+            "contains": "browser"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".agents/skills/orchestrate/SKILL.md",
+            "contains": "browser"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "mcp",
+        "scope": "project",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "antigravity/mcp_config.json.example",
+        "compatibility_floor": "Antigravity loads the MCP template; bunx launches the pinned Playwright server specification in that template.",
+        "reason": "MCP configuration and the browser verification skill are provisioned; server startup and browser execution remain unverified by these probes.",
+        "probe": [
+          {
+            "kind": "json-key",
+            "path": "antigravity/mcp_config.json.example",
+            "key": [
+              "mcpServers",
+              "playwright"
+            ]
+          },
+          {
+            "kind": "text",
+            "path": "antigravity/skills/browser-verify/SKILL.md",
+            "contains": "Claim to disprove"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "json-key",
+            "path": ".gemini/config/mcp_config.json",
+            "key": [
+              "mcpServers",
+              "playwright"
+            ]
+          },
+          {
+            "kind": "text",
+            "path": ".gemini/config/skills/browser-verify/SKILL.md",
+            "contains": "Claim to disprove"
+          }
+        ]
+      }
+    },
+    "handoff-injection": {
+      "claude": {
+        "kind": "hook",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/hooks/HandoffReminder.hook.sh",
+        "compatibility_floor": "Claude SessionStart consumes hook stdout; private settings must wire the public script.",
+        "reason": "The public hook is shipped, but event wiring is private and injection is advisory; no hook is executed by this probe.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/hooks/HandoffReminder.hook.sh",
+            "contains": "handoffs"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".claude/hooks/HandoffReminder.hook.sh"
+          },
+          {
+            "kind": "json-key",
+            "path": ".claude/settings.json",
+            "key": [
+              "hooks",
+              "SessionStart"
+            ]
+          },
+          {
+            "kind": "text",
+            "path": ".claude/settings.json",
+            "contains": "HandoffReminder.hook.sh"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "instruction",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "codex/AGENTS.md",
+        "compatibility_floor": "Runtime loads global AGENTS.md and can read the shared handoff directory.",
+        "reason": "Manual handoff loading is instructed. Automatic injection is not implemented in this repository; documented native hook support does not prove a local adapter or trust state.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "codex/AGENTS.md",
+            "contains": "~/.claude/handoffs/"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".codex/AGENTS.md",
+            "contains": "~/.claude/handoffs/"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "hook",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/scripts/agy-inject-handoff.sh",
+        "compatibility_floor": "Existing PreInvocation adapter expects workspacePaths/invocationNum input and injectSteps output.",
+        "reason": "The existing adapter and event wiring are inventoried without porting them to another runtime or asserting enforcement.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/scripts/agy-inject-handoff.sh",
+            "contains": "injectSteps"
+          },
+          {
+            "kind": "json-key",
+            "path": "antigravity/hooks.json",
+            "key": [
+              "handoff-context",
+              "PreInvocation"
+            ]
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".claude/scripts/agy-inject-handoff.sh",
+            "contains": "injectSteps"
+          },
+          {
+            "kind": "json-key",
+            "path": ".gemini/config/hooks.json",
+            "key": [
+              "handoff-context",
+              "PreInvocation"
+            ]
+          }
+        ]
+      }
+    },
+    "formatting": {
+      "claude": {
+        "kind": "hook",
+        "scope": "project",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/hooks/format-on-edit.sh",
+        "compatibility_floor": "Claude PostToolUse supplies tool_input.file_path; the project opts in and has its formatter installed.",
+        "reason": "The existing formatter hook is best effort and always allows; private settings own event wiring.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/hooks/format-on-edit.sh",
+            "contains": "tool_input.file_path"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".claude/hooks/format-on-edit.sh"
+          },
+          {
+            "kind": "json-key",
+            "path": ".claude/settings.json",
+            "key": [
+              "hooks",
+              "PostToolUse"
+            ]
+          },
+          {
+            "kind": "text",
+            "path": ".claude/settings.json",
+            "contains": "format-on-edit.sh"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "skill",
+        "scope": "project",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/simplify/SKILL.md",
+        "compatibility_floor": "Runtime has a shell and the project defines an available formatter, lint, typecheck, or test command.",
+        "reason": "Manual project checks are instructed. No automatic on-edit hook adapter is installed for this runtime.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/simplify/SKILL.md",
+            "contains": "formatter"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".agents/skills/simplify/SKILL.md",
+            "contains": "formatter"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "skill",
+        "scope": "project",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "agents/skills/simplify/SKILL.md",
+        "compatibility_floor": "Runtime has a shell and the project defines an available formatter, lint, typecheck, or test command.",
+        "reason": "Manual project checks are instructed. No automatic on-edit hook adapter is installed for this runtime.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "agents/skills/simplify/SKILL.md",
+            "contains": "formatter"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "text",
+            "path": ".gemini/config/skills/simplify/SKILL.md",
+            "contains": "formatter"
+          }
+        ]
+      }
+    },
+    "secret-scanning": {
+      "claude": {
+        "kind": "git-hook",
+        "scope": "required",
+        "owner": "public",
+        "status": "supported",
+        "provider": "githooks/pre-push",
+        "compatibility_floor": "Git invokes the installed pre-push hook and gitleaks supports its git subcommand (the setup script checks this interface).",
+        "reason": "The repository hook supplies the shared scan. Presence does not prove Git hook wiring; missing gitleaks may be advisory under the existing hook policy. CI separately runs the scanner.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "githooks/pre-push",
+            "contains": "gitleaks git"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "gitleaks"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "git-hook",
+        "scope": "required",
+        "owner": "public",
+        "status": "supported",
+        "provider": "githooks/pre-push",
+        "compatibility_floor": "Git invokes the installed pre-push hook and gitleaks supports its git subcommand (the setup script checks this interface).",
+        "reason": "The repository hook supplies the shared scan. Presence does not prove Git hook wiring; missing gitleaks may be advisory under the existing hook policy. CI separately runs the scanner.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "githooks/pre-push",
+            "contains": "gitleaks git"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "gitleaks"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "git-hook",
+        "scope": "required",
+        "owner": "public",
+        "status": "supported",
+        "provider": "githooks/pre-push",
+        "compatibility_floor": "Git invokes the installed pre-push hook and gitleaks supports its git subcommand (the setup script checks this interface).",
+        "reason": "The repository hook supplies the shared scan. Presence does not prove Git hook wiring; missing gitleaks may be advisory under the existing hook policy. CI separately runs the scanner.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "githooks/pre-push",
+            "contains": "gitleaks git"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "gitleaks"
+          }
+        ]
+      }
+    },
+    "notifications": {
+      "claude": {
+        "kind": "hook",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/hooks/ntfy-awaiting-input.sh",
+        "compatibility_floor": "Claude PreToolUse AskUserQuestion wiring, curl, and private NTFY_TOPIC configuration.",
+        "reason": "Notification sending is optional; this probe never sends a message or reads the topic value.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/hooks/ntfy-awaiting-input.sh",
+            "contains": "NTFY_TOPIC"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".claude/hooks/ntfy-awaiting-input.sh"
+          },
+          {
+            "kind": "json-key",
+            "path": ".claude/settings.json",
+            "key": [
+              "hooks",
+              "PreToolUse"
+            ]
+          },
+          {
+            "kind": "text",
+            "path": ".claude/settings.json",
+            "contains": "ntfy-awaiting-input.sh"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "No public notification adapter is provisioned for this runtime. Private or injected providers remain operator owned.",
+        "probe": [],
+        "live_probe": []
+      },
+      "antigravity": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "No public notification adapter is provisioned for this runtime. Private or injected providers remain operator owned.",
+        "probe": [],
+        "live_probe": []
+      }
+    },
+    "docs-lookup": {
+      "claude": {
+        "kind": "plugin",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/plugins.txt",
+        "compatibility_floor": "The runtime installs and enables context7 from the declared plugin marketplace.",
+        "reason": "The plugin list declares documentation lookup; this probe does not contact its server or prove enablement.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/plugins.txt",
+            "contains": "context7@claude-plugins-official"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "json-key",
+            "path": ".claude/plugins/installed_plugins.json",
+            "key": [
+              "plugins",
+              "context7@claude-plugins-official"
+            ]
+          }
+        ]
+      },
+      "codex": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "The public runtime template provisions no documentation lookup provider. Built-in search, local plugins, and injected tools must be checked in the active session.",
+        "probe": [],
+        "live_probe": []
+      },
+      "antigravity": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "The public runtime template provisions no documentation lookup provider. Built-in search, local plugins, and injected tools must be checked in the active session.",
+        "probe": [],
+        "live_probe": []
+      }
+    },
+    "private-memory": {
+      "claude": {
+        "kind": "instruction",
+        "scope": "optional",
+        "owner": "private",
+        "status": "advisory",
+        "provider": ".claude/CLAUDE.local.md",
+        "compatibility_floor": "Optional private companion repository installs the runtime memory/instruction file.",
+        "reason": "The operator owns private content. Public CI validates only this disposition; the live probe checks presence without reading memory contents.",
+        "probe": [
+          {
+            "kind": "file",
+            "path": ".claude/CLAUDE.local.md"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".claude/CLAUDE.local.md"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "instruction",
+        "scope": "optional",
+        "owner": "private",
+        "status": "advisory",
+        "provider": ".codex/MEMORY.md",
+        "compatibility_floor": "Optional private companion repository installs the runtime memory/instruction file.",
+        "reason": "The operator owns private content. Public CI validates only this disposition; the live probe checks presence without reading memory contents.",
+        "probe": [
+          {
+            "kind": "file",
+            "path": ".codex/MEMORY.md"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".codex/MEMORY.md"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "instruction",
+        "scope": "optional",
+        "owner": "private",
+        "status": "advisory",
+        "provider": ".gemini/config/MEMORY.md",
+        "compatibility_floor": "Optional private companion repository installs the runtime memory/instruction file.",
+        "reason": "The operator owns private content. Public CI validates only this disposition; the live probe checks presence without reading memory contents.",
+        "probe": [
+          {
+            "kind": "file",
+            "path": ".gemini/config/MEMORY.md"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".gemini/config/MEMORY.md"
+          }
+        ]
+      }
+    }
+  }
+}
