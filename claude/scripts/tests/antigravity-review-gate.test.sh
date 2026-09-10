@@ -326,6 +326,70 @@ printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --require
 rm -rf "$R"
 
+# Unchanged canonical instruction links can be reviewed; both identities stay bound.
+for mutation in target-worktree target-index target-commit link-worktree link-index link-commit; do
+  new_repo
+  printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+  ln -s CLAUDE.md "$R/AGENTS.md"
+  git -C "$R" add AGENTS.md CLAUDE.md
+  git -C "$R" commit -qm 'canonical instructions'
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  check "canonical link permits antigravity receipt before $mutation" 0 "LGTB verdict" --committed --require
+  assert "canonical link antigravity receipt is valid" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer antigravity >/dev/null 2>&1"
+  case "$mutation" in
+    target-*)
+      printf 'Changed canonical instructions.\n' > "$R/CLAUDE.md"
+      if [[ "$mutation" == target-index ]]; then
+        git -C "$R" add CLAUDE.md
+        printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+      elif [[ "$mutation" == target-commit ]]; then
+        git -C "$R" commit -qam 'changed canonical target'
+      fi
+      ;;
+    link-*)
+      rm "$R/AGENTS.md"
+      ln -s ./CLAUDE.md "$R/AGENTS.md"
+      if [[ "$mutation" == link-index ]]; then
+        git -C "$R" add AGENTS.md
+        rm "$R/AGENTS.md"
+        ln -s CLAUDE.md "$R/AGENTS.md"
+      elif [[ "$mutation" == link-commit ]]; then
+        git -C "$R" commit -qam 'changed canonical link'
+      fi
+      ;;
+  esac
+  assert "$mutation stales antigravity shipping evidence" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer antigravity >/dev/null 2>&1"
+  rm -f "$AGY_FAKE_DIR/invoked"
+  check "$mutation blocks a new antigravity review" 2 "instruction symlink" --committed --require
+  assert "$mutation prevents antigravity dispatch and approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+  rm -rf "$R"
+done
+
+for mutation in target link; do
+  new_repo
+  printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+  ln -s CLAUDE.md "$R/AGENTS.md"
+  git -C "$R" add AGENTS.md CLAUDE.md
+  git -C "$R" commit -qm 'canonical instructions'
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  if [[ "$mutation" == target ]]; then
+    printf 'printf "Mutated during review.\\n" > CLAUDE.md\n' > "$AGY_FAKE_DIR/mutate"
+  else
+    printf 'rm AGENTS.md\nln -s ./CLAUDE.md AGENTS.md\n' > "$AGY_FAKE_DIR/mutate"
+  fi
+  check "concurrent $mutation mutation blocks antigravity receipt" 2 "instruction symlink" --committed --require
+  assert "concurrent $mutation mutation leaves no antigravity approval" "[ -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+  rm -rf "$R"
+done
+
 # The alternate lane must receive instruction bytes even with passive suffixes.
 for active_path in .codex/policy.lock .claude/hooks/check.lock LICENSE.py; do
   for scope in committed uncommitted; do

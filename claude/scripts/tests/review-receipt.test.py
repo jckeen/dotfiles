@@ -40,9 +40,9 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(p.returncode == 0, ok, p.stdout + p.stderr)
         return p.stdout.strip()
 
-    def begin(self, scope='committed', base='main', tier1_max_lines=None):
+    def begin(self, scope='committed', base='main', tier1_max_lines=None, reviewer='codex'):
         policy = ('--tier1-max-lines=' + tier1_max_lines,) if tier1_max_lines is not None else ()
-        return Path(self.run_helper('begin', '--repo', str(self.repo), '--base', base, '--scope', scope, '--reviewer', 'codex', *policy)) / 'snapshot.json'
+        return Path(self.run_helper('begin', '--repo', str(self.repo), '--base', base, '--scope', scope, '--reviewer', reviewer, *policy)) / 'snapshot.json'
 
     def complete(self, snapshot, outcome='passed', ok=True):
         return self.run_helper('complete', '--snapshot', str(snapshot), '--outcome', outcome, '--output', str(self.result), ok=ok)
@@ -423,15 +423,235 @@ class ReceiptTests(unittest.TestCase):
             alias.symlink_to('local-policy.txt' if name == 'AGENTS.md' else target)
             self.git('add', name)
             self.git('commit', '-qm', 'instruction alias')
+            self.git('branch', '-f', 'main', 'HEAD')
             for scope, base in (('committed', 'main'), ('uncommitted', 'main'), ('auto', 'main'), ('auto', 'HEAD')):
                 with self.subTest(path=name, scope=scope, base=base):
                     result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo), '--base', base,
                                              '--scope', scope, '--reviewer', 'codex'], capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn('instruction symlink targets are unsupported', result.stderr)
+                    self.assertIn('instruction symlink', result.stderr)
                     self.assertFalse(list((self.repo / '.git/review-receipts').glob('run-*/diff.patch')))
             self.git('rm', name)
             self.git('commit', '-qm', 'remove instruction alias')
+
+    def instruction_link_fixture(self, link='AGENTS.md', target='CLAUDE.md', link_text=None):
+        alias, policy = self.repo / link, self.repo / target
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text('Canonical instructions.\n')
+        alias.symlink_to(link_text or os.path.relpath(policy, alias.parent))
+        self.git('add', link, target)
+        self.git('commit', '-qm', 'canonical instruction link')
+        self.git('branch', '-f', 'main', 'HEAD')
+        (self.repo / 'code.txt').write_text('unrelated feature change\n')
+        self.git('commit', '-qam', 'feature after instructions')
+        return alias, policy
+
+    def test_unchanged_canonical_instruction_link_gets_bound_receipts(self):
+        original = self.git('rev-parse', 'HEAD')
+        for link, target in (('AGENTS.md', 'CLAUDE.md'), ('nested/AGENTS.md', 'CLAUDE.md'),
+                             ('AGENTS.md', 'docs/CLAUDE policy.md')):
+            with self.subTest(link=link, target=target):
+                self.git('reset', '--hard', original)
+                self.git('clean', '-fd')
+                alias, policy = self.instruction_link_fixture(link, target)
+                for lane in ('codex', 'antigravity'):
+                    snapshot = self.begin(reviewer=lane)
+                    artifact = json.loads(snapshot.read_text())['artifact']
+                    self.assertEqual(artifact['changed_paths'], ['code.txt'])
+                    binding = artifact['instruction_links'][link]
+                    self.assertEqual(binding['target'], target)
+                    self.assertEqual(binding['link_object'], self.git('rev-parse', 'HEAD:' + link))
+                    self.assertEqual(binding['target_object'], self.git('rev-parse', 'HEAD:' + target))
+                    self.complete(snapshot)
+                    self.check(True, '--reviewer', lane)
+                    clean = self.begin('uncommitted', reviewer=lane)
+                    self.assertEqual(json.loads(clean.read_text())['artifact']['changed_paths'], [])
+                    self.complete(clean, 'no-diff')
+                    policy.write_text('Mutated canonical instructions.\n')
+                    self.complete(clean, ok=False)
+                    policy.write_text('Canonical instructions.\n')
+
+    def test_committed_canonical_link_changes_need_separate_instruction_review(self):
+        alias, policy = self.instruction_link_fixture()
+        head = self.git('rev-parse', 'HEAD')
+        for change in ('link', 'target'):
+            with self.subTest(change=change):
+                self.git('reset', '--hard', head)
+                if change == 'link':
+                    alias.unlink()
+                    alias.symlink_to('./CLAUDE.md')
+                else:
+                    policy.write_text('Changed canonical instructions.\n')
+                self.git('add', 'AGENTS.md', 'CLAUDE.md')
+                self.git('commit', '-qm', 'changed canonical instructions')
+                for lane in ('codex', 'antigravity'):
+                    result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo),
+                                             '--base', 'main', '--scope', 'committed', '--reviewer', lane],
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('separate instruction review', result.stderr)
+
+    def test_canonical_link_keeps_native_crlf_target_normalization(self):
+        alias, policy = self.instruction_link_fixture()
+        self.git('config', 'core.autocrlf', 'true')
+        policy.unlink()
+        self.git('checkout', '--', 'CLAUDE.md')
+        self.assertEqual(policy.read_bytes(), b'Canonical instructions.\r\n')
+        snapshot = self.begin()
+        self.complete(snapshot)
+        self.check()
+        policy.write_bytes(b'Canonical instructions.\n')
+        self.check(False)
+        self.complete(snapshot, ok=False)
+        self.complete(self.begin())
+        self.check()
+
+    def test_sparse_canonical_link_requires_present_link_and_target(self):
+        for omitted_path in ('docs/AGENTS.md', 'docs/CLAUDE.md'):
+            with self.subTest(omitted=omitted_path):
+                self.git('sparse-checkout', 'disable')
+                self.git('reset', '--hard', self.git('rev-list', '--max-parents=0', 'HEAD'))
+                self.git('clean', '-fd')
+                self.instruction_link_fixture('docs/AGENTS.md', 'docs/CLAUDE.md')
+                self.git('config', 'core.sparseCheckout', 'true')
+                self.git('update-index', '--skip-worktree', omitted_path)
+                (self.repo / omitted_path).unlink()
+                for scope in ('committed', 'uncommitted'):
+                    self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', scope,
+                                    '--reviewer', 'codex', ok=False)
+
+    def test_link_and_target_mutations_stale_each_lane_receipt(self):
+        alias, policy = self.instruction_link_fixture()
+        original_target = self.git('rev-parse', 'HEAD:CLAUDE.md')
+        for lane in ('codex', 'antigravity'):
+            for mutation in ('target-worktree', 'target-index', 'target-mode', 'target-commit',
+                             'link-worktree', 'link-index', 'link-mode', 'link-commit'):
+                with self.subTest(lane=lane, mutation=mutation):
+                    self.git('reset', '--hard', 'HEAD')
+                    snapshot = self.begin(reviewer=lane)
+                    self.complete(snapshot)
+                    self.check(True, '--reviewer', lane)
+                    if mutation.startswith('target'):
+                        policy.write_text('Changed target bytes.\n')
+                        if mutation == 'target-mode':
+                            policy.write_text('Canonical instructions.\n')
+                            policy.chmod(0o755)
+                        elif mutation in ('target-index', 'target-commit'):
+                            self.git('add', 'CLAUDE.md')
+                            if mutation == 'target-index':
+                                policy.write_text('Canonical instructions.\n')
+                            else:
+                                self.git('commit', '-qm', 'changed canonical policy')
+                    else:
+                        alias.unlink()
+                        if mutation == 'link-mode':
+                            alias.write_text('CLAUDE.md')
+                        else:
+                            alias.symlink_to('./CLAUDE.md')
+                        if mutation in ('link-index', 'link-commit'):
+                            self.git('add', 'AGENTS.md')
+                            if mutation == 'link-index':
+                                alias.unlink()
+                                alias.symlink_to('CLAUDE.md')
+                            else:
+                                self.git('commit', '-qm', 'changed canonical link')
+                    self.check(False, '--reviewer', lane)
+                    self.complete(snapshot, ok=False)
+                    self.git('reset', '--hard', json.loads(snapshot.read_text())['artifact']['head'])
+                    self.assertEqual(self.git('rev-parse', 'HEAD:CLAUDE.md'), original_target)
+
+    def test_instruction_link_mismatches_fail_in_every_scope(self):
+        alias, policy = self.instruction_link_fixture()
+        for mutation in ('target-worktree', 'target-index', 'target-mode', 'target-delete',
+                         'link-worktree', 'link-index', 'link-mode', 'link-delete'):
+            with self.subTest(mutation=mutation):
+                self.git('reset', '--hard', 'HEAD')
+                changed = policy if mutation.startswith('target') else alias
+                if mutation.endswith('mode'):
+                    if changed == policy:
+                        changed.chmod(0o755)
+                    else:
+                        changed.unlink()
+                        changed.write_text('CLAUDE.md')
+                elif mutation.endswith('delete'):
+                    changed.unlink()
+                elif changed == policy:
+                    changed.write_text('Unreviewed instruction change.\n')
+                else:
+                    changed.unlink()
+                    changed.symlink_to('./CLAUDE.md')
+                if mutation.endswith('index'):
+                    self.git('add', changed.name)
+                    if changed == policy:
+                        changed.write_text('Canonical instructions.\n')
+                    else:
+                        changed.unlink()
+                        changed.symlink_to('CLAUDE.md')
+                for scope in ('committed', 'uncommitted', 'auto'):
+                    self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', scope,
+                                    '--reviewer', 'codex', ok=False)
+
+    def test_unsupported_instruction_link_targets_fail_without_export(self):
+        original = self.git('rev-parse', 'HEAD')
+        outside = Path(self.tmp.name) / 'CLAUDE.md'
+        outside.write_text('OUTSIDE_PRIVATE_INSTRUCTION_MARKER\n')
+        for unsafe in ('external', 'absolute-internal', 'escape-reentry', 'dangling', 'cycle', 'chain',
+                       'untracked', 'ignored', 'unnamed', 'directory', 'root-directory', 'symlink-parent', 'missing-parent', 'trailing-slash', 'trailing-dot'):
+            with self.subTest(target=unsafe):
+                self.git('reset', '--hard', original)
+                self.git('clean', '-fdx')
+                (self.repo / '.git/info/exclude').write_text('')
+                policy = self.repo / 'CLAUDE.md'
+                policy.write_text('Canonical instructions.\n')
+                self.git('add', 'CLAUDE.md')
+                text = 'CLAUDE.md'
+                if unsafe == 'external':
+                    text = '../CLAUDE.md'
+                elif unsafe == 'absolute-internal':
+                    text = str(policy)
+                elif unsafe == 'escape-reentry':
+                    text = '../repo/CLAUDE.md'
+                elif unsafe == 'dangling':
+                    text = 'MISSING-CLAUDE.md'
+                elif unsafe in ('cycle', 'chain'):
+                    policy.unlink()
+                    policy.symlink_to('AGENTS.md' if unsafe == 'cycle' else 'GEMINI.md')
+                    (self.repo / 'GEMINI.md').write_text('Chained instructions.\n')
+                    self.git('add', 'CLAUDE.md', 'GEMINI.md')
+                elif unsafe in ('untracked', 'ignored'):
+                    self.git('rm', '--cached', 'CLAUDE.md')
+                    if unsafe == 'ignored':
+                        (self.repo / '.git/info/exclude').write_text('CLAUDE.md\n')
+                elif unsafe == 'unnamed':
+                    text = 'policy.lock'
+                    (self.repo / text).write_text('Unclassified instruction target.\n')
+                    self.git('add', text)
+                elif unsafe == 'directory':
+                    text = 'docs'
+                    (self.repo / 'docs').mkdir()
+                elif unsafe == 'root-directory':
+                    text = '.'
+                elif unsafe == 'symlink-parent':
+                    (self.repo / 'alias').symlink_to('.', target_is_directory=True)
+                    text = 'alias/CLAUDE.md'
+                    self.git('add', 'alias')
+                elif unsafe == 'missing-parent':
+                    text = 'missing/../CLAUDE.md'
+                elif unsafe == 'trailing-slash':
+                    text = 'CLAUDE.md/'
+                elif unsafe == 'trailing-dot':
+                    text = 'CLAUDE.md/.'
+                (self.repo / 'AGENTS.md').symlink_to(text)
+                self.git('add', 'AGENTS.md')
+                self.git('commit', '-qm', 'unsupported instruction target')
+                self.git('branch', '-f', 'main', 'HEAD')
+                for scope in ('committed', 'uncommitted', 'auto'):
+                    result = subprocess.run([sys.executable, str(HELPER), 'begin', '--repo', str(self.repo),
+                                             '--base', 'main', '--scope', scope, '--reviewer', 'codex'],
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertNotIn('OUTSIDE_PRIVATE_INSTRUCTION_MARKER', result.stdout + result.stderr)
 
     def test_deleted_parent_directory_remains_reviewable(self):
         nested = self.repo / 'nested'

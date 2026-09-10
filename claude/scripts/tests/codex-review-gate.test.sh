@@ -709,6 +709,68 @@ check "later empty output produces no new approval" 0 "produced no review output
 assert "failed retry invalidates the earlier lane receipt" "[ ! -f '$R/.git/review-receipts/codex.json' ]"
 rm -rf "$R"
 
+# Unchanged canonical instruction links can be reviewed; both identities stay bound.
+for mutation in target-worktree target-index target-commit link-worktree link-index link-commit; do
+  new_repo
+  printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+  ln -s CLAUDE.md "$R/AGENTS.md"
+  git -C "$R" add AGENTS.md CLAUDE.md
+  git -C "$R" commit -qm 'canonical instructions'
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  approve_clean
+  check "canonical link permits codex receipt before $mutation" 0 "Codex review passed" --committed --require --no-issues
+  assert "canonical link codex receipt is valid" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer codex >/dev/null 2>&1"
+  case "$mutation" in
+    target-*)
+      printf 'Changed canonical instructions.\n' > "$R/CLAUDE.md"
+      if [[ "$mutation" == target-index ]]; then
+        git -C "$R" add CLAUDE.md
+        printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+      elif [[ "$mutation" == target-commit ]]; then
+        git -C "$R" commit -qam 'changed canonical target'
+      fi
+      ;;
+    link-*)
+      rm "$R/AGENTS.md"
+      ln -s ./CLAUDE.md "$R/AGENTS.md"
+      if [[ "$mutation" == link-index ]]; then
+        git -C "$R" add AGENTS.md
+        rm "$R/AGENTS.md"
+        ln -s CLAUDE.md "$R/AGENTS.md"
+      elif [[ "$mutation" == link-commit ]]; then
+        git -C "$R" commit -qam 'changed canonical link'
+      fi
+      ;;
+  esac
+  assert "$mutation stales codex shipping evidence" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer codex >/dev/null 2>&1"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "$mutation blocks a new codex review" 2 "instruction symlink" --committed --require --no-issues
+  assert "$mutation prevents codex dispatch and approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
+for mutation in target link; do
+  new_repo
+  printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+  ln -s CLAUDE.md "$R/AGENTS.md"
+  git -C "$R" add AGENTS.md CLAUDE.md
+  git -C "$R" commit -qm 'canonical instructions'
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  approve_clean
+  if [[ "$mutation" == target ]]; then
+    printf 'printf "Mutated during review.\\n" > CLAUDE.md\n' > "$CODEX_FAKE_DIR/mutate"
+  else
+    printf 'rm AGENTS.md\nln -s ./CLAUDE.md AGENTS.md\n' > "$CODEX_FAKE_DIR/mutate"
+  fi
+  check "concurrent $mutation mutation blocks codex receipt" 2 "instruction symlink" --committed --require --no-issues
+  assert "concurrent $mutation mutation leaves no codex approval" "[ -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
 # Regression coverage for the workflow audit findings.
 new_repo
 git -C "$R" checkout -qb feature

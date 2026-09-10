@@ -154,8 +154,6 @@ def file_bytes(repo, path, directory_is_missing=False):
     except (FileNotFoundError, NotADirectoryError):
         return 'missing', b''
     if stat.S_ISLNK(info.st_mode):
-        if instruction(path):
-            raise ValueError('instruction symlink targets are unsupported; review separately: ' + path)
         return '120000', os.fsencode(os.readlink(file))
     if stat.S_ISDIR(info.st_mode) and directory_is_missing:
         return 'missing', b''
@@ -218,6 +216,65 @@ def same_content(path, mode, original, content, crlf_paths):
             and content.replace(b'\r\n', b'\n') == original)
 
 
+def instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf_paths):
+    bindings = {}
+    links = {path for state in (entries, staged, workspace) for path, (mode, _) in state.items()
+             if mode == '120000' and instruction(path)}
+    for path in sorted(links):
+        def unsupported(reason):
+            raise ValueError('unsupported instruction symlink: ' + path + ' (' + reason + ')')
+
+        mode, content = workspace.get(path, ('missing', b''))
+        original_mode, obj = entries.get(path, ('missing', None))
+        if (mode != '120000' or original_mode != mode or staged.get(path) != entries.get(path)
+                or content != blob(obj)):
+            unsupported('link must match HEAD, index, and worktree')
+        if entries.get(path) != base_entries.get(path):
+            unsupported('changed link needs separate instruction review')
+        link_text = os.fsdecode(content)
+        if not link_text or os.path.isabs(link_text):
+            unsupported('target must be relative and stay within the repository')
+        parts = list(Path(path).parent.parts)
+        for part in Path(link_text).parts:
+            if part == '..':
+                if not parts:
+                    unsupported('target must stay within the repository')
+                parts.pop()
+            else:
+                parts.append(part)
+        target = str(Path(*parts))
+        # Arbitrary target names would evade the gates' existing instruction
+        # classification (including passive-file exclusions and self-review).
+        # Keep this exception to one hop into an already recognized surface.
+        if not parts or not instruction(target) or private_agent_data(target):
+            unsupported('target must be a recognized instruction file')
+        target_mode, target_obj = entries.get(target, ('missing', None))
+        if target_mode not in ('100644', '100755') or staged.get(target) != entries.get(target):
+            unsupported('target must be a regular instruction file in HEAD and index')
+        # A changed CLAUDE.md target is also a changed AGENTS.md instruction,
+        # but the Codex gate's static self-review guard cannot follow aliases.
+        if entries.get(target) != base_entries.get(target):
+            unsupported('changed target needs separate instruction review')
+        # Inspect the uncollapsed path so missing/../ or a symlink ancestor
+        # cannot acquire the identity of a different, normalized Git path.
+        actual_mode, actual_bytes = file_bytes(repo, str(Path(path).parent / link_text))
+        if ((actual_mode, actual_bytes) != workspace.get(target) or actual_mode != target_mode
+                or not same_content(target, target_mode, blob(target_obj), actual_bytes, crlf_paths)):
+            unsupported('target must match HEAD, index, and worktree')
+        # Path normalizes trailing / and /. even when those make a live link
+        # dangling. Confirm the link actually reaches the captured file.
+        try:
+            resolves = os.path.samefile(repo / path, repo / target)
+        except OSError:
+            resolves = False
+        if not resolves:
+            unsupported('link must resolve to the captured instruction file')
+        bindings[path] = {'target': target, 'link_object': obj, 'link_sha256': digest(content),
+                          'target_object': target_obj, 'target_mode': target_mode,
+                          'target_sha256': digest(actual_bytes)}
+    return bindings
+
+
 def capture(repo, base, scope):
     head = oid(repo, 'HEAD')
     base_commit = oid(repo, base) if base else None
@@ -242,9 +299,6 @@ def capture(repo, base, scope):
             skipped.add(path)
     sparse = git(repo, 'config', '--type=bool', '--default', 'false', '--get', 'core.sparseCheckout').strip() == b'true'
     entries = tree_files(repo, head)
-    for path, (mode, _) in list(entries.items()) + list(staged.items()):
-        if mode == '120000' and instruction(path):
-            raise ValueError('instruction symlink targets are unsupported; review separately: ' + path)
     base_entries = tree_files(repo, merge) if scope == 'committed' else entries
     tracked = set(staged)
     tracked_files = {path for path, (mode, _) in staged.items() if mode in ('100644', '100755', '120000')}
@@ -276,6 +330,7 @@ def capture(repo, base, scope):
             omitted.add(path)
     # Keep semantic cleanliness separate from the raw bytes bound above.
     crlf_paths = crlf_normalized_paths(repo) if any(b'\r\n' in data for mode, data in workspace.values()) else set()
+    links = instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf_paths)
     for path, (mode, content) in workspace.items():
         if instruction(path):
             original_mode, obj = entries.get(path, ('missing', None))
@@ -330,7 +385,7 @@ def capture(repo, base, scope):
                 'scope': scope, 'index_sha256': digest(index), 'worktree_sha256': digest(encoded(files)),
                 'untracked_sha256': digest(encoded(sorted(untracked | ignored_instructions))),
                 'diff_sha256': digest(full), 'review_diff_sha256': digest(patch), 'changed_paths': paths,
-                'changed_modes': changed_modes}
+                'changed_modes': changed_modes, 'instruction_links': links}
     return artifact, patch
 
 
