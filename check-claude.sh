@@ -72,6 +72,7 @@ fi
 # Preserve existing audits of symlinked roots, but never heal through them.
 for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
   if [ -L "$root" ]; then
+    # shellcheck disable=SC2034  # HEAL is consumed by the sourced link helpers.
     HEAL=0
   fi
 done

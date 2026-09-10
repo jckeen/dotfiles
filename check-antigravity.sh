@@ -19,6 +19,7 @@ FIX=0
 HEAL=0
 HEALED=0
 STRICT=0
+# shellcheck disable=SC2034  # HEAL is consumed by the sourced link helpers.
 for arg in "$@"; do
   case "$arg" in
     --fix) FIX=1 ;;
