@@ -161,6 +161,22 @@ assert "fallback invokes the fixture CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_F
 export CODEX_GATE_BIN="$SHIM_DIR/codex"
 rm -rf "$R"
 
+# ── preserve exact executable identity through command substitution ─────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+newline_cli="$SHIM_DIR/reviewer"$'\n'
+cp "$SHIM_DIR/codex" "$SHIM_DIR/reviewer"
+cp "$SHIM_DIR/codex" "$newline_cli"
+ln -s "$newline_cli" "$SHIM_DIR/reviewer-link"
+for selection in "$newline_cli" "$SHIM_DIR/reviewer-link"; do
+  export CODEX_GATE_BIN="$selection"
+  check "newline executable selection passes" 0 "Codex review passed" --uncommitted --no-issues
+  assert "receipt and invocation preserve the exact newline executable" "python3 -c 'import json,sys; from pathlib import Path; receipt,invoked,expected=sys.argv[1:]; assert json.loads(Path(receipt).read_text())[\"reviewer\"][\"executable\"] == expected; assert Path(invoked).read_text() == expected + chr(10)' '$R/.git/review-receipts/codex.json' '$CODEX_FAKE_DIR/executable' \"\$newline_cli\""
+done
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+rm -rf "$R"
+
 # ── failures expose a safe hint and a bounded private diagnostic ─────────
 new_repo
 echo "change" >> "$R/code.txt"

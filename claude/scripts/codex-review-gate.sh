@@ -156,7 +156,8 @@ fi
 # same executable here so login-shell PATH order cannot select an older CLI.
 # CODEX_GATE_BIN=codex intentionally requests PATH; invalid overrides fail closed.
 if [[ "${CODEX_GATE_BIN+x}" == x ]]; then
-  GATE_CLI="$(type -P -- "$CODEX_GATE_BIN" || true)"
+  GATE_CLI="$(type -P -- "$CODEX_GATE_BIN" && printf .)" || GATE_CLI=""
+  GATE_CLI=${GATE_CLI%$'\n.'}
   if [[ ! -f "$GATE_CLI" || ! -x "$GATE_CLI" ]]; then
     red "✖ CODEX_GATE_BIN must name an executable file or a command on PATH."
     exit 3
@@ -164,12 +165,14 @@ if [[ "${CODEX_GATE_BIN+x}" == x ]]; then
 elif [[ -f "${HOME:-}/.codex/packages/standalone/current/bin/codex" && -x "${HOME:-}/.codex/packages/standalone/current/bin/codex" ]]; then
   GATE_CLI="${HOME}/.codex/packages/standalone/current/bin/codex"
 else
-  GATE_CLI="$(type -P codex || true)"
+  GATE_CLI="$(type -P codex && printf .)" || GATE_CLI=""
+  GATE_CLI=${GATE_CLI%$'\n.'}
   [[ -f "$GATE_CLI" && -x "$GATE_CLI" ]] || degrade "codex CLI not found on PATH."
 fi
 # Resolve the launcher before artifact capture so the receipt names the file
 # actually invoked even if the managed release symlink changes during review.
-GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI")"
+GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI" && printf .)"
+GATE_CLI=${GATE_CLI%$'\n.'}
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
