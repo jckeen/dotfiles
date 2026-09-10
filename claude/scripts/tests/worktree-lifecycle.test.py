@@ -615,6 +615,82 @@ if kind == 'writer':
         self.assertEqual(json.loads((archive / 'recovery.json').read_text())['head'], self.head)
         self.assertEqual(self.run_git(self.repo, 'rev-parse', 'topic').strip(), self.head)
 
+    def test_archive_rejects_actual_primary_with_separate_git_directory(self):
+        self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        destination = self.repo / 'private-recovery'
+        result = self.retire('--apply', '--archive-dir', str(destination))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('archive must be outside', result.stderr)
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.worktree.exists())
+
+    def test_archive_rejects_symlink_into_actual_primary_with_external_metadata(self):
+        self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        alias = self.root / 'primary-alias'
+        alias.symlink_to(self.repo, target_is_directory=True)
+        destination = alias / 'private-recovery'
+        result = self.retire('--apply', '--archive-dir', str(destination))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('archive must be outside', result.stderr)
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.worktree.exists())
+
+    def test_archive_outside_separate_primary_and_metadata_remains_supported(self):
+        self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        destination = self.root / 'private-recovery'
+        result = self.retire('--apply', '--archive-dir', str(destination))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = Path(json.loads(result.stdout)['archive'])
+        self.assertTrue((archive / 'repository.bundle').is_file())
+        self.assertTrue((archive / 'worktree-metadata.tar').is_file())
+        self.assertFalse(self.worktree.exists())
+
+    def test_archive_rejects_common_and_private_git_metadata(self):
+        common = self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        for root in (common, admin):
+            with self.subTest(root=root):
+                destination = root / 'private-recovery'
+                result = self.retire('--apply', '--archive-dir', str(destination))
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('archive must be outside', result.stderr)
+                self.assertFalse(destination.exists())
+                self.assertTrue(self.worktree.exists())
+
+    def test_archive_linked_repo_requires_primary_before_creating_inside_or_outside_destination(self):
+        self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        for destination in (self.repo / 'private-recovery', self.root / 'private-recovery'):
+            with self.subTest(destination=destination):
+                result = subprocess.run(['python3', str(self.runner), 'retire', '--repo', str(self.worktree),
+                    '--worktree', str(self.worktree), '--apply', '--archive-dir', str(destination)],
+                    cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('primary checkout', result.stderr)
+                self.assertFalse(destination.exists())
+                self.assertTrue(self.worktree.exists())
+
+    def test_archive_metadata_only_repo_cannot_establish_actual_primary(self):
+        common = self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        destination = self.root / 'private-recovery'
+        result = subprocess.run(['python3', str(self.runner), 'retire', '--repo', str(common),
+            '--worktree', str(self.worktree), '--apply', '--archive-dir', str(destination)],
+            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.worktree.exists())
+
     def test_changed_head_unique_merge_and_remote_ambiguity_are_retained(self):
         self.merged()
         self.assertEqual(self.release().returncode, 0)

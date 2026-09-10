@@ -332,10 +332,19 @@ def retire(repo, path, apply, archive_dir):
     if archive_dir is None:
         raise ValueError('--apply requires an explicit private --archive-dir')
     archive_dir = archive_dir.resolve()
-    for entry in worktrees(repo):
-        root = Path(entry['path'])
+    common = Path(text(git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))).resolve(strict=True)
+    invoking_admin = Path(text(git(repo, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
+    if invoking_admin != common:
+        raise ValueError('--apply requires --repo to identify the primary checkout')
+    # worktree list can report the common metadata path as the primary when
+    # --separate-git-dir is used. Resolve the actual primary from its checkout;
+    # a metadata-only invocation cannot establish that top-level and must fail.
+    primary = Path(text(git(repo, 'rev-parse', '--show-toplevel'))).resolve(strict=True)
+    excluded = {primary, common, admin.resolve(strict=True)}
+    excluded.update(Path(entry['path']).resolve() for entry in worktrees(repo))
+    for root in excluded:
         if archive_dir == root or root in archive_dir.parents:
-            raise ValueError('archive must be outside repository worktrees')
+            raise ValueError('archive must be outside repository worktrees and Git metadata')
     archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = archive_dir.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
