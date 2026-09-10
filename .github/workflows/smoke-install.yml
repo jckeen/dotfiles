@@ -74,17 +74,11 @@ jobs:
             echo "No installer changes — installer smoke steps skip."
           fi
 
-      # Offline fixtures use a stub Codex, never an account or model. Native
-      # macOS coverage checks BSD tempfiles and stable process signaling.
-      - uses: actions/setup-python@v6
-        if: steps.changes.outputs.gate_relevant == 'true'
-        with:
-          # macOS exposes os.waitid (needed to retain the session leader
-          # until cleanup finishes) starting with this Python release.
-          python-version: "3.13"
-
+      # The required ci.yml checks job already runs these fixtures on Linux.
+      # Native macOS adds BSD tempfile and foreground runtime coverage.
+      # Fixtures use a stub Codex, never an account or model.
       - name: Codex review gate portability
-        if: steps.changes.outputs.gate_relevant == 'true'
+        if: steps.changes.outputs.gate_relevant == 'true' && runner.os == 'macOS'
         run: bash claude/scripts/tests/codex-review-gate.test.sh
 
       - name: Syntax check shell scripts

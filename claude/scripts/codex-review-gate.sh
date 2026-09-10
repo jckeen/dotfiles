@@ -74,7 +74,6 @@ FORCE_UNCOMMITTED=false
 REQUIRED="${CODEX_GATE_REQUIRED:-0}"
 MAX_ISSUES="${CODEX_GATE_MAX_ISSUES:-10}"
 MAX_DIFF_LINES="${CODEX_GATE_MAX_LINES:-5000}"
-REVIEW_TIMEOUT="${CODEX_GATE_TIMEOUT-600}"
 CLAIM=""
 REPRO=""
 
@@ -115,10 +114,6 @@ GATE_REVIEWER=codex GATE_CLI=codex
 # shellcheck disable=SC2034  # Do not invent an observed identity from config.
 GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
-WRAPPER_CANCELLED=0
-WRAPPER_CANCEL_GENERATION=0
-WRAPPER_REVIEW_RUNNING=false
-WRAPPER_CANCEL_FILE=""
 GATE_RUN_DIR=""
 OUT_FILE=""
 ERR_FILE=""
@@ -126,23 +121,16 @@ KEEP_DIAGNOSTIC=false
 RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
 
 # The shared capture helper installs gate_cleanup as its EXIT trap, including
-# exemption paths. Keep wrapper state in that same cleanup contract.
+# exemption paths. Keep owned review files in that same cleanup contract.
 gate_cleanup() {
   [[ -z "${OUT_FILE:-}" ]] || rm -f "$OUT_FILE"
   if [[ -n "${ERR_FILE:-}" && "${KEEP_DIAGNOSTIC:-false}" != true ]]; then
     rm -f "$ERR_FILE"
   fi
-  [[ -z "$WRAPPER_CANCEL_FILE" ]] || rm -f "$WRAPPER_CANCEL_FILE"
   [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
 }
 
 cancel_review() {
-  WRAPPER_CANCELLED=1
-  WRAPPER_CANCEL_GENERATION=$((WRAPPER_CANCEL_GENERATION + 1))
-  if [[ "$WRAPPER_REVIEW_RUNNING" == true ]]; then
-    printf '1\n' > "$WRAPPER_CANCEL_FILE"
-    return
-  fi
   # Cancellation is already final. Repeated signals must not interrupt receipt
   # invalidation or cleanup. The existing receipt API invalidates the whole lane.
   trap '' INT TERM HUP QUIT TSTP
@@ -159,6 +147,10 @@ cancel_review() {
 trap cancel_review INT TERM HUP QUIT TSTP
 trap gate_cleanup EXIT
 gate_init_receipt
+if [[ "${CODEX_GATE_TIMEOUT+x}" == x ]]; then
+  red "✖ CODEX_GATE_TIMEOUT is retired; unset it to use native foreground Codex execution."
+  exit 3
+fi
 
 # Interactive shells already prefer the managed standalone release. Pin the
 # same executable here so login-shell PATH order cannot select an older CLI.
@@ -178,10 +170,6 @@ fi
 # Resolve the launcher before artifact capture so the receipt names the file
 # actually invoked even if the managed release symlink changes during review.
 GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI")"
-if [[ ! "$REVIEW_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-  red "✖ CODEX_GATE_TIMEOUT must be a positive whole number of seconds."
-  exit 3
-fi
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
@@ -322,7 +310,6 @@ OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
 # tail in the system temp directory; never echo its untrusted bytes to the user.
 ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX)"
 KEEP_DIAGNOSTIC=false
-WRAPPER_CANCEL_FILE="$(mktemp /tmp/codex-review-cancel.XXXXXX)"
 report_diagnostic() {
   [[ -s "$ERR_FILE" ]] || return 0
   python3 - "$ERR_FILE" <<'PYERR' || return 1
@@ -337,8 +324,6 @@ path.write_bytes(tail)
 message = tail.decode('utf-8', errors='replace').lower()
 if 'requires a newer version of codex' in message:
     print('  The configured model requires a newer Codex CLI; update the selected installation.')
-elif 'non-reaping child observation is unavailable' in message:
-    print('  Reviewer supervision needs waitid/WNOWAIT support (Python 3.13+ on macOS).')
 elif any(value in message for value in ('unauthorized', 'authentication', 'not logged in', '401')):
     print('  Codex reported an authentication failure; check login for the selected installation.')
 elif any(value in message for value in ('rate limit', '429', 'quota')):
@@ -353,218 +338,16 @@ trap gate_cleanup EXIT
 # able to write or execute beyond reads. A nonzero exit is a failed run, even
 # if it left a partial structured result.
 set +e
-# Python is already required by receipts and bounds execution on both Linux
-# and macOS, including installations without GNU timeout. A separate process
-# session lets the deadline terminate tool subprocesses across job-control groups.
-WRAPPER_REVIEW_RUNNING=true
-python3 -c '
-import ctypes
-import errno
-import os
-import signal
-import subprocess
-import sys
-import time
-
-if sys.platform == "darwin":
-    # Apple libproc: PROC_PIDUNIQIDENTIFIERINFO and proc_signal_with_audittoken
-    # bind delivery to pid + idversion rather than a recyclable PID alone.
-    class UniqueIdentifier(ctypes.Structure):
-        _fields_ = [("uuid", ctypes.c_byte * 16), ("uniqueid", ctypes.c_uint64),
-                    ("parent_uniqueid", ctypes.c_uint64), ("idversion", ctypes.c_int32),
-                    ("reserved2", ctypes.c_uint32), ("reserved3", ctypes.c_uint64),
-                    ("reserved4", ctypes.c_uint64)]
-    AuditToken = ctypes.c_uint32 * 8
-    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-    libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                                     ctypes.c_void_p, ctypes.c_int]
-    libproc.proc_pidinfo.restype = ctypes.c_int
-    libproc.proc_signal_with_audittoken.argtypes = [ctypes.POINTER(AuditToken), ctypes.c_int]
-    libproc.proc_signal_with_audittoken.restype = ctypes.c_int
-elif sys.platform != "linux" or not all((hasattr(os, "pidfd_open"),
-                                        hasattr(signal, "pidfd_send_signal"))):
-    raise RuntimeError("Stable process identity signaling is unavailable; refusing review dispatch")
-
-def signal_member(pid, sid, signum):
-    try:
-        if sys.platform == "darwin":
-            identity = UniqueIdentifier()
-            size = ctypes.sizeof(identity)
-            if libproc.proc_pidinfo(pid, 17, 0, ctypes.byref(identity), size) != size:
-                error = ctypes.get_errno() or errno.EIO
-                raise OSError(error, os.strerror(error))
-            if os.getsid(pid) != sid:
-                return
-            token = AuditToken()
-            token[5], token[7] = pid, identity.idversion
-            # Unlike kill(2), this Darwin API rejects signal 0. Startup probes
-            # identity capture and symbol availability without delivering one.
-            if signum:
-                error = libproc.proc_signal_with_audittoken(ctypes.byref(token), signum)
-                if error:
-                    raise OSError(error, os.strerror(error))
-        else:
-            fd = os.pidfd_open(pid)
-            try:
-                if os.getsid(pid) == sid:
-                    signal.pidfd_send_signal(fd, signum)
-            finally:
-                os.close(fd)
-    except ProcessLookupError:
-        pass
-
-# Check stable identity support without delivering a signal, before launching.
-signal_member(os.getpid(), os.getsid(0), 0)
-if not all(hasattr(os, name) for name in ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT")):
-    raise RuntimeError("Non-reaping child observation is unavailable (macOS requires Python 3.13+); refusing review dispatch")
-interruption = None
-completion_ready = False
-outcome = "error"
-
-def interrupted(signum, _frame=None):
-    global interruption
-    if interruption is None:
-        interruption = signum
-    # Raising is safe only after session cleanup and bounded reaping finish.
-    if completion_ready:
-        raise SystemExit(124 if outcome == "timeout" else 128 + interruption)
-
-stop_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT,
-                signal.SIGTSTP)
-for signum in stop_signals:
-    signal.signal(signum, interrupted)
-
-cancel_file = sys.argv[2]
-
-def wrapper_cancelled():
-    try:
-        return os.stat(cancel_file).st_size != 0
-    except OSError:
-        return True
-
-if wrapper_cancelled():
-    sys.exit(143)
-process = subprocess.Popen(sys.argv[3:], start_new_session=True)
-
-errors = []
-
-def session_members(timeout=1):
-    try:
-        listing = subprocess.check_output(["ps", "-A", "-o", "pid=", "-o", "stat="],
-                                          text=True, timeout=timeout)
-        if not listing.strip():
-            raise ValueError("empty process listing")
-        members = {}
-        for line in listing.splitlines():
-            value, state = line.split()
-            pid = int(value)
-            if state.startswith(("Z", "X")):
-                continue
-            try:
-                if os.getsid(pid) == process.pid:
-                    members[pid] = os.getpgid(pid)
-            except ProcessLookupError:
-                pass
-        return members
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        errors.append("Session enumeration failed: " + str(error))
-        return None
-
-def signal_session(members, signum):
-    for pid, group in (members or {}).items():
-        if group != process.pid:
-            try:
-                signal_member(pid, process.pid, signum)
-            except OSError as error:
-                errors.append("Session member cleanup failed: " + str(error))
-    # WNOWAIT pins the session leader and its primary group ID through every
-    # exit path, including natural success with surviving background children.
-    try:
-        os.killpg(process.pid, signum)
-    except ProcessLookupError:
-        pass
-    except OSError as error:
-        errors.append("Primary group cleanup failed: " + str(error))
-
-def await_session(seconds):
-    deadline = time.monotonic() + seconds
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return session_members()
-        members = session_members(timeout=min(1, remaining))
-        if members is None or not members:
-            return members
-        time.sleep(min(.05, remaining))
-
-result = 125
-try:
-    deadline = time.monotonic() + int(sys.argv[1])
-    while True:
-        if wrapper_cancelled():
-            interrupted(signal.SIGTERM)
-        if interruption is not None:
-            outcome = "interrupted"
-            break
-        if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
-            outcome = "exited"
-            break
-        if time.monotonic() >= deadline:
-            outcome = "timeout"
-            break
-        time.sleep(.05)
-except OSError as error:
-    errors.append("Reviewer observation failed: " + str(error))
-finally:
-    # Keep recording terminal interruptions until completion, without raising
-    # while cleanup owns the session. Empty sessions incur no grace delay.
-    members = session_members()
-    if members is None or members:
-        signal_session(members, signal.SIGTERM)
-        members = await_session(5)
-        if members is None or members:
-            signal_session(session_members(), signal.SIGKILL)
-            members = await_session(2)
-        if members:
-            errors.append("Live reviewer session members remain after cleanup")
-    try:
-        result = process.wait(timeout=2)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        errors.append("Reviewer reaping failed: " + str(error))
-
-if wrapper_cancelled():
-    interrupted(signal.SIGTERM)
-for error in errors:
-    print(error, file=sys.stderr)
-# This is the ownership-completion boundary. New signals can now exit directly
-# without abandoning children; previously recorded signals still veto approval.
-completion_ready = True
-if outcome == "timeout":
-    result = 124
-elif interruption is not None:
-    result = 128 + interruption
-elif errors or outcome != "exited":
-    result = 125
-sys.exit(result if result >= 0 else 128 - result)
-' "$REVIEW_TIMEOUT" "$WRAPPER_CANCEL_FILE" "$GATE_CLI" exec - \
+# Leave terminal handling and tool-process cleanup with the native CLI. A
+# signal sent only to Bash is handled after this foreground command returns.
+"$GATE_CLI" exec - \
   -s read-only \
   --output-schema "$SCHEMA" \
-  -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE" &
-SUPERVISOR_PID=$!
-# A trapped signal interrupts Bash wait before its child has finished. Retry
-# by trap generation, never by probing or signaling a potentially reused PID.
-while true; do
-  wait_generation="$WRAPPER_CANCEL_GENERATION"
-  wait "$SUPERVISOR_PID"
-  CODEX_RC=$?
-  [[ "$wait_generation" == "$WRAPPER_CANCEL_GENERATION" ]] && break
-done
-WRAPPER_REVIEW_RUNNING=false
+  -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
+CODEX_RC=$?
 set -e
-[[ "$WRAPPER_CANCELLED" == 0 ]] || cancel_review
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
-  [[ "$CODEX_RC" -ne 124 ]] || red "✖ Codex review timed out after $REVIEW_TIMEOUT seconds."
   report_diagnostic
   red "✖ Codex exited rc=$CODEX_RC — not trusting the result, even when findings were written."
   exit 3

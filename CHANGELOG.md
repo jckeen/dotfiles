@@ -10,11 +10,11 @@
   verification is assigned by capability. Issue delivery uses the shared
   shipping skill and its receipt checks.
 - The Codex review gate selects the managed standalone installation unless an
-  explicit executable override is supplied, bounds review execution, and
-  preserves private failure diagnostics. Receipts record the selected runtime.
-- Every completion path cleans up the reviewer's session despite repeated
-  interrupts; cleanup failures block approval. Gate changes run offline
-  portability fixtures on Linux and macOS.
+  explicit executable override is supplied and preserves private failure
+  diagnostics. Receipts record the selected runtime.
+- Review execution uses the native foreground CLI. Observed cancellation
+  invalidates approval, including during receipt creation. Gate changes run
+  offline portability fixtures on Linux and macOS.
 
 ## 2026-09-09 — fix: preserve shared Codex sessions during startup
 

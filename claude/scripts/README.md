@@ -133,16 +133,17 @@ The Codex gate honors `CODEX_GATE_BIN` when explicitly set. Otherwise it prefers
 the managed standalone installation under `~/.codex` and falls back to `PATH`. Set `CODEX_GATE_BIN=codex` to deliberately select the
 executable on `PATH`. The receipt records the executable used by that run.
 
-`CODEX_GATE_TIMEOUT` bounds reviewer execution; its default lives in
-`codex-review-gate.sh`. A timeout or failed process does not produce approval.
-Cleanup runs on every completion path and covers the session created for that
-review, including shell job-control groups. Cleanup failure blocks approval.
-The gate requires stable process identity support and non-reaping child
-observation; unavailable support fails before reviewer dispatch. On macOS,
-use at least the Python version selected by the
-[native portability workflow](../../.github/workflows/smoke-install.yml).
-Terminal hangup, quit, or stop cancels the review and runs cleanup; suspending
-the terminal must not leave the detached reviewer running.
+The gate runs Codex in the foreground and validates its exit status, structured
+result, and artifact receipt. Native Codex handles terminal cancellation and
+its tool processes. Send cancellation to the foreground job; a signal sent
+only to the Bash wrapper may wait until the current command returns. Observed
+cancellation invalidates approval, including during receipt creation.
+
+The gate provides no hard execution deadline or detached-process containment.
+Unattended jobs that require those guarantees must obtain them from their
+execution host. An explicitly set `CODEX_GATE_TIMEOUT` is rejected so it cannot
+silently imply a deadline. Offline fixtures run in required Linux CI and the
+[native macOS portability workflow](../../.github/workflows/smoke-install.yml).
 Failures report a diagnostic hint and a private temporary log path without
 printing raw reviewer stderr, which may contain reviewed content. Inspect that
 log when needed and keep it out of repositories.

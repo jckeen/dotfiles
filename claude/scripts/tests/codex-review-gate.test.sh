@@ -213,271 +213,21 @@ rm -f "$SHIM_DIR/mktemp"
 unset CODEX_TEST_REAL_MKTEMP
 rm -rf "$R"
 
-# ── bounded timeout terminates the reviewer and stubborn descendants ─────
+# A retired deadline option must never imply that a deadline is enforced.
 new_repo
 echo "change" >> "$R/code.txt"
 approve_clean
-for invalid in 0 -1 invalid; do
-  export CODEX_GATE_TIMEOUT="$invalid"
-  check "invalid timeout fails closed before dispatch" 3 "CODEX_GATE_TIMEOUT" --uncommitted --no-issues
-  assert "invalid timeout never dispatches reviewer" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+for configured_timeout in 600 1 0 invalid ''; do
+  export CODEX_GATE_TIMEOUT="$configured_timeout"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "explicit retired timeout fails before dispatch" 3 "CODEX_GATE_TIMEOUT is retired" --uncommitted --no-issues
+  assert "retired timeout never dispatches or approves" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
 done
-cat > "$CODEX_FAKE_DIR/hang" <<'PYHANG'
-import os
-from pathlib import Path
-import signal
-import subprocess
-import sys
-import time
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-child = subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)'])
-Path(os.environ['CODEX_FAKE_DIR'], 'pids').write_text(f'{os.getpid()} {child.pid}')
-time.sleep(10)
-PYHANG
-export CODEX_GATE_TIMEOUT=1
-started=$SECONDS
-check "hung review fails closed at the deadline" 3 "timed out after 1 seconds" --uncommitted --no-issues
-assert "timeout and kill grace stay bounded" "(( SECONDS - $started < 9 ))"
-assert "timeout does not issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-assert "timeout kills the reviewer and its descendants" "python3 -c 'from pathlib import Path; import subprocess,sys; pids=Path(sys.argv[1]).read_text().split(); assert len(pids) == 2; states=[subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip() for pid in pids]; assert all(not state or state.startswith(\"Z\") for state in states), states' '$CODEX_FAKE_DIR/pids'"
 unset CODEX_GATE_TIMEOUT
 rm -rf "$R"
 
-# Job control creates another group in the same owned session.
-for lifecycle in job-control interrupt-cleanup interrupt-startup hangup-startup quit-startup stop-startup; do
-  new_repo
-  echo "change" >> "$R/code.txt"
-  approve_clean
-  if [[ "$lifecycle" == job-control ]]; then
-    cat > "$CODEX_FAKE_DIR/hang" <<'PYJOB'
-import os
-os.execv('/bin/bash', ['bash', '-c', 'set -m; sleep 12 & echo "$$ $!" > "$CODEX_FAKE_DIR/pids"; wait'])
-PYJOB
-  elif [[ "$lifecycle" == *-startup ]]; then
-    export CODEX_TEST_INTERRUPT_SIGNAL=SIGINT
-    [[ "$lifecycle" != hangup-startup ]] || CODEX_TEST_INTERRUPT_SIGNAL=SIGHUP
-    [[ "$lifecycle" != quit-startup ]] || CODEX_TEST_INTERRUPT_SIGNAL=SIGQUIT
-    [[ "$lifecycle" != stop-startup ]] || CODEX_TEST_INTERRUPT_SIGNAL=SIGTSTP
-    cat > "$CODEX_FAKE_DIR/hang" <<'PYSTARTUP'
-import os
-from pathlib import Path
-import signal
-import time
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-Path(os.environ['CODEX_FAKE_DIR'], 'pids').write_text(str(os.getpid()))
-time.sleep(12)
-PYSTARTUP
-    cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYSITE'
-import os
-from pathlib import Path
-import signal
-import subprocess
-import time
-original = subprocess.Popen
-def popen(*args, **kwargs):
-    process = original(*args, **kwargs)
-    if kwargs.get('start_new_session'):
-        for _ in range(100):
-            if Path(os.environ['CODEX_FAKE_DIR'], 'pids').exists():
-                break
-            time.sleep(.01)
-        os.kill(os.getpid(), getattr(signal, os.environ['CODEX_TEST_INTERRUPT_SIGNAL']))
-    return process
-subprocess.Popen = popen
-PYSITE
-    export PYTHONPATH="$CODEX_FAKE_DIR"
-  else
-    cat > "$CODEX_FAKE_DIR/hang" <<'PYINTERRUPT'
-import os
-from pathlib import Path
-import signal
-import subprocess
-import sys
-import time
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-signal.signal(signal.SIGINT, signal.SIG_IGN)
-script = "import os,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(2); os.kill(int(__import__('sys').argv[1]), signal.SIGINT)"
-child = subprocess.Popen([sys.executable, '-c', script, str(os.getppid())])
-Path(os.environ['CODEX_FAKE_DIR'], 'pids').write_text(f'{os.getpid()} {child.pid}')
-time.sleep(12)
-PYINTERRUPT
-  fi
-  sleep 15 &
-  unrelated_pid=$!
-  export CODEX_GATE_TIMEOUT=1
-  fragment="timed out after 1 seconds"
-  [[ "$lifecycle" != *-startup ]] || fragment="not trusting the result"
-  check "$lifecycle fails closed" 3 "$fragment" --uncommitted --no-issues
-  assert "$lifecycle does not issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-  assert "$lifecycle terminates owned descendants" "python3 -c 'from pathlib import Path; import subprocess,sys; pids=Path(sys.argv[1]).read_text().split(); assert pids; states=[subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip() for pid in pids]; assert all(not state or state.startswith(\"Z\") for state in states), states' '$CODEX_FAKE_DIR/pids'"
-  assert "$lifecycle preserves an unrelated process" "kill -0 '$unrelated_pid'"
-  kill "$unrelated_pid"
-  wait "$unrelated_pid" 2>/dev/null || true
-  unset CODEX_GATE_TIMEOUT PYTHONPATH CODEX_TEST_INTERRUPT_SIGNAL
-  rm -rf "$R"
-done
-
-# An interrupt concurrent with successful wait must not mint approval.
-new_repo
-echo "change" >> "$R/code.txt"
-approve_clean
-cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYSUCCESS'
-import os
-import signal
-import subprocess
-original = subprocess.Popen
-def popen(*args, **kwargs):
-    process = original(*args, **kwargs)
-    if kwargs.get('start_new_session'):
-        original_wait = process.wait
-        def wait(*args, **kwargs):
-            result = original_wait(*args, **kwargs)
-            os.kill(os.getpid(), signal.SIGINT)
-            return result
-        process.wait = wait
-    return process
-subprocess.Popen = popen
-PYSUCCESS
-export PYTHONPATH="$CODEX_FAKE_DIR"
-check "interrupt concurrent with successful exit fails closed" 3 "not trusting the result" --uncommitted --no-issues
-assert "interrupted success cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-unset PYTHONPATH
-rm -rf "$R"
-
-# Natural success and failure still own session children until cleanup ends.
-for reviewer_rc in 0 1; do
-  new_repo
-  echo "change" >> "$R/code.txt"
-  approve_clean
-  echo "$reviewer_rc" > "$CODEX_FAKE_DIR/rc"
-  cat > "$CODEX_FAKE_DIR/mutate" <<'SHCHILD'
-set -m
-sleep 12 &
-echo "$!" > "$CODEX_FAKE_DIR/pids"
-SHCHILD
-  export CODEX_GATE_TIMEOUT=1
-  if [[ "$reviewer_rc" == 0 ]]; then
-    check "successful exit cleans remaining session children" 0 "Codex review passed" --uncommitted --no-issues
-  else
-    check "failed exit cleans remaining session children" 3 "not trusting the result" --uncommitted --no-issues
-  fi
-  assert "exit $reviewer_rc leaves no live session child" "python3 -c 'from pathlib import Path; import subprocess,sys; pid=Path(sys.argv[1]).read_text().strip(); state=subprocess.run([\"ps\", \"-p\", pid, \"-o\", \"stat=\"], capture_output=True, text=True).stdout.strip(); assert not state or state.startswith(\"Z\"), state' '$CODEX_FAKE_DIR/pids'"
-  unset CODEX_GATE_TIMEOUT
-  rm -rf "$R"
-done
-
-# A cancellation at the final exit boundary must never disappear into SIG_IGN.
-new_repo
-echo "change" >> "$R/code.txt"
-approve_clean
-cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYLATE'
-import os
-import signal
-import subprocess
-import sys
-original_popen, original_exit = subprocess.Popen, sys.exit
-is_supervisor = False
-def popen(*args, **kwargs):
-    global is_supervisor
-    process = original_popen(*args, **kwargs)
-    is_supervisor = is_supervisor or kwargs.get('start_new_session', False)
-    return process
-def finish(status=0):
-    if is_supervisor:
-        os.kill(os.getpid(), signal.SIGINT)
-    original_exit(status)
-subprocess.Popen, sys.exit = popen, finish
-PYLATE
-export PYTHONPATH="$CODEX_FAKE_DIR"
-check "late final-exit cancellation blocks approval" 3 "not trusting the result" --uncommitted --no-issues
-assert "late cancellation cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-unset PYTHONPATH
-rm -rf "$R"
-
-# An otherwise clean review cannot approve if cleanup cannot inspect ownership.
-for listing_rc in 1 0; do
-  new_repo
-  echo "change" >> "$R/code.txt"
-  approve_clean
-  printf '#!/usr/bin/env bash\nexit %s\n' "$listing_rc" > "$SHIM_DIR/ps"
-  chmod +x "$SHIM_DIR/ps"
-  check "failed or empty process listing blocks successful review" 3 "not trusting the result" --uncommitted --no-issues
-  assert "failed cleanup cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-  rm "$SHIM_DIR/ps"
-  rm -rf "$R"
-done
-
-# Missing observation support must fail before any reviewer starts.
-new_repo
-echo "change" >> "$R/code.txt"
-approve_clean
-cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYNOWAIT'
-import os
-if hasattr(os, 'waitid'):
-    del os.waitid
-PYNOWAIT
-export PYTHONPATH="$CODEX_FAKE_DIR"
-check "missing non-reaping observation fails closed" 3 "waitid/WNOWAIT" --uncommitted --no-issues
-assert "missing waitid never dispatches reviewer" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
-unset PYTHONPATH
-rm -rf "$R"
-
-# Cleanup signal errors persist even when the session subsequently empties.
-new_repo
-echo "change" >> "$R/code.txt"
-approve_clean
-cat > "$CODEX_FAKE_DIR/mutate" <<'SHSIGNALCHILD'
-set -m
-sleep 12 &
-SHSIGNALCHILD
-cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYSIGNALFAIL'
-import os
-import signal
-original = os.killpg
-def killpg(pid, signum):
-    if signum == signal.SIGTERM:
-        raise PermissionError('synthetic cleanup signal failure')
-    return original(pid, signum)
-os.killpg = killpg
-PYSIGNALFAIL
-export PYTHONPATH="$CODEX_FAKE_DIR"
-check "cleanup signal failure blocks approval" 3 "not trusting the result" --uncommitted --no-issues
-assert "signal cleanup failure cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-unset PYTHONPATH
-rm -rf "$R"
-
-# Final reaping is bounded and cannot turn a failure into success.
-new_repo
-echo "change" >> "$R/code.txt"
-approve_clean
-cat > "$CODEX_FAKE_DIR/sitecustomize.py" <<'PYREAPFAIL'
-import subprocess
-original = subprocess.Popen
-def popen(*args, **kwargs):
-    process = original(*args, **kwargs)
-    if kwargs.get('start_new_session'):
-        def wait(timeout=None):
-            assert timeout is not None and timeout <= 2, 'final reap was unbounded'
-            raise subprocess.TimeoutExpired('synthetic reviewer', timeout)
-        process.wait = wait
-    return process
-subprocess.Popen = popen
-PYREAPFAIL
-export PYTHONPATH="$CODEX_FAKE_DIR"
-check "bounded final reap failure blocks approval" 3 "not trusting the result" --uncommitted --no-issues
-assert "reaping failure cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
-unset PYTHONPATH
-rm -rf "$R"
-
-new_repo
-echo "change" >> "$R/code.txt"
-approve_clean
-started=$SECONDS
-check "clean completion avoids the cleanup grace" 0 "Codex review passed" --uncommitted --no-issues
-assert "clean success has no fixed five-second delay" "(( SECONDS - $started < 5 ))"
-rm -rf "$R"
-
-# Exercise cancellation at the public Bash PID, with default signal dispositions.
+# Bash-only signals defer until the native foreground reviewer returns.
+# Cancellation must still veto approval, including after a receipt was written.
 cat > "$SHIM_DIR/check-wrapper-cancel.py" <<'PYWRAPPER'
 import json
 import os
@@ -495,8 +245,9 @@ import json, os, sys, time
 from pathlib import Path
 fixture = Path(os.environ['CODEX_FAKE_DIR'])
 print('WRAPPER_DIAGNOSTIC_MARKER', file=sys.stderr, flush=True)
-(fixture / 'owned-pids').write_text(json.dumps([(os.getpid(), os.getsid(0)), (os.getppid(), os.getsid(os.getppid()))]))
-time.sleep(3)
+(fixture / 'reviewer-ready').write_text(json.dumps({'parent': os.getppid(), 'session': os.getsid(0), 'group': os.getpgrp()}))
+time.sleep(1)
+(fixture / 'reviewer-finished').touch()
 args = (fixture / 'argv').read_text().splitlines()
 Path(args[args.index('-o') + 1]).write_text((fixture / 'output').read_text())
 ''')
@@ -558,7 +309,7 @@ try:
         elif scenario == 'startup':
             ready = bool(list(Path(repo, '.git', 'review-receipts').glob('run-*/snapshot.json')))
         else:
-            ready = (fixture / 'owned-pids').exists()
+            ready = (fixture / 'reviewer-ready').exists()
         if ready:
             break
         if process.poll() is not None or time.monotonic() >= deadline:
@@ -576,32 +327,24 @@ try:
     for diagnostic in diagnostics:
         details = diagnostic.read_bytes()
         if b'Traceback' in details or b'TypeError' in details:
-            failures.append('supervisor diagnostic contains an unexpected Python failure')
+            failures.append('reviewer diagnostic contains an unexpected Python failure')
     if scenario == 'receipt-diagnostic-failure':
         if not (fixture / 'diagnostic-failed').exists():
             failures.append('diagnostic failure injection was not exercised')
-    elif (fixture / 'owned-pids').exists() and not diagnostics:
+    elif (fixture / 'reviewer-ready').exists() and not diagnostics:
         failures.append('cancelled reviewer diagnostic was discarded')
     if process.returncode != 3:
         failures.append(f'expected exit 3, got {process.returncode}')
     if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
         failures.append('cancelled wrapper left a review receipt')
-    if (fixture / 'owned-pids').exists():
-        for pid, sid in json.loads((fixture / 'owned-pids').read_text()):
-            state = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
-            if state and not state.startswith('Z'):
-                failures.append(f'owned process still alive: {pid} {state}')
+    if (fixture / 'reviewer-ready').exists():
+        identity = json.loads((fixture / 'reviewer-ready').read_text())
+        if identity != {'parent': process.pid, 'session': process.pid, 'group': process.pid}:
+            failures.append('reviewer was not a direct foreground child in the gate session')
+        if not (fixture / 'reviewer-finished').exists():
+            failures.append('Bash-only cancellation interrupted the native foreground reviewer')
     assert not failures, '; '.join(failures) + '\n' + output
 finally:
-    # Clean failed fixtures through the same stable-ID primitive, never a raw
-    # recyclable PID. This prefix defines identity helpers without dispatching.
-    if (fixture / 'owned-pids').exists():
-        source = Path(gate).read_text().split("python3 -c '\nimport ctypes", 1)[1]
-        source = 'import ctypes' + source.split('# Check stable identity support', 1)[0]
-        namespace = {}
-        exec(source, namespace)
-        for pid, sid in json.loads((fixture / 'owned-pids').read_text()):
-            namespace['signal_member'](pid, sid, signal.SIGKILL)
     if process.poll() is None:
         process.kill()
     process.wait(timeout=2)
@@ -635,65 +378,6 @@ GATE_RUN_DIR="$sentinel/run" OUT_FILE="$sentinel/stdout" ERR_FILE="$sentinel/std
   check "invalid startup fails before review capture" 3 "CODEX_GATE_TIMEOUT" --uncommitted --no-issues
 assert "early cleanup preserves inherited caller paths" "[ -f '$sentinel/run/owned-by-caller' ] && [ -f '$sentinel/stdout' ] && [ -f '$sentinel/stderr' ]"
 rm -rf "$R"
-
-# Stable handles must reject a recycled PID and preserve captured identity.
-cat > "$SHIM_DIR/check-signal-identity.py" <<'PYIDENTITY'
-import ast
-import ctypes
-import errno
-from pathlib import Path
-import sys
-from types import SimpleNamespace
-source = Path(sys.argv[1]).read_text().split("python3 -c '\nimport ctypes", 1)[1]
-source = 'import ctypes' + source.split("' \"$REVIEW_TIMEOUT\"", 1)[0]
-tree = ast.parse(source)
-definitions = [node for node in ast.walk(tree)
-               if isinstance(node, (ast.FunctionDef, ast.ClassDef))
-               and node.name in ('signal_member', 'UniqueIdentifier')]
-namespace = dict(ctypes=ctypes, errno=errno)
-exec(compile(ast.Module(body=definitions, type_ignores=[]), '<gate signaling>', 'exec'), namespace)
-received, closed = [], []
-namespace.update(sys=SimpleNamespace(platform='linux'),
-                 os=SimpleNamespace(pidfd_open=lambda pid: 42, getsid=lambda pid: 999,
-                                    close=closed.append, strerror=str),
-                 signal=SimpleNamespace(pidfd_send_signal=lambda fd, sig: received.append((fd, sig))))
-namespace['signal_member'](101, 202, 9)
-assert received == [] and closed == [42], 'recycled PID outside owned session was signaled'
-namespace['os'].getsid = lambda pid: 202
-namespace['signal_member'](101, 202, 9)
-assert received == [(42, 9)], 'Linux signal did not use the opened stable handle'
-
-def vanished(pid):
-    raise ProcessLookupError()
-namespace['os'].pidfd_open = vanished
-namespace['signal_member'](101, 202, 9)
-assert received == [(42, 9)], 'vanished PID fell back to unsafe delivery'
-
-UniqueIdentifier = namespace['UniqueIdentifier']
-assert ctypes.sizeof(UniqueIdentifier) == 56
-AuditToken = ctypes.c_uint32 * 8
-received.clear()
-def pidinfo(pid, flavor, arg, pointer, size):
-    assert flavor == 17 and size == 56
-    ctypes.cast(pointer, ctypes.POINTER(UniqueIdentifier)).contents.idversion = 303
-    return size
-
-def deliver(pointer, signum):
-    token = ctypes.cast(pointer, ctypes.POINTER(AuditToken)).contents
-    received.append((token[5], token[7], signum))
-    return errno.ESRCH  # The kernel rejects this vanished pidversion.
-namespace.update(sys=SimpleNamespace(platform='darwin'), AuditToken=AuditToken,
-                 libproc=SimpleNamespace(proc_pidinfo=pidinfo, proc_signal_with_audittoken=deliver))
-namespace['os'].getsid = lambda pid: 999
-namespace['signal_member'](101, 202, 9)
-assert received == [], 'Darwin reused PID outside the session was signaled'
-namespace['os'].getsid = lambda pid: 202
-namespace['signal_member'](101, 202, 0)
-assert received == [], 'Darwin startup called its signal API with invalid signal zero'
-namespace['signal_member'](101, 202, 9)
-assert received == [(101, 303, 9)], 'Darwin signal lost captured pidversion'
-PYIDENTITY
-assert "stable signals reject stale PIDs on Linux and Darwin" "python3 '$SHIM_DIR/check-signal-identity.py' '$GATE'"
 
 # ── fail CLOSED on unparseable / nonconforming JSON ───────────────────
 new_repo
