@@ -661,7 +661,7 @@ for ancestor in claude claude/scripts .claude .claude/scripts; do
     git -C "$R" commit -qm 'redirect gate ancestor'
     source_scripts="$R/${ancestor%%/*}/scripts"
     if [[ "$route" == installed ]]; then
-      installed_scripts="$versions/home/.claude/scripts"
+      installed_scripts="$versions/operator-root/.claude/scripts"
       mkdir -p "$installed_scripts"
       for source_file in "${gate_files[@]}"; do
         ln -s "$source_scripts/$source_file" "$installed_scripts/$source_file"
