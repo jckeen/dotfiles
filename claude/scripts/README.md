@@ -319,8 +319,10 @@ ignored or special files, empty directories, special index flags or submodules
 means retain for separate inspection. Raw file bytes and modes must match the
 committed blobs; transformed checkout contents and active content filters also
 require separate retirement. Inspection does not execute those filters.
-Process inspection currently requires Linux `/proc`; other hosts
-retain worktrees for an explicit platform-appropriate review.
+Process inspection requires Linux `/proc` and checks same-user processes'
+working directories, roots, executables, open descriptors and file-backed
+memory mappings. Missing or unreadable evidence retains the worktree. Other
+hosts require an explicit platform-appropriate review.
 
 Before non-force removal, the collector verifies a recovery Git bundle
 including reflog-reachable commits,

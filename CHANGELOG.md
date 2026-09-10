@@ -43,6 +43,8 @@
   special files and empty directories that Git status omits, and refuses active
   content filters without running them. Native portability fixtures use physical
   temporary paths and portable timestamp setup.
+- Retirement also checks process file descriptors and mappings, so background
+  workers using files from another working directory keep their worktrees.
 
 ### Decisions made
 - Retired-skill healing is an exact historical migration; unknown or custom
