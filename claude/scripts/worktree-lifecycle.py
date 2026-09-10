@@ -379,15 +379,31 @@ def retire(repo, path, apply, archive_dir):
     invoking_admin = Path(text(git(repo, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
     if invoking_admin != common:
         raise ValueError('--apply requires --repo to identify the primary checkout')
-    # worktree list can report the common metadata path as the primary when
-    # --separate-git-dir is used. Resolve the actual primary from its checkout;
-    # a metadata-only invocation cannot establish that top-level and must fail.
+    # External common metadata can have multiple Git-file primary aliases;
+    # neither worktree list nor show-toplevel can enumerate all those roots.
+    # Apply only when the primary owns the conventional common directory.
     primary = Path(text(git(repo, 'rev-parse', '--show-toplevel'))).resolve(strict=True)
+    primary_git = primary / '.git'
+    if not stat.S_ISDIR(primary_git.lstat().st_mode) or primary_git.resolve(strict=True) != common:
+        raise ValueError('--apply requires a conventional primary checkout with its own .git directory')
     excluded = {primary, common, admin.resolve(strict=True)}
     excluded.update(Path(entry['path']).resolve() for entry in worktrees(repo))
     for root in excluded:
         if archive_dir == root or root in archive_dir.parents:
             raise ValueError('archive must be outside repository worktrees and Git metadata')
+    # Git-file aliases of even a conventional primary need not be registered.
+    # Inspect existing ancestry without creating the destination, and force
+    # each discovered marker so malformed metadata cannot fall back upward.
+    for directory in (archive_dir, *archive_dir.parents):
+        git_marker = directory / '.git'
+        try:
+            git_marker.lstat()
+        except FileNotFoundError:
+            continue
+        ancestor_common = Path(text(git(directory, '--git-dir=' + str(git_marker), 'rev-parse',
+                                       '--path-format=absolute', '--git-common-dir'))).resolve(strict=True)
+        if ancestor_common == common:
+            raise ValueError('archive must be outside this repository, including Git-file aliases')
     archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = archive_dir.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:

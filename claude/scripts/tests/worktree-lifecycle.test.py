@@ -704,12 +704,11 @@ if kind == 'writer':
         destination = self.repo / 'private-recovery'
         result = self.retire('--apply', '--archive-dir', str(destination))
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn('archive must be outside', result.stderr)
+        self.assertIn('conventional primary checkout', result.stderr)
         self.assertFalse(destination.exists())
         self.assertTrue(self.worktree.exists())
 
-    def test_archive_rejects_symlink_into_actual_primary_with_external_metadata(self):
-        self.separate_git_directory()
+    def test_archive_rejects_symlink_into_conventional_primary(self):
         self.merged()
         self.assertEqual(self.release().returncode, 0)
         alias = self.root / 'primary-alias'
@@ -721,24 +720,112 @@ if kind == 'writer':
         self.assertFalse(destination.exists())
         self.assertTrue(self.worktree.exists())
 
-    def test_archive_outside_separate_primary_and_metadata_remains_supported(self):
+    def test_separate_metadata_allows_preview_but_retains_applied_retirement(self):
         self.separate_git_directory()
         self.merged()
         self.assertEqual(self.release().returncode, 0)
+        inventory = self.cli('inventory')
+        self.assertEqual(inventory.returncode, 0, inventory.stderr)
+        task = next(item for item in json.loads(inventory.stdout)['worktrees']
+                    if item['path'] == str(self.worktree))
+        self.assertEqual(task['disposition'], 'released')
+        preview = self.retire()
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(json.loads(preview.stdout)['disposition'], 'ready')
         destination = self.root / 'private-recovery'
         result = self.retire('--apply', '--archive-dir', str(destination))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('conventional primary checkout', result.stderr)
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.worktree.exists())
+
+    def test_gitfile_alias_cannot_archive_inside_unlisted_external_primary(self):
+        common = self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        alias = self.root / 'alias'
+        alias.mkdir()
+        (alias / '.git').write_text('gitdir: ../metadata.git\n')
+        self.assertEqual(Path(self.run_git(alias, 'rev-parse', '--absolute-git-dir').strip()).resolve(), common)
+        self.assertEqual(Path(self.run_git(alias, 'rev-parse', '--show-toplevel').strip()).resolve(), alias)
+        destination = self.repo / 'private-recovery'
+        result = subprocess.run(['python3', str(self.runner), 'retire', '--repo', str(alias),
+            '--worktree', str(self.worktree), '--apply', '--archive-dir', str(destination)],
+            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('conventional primary checkout', result.stderr)
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.worktree.exists())
+
+    def test_primary_git_directory_symlink_cannot_enable_applied_retirement(self):
+        common = self.separate_git_directory()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        (self.repo / '.git').unlink()
+        (self.repo / '.git').symlink_to(common, target_is_directory=True)
+        destination = self.root / 'private-recovery'
+        result = self.retire('--apply', '--archive-dir', str(destination))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('conventional primary checkout', result.stderr)
+        self.assertFalse(destination.exists())
+        self.assertTrue(self.worktree.exists())
+
+    def test_archive_rejects_gitfile_alias_of_conventional_primary(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        alias = self.root / 'alias'
+        alias.mkdir()
+        (alias / '.git').write_text('gitdir: ../repo/.git\n')
+        destination = alias / 'missing-parent/private-recovery'
+        result = self.retire('--apply', '--archive-dir', str(destination))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('archive must be outside', result.stderr)
+        self.assertFalse((alias / 'missing-parent').exists())
+        self.assertTrue(self.worktree.exists())
+
+    def test_archive_with_unresolvable_git_ancestry_is_retained_before_creation(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        private = self.root / 'private'
+        private.mkdir()
+        git_marker = private / '.git'
+        for kind in ('malformed', 'dangling', 'empty-directory'):
+            with self.subTest(marker=kind):
+                if kind == 'malformed':
+                    git_marker.write_text('not a Git directory pointer\n')
+                elif kind == 'dangling':
+                    git_marker.symlink_to(self.root / 'missing.git', target_is_directory=True)
+                else:
+                    git_marker.mkdir()
+                try:
+                    result = self.retire('--apply', '--archive-dir', str(private / 'recovery'))
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertFalse((private / 'recovery').exists())
+                    self.assertTrue(self.worktree.exists())
+                finally:
+                    if git_marker.is_dir() and not git_marker.is_symlink():
+                        git_marker.rmdir()
+                    else:
+                        git_marker.unlink()
+
+    def test_archive_inside_different_private_repository_remains_supported(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        private = self.root / 'private'
+        self.run_git(self.root, 'init', '-q', '-b', 'main', str(private))
+        result = self.retire('--apply', '--archive-dir', str(private / 'recovery'))
         self.assertEqual(result.returncode, 0, result.stderr)
         archive = Path(json.loads(result.stdout)['archive'])
         self.assertTrue((archive / 'repository.bundle').is_file())
         self.assertTrue((archive / 'worktree-metadata.tar').is_file())
         self.assertFalse(self.worktree.exists())
 
-    def test_archive_rejects_common_and_private_git_metadata(self):
-        common = self.separate_git_directory()
+    def test_archive_rejects_worktrees_and_git_metadata(self):
+        common = self.repo / '.git'
         self.merged()
         self.assertEqual(self.release().returncode, 0)
         admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
-        for root in (common, admin):
+        for root in (self.repo, self.worktree, common, admin):
             with self.subTest(root=root):
                 destination = root / 'private-recovery'
                 result = self.retire('--apply', '--archive-dir', str(destination))
