@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise lifecycle decisions on real disposable Git worktrees."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -259,10 +260,14 @@ int main(int argc, char **argv) {
     def worker(self, kind, target=None):
         target = target or self.worktree / 'file'
         program = r'''
-import ctypes, mmap, os, sys
+import ctypes, mmap, os, socket, sys
 kind, path = sys.argv[1:]
 if kind == 'cwd':
     os.chdir(os.path.dirname(path))
+elif kind == 'socket':
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(path)
+    server.listen()
 else:
     descriptor = os.open(path, os.O_RDWR | os.O_APPEND if kind == 'writer' else os.O_RDONLY)
     if kind == 'mapping':
@@ -385,6 +390,61 @@ if kind == 'writer':
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIsNone(child.poll())
             self.assertEqual(evidence.read_text(), 'shared repository evidence\n')
+
+    def assert_private_admin_special_file_retained(self, kind, after_release):
+        self.merged()
+        if after_release:
+            self.assertEqual(self.release().returncode, 0)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        endpoint = admin / 'runtime/endpoint'
+        endpoint.parent.mkdir()
+        if kind == 'fifo': os.mkfifo(endpoint)
+        with self.worker('socket', endpoint) if kind == 'socket' else nullcontext() as child:
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive')) if after_release else self.release()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('special Git metadata', result.stderr)
+            self.assertTrue(self.worktree.exists())
+            self.assertTrue(endpoint.exists())
+            self.assertFalse((self.root / 'archive').exists())
+            if child is not None:
+                self.assertIsNone(child.poll())
+                with socket.socket(socket.AF_UNIX) as client: client.connect(str(endpoint))
+
+    def test_private_admin_socket_refuses_release(self):
+        self.assert_private_admin_special_file_retained('socket', False)
+
+    def test_private_admin_socket_refuses_retirement(self):
+        self.assert_private_admin_special_file_retained('socket', True)
+
+    def test_private_admin_fifo_refuses_release(self):
+        self.assert_private_admin_special_file_retained('fifo', False)
+
+    def test_private_admin_fifo_refuses_retirement(self):
+        self.assert_private_admin_special_file_retained('fifo', True)
+
+    def test_regular_private_metadata_is_archived_without_following_symlinks(self):
+        self.merged()
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        (admin / 'evidence/empty').mkdir(parents=True)
+        (admin / 'evidence/notes').write_bytes(b'private regular metadata\x00\n')
+        outside = self.root / 'outside-metadata'
+        outside.mkdir()
+        os.mkfifo(outside / 'live-fifo')
+        (admin / 'external').symlink_to(outside, target_is_directory=True)
+        (admin / 'broken').symlink_to('missing-target')
+        result = self.release()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = Path(json.loads(result.stdout)['archive'])
+        with tarfile.open(archive / 'worktree-metadata.tar') as stream:
+            self.assertEqual(stream.extractfile('worktree-metadata/evidence/notes').read(), b'private regular metadata\x00\n')
+            self.assertTrue(stream.getmember('worktree-metadata/evidence/empty').isdir())
+            for name in ('external', 'broken'):
+                self.assertTrue(stream.getmember('worktree-metadata/' + name).issym())
+            self.assertEqual(stream.getmember('worktree-metadata/external').linkname, str(outside))
+            self.assertNotIn('worktree-metadata/external/live-fifo', stream.getnames())
+        self.assertTrue((outside / 'live-fifo').exists())
 
     def test_scanner_itself_has_complete_descriptor_evidence(self):
         module, _ = self.process_fixture()

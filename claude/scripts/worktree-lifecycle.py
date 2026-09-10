@@ -149,6 +149,20 @@ def clean(path):
             raise ValueError('active content filters require separate retirement')
 
 
+def check_admin_metadata(admin):
+    # Tar silently omits sockets, and an archived special-file node cannot
+    # preserve a live endpoint. Never open these targets or follow symlinks.
+    def scan_error(error):
+        raise error
+
+    for directory, dirs, files in os.walk(admin, followlinks=False, onerror=scan_error):
+        for name in dirs + files:
+            entry = Path(directory) / name
+            mode = entry.lstat().st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+                raise ValueError('special Git metadata must be retained: ' + str(entry.relative_to(admin)))
+
+
 def thread_exited(entry):
     """A dead task establishes only that thread's exit, never its group's."""
     try:
@@ -247,6 +261,7 @@ def release(repo, path, head, owner, pr, slug):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', slug) or pr <= 0 or not owner.strip():
         raise ValueError('release needs an owner and valid GitHub repository/PR')
     clean(path)
+    check_admin_metadata(admin)
     active_processes(path)
     active_processes(admin)
     if (admin / MARKER).exists():
@@ -275,6 +290,7 @@ def assess(repo, path):
     if (record.get('head'), record.get('path'), record.get('branch')) != (item['HEAD'], str(path), item.get('branch')):
         raise ValueError('HEAD, path or branch changed since release')
     clean(path)
+    check_admin_metadata(admin)
     active_processes(path)
     active_processes(admin)
     if any(admin.glob('*.lock')):
