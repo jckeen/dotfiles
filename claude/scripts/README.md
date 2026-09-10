@@ -322,7 +322,9 @@ require separate retirement. Inspection does not execute those filters.
 Process inspection requires Linux `/proc` and checks same-user processes'
 working directories, roots, executables, open descriptors and file-backed
 memory mappings. Missing or unreadable evidence retains the worktree. Other
-hosts require an explicit platform-appropriate review.
+hosts require an explicit platform-appropriate review. These checks sample
+visible path references; the owner must account for activity in other process
+namespaces or through alternate mount paths when releasing the task.
 
 Before non-force removal, the collector verifies a recovery Git bundle
 including reflog-reachable commits,
