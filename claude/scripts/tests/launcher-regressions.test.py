@@ -257,6 +257,9 @@ cd "$HOME/dev"
 '''
         (fixture / ".bashrc").write_text(startup)
         (fixture / ".bash_profile").write_text('source "$HOME/.bashrc"\n')
+        # Global interactive startup may prompt and consume cct's queued input.
+        # Keep the fixture's own login/interactive rc files enabled.
+        (fixture / ".zshenv").write_text('unsetopt GLOBAL_RCS\n')
         (fixture / ".zshrc").write_text(startup)
         (fixture / ".zprofile").write_text('cd "$HOME/dev"\n')
         return project
