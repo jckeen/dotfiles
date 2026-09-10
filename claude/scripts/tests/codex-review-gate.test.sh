@@ -32,6 +32,8 @@ R=""
 # called, so tests can assert both the gate's verdict handling and the
 # prompt-delivery channel.
 SHIM_DIR="$(mktemp -d)"
+# The gate records canonical executable paths, including TMPDIR ancestors.
+SHIM_DIR="$(cd -P "$SHIM_DIR" && pwd)"
 cat > "$SHIM_DIR/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CODEX_FAKE_DIR/argv"
