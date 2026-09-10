@@ -358,6 +358,52 @@ for protected in GEMINI.md .gemini/commands/check.md .antigravity/policy.lock; d
   rm -rf "$R"
 done
 
+# setup.sh installs agents/skills directly into Antigravity's managed skills.
+for protected in agents/skills/review/SKILL.md agents/skills/review/references/policy.lock; do
+  for scope in committed uncommitted; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    skill_home="$SHIM_DIR/skill-home"
+    mkdir -p "$R/$(dirname "$protected")" "$skill_home/.gemini/config/skills"
+    printf 'SHARED_SKILL_INSTRUCTION_MARKER\n' > "$R/$protected"
+    ln -s "$R/agents/skills/review" "$skill_home/.gemini/config/skills/review"
+    assert "managed Antigravity skill exposes the source bundle" "grep -q 'SHARED_SKILL_INSTRUCTION_MARKER' '$skill_home/.gemini/config/skills/review/${protected#agents/skills/review/}'"
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" add "$protected"
+      git -C "$R" commit -qm 'shared skill input'
+    fi
+    printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+    printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+    HOME="$skill_home" check "$scope $protected blocks Antigravity self-review" 2 "Diff touches the Antigravity reviewer's own instruction surface" "--$scope" --require
+    assert "shared skill cannot dispatch or issue Antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    HOME="$skill_home" ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope $protected permits Antigravity override" 0 "Instruction-surface diff allowed" "--$scope" --require
+    assert "override reviews the complete Antigravity skill input" "grep -q 'SHARED_SKILL_INSTRUCTION_MARKER' '$AGY_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+    rm -f "$skill_home/.gemini/config/skills/review"
+    rm -rf "$R"
+  done
+done
+
+for scope in committed uncommitted; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  skill_home="$SHIM_DIR/skill-home"
+  mkdir -p "$SHIM_DIR/shared-agent-source/skills/review" "$skill_home/.gemini/config/skills"
+  printf 'REDIRECTED_SHARED_SKILL_MARKER\n' > "$SHIM_DIR/shared-agent-source/skills/review/SKILL.md"
+  ln -s "$SHIM_DIR/shared-agent-source" "$R/agents"
+  ln -s "$R/agents/skills/review" "$skill_home/.gemini/config/skills/review"
+  assert "shared root redirects the installed Antigravity skill" "grep -q 'REDIRECTED_SHARED_SKILL_MARKER' '$skill_home/.gemini/config/skills/review/SKILL.md'"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" add agents
+    git -C "$R" commit -qm 'shared source root replacement'
+  fi
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  HOME="$skill_home" check "$scope shared source root blocks Antigravity self-review" 2 "instruction surface" "--$scope" --require
+  assert "shared source root cannot issue Antigravity approval" "[ ! -e '$AGY_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+  rm -f "$skill_home/.gemini/config/skills/review"
+  rm -rf "$R"
+done
+
 # Unchanged canonical instruction links can be reviewed; both identities stay bound.
 for mutation in target-worktree target-index target-commit link-worktree link-index link-commit; do
   new_repo
@@ -597,7 +643,12 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
   git -C "$R" commit -qm 'source instruction'
   printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
   printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-  check "$source_instruction requires alternate review" 0 "LGTB verdict" --committed --require
+  if [[ "$source_instruction" == agents/skills/* ]]; then
+    check "$source_instruction blocks shared-skill self-review" 2 "instruction surface" --committed --require
+    ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$source_instruction permits independently reviewed override" 0 "LGTB verdict" --committed --require
+  else
+    check "$source_instruction requires alternate review" 0 "LGTB verdict" --committed --require
+  fi
   assert "source instruction reaches alternate reviewer" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
   assert "source instruction receives reviewed alternate evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
@@ -652,7 +703,8 @@ for instruction in .claude/settings.json .agents/example/SKILL.md .codex/cache/A
 done
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-check "ignored runtime credentials allow alternate review" 0 "LGTB verdict" --uncommitted --require
+check "ignored shared skills still block Antigravity self-review" 2 "instruction surface" --uncommitted --require
+ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 check "ignored runtime credentials allow independently reviewed skill input" 0 "LGTB verdict" --uncommitted --require
 assert "ignored runtime credentials stay out of Antigravity stdin" "[ -s '$AGY_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$AGY_FAKE_DIR/stdin'"
 assert "ignored agent config and skills still reach Antigravity" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$AGY_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$AGY_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$AGY_FAKE_DIR/stdin' && grep -q '.codex/cache/AGENTS.md' '$AGY_FAKE_DIR/stdin'"
 assert "source bundle cache reaches alternate reviewer" "grep -q 'agents/skills/example/cache/policy.md' '$AGY_FAKE_DIR/stdin'"

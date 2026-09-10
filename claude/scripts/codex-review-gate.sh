@@ -215,28 +215,27 @@ fi
 
 # ─── Self-review guard ─────────────────────────────────────────
 # The reviewing Codex session loads ~/.codex/AGENTS.md — which this repo's
-# setup symlinks to codex/AGENTS.md. A diff that MODIFIES the reviewer's own
-# instruction surface could steer the very review that judges it, so a codex
+# setup symlinks to codex/AGENTS.md; agents/skills bundles are installed into
+# ~/.agents/skills and legacy ~/.codex/skills. Changing those runtime inputs
+# could steer the very review that judges them, so a codex
 # self-review of those files is not trustworthy. The same applies to the gate
 # machinery itself (gate-lib.sh, both *-review-gate.sh): the running gate has
 # already sourced the working-tree copy of that code, so a review of an edit
-# to it is a review conducted BY the edited code. Fail closed toward the
-# cross-vendor gate (antigravity-review-gate.sh) and human eyes — and for
-# gate-machinery diffs, human eyes specifically (the other gate shares the
-# same lib).
+# to it is a review conducted BY the edited code. Shared skill and gate changes
+# require review outside both configured gates. Include bare namespace roots:
+# replacing `agents` with a symlink also redirects installed skill links.
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex/|(^|/)(gate-lib\.sh|review-receipt\.py)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)(gate-lib\.sh|review-receipt\.py)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
   if [[ "${CODEX_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
-    red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/)"
+    red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/ / agents/skills/ / .agents/skills/)"
     red "  or the gate machinery (gate-lib.sh / *-review-gate.sh)."
     red "  A self-review under possibly-modified instructions or gate code is not trustworthy."
-    echo "  Use the cross-vendor gate (antigravity-review-gate.sh) plus human review"
-    echo "  (for gate-machinery diffs, human review specifically — both gates share the lib),"
-    echo "  or re-run with CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 after reading the"
-    echo "  instruction-file changes yourself."
+    echo "  Obtain independent review of these changes first. For shared skills or gate"
+    echo "  machinery, use human review or a reviewer outside both configured gates."
+    echo "  Then re-run with CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1."
     exit 2
   fi
-  yellow "⚠ Instruction-surface diff allowed by CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 — make sure a human read those changes."
+  yellow "⚠ Instruction-surface diff allowed by CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 — independent review must already be complete."
 fi
 
 # ─── Proportionality valve (#212) ──────────────────────────────

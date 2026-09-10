@@ -606,6 +606,50 @@ unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 assert "codex invoked once the guard is overridden" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# setup.sh installs shared bundles into both managed runtime skill roots.
+for protected in agents/skills/review/SKILL.md agents/skills/review/references/policy.lock .agents/skills/review/SKILL.md; do
+  for scope in committed uncommitted; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    mkdir -p "$R/$(dirname "$protected")" "$TEST_HOME/.agents/skills"
+    printf 'SHARED_SKILL_INSTRUCTION_MARKER\n' > "$R/$protected"
+    if [[ "$protected" == agents/skills/* ]]; then
+      ln -s "$R/agents/skills/review" "$TEST_HOME/.agents/skills/review"
+      assert "managed Codex skill exposes the source bundle" "grep -q 'SHARED_SKILL_INSTRUCTION_MARKER' '$TEST_HOME/.agents/skills/review/${protected#agents/skills/review/}'"
+    fi
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" add "$protected"
+      git -C "$R" commit -qm 'shared skill input'
+    fi
+    approve_clean
+    check "$scope $protected blocks Codex self-review" 2 "Diff touches the Codex reviewer's own instruction surface" "--$scope" --no-issues --require
+    assert "shared skill cannot dispatch or issue Codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+    CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope $protected permits Codex override" 0 "Instruction-surface diff allowed" "--$scope" --no-issues --require
+    assert "override reviews the complete Codex skill input" "grep -q 'SHARED_SKILL_INSTRUCTION_MARKER' '$CODEX_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+    rm -f "$TEST_HOME/.agents/skills/review"
+    rm -rf "$R"
+  done
+done
+
+for scope in committed uncommitted; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$SHIM_DIR/shared-agent-source/skills/review" "$TEST_HOME/.agents/skills"
+  printf 'REDIRECTED_SHARED_SKILL_MARKER\n' > "$SHIM_DIR/shared-agent-source/skills/review/SKILL.md"
+  ln -s "$SHIM_DIR/shared-agent-source" "$R/agents"
+  ln -s "$R/agents/skills/review" "$TEST_HOME/.agents/skills/review"
+  assert "shared root redirects the installed Codex skill" "grep -q 'REDIRECTED_SHARED_SKILL_MARKER' '$TEST_HOME/.agents/skills/review/SKILL.md'"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" add agents
+    git -C "$R" commit -qm 'shared source root replacement'
+  fi
+  approve_clean
+  check "$scope shared source root blocks Codex self-review" 2 "instruction surface" "--$scope" --no-issues --require
+  assert "shared source root cannot issue Codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -f "$TEST_HOME/.agents/skills/review"
+  rm -rf "$R"
+done
+
 # Rename laundering must not slip past the guard: `git mv AGENTS.md notes.md`
 # lists only the destination under rename detection; --no-renames restores
 # both sides so the source path still trips the guard.
@@ -1027,7 +1071,12 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
   git -C "$R" add "$source_instruction"
   git -C "$R" commit -qm 'source instruction'
   approve_clean
-  check "$source_instruction requires full Codex review" 0 "Codex review passed" --committed --no-issues --require
+  if [[ "$source_instruction" == agents/skills/* ]]; then
+    check "$source_instruction blocks shared-skill self-review" 2 "instruction surface" --committed --no-issues --require
+    CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$source_instruction permits independently reviewed override" 0 "Codex review passed" --committed --no-issues --require
+  else
+    check "$source_instruction requires full Codex review" 0 "Codex review passed" --committed --no-issues --require
+  fi
   assert "source instruction reaches Codex" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$CODEX_FAKE_DIR/stdin'"
   assert "source instruction receives reviewed shipping evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
@@ -1107,7 +1156,8 @@ for instruction in .claude/settings.json .agents/example/SKILL.md agents/skills/
   printf 'REVIEW_AGENT_CONFIG_MARKER\n' > "$R/$instruction"
 done
 approve_clean
-check "ignored runtime credentials allow ordinary review" 0 "Codex review passed" --uncommitted --no-issues --require
+check "ignored shared skills still block Codex self-review" 2 "instruction surface" --uncommitted --no-issues --require
+CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "ignored runtime credentials allow independently reviewed skill input" 0 "Codex review passed" --uncommitted --no-issues --require
 assert "ignored runtime credentials stay out of Codex stdin" "[ -s '$CODEX_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$CODEX_FAKE_DIR/stdin'"
 assert "ignored agent config and skill still reach Codex" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$CODEX_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$CODEX_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$CODEX_FAKE_DIR/stdin'"
 assert "source bundle cache remains instruction data" "grep -q 'agents/skills/example/cache/policy.md' '$CODEX_FAKE_DIR/stdin'"

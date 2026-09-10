@@ -147,15 +147,17 @@ gate_select_diff_target
 gate_extract_diff
 
 # Own instructions and shared gate code cannot establish independent review.
-# Check before any size/docs exemption, using the captured (unfiltered) paths.
+# setup.sh links agents/skills bundles into ~/.gemini/config/skills; replacing
+# the bare agents root also redirects those installed links. Check before any
+# size/docs exemption, using the captured (unfiltered) paths.
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)GEMINI(\.local)?\.md$|(^|/)(\.gemini|\.?antigravity)/|(^|/)(gate-lib\.sh|review-receipt\.py)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)GEMINI(\.local)?\.md$|(^|/)(\.gemini|\.?antigravity)(/|$)|(^|/)agents(/skills(/|$)|$)|(^|/)(gate-lib\.sh|review-receipt\.py)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
   if [[ "${ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
-    red "✖ Diff touches the Antigravity reviewer's own instruction surface (GEMINI*.md / .gemini/ / antigravity/)"
+    red "✖ Diff touches the Antigravity reviewer's own instruction surface (GEMINI*.md / .gemini/ / antigravity/ / agents/skills/)"
     red "  or the gate machinery (gate-lib.sh / review-receipt.py / *-review-gate.sh)."
     red "  A self-review under possibly-modified instructions or gate code is not trustworthy."
-    echo "  Obtain independent review of these changes first. For shared gate machinery,"
-    echo "  use human review or a reviewer outside both gates; both gates share the code."
+    echo "  Obtain independent review of these changes first. For shared skills or gate"
+    echo "  machinery, use human review or a reviewer outside both configured gates."
     echo "  Then re-run with ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1."
     exit 2
   fi
