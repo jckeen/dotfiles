@@ -63,7 +63,9 @@ Changing the artifact invalidates approval and requires affected verification
 and review again. The wrapper requires the pinned commit to remain current
 through tests, review, and confirmation. Staged, unstaged, and untracked changes
 stop the wrapper before testing and at each later checkpoint, so verification
-cannot rely on uncommitted fixes. `--auto-push` removes the prompt, not the checks. The pre-push
+cannot rely on uncommitted fixes. Index flags that hide tracked changes also
+require separate inspection before shipping. Ordinary ignored dependencies and
+test artifacts remain supported. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
 secret scanner runs. For a PR explicitly targeting a nondefault base, run the
 gate and receipt check with `--base <ref>`, then use
