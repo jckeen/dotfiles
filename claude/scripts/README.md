@@ -95,7 +95,9 @@ and quote filenames in their headers.
 Instruction coverage includes shared skill bundles and canonical sources under
 `agents/skills/` and `agents/canon/`, Claude skill and agent sources under
 `claude/skills/` and `claude/agents/`, and the Claude AgentPack manifest,
-metadata, and policy files. Ignored references inside these bundles remain
+metadata, and policy files. Source ancestor entries (`agents`, `claude`, and
+`claude/scripts`) and the Codex output schema are also review inputs, including
+when modified outside the committed delta. Ignored references inside these bundles remain
 bound to the receipt; ordinary documentation outside them keeps its usual policy.
 Instruction checks recognize Git-managed CRLF text conversion for regular files
 and sparse checkout omissions while retaining raw workspace hashes.
@@ -116,7 +118,9 @@ An unchanged canonical instruction link such as `AGENTS.md -> CLAUDE.md` is
 supported when it takes one relative hop to a tracked regular instruction file
 inside the repository. Link and target must match the review base, HEAD, index
 and working tree; the receipt binds both identities and contents. Absolute,
-external, chained, dangling, sparse or untracked targets are unsupported.
+external, chained, dangling, sparse, directory or untracked targets are unsupported.
+This includes directory links that redirect installed skill or gate sources;
+an instruction-diff override does not bypass snapshot restrictions.
 Changing a canonical link or target requires separate instruction review until
 the gate can follow aliases in its self-review policy. Installed global links
 outside the repository are unaffected. Ordinary leaf symlinks remain

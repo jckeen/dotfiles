@@ -13,7 +13,8 @@
 - Review-and-push refuses uncommitted input before tests and at later shipping
   checkpoints. Antigravity requires independent review of its own instruction
   surfaces and shared review machinery. Both gates protect installed shared
-  skill bundles and ancestor links that can redirect them.
+  skill bundles, output schemas, and ancestor entries that can redirect their
+  inputs, including uncommitted changes outside the review target.
 - The Codex gate recognizes both managed standalone launcher layouts before
   falling back to the executable on PATH.
 
