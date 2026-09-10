@@ -269,19 +269,19 @@ _memory_content_is_safe() {
 }
 
 _memory_blob_is_safe() {
-  local repo="$1" tree="$2" path="$3" listing blob blob_spec
+  local repo="$1" tree="$2" blob_path="$3" listing blob blob_spec
   listing="$(mktemp)" || return 1
   blob="$(mktemp)" || { rm -f "$listing"; return 1; }
 
   if [ "$tree" = ":" ]; then
-    blob_spec=":$path"
-    _memory_git "$repo" ls-files --stage -z -- "$path" > "$listing" || {
+    blob_spec=":$blob_path"
+    _memory_git "$repo" ls-files --stage -z -- "$blob_path" > "$listing" || {
       rm -f "$listing" "$blob"
       return 1
     }
   else
-    blob_spec="$tree:$path"
-    _memory_git "$repo" ls-tree -z "$tree" -- "$path" > "$listing" || {
+    blob_spec="$tree:$blob_path"
+    _memory_git "$repo" ls-tree -z "$tree" -- "$blob_path" > "$listing" || {
       rm -f "$listing" "$blob"
       return 1
     }
@@ -308,7 +308,7 @@ _memory_range_is_safe() {
     return 1
   fi
 
-  local commits_file paths_file commit_file commit path unsafe
+  local commits_file paths_file commit_file commit changed_path unsafe
   commits_file="$(mktemp)" || return 1
   if ! _memory_git "$repo" rev-list --reverse "$upstream".."$validated_head" > "$commits_file"; then
     rm -f "$commits_file"
@@ -331,13 +331,13 @@ _memory_range_is_safe() {
       return 1
     fi
     unsafe=0
-    while IFS= read -r -d '' path; do
-      [ -n "$path" ] || continue
-      if ! _memory_path_is_publishable "$path"; then
+    while IFS= read -r -d '' changed_path; do
+      [ -n "$changed_path" ] || continue
+      if ! _memory_path_is_publishable "$changed_path"; then
         unsafe=1
         break
       fi
-      if ! _memory_blob_is_safe "$repo" "$commit" "$path"; then
+      if ! _memory_blob_is_safe "$repo" "$commit" "$changed_path"; then
         echo "  SECRET-LIKE CONTENT IN PENDING MEMORY COMMIT — refusing to push." >&2
         rm -f "$paths_file" "$commits_file"
         return 1

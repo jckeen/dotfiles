@@ -58,6 +58,105 @@ _memory_path_is_publishable project/memory/authors.md || exit 1
 ! _memory_path_is_publishable project/memory/auth-token.txt
 ''', "zsh")
 
+    def memory_fixture(self, name):
+        home = self.root / name
+        repo = home / 'dev/claude-memory'
+        remote = home / 'origin.git'
+        repo.mkdir(parents=True)
+        shim = home / 'bin'
+        shim.mkdir()
+        scanner = shim / 'gitleaks'
+        scanner.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+            'from pathlib import Path\n'
+            'if sys.argv[1:2] != ["stdin"]: sys.exit(2)\n'
+            'payload=sys.stdin.buffer.read()\n'
+            'with Path(os.environ["MEMORY_SCAN_LOG"]).open("ab") as log: log.write(b"scanned\\n")\n'
+            'sys.exit(1 if b"SYNTHETIC_MEMORY_SECRET" in payload else 0)\n')
+        scanner.chmod(0o700)
+        env = dict(self.env, HOME=str(home), PATH=str(shim) + os.pathsep + self.env['PATH'],
+                   MEMORY_SCAN_LOG=str(home / 'scans'))
+
+        def git(*args, cwd=repo):
+            return subprocess.check_output(['git', '-C', str(cwd), *args], env=env,
+                                           text=True, stderr=subprocess.STDOUT)
+
+        git('init', '--bare', '-q', '-b', 'main', str(remote))
+        git('init', '-q', '-b', 'main')
+        git('config', 'user.name', 'Fixture')
+        git('config', 'user.email', 'fixture@example.invalid')
+        note = repo / 'project/memory/note.md'
+        note.parent.mkdir(parents=True)
+        note.write_text('initial memory\n')
+        (repo / 'settings.json').write_text('initial settings\n')
+        git('add', 'project/memory/note.md', 'settings.json')
+        git('commit', '-qm', 'initial memory')
+        git('remote', 'add', 'origin', str(remote))
+        git('push', '-qu', 'origin', 'main')
+        return repo, remote, note, env, git
+
+    def run_memory_sync(self, launch_shell, env):
+        return subprocess.run([launch_shell, '-c', '''source "$ALIASES" || exit 1
+memory_original_path="$PATH"
+if sync-memory; then memory_sync_rc=0; else memory_sync_rc=$?; fi
+[ "$PATH" = "$memory_original_path" ] || exit 91
+command -v git >/dev/null || exit 92
+command -v mktemp >/dev/null || exit 93
+exit "$memory_sync_rc"
+'''], cwd=env['HOME'], env=env, text=True, capture_output=True, timeout=30)
+
+    def test_memory_sync_publishes_dirty_and_pending_content_in_native_shells(self):
+        for launch_shell in ('bash', 'zsh'):
+            if not shutil.which(launch_shell):
+                continue
+            for state in ('dirty', 'pending'):
+                with self.subTest(shell=launch_shell, state=state):
+                    repo, remote, note, env, git = self.memory_fixture(f'memory-{launch_shell}-{state}')
+                    note.write_text('safe memory update\n')
+                    if state == 'pending':
+                        git('commit', '-qam', 'pending memory update')
+                    before = git('rev-parse', 'HEAD').strip()
+                    (repo / 'settings.json').write_text('private operator settings\n')
+                    result = self.run_memory_sync(launch_shell, env)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(git('show', 'main:project/memory/note.md', cwd=remote), 'safe memory update\n')
+                    self.assertEqual(git('show', 'main:settings.json', cwd=remote), 'initial settings\n')
+                    self.assertEqual((repo / 'settings.json').read_text(), 'private operator settings\n')
+                    self.assertEqual(git('diff', '--cached', '--name-only'), '')
+                    self.assertEqual(git('status', '--porcelain', '--', 'project/memory/note.md'), '')
+                    published = git('rev-parse', 'main', cwd=remote).strip()
+                    self.assertEqual(published, git('rev-parse', 'HEAD').strip())
+                    if state == 'pending':
+                        self.assertEqual(published, before, 'retry created an unnecessary commit')
+                    self.assertTrue(Path(env['MEMORY_SCAN_LOG']).read_bytes())
+
+    def test_memory_sync_refuses_secret_content_and_sensitive_paths_in_native_shells(self):
+        for launch_shell in ('bash', 'zsh'):
+            if not shutil.which(launch_shell):
+                continue
+            for state in ('dirty', 'pending'):
+                for kind in ('content', 'path'):
+                    with self.subTest(shell=launch_shell, state=state, kind=kind):
+                        repo, remote, note, env, git = self.memory_fixture(f'memory-{launch_shell}-{state}-{kind}')
+                        remote_before = git('rev-parse', 'main', cwd=remote)
+                        target = note if kind == 'content' else repo / 'project/memory/auth/session.json'
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        payload = 'SYNTHETIC_MEMORY_SECRET\n' if kind == 'content' else 'private state\n'
+                        target.write_text(payload)
+                        if state == 'pending':
+                            git('add', str(target))
+                            git('commit', '-qm', 'pending memory fixture')
+                        local_before = git('rev-parse', 'HEAD')
+                        result = self.run_memory_sync(launch_shell, env)
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        reason = ('SECRET-LIKE MEMORY' if state == 'dirty' else (
+                            'SECRET-LIKE CONTENT' if kind == 'content' else 'includes non-memory paths'))
+                        self.assertIn(reason, result.stderr)
+                        self.assertNotIn('command not found', result.stderr)
+                        self.assertEqual(git('rev-parse', 'main', cwd=remote), remote_before)
+                        self.assertEqual(git('rev-parse', 'HEAD'), local_before)
+                        self.assertEqual(git('diff', '--cached', '--name-only'), '')
+                        self.assertEqual(target.read_text(), payload)
+
     def test_same_second_edit_reloads(self):
         stamp = 1_234_567_890_000_000_000
         os.utime(self.aliases, ns=(stamp, stamp))
