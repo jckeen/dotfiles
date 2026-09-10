@@ -1,9 +1,8 @@
 # gitleaks config for the public dotfiles repo.
 #
-# Why: the CI `leak-scan` job only catches machine-specific *home paths*
-# (check-no-personal-data.sh). The README promises this repo won't leak auth
-# tokens, account IDs, bearer tokens, or private MCP endpoints — but nothing
-# enforced that. gitleaks closes the gap by scanning every tracked file (and
+# Why: check-no-personal-data.sh in CI's `checks` job catches home-path and
+# private-state patterns. The `secret-scan` job adds gitleaks for auth
+# tokens, bearer tokens, and private keys by scanning every tracked file (and
 # full history on PRs) for secret *shapes*: API keys, tokens, private keys, etc.
 #
 # This extends gitleaks' built-in ruleset and only adds allowlists for the

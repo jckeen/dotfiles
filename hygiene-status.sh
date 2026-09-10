@@ -8,7 +8,8 @@
 #   hygiene-status --reminder    # wrap in <system-reminder> for Claude hooks
 #   hygiene-status --cli         # color CLI output for cc/cx, silent if clean+fresh
 #   hygiene-status --json        # raw cached JSON (always emits)
-#   hygiene-status --status      # short one-line status (always emits)
+#   hygiene-status --status      # short repository-settings status (always emits)
+#   hygiene-status --worktrees   # separate cached worktree disposition JSON
 #
 # State file: $HOME/.local/state/hygiene/status.json
 #   (written by claude/scripts/hygiene-cron.sh, fired by git-hygiene.timer)
@@ -25,6 +26,13 @@ case "$MODE" in
   --cli|cli)           MODE=cli ;;
   --json|json)         MODE=json ;;
   --status|status)     MODE=status ;;
+  --worktrees|worktrees)
+    if [[ -f "$HOME/.local/state/hygiene/worktrees.json" ]]; then
+      cat "$HOME/.local/state/hygiene/worktrees.json"
+    else
+      echo '{"error":"worktree inventory not found"}'
+    fi
+    exit 0 ;;
   --text|text|"")      MODE=text ;;
   -h|--help)
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -76,7 +84,7 @@ case "$MODE" in
     elif [[ "$is_stale" -eq 1 ]]; then
       echo "stale: ${stale_hours}h"
     else
-      echo "clean (checked ${stale_hours}h ago)"
+      echo "settings clean (checked ${stale_hours}h ago)"
     fi
     exit 0 ;;
 esac

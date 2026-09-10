@@ -17,6 +17,8 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 mkdir -p "$R/codex" "$R/agents/skills/demo/references" \
   "$H/.codex/skills/demo/references" "$H/.agents/skills"
 cp "$REPO_ROOT/check-codex.sh" "$REPO_ROOT/lib-checks.sh" "$R/"
+mkdir -p "$R/claude/scripts"
+cp "$REPO_ROOT/claude/scripts/retired-skill-links.sh" "$R/claude/scripts/"
 printf '# Agent rules\n' > "$R/codex/AGENTS.md"
 printf '%s\n' '---' 'name: demo' 'description: Demo skill.' '---' > "$R/agents/skills/demo/SKILL.md"
 printf '# Nested reference\n' > "$R/agents/skills/demo/references/runtime.md"

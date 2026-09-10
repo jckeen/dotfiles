@@ -373,21 +373,63 @@ if [[ ! -s "$OUT_FILE" ]]; then
 fi
 
 # ─── Parse the structured result ───────────────────────────────
-# The schema guarantees shape when Codex honors it. Validate STRICTLY: the
-# verdict must be a known value and every finding's severity must be in the
-# enum — otherwise findings could exist that our severity buckets never count,
-# and the gate would pass with unread findings. Anything nonconforming fails
-# CLOSED, never waved through.
-# (Plain equality chains, not jq's IN() — IN needs jq >= 1.6 and this gate
-# must not misreport on older jq installs.)
-if ! jq -e '
-    (has("verdict") and has("findings"))
-    and ((.verdict == "approve") or (.verdict == "needs-attention"))
-    and ((.findings // []) | all(
-      (has("severity") and has("title") and has("file") and has("line_start"))
-      and ((.severity == "critical") or (.severity == "high")
-           or (.severity == "medium") or (.severity == "low"))
-    ))' "$OUT_FILE" >/dev/null 2>&1; then
+# Enforce codex-review-schema.json locally before rendering or recording a
+# receipt; the CLI's schema request alone does not establish valid output.
+# Decode decimal literals exactly: rounding must not turn a fractional line
+# number or out-of-range confidence into a valid approval.
+if ! python3 - "$OUT_FILE" >/dev/null 2>&1 <<'PY'
+from decimal import Decimal
+import json
+import sys
+
+def unique_object(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("duplicate JSON key")
+    return value
+
+def reject_constant(value):
+    raise ValueError("invalid JSON constant: " + value)
+
+def nonempty_string(value):
+    return type(value) is str and len(value) >= 1
+
+def positive_integer(value):
+    if type(value) is int:
+        return value >= 1
+    return (type(value) is Decimal and value.is_finite() and value >= 1
+            and value == value.to_integral_value())
+
+def valid_finding(value):
+    return (
+        type(value) is dict
+        and set(value) == {"body", "confidence", "file", "line_end", "line_start",
+                           "recommendation", "severity", "title"}
+        and value["severity"] in ("critical", "high", "medium", "low")
+        and all(nonempty_string(value[key]) for key in ("title", "body", "file"))
+        and positive_integer(value["line_start"])
+        and positive_integer(value["line_end"])
+        and type(value["confidence"]) in (int, Decimal)
+        and 0 <= value["confidence"] <= 1
+        and type(value["recommendation"]) is str
+    )
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    result = json.load(source, object_pairs_hook=unique_object,
+                       parse_constant=reject_constant, parse_float=Decimal)
+if not (
+    type(result) is dict
+    and set(result) == {"findings", "next_steps", "summary", "verdict"}
+    and result["verdict"] in ("approve", "needs-attention")
+    and nonempty_string(result["summary"])
+    and type(result["next_steps"]) is list
+    and all(nonempty_string(step) for step in result["next_steps"])
+    and type(result["findings"]) is list
+    and all(valid_finding(finding) for finding in result["findings"])
+):
+    raise ValueError("review does not match codex-review-schema.json")
+PY
+then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
   sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
   red "Push blocked: cannot confirm review is clean."

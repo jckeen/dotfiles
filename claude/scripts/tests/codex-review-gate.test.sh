@@ -80,7 +80,7 @@ new_repo() {
 }
 
 approve_clean() {
-  printf '%s' '{"verdict":"approve","summary":"looks fine","findings":[]}' > "$CODEX_FAKE_DIR/output"
+  printf '%s' '{"verdict":"approve","summary":"looks fine","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 }
 
 # check <name> <expected-exit> [<required output fragment>] [gate args...]
@@ -440,20 +440,95 @@ rm -rf "$R"
 # ── whole-verdict handling ─────────────────────────────────────────────
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"bug","findings":[{"severity":"high","title":"real bug","file":"code.txt","line_start":1,"body":"boom","recommendation":"fix"}]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"bug","findings":[{"severity":"high","title":"real bug","file":"code.txt","line_start":1,"line_end":1,"confidence":1,"body":"boom","recommendation":"fix"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "high finding blocks" 2 "BLOCKING findings" --uncommitted --no-issues
 rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"something is off","findings":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"something is off","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "needs-attention with zero findings fails closed" 2 "(fail closed)" --uncommitted --no-issues
 rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1,"body":"minor","recommendation":"maybe"}]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1,"line_end":1,"confidence":0,"body":"minor","recommendation":""}],"next_steps":["Consider the nit"]}' > "$CODEX_FAKE_DIR/output"
 check "low-only findings do not block" 0 "Codex review passed" --uncommitted --no-issues
+rm -rf "$R"
+
+# Schema-invalid responses must neither retain nor create shipping approval.
+new_repo
+git -C "$R" checkout -qb feature
+echo committed >> "$R/code.txt"
+git -C "$R" commit -qam work
+approve_clean
+check "schema fixture starts with a valid receipt" 0 "Review receipt recorded" --no-issues --require
+valid_result='{"verdict":"approve","summary":"nit","findings":[{"severity":"low","title":"nit","body":"minor","file":"code.txt","line_start":1,"line_end":1,"confidence":0.5,"recommendation":""}],"next_steps":[]}'
+while IFS= read -r mutation; do
+  jq -c "$mutation" <<<"$valid_result" > "$CODEX_FAKE_DIR/output"
+  check "schema rejects $mutation" 2 "not the expected JSON shape" --no-issues --require
+  assert "schema failure leaves no receipt: $mutation" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+done <<'EOF'
+.findings = {}
+.findings = null
+.summary = false
+.summary = ""
+del(.summary)
+del(.next_steps)
+.next_steps = {}
+.next_steps = [null]
+.next_steps = [""]
+.unexpected = true
+[.]
+.findings = [null]
+.findings[0].title = null
+.findings[0].body = ""
+.findings[0].file = null
+.findings[0].line_start = null
+.findings[0].line_start = "1"
+.findings[0].line_start = 0
+.findings[0].line_start = 1.5
+.findings[0].line_end = false
+.findings[0].line_end = 0
+del(.findings[0].line_end)
+.findings[0].confidence = "0.5"
+.findings[0].confidence = -0.1
+.findings[0].confidence = 1.1
+del(.findings[0].confidence)
+.findings[0].recommendation = null
+.findings[0].extra = "unexpected"
+., .
+EOF
+python3 - "$CODEX_FAKE_DIR" "$valid_result" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+valid = sys.argv[2]
+blocking = valid.replace('"severity":"low"', '"severity":"high"')
+variants = {
+    "duplicate-findings": blocking.replace('"next_steps":[]', '"findings":[],"next_steps":[]').encode(),
+    "duplicate-severity": valid.replace('"severity":"low"', '"severity":"high","severity":"low"').encode(),
+    "infinity": valid.replace('"line_start":1', '"line_start":Infinity').encode(),
+    "nan": valid.replace('"confidence":0.5', '"confidence":NaN').encode(),
+    "invalid-utf8": valid.encode().replace(b'"nit"', b'"\xff"', 1),
+    "fractional-line": valid.replace('"line_start":1', '"line_start":1.0000000000000001').encode(),
+    "excess-confidence": valid.replace('"confidence":0.5', '"confidence":1.0000000000000001').encode(),
+    "integral-decimal": valid.replace('"line_start":1', '"line_start":1.0').encode(),
+    "integral-exponent": valid.replace('"line_start":1', '"line_start":1e2').encode(),
+}
+for name, payload in variants.items():
+    (root / name).write_bytes(payload)
+PY
+for variant in duplicate-findings duplicate-severity infinity nan invalid-utf8 fractional-line excess-confidence; do
+  cp "$CODEX_FAKE_DIR/$variant" "$CODEX_FAKE_DIR/output"
+  check "strict JSON rejects $variant" 2 "not the expected JSON shape" --no-issues --require
+  assert "invalid JSON leaves no receipt: $variant" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+done
+for variant in integral-decimal integral-exponent; do
+  cp "$CODEX_FAKE_DIR/$variant" "$CODEX_FAKE_DIR/output"
+  check "numeric validation accepts $variant" 0 "Review receipt recorded" --no-issues --require
+done
 rm -rf "$R"
 
 # ── rc-vs-approve guard: non-zero exit + clean approve is distrusted ──
@@ -633,6 +708,68 @@ assert "common shipping checker accepts the gate receipt" "python3 '$SCRIPT_DIR/
 check "later empty output produces no new approval" 0 "produced no review output" --no-issues
 assert "failed retry invalidates the earlier lane receipt" "[ ! -f '$R/.git/review-receipts/codex.json' ]"
 rm -rf "$R"
+
+# Unchanged canonical instruction links can be reviewed; both identities stay bound.
+for mutation in target-worktree target-index target-commit link-worktree link-index link-commit; do
+  new_repo
+  printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+  ln -s CLAUDE.md "$R/AGENTS.md"
+  git -C "$R" add AGENTS.md CLAUDE.md
+  git -C "$R" commit -qm 'canonical instructions'
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  approve_clean
+  check "canonical link permits codex receipt before $mutation" 0 "Codex review passed" --committed --require --no-issues
+  assert "canonical link codex receipt is valid" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer codex >/dev/null 2>&1"
+  case "$mutation" in
+    target-*)
+      printf 'Changed canonical instructions.\n' > "$R/CLAUDE.md"
+      if [[ "$mutation" == target-index ]]; then
+        git -C "$R" add CLAUDE.md
+        printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+      elif [[ "$mutation" == target-commit ]]; then
+        git -C "$R" commit -qam 'changed canonical target'
+      fi
+      ;;
+    link-*)
+      rm "$R/AGENTS.md"
+      ln -s ./CLAUDE.md "$R/AGENTS.md"
+      if [[ "$mutation" == link-index ]]; then
+        git -C "$R" add AGENTS.md
+        rm "$R/AGENTS.md"
+        ln -s CLAUDE.md "$R/AGENTS.md"
+      elif [[ "$mutation" == link-commit ]]; then
+        git -C "$R" commit -qam 'changed canonical link'
+      fi
+      ;;
+  esac
+  assert "$mutation stales codex shipping evidence" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer codex >/dev/null 2>&1"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "$mutation blocks a new codex review" 2 "instruction symlink" --committed --require --no-issues
+  assert "$mutation prevents codex dispatch and approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
+for mutation in target link; do
+  new_repo
+  printf 'Canonical instructions.\n' > "$R/CLAUDE.md"
+  ln -s CLAUDE.md "$R/AGENTS.md"
+  git -C "$R" add AGENTS.md CLAUDE.md
+  git -C "$R" commit -qm 'canonical instructions'
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  approve_clean
+  if [[ "$mutation" == target ]]; then
+    printf 'printf "Mutated during review.\\n" > CLAUDE.md\n' > "$CODEX_FAKE_DIR/mutate"
+  else
+    printf 'rm AGENTS.md\nln -s ./CLAUDE.md AGENTS.md\n' > "$CODEX_FAKE_DIR/mutate"
+  fi
+  check "concurrent $mutation mutation blocks codex receipt" 2 "instruction symlink" --committed --require --no-issues
+  assert "concurrent $mutation mutation leaves no codex approval" "[ -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
 
 # Regression coverage for the workflow audit findings.
 new_repo

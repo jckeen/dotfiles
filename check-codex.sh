@@ -57,6 +57,12 @@ if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
 fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+if [ ! -f "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh" ]; then
+  echo "FATAL: retired-skill-links.sh is missing (broken checkout)" >&2
+  exit 1
+fi
+# shellcheck source=claude/scripts/retired-skill-links.sh
+source "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.codex/"
 REPORTED_UNSAFE_DIRS=()
@@ -113,6 +119,15 @@ else
     red "        Refusing to audit or clean through a symlinked skills root."
     ERRORS=$((ERRORS + 1))
     AGENT_SKILLS_UNSAFE=1
+  fi
+
+  for retired_file in SKILL.md agents/openai.yaml; do
+    heal_retired_skill_link "$CODEX_DST/skills/fable-mode/$retired_file" \
+      "$SKILLS_SRC/fable-mode/$retired_file" "$SKILLS_SRC/fable-mode"
+  done
+  if [ "$AGENT_SKILLS_UNSAFE" -eq 0 ]; then
+    heal_retired_skill_link "$AGENT_SKILLS_DST/fable-mode" \
+      "$SKILLS_SRC/fable-mode" "$SKILLS_SRC/fable-mode"
   fi
 
   if [ -L "$SKILLS_SRC" ]; then

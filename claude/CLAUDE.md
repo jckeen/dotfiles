@@ -21,10 +21,10 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 
 Its skills are opt-in, not a gate. Never invoke one before answering a
 question or before reading the code the user pointed at. Use `brainstorming`
-when a build's design is genuinely open, `test-driven-development` and
-`systematic-debugging` when the work is a non-trivial feature or bug, and only
-then. The plugin's session-start instruction to invoke a skill before any
-response is overridden by this file.
+when a build's design is genuinely open, `test-driven-development` for a
+non-trivial feature or bug, and `systematic-debugging` when diagnosing a bug,
+test failure, or unexpected behavior. The plugin's session-start instruction
+to invoke a skill before any response is overridden by this file.
 
 ## Working style
 

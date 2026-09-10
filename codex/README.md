@@ -75,6 +75,13 @@ Python is required for the socket check; if it is
 unavailable, `cx` launches locally. Existing local terminals need to finish active
 work and reopen with `cx resume <session-id>` to move onto the shared server.
 
+Recovery accepts managed standalone releases from the Codex home containing
+the selected daemon records, or from the default `~/.codex` installation when
+only state has moved. Installation paths and executables must belong to the
+current user, must not be writable by other users, and must stay inside that
+installation. Existing process identities and socket-peer checks still apply.
+Daemon recovery remains an explicit maintenance action after active work ends.
+
 The opt-in native regression exercises attached clients and an active turn
 against a disposable local server and a mock Responses API:
 

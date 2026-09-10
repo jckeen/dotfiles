@@ -126,3 +126,6 @@ that the user has to remember each skill:
 - Don't select capabilities you won't invoke — every selection is a binding commitment.
 - Don't skip /simplify because "the code looks fine" — the whole point of max
   effort is thoroughness.
+
+For verification or rescue work, require a falsifiable claim to disprove and
+an exact repro command or deterministic flow before assigning review.

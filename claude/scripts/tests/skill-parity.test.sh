@@ -26,6 +26,7 @@ new_repo() {
   mkdir -p "$R/claude/scripts" "$R/claude/skills" "$R/agents/skills"
   cp "$CHECKER" "$R/claude/scripts/check-skill-parity.sh"
   cp "$LIB" "$R/claude/scripts/checker-lib.sh"
+  cp "$SCRIPT_DIR/../check-workflow-invariants.py" "$R/claude/scripts/"
   chmod +x "$R/claude/scripts/check-skill-parity.sh"
 }
 
@@ -67,6 +68,12 @@ scaffold_good() {
   printf '# Dotfiles\n\nProvides 2 slash commands and a 1-agent review orchestra.\n' > "$R/README.md"
   mkdir -p "$R/agents"
   printf 'changelog\tshared\nhandoff\tshared\n' > "$R/agents/skill-coverage.tsv"
+  cat > "$R/agents/workflow-invariants.json" <<'JSON'
+{"version":1,"workflows":{
+  "changelog":{"record-change":{"description":"Record completed work","claude":["What changed"],"agents":["What changed"]}},
+  "handoff":{"carry-context":{"description":"Carry completed work to the next session","claude":["What we did"],"agents":["What we did"]}}
+}}
+JSON
   write_guide changelog handoff
   # one agent file to match the "1-agent" claim
   mkdir -p "$R/claude/agents"
@@ -185,6 +192,13 @@ grep -v '^handoff' "$R/agents/skill-coverage.tsv" > "$R/agents/skill-coverage.ts
 mv "$R/agents/skill-coverage.tsv.tmp" "$R/agents/skill-coverage.tsv"
 check "bad coverage: unclassified Claude/shared skill fails" 1 \
   "missing from agents/skill-coverage.tsv"
+
+# The existing entry point must enforce the adjacent semantic contract too.
+new_repo
+scaffold_good
+rm "$R/agents/workflow-invariants.json"
+check "bad invariants: missing semantic contract fails" 1 \
+  "workflow invariant contract"
 
 echo "---"
 echo "$pass passed, $failed failed"

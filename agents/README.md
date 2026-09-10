@@ -37,3 +37,21 @@ project context belong in the private memory repos (`codex-memory`,
 > after pulling so the `~/.agents/skills/`, compatibility
 > `~/.codex/skills/`, and `~/.gemini/config/skills/`
 > symlinks repoint at the new path.
+
+## Capability and workflow contracts
+
+`capabilities.json` declares each runtime's provider, scope, owner, prerequisite
+interface, and passive probe. `claude/scripts/check-capability-parity.py` checks
+public provider references in CI. Add `--live-home "$HOME"` for an advisory
+installed-provider report; additional local skills are allowed. The report
+checks presence and configuration, not execution, authentication, hook trust,
+or equivalence between runtime internals. Unsupported and advisory capabilities
+are explicit; no unverified hook adapter is installed by this contract.
+
+`workflow-invariants.json`, adjacent to `skill-coverage.tsv`, declares the small
+instruction requirements shared workflows must carry. The skill-parity checker
+checks each Claude body and the shared Codex/Antigravity body or local override.
+It ignores Markdown formatting, wrapping, frontmatter and comments; fixtures
+verify that removing an invariant fails with its workflow and runtime named.
+These checks detect declared instruction drift without requiring identical
+wording or proving that an agent followed the instructions during execution.

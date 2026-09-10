@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# git-hygiene-prune.test.sh — fixture tests for `git-hygiene.sh prune` and the
+# git-hygiene-prune.test.sh — fixture tests for git-hygiene branch decisions and the
 # hygiene-cron.sh wrapper around it. Builds a throwaway origin + clone under
 # mktemp with one branch per classification (merged, squash-merged with and
 # without a confirming merged PR, gone upstream, unique work, worktree,
 # checked-out, recently touched) and asserts exactly which branches survive.
-# `gh` and `curl` are PATH shims, so no network and no plan quota. Run
+# `gh` and `curl` are PATH shims; HTTP fixtures use loopback, with no external
+# network and no plan quota. Run
 # directly; exit 1 on any failure. Mirrors antigravity-review-gate.test.sh.
 set -uo pipefail
 
@@ -256,6 +257,443 @@ out="$(HYGIENE_MIN_AGE_HOURS=0 "$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
 assert "MIN_AGE=0: recent deleted" "! has_branch recent"
 assert "MIN_AGE=0: unique-work still kept" "has_branch unique-work"
 rm -rf "$FIX" "$GH_FAKE_DIR" "$report"
+
+# Small local-origin fixtures exercise failures without network or GitHub shims.
+build_small_fixture() {
+  FIX="$(mktemp -d)"
+  mkdir -p "$FIX/dev"
+  g init -q --bare -b main "$FIX/origin.git"
+  g init -q -b main "$FIX/seed"
+  commit_file "$FIX/seed" seed.txt seed
+  g -C "$FIX/seed" remote add origin "$FIX/origin.git"
+  g -C "$FIX/seed" push -q -u origin main
+  g clone -q "$FIX/origin.git" "$FIX/dev/repo"
+  g -C "$FIX/dev/repo" branch candidate
+}
+
+# An inherited graft file can forge ancestry without changing any object/ref.
+# Refuse it before fetches, archive snapshots, or safe-deletion recommendations.
+for mode in clean prune audit; do
+  for preview in false true; do
+    build_small_fixture
+    C="$FIX/dev/repo"
+    base="$(git -C "$C" rev-parse main)"
+    g -C "$C" checkout -q candidate
+    commit_file "$C" unique.txt 'unique unmerged work'
+    unique="$(git -C "$C" rev-parse candidate)"
+    g -C "$C" checkout -q main
+    assert "graft ($mode dry=$preview): real graph has unique work" \
+      "git -C '$C' cherry origin/main candidate | grep -qx '+ $unique'"
+    printf '%s\n%s %s\n' "$unique" "$base" "$unique" > "$FIX/grafts"
+    cp -a "$C/.git" "$FIX/before.git"
+    flags=()
+    $preview && flags=(--dry-run)
+    out="$(GIT_GRAFT_FILE="$FIX/grafts" "$HYGIENE" "$mode" "$FIX/dev" --yes "${flags[@]}" 2>&1)"
+    result=$?
+    assert "graft ($mode dry=$preview): explicit environment refusal" \
+      "[ '$result' -eq 1 ] && outgrep 'Git environment overrides' && outgrep GIT_GRAFT_FILE"
+    assert "graft ($mode dry=$preview): unique branch and graph survive" \
+      "has_branch candidate && git -C '$C' cherry origin/main candidate | grep -qx '+ $unique'"
+    assert "graft ($mode dry=$preview): all source metadata unchanged" "diff -qr '$FIX/before.git' '$C/.git' >/dev/null"
+    assert "graft ($mode dry=$preview): no misleading eligibility" \
+      "! outgrep 'would delete' && ! outgrep 'safely deletable' && ! outgrep 'deleted candidate'"
+    rm -rf "$FIX"
+  done
+done
+
+build_small_fixture
+C="$FIX/dev/repo"
+cp -a "$C/.git" "$FIX/before.git"
+for variable in GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE \
+  GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_NAMESPACE GIT_PREFIX GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_ATTR_SOURCE \
+  GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+  GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM; do
+  out="$(env "$variable=PRIVATE FIXTURE VALUE" "$HYGIENE" clean "$FIX/dev" --yes 2>&1)"
+  result=$?
+  assert "environment ($variable): refuse without exposing values" \
+    "[ '$result' -eq 1 ] && outgrep 'Git environment overrides' && outgrep '$variable' && ! outgrep 'PRIVATE FIXTURE VALUE'"
+done
+assert "environment: refusals preserve all source metadata" "diff -qr '$FIX/before.git' '$C/.git' >/dev/null && has_branch candidate"
+out="$(GIT_INDEX_FILE=private "$HYGIENE" --help 2>&1)"
+result=$?
+assert "environment: help remains available" "[ '$result' -eq 0 ] && outgrep 'Usage:'"
+rm -rf "$FIX"
+
+# Failed remote evidence must retain this repo and still visit later repos.
+for preview in false true; do
+  build_small_fixture
+  g clone -q "$FIX/origin.git" "$FIX/dev/z-later"
+  g -C "$FIX/dev/z-later" branch later-candidate
+  g -C "$FIX/dev/repo" remote set-url origin "$FIX/unavailable.git"
+  flags=()
+  $preview && flags=(--dry-run)
+  out="$("$HYGIENE" prune "$FIX/dev" --yes "${flags[@]}" 2>&1)"
+  assert "fetch failure (dry=$preview): candidate survives" "has_branch candidate"
+  assert "fetch failure (dry=$preview): warning names failure" "outgrep 'fetch failed'"
+  assert "fetch failure (dry=$preview): later repo inspected" "outgrep z-later && outgrep 'scanned 2 repos'"
+  rm -rf "$FIX"
+done
+
+# An empty git cherry output says nothing about unique merge resolutions.
+for mode in prune clean audit; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  base="$(git -C "$C" rev-parse HEAD)"
+  commit_file "$C" main.txt main
+  parent="$(git -C "$C" rev-parse HEAD)"
+  g -C "$C" push -q origin main
+  commit_file "$C" unique-merge.txt resolution
+  tree="$(git -C "$C" rev-parse 'HEAD^{tree}')"
+  merge="$(printf 'unique resolution\n' | g -C "$C" commit-tree "$tree" -p "$parent" -p "$base")"
+  g -C "$C" update-ref refs/heads/candidate "$merge"
+  g -C "$C" reset -q --hard "$parent"
+  out="$("$HYGIENE" "$mode" "$FIX/dev" --yes 2>&1)"
+  assert "unique merge ($mode): empty cherry does not delete branch" "has_branch candidate"
+  assert "unique merge ($mode): preserved tree has its resolution" "git -C '$C' cat-file -e candidate:unique-merge.txt"
+  assert "unique merge ($mode): no safe-deletion recommendation" "! outgrep 'candidate — safely deletable'"
+  rm -rf "$FIX"
+done
+
+# A matching subject does not establish that another commit contains the work.
+for mode in clean audit; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$C" checkout -q candidate
+  commit_file "$C" unique.txt 'matching subject'
+  g -C "$C" checkout -q main
+  commit_file "$C" unrelated.txt 'matching subject'
+  g -C "$C" push -q origin main
+  out="$("$HYGIENE" "$mode" "$FIX/dev" --yes 2>&1)"
+  assert "duplicate subject ($mode): unique branch kept" "has_branch candidate"
+  assert "duplicate subject ($mode): no safe-deletion recommendation" "! outgrep 'candidate — safely deletable'"
+  rm -rf "$FIX"
+done
+
+# Conservative classification still recognizes ancestry and equivalent patches.
+for mode in clean audit; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$C" checkout -qb equivalent
+  commit_file "$C" patch.txt patch
+  g -C "$C" checkout -q main
+  commit_file "$C" advance.txt advance
+  g -C "$C" cherry-pick equivalent >/dev/null
+  g -C "$C" push -q origin main
+  git -C "$C" branch recent
+  out="$("$HYGIENE" "$mode" "$FIX/dev" --yes 2>&1)"
+  if [[ "$mode" == clean ]]; then
+    assert "proven integration ($mode): ancestor deleted" "! has_branch candidate"
+    assert "proven integration ($mode): equivalent patch deleted" "! has_branch equivalent"
+  else
+    assert "proven integration ($mode): ancestor eligible without deleting" "has_branch candidate && outgrep 'candidate — safely deletable'"
+    assert "proven integration ($mode): equivalent patch eligible without deleting" "has_branch equivalent && outgrep 'equivalent — safely deletable'"
+  fi
+  assert "proven integration ($mode): recent branch kept" "has_branch recent && ! outgrep 'recent — safely deletable'"
+  rm -rf "$FIX"
+done
+
+# Missing activity history cannot establish that a branch is old enough.
+build_small_fixture
+C="$FIX/dev/repo"
+git -C "$C" config core.logAllRefUpdates false
+git -C "$C" branch no-reflog
+git -C "$C" branch malformed-reflog
+printf 'invalid reflog\n' > "$C/.git/logs/refs/heads/malformed-reflog"
+out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+assert "missing reflog: new branch off old commit survives" "has_branch no-reflog"
+assert "malformed reflog: branch survives" "has_branch malformed-reflog"
+assert "missing reflog: explains unavailable activity" "outgrep 'activity unavailable'"
+rm -rf "$FIX"
+
+# Git's dirty inventory includes untracked dangling links as well as files.
+for dirt in tracked untracked dangling-link hidden-untracked; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  case "$dirt" in
+    tracked) echo changed >> "$C/seed.txt" ;;
+    untracked) echo private > "$C/untracked.txt" ;;
+    dangling-link) ln -s missing-target "$C/untracked-link" ;;
+    hidden-untracked)
+      git -C "$C" config status.showUntrackedFiles no
+      echo private > "$C/untracked.txt" ;;
+  esac
+  out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+  assert "dirty repo ($dirt): candidate kept" "has_branch candidate"
+  assert "dirty repo ($dirt): warning explains retention" "outgrep 'dirty/untracked file(s)'"
+  rm -rf "$FIX"
+done
+
+# User display settings cannot hide modified or untracked submodule work.
+for ignore_setting in diff.ignoreSubmodules submodule.module.ignore; do
+  for dirt in tracked untracked; do
+    build_small_fixture
+    C="$FIX/dev/repo"
+    g init -q --bare -b main "$FIX/module-origin.git"
+    g init -q -b main "$FIX/module-seed"
+    commit_file "$FIX/module-seed" tracked.txt module
+    g -C "$FIX/module-seed" remote add origin "$FIX/module-origin.git"
+    g -C "$FIX/module-seed" push -q origin main
+    g -c protocol.file.allow=always -C "$C" submodule add -q "$FIX/module-origin.git" module
+    g -C "$C" commit -qm 'add module'
+    g -C "$C" push -q origin main
+    git -C "$C" config "$ignore_setting" all
+    if [[ "$dirt" == tracked ]]; then
+      echo changed >> "$C/module/tracked.txt"
+    else
+      echo private > "$C/module/untracked.txt"
+    fi
+    out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+    assert "dirty submodule ($ignore_setting/$dirt): candidate kept" "has_branch candidate"
+    assert "dirty submodule ($ignore_setting/$dirt): warning explains retention" \
+      "outgrep 'dirty/untracked file(s)'"
+    rm -rf "$FIX"
+  done
+done
+
+# Relative roots must classify every repo using the same absolute paths.
+build_small_fixture
+g clone -q "$FIX/origin.git" "$FIX/dev/z-later"
+g -C "$FIX/dev/z-later" branch later-candidate
+out="$(cd "$FIX" && "$HYGIENE" prune dev --yes 2>&1)"
+assert "relative root: candidate deleted" "! has_branch candidate"
+assert "relative root: later repo inspected" "outgrep 'deleted later-candidate' && outgrep 'scanned 2 repos'"
+rm -rf "$FIX"
+
+# The server's HEAD wins over a dangling or merely stale local origin/HEAD.
+for delete_old in false true; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$FIX/seed" checkout -q -b trunk
+  commit_file "$FIX/seed" trunk.txt trunk
+  g -C "$FIX/seed" push -q origin trunk
+  git -C "$FIX/origin.git" symbolic-ref HEAD refs/heads/trunk
+  $delete_old && g -C "$FIX/seed" push -q origin --delete main
+  out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+  assert "changed default (old deleted=$delete_old): origin/HEAD refreshed" \
+    "[ \"\$(git -C '$C' symbolic-ref refs/remotes/origin/HEAD)\" = refs/remotes/origin/trunk ]"
+  assert "changed default (old deleted=$delete_old): candidate evaluated against trunk" \
+    "! has_branch candidate && outgrep 'merged into origin/trunk'"
+  rm -rf "$FIX"
+done
+
+# Preview fetches must not write refs, reflogs, objects, FETCH_HEAD or index.
+for prune_setting in fetch.prune remote.origin.prune; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  g -C "$C" push -q -u origin candidate
+  g -C "$FIX/seed" push -q origin --delete candidate
+  commit_file "$FIX/seed" advance.txt advance
+  g -C "$FIX/seed" push -q origin main
+  git -C "$C" config "$prune_setting" true
+  git -C "$C" symbolic-ref -d refs/remotes/origin/HEAD
+  snapshot="$(mktemp -d)"
+  cp -a "$C/.git" "$snapshot/git"
+  out="$("$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
+  assert "dry-run ($prune_setting): Git state byte-for-byte unchanged" "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
+  assert "dry-run ($prune_setting): current remote evidence still classifies candidate" \
+    "outgrep 'would delete candidate' && outgrep 'would prune 1 stale remote-tracking ref'"
+  rm -rf "$FIX" "$snapshot"
+done
+
+# SSH stays local: the configured transport serves a fixture bare repository.
+unset GIT_SSH GIT_SSH_COMMAND GIT_SSH_VARIANT
+# Its relative script path must resolve from the source checkout in both modes.
+cat > "$SHIM_DIR/ssh" <<'EOF'
+#!/usr/bin/env bash
+exit 99
+EOF
+chmod +x "$SHIM_DIR/ssh"
+for transport_scope in local conditional; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  export HYGIENE_SSH_EXPECT_CWD="$C" HYGIENE_SSH_ORIGIN="$FIX/origin.git"
+  export HYGIENE_SSH_CALLS="$FIX/ssh-calls" HYGIENE_SSH_EXPECT_CONFIG="$FIX/expected"
+  mkdir -p "$C/.git/probe-hooks"
+  cat > "$C/.git/probe-hooks/reference-transaction" <<'EOF'
+#!/usr/bin/env bash
+printf 'hook ran\n' >> "$HYGIENE_SSH_CALLS.hooks"
+EOF
+  chmod +x "$C/.git/probe-hooks/reference-transaction"
+  cat > "$C/.git/fixture-ssh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$PWD" == "$HYGIENE_SSH_EXPECT_CWD" ]] || exit 91
+printf 'transport ran\n' >> "$HYGIENE_SSH_CALLS"
+exec git-upload-pack "$HYGIENE_SSH_ORIGIN"
+EOF
+  # Load normal global configuration from a disposable home. Inherited
+  # GIT_CONFIG_* routing is intentionally rejected by cleanup entrypoints.
+  fixture_home="$FIX/home"
+  mkdir -p "$fixture_home"
+  global_config="$fixture_home/.gitconfig"
+  conditional_config="$FIX/conditional.config"
+  git config --file "$global_config" core.hooksPath "$C/.git/probe-hooks"
+  git config --file "$global_config" --add credential.helper first
+  git config --file "$global_config" --add http.extraHeader 'X-Global: first'
+  git -C "$C" config core.worktree "$C"
+  if [[ "$transport_scope" == local ]]; then
+    transport_config="$C/.git/config"
+  else
+    git config --file "$global_config" "includeIf.gitdir:$C/.git.path" "$conditional_config"
+    transport_config="$conditional_config"
+  fi
+  git config --file "$transport_config" core.sshCommand 'bash .git/fixture-ssh'
+  git config --file "$transport_config" ssh.variant ssh
+  git config --file "$transport_config" --add credential.helper ''
+  git config --file "$transport_config" --add credential.helper $'second\n'
+  git config --file "$transport_config" --add http.extraHeader ''
+  git config --file "$transport_config" --add http.extraHeader 'X-Transport: second'
+  git -C "$C" config --add credential.helper third
+  git -C "$C" config --add http.extraHeader 'X-Local: third'
+  git -C "$C" remote set-url origin 'ssh://fixture.invalid/repository'
+  for key in credential.helper http.extraheader; do
+    HOME="$fixture_home" XDG_CONFIG_HOME="$FIX/xdg" \
+      git -C "$C" config --null --get-all "$key" > "$HYGIENE_SSH_EXPECT_CONFIG.$key"
+  done
+  snapshot="$(mktemp -d)"
+  cp -a "$C/.git" "$snapshot/git"
+  out="$(HOME="$fixture_home" XDG_CONFIG_HOME="$FIX/xdg" \
+    GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+    GIT_TRACE2_EVENT="$FIX/preview-trace.jsonl" \
+    GIT_TRACE2_CONFIG_PARAMS=credential.helper,http.extraheader \
+    "$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
+  assert "transport ($transport_scope): preview uses configured relative SSH command" \
+    "outgrep 'would delete candidate' && [ -s '$HYGIENE_SSH_CALLS' ]"
+  for key in credential.helper http.extraheader; do
+    jq -cRs 'split("\u0000")[:-1]' "$HYGIENE_SSH_EXPECT_CONFIG.$key" > "$FIX/expected-values.json"
+    jq -cs --arg key "$key" '
+      [.[] | select(.event == "start" and (.argv | index("fetch"))) | .sid] as $fetches |
+      [.[] | select(.event == "def_param" and .param == $key and
+        (.sid as $sid | $fetches | index($sid))) | .value]
+    ' "$FIX/preview-trace.jsonl" > "$FIX/fetched-values.json"
+    assert "transport ($transport_scope): effective $key preserves repeated and empty values" \
+      "cmp -s '$FIX/expected-values.json' '$FIX/fetched-values.json'"
+  done
+  assert "transport ($transport_scope): preview preserves source Git metadata" \
+    "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
+  assert "transport ($transport_scope): preview does not run source hooks" \
+    "[ ! -e '$HYGIENE_SSH_CALLS.hooks' ]"
+  out="$(HOME="$fixture_home" XDG_CONFIG_HOME="$FIX/xdg" \
+    GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
+    "$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+  assert "transport ($transport_scope): real prune agrees with preview" \
+    "! has_branch candidate && outgrep 'deleted candidate'"
+  rm -rf "$FIX" "$snapshot"
+done
+unset HYGIENE_SSH_EXPECT_CWD HYGIENE_SSH_ORIGIN HYGIENE_SSH_CALLS HYGIENE_SSH_EXPECT_CONFIG
+
+# HTTP stays on loopback. Existing jars are required authentication input;
+# absent jars exercise cookies received and reused within the HTTP session.
+cat > "$SHIM_DIR/cookie-server.py" <<'PY'
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from pathlib import Path
+import sys
+from urllib.parse import urlsplit
+
+root, cookie_state = Path(sys.argv[1]), sys.argv[2]
+
+
+class CookieHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(root), **kwargs)
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        cookies = self.headers.get("Cookie", "")
+        if cookie_state == "existing":
+            allowed = "fixture_auth=present" in cookies
+            evidence = "input-cookie accepted"
+        else:
+            allowed = (urlsplit(self.path).path.endswith("/info/refs") or
+                       "review_cookie=received" in cookies)
+            evidence = "session-cookie accepted" if "review_cookie=received" in cookies else "bootstrap"
+        if not allowed:
+            self.send_error(403, "fixture cookie required")
+            return
+        with (root / "http-requests").open("a") as stream:
+            stream.write(evidence + "\n")
+        super().do_GET()
+
+    def end_headers(self):
+        self.send_header("Set-Cookie", "review_cookie=received; Path=/")
+        super().end_headers()
+
+
+server = HTTPServer(("127.0.0.1", 0), CookieHandler)
+(root / "http-port").write_text(str(server.server_port))
+server.serve_forever()
+PY
+for cookie_scope in generic url; do
+  for cookie_state in existing absent; do
+    build_small_fixture
+    C="$FIX/dev/repo"
+    git -C "$FIX/origin.git" update-server-info
+    python3 "$SHIM_DIR/cookie-server.py" "$FIX" "$cookie_state" > "$FIX/http-server.log" 2>&1 &
+    cookie_server_pid=$!
+    trap 'kill "$cookie_server_pid" 2>/dev/null || true; wait "$cookie_server_pid" 2>/dev/null || true' EXIT
+    for _ in {1..50}; do
+      [[ -s "$FIX/http-port" ]] && break
+      sleep 0.1
+    done
+    if [[ ! -s "$FIX/http-port" ]]; then
+      cat "$FIX/http-server.log" >&2
+      assert "HTTP fixture starts" false
+      kill "$cookie_server_pid" 2>/dev/null || true
+      wait "$cookie_server_pid" 2>/dev/null || true
+      trap - EXIT
+      break
+    fi
+    cookie_url="http://127.0.0.1:$(cat "$FIX/http-port")/origin.git"
+    git -C "$C" remote set-url origin "$cookie_url"
+    cookie_prefix=http
+    [[ "$cookie_scope" == url ]] && cookie_prefix="http.$cookie_url"
+    git -C "$C" config "$cookie_prefix.cookieFile" .git/review-cookies
+    git -C "$C" config --add "$cookie_prefix.saveCookies" false
+    git -C "$C" config --add "$cookie_prefix.saveCookies" true
+    if [[ "$cookie_state" == existing ]]; then
+      printf '# Netscape HTTP Cookie File\n127.0.0.1\tFALSE\t/\tFALSE\t0\tfixture_auth\tpresent\n' > "$C/.git/review-cookies"
+    fi
+    snapshot="$(mktemp -d)"
+    cp -a "$C/.git" "$snapshot/git"
+    out="$("$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
+    assert "HTTP cookies ($cookie_scope/$cookie_state): preview preserves source Git metadata" \
+      "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
+    assert "HTTP cookies ($cookie_scope/$cookie_state): preview authenticates and classifies candidate" \
+      "outgrep 'would delete candidate' && has_branch candidate"
+    cookie_evidence='input-cookie accepted'
+    [[ "$cookie_state" == absent ]] && cookie_evidence='session-cookie accepted'
+    assert "HTTP cookies ($cookie_scope/$cookie_state): transport uses expected cookie input" \
+      "grep -qx '$cookie_evidence' '$FIX/http-requests'"
+    out="$("$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
+    assert "HTTP cookies ($cookie_scope/$cookie_state): real prune agrees and saves received cookies" \
+      "! has_branch candidate && outgrep 'deleted candidate' && grep -q review_cookie '$C/.git/review-cookies'"
+    kill "$cookie_server_pid"
+    wait "$cookie_server_pid" 2>/dev/null || true
+    trap - EXIT
+    rm -rf "$FIX" "$snapshot"
+  done
+done
+
+# A fresh clone and preview must agree even when neither default ref exists.
+for preview in true false; do
+  build_small_fixture
+  C="$FIX/dev/repo"
+  git -C "$C" symbolic-ref -d refs/remotes/origin/HEAD
+  git -C "$C" update-ref -d refs/remotes/origin/main
+  flags=()
+  $preview && flags=(--dry-run)
+  out="$("$HYGIENE" prune "$FIX/dev" --yes "${flags[@]}" 2>&1)"
+  if $preview; then
+    assert "missing default refs: preview resolves deletion" "outgrep 'would delete candidate' && has_branch candidate"
+    assert "missing default refs: preview leaves tracking ref absent" "! has_remote_ref main"
+  else
+    assert "missing default refs: real run agrees with preview" "! has_branch candidate"
+    assert "missing default refs: real run installs origin/HEAD" "has_remote_ref HEAD"
+  fi
+  rm -rf "$FIX"
+done
 
 # ── flag hygiene ────────────────────────────────────────────────────────
 out="$("$HYGIENE" clean "$HOME" --gh 2>&1)"; rc=$?

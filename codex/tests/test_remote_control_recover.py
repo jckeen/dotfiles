@@ -9,6 +9,7 @@ import socket
 import tempfile
 import time
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 
@@ -326,6 +327,174 @@ class RemoteControlRecoverTest(unittest.TestCase):
             pidfd_send_signal=lambda fd, sig: None, close_pidfd=lambda fd: None,
         ))
         self.assertTrue(self.recover())
+
+    def snapshot(self):
+        return RECOVER.snapshot_updater(
+            pid_file=self.pid_file, identity_file=self.identity_file,
+            proc_root=self.proc, home=self.home, expected_uid=os.getuid(),
+            clock_ticks=self.clock_ticks, pidfd_open=lambda pid: 99,
+            pidfd_send_signal=lambda fd, sig: self.signals.append((fd, sig)),
+            close_pidfd=lambda fd: None,
+        )
+
+    def select_custom_state(self):
+        custom_home = self.root / "custom-codex"
+        custom_home.mkdir()
+        daemon = custom_home / "app-server-daemon"
+        self.pid_file.parent.rename(daemon)
+        self.pid_file = daemon / self.pid_file.name
+        self.identity_file = daemon / self.identity_file.name
+        return custom_home
+
+    def select_custom_install(self):
+        custom_home = self.select_custom_state()
+        standalone = custom_home / "packages/standalone"
+        release = standalone / "releases/test/bin"
+        release.mkdir(parents=True)
+        self.exe = release / "codex"
+        self.exe.write_bytes(b"custom fixture")
+        (standalone / "current").symlink_to("releases/test", target_is_directory=True)
+        self.argv_zero = standalone / "current/bin/codex"
+        exe_link = self.proc / str(self.pid) / "exe"
+        exe_link.unlink()
+        exe_link.symlink_to(self.exe)
+        self.write_updater_argv()
+        return custom_home
+
+    def write_updater_argv(self):
+        (self.proc / str(self.pid) / "cmdline").write_bytes(
+            os.fsencode(self.argv_zero) + b"\0app-server\0daemon\0pid-update-loop\0"
+        )
+
+    def assert_all_actions_succeed(self):
+        self.identity_file.unlink()
+        self.assertTrue(self.snapshot())
+        self.assertEqual(json.loads(self.identity_file.read_text())["startTicks"], self.start_ticks)
+        self.assertTrue(self.recover())
+        self.prepare_repair()
+        self.assertTrue(self.repair())
+        self.assertEqual(json.loads(self.pid_file.read_text())["pid"], self.pid)
+        self.assertEqual(json.loads(self.server_pid_file.read_text())["pid"], self.server_pid)
+        self.assertEqual(self.signals, [(99, 0), (99, signal.SIGTERM), (99, 0), (98, 0)])
+
+    def assert_all_actions_refuse(self):
+        original_identity = self.identity_file.read_bytes()
+        self.assertFalse(self.snapshot())
+        self.assertEqual(self.identity_file.read_bytes(), original_identity)
+        self.assertFalse(self.recover())
+        self.prepare_repair()
+        self.assertFalse(self.repair())
+        self.assertFalse(self.pid_file.exists())
+        self.assertFalse(self.server_pid_file.exists())
+        self.assertEqual(self.signals, [])
+
+    def test_custom_state_with_default_install_supports_all_actions(self):
+        self.select_custom_state()
+        self.assert_all_actions_succeed()
+
+    def test_selected_custom_install_supports_all_actions_without_default_install(self):
+        self.select_custom_install()
+        (self.home / ".codex/packages/standalone").rename(self.root / "unused-install")
+        self.assert_all_actions_succeed()
+
+    def test_selected_custom_install_survives_updated_current_for_all_actions(self):
+        custom_home = self.select_custom_install()
+        standalone = custom_home / "packages/standalone"
+        newer = standalone / "releases/new/bin"
+        newer.mkdir(parents=True)
+        (newer / "codex").write_bytes(b"newer custom fixture")
+        (standalone / "current").unlink()
+        (standalone / "current").symlink_to("releases/new", target_is_directory=True)
+        self.assert_all_actions_succeed()
+
+    def test_same_owner_selected_home_alias_keeps_matching_updated_launcher(self):
+        custom_home = self.select_custom_install()
+        real_home = self.root / "real-custom-codex"
+        custom_home.rename(real_home)
+        custom_home.symlink_to(real_home, target_is_directory=True)
+        standalone = custom_home / "packages/standalone"
+        newer = standalone / "releases/new/bin"
+        newer.mkdir(parents=True)
+        (newer / "codex").write_bytes(b"updated alias fixture")
+        (standalone / "current").unlink()
+        (standalone / "current").symlink_to("releases/new", target_is_directory=True)
+        self.assert_all_actions_succeed()
+
+    def test_ambient_home_does_not_admit_an_unselected_neighbor_install(self):
+        custom_home = self.select_custom_install()
+        neighbor = self.root / "custom-codex-neighbor"
+        neighbor.mkdir()
+        daemon = neighbor / "app-server-daemon"
+        self.pid_file.parent.rename(daemon)
+        self.pid_file = daemon / self.pid_file.name
+        self.identity_file = daemon / self.identity_file.name
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(custom_home)}):
+            self.assert_all_actions_refuse()
+
+    def test_default_current_cannot_vouch_for_a_custom_install_executable(self):
+        self.select_custom_install()
+        self.argv_zero = self.home / ".codex/packages/standalone/current/bin/codex"
+        self.write_updater_argv()
+        self.assert_all_actions_refuse()
+
+    def test_custom_packages_symlink_escape_is_refused(self):
+        custom_home = self.select_custom_install()
+        escaped = self.root / "escaped-packages"
+        (custom_home / "packages").rename(escaped)
+        (custom_home / "packages").symlink_to(escaped, target_is_directory=True)
+        self.assert_all_actions_refuse()
+
+    def test_custom_release_symlink_escape_is_refused(self):
+        custom_home = self.select_custom_install()
+        releases = custom_home / "packages/standalone/releases"
+        escaped = self.root / "escaped-release"
+        (releases / "test").rename(escaped)
+        (releases / "test").symlink_to(escaped, target_is_directory=True)
+        self.assert_all_actions_refuse()
+
+    def test_managed_install_foreign_ownership_is_refused_for_all_actions(self):
+        # /proc and state retain the expected UID; only installation metadata differs.
+        targets = [
+            self.home / ".codex", *self.exe.parents[:5], self.exe,
+            self.proc / str(self.pid) / "exe",
+        ]
+        real_stat = Path.stat
+        def foreign_stat(path, *args, **kwargs):
+            metadata = real_stat(path, *args, **kwargs)
+            if path == target:
+                fields = list(metadata)
+                fields[4] = os.getuid() + 1
+                return os.stat_result(fields)
+            return metadata
+
+        original_identity = self.identity_file.read_bytes()
+        for target in targets:
+            with self.subTest(path=target), mock.patch.object(Path, "stat", foreign_stat):
+                self.assertFalse(self.snapshot())
+                self.assertFalse(self.recover())
+                self.assertEqual(self.identity_file.read_bytes(), original_identity)
+                self.assertEqual(self.signals, [])
+        self.prepare_repair()
+        for target in targets:
+            with self.subTest(path=target), mock.patch.object(Path, "stat", foreign_stat):
+                self.assertFalse(self.repair())
+                self.assertFalse(self.pid_file.exists())
+                self.assertFalse(self.server_pid_file.exists())
+                self.assertEqual(self.signals, [])
+
+    def test_running_executable_inode_must_match_the_owned_release_file(self):
+        real_stat = Path.stat
+        proc_exe = self.proc / str(self.pid) / "exe"
+        def replaced_inode(path, *args, **kwargs):
+            metadata = real_stat(path, *args, **kwargs)
+            if path == proc_exe:
+                fields = list(metadata)
+                fields[1] += 1
+                return os.stat_result(fields)
+            return metadata
+
+        with mock.patch.object(Path, "stat", replaced_inode):
+            self.assert_all_actions_refuse()
 
     def test_repair_refuses_a_reused_updater_pid(self):
         self.prepare_repair()

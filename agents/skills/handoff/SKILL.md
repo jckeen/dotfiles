@@ -16,9 +16,15 @@ brief.
 4. Queue USER ACTION items to `~/.claude/operator-queue.md` — see
    "Operator-action queue" below for the block format and rules.
 5. Session-end hygiene (before saving the note):
-   - `git worktree list` — identify worktrees this session created and no
-     longer needs. Remove only those already covered by explicit cleanup
-     authorization and proven to contain no unique work; otherwise list them.
+   - `git worktree list` — record every task worktree as removed, or retained
+     with its owner, reason, PR, and concrete follow-up command. Follow the
+     shared lifecycle procedure in `claude/scripts/README.md`. Stop owned
+     processes first and archive recovery/review evidence. Remove explicitly
+     released worktrees only after verified integration and applicable user or
+     standing cleanup authorization. Preserve active/locked worktrees, unique
+     work, dirty/untracked/ignored content, stashes and unknown ownership.
+     Pending PRs retain their worktrees; release the exact completed artifact
+     when appropriate so a later session can assess it after merge.
    - Inventory local branches fully merged into the default branch
      (`git branch --merged "$(git rev-parse --abbrev-ref origin/HEAD)"` —
      don't assume it's named `main`). Delete them only when the user or an

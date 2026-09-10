@@ -57,7 +57,7 @@ jobs:
           gate_relevant=false
           while IFS= read -r f; do
             case "$f" in
-              setup.sh|check-claude.sh|check-codex.sh|check-antigravity.sh|gh-bootstrap.sh|git-hygiene.sh|hygiene-status.sh|lib-*.sh|.bash_aliases|.bash_profile|.github/workflows/smoke-install.yml)
+              setup.sh|check-claude.sh|check-codex.sh|check-antigravity.sh|gh-bootstrap.sh|git-hygiene.sh|hygiene-status.sh|lib-*.sh|.bash_aliases|.bash_profile|claude/scripts/retired-skill-links.*|claude/scripts/tests/retired-skill-links.test.py|claude/scripts/tests/launcher-regressions.test.py|.github/workflows/smoke-install.yml)
                 echo "smoke-relevant change: $f"
                 relevant=true
                 ;;
@@ -80,6 +80,12 @@ jobs:
       - name: Codex review gate portability
         if: steps.changes.outputs.gate_relevant == 'true' && runner.os == 'macOS'
         run: bash claude/scripts/tests/codex-review-gate.test.sh
+
+      - name: Retired-link and shell portability
+        if: steps.changes.outputs.relevant == 'true' && runner.os == 'macOS'
+        run: |
+          python3 claude/scripts/tests/retired-skill-links.test.py
+          python3 claude/scripts/tests/launcher-regressions.test.py
 
       - name: Syntax check shell scripts
         if: steps.changes.outputs.relevant == 'true'

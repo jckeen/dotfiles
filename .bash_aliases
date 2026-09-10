@@ -7,31 +7,28 @@
 # even on a fresh install whose login shell hasn't already added it to PATH.
 export PATH="$HOME/.local/bin:$HOME/.claude/scripts:$PATH"
 
-# Where this file lives and its mtime as loaded. Shells outlive edits to this
-# file by days (WSL6 panes), so a launcher keeps the body it sourced long after
-# pull-all replaced it on disk — the fail-closed sync message outlived its own
-# fix that way. GNU and BSD stat spell the query differently; -L follows the
-# ~/.bash_aliases symlink into the dotfiles checkout either way.
-# Detect GNU vs BSD stat by capability, not by trying one and falling back:
-# on GNU, `stat -f %m` is filesystem mode and prints a mount point, not a time.
-if stat --version >/dev/null 2>&1; then
-  _file_mtime() { stat -L -c %Y "$1" 2>/dev/null; }
-else
-  _file_mtime() { stat -L -f %m "$1" 2>/dev/null; }
-fi
+# Hash the sourced contents: timestamp resolution varies across filesystems,
+# and setup or pull-all can replace the file within the same clock tick.
+_file_fingerprint() { cksum 2>/dev/null < "$1"; }
+
 # Anchored to an absolute path so a later `cd` cannot redirect the reload.
-_BASH_ALIASES_PATH="${BASH_SOURCE[0]}"
+if [ -n "${ZSH_VERSION:-}" ]; then
+  # shellcheck disable=SC2296  # zsh's source-file expansion, evaluated only in zsh
+  _BASH_ALIASES_PATH="${(%):-%N}"
+else
+  _BASH_ALIASES_PATH="${BASH_SOURCE[0]}"
+fi
 case "$_BASH_ALIASES_PATH" in /*) ;; *) _BASH_ALIASES_PATH="$PWD/$_BASH_ALIASES_PATH" ;; esac
-_BASH_ALIASES_MTIME="$(_file_mtime "$_BASH_ALIASES_PATH")"
+_BASH_ALIASES_FINGERPRINT="$(_file_fingerprint "$_BASH_ALIASES_PATH")"
 
 # Re-source this file when it changed since the shell loaded it. Succeeds only
 # when a reload happened, so a launcher can re-enter itself and run the fresh
 # definitions instead of the body already executing. The reload resets
-# _BASH_ALIASES_MTIME, which is what stops the re-entry from repeating.
+# _BASH_ALIASES_FINGERPRINT, which is what stops the re-entry from repeating.
 _launcher_reloaded() {
   local now
-  now="$(_file_mtime "$_BASH_ALIASES_PATH")"
-  [ -n "$now" ] && [ "$now" != "$_BASH_ALIASES_MTIME" ] || return 1
+  now="$(_file_fingerprint "$_BASH_ALIASES_PATH")"
+  [ -n "$now" ] && [ "$now" != "$_BASH_ALIASES_FINGERPRINT" ] || return 1
   echo "ℹ ~/.bash_aliases changed since this shell loaded it — reloading launcher definitions." >&2
   # shellcheck source=/dev/null
   source "$_BASH_ALIASES_PATH"
@@ -85,6 +82,18 @@ _pull_all_is_linked_worktree() {
   git_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$git_dir" && builtin pwd -P)" || return 2
   common_dir="$(builtin cd -P -- "$repo" && builtin cd -P -- "$common_dir" && builtin pwd -P)" || return 2
   [ "$git_dir" != "$common_dir" ]
+}
+
+# A negative fetch refspec can produce the same pull diagnostic as a deleted
+# branch. Only the remote's successful no-match result establishes deletion.
+_pull_all_upstream_deleted() {
+  local repo="$1" branch remote merge_ref rc=0
+  branch="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)" || return 1
+  remote="$(git -C "$repo" config --get "branch.$branch.remote")" || return 1
+  merge_ref="$(git -C "$repo" config --get "branch.$branch.merge")" || return 1
+  [ -n "$remote" ] && [ -n "$merge_ref" ] || return 1
+  git -C "$repo" ls-remote --exit-code --refs "$remote" "$merge_ref" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ]
 }
 
 # Linked worktrees may belong to another session, so only fetch into their
@@ -150,9 +159,8 @@ pull-all() {
     output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
       _pull_all_report "$name" "$(tail -1 <<< "$output")"
-    elif grep -q 'no such ref was fetched' <<< "$output"; then
-      # Nothing to pull: the checkout tracks a branch that no longer exists.
-      # Same posture as "No upstream branch" — not a launch blocker.
+    elif grep -q 'no such ref was fetched' <<< "$output" \
+      && _pull_all_upstream_deleted "$repo"; then
       _pull_all_report "$name" \
         "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
     else
@@ -180,7 +188,7 @@ _check_codex_launch_health() {
 }
 
 _check_antigravity_launch_health() {
-  "$(_dev_dir)/dotfiles/check-antigravity.sh" --strict
+  "$(_dev_dir)/dotfiles/check-antigravity.sh" --heal --strict
 }
 
 _codex_is_resume_invocation() {
@@ -232,15 +240,17 @@ _memory_git() {
 }
 
 _memory_path_is_publishable() {
-  local path="$1" folded sensitive_folded
-  [[ "$path" =~ ^[^/]+/memory/ ]] || return 1
-  folded="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')" || return 1
+  local memory_path="$1" folded sensitive_folded sensitive_pattern denied_pattern
+  [[ "$memory_path" =~ ^[^/]+/memory/ ]] || return 1
+  folded="$(printf '%s' "$memory_path" | tr '[:upper:]' '[:lower:]')" || return 1
   # Allow an explicit author/authors document component without weakening the
   # auth/authorization/oauth deny boundary elsewhere in the path.
   sensitive_folded="$(printf '%s' "$folded" \
     | sed -E 's#(^|/)authors?(\.[^/]*)?(/|$)#\1\2\3#g')" || return 1
-  [[ ! "$sensitive_folded" =~ auth|session|cache ]] || return 1
-  [[ ! "$folded" =~ (^|/)(auth|sessions?|cache|logs?|credentials?|tokens?|secrets?)([^[:alnum:]/][^/]*|/|$)|(^|/)[^/]*\.env([^/]*)(/|$)|\.(key|pem)([^/]*)$|secret|credentials|token ]]
+  sensitive_pattern='auth|session|cache'
+  denied_pattern='(^|/)(auth|sessions?|cache|logs?|credentials?|tokens?|secrets?)([^[:alnum:]/][^/]*|/|$)|(^|/)[^/]*\.env([^/]*)(/|$)|\.(key|pem)([^/]*)$|secret|credentials|token'
+  [[ ! "$sensitive_folded" =~ $sensitive_pattern ]] || return 1
+  [[ ! "$folded" =~ $denied_pattern ]]
 }
 
 _memory_content_is_safe() {
@@ -259,19 +269,19 @@ _memory_content_is_safe() {
 }
 
 _memory_blob_is_safe() {
-  local repo="$1" tree="$2" path="$3" listing blob blob_spec
+  local repo="$1" tree="$2" blob_path="$3" listing blob blob_spec
   listing="$(mktemp)" || return 1
   blob="$(mktemp)" || { rm -f "$listing"; return 1; }
 
   if [ "$tree" = ":" ]; then
-    blob_spec=":$path"
-    _memory_git "$repo" ls-files --stage -z -- "$path" > "$listing" || {
+    blob_spec=":$blob_path"
+    _memory_git "$repo" ls-files --stage -z -- "$blob_path" > "$listing" || {
       rm -f "$listing" "$blob"
       return 1
     }
   else
-    blob_spec="$tree:$path"
-    _memory_git "$repo" ls-tree -z "$tree" -- "$path" > "$listing" || {
+    blob_spec="$tree:$blob_path"
+    _memory_git "$repo" ls-tree -z "$tree" -- "$blob_path" > "$listing" || {
       rm -f "$listing" "$blob"
       return 1
     }
@@ -298,7 +308,7 @@ _memory_range_is_safe() {
     return 1
   fi
 
-  local commits_file paths_file commit_file commit path unsafe
+  local commits_file paths_file commit_file commit changed_path unsafe
   commits_file="$(mktemp)" || return 1
   if ! _memory_git "$repo" rev-list --reverse "$upstream".."$validated_head" > "$commits_file"; then
     rm -f "$commits_file"
@@ -321,13 +331,13 @@ _memory_range_is_safe() {
       return 1
     fi
     unsafe=0
-    while IFS= read -r -d '' path; do
-      [ -n "$path" ] || continue
-      if ! _memory_path_is_publishable "$path"; then
+    while IFS= read -r -d '' changed_path; do
+      [ -n "$changed_path" ] || continue
+      if ! _memory_path_is_publishable "$changed_path"; then
         unsafe=1
         break
       fi
-      if ! _memory_blob_is_safe "$repo" "$commit" "$path"; then
+      if ! _memory_blob_is_safe "$repo" "$commit" "$changed_path"; then
         echo "  SECRET-LIKE CONTENT IN PENDING MEMORY COMMIT — refusing to push." >&2
         rm -f "$paths_file" "$commits_file"
         return 1
@@ -538,7 +548,7 @@ _check_critical_symlinks() {
 # anything else is reported and left for a human.
 _dev_dir_stub_gitdir() {
   local dev_dir="$1" top
-  [ -e "$dev_dir/.git" ] || return 0
+  [ -e "$dev_dir/.git" ] || [ -L "$dev_dir/.git" ] || return 0
   if top="$(git -C "$dev_dir" rev-parse --show-toplevel 2>/dev/null)" && [ "$top" -ef "$dev_dir" ]; then
     return 0
   fi
@@ -555,7 +565,10 @@ _dev_dir_stub_gitdir() {
 _dotfiles_branch_check() {
   local repo="$1/dotfiles" branch
   [ -e "$repo/.git" ] || return 0
-  branch="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)" || return 0
+  if ! branch="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)"; then
+    git -C "$repo" rev-parse --verify HEAD >/dev/null 2>&1 || return 0
+    branch="detached HEAD"
+  fi
   case "$branch" in main|master|"") return 0 ;; esac
   echo "⚠ dotfiles checkout is on '$branch' — ~/.bash_aliases, hooks and skills follow it. Finish that work in a worktree and return $repo to main." >&2
 }
@@ -568,8 +581,14 @@ _agent_preflight() {
   dev_dir="$(_dev_dir)"
   _dev_dir_stub_gitdir "$dev_dir"
 
-  # Detect resume-style invocation anywhere in the args. resume_keys is left
-  # unquoted so it word-splits into the individual keywords to match against.
+  # zsh does not split unquoted scalar parameters into words by default.
+  local -a resume_words
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    read -r -A resume_words <<< "$resume_keys"
+  else
+    read -r -a resume_words <<< "$resume_keys"
+  fi
+
   _agent_resuming="${_agent_force_resuming:-0}"
   _agent_force_resuming=0
   local arg key arg_index=0 runtime_arg_index=1
@@ -580,7 +599,7 @@ _agent_preflight() {
     for arg in "$@"; do
       arg_index=$((arg_index + 1))
       [ "$arg" = "--" ] && break
-      for key in $resume_keys; do
+      for key in "${resume_words[@]}"; do
         if [[ "$key" != -* ]] && [ "$arg_index" -ne "$runtime_arg_index" ]; then
           continue
         fi
@@ -597,7 +616,7 @@ _agent_preflight() {
   # If a project name was passed, cd into it (honored even when resuming) and
   # tell the caller to shift it out.
   _agent_shifted=0
-  if [ -n "$1" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+  if [ -n "${1:-}" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
     cd "$dev_dir/$1" || return 1
     _agent_shifted=1
   elif [ "$_agent_resuming" -eq 0 ] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -605,7 +624,7 @@ _agent_preflight() {
     cd "$dev_dir" || return 1
   fi
 
-  if [ "$_agent_resuming" -eq 0 ]; then
+  if [ "$_agent_resuming" -eq 0 ] && [ "${_agent_preflight_synced:-0}" -eq 0 ]; then
     echo "Syncing repos..."
     # A repo that cannot sync is not a reason to withhold the agent: the
     # checkout is still usable, just possibly stale. The warning repeats the
@@ -620,6 +639,12 @@ _agent_preflight() {
       } >&2
     fi
     echo ""
+    if _launcher_reloaded; then
+      # The caller re-enters its newly sourced definition with the original
+      # arguments. Dynamic local scope carries this flag through that call.
+      _agent_preflight_synced=1
+      return 2
+    fi
   fi
   _dotfiles_branch_check "$dev_dir"
   if ! "$health_cmd"; then
@@ -639,6 +664,7 @@ _agent_preflight() {
 # no repository pulls, but memory publication and runtime health still run.
 # shellcheck disable=SC2120  # args come from interactive use, not in-file callers
 cc() {
+  local _agent_preflight_synced="${_agent_preflight_synced:-0}" preflight_rc=0
   if _launcher_reloaded; then cc "$@"; return $?; fi
   # Quick critical symlink validation (fast — just 2 stat calls; cwd-independent,
   # so running it before the preflight cd is equivalent to running it after).
@@ -646,7 +672,9 @@ cc() {
 
   # Shared preflight: resume detection, project cd, and the repo + memory sync.
   _agent_preflight "--resume --resume= -r --continue --continue= -c" \
-    "_check_claude_launch_health" "$@" || return 1
+    "_check_claude_launch_health" "$@" || preflight_rc=$?
+  if [ "$preflight_rc" -eq 2 ]; then cc "$@"; return $?; fi
+  [ "$preflight_rc" -eq 0 ] || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
   local resuming="$_agent_resuming"
 
@@ -720,8 +748,8 @@ cc() {
 #        cct <project>      — session named <project>, cc cds into it
 #        cct <project> -c   — any further args pass straight to cc
 # An existing session of that name is attached, not recreated; detach with
-# Ctrl-b d, list with `tmux ls`. Args are typed into the session's login
-# shell (which already sources this file), so cc's preflight runs unchanged.
+# Ctrl-b d, list with `tmux ls`. The login shell sources this file, so cc's
+# preflight runs unchanged.
 cct() {
   if ! command -v tmux >/dev/null 2>&1; then
     echo "cct: tmux not installed — run dotfiles-update (setup.sh installs it)" >&2
@@ -757,21 +785,21 @@ cct() {
     return
   fi
 
-  # Start detached, then type the command: send-keys goes through the pane's
-  # interactive bash, so %q-quoted args are parsed exactly as typed at a prompt
-  # (new-session's command arg is joined with spaces and run via sh -c, which
-  # would mangle quoting). The explicit cd defeats .bashrc's auto-cd to ~/dev
-  # when cct is run from a repo dir with no <project> arg.
-  local cmd
-  printf -v cmd 'cd %q && cc' "$PWD"
-  if [ "$#" -gt 0 ]; then
-    local arg
-    for arg in "$@"; do
-      printf -v cmd '%s %q' "$cmd" "$arg"
-    done
-  fi
-  tmux new-session -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" || return 1
-  tmux send-keys -t "=$name" "$cmd" Enter
+  # Keep one login shell so its startup cannot move the working directory
+  # again after cc exits. Private values travel as argv; only a fixed command
+  # referring to those parameters enters the interactive shell's history.
+  local launch_shell="${SHELL:-/bin/bash}" arg
+  local -a launch_args=()
+  # tmux splits commands at terminal semicolons, or removes one backslash
+  # immediately before them. Add that backslash even when one is present.
+  for arg in -d -s "$name" -c "$PWD" -e "CCT_DIR=$dir" \
+    "$launch_shell" -lis -- "$PWD" "$@"; do
+    case "$arg" in *';') arg="${arg%;}\\;" ;; esac
+    launch_args+=("$arg")
+  done
+  tmux new-session "${launch_args[@]}" || return 1
+  tmux send-keys -t "=$name:" \
+    'if cd -- "$1"; then shift; cc "$@"; fi; set --' Enter || return 1
   tmux attach-session -t "=$name"
 }
 
@@ -866,12 +894,15 @@ _codex_wants_shared_remote() {
 }
 
 cx() {
+  local _agent_preflight_synced="${_agent_preflight_synced:-0}" preflight_rc=0
   if _launcher_reloaded; then cx "$@"; return $?; fi
   _agent_force_resuming=0
   _codex_is_resume_invocation "$@" && _agent_force_resuming=1
   # Shared preflight: resume/fork detection, project cd, and the repo sync +
   # Codex config health check (no Claude memory or ~/.claude healing).
-  _agent_preflight "" "_check_codex_launch_health" "$@" || return 1
+  _agent_preflight "" "_check_codex_launch_health" "$@" || preflight_rc=$?
+  if [ "$preflight_rc" -eq 2 ]; then cx "$@"; return $?; fi
+  [ "$preflight_rc" -eq 0 ] || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
   # Reapply portable private defaults after the repo sync without replacing the
@@ -906,6 +937,7 @@ cx() {
 #        agy --continue|-c           — continue without the sync preflight
 #        agy --conversation <id>     — resume by id without the sync preflight
 agy() {
+  local _agent_preflight_synced="${_agent_preflight_synced:-0}" preflight_rc=0
   if _launcher_reloaded; then agy "$@"; return $?; fi
   # Utility subcommands (agy models, plugin list, update…) and help/version
   # are plain CLI calls, not workspace launches — the repo-sync + strict
@@ -919,7 +951,9 @@ agy() {
       ;;
   esac
   _agent_preflight "--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=" \
-    "_check_antigravity_launch_health" "$@" || return 1
+    "_check_antigravity_launch_health" "$@" || preflight_rc=$?
+  if [ "$preflight_rc" -eq 2 ]; then agy "$@"; return $?; fi
+  [ "$preflight_rc" -eq 0 ] || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
   command agy "$@"

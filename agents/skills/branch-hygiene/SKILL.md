@@ -41,7 +41,8 @@ When the user asks about hygiene state:
 3. To clean stale local branches now: `~/dev/dotfiles/git-hygiene.sh prune
    ~/dev --yes --gh` (what the timer runs; add `--dry-run` to preview — it
    writes nothing: no deletions, no `fetch --prune`, no `remote set-head`), or
-   the broader heuristic `~/dev/dotfiles/git-hygiene.sh clean ~/dev --yes`.
+   the compatibility command `~/dev/dotfiles/git-hygiene.sh clean ~/dev --yes`,
+   which uses the same conservative local proof rules.
 4. To bootstrap a new or drifted repo:
    `~/dev/dotfiles/gh-bootstrap.sh <owner/repo>` or `--all <dir>`.
 
@@ -54,28 +55,22 @@ after** any successful create/clone you do, so the new repo doesn't drift.
 
 ## What "safely deletable" means here
 
-`git-hygiene.sh` confirms a local branch is merged via three independent
-signals before deleting:
-1. `git cherry origin/<default> <branch>` — patch-equivalent commits
-2. Each commit's subject is found in `origin/<default>` history
-   (catches squash collapses that cherry misses)
-3. `gh pr list --state all --head <branch> --base <default>` returns MERGED
-   (a PR merged into a release/feature branch that never reached the default
-   does not count)
+Both `clean` and `prune` require current remote evidence, known branch activity,
+and proof that no unique merges or patches remain. Dirty working trees,
+current branch, and worktree-checked-out branches are always skipped.
+`HYGIENE_MIN_AGE_HOURS` in `git-hygiene.sh` controls the activity window.
 
-A branch is deleted only when at least one signal confirms merge. Dirty
-working trees, current branch, and worktree-checked-out branches are always
-skipped.
+`prune --gh` can also verify a squash-merged PR into the default branch when
+its head SHA matches the local tip or a fetched descendant. A name or commit
+subject match never authorizes deletion. Failed remote refresh, unknown
+activity, unique merge commits and unavailable GitHub evidence preserve work.
 
-`git-hygiene.sh prune` (the timer's mode) is stricter because it runs
-unattended: it deletes a branch only when it is not the default, checked-out,
-or worktree branch, was not touched in the last 24 h, and either has no unique
-commits vs `origin/<default>` (merged, upstream gone, or cherry-equivalent)
-or — with `--gh` and a working `gh auth status` — GitHub shows a PR merged
-into the default branch whose head ref is the branch and whose head SHA is
-the local tip (or a locally-fetched descendant of it). Subject matching is not used; a
-squash-merged branch with no confirming PR is kept, and any `gh` error keeps
-the branch.
+For task worktrees, inspect `hygiene-status.sh --worktrees` or run
+`python3 ~/dev/dotfiles/claude/scripts/worktree-lifecycle.py inventory --repo /path/to/repo`.
+The timer reports ownership/disposition separately from settings drift and
+never deletes worktrees. Follow the release and authorized-retirement procedure
+in `claude/scripts/README.md`, including private evidence archival. A pending
+PR retains its worktree with a named owner and follow-up command.
 
 ## Output
 
@@ -83,10 +78,11 @@ If the user just asks "is everything clean?":
 
 ```
 $ ~/dev/dotfiles/hygiene-status.sh --status
-clean (checked 4h ago)
+settings clean (checked 4h ago)
 ```
 
-If drift exists, the same command emits a summary and the user can run
+This reports repository settings only; read `--worktrees` for retained or
+released task worktrees. If settings drift exists, the same command emits a summary and the user can run
 `gh-bootstrap.sh --all ~/dev` to fix it. Be specific about which repos
 drifted — they're listed in `drifted_repos` of the JSON.
 

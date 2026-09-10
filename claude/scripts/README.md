@@ -107,10 +107,15 @@ Receipts live in the worktree's Git metadata, outside tracked files. They are
 local evidence, not signatures against the filesystem owner. The checker
 uses artifact identity and attempt tokens for freshness; clock adjustments
 do not invalidate a completed review. It requires the outgoing commit to be
-that worktree's current HEAD and rejects submodules, repository instruction
-symlinks, and non-UTF-8 review content.
-Use regular instruction files inside the reviewed repository; installed global
-instruction links outside it are unaffected. Ordinary leaf symlinks remain
+that worktree's current HEAD and rejects submodules and non-UTF-8 review content.
+An unchanged canonical instruction link such as `AGENTS.md -> CLAUDE.md` is
+supported when it takes one relative hop to a tracked regular instruction file
+inside the repository. Link and target must match the review base, HEAD, index
+and working tree; the receipt binds both identities and contents. Absolute,
+external, chained, dangling, sparse or untracked targets are unsupported.
+Changing a canonical link or target requires separate instruction review until
+the gate can follow aliases in its self-review policy. Installed global links
+outside the repository are unaffected. Ordinary leaf symlinks remain
 reviewable as link text. Review another branch in its own worktree; resolve
 unsupported content explicitly before shipping.
 Reviewer dispatch information and observed identity are recorded separately.
@@ -276,3 +281,57 @@ Getting started:
 6. **Go deeper when comfortable**: `./overnight.sh --deep` (writes tests + fixes issues)
 7. **Morning review**: `./review-and-push.sh /path/to/repo` (AI reviews changes, prompts before push)
 8. **Schedule with cron** when you trust the workflow (see Scheduling section above)
+
+## Worktree lifecycle
+
+`worktree-lifecycle.py inventory --repo /path/to/repo` reports task worktrees
+separately from GitHub repository-settings drift. Use `--root /path/to/dev`
+to inventory primary repositories under a shared directory. The daily hygiene
+timer saves this read-only inventory to `~/.local/state/hygiene/worktrees.json`.
+Read it with `hygiene-status.sh --worktrees`; `--status` describes repository
+settings only.
+Unreleased worktrees have unknown or active ownership and remain retained.
+
+The task owner stops its processes, leaves the target directory, and releases
+the completed artifact with its PR and session identifier:
+
+```sh
+python3 claude/scripts/worktree-lifecycle.py release --repo /path/to/repo \
+  --worktree /path/to/task --head COMMITTED_HEAD --owner SESSION_ID \
+  --pr PR_NUMBER --github-repo OWNER/REPO
+```
+
+A pending PR remains retained with that owner. After it merges, an authorized
+session refreshes repository refs and previews the specific retirement:
+
+```sh
+git -C /path/to/repo fetch origin
+python3 claude/scripts/worktree-lifecycle.py retire --repo /path/to/repo \
+  --worktree /path/to/task
+```
+
+Add `--apply --archive-dir /path/to/private/archive` only when cleanup is
+already authorized. The collector requires the exact released HEAD on a merged
+same-repository PR, its merge commit reachable from the verified current remote
+default, and a clean, unlocked worktree without active processes. Squash merges
+use the actual PR head and merge identities. A changed HEAD, unknown evidence,
+ignored or special files, empty directories, special index flags or submodules
+means retain for separate inspection. Raw file bytes and modes must match the
+committed blobs; transformed checkout contents and active content filters also
+require separate retirement. Inspection does not execute those filters.
+Process inspection requires Linux `/proc` and checks same-user processes'
+working directories, roots, executables, open descriptors and file-backed
+memory mappings. Missing or unreadable evidence retains the worktree. Other
+hosts require an explicit platform-appropriate review. These checks sample
+visible path references; the owner must account for activity in other process
+namespaces or through alternate mount paths when releasing the task.
+
+Before non-force removal, the collector verifies a recovery Git bundle
+including reflog-reachable commits,
+archives worktree metadata including review receipts, and records identities
+and file hashes in a private recovery record. Stashes and branch refs stay in
+the source repository. The timer never releases or deletes worktrees; the next
+session owns follow-up for pending releases. User authorization and release
+ownership remain prerequisites for mutation, including when a standing order
+covers cleanup. This is not a lock against a filesystem owner starting new work
+after releasing a task.

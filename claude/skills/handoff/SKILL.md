@@ -40,12 +40,17 @@ When the user runs /handoff, do the following:
 3. Save the note to `~/.claude/handoffs/[date]-[project-name]-handoff.md` (the global Claude config directory, NOT inside the project repo). Create the directory if needed. **If the file already exists, Read it first before Writing** — this prevents the overwrite confirmation prompt.
 4. Update `CHANGELOG.md` with what happened this session. Create it if it doesn't exist. Keep entries concise — what changed and why, not how.
 5. Session-end hygiene (before committing):
-   - `git worktree list` — remove worktrees this session created and no
-     longer needs (`git worktree remove <path>`).
-   - Delete local branches fully merged into the default branch
-     (`git branch --merged "$(git rev-parse --abbrev-ref origin/HEAD)"` —
-     don't assume it's named `main`), excluding the default and current
-     branches.
+   - `git worktree list` — record each task worktree as removed, or retained
+     with an owner, reason, PR, and concrete follow-up command. Follow the
+     shared lifecycle procedure in `claude/scripts/README.md`. Stop owned
+     processes first, archive recovery/review evidence, and remove only
+     explicitly released worktrees after verified integration and applicable
+     user or standing cleanup authorization. A pending PR keeps its worktree;
+     record its release for a later session to assess after merge.
+   - Inventory branches fully merged into the default branch, excluding the
+     default and current branches. Delete only under applicable user or
+     standing cleanup authorization and after proving no unique work remains.
+     Preserve dirty/ignored/untracked files, stashes, locks and unknown owners.
    - Push or PR every branch that has work on it — never leave work
      stranded local-only.
    - `gh pr list` — note each open PR's review + CI state in the

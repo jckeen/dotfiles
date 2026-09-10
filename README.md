@@ -151,6 +151,12 @@ codex login            # Optional
 ./setup.sh --help      # usage and flag reference
 ```
 
+The launchers run their health checker with `--heal --strict`. Healing creates
+missing managed links and removes only exact obsolete `fable-mode` symlinks
+whose original source bundle is gone. It preserves custom files, unexpected
+targets, restored bundles, and symlinked ancestors. Running a checker without
+a repair flag is read-only.
+
 > **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions or memories, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI runs secret and personal-data checks on every PR; the canonical required-check policy lives in [docs/BRANCH_PROTECTION.md](docs/BRANCH_PROTECTION.md).
 
 > **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Without it you still get hooks, skills, agents, status line, and dotfiles — the global `claude/CLAUDE.md` is symlinked either way.

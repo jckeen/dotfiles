@@ -185,6 +185,11 @@ require_headings handoff "What we did" "Where we left off" "Key decisions made" 
 
 [ "$VIOLATIONS" -eq 0 ] && green "artifact shapes: changelog + handoff headings match across Claude/shared agents"
 
+# Declared workflow requirements must survive runtime-specific skill edits.
+if ! python3 "$REPO_ROOT/claude/scripts/check-workflow-invariants.py" --repo "$REPO_ROOT"; then
+  red "workflow invariant contract failed — see the named workflow/runtime/invariant above"
+fi
+
 if [ "$VIOLATIONS" -ne 0 ]; then
   echo ""
   echo "skill-parity: FAILED — see [ERR] lines above."

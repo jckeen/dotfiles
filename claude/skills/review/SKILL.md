@@ -8,10 +8,11 @@ When the user runs /review, do the following:
 1. Run `git diff HEAD~3..HEAD` (or since last review/tag) to see recent changes.
    If the argument is a PR number, review that GitHub PR instead: `gh pr diff <n>`
    selects the PR by number and needs no local branch state — never require the
-   current checkout to match the PR. Only if you want a LOCAL diff (e.g. to read
-   surrounding files at the PR's revision), first fetch and check out the PR's
-   verified head (`gh pr view <n> --json headRefOid`, then
-   `gh pr checkout <n>`) so that diff covers exactly what merges.
+   current checkout to match the PR. For surrounding files at the PR's revision,
+   resolve its head with `gh pr view <n> --json headRefOid`, fetch that commit,
+   and inspect it with `git show <verified-head>:<path>`. If running checks needs
+   a checkout, use a separate temporary worktree at that verified head. Never
+   switch branches or replace files in the user's checkout for a review.
 2. Review the diff for the checklist below. Run this pass at low effort — a
    fast, literal read of what the code does, not a rewrite of the design.
 
