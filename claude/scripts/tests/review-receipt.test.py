@@ -1405,7 +1405,8 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         for name in ('agents/skills/orchestrate/references/runtime-contracts.md', 'agents/canon/fragments/shared.md',
                      'claude/skills/example/reference.md', 'claude/agents/reviewer.md', 'claude/AgentPack.md',
                      'claude/AGENTPACK.yaml', 'claude/agentpack-meta.json',
-                     'nested/agents/skills/example/references/policy.lock'):
+                     'nested/agents/skills/example/references/policy.lock',
+                     'agents', 'claude', 'claude/scripts', 'claude/scripts/codex-review-schema.json'):
             with self.subTest(path=name):
                 self.git('reset', '--hard', 'main')
                 self.git('clean', '-fd')
@@ -1417,6 +1418,24 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                 self.assert_full_review(self.begin(), 'SOURCE_INSTRUCTION_MARKER', 'committed', 'main')
                 path.write_text('DIRTY_SOURCE_INSTRUCTION_MARKER\n')
                 self.run_helper('begin', '--repo', str(self.repo), '--base', 'main', '--scope', 'committed', '--reviewer', 'codex', ok=False)
+
+    def test_dirty_instruction_ancestor_links_cannot_hide_outside_committed_delta(self):
+        for name in ('agents', 'claude', 'claude/scripts'):
+            with self.subTest(path=name):
+                self.git('reset', '--hard', 'main')
+                self.git('clean', '-fd')
+                link = self.repo / name
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(Path(self.tmp.name) / 'before', target_is_directory=True)
+                self.git('add', name)
+                self.git('commit', '-qm', 'installed source link')
+                self.git('branch', '-f', 'baseline', 'HEAD')
+                (self.repo / 'code.txt').write_text('benign committed change\n')
+                self.git('commit', '-qam', 'benign change')
+                link.unlink()
+                link.symlink_to(Path(self.tmp.name) / 'after', target_is_directory=True)
+                self.assertEqual(self.git('diff', '--name-only', 'baseline', 'HEAD'), 'code.txt')
+                self.run_helper('begin', '--repo', str(self.repo), '--base', 'baseline', '--scope', 'committed', '--reviewer', 'codex', ok=False)
 
     def test_ignored_source_skill_reference_changes_invalidate_review(self):
         name = 'agents/skills/orchestrate/references/runtime-contracts.md'

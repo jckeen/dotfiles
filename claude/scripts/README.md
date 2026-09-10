@@ -49,7 +49,7 @@ done
 
 What `review-and-push.sh` does:
 
-1. Inspects the non-default branch and working tree, then pins the current commit.
+1. Requires a clean non-default branch, then pins the current commit.
 2. Runs the detected test suite and stops on failure.
 3. Runs the Codex review gate with `--require --committed` on the committed artifact.
 4. Prompts for confirmation, unless `--auto-push` was selected.
@@ -61,7 +61,11 @@ prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
 tier/no-diff exemptions are reported separately from successful reviews.
 Changing the artifact invalidates approval and requires affected verification
 and review again. The wrapper requires the pinned commit to remain current
-through tests, review, and confirmation. `--auto-push` removes the prompt, not the checks. The pre-push
+through tests, review, and confirmation. Staged, unstaged, and untracked changes
+stop the wrapper before testing and at each later checkpoint, so verification
+cannot rely on uncommitted fixes. Index flags that hide tracked changes also
+require separate inspection before shipping. Ordinary ignored dependencies and
+test artifacts remain supported. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
 secret scanner runs. For a PR explicitly targeting a nondefault base, run the
 gate and receipt check with `--base <ref>`, then use
@@ -91,7 +95,9 @@ and quote filenames in their headers.
 Instruction coverage includes shared skill bundles and canonical sources under
 `agents/skills/` and `agents/canon/`, Claude skill and agent sources under
 `claude/skills/` and `claude/agents/`, and the Claude AgentPack manifest,
-metadata, and policy files. Ignored references inside these bundles remain
+metadata, and policy files. Source ancestor entries (`agents`, `claude`, and
+`claude/scripts`) and the Codex output schema are also review inputs, including
+when modified outside the committed delta. Ignored references inside these bundles remain
 bound to the receipt; ordinary documentation outside them keeps its usual policy.
 Instruction checks recognize Git-managed CRLF text conversion for regular files
 and sparse checkout omissions while retaining raw workspace hashes.
@@ -112,7 +118,9 @@ An unchanged canonical instruction link such as `AGENTS.md -> CLAUDE.md` is
 supported when it takes one relative hop to a tracked regular instruction file
 inside the repository. Link and target must match the review base, HEAD, index
 and working tree; the receipt binds both identities and contents. Absolute,
-external, chained, dangling, sparse or untracked targets are unsupported.
+external, chained, dangling, sparse, directory or untracked targets are unsupported.
+This includes directory links that redirect installed skill or gate sources;
+an instruction-diff override does not bypass snapshot restrictions.
 Changing a canonical link or target requires separate instruction review until
 the gate can follow aliases in its self-review policy. Installed global links
 outside the repository are unaffected. Ordinary leaf symlinks remain
@@ -134,8 +142,10 @@ and repository and worktree paths retain their exact whitespace.
 
 ### Codex review runtime
 
-The Codex gate honors `CODEX_GATE_BIN` when explicitly set. Otherwise it prefers
-the managed standalone installation under `~/.codex` and falls back to `PATH`. Set `CODEX_GATE_BIN=codex` to deliberately select the
+The Codex gate honors `CODEX_GATE_BIN` when explicitly set. Otherwise it probes
+`~/.codex/packages/standalone/current/bin/codex`, then the root-level
+`~/.codex/packages/standalone/current/codex`, before falling back to `PATH`.
+Set `CODEX_GATE_BIN=codex` to deliberately select the
 executable on `PATH`. The receipt records the executable used by that run.
 
 The gate runs Codex in the foreground and validates its exit status, structured
@@ -152,6 +162,20 @@ silently imply a deadline. Offline fixtures run in required Linux CI and the
 Failures report a diagnostic hint and a private temporary log path without
 printing raw reviewer stderr, which may contain reviewed content. Inspect that
 log when needed and keep it out of repositories.
+
+### Review of reviewer instructions and gates
+
+The Codex and Antigravity gates refuse changes to their own instruction
+surfaces, the shared skill bundles installed from `agents/skills`, and the
+shared review machinery before dispatch or exemptions. Supporting files in
+those installed skill bundles need the same independent review as `SKILL.md`.
+Use independent review before setting a scoped
+`CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` or
+`ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1` override. Changes to shared skills
+or machinery require review outside both gates, because both runtimes load
+those sources.
+An override records no independent approval by itself; retain the actual
+review evidence and validate the final artifact receipt before shipping.
 
 ### Claude script tiers
 
@@ -326,12 +350,33 @@ hosts require an explicit platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.
 
-Before non-force removal, the collector verifies a recovery Git bundle
-including reflog-reachable commits,
-archives worktree metadata including review receipts, and records identities
-and file hashes in a private recovery record. Stashes and branch refs stay in
-the source repository. The timer never releases or deletes worktrees; the next
-session owns follow-up for pending releases. User authorization and release
-ownership remain prerequisites for mutation, including when a standing order
-covers cleanup. This is not a lock against a filesystem owner starting new work
-after releasing a task.
+The collector verifies a recovery Git bundle including reflog-reachable
+commits, archives worktree metadata including review receipts, and records
+identities and file hashes in a private recovery record. It then locks the
+worktree against Git pruning and renames the actual directory to
+`worktree` inside that recovery directory, on the same filesystem. The result
+reports `quarantined` and the retained path. Late files and writes through open
+descriptors remain there, including ignored content that Git removal would
+discard. Retirement never deletes the retained directory or reclaims its disk
+space. Stashes, branch refs, and locked worktree metadata stay in the source
+repository. Cross-filesystem destinations and checkouts with an explicit
+`core.worktree` override are retained for separate handling. Other per-worktree
+settings are preserved, and Git's resolved directory and metadata location are
+verified after repair before reporting success.
+
+The recovery record includes the original path, quarantine path and Git
+metadata path before the rename starts. If interruption leaves the tree in
+quarantine but Git still points at the original path, run
+`git -C /path/to/repo worktree repair /path/to/private/archive/retired-DIR/worktree`
+after inspecting those paths. Before other recovery commands, verify that
+`git -C /path/to/quarantine rev-parse --show-toplevel --absolute-git-dir` identifies
+the retained checkout and recorded metadata; repair alone does not migrate
+custom working-directory overrides. The lock remains in place across interruption
+and successful repair. Keep it until an authorized owner has inspected the
+retained files and decided their disposition; no automatic purge is provided.
+
+The timer never releases or deletes worktrees; the next session owns follow-up
+for pending releases. User authorization and release ownership remain
+prerequisites for mutation, including when a standing order covers cleanup.
+Quarantine retains late writes; it does not prevent a filesystem owner from
+resuming work or creating a new directory at the original path.

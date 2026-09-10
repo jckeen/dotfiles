@@ -159,8 +159,8 @@ def clean(path):
             seen.add(relative)
     if seen != staged.keys():
         raise ValueError('missing tracked files must be retained')
-    # Even unchanged raw files can run configured drivers during Git's final
-    # non-force removal. Retain active filter paths without executing a driver.
+    # Keep transformed checkouts in place for separate owner inspection.
+    # Inspect attributes without executing a configured driver.
     if staged:
         attributes = git(path, 'check-attr', '-z', 'filter', '--', *staged).split(b'\0')
         if any(value not in (b'unspecified', b'unset') for value in attributes[2::3]):
@@ -386,12 +386,21 @@ def assess(repo, path):
     return item, admin, dict(record, merge=merge, default_head=base, default_branch=default)
 
 
+def check_relocatable_worktree(path):
+    # Repair updates Git's worktree links, not configured working-directory
+    # overrides. Retain those checkouts without rewriting operator settings.
+    keys = git(path, 'config', '--null', '--name-only', '--list').split(b'\0')
+    if any(key.lower() == b'core.worktree' for key in keys):
+        raise ValueError('core.worktree overrides require separate retirement; retain worktree')
+
+
 def retire(repo, path, apply, archive_dir):
     item, admin, record = assess(repo, path)
     if not apply:
         return dict(disposition='ready', path=item['path'], owner=record['owner'], head=item['HEAD'])
     if archive_dir is None:
         raise ValueError('--apply requires an explicit private --archive-dir')
+    check_relocatable_worktree(path)
     archive_dir = archive_dir.resolve()
     common = Path(text(git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))).resolve(strict=True)
     invoking_admin = Path(text(git(repo, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
@@ -427,7 +436,9 @@ def retire(repo, path, apply, archive_dir):
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('archive directory must be private to the current user')
     archive = Path(tempfile.mkdtemp(prefix='retired-', dir=archive_dir))
-    # Include reflog-only detached work before its worktree metadata disappears.
+    if path.stat().st_dev != archive.stat().st_dev:
+        raise ValueError(f'quarantine requires the same filesystem; retained; archive: {archive}')
+    # Include reflog-only detached work in the independent recovery bundle.
     # This adds pack objects without creating recovery refs in the source repo.
     git(path, 'bundle', 'create', str(archive / 'repository.bundle'), '--all', '--reflog')
     git(repo, 'bundle', 'verify', str(archive / 'repository.bundle'))
@@ -435,8 +446,8 @@ def retire(repo, path, apply, archive_dir):
         stream.add(admin, arcname='worktree-metadata', recursive=True)
     record['files'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in archive.iterdir()}
     (archive / 'recovery.json').write_text(json.dumps(record, indent=2) + '\n')
-    # Recheck after archival; git's non-force removal independently refuses
-    # dirty/locked worktrees. Released ownership is required to avoid new work.
+    # Recheck after archival. Released ownership is still required, but even
+    # an exited writer may have changed the source after the earlier sample.
     again, _, current = assess(repo, path)
     if current != {k: v for k, v in record.items() if k != 'files'} or again != item:
         raise ValueError(f'worktree changed during archival; retained; archive: {archive}')
@@ -446,11 +457,31 @@ def retire(repo, path, apply, archive_dir):
     try:
         if not archived_metadata_matches(admin, archive / 'worktree-metadata.tar'):
             raise ValueError('metadata differs from archive')
+        check_relocatable_worktree(path)
     except (OSError, ValueError, tarfile.TarError) as error:
         raise ValueError(f'Git metadata changed or could not be verified; retained; archive: {archive}') from error
-    git(repo, 'worktree', 'remove', str(path))
-    return dict(disposition='removed', path=item['path'], head=item['HEAD'], archive=str(archive),
-                branch='retained for normal branch hygiene')
+    # Git removal discards ignored files, including writes after the final
+    # sample. Retain the actual directory instead: rename preserves late
+    # entries and writes through open descriptors. Never copy/delete it.
+    quarantine = archive / 'worktree'
+    record.update(quarantine=str(quarantine), git_metadata=str(admin))
+    (archive / 'recovery.json').write_text(json.dumps(record, indent=2) + '\n')
+    # Lock BEFORE renaming so interruption cannot leave now-missing worktree
+    # metadata eligible for pruning. Repair reconnects Git to the new path;
+    # failure retains both bytes and the lock for explicit recovery.
+    git(repo, 'worktree', 'lock', '--reason', 'retained quarantine: ' + str(archive), str(path))
+    try:
+        os.rename(path, quarantine)
+        git(repo, 'worktree', 'repair', str(quarantine))
+        actual_path = Path(text(git(quarantine, 'rev-parse', '--show-toplevel'))).resolve(strict=True)
+        actual_admin = Path(text(git(quarantine, 'rev-parse', '--absolute-git-dir'))).resolve(strict=True)
+        if actual_path != quarantine or actual_admin != admin.resolve(strict=True):
+            raise ValueError('repaired Git worktree points outside the retained checkout')
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError(f'quarantine interrupted; files and locked metadata retained; archive: {archive}') from error
+    return dict(disposition='quarantined', path=item['path'], quarantine=str(quarantine),
+                head=item['HEAD'], archive=str(archive),
+                branch='retained with quarantined worktree')
 
 
 def inventory(repo):

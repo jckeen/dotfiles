@@ -146,6 +146,26 @@ gate_select_diff_target
 # untracked files.
 gate_extract_diff
 
+# Own instructions and shared gate code cannot establish independent review.
+# setup.sh links agents/skills bundles into ~/.gemini/config/skills; replacing
+# the bare agents root also redirects those installed links. The claude and
+# claude/scripts ancestors redirect gate files, including setup.sh's per-file
+# ~/.claude/scripts links; protect those installed ancestors too. Check before
+# any size/docs exemption, using the captured (unfiltered) paths.
+CHANGED_PATHS="$(gate_changed_paths)"
+if grep -qE '(^|/)GEMINI(\.local)?\.md$|(^|/)(\.gemini|\.?antigravity)(/|$)|(^|/)agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+  if [[ "${ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
+    red "✖ Diff touches the Antigravity reviewer's own instruction surface (GEMINI*.md / .gemini/ / antigravity/ / agents/skills/)"
+    red "  or gate machinery (helpers / output schema / *-review-gate.sh) and its ancestors."
+    red "  A self-review under possibly-modified instructions or gate code is not trustworthy."
+    echo "  Obtain independent review of these changes first. For shared skills or gate"
+    echo "  machinery, use human review or a reviewer outside both configured gates."
+    echo "  Then re-run with ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1."
+    exit 2
+  fi
+  yellow "⚠ Instruction-surface diff allowed by ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 — independent review must already be complete."
+fi
+
 if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
   gate_record_pass no-diff
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."

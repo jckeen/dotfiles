@@ -3,7 +3,7 @@
 # Uses the required Codex gate and validates its receipt immediately before push.
 #
 # Flow:
-#   1. Check for uncommitted/committed changes since last push
+#   1. Require a clean working tree and pin the commit to review
 #   2. Run tests — STOP if they fail
 #   3. Run the required Codex review gate on the committed delta
 #   4. Prompt to push (or accept --auto-push)
@@ -43,6 +43,7 @@ BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
 }
 REVIEWED_HEAD=$(git rev-parse HEAD)
 check_review_target() {
+  local uncommitted
   if [[ "$(git symbolic-ref --quiet HEAD)" != "$BRANCH_REF" ]]; then
     echo "Branch changed during tests or review; run tests and review again on the intended branch." >&2
     return 1
@@ -51,7 +52,35 @@ check_review_target() {
     echo "Commit changed during tests or review; run tests and review again on the intended commit." >&2
     return 1
   fi
+  # Status trusts index hints that can hide tracked edits. Inspect NUL-delimited
+  # records without changing the index or interpreting filename bytes as tags.
+  if ! python3 - <<'PY_INDEX'
+import subprocess
+import sys
+
+listing = subprocess.run(["git", "ls-files", "-v", "-z"], stdout=subprocess.PIPE)
+entries = listing.stdout.split(b'\0')
+if listing.returncode != 0 or any(
+    entry and (entry[:1].islower() or entry[:1] == b'S') for entry in entries
+):
+    sys.exit(1)
+PY_INDEX
+  then
+    echo "Cannot verify tracked input: index flags may hide changes, or index inspection failed." >&2
+    echo "Clear assume-unchanged/skip-worktree flags before running tests and review." >&2
+    return 1
+  fi
+  if ! uncommitted=$(git -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all --ignore-submodules=none); then
+    echo "Cannot verify a clean working tree; not running tests, review, or push." >&2
+    return 1
+  fi
+  if [[ -n "$uncommitted" ]]; then
+    echo "There are uncommitted changes; commit or stash them before running tests and review for this push." >&2
+    printf '%s\n' "$uncommitted" >&2
+    return 1
+  fi
 }
+check_review_target
 BRANCH=${BRANCH_REF#refs/heads/}
 # Preserve configured newline bytes; remove only the sentinel and Git's terminator.
 REMOTE=$(
@@ -179,20 +208,9 @@ echo ""
 
 # ─── Step 1: What changed? ────────────────────────────────────
 
-UNSTAGED=$(git status --porcelain 2>/dev/null || echo "")
-
 echo "═══ Current commit ═══"
 git --no-replace-objects log -1 --oneline "$REVIEWED_HEAD"
 echo ""
-
-if [[ -n "$UNSTAGED" ]]; then
-  echo "═══ Uncommitted changes ═══"
-  echo "$UNSTAGED"
-  echo ""
-  echo "⚠ There are uncommitted changes. These will NOT be pushed."
-  echo "  Review them manually or run the overnight scripts again."
-  echo ""
-fi
 
 # ─── Step 2: Run tests ────────────────────────────────────────
 

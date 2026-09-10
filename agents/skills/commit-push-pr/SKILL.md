@@ -96,7 +96,9 @@ and run lifecycle commands from outside the target worktree.
 
 After verified integration, retire released worktrees only when the user or
 applicable standing authorization permits cleanup. Archive recovery data and
-review evidence before non-force removal. Preserve primary/current/locked
+review evidence before moving the directory into retained, locked quarantine.
+Retirement does not delete the quarantine or reclaim its disk space.
+Preserve primary/current/locked
 worktrees, unique work, dirty/untracked/ignored content, and stashes. Never use
 branch names or commit subjects as merge evidence.
 

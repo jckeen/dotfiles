@@ -794,6 +794,185 @@ if kind == 'writer':
         self.assertEqual(json.loads((archive / 'recovery.json').read_text())['head'], self.head)
         self.assertEqual(self.run_git(self.repo, 'rev-parse', 'topic').strip(), self.head)
 
+    def test_final_ignored_write_is_preserved_in_locked_quarantine(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.run_git(self.worktree, 'config', 'core.excludesFile', str(self.root / 'ignore'))
+        (self.root / 'ignore').write_text('late.secret\n')
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.archived_metadata_matches
+
+        def late_write(admin, archive):
+            matches = original(admin, archive)
+            (self.worktree / 'late.secret').write_bytes(b'late operator data\n')
+            return matches
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle, 'archived_metadata_matches', late_write):
+            result = lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        quarantine = Path(result['archive']) / 'worktree'
+        self.assertTrue(quarantine.is_dir(), 'retirement deleted the late ignored file instead of retaining the tree')
+        self.assertEqual((quarantine / 'late.secret').read_bytes(), b'late operator data\n')
+        self.assertEqual(result['disposition'], 'quarantined')
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(self.run_git(quarantine, 'rev-parse', 'HEAD').strip(), self.head)
+        admin = Path(self.run_git(quarantine, 'rev-parse', '--absolute-git-dir').strip())
+        self.assertTrue((admin / 'locked').is_file())
+        self.run_git(self.repo, 'worktree', 'prune', '--expire', 'now')
+        self.assertTrue(admin.is_dir())
+
+    def test_worktree_directory_override_requires_separate_retirement(self):
+        self.run_git(self.repo, 'config', 'extensions.worktreeConfig', 'true')
+        self.run_git(self.worktree, 'config', '--worktree', 'core.worktree', str(self.worktree))
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        original_config = (admin / 'config.worktree').read_bytes()
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('core.worktree', result.stderr)
+        self.assertEqual((self.worktree / 'file').read_text(), 'feature\n')
+        self.assertEqual((admin / 'config.worktree').read_bytes(), original_config)
+        self.assertFalse((self.root / 'archive').exists())
+        self.assertFalse((admin / 'locked').exists())
+
+    def test_other_worktree_configuration_survives_quarantine(self):
+        self.run_git(self.repo, 'config', 'extensions.worktreeConfig', 'true')
+        self.run_git(self.worktree, 'config', '--worktree', 'fixture.keep', 'operator setting')
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        admin = self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip()
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        quarantine = Path(json.loads(result.stdout)['quarantine'])
+        self.assertEqual(self.run_git(quarantine, 'rev-parse', '--show-toplevel').strip(), str(quarantine))
+        self.assertEqual(self.run_git(quarantine, 'rev-parse', '--absolute-git-dir').strip(), admin)
+        self.assertEqual(self.run_git(quarantine, 'config', '--worktree', 'fixture.keep').strip(), 'operator setting')
+
+    def test_post_repair_directory_redirect_cannot_report_success(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.run_git(self.repo, 'config', 'extensions.worktreeConfig', 'true')
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        original = lifecycle.git
+
+        def redirect_after_repair(repo, *args):
+            result = original(repo, *args)
+            if args[:2] == ('worktree', 'repair'):
+                self.worktree.mkdir()
+                (self.worktree / 'new-session').write_text('unrelated operator work\n')
+                original(Path(args[2]), 'config', '--worktree', 'core.worktree', str(self.worktree))
+            return result
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle, 'git', redirect_after_repair):
+            with self.assertRaisesRegex(ValueError, 'retained.*archive:'):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        archive, = (self.root / 'archive').iterdir()
+        self.assertEqual((archive / 'worktree/file').read_text(), 'feature\n')
+        self.assertEqual((self.worktree / 'new-session').read_text(), 'unrelated operator work\n')
+        self.assertTrue((admin / 'locked').is_file())
+
+    def test_interrupted_quarantine_preserves_tree_and_git_metadata(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        original = lifecycle.git
+
+        def interrupted_repair(repo, *args):
+            if args[:2] == ('worktree', 'repair'):
+                raise ValueError('interrupted repair')
+            return original(repo, *args)
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle, 'git', interrupted_repair):
+            with self.assertRaisesRegex(ValueError, 'retained.*archive:'):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        archive, = (self.root / 'archive').iterdir()
+        quarantine = archive / 'worktree'
+        self.assertEqual((quarantine / 'file').read_text(), 'feature\n')
+        self.assertTrue((admin / 'locked').is_file())
+        self.run_git(self.repo, 'worktree', 'prune', '--expire', 'now')
+        self.assertTrue(admin.is_dir(), 'interrupted move left metadata vulnerable to prune')
+        self.run_git(self.repo, 'worktree', 'repair', str(quarantine))
+        self.assertEqual(self.run_git(quarantine, 'rev-parse', 'HEAD').strip(), self.head)
+
+    def test_late_descriptor_write_survives_quarantine(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.archived_metadata_matches
+        streams = []
+
+        def late_open(admin, archive):
+            matches = original(admin, archive)
+            streams.append((self.worktree / 'file').open('ab', buffering=0))
+            return matches
+
+        try:
+            with patch.dict(os.environ, self.env), patch.object(lifecycle, 'archived_metadata_matches', late_open):
+                result = lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+            streams[0].write(b'after retirement\n')
+            quarantine = Path(result['archive']) / 'worktree'
+            self.assertTrue(quarantine.is_dir(), 'late open descriptor now points at unlinked data')
+            self.assertEqual((quarantine / 'file').read_bytes(), b'feature\nafter retirement\n')
+        finally:
+            for stream in streams:
+                stream.close()
+
+    def test_failed_quarantine_rename_retains_original_and_lock(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        with patch.dict(os.environ, self.env), patch.object(lifecycle.os, 'rename', side_effect=OSError('rename refused')):
+            with self.assertRaisesRegex(ValueError, 'retained.*archive:'):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        self.assertEqual((self.worktree / 'file').read_text(), 'feature\n')
+        self.assertTrue((admin / 'locked').is_file())
+        archive, = (self.root / 'archive').iterdir()
+        self.assertFalse((archive / 'worktree').exists())
+        self.assertEqual(json.loads((archive / 'recovery.json').read_text())['quarantine'], str(archive / 'worktree'))
+
+    def test_recreated_original_path_survives_quarantine_repair(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.os.rename
+
+        def recreate_after_move(source, destination):
+            original(source, destination)
+            source.mkdir()
+            (source / 'new-session').write_text('new operator work\n')
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle.os, 'rename', recreate_after_move):
+            result = lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+        self.assertEqual((self.worktree / 'new-session').read_text(), 'new operator work\n')
+        self.assertEqual((Path(result['quarantine']) / 'file').read_text(), 'feature\n')
+
     def test_archive_rejects_actual_primary_with_separate_git_directory(self):
         self.separate_git_directory()
         self.merged()

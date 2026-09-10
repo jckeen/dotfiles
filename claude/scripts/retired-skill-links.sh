@@ -5,7 +5,8 @@ heal_retired_skill_link() {
   local link="$1" source="$2" bundle="$3" ancestor target result
   [ "${HEAL:-0}" -eq 1 ] || return 0
   [[ "$link" == /* && "$source" == /* && "$bundle" == /* ]] || return 0
-  # A restored bundle is current again, even if one historical file is absent.
+  # For standalone documents, bundle is the source file. A restored skill
+  # bundle is current again, even if one historical file is absent.
   [ ! -e "$bundle" ] && [ ! -L "$bundle" ] || return 0
   [ -L "$link" ] || return 0
   # Preserve target bytes; remove only readlink's terminator and our sentinel.
@@ -28,12 +29,12 @@ heal_retired_skill_link() {
   # a concurrent replacement could still be deleted. Capture the entry first.
   command -v python3 >/dev/null 2>&1 || return 0
   if python3 "${BASH_SOURCE[0]%/*}/retired-skill-links.py" "$link" "$source" "$bundle"; then
-    green "RETIRED  ${link#"$HOME"/} (removed known retired skill link)"
+    green "RETIRED  ${link#"$HOME"/} (removed known retired link)"
     FIXED=$((FIXED + 1))
   else
     result=$?
     [ "$result" -eq 1 ] && return 0
-    red "FAILED  ${link#"$HOME"/} could not remove retired skill link"
+    red "FAILED  ${link#"$HOME"/} could not remove retired link"
     ERRORS=$((ERRORS + 1))
   fi
 }

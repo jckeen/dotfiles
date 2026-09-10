@@ -139,6 +139,9 @@ managed="$TEST_HOME/.codex/packages/standalone/current/bin/codex"
 mkdir -p "$(dirname "$managed")" "$SHIM_DIR/release/bin"
 cp "$SHIM_DIR/codex" "$SHIM_DIR/release/bin/codex"
 ln -s "$SHIM_DIR/release/bin/codex" "$managed"
+managed_root="$TEST_HOME/.codex/packages/standalone/current/codex"
+cp "$SHIM_DIR/codex" "$SHIM_DIR/release/codex"
+ln -s "$SHIM_DIR/release/codex" "$managed_root"
 unset CODEX_GATE_BIN
 check "managed standalone wins over an older PATH CLI" 0 "Codex review passed" --uncommitted --no-issues
 assert "receipt and invocation pin the managed executable" "jq -e --arg exe '$SHIM_DIR/release/bin/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/release/bin/codex' '$CODEX_FAKE_DIR/executable'"
@@ -156,6 +159,13 @@ for invalid in "$SHIM_DIR/missing" "$SHIM_DIR" ''; do
 done
 unset CODEX_GATE_BIN
 rm "$managed"
+check "managed root layout wins over an older PATH CLI" 0 "Codex review passed" --uncommitted --no-issues
+assert "root layout receipt pins the invoked executable" "jq -e --arg exe '$SHIM_DIR/release/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/release/codex' '$CODEX_FAKE_DIR/executable'"
+# A missing/non-executable bin layout must not hide a working root layout.
+ln -s "$SHIM_DIR/missing" "$managed"
+check "broken bin layout falls through to managed root" 0 "Codex review passed" --uncommitted --no-issues
+assert "broken bin layout still invokes managed root" "grep -qxF '$SHIM_DIR/release/codex' '$CODEX_FAKE_DIR/executable'"
+rm "$managed" "$managed_root"
 check "PATH remains the fallback without a standalone install" 0 "Codex review passed" --uncommitted --no-issues
 assert "fallback invokes the fixture CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
 export CODEX_GATE_BIN="$SHIM_DIR/codex"
@@ -596,6 +606,156 @@ unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 assert "codex invoked once the guard is overridden" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# The reviewer output schema is itself a runtime review input.
+original_gate="$GATE"
+for scope in committed uncommitted; do
+  new_repo
+  mkdir -p "$R/claude/scripts"
+  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json; do
+    cp "$SCRIPT_DIR/../$source_file" "$R/claude/scripts/"
+  done
+  git -C "$R" add claude/scripts
+  git -C "$R" commit -qm 'baseline gate and schema'
+  git -C "$R" checkout -qb feature
+  jq '.properties.verdict.enum = ["approve"] | .properties.findings.maxItems = 0 | .description = "RESTRICTED_REVIEW_SCHEMA_MARKER"' "$SCRIPT_DIR/../codex-review-schema.json" > "$R/claude/scripts/codex-review-schema.json"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" commit -qam 'restrict the review schema'
+  fi
+  GATE="$R/claude/scripts/codex-review-gate.sh"
+  approve_clean
+  check "$scope output schema cannot authorize codex review" 2 "instruction surface" "--$scope" --require --no-issues
+  assert "changed schema cannot dispatch or issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope schema permits codex override" 0 "Instruction-surface diff allowed" "--$scope" --require --no-issues
+  assert "schema override reviews the restricting input in full" "grep -q 'RESTRICTED_REVIEW_SCHEMA_MARKER' '$CODEX_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+  assert "candidate schema is the one supplied to Codex" "grep -qxF '$R/claude/scripts/codex-review-schema.json' '$CODEX_FAKE_DIR/argv'"
+  rm -rf "$R"
+done
+GATE="$original_gate"
+
+# Gate ancestor symlinks also redirect the installed helper symlink farm.
+original_gate="$GATE"
+for ancestor in claude claude/scripts .claude .claude/scripts; do
+  for route in direct installed; do
+    new_repo
+    versions="$(mktemp -d "$SHIM_DIR/gate-ancestors.XXXXXX")"
+    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json)
+    for version in before after; do
+      source_scripts="$versions/$version"
+      [[ "$ancestor" == */scripts ]] || source_scripts+=/scripts
+      mkdir -p "$source_scripts"
+      for source_file in "${gate_files[@]}"; do
+        cp "$SCRIPT_DIR/../$source_file" "$source_scripts/"
+      done
+      if [[ "$version" == after ]]; then
+        printf '\ntouch "$CODEX_FAKE_DIR/helper-evidence"\n' >> "$source_scripts/gate-lib.sh"
+      fi
+    done
+    mkdir -p "$R/$(dirname "$ancestor")"
+    ln -s "$versions/before" "$R/$ancestor"
+    git -C "$R" add "$ancestor"
+    git -C "$R" commit -qm 'baseline gate ancestor'
+    git -C "$R" checkout -qb feature
+    rm "$R/$ancestor"
+    ln -s "$versions/after" "$R/$ancestor"
+    git -C "$R" add "$ancestor"
+    git -C "$R" commit -qm 'redirect gate ancestor'
+    source_scripts="$R/${ancestor%%/*}/scripts"
+    if [[ "$route" == installed ]]; then
+      installed_scripts="$versions/operator-root/.claude/scripts"
+      mkdir -p "$installed_scripts"
+      for source_file in "${gate_files[@]}"; do
+        ln -s "$source_scripts/$source_file" "$installed_scripts/$source_file"
+      done
+      GATE="$installed_scripts/codex-review-gate.sh"
+    else
+      GATE="$source_scripts/codex-review-gate.sh"
+    fi
+    approve_clean
+    check "$route $ancestor retarget blocks codex self-review" 2 "instruction" --committed --require --no-issues
+    assert "retargeted helper was loaded through $route $ancestor" "[ -e '$CODEX_FAKE_DIR/helper-evidence' ]"
+    assert "gate ancestor cannot dispatch or issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+    CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$route $ancestor still requires a supported instruction snapshot" 2 "instruction symlink" --committed --require --no-issues
+    assert "unsupported ancestor override cannot issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+    rm -rf "$R"
+  done
+done
+GATE="$original_gate"
+
+# Every protected runtime root must also reject a tracked ancestor retarget.
+for ancestor in codex .codex agents agents/skills .agents .agents/skills; do
+  new_repo
+  versions="$(mktemp -d "$SHIM_DIR/runtime-ancestors.XXXXXX")"
+  case "$ancestor" in
+    agents|.agents) runtime_input=skills/review/SKILL.md ;;
+    agents/skills|.agents/skills) runtime_input=review/SKILL.md ;;
+    codex|.codex) runtime_input=AGENTS.md ;;
+    .gemini) runtime_input=config/GEMINI.md ;;
+    *) runtime_input=GEMINI.md ;;
+  esac
+  for version in before after; do
+    mkdir -p "$versions/$version/$(dirname "$runtime_input")"
+    printf '%s runtime input\n' "$version" > "$versions/$version/$runtime_input"
+  done
+  mkdir -p "$R/$(dirname "$ancestor")"
+  ln -s "$versions/before" "$R/$ancestor"
+  git -C "$R" add "$ancestor"
+  git -C "$R" commit -qm 'baseline runtime ancestor'
+  git -C "$R" checkout -qb feature
+  rm "$R/$ancestor"
+  ln -s "$versions/after" "$R/$ancestor"
+  git -C "$R" add "$ancestor"
+  git -C "$R" commit -qm 'redirect runtime ancestor'
+  approve_clean
+  check "$ancestor retarget blocks codex runtime self-review" 2 "instruction" --committed --require --no-issues
+  assert "$ancestor actually redirects the runtime input" "grep -q 'after runtime input' '$R/$ancestor/$runtime_input'"
+  assert "runtime ancestor cannot dispatch or issue codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
+# setup.sh installs shared bundles into both managed runtime skill roots.
+for protected in agents/skills/review/SKILL.md agents/skills/review/references/policy.lock .agents/skills/review/SKILL.md; do
+  for scope in committed uncommitted; do
+    new_repo
+    git -C "$R" checkout -qb feature
+    mkdir -p "$R/$(dirname "$protected")" "$TEST_HOME/.agents/skills"
+    printf 'SHARED_SKILL_INSTRUCTION_MARKER\n' > "$R/$protected"
+    if [[ "$protected" == agents/skills/* ]]; then
+      ln -s "$R/agents/skills/review" "$TEST_HOME/.agents/skills/review"
+      assert "managed Codex skill exposes the source bundle" "grep -q 'SHARED_SKILL_INSTRUCTION_MARKER' '$TEST_HOME/.agents/skills/review/${protected#agents/skills/review/}'"
+    fi
+    if [[ "$scope" == committed ]]; then
+      git -C "$R" add "$protected"
+      git -C "$R" commit -qm 'shared skill input'
+    fi
+    approve_clean
+    check "$scope $protected blocks Codex self-review" 2 "Diff touches the Codex reviewer's own instruction surface" "--$scope" --no-issues --require
+    assert "shared skill cannot dispatch or issue Codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+    CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "independently reviewed $scope $protected permits Codex override" 0 "Instruction-surface diff allowed" "--$scope" --no-issues --require
+    assert "override reviews the complete Codex skill input" "grep -q 'SHARED_SKILL_INSTRUCTION_MARKER' '$CODEX_FAKE_DIR/stdin' && jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null"
+    rm -f "$TEST_HOME/.agents/skills/review"
+    rm -rf "$R"
+  done
+done
+
+for scope in committed uncommitted; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  mkdir -p "$SHIM_DIR/shared-agent-source/skills/review" "$TEST_HOME/.agents/skills"
+  printf 'REDIRECTED_SHARED_SKILL_MARKER\n' > "$SHIM_DIR/shared-agent-source/skills/review/SKILL.md"
+  ln -s "$SHIM_DIR/shared-agent-source" "$R/agents"
+  ln -s "$R/agents/skills/review" "$TEST_HOME/.agents/skills/review"
+  assert "shared root redirects the installed Codex skill" "grep -q 'REDIRECTED_SHARED_SKILL_MARKER' '$TEST_HOME/.agents/skills/review/SKILL.md'"
+  if [[ "$scope" == committed ]]; then
+    git -C "$R" add agents
+    git -C "$R" commit -qm 'shared source root replacement'
+  fi
+  approve_clean
+  check "$scope shared source root blocks Codex self-review" 2 "instruction" "--$scope" --no-issues --require
+  assert "shared source root cannot issue Codex approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -f "$TEST_HOME/.agents/skills/review"
+  rm -rf "$R"
+done
+
 # Rename laundering must not slip past the guard: `git mv AGENTS.md notes.md`
 # lists only the destination under rename detection; --no-renames restores
 # both sides so the source path still trips the guard.
@@ -1017,7 +1177,12 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
   git -C "$R" add "$source_instruction"
   git -C "$R" commit -qm 'source instruction'
   approve_clean
-  check "$source_instruction requires full Codex review" 0 "Codex review passed" --committed --no-issues --require
+  if [[ "$source_instruction" == agents/skills/* ]]; then
+    check "$source_instruction blocks shared-skill self-review" 2 "instruction surface" --committed --no-issues --require
+    CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$source_instruction permits independently reviewed override" 0 "Codex review passed" --committed --no-issues --require
+  else
+    check "$source_instruction requires full Codex review" 0 "Codex review passed" --committed --no-issues --require
+  fi
   assert "source instruction reaches Codex" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$CODEX_FAKE_DIR/stdin'"
   assert "source instruction receives reviewed shipping evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/codex.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
@@ -1097,7 +1262,8 @@ for instruction in .claude/settings.json .agents/example/SKILL.md agents/skills/
   printf 'REVIEW_AGENT_CONFIG_MARKER\n' > "$R/$instruction"
 done
 approve_clean
-check "ignored runtime credentials allow ordinary review" 0 "Codex review passed" --uncommitted --no-issues --require
+check "ignored shared skills still block Codex self-review" 2 "instruction surface" --uncommitted --no-issues --require
+CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "ignored runtime credentials allow independently reviewed skill input" 0 "Codex review passed" --uncommitted --no-issues --require
 assert "ignored runtime credentials stay out of Codex stdin" "[ -s '$CODEX_FAKE_DIR/stdin' ] && ! grep -q 'SYNTHETIC_PRIVATE_CREDENTIAL_MARKER' '$CODEX_FAKE_DIR/stdin'"
 assert "ignored agent config and skill still reach Codex" "grep -q 'REVIEW_AGENT_CONFIG_MARKER' '$CODEX_FAKE_DIR/stdin' && grep -q '.claude/settings.json' '$CODEX_FAKE_DIR/stdin' && grep -q '.agents/example/SKILL.md' '$CODEX_FAKE_DIR/stdin'"
 assert "source bundle cache remains instruction data" "grep -q 'agents/skills/example/cache/policy.md' '$CODEX_FAKE_DIR/stdin'"

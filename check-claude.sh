@@ -39,10 +39,10 @@ HEALED=0
 
 # Flags:
 #   --fix    auto-clean orphaned symlinks and stale backups (existing behavior)
-#   --heal   auto-create MISSING links and retire exact historical fable-mode
-#            links. Creating a link requires an absent destination, so it
-#            clobbers nothing and the source is guaranteed present (callers only
-#            iterate existing source files). Ambiguous states (NOT LINKED regular
+#   --heal   auto-create MISSING links and retire exact historical FABLE document
+#            and fable-mode skill links. Creating a link requires an absent
+#            destination, so it clobbers nothing and the source is guaranteed
+#            present (callers only iterate existing source files). Ambiguous states (NOT LINKED regular
 #            file, WRONG target, unknown orphan) stay report-only, since those can be
 #            intentional divergence. `cc` passes --heal at launch so startup
 #            self-heals the safe case without prompting; standalone runs stay
@@ -78,6 +78,8 @@ for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
 done
 heal_retired_skill_link "$CLAUDE_DST/skills/fable-mode/SKILL.md" \
   "$CLAUDE_SRC/skills/fable-mode/SKILL.md" "$CLAUDE_SRC/skills/fable-mode"
+# The standalone document has no bundle; restoring its source cancels retirement.
+heal_retired_skill_link "$CLAUDE_DST/FABLE.md" "$CLAUDE_SRC/FABLE.md" "$CLAUDE_SRC/FABLE.md"
 
 # Memory repo check
 echo "Checking memory repo..."
