@@ -47,8 +47,37 @@
 #   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
-# Bootstrap has no owned processes or receipt state to clean up yet.
-trap 'exit 3' INT TERM HUP QUIT TSTP
+GATE_RUN_DIR=""
+OUT_FILE=""
+ERR_FILE=""
+KEEP_DIAGNOSTIC=false
+# Establish the helper without subprocesses so the first cancellation trap can
+# invalidate an earlier receipt even during script-directory discovery.
+case "${BASH_SOURCE[0]}" in
+  */*) RECEIPT_HELPER="${BASH_SOURCE[0]%/*}/review-receipt.py" ;;
+  *)   RECEIPT_HELPER="./review-receipt.py" ;;
+esac
+cancel_review() {
+  # Repeated signals must not interrupt receipt invalidation or cleanup. The
+  # existing receipt API invalidates the whole lane.
+  trap '' INT TERM HUP QUIT TSTP
+  if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
+    [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
+  fi
+  if [[ -n "$ERR_FILE" ]] && declare -F report_diagnostic >/dev/null; then
+    report_diagnostic || true
+  fi
+  if declare -F gate_cleanup >/dev/null; then
+    gate_cleanup || true
+  fi
+  if declare -F red >/dev/null; then
+    red "✖ Codex review cancelled; no approval from this attempt may be used."
+  else
+    printf '%s\n' "✖ Codex review cancelled; no approval from this attempt may be used."
+  fi
+  exit 3
+}
+trap cancel_review INT TERM HUP QUIT TSTP
 
 # The schema and gate-lib.sh ship beside this script in BOTH install locations
 # (the repo's claude/scripts/ and the ~/.claude/scripts symlink farm), so a
@@ -59,6 +88,7 @@ SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 SCRIPT_DIR="$(cd -- "$SCRIPT_DIR" && pwd && printf .)" || exit 2
 SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 SCHEMA="$SCRIPT_DIR/codex-review-schema.json"
+RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
 
 # Shared gate plumbing: colors, base resolution, diff-target selection, diff
 # extraction/filtering, hash fencing (#200).
@@ -114,11 +144,6 @@ GATE_REVIEWER=codex GATE_CLI=codex
 # shellcheck disable=SC2034  # Do not invent an observed identity from config.
 GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
-GATE_RUN_DIR=""
-OUT_FILE=""
-ERR_FILE=""
-KEEP_DIAGNOSTIC=false
-RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
 
 # The shared capture helper installs gate_cleanup as its EXIT trap, including
 # exemption paths. Keep owned review files in that same cleanup contract.
@@ -130,21 +155,6 @@ gate_cleanup() {
   [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
 }
 
-cancel_review() {
-  # Cancellation is already final. Repeated signals must not interrupt receipt
-  # invalidation or cleanup. The existing receipt API invalidates the whole lane.
-  trap '' INT TERM HUP QUIT TSTP
-  if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
-    [[ -z "${GATE_RUN_DIR:-}" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
-  fi
-  if [[ -n "${ERR_FILE:-}" ]] && declare -F report_diagnostic >/dev/null; then
-    report_diagnostic || true
-  fi
-  gate_cleanup
-  red "✖ Codex review cancelled; no approval from this attempt may be used."
-  exit 3
-}
-trap cancel_review INT TERM HUP QUIT TSTP
 trap gate_cleanup EXIT
 gate_init_receipt
 if [[ "${CODEX_GATE_TIMEOUT+x}" == x ]]; then

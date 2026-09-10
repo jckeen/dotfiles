@@ -258,6 +258,16 @@ import time
 
 gate, repo, home, scenario = sys.argv[1:]
 fixture = Path(os.environ['CODEX_FAKE_DIR'])
+if scenario.startswith('bootstrap'):
+    seed = subprocess.run([gate, '--committed', '--base', 'main', '--require', '--no-issues'],
+                          cwd=repo, env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=8)
+    assert seed.returncode == 0, seed.stdout + seed.stderr
+    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    checker = [sys.executable, str(Path(gate).parent / 'review-receipt.py'), 'check',
+               '--repo', repo, '--head', head, '--base', 'main', '--reviewer', 'codex']
+    checked = subprocess.run(checker, capture_output=True, text=True, timeout=8)
+    assert checked.returncode == 0, 'bootstrap seed must be a usable committed approval: ' + checked.stderr
+    (fixture / 'invoked').unlink()
 (fixture / 'hang').write_text('''
 import json, os, sys, time
 from pathlib import Path
@@ -294,31 +304,42 @@ if scenario.startswith('receipt'):
     environment['PYTHONPATH'] = str(fixture)
 if scenario == 'receipt-diagnostic-failure':
     environment['WRAPPER_FAIL_DIAGNOSTIC'] = '1'
-if scenario == 'bootstrap':
+if scenario.startswith('bootstrap'):
     environment['REAL_GIT'] = shutil.which('git')
+    environment['REAL_DIRNAME'] = shutil.which('dirname')
     environment['PATH'] = str(fixture) + os.pathsep + environment['PATH']
-    (fixture / 'git').write_text('''#!/usr/bin/env bash
+    if scenario == 'bootstrap':
+        (fixture / 'git').write_text('''#!/usr/bin/env bash
 if [[ "$1" == rev-parse && "${2:-}" == --is-inside-work-tree ]]; then
   kill -INT "$PPID"
 fi
 exec "$REAL_GIT" "$@"
 ''')
-    (fixture / 'git').chmod(0o700)
+        (fixture / 'git').chmod(0o700)
+    else:
+        (fixture / 'dirname').write_text('''#!/usr/bin/env bash
+while [[ ! -s "$CODEX_FAKE_DIR/gate-pid" ]]; do sleep .01; done
+kill -INT "$(cat "$CODEX_FAKE_DIR/gate-pid")"
+exec "$REAL_DIRNAME" "$@"
+''')
+        (fixture / 'dirname').chmod(0o700)
 stop_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGTSTP)
 def default_signals():
     for signum in stop_signals:
         signal.signal(signum, signal.SIG_DFL)
 diagnostics = []
-scope = '--committed' if scenario == 'receipt-diagnostic-failure' else '--uncommitted'
+scope = '--committed' if scenario == 'receipt-diagnostic-failure' or scenario.startswith('bootstrap') else '--uncommitted'
 process = subprocess.Popen([gate, scope, '--no-issues'], cwd=repo, env=environment,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                            start_new_session=True, preexec_fn=default_signals)
+(fixture / 'gate-pid').write_text(str(process.pid))
 try:
-    if scenario == 'bootstrap':
+    if scenario.startswith('bootstrap'):
         output, _ = process.communicate(timeout=8)
         assert process.returncode == 3, f'bootstrap cancellation returned {process.returncode}: {output}'
         assert not (fixture / 'invoked').exists(), 'bootstrap cancellation dispatched a reviewer'
-        assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation approved a receipt'
+        assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation left the previous receipt'
+        assert subprocess.run(checker, capture_output=True, timeout=8).returncode != 0, 'previous approval remains usable'
         sys.exit(0)
     deadline = time.monotonic() + 8
     while True:
@@ -369,14 +390,14 @@ finally:
     for diagnostic in diagnostics:
         diagnostic.unlink(missing_ok=True)
 PYWRAPPER
-for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP repeated bootstrap startup receipt receipt-tier1 receipt-no-diff receipt-diagnostic-failure; do
+for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP repeated bootstrap bootstrap-dirname startup receipt receipt-tier1 receipt-no-diff receipt-diagnostic-failure; do
   new_repo
   if [[ "$cancellation" == receipt-tier1 ]]; then
     echo '# Documentation' > "$R/README.md"
   elif [[ "$cancellation" != receipt-no-diff ]]; then
     echo "change" >> "$R/code.txt"
   fi
-  if [[ "$cancellation" == receipt-diagnostic-failure ]]; then
+  if [[ "$cancellation" == receipt-diagnostic-failure || "$cancellation" == bootstrap* ]]; then
     git -C "$R" checkout -qb feature
     git -C "$R" commit -qam 'reviewable committed change'
   fi
