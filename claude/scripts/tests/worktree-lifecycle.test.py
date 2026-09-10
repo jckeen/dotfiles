@@ -264,7 +264,7 @@ kind, path = sys.argv[1:]
 if kind == 'cwd':
     os.chdir(os.path.dirname(path))
 else:
-    descriptor = os.open(path, os.O_RDONLY)
+    descriptor = os.open(path, os.O_RDWR | os.O_APPEND if kind == 'writer' else os.O_RDONLY)
     if kind == 'mapping':
         libc = ctypes.CDLL(None, use_errno=True)
         libc.mmap.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
@@ -277,6 +277,11 @@ else:
         os.close(descriptor)
 print('ready', flush=True)
 sys.stdin.buffer.read(1)
+if kind == 'writer':
+    os.write(descriptor, b'after liveness scan\n')
+    os.fsync(descriptor)
+    print('updated', flush=True)
+    sys.stdin.buffer.read(1)
 '''
         child = subprocess.Popen([sys.executable, '-B', '-c', program, kind, str(target)],
             cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -341,6 +346,45 @@ sys.stdin.buffer.read(1)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIsNone(child.poll())
             self.assertEqual(unrelated.read_text(), 'outside the task\n')
+
+    def assert_private_admin_writer_retained(self, after_release):
+        self.merged()
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        evidence = admin / 'owned-runtime-evidence.log'
+        evidence.write_text('before liveness scan\n')
+        if after_release:
+            self.assertEqual(self.release().returncode, 0)
+        with self.worker('writer', evidence) as child:
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive')) if after_release else self.release()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('active process', result.stderr)
+            child.stdin.write(b'x')
+            child.stdin.flush()
+            self.assertTrue(select.select([child.stdout], [], [], 5)[0], 'writer response timeout')
+            self.assertEqual(child.stdout.readline(), b'updated\n')
+            self.assertEqual(evidence.read_text(), 'before liveness scan\nafter liveness scan\n')
+            self.assertTrue(self.worktree.exists())
+            self.assertIsNone(child.poll())
+            self.assertFalse((self.root / 'archive').exists())
+
+    def test_private_admin_writer_refuses_release(self):
+        self.assert_private_admin_writer_retained(False)
+
+    def test_private_admin_writer_refuses_retirement(self):
+        self.assert_private_admin_writer_retained(True)
+
+    def test_common_git_metadata_reference_does_not_block_retirement(self):
+        self.merged()
+        common = Path(self.run_git(self.worktree, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip())
+        evidence = common / 'shared-runtime-evidence.log'
+        evidence.write_text('shared repository evidence\n')
+        with self.worker('fd', evidence) as child:
+            result = self.release()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(child.poll())
+            self.assertEqual(evidence.read_text(), 'shared repository evidence\n')
 
     def test_scanner_itself_has_complete_descriptor_evidence(self):
         module, _ = self.process_fixture()

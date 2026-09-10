@@ -248,6 +248,7 @@ def release(repo, path, head, owner, pr, slug):
         raise ValueError('release needs an owner and valid GitHub repository/PR')
     clean(path)
     active_processes(path)
+    active_processes(admin)
     if (admin / MARKER).exists():
         previous = marker(admin)
         if previous['owner'] != owner:
@@ -275,6 +276,7 @@ def assess(repo, path):
         raise ValueError('HEAD, path or branch changed since release')
     clean(path)
     active_processes(path)
+    active_processes(admin)
     if any(admin.glob('*.lock')):
         raise ValueError('Git operation is active; retain worktree')
     slug = record['github_repo']
