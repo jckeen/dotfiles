@@ -26,7 +26,7 @@ make a pull request.
    - `refactor: ...`
    - `test: ...`
    - `chore: ...`
-6. Run `~/.claude/scripts/codex-review-gate.sh --require` **after the last
+6. Run `~/.claude/scripts/codex-review-gate.sh --require --committed` **after the last
    commit, before the push**. Supply `--base <ref>` when needed to identify the
    PR base. The gate reviews the committed delta and records private evidence
    bound to that artifact.

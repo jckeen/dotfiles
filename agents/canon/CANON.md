@@ -17,19 +17,13 @@ Each block is delimited by `<!-- canon:ID -->` … `<!-- /canon:ID -->`; a
 fragment pulls it in with a line of the exact form `<!-- include:ID -->`.
 Prose outside blocks (like this preamble) is never emitted.
 
-## Conduct layer (Codex, Antigravity)
+## Authorized work (all three)
 
-Claude Code's harness system prompt already states these rules, so its
-fragment does not import FABLE.md; the other two carry this pointer paragraph.
-
-<!-- canon:conduct-layer -->
-At session start, read `~/.claude/FABLE.md` (in this repo: `claude/FABLE.md`)
-and follow it — the operating discipline shared by every agent on this config:
-outcome-first final messages, readable-over-concise prose, the
-reversible/destructive/assessment autonomy switch, the end-of-turn self-check,
-and evidence discipline. If a session drifts from it, re-read the file and run
-its pre-send checklist.
-<!-- /canon:conduct-layer -->
+<!-- canon:authorized-work -->
+- Proceed with clear, in-scope work and honor explicit requests and applicable
+  standing authorizations. Ask when missing information prevents progress or
+  an action requires approval that has not already been given.
+<!-- /canon:authorized-work -->
 
 ## Core working style (Codex, Antigravity)
 

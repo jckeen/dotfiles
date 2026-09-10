@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-09 — fix: retire the FABLE layer and streamline reviews
+
+- Removed FABLE's instruction file, generated imports, and AgentPack entry.
+  Shared guidance honors applicable standing authorizations without requiring
+  repeated approval for the same work. Existing scope and evidence rules remain.
+- Ordinary shipping uses the committed review gate as the final fresh-context
+  review. High-risk changes retain separate-family review, and runtime/browser
+  verification is assigned by capability. Issue delivery uses the shared
+  shipping skill and its receipt checks.
+- The Codex review gate selects the managed standalone installation unless an
+  explicit executable override is supplied and preserves private failure
+  diagnostics. Receipts record the selected runtime.
+- Review execution uses the native foreground CLI. Observed cancellation
+  invalidates approval, including during receipt creation. Gate changes run
+  offline portability fixtures on Linux and macOS.
+
 ## 2026-09-09 — fix: preserve shared Codex sessions during startup
 
 - `cx` probes the control socket and reuses a listening server without running

@@ -18,7 +18,6 @@ LIVING        .github/SECURITY.md
 # Source — markdown-as-config: rules, skills, agents, templates
 SOURCE        agents/canon/CANON.md
 SOURCE        agents/canon/fragments/*.md
-SOURCE        claude/FABLE.md
 SOURCE        claude/AgentPack.md
 SOURCE        claude/MULTI-AGENT.md
 SOURCE        claude/agents/*.md
@@ -53,3 +52,5 @@ HISTORICAL    docs/superpowers/specs/*.md
 # Guards. Open work lives in GitHub issues, not active docs.
 # (SOURCE exempt: PR-template platform checkboxes, plan-executing skills.)
 BANNED:LIVING,GENERATED ^[[:space:]]*[-*] \[ \]
+# Retired conduct layer must not be loaded as active instructions.
+BANNED:SOURCE,GENERATED FABLE\.md|fable-conduct-layer
