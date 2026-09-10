@@ -96,6 +96,104 @@ def fixture(runtime):
         yield repo, home, run
 
 
+@contextmanager
+def document_fixture():
+    with fixture("claude") as (repo, home, run):
+        for dest, _ in LINKS["claude"]:
+            (home / dest).unlink()
+        link_to(home / ".claude/FABLE.md", repo / "claude/FABLE.md")
+        yield repo, home, run
+
+
+class DocumentRetirementTests(unittest.TestCase):
+    def test_plain_audit_reports_document_without_changes(self):
+        with document_fixture() as (_, home, run):
+            before = snapshot(home)
+            result = run()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("ORPHAN  FABLE.md", result.stdout)
+            self.assertEqual(snapshot(home), before)
+
+    def test_normal_heal_removes_only_retired_document_and_is_idempotent(self):
+        with document_fixture() as (_, home, run):
+            before = snapshot(home)
+            result = run("--heal")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("RETIRED  .claude/FABLE.md", result.stdout)
+            del before[".claude/FABLE.md"]
+            self.assertEqual(snapshot(home), before)
+            result = run("--heal")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(snapshot(home), before)
+
+    def test_document_replacements_and_other_orphans_are_preserved(self):
+        for kind in ("file", "directory", "custom-link", "near-match", "newline-target"):
+            with self.subTest(kind=kind), document_fixture() as (repo, home, run):
+                destination = home / ".claude/FABLE.md"
+                destination.unlink()
+                if kind == "file":
+                    destination.write_text("operator-owned document\n")
+                elif kind == "directory":
+                    destination.mkdir()
+                    (destination / "private.txt").write_text("operator-owned directory\n")
+                else:
+                    target = {"custom-link": "custom/FABLE.md", "near-match": "claude/FABLE.md.old",
+                              "newline-target": "claude/FABLE.md\n"}[kind]
+                    destination.symlink_to(repo / target)
+                link_to(home / ".claude/other-retired.md", repo / "claude/other-retired.md")
+                before = snapshot(home)
+                result = run("--heal")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("ORPHAN  other-retired.md", result.stdout)
+                self.assertEqual(snapshot(home), before)
+
+    def test_restored_document_sources_are_preserved(self):
+        for kind in ("file", "directory", "symlink", "dangling-symlink"):
+            with self.subTest(kind=kind), document_fixture() as (repo, home, run):
+                source = repo / "claude/FABLE.md"
+                if kind == "file":
+                    source.write_text("restored document\n")
+                elif kind == "directory":
+                    source.mkdir()
+                else:
+                    target = repo / "restored-document"
+                    if kind == "symlink":
+                        target.write_text("restored document target\n")
+                    source.symlink_to(target)
+                before = snapshot(home)
+                run("--heal")
+                self.assertEqual(snapshot(home), before)
+
+    def test_symlinked_document_ancestors_are_not_traversed(self):
+        for boundary in ("destination", "source"):
+            with self.subTest(boundary=boundary), document_fixture() as (repo, home, run):
+                directory = home / ".claude" if boundary == "destination" else repo / "claude"
+                external = home.parent / "external"
+                directory.rename(external)
+                directory.symlink_to(external)
+                before_home, before_external = snapshot(home), snapshot(external)
+                run("--heal")
+                self.assertEqual(snapshot(home), before_home)
+                self.assertEqual(snapshot(external), before_external)
+
+    def test_document_restored_during_capture_keeps_the_link(self):
+        with document_fixture() as (repo, home, _):
+            helper = load_retirement_helper(repo)
+            destination, source = home / ".claude/FABLE.md", repo / "claude/FABLE.md"
+            rename = os.rename
+
+            def capture_then_restore_document(*args, **kwargs):
+                rename(*args, **kwargs)
+                source.write_text("restored document\n")
+
+            with patch.object(helper.os, "rename", side_effect=capture_then_restore_document):
+                result = helper.retire(str(destination), str(source), str(source))
+            self.assertEqual(result, 1)
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(destination.read_text(), "restored document\n")
+            self.assertEqual(list(destination.parent.glob(".retired-skill-*")), [])
+
+
 class RetirementTests(unittest.TestCase):
     def test_install_executable_policy_does_not_dirty_helper(self):
         with fixture("claude") as (repo, _, _):
