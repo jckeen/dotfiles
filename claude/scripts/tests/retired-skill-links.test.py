@@ -52,7 +52,9 @@ def load_retirement_helper(repo):
 @contextmanager
 def fixture(runtime):
     with tempfile.TemporaryDirectory(prefix="retired-skill-test-") as temp:
-        base = Path(temp)
+        # macOS temporary roots can traverse /var -> /private/var. Use the real
+        # path so incidental platform links do not trigger the ancestry guard.
+        base = Path(temp).resolve()
         repo, home = base / "dotfiles", base / "home"
         repo.mkdir()
         home.mkdir()

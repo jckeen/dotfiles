@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[3]
 class LauncherRegressions(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.aliases = self.root / "aliases"
         shutil.copyfile(REPO / ".bash_aliases", self.aliases)
         self.env = dict(os.environ, HOME=str(self.root), FIXTURE=str(self.root),
@@ -59,10 +59,17 @@ _memory_path_is_publishable project/memory/authors.md || exit 1
 ''', "zsh")
 
     def test_same_second_edit_reloads(self):
-        self.shell('touch -d @1234567890 "$ALIASES"; source "$ALIASES"; '
-                   'printf "\\ntriage_marker() { :; }\\n" >> "$ALIASES"; '
-                   'touch -d @1234567890.500000000 "$ALIASES"; '
-                   '_launcher_reloaded && declare -F triage_marker >/dev/null')
+        stamp = 1_234_567_890_000_000_000
+        os.utime(self.aliases, ns=(stamp, stamp))
+        self.shell(r'''set -e
+source "$ALIASES"
+printf '\ntriage_marker() { :; }\n' >> "$ALIASES"
+python3 -c 'import os; stamp = 1_234_567_890_500_000_000; os.utime(os.environ["ALIASES"], ns=(stamp, stamp))'
+_launcher_reloaded
+declare -F triage_marker >/dev/null
+''')
+        self.assertEqual(self.aliases.stat().st_mtime_ns // 1_000_000_000,
+                         stamp // 1_000_000_000)
 
     def test_pull_reload_uses_new_launcher_once(self):
         self.shell(r'''
@@ -244,7 +251,7 @@ cct "$@"
                         # Exercise terminal semicolons in -c and CCT_DIR too.
                         project = self.cct_fixture(fixture, "project;" if case == "literal" else "project")
                         marker = fixture / "PRIVATE_SENTINEL"
-                        touch_command = "touch -- " + shlex.quote(str(marker))
+                        touch_command = "touch " + shlex.quote(str(marker))
                         if case == "bare":
                             payload = [";", "run-shell", touch_command]
                         elif case == "trailing":
