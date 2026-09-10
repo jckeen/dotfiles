@@ -271,6 +271,55 @@ build_small_fixture() {
   g -C "$FIX/dev/repo" branch candidate
 }
 
+# An inherited graft file can forge ancestry without changing any object/ref.
+# Refuse it before fetches, archive snapshots, or safe-deletion recommendations.
+for mode in clean prune audit; do
+  for preview in false true; do
+    build_small_fixture
+    C="$FIX/dev/repo"
+    base="$(git -C "$C" rev-parse main)"
+    g -C "$C" checkout -q candidate
+    commit_file "$C" unique.txt 'unique unmerged work'
+    unique="$(git -C "$C" rev-parse candidate)"
+    g -C "$C" checkout -q main
+    assert "graft ($mode dry=$preview): real graph has unique work" \
+      "git -C '$C' cherry origin/main candidate | grep -qx '+ $unique'"
+    printf '%s\n%s %s\n' "$unique" "$base" "$unique" > "$FIX/grafts"
+    cp -a "$C/.git" "$FIX/before.git"
+    flags=()
+    $preview && flags=(--dry-run)
+    out="$(GIT_GRAFT_FILE="$FIX/grafts" "$HYGIENE" "$mode" "$FIX/dev" --yes "${flags[@]}" 2>&1)"
+    result=$?
+    assert "graft ($mode dry=$preview): explicit environment refusal" \
+      "[ '$result' -eq 1 ] && outgrep 'Git environment overrides' && outgrep GIT_GRAFT_FILE"
+    assert "graft ($mode dry=$preview): unique branch and graph survive" \
+      "has_branch candidate && git -C '$C' cherry origin/main candidate | grep -qx '+ $unique'"
+    assert "graft ($mode dry=$preview): all source metadata unchanged" "diff -qr '$FIX/before.git' '$C/.git' >/dev/null"
+    assert "graft ($mode dry=$preview): no misleading eligibility" \
+      "! outgrep 'would delete' && ! outgrep 'safely deletable' && ! outgrep 'deleted candidate'"
+    rm -rf "$FIX"
+  done
+done
+
+build_small_fixture
+C="$FIX/dev/repo"
+cp -a "$C/.git" "$FIX/before.git"
+for variable in GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE \
+  GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_NAMESPACE GIT_PREFIX GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_ATTR_SOURCE \
+  GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+  GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM; do
+  out="$(env "$variable=PRIVATE FIXTURE VALUE" "$HYGIENE" clean "$FIX/dev" --yes 2>&1)"
+  result=$?
+  assert "environment ($variable): refuse without exposing values" \
+    "[ '$result' -eq 1 ] && outgrep 'Git environment overrides' && outgrep '$variable' && ! outgrep 'PRIVATE FIXTURE VALUE'"
+done
+assert "environment: refusals preserve all source metadata" "diff -qr '$FIX/before.git' '$C/.git' >/dev/null && has_branch candidate"
+out="$(GIT_INDEX_FILE=private "$HYGIENE" --help 2>&1)"
+result=$?
+assert "environment: help remains available" "[ '$result' -eq 0 ] && outgrep 'Usage:'"
+rm -rf "$FIX"
+
 # Failed remote evidence must retain this repo and still visit later repos.
 for preview in false true; do
   build_small_fixture
@@ -472,7 +521,11 @@ EOF
 printf 'transport ran\n' >> "$HYGIENE_SSH_CALLS"
 exec git-upload-pack "$HYGIENE_SSH_ORIGIN"
 EOF
-  global_config="$FIX/global.config"
+  # Load normal global configuration from a disposable home. Inherited
+  # GIT_CONFIG_* routing is intentionally rejected by cleanup entrypoints.
+  fixture_home="$FIX/home"
+  mkdir -p "$fixture_home"
+  global_config="$fixture_home/.gitconfig"
   conditional_config="$FIX/conditional.config"
   git config --file "$global_config" core.hooksPath "$C/.git/probe-hooks"
   git config --file "$global_config" --add credential.helper first
@@ -494,12 +547,13 @@ EOF
   git -C "$C" config --add http.extraHeader 'X-Local: third'
   git -C "$C" remote set-url origin 'ssh://fixture.invalid/repository'
   for key in credential.helper http.extraheader; do
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$global_config" \
+    HOME="$fixture_home" XDG_CONFIG_HOME="$FIX/xdg" \
       git -C "$C" config --null --get-all "$key" > "$HYGIENE_SSH_EXPECT_CONFIG.$key"
   done
   snapshot="$(mktemp -d)"
   cp -a "$C/.git" "$snapshot/git"
-  out="$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$global_config" \
+  out="$(HOME="$fixture_home" XDG_CONFIG_HOME="$FIX/xdg" \
+    GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
     GIT_TRACE2_EVENT="$FIX/preview-trace.jsonl" \
     GIT_TRACE2_CONFIG_PARAMS=credential.helper,http.extraheader \
     "$HYGIENE" prune "$FIX/dev" --yes --dry-run 2>&1)"
@@ -519,7 +573,8 @@ EOF
     "diff -qr '$snapshot/git' '$C/.git' >/dev/null"
   assert "transport ($transport_scope): preview does not run source hooks" \
     "[ ! -e '$HYGIENE_SSH_CALLS.hooks' ]"
-  out="$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$global_config" \
+  out="$(HOME="$fixture_home" XDG_CONFIG_HOME="$FIX/xdg" \
+    GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 \
     "$HYGIENE" prune "$FIX/dev" --yes 2>&1)"
   assert "transport ($transport_scope): real prune agrees with preview" \
     "! has_branch candidate && outgrep 'deleted candidate'"

@@ -100,6 +100,26 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# -C does not override inherited repository/index/object routing. Reject the
+# same evidence overrides as worktree lifecycle before inspecting or changing
+# any repository; only variable names belong in diagnostics. SSH/credential
+# transport and defensive flags remain available. --help exits above.
+git_environment_overrides=""
+for git_environment_name in "${!GIT_@}"; do
+  case "$git_environment_name" in
+    GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|GIT_DIR|GIT_WORK_TREE|\
+    GIT_IMPLICIT_WORK_TREE|GIT_COMMON_DIR|GIT_GRAFT_FILE|GIT_INDEX_FILE|\
+    GIT_REPLACE_REF_BASE|GIT_PREFIX|GIT_SHALLOW_FILE|GIT_NAMESPACE|GIT_ATTR_SOURCE|\
+    GIT_CONFIG|GIT_CONFIG_*)
+      git_environment_overrides+="${git_environment_overrides:+, }$git_environment_name" ;;
+  esac
+done
+if [[ -n "$git_environment_overrides" ]]; then
+  echo "error: Git environment overrides prevent verifying selected repositories; unset: $git_environment_overrides" >&2
+  exit 1
+fi
+
 MODE="${MODE:-audit}"
 ROOT="${ROOT:-$HOME/dev}"
 
