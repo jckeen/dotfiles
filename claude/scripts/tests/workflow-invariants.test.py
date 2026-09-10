@@ -71,13 +71,27 @@ class WorkflowInvariantTests(unittest.TestCase):
         self.assert_failure('simplify/antigravity: missing invariant preserve-behavior')
 
     def test_present_override_bundle_cannot_fall_back_after_entrypoint_removal(self):
-        for runtime in ('codex', 'antigravity'):
-            with self.subTest(runtime=runtime):
-                override = self.write_skill(runtime, 'No shared invariants here.\n')
-                self.assert_failure('simplify/' + runtime + ': missing invariant preserve-behavior')
-                (override.parent / 'reference.md').write_text('Runtime-specific support material.\n')
-                override.unlink()
-                self.assert_failure('simplify/' + runtime + ': skill body missing or unreadable')
+        override = self.write_skill('antigravity', 'No shared invariants here.\n')
+        self.assert_failure('simplify/antigravity: missing invariant preserve-behavior')
+        (override.parent / 'reference.md').write_text('Runtime-specific support material.\n')
+        override.unlink()
+        self.assert_failure('simplify/antigravity: skill body missing or unreadable')
+
+    def test_undeployed_codex_override_cannot_hide_missing_shared_invariant(self):
+        self.write_skill('agents', 'Run focused checks.\n')
+        self.write_skill('antigravity', 'Keep behavior unchanged. Run focused checks.\n')
+        self.assert_failure('simplify/codex: missing invariant preserve-behavior')
+        self.write_skill('codex', 'Keep behavior unchanged. Run focused checks.\n')
+        self.assert_failure('simplify/codex: missing invariant preserve-behavior')
+
+    def test_undeployed_codex_bundle_does_not_replace_valid_shared_source(self):
+        override = self.write_skill('codex', 'No shared invariants here.\n')
+        for remove_entrypoint in (False, True):
+            with self.subTest(missing_entrypoint=remove_entrypoint):
+                if remove_entrypoint:
+                    override.unlink()
+                result = self.run_check()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_empty_override_bundle_is_not_absent(self):
         bundle = self.root / 'antigravity/skills/simplify'

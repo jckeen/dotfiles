@@ -3,8 +3,9 @@
 
 The contract records small, reviewable regex anchors, not whole-file hashes or
 proof of agent compliance. Frontmatter and HTML comments cannot satisfy an
-instruction. Codex and Antigravity use agents/skills unless a runtime override
-exists, in which case that body must satisfy the shared-agent anchors too.
+instruction. Codex always uses the deployed agents/skills source. Antigravity
+uses agents/skills unless its runtime override bundle exists, in which case
+that body must satisfy the shared-agent anchors too.
 """
 import argparse
 import json
@@ -72,7 +73,9 @@ def check(root):
         for runtime, side in (('claude', 'claude'), ('codex', 'agents'), ('antigravity', 'agents')):
             path = root / runtime / 'skills' / skill / 'SKILL.md'
             try:
-                if runtime != 'claude':
+                if runtime == 'codex':
+                    path = root / 'agents/skills' / skill / 'SKILL.md'
+                elif runtime == 'antigravity':
                     # Overrides are bundles: a missing/broken entrypoint must
                     # fail when its bundle exists, including a dangling link.
                     # Only a genuinely absent bundle permits shared fallback.
