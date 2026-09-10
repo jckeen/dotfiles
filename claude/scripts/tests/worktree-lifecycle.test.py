@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -183,6 +184,73 @@ class LifecycleTests(unittest.TestCase):
         result = self.retire()
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(self.worktree.exists())
+
+    def test_filtered_local_bytes_are_retained_even_when_git_reports_clean(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        (self.repo / '.git/info/attributes').write_text('file filter=local\n')
+        self.run_git(self.repo, 'config', 'filter.local.clean', "sed '/^PRIVATE_LOCAL=/d'")
+        private = b'feature\nPRIVATE_LOCAL=unique\n'
+        (self.worktree / 'file').write_bytes(private)
+        self.run_git(self.worktree, 'add', 'file')
+        self.assertEqual(self.run_git(self.worktree, 'status', '--porcelain'), '')
+        self.assertNotEqual(self.release().returncode, 0)
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((self.worktree / 'file').read_bytes(), private)
+        self.assertFalse((self.root / 'archive').exists())
+
+    def test_fifo_socket_and_empty_directory_are_retained(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        endpoint = self.worktree / 'operator-state'
+        for kind in ('fifo', 'socket', 'empty-directory'):
+            with self.subTest(kind=kind):
+                server = None
+                if kind == 'fifo': os.mkfifo(endpoint)
+                elif kind == 'socket':
+                    server = socket.socket(socket.AF_UNIX)
+                    server.bind(str(endpoint)); server.listen()
+                else: endpoint.mkdir()
+                try:
+                    self.assertEqual(self.run_git(self.worktree, 'status', '--porcelain'), '')
+                    self.assertNotEqual(self.release().returncode, 0)
+                    result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertTrue(endpoint.exists())
+                    if server is not None:
+                        with socket.socket(socket.AF_UNIX) as client: client.connect(str(endpoint))
+                finally:
+                    if server is not None: server.close()
+                    if endpoint.is_dir(): endpoint.rmdir()
+                    elif endpoint.exists(): endpoint.unlink()
+
+    def test_active_filters_are_retained_without_executing_them(self):
+        marker = self.root / 'filter-executed'
+        driver = self.root / 'filter.py'
+        driver.write_text('import sys\nfrom pathlib import Path\n'
+                         f'Path({str(marker)!r}).touch()\n'
+                         'sys.stdout.buffer.write(sys.stdin.buffer.read())\n')
+        (self.repo / '.git/info/attributes').write_text('file filter=local\n')
+        self.run_git(self.repo, 'config', 'filter.local.clean', 'python3 ' + str(driver))
+        modified = (self.worktree / 'file').stat().st_mtime_ns + 2_000_000_000
+        os.utime(self.worktree / 'file', ns=(modified, modified))
+        result = self.release()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(marker.exists(), 'release executed a configured content filter')
+
+    def test_tracked_symlinks_remain_recoverable_without_following_them(self):
+        private = self.root / 'private-outside'
+        private.write_text('operator content')
+        (self.worktree / 'link').symlink_to('../private-outside')
+        self.run_git(self.worktree, 'add', 'link')
+        self.run_git(self.worktree, 'commit', '-qm', 'track a link')
+        self.head = self.run_git(self.worktree, 'rev-parse', 'HEAD').strip()
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(private.read_text(), 'operator content')
 
     def test_wrong_repository_and_stale_remote_snapshot_are_retained(self):
         self.merged()

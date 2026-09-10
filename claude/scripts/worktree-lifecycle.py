@@ -79,12 +79,74 @@ def clean(path):
     entries = git(path, 'ls-files', '-v', '-z').split(b'\0')
     if any(entry and (entry[:1].islower() or entry[:1] == b'S') for entry in entries):
         raise ValueError('index flags hide worktree contents; retain for separate inspection')
-    status = git(path, 'status', '--porcelain=v1', '-z', '--untracked-files=all',
-                 '--ignored=matching', '--ignore-submodules=none')
-    if status:
-        raise ValueError('dirty, untracked, ignored or submodule work must be retained')
-    if any(row.startswith(b'160000 ') for row in git(path, 'ls-files', '--stage', '-z').split(b'\0')):
+    staged = {}
+    for row in git(path, 'ls-files', '--stage', '-z').split(b'\0'):
+        if not row: continue
+        metadata, name = row.split(b'\t', 1)
+        mode, oid, stage = metadata.split()
+        if stage != b'0': raise ValueError('unmerged index must be retained')
+        staged[os.fsdecode(name)] = (mode, oid)
+    committed = {}
+    for row in git(path, 'ls-tree', '-r', '-z', 'HEAD').split(b'\0'):
+        if not row: continue
+        metadata, name = row.split(b'\t', 1)
+        mode, _, oid = metadata.split()
+        committed[os.fsdecode(name)] = (mode, oid)
+    if staged != committed:
+        raise ValueError('staged changes must be retained')
+    if any(mode == b'160000' for mode, _ in staged.values()):
         raise ValueError('worktrees with submodules require separate retirement')
+    # Git status applies clean/encoding filters and omits sockets, FIFOs and
+    # empty directories. Inspect the actual filesystem and raw blob identities;
+    # local bytes absent from the recovery bundle must never be discarded.
+    algorithm = text(git(path, 'rev-parse', '--show-object-format'))
+    if algorithm not in ('sha1', 'sha256'):
+        raise ValueError('unsupported Git object format; retain worktree')
+    parents = {str(parent) for name in staged for parent in Path(name).parents if str(parent) != '.'}
+    seen = set()
+
+    def scan_error(error):
+        raise error
+
+    for directory, dirs, files in os.walk(path, followlinks=False, onerror=scan_error):
+        for name in dirs + files:
+            file = Path(directory) / name
+            relative = str(file.relative_to(path))
+            info = file.lstat()
+            if relative == '.git' and stat.S_ISREG(info.st_mode): continue
+            if stat.S_ISDIR(info.st_mode):
+                if relative not in parents:
+                    raise ValueError('untracked or empty directory must be retained: ' + relative)
+                continue
+            expected = staged.get(relative)
+            if expected is None:
+                raise ValueError('untracked, ignored or special file must be retained: ' + relative)
+            digest = hashlib.new(algorithm)
+            if stat.S_ISREG(info.st_mode):
+                mode = b'100755' if info.st_mode & stat.S_IXUSR else b'100644'
+                with os.fdopen(os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+                    opened = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(opened.st_mode):
+                        raise ValueError('file changed during inspection; retain worktree')
+                    digest.update(f'blob {opened.st_size}\0'.encode())
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b''): digest.update(chunk)
+            elif stat.S_ISLNK(info.st_mode):
+                mode = b'120000'
+                content = os.fsencode(os.readlink(file))
+                digest.update(f'blob {len(content)}\0'.encode() + content)
+            else:
+                raise ValueError('special file must be retained: ' + relative)
+            if (mode, digest.hexdigest().encode()) != expected:
+                raise ValueError('raw local content or mode must be retained: ' + relative)
+            seen.add(relative)
+    if seen != staged.keys():
+        raise ValueError('missing tracked files must be retained')
+    # Even unchanged raw files can run configured drivers during Git's final
+    # non-force removal. Retain active filter paths without executing a driver.
+    if staged:
+        attributes = git(path, 'check-attr', '-z', 'filter', '--', *staged).split(b'\0')
+        if any(value not in (b'unspecified', b'unset') for value in attributes[2::3]):
+            raise ValueError('active content filters require separate retirement')
 
 
 def active_processes(path, proc_root=Path('/proc')):

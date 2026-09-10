@@ -39,6 +39,10 @@
   opt-in collector verifies merged artifacts, preserves hidden work and reflog
   history, and archives review evidence before removal; the timer only reports
   worktree inventory separately from repository-settings drift.
+- Retirement compares raw filesystem contents with committed blobs, retains
+  special files and empty directories that Git status omits, and refuses active
+  content filters without running them. Native portability fixtures use physical
+  temporary paths and portable timestamp setup.
 
 ### Decisions made
 - Retired-skill healing is an exact historical migration; unknown or custom

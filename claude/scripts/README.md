@@ -315,8 +315,11 @@ already authorized. The collector requires the exact released HEAD on a merged
 same-repository PR, its merge commit reachable from the verified current remote
 default, and a clean, unlocked worktree without active processes. Squash merges
 use the actual PR head and merge identities. A changed HEAD, unknown evidence,
-ignored files, special index flags or submodules means retain for separate
-inspection. Process inspection currently requires Linux `/proc`; other hosts
+ignored or special files, empty directories, special index flags or submodules
+means retain for separate inspection. Raw file bytes and modes must match the
+committed blobs; transformed checkout contents and active content filters also
+require separate retirement. Inspection does not execute those filters.
+Process inspection currently requires Linux `/proc`; other hosts
 retain worktrees for an explicit platform-appropriate review.
 
 Before non-force removal, the collector verifies a recovery Git bundle
