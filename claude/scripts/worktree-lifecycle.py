@@ -429,7 +429,7 @@ def retire(repo, path, apply, archive_dir):
     archive = Path(tempfile.mkdtemp(prefix='retired-', dir=archive_dir))
     if path.stat().st_dev != archive.stat().st_dev:
         raise ValueError(f'quarantine requires the same filesystem; retained; archive: {archive}')
-    # Include reflog-only detached work before its worktree metadata disappears.
+    # Include reflog-only detached work in the independent recovery bundle.
     # This adds pack objects without creating recovery refs in the source repo.
     git(path, 'bundle', 'create', str(archive / 'repository.bundle'), '--all', '--reflog')
     git(repo, 'bundle', 'verify', str(archive / 'repository.bundle'))
@@ -467,7 +467,7 @@ def retire(repo, path, apply, archive_dir):
         raise ValueError(f'quarantine interrupted; files and locked metadata retained; archive: {archive}') from error
     return dict(disposition='quarantined', path=item['path'], quarantine=str(quarantine),
                 head=item['HEAD'], archive=str(archive),
-                branch='retained for normal branch hygiene')
+                branch='retained with quarantined worktree')
 
 
 def inventory(repo):
