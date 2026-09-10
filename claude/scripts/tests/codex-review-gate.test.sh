@@ -32,11 +32,15 @@ R=""
 # called, so tests can assert both the gate's verdict handling and the
 # prompt-delivery channel.
 SHIM_DIR="$(mktemp -d)"
+# The gate records canonical executable paths, including TMPDIR ancestors.
+SHIM_DIR="$(cd -P "$SHIM_DIR" && pwd)"
 cat > "$SHIM_DIR/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CODEX_FAKE_DIR/argv"
 cat > "$CODEX_FAKE_DIR/stdin"
 touch "$CODEX_FAKE_DIR/invoked"
+printf '%s\n' "$0" > "$CODEX_FAKE_DIR/executable"
+[ ! -f "$CODEX_FAKE_DIR/hang" ] || exec python3 "$CODEX_FAKE_DIR/hang"
 [ ! -f "$CODEX_FAKE_DIR/mutate" ] || bash "$CODEX_FAKE_DIR/mutate"
 prev=""
 for a in "$@"; do
@@ -51,6 +55,13 @@ EOF
 chmod +x "$SHIM_DIR/codex"
 export PATH="$SHIM_DIR:$PATH"
 export CODEX_FAKE_DIR=""
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+unset CODEX_GATE_TIMEOUT
+TEST_HOME="$SHIM_DIR/home"
+mkdir -p "$TEST_HOME"
+CHECK_OUTPUT=""
+CHECK_DIAGNOSTIC=""
+trap 'rm -f -- "$CHECK_DIAGNOSTIC"; rm -rf -- "$SHIM_DIR"' EXIT
 unset CODEX_GATE_REQUIRED
 unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 unset GATE_FORCE_FULL
@@ -77,8 +88,12 @@ check() {
   local name="$1" want="$2" frag="${3:-}"
   shift 3 || shift $#
   local out rc
-  out="$(cd "$R" && "$GATE" "$@" 2>&1)"
+  rm -f -- "$CHECK_DIAGNOSTIC"
+  out="$(cd "$R" && env HOME="$TEST_HOME" "$GATE" "$@" 2>&1)"
   rc=$?
+  # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+  CHECK_OUTPUT="$out"
+  CHECK_DIAGNOSTIC="$(sed -n 's/^  Private Codex diagnostic: //p' <<<"$out")"
   local ok=1
   [ "$rc" -eq "$want" ] || ok=0
   if [ -n "$frag" ] && ! grep -qF -- "$frag" <<<"$out"; then ok=0; fi
@@ -114,6 +129,293 @@ assert "diff absent from codex argv" "! grep -q 'SECRET_MARKER_XYZ' '$CODEX_FAKE
 assert "fence preamble absent from codex argv" "! grep -q 'UNTRUSTED' '$CODEX_FAKE_DIR/argv'"
 assert "structured schema requested" "grep -q -- '--output-schema' '$CODEX_FAKE_DIR/argv'"
 assert "review runs sandboxed read-only" "grep -qx 'read-only' '$CODEX_FAKE_DIR/argv'"
+rm -rf "$R"
+
+# ── installed runtime preference and explicit override ─────────────────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+managed="$TEST_HOME/.codex/packages/standalone/current/bin/codex"
+mkdir -p "$(dirname "$managed")" "$SHIM_DIR/release/bin"
+cp "$SHIM_DIR/codex" "$SHIM_DIR/release/bin/codex"
+ln -s "$SHIM_DIR/release/bin/codex" "$managed"
+unset CODEX_GATE_BIN
+check "managed standalone wins over an older PATH CLI" 0 "Codex review passed" --uncommitted --no-issues
+assert "receipt and invocation pin the managed executable" "jq -e --arg exe '$SHIM_DIR/release/bin/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/release/bin/codex' '$CODEX_FAKE_DIR/executable'"
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+check "explicit binary overrides the managed installation" 0 "Codex review passed" --uncommitted --no-issues
+assert "receipt and invocation agree on explicit binary" "jq -e --arg exe '$SHIM_DIR/codex' '.reviewer.executable == \$exe' '$R/.git/review-receipts/codex.json' >/dev/null && grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
+export CODEX_GATE_BIN=codex
+check "explicit command name intentionally uses PATH" 0 "Codex review passed" --uncommitted --no-issues
+assert "explicit PATH selection wins over managed CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
+for invalid in "$SHIM_DIR/missing" "$SHIM_DIR" ''; do
+  export CODEX_GATE_BIN="$invalid"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "invalid explicit binary fails closed" 3 "CODEX_GATE_BIN" --uncommitted --no-issues
+  assert "invalid override never falls back or leaves a receipt" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+done
+unset CODEX_GATE_BIN
+rm "$managed"
+check "PATH remains the fallback without a standalone install" 0 "Codex review passed" --uncommitted --no-issues
+assert "fallback invokes the fixture CLI" "grep -qxF '$SHIM_DIR/codex' '$CODEX_FAKE_DIR/executable'"
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+rm -rf "$R"
+
+# ── preserve exact executable identity through command substitution ─────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+newline_cli="$SHIM_DIR/reviewer"$'\n'
+cp "$SHIM_DIR/codex" "$SHIM_DIR/reviewer"
+cp "$SHIM_DIR/codex" "$newline_cli"
+ln -s "$newline_cli" "$SHIM_DIR/reviewer-link"
+for selection in "$newline_cli" "$SHIM_DIR/reviewer-link"; do
+  export CODEX_GATE_BIN="$selection"
+  check "newline executable selection passes" 0 "Codex review passed" --uncommitted --no-issues
+  assert "receipt and invocation preserve the exact newline executable" "python3 -c 'import json,sys; from pathlib import Path; receipt,invoked,expected=sys.argv[1:]; assert json.loads(Path(receipt).read_text())[\"reviewer\"][\"executable\"] == expected; assert Path(invoked).read_text() == expected + chr(10)' '$R/.git/review-receipts/codex.json' '$CODEX_FAKE_DIR/executable' \"\$newline_cli\""
+done
+export CODEX_GATE_BIN="$SHIM_DIR/codex"
+rm -rf "$R"
+
+# ── failures expose a safe hint and a bounded private diagnostic ─────────
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+echo 1 > "$CODEX_FAKE_DIR/rc"
+python3 - "$CODEX_FAKE_DIR/stderr" <<'PYERR'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_text('PRIVATE_PROMPT_MARKER' * 2000 + '\nERROR: The configured model requires a newer version of Codex. PRIVATE_TOKEN_MARKER\n')
+PYERR
+check "runtime failure explains incompatible CLI" 3 "requires a newer Codex CLI" --uncommitted --no-issues
+assert "failure output never dumps stderr secrets" "[[ \$CHECK_OUTPUT != *PRIVATE_PROMPT_MARKER* && \$CHECK_OUTPUT != *PRIVATE_TOKEN_MARKER* ]]"
+assert "private diagnostic retains bounded error details" "python3 -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); assert p.is_file() and 0 < p.stat().st_size <= 16384; assert p.stat().st_mode & 0o777 == 0o600; assert b\"PRIVATE_TOKEN_MARKER\" in p.read_bytes()' \"\$CHECK_DIAGNOSTIC\""
+assert "failed runtime cannot issue a receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+: > "$CODEX_FAKE_DIR/output"
+echo 0 > "$CODEX_FAKE_DIR/rc"
+check "empty output also gives safe diagnostic context" 3 "requires a newer Codex CLI" --uncommitted --no-issues --require
+assert "empty-output diagnostic never dumps stderr secrets" "[[ \$CHECK_OUTPUT != *PRIVATE_PROMPT_MARKER* && \$CHECK_OUTPUT != *PRIVATE_TOKEN_MARKER* ]]"
+rm -rf "$R"
+
+# BSD mktemp passes explicit templates directly to mkstemp, which requires
+# trailing Xs. Exercise that interface on Linux too, where GNU mktemp accepts
+# a suffix that would fail on macOS.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+export CODEX_TEST_REAL_MKTEMP
+CODEX_TEST_REAL_MKTEMP="$(type -P mktemp)"
+cat > "$SHIM_DIR/mktemp" <<'PYMKTEMP'
+#!/usr/bin/env python3
+import ctypes
+import os
+import sys
+args = sys.argv[1:]
+if len(args) == 1 and args[0].startswith('/'):
+    template = ctypes.create_string_buffer(os.fsencode(args[0]))
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.mkstemp(template)
+    if fd < 0:
+        sys.exit('mkstemp: ' + os.strerror(ctypes.get_errno()))
+    os.close(fd)
+    print(os.fsdecode(template.value))
+else:
+    os.execv(os.environ['CODEX_TEST_REAL_MKTEMP'], ['mktemp', *args])
+PYMKTEMP
+chmod +x "$SHIM_DIR/mktemp"
+check "BSD explicit tempfile templates permit a clean review" 0 "Codex review passed" --uncommitted --no-issues
+echo 1 > "$CODEX_FAKE_DIR/rc"
+echo 'private diagnostic' > "$CODEX_FAKE_DIR/stderr"
+check "BSD explicit tempfile templates retain failure diagnostics" 3 "Private Codex diagnostic:" --uncommitted --no-issues
+rm -f "$SHIM_DIR/mktemp"
+unset CODEX_TEST_REAL_MKTEMP
+rm -rf "$R"
+
+# A retired deadline option must never imply that a deadline is enforced.
+new_repo
+echo "change" >> "$R/code.txt"
+approve_clean
+for configured_timeout in 600 1 0 invalid ''; do
+  export CODEX_GATE_TIMEOUT="$configured_timeout"
+  rm -f "$CODEX_FAKE_DIR/invoked"
+  check "explicit retired timeout fails before dispatch" 3 "CODEX_GATE_TIMEOUT is retired" --uncommitted --no-issues
+  assert "retired timeout never dispatches or approves" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+done
+unset CODEX_GATE_TIMEOUT
+rm -rf "$R"
+
+# Bash-only signals defer until the native foreground reviewer returns.
+# Cancellation must still veto approval, including after a receipt was written.
+cat > "$SHIM_DIR/check-wrapper-cancel.py" <<'PYWRAPPER'
+import json
+import os
+from pathlib import Path
+import signal
+import shutil
+import subprocess
+import sys
+import time
+
+gate, repo, home, scenario = sys.argv[1:]
+fixture = Path(os.environ['CODEX_FAKE_DIR'])
+if scenario.startswith('bootstrap'):
+    seed = subprocess.run([gate, '--committed', '--base', 'main', '--require', '--no-issues'],
+                          cwd=repo, env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=8)
+    assert seed.returncode == 0, seed.stdout + seed.stderr
+    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    checker = [sys.executable, str(Path(gate).parent / 'review-receipt.py'), 'check',
+               '--repo', repo, '--head', head, '--base', 'main', '--reviewer', 'codex']
+    checked = subprocess.run(checker, capture_output=True, text=True, timeout=8)
+    assert checked.returncode == 0, 'bootstrap seed must be a usable committed approval: ' + checked.stderr
+    (fixture / 'invoked').unlink()
+(fixture / 'hang').write_text('''
+import json, os, sys, time
+from pathlib import Path
+fixture = Path(os.environ['CODEX_FAKE_DIR'])
+print('WRAPPER_DIAGNOSTIC_MARKER', file=sys.stderr, flush=True)
+(fixture / 'reviewer-ready').write_text(json.dumps({'parent': os.getppid(), 'session': os.getsid(0), 'group': os.getpgrp()}))
+time.sleep(1)
+(fixture / 'reviewer-finished').touch()
+args = (fixture / 'argv').read_text().splitlines()
+Path(args[args.index('-o') + 1]).write_text((fixture / 'output').read_text())
+''')
+if scenario.startswith('receipt'):
+    (fixture / 'sitecustomize.py').write_text('''
+import os, time
+from pathlib import Path
+original = os.replace
+def replace(source, target, *args, **kwargs):
+    result = original(source, target, *args, **kwargs)
+    if str(target).endswith('/codex.json'):
+        Path(os.environ['CODEX_FAKE_DIR'], 'receipt-written').touch()
+        time.sleep(.3)
+    return result
+os.replace = replace
+original_open = Path.open
+def open_path(path, *args, **kwargs):
+    if os.environ.get('WRAPPER_FAIL_DIAGNOSTIC') == '1' and path.name.startswith('codex-review-err.'):
+        Path(os.environ['CODEX_FAKE_DIR'], 'diagnostic-failed').touch()
+        raise OSError('fixture diagnostic read failure')
+    return original_open(path, *args, **kwargs)
+Path.open = open_path
+''')
+environment = dict(os.environ, HOME=home)
+if scenario.startswith('receipt'):
+    environment['PYTHONPATH'] = str(fixture)
+if scenario == 'receipt-diagnostic-failure':
+    environment['WRAPPER_FAIL_DIAGNOSTIC'] = '1'
+if scenario.startswith('bootstrap'):
+    environment['REAL_GIT'] = shutil.which('git')
+    environment['REAL_DIRNAME'] = shutil.which('dirname')
+    environment['PATH'] = str(fixture) + os.pathsep + environment['PATH']
+    if scenario == 'bootstrap':
+        (fixture / 'git').write_text('''#!/usr/bin/env bash
+if [[ "$1" == rev-parse && "${2:-}" == --is-inside-work-tree ]]; then
+  kill -INT "$PPID"
+fi
+exec "$REAL_GIT" "$@"
+''')
+        (fixture / 'git').chmod(0o700)
+    else:
+        (fixture / 'dirname').write_text('''#!/usr/bin/env bash
+while [[ ! -s "$CODEX_FAKE_DIR/gate-pid" ]]; do sleep .01; done
+kill -INT "$(cat "$CODEX_FAKE_DIR/gate-pid")"
+exec "$REAL_DIRNAME" "$@"
+''')
+        (fixture / 'dirname').chmod(0o700)
+stop_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGTSTP)
+def default_signals():
+    for signum in stop_signals:
+        signal.signal(signum, signal.SIG_DFL)
+diagnostics = []
+scope = '--committed' if scenario == 'receipt-diagnostic-failure' or scenario.startswith('bootstrap') else '--uncommitted'
+process = subprocess.Popen([gate, scope, '--no-issues'], cwd=repo, env=environment,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           start_new_session=True, preexec_fn=default_signals)
+(fixture / 'gate-pid').write_text(str(process.pid))
+try:
+    if scenario.startswith('bootstrap'):
+        output, _ = process.communicate(timeout=8)
+        assert process.returncode == 3, f'bootstrap cancellation returned {process.returncode}: {output}'
+        assert not (fixture / 'invoked').exists(), 'bootstrap cancellation dispatched a reviewer'
+        assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation left the previous receipt'
+        assert subprocess.run(checker, capture_output=True, timeout=8).returncode != 0, 'previous approval remains usable'
+        sys.exit(0)
+    deadline = time.monotonic() + 8
+    while True:
+        if scenario.startswith('receipt'):
+            ready = (fixture / 'receipt-written').exists()
+        elif scenario == 'startup':
+            ready = bool(list(Path(repo, '.git', 'review-receipts').glob('run-*/snapshot.json')))
+        else:
+            ready = (fixture / 'reviewer-ready').exists()
+        if ready:
+            break
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError('public wrapper never reached the requested cancellation phase')
+        time.sleep(.01)
+    signum = getattr(signal, scenario) if scenario.startswith('SIG') else signal.SIGINT
+    process.send_signal(signum)
+    if scenario == 'repeated':
+        for _ in range(3):
+            time.sleep(.03)
+            process.send_signal(signal.SIGTERM)
+    output, _ = process.communicate(timeout=10)
+    failures = []
+    diagnostics = [Path(line.removeprefix('  Private Codex diagnostic: ')) for line in output.splitlines() if line.startswith('  Private Codex diagnostic: ')]
+    for diagnostic in diagnostics:
+        details = diagnostic.read_bytes()
+        if b'Traceback' in details or b'TypeError' in details:
+            failures.append('reviewer diagnostic contains an unexpected Python failure')
+    if scenario == 'receipt-diagnostic-failure':
+        if not (fixture / 'diagnostic-failed').exists():
+            failures.append('diagnostic failure injection was not exercised')
+    elif (fixture / 'reviewer-ready').exists() and not diagnostics:
+        failures.append('cancelled reviewer diagnostic was discarded')
+    if process.returncode != 3:
+        failures.append(f'expected exit 3, got {process.returncode}')
+    if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
+        failures.append('cancelled wrapper left a review receipt')
+    if (fixture / 'reviewer-ready').exists():
+        identity = json.loads((fixture / 'reviewer-ready').read_text())
+        if identity != {'parent': process.pid, 'session': process.pid, 'group': process.pid}:
+            failures.append('reviewer was not a direct foreground child in the gate session')
+        if not (fixture / 'reviewer-finished').exists():
+            failures.append('Bash-only cancellation interrupted the native foreground reviewer')
+    assert not failures, '; '.join(failures) + '\n' + output
+finally:
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=2)
+    for diagnostic in diagnostics:
+        diagnostic.unlink(missing_ok=True)
+PYWRAPPER
+for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP repeated bootstrap bootstrap-dirname startup receipt receipt-tier1 receipt-no-diff receipt-diagnostic-failure; do
+  new_repo
+  if [[ "$cancellation" == receipt-tier1 ]]; then
+    echo '# Documentation' > "$R/README.md"
+  elif [[ "$cancellation" != receipt-no-diff ]]; then
+    echo "change" >> "$R/code.txt"
+  fi
+  if [[ "$cancellation" == receipt-diagnostic-failure || "$cancellation" == bootstrap* ]]; then
+    git -C "$R" checkout -qb feature
+    git -C "$R" commit -qam 'reviewable committed change'
+  fi
+  approve_clean
+  assert "public Bash PID cancellation: $cancellation" "python3 '$SHIM_DIR/check-wrapper-cancel.py' '$GATE' '$R' '$TEST_HOME' '$cancellation'"
+  rm -rf "$R"
+done
+
+# Early traps may remove only paths initialized by this invocation.
+new_repo
+sentinel="$SHIM_DIR/inherited-cleanup"
+mkdir -p "$sentinel/run"
+printf 'preserve\n' > "$sentinel/run/owned-by-caller"
+printf 'preserve\n' > "$sentinel/stdout"
+printf 'preserve\n' > "$sentinel/stderr"
+GATE_RUN_DIR="$sentinel/run" OUT_FILE="$sentinel/stdout" ERR_FILE="$sentinel/stderr" KEEP_DIAGNOSTIC=false CODEX_GATE_TIMEOUT=0 \
+  check "invalid startup fails before review capture" 3 "CODEX_GATE_TIMEOUT" --uncommitted --no-issues
+assert "early cleanup preserves inherited caller paths" "[ -f '$sentinel/run/owned-by-caller' ] && [ -f '$sentinel/stdout' ] && [ -f '$sentinel/stderr' ]"
 rm -rf "$R"
 
 # ── fail CLOSED on unparseable / nonconforming JSON ───────────────────

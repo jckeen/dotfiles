@@ -8,12 +8,9 @@ session should share, regardless of machine. Personal identity, project
 context, tokens, and machine paths stay out of here — they live in
 `~/dev/agy-memory`.
 
-## Conduct Layer
-
-<!-- include:conduct-layer -->
-
 ## Working Style
 
+<!-- include:authorized-work -->
 <!-- include:working-style-core -->
 <!-- include:two-floor -->
 - Doc contract: a repo's Markdown surfaces are declared in a root
@@ -41,9 +38,7 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
 
 ## Teammate Contract
 
-Evidence discipline for anything I report to the team — the FABLE.md rules
-made concrete for audit/review dispatches (added after the 2026-07-09 launch
-audit, issue #178):
+Evidence requirements for audit and review dispatches:
 
 - **Cite `file:line` for every source claim.** Before asserting that a
   string, symbol, or file exists in a repo, grep for it and cite where it

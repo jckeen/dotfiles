@@ -12,17 +12,11 @@ session should share, regardless of machine. Personal identity, project
 context, tokens, and machine paths stay out of here — they live in
 `~/dev/agy-memory`.
 
-## Conduct Layer
-
-At session start, read `~/.claude/FABLE.md` (in this repo: `claude/FABLE.md`)
-and follow it — the operating discipline shared by every agent on this config:
-outcome-first final messages, readable-over-concise prose, the
-reversible/destructive/assessment autonomy switch, the end-of-turn self-check,
-and evidence discipline. If a session drifts from it, re-read the file and run
-its pre-send checklist.
-
 ## Working Style
 
+- Proceed with clear, in-scope work and honor explicit requests and applicable
+  standing authorizations. Ask when missing information prevents progress or
+  an action requires approval that has not already been given.
 - Treat the worktree as shared with the user; do not revert changes you did not
   make unless explicitly asked.
 - Read the surrounding code before changing behavior.
@@ -68,9 +62,7 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
 
 ## Teammate Contract
 
-Evidence discipline for anything I report to the team — the FABLE.md rules
-made concrete for audit/review dispatches (added after the 2026-07-09 launch
-audit, issue #178):
+Evidence requirements for audit and review dispatches:
 
 - **Cite `file:line` for every source claim.** Before asserting that a
   string, symbol, or file exists in a repo, grep for it and cite where it

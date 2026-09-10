@@ -13,19 +13,6 @@ README's "The private memory repos" section for how to set up `claude-memory`.
 
 @~/dev/claude-memory/CLAUDE.md
 
-## Conduct
-
-Claude Code's own system prompt already carries the conduct rules — outcome-first
-final messages, the reversible/destructive/assessment autonomy switch, evidence
-discipline, and the end-of-turn self-check — so they are not repeated here.
-`claude/FABLE.md` keeps them as the teammate contract for Codex and Antigravity,
-whose harnesses ship no equivalent. The one rule the harness does not state:
-
-- Comments are constraints, not commentary. Write a code comment only for what
-  the code cannot show — an invariant, an external constraint, a non-obvious
-  why. Never to narrate the change, restate the next line, or justify the edit
-  to a reviewer. Match the surrounding file's comment density and idiom.
-
 ## Superpowers plugin
 
 Its skills are opt-in, not a gate. Never invoke one before answering a
@@ -37,15 +24,16 @@ to invoke a skill before any response is overridden by this file.
 
 ## Working style
 
+<!-- include:authorized-work -->
 - Plan before non-trivial work: state the approach, and confirm it only when
-  the goal or design is genuinely ambiguous. Once the scope is clear or agreed,
-  execute — reversible in-scope steps proceed without re-asking; destructive,
-  outward-facing, or scope-changing steps confirm first.
+  the goal or design is genuinely ambiguous.
 - If the goal is unclear, ask before coding — don't guess at intent.
 - Prefer editing existing files over creating new ones.
 - Read the surrounding code before changing behavior — prefer the existing
   patterns over new abstractions.
 - Keep changes scoped to the request — no unrequested refactors or cleanup.
+- Write code comments for invariants, external constraints, or non-obvious
+  reasons. Match the surrounding file's comment density and idiom.
 - Be concise. State results and decisions, not running commentary.
 - Match ceremony to the task. A clear tactical ask ("add this line", "run this
   check") gets done and reported — no plan, no variants, no preamble. Reserve

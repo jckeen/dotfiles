@@ -5,10 +5,12 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import tempfile
 import time
 import unittest
 from unittest import mock
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "remote_control_recover.py"
@@ -16,6 +18,44 @@ SPEC = importlib.util.spec_from_file_location("remote_control_recover", MODULE_P
 assert SPEC and SPEC.loader
 RECOVER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RECOVER)
+
+
+class SharedServerProbeTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / "control.sock"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_missing_socket_is_reported_absent(self):
+        self.assertEqual(RECOVER.probe_shared_server(self.path), 3)
+
+    def test_refused_socket_is_reported_absent(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(self.path))
+        self.assertEqual(RECOVER.probe_shared_server(self.path), 3)
+
+    def test_listening_server_is_reused_without_messages_or_daemon_records(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(self.path))
+            listener.listen()
+            listener.settimeout(2)
+            self.assertEqual(RECOVER.probe_shared_server(self.path), 0)
+            with listener.accept()[0] as client:
+                client.settimeout(2)
+                self.assertEqual(client.recv(1), b"")
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_denied_or_timed_out_probe_is_uncertain(self):
+        for error in [PermissionError(), TimeoutError(), OSError("unknown")]:
+            with self.subTest(error=type(error).__name__):
+                with patch.object(socket.socket, "connect", side_effect=error):
+                    self.assertEqual(RECOVER.probe_shared_server(self.path), 2)
+
+    def test_socket_creation_failure_is_uncertain(self):
+        with patch.object(socket, "socket", side_effect=OSError("fd limit")):
+            self.assertEqual(RECOVER.probe_shared_server(self.path), 2)
 
 
 class RemoteControlRecoverTest(unittest.TestCase):

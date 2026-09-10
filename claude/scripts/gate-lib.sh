@@ -54,7 +54,10 @@ gate_cleanup() {
 gate_extract_diff() {
   local args=(begin --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
   [[ -z "$BASE_REF" ]] || args+=(--base "$BASE_REF")
-  args+=(--executable "$(command -v "$GATE_CLI" || true)")
+  local executable
+  executable="$(command -v "$GATE_CLI" && printf .)" || executable=""
+  executable=${executable%$'\n.'}
+  args+=(--executable "$executable")
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
   trap gate_cleanup EXIT

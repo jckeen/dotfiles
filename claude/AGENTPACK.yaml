@@ -65,15 +65,6 @@
       "permissions": []
     },
     {
-      "id": "instruction:fable-conduct-layer",
-      "type": "instruction",
-      "name": "Fable conduct layer",
-      "description": "Operating discipline distilled from Claude Fable 5 — outcome-first final messages, readable-over-concise prose, the reversible/destructive/assessment autonomy switch, end-of-turn self-check, evidence discipline, and a pre-send checklist. The teammate contract for Codex and Antigravity; Claude Code carries the same rules in its harness prompt.",
-      "path": "FABLE.md",
-      "risk_level": "low",
-      "permissions": []
-    },
-    {
       "id": "skill:antigravity-review",
       "type": "skill",
       "name": "antigravity-review",

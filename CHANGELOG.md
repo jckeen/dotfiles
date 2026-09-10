@@ -33,7 +33,39 @@
 - Retired-skill healing is an exact historical migration; unknown or custom
   content remains report-only. No general automatic deletion is introduced.
 
+## 2026-09-09 — fix: retire the FABLE layer and streamline reviews
+
+- Removed FABLE's instruction file, generated imports, and AgentPack entry.
+  Shared guidance honors applicable standing authorizations without requiring
+  repeated approval for the same work. Existing scope and evidence rules remain.
+- Ordinary shipping uses the committed review gate as the final fresh-context
+  review. High-risk changes retain separate-family review, and runtime/browser
+  verification is assigned by capability. Issue delivery uses the shared
+  shipping skill and its receipt checks.
+- The Codex review gate selects the managed standalone installation unless an
+  explicit executable override is supplied and preserves private failure
+  diagnostics. Receipts record the selected runtime.
+- Review execution uses the native foreground CLI. Observed cancellation
+  invalidates approval, including during receipt creation. Gate changes run
+  offline portability fixtures on Linux and macOS.
+
+## 2026-09-09 — fix: preserve shared Codex sessions during startup
+
+- `cx` probes the control socket and reuses a listening server without running
+  daemon management commands. This avoids live PID-record cleanup after clock
+  drift and preserves terminals when mobile Remote Control is unavailable.
+- Missing or uncertain socket connections fall back locally. Daemon startup
+  and repair are now explicit maintenance actions: even a native start can
+  erase a live PID record when the listener appears after the socket probe.
+- Socket and launcher regression tests cover reuse, ambiguous socket failures,
+  conservative fallback, and a server becoming ready during startup.
+- An opt-in native test holds a turn against a local mock API and verifies
+  that repeated launches preserve attached clients without resending input.
+
 ## 2026-09-09 — fix: attach cx terminals to the shared Remote Control daemon
+
+> **Historical** — point-in-time record (2026-09-09). Do not act on this.
+> Automatic daemon management was retired by the shared-session fix above.
 
 - Interactive `cx` launches now connect with `--remote unix://` after the
   already-enabled daemon starts successfully. Fresh sessions, `resume`, `fork`,
@@ -233,6 +265,9 @@
   `dotfiles-update`.
 
 ## 2026-09-04 — fix: recover errored Codex Remote Control during startup
+
+> **Historical** — point-in-time record (2026-09-04). Do not act on this.
+> Automatic startup stops and restarts were retired by the shared-session fix above.
 
 ### What changed
 - `cx` attempts one timed managed-daemon restart for an errored Remote Control

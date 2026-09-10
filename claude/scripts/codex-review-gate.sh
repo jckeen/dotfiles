@@ -47,6 +47,37 @@
 #   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
+GATE_RUN_DIR=""
+OUT_FILE=""
+ERR_FILE=""
+KEEP_DIAGNOSTIC=false
+# Establish the helper without subprocesses so the first cancellation trap can
+# invalidate an earlier receipt even during script-directory discovery.
+case "${BASH_SOURCE[0]}" in
+  */*) RECEIPT_HELPER="${BASH_SOURCE[0]%/*}/review-receipt.py" ;;
+  *)   RECEIPT_HELPER="./review-receipt.py" ;;
+esac
+cancel_review() {
+  # Repeated signals must not interrupt receipt invalidation or cleanup. The
+  # existing receipt API invalidates the whole lane.
+  trap '' INT TERM HUP QUIT TSTP
+  if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
+    [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
+  fi
+  if [[ -n "$ERR_FILE" ]] && declare -F report_diagnostic >/dev/null; then
+    report_diagnostic || true
+  fi
+  if declare -F gate_cleanup >/dev/null; then
+    gate_cleanup || true
+  fi
+  if declare -F red >/dev/null; then
+    red "✖ Codex review cancelled; no approval from this attempt may be used."
+  else
+    printf '%s\n' "✖ Codex review cancelled; no approval from this attempt may be used."
+  fi
+  exit 3
+}
+trap cancel_review INT TERM HUP QUIT TSTP
 
 # The schema and gate-lib.sh ship beside this script in BOTH install locations
 # (the repo's claude/scripts/ and the ~/.claude/scripts symlink farm), so a
@@ -57,6 +88,7 @@ SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 SCRIPT_DIR="$(cd -- "$SCRIPT_DIR" && pwd && printf .)" || exit 2
 SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 SCHEMA="$SCRIPT_DIR/codex-review-schema.json"
+RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
 
 # Shared gate plumbing: colors, base resolution, diff-target selection, diff
 # extraction/filtering, hash fencing (#200).
@@ -112,9 +144,45 @@ GATE_REVIEWER=codex GATE_CLI=codex
 # shellcheck disable=SC2034  # Do not invent an observed identity from config.
 GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
-gate_init_receipt
 
-command -v codex >/dev/null 2>&1 || degrade "codex CLI not found on PATH."
+# The shared capture helper installs gate_cleanup as its EXIT trap, including
+# exemption paths. Keep owned review files in that same cleanup contract.
+gate_cleanup() {
+  [[ -z "${OUT_FILE:-}" ]] || rm -f "$OUT_FILE"
+  if [[ -n "${ERR_FILE:-}" && "${KEEP_DIAGNOSTIC:-false}" != true ]]; then
+    rm -f "$ERR_FILE"
+  fi
+  [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
+}
+
+trap gate_cleanup EXIT
+gate_init_receipt
+if [[ "${CODEX_GATE_TIMEOUT+x}" == x ]]; then
+  red "✖ CODEX_GATE_TIMEOUT is retired; unset it to use native foreground Codex execution."
+  exit 3
+fi
+
+# Interactive shells already prefer the managed standalone release. Pin the
+# same executable here so login-shell PATH order cannot select an older CLI.
+# CODEX_GATE_BIN=codex intentionally requests PATH; invalid overrides fail closed.
+if [[ "${CODEX_GATE_BIN+x}" == x ]]; then
+  GATE_CLI="$(type -P -- "$CODEX_GATE_BIN" && printf .)" || GATE_CLI=""
+  GATE_CLI=${GATE_CLI%$'\n.'}
+  if [[ ! -f "$GATE_CLI" || ! -x "$GATE_CLI" ]]; then
+    red "✖ CODEX_GATE_BIN must name an executable file or a command on PATH."
+    exit 3
+  fi
+elif [[ -f "${HOME:-}/.codex/packages/standalone/current/bin/codex" && -x "${HOME:-}/.codex/packages/standalone/current/bin/codex" ]]; then
+  GATE_CLI="${HOME}/.codex/packages/standalone/current/bin/codex"
+else
+  GATE_CLI="$(type -P codex && printf .)" || GATE_CLI=""
+  GATE_CLI=${GATE_CLI%$'\n.'}
+  [[ -f "$GATE_CLI" && -x "$GATE_CLI" ]] || degrade "codex CLI not found on PATH."
+fi
+# Resolve the launcher before artifact capture so the receipt names the file
+# actually invoked even if the managed release symlink changes during review.
+GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI" && printf .)"
+GATE_CLI=${GATE_CLI%$'\n.'}
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
@@ -188,6 +256,7 @@ fi
 
 bold "→ Codex review gate"
 echo "  Reviewing: $TARGET_DESC ($N_LINES lines)"
+printf '  Codex executable: %s\n' "$GATE_CLI"
 [[ -n "$CLAIM" ]] && echo "  Adversarial claim: $CLAIM"
 echo ""
 
@@ -250,15 +319,41 @@ ${FENCE}"
 
 # ─── Run the review ────────────────────────────────────────────
 OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
-ERR_FILE="$(mktemp -t codex-review-err.XXXXXX.txt)"
-cleanup() { rm -f "$OUT_FILE" "$ERR_FILE"; gate_cleanup; }
-trap cleanup EXIT
+# Failure stderr can contain the full prompt. Retain only a private, bounded
+# tail in the system temp directory; never echo its untrusted bytes to the user.
+ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX)"
+KEEP_DIAGNOSTIC=false
+report_diagnostic() {
+  [[ -s "$ERR_FILE" ]] || return 0
+  python3 - "$ERR_FILE" <<'PYERR' || return 1
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+with path.open('rb') as stream:
+    stream.seek(0, 2)
+    stream.seek(max(0, stream.tell() - 16384))
+    tail = stream.read()
+path.write_bytes(tail)
+message = tail.decode('utf-8', errors='replace').lower()
+if 'requires a newer version of codex' in message:
+    print('  The configured model requires a newer Codex CLI; update the selected installation.')
+elif any(value in message for value in ('unauthorized', 'authentication', 'not logged in', '401')):
+    print('  Codex reported an authentication failure; check login for the selected installation.')
+elif any(value in message for value in ('rate limit', '429', 'quota')):
+    print('  Codex reported a rate or usage limit; review the private diagnostic before retrying.')
+PYERR
+  KEEP_DIAGNOSTIC=true
+  printf '  Private Codex diagnostic: %s\n' "$ERR_FILE"
+}
+trap gate_cleanup EXIT
 
 # `-s read-only`: the diff is untrusted input; a steered review must not be
 # able to write or execute beyond reads. A nonzero exit is a failed run, even
 # if it left a partial structured result.
 set +e
-codex exec - \
+# Leave terminal handling and tool-process cleanup with the native CLI. A
+# signal sent only to Bash is handled after this foreground command returns.
+"$GATE_CLI" exec - \
   -s read-only \
   --output-schema "$SCHEMA" \
   -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
@@ -266,13 +361,14 @@ CODEX_RC=$?
 set -e
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
+  report_diagnostic
   red "✖ Codex exited rc=$CODEX_RC — not trusting the result, even when findings were written."
   exit 3
 fi
 gate_assert_unchanged
 
 if [[ ! -s "$OUT_FILE" ]]; then
-  [[ -s "$ERR_FILE" ]] && { yellow "  codex stderr:"; sed -n '1,20{s/^/    /;p;}' "$ERR_FILE"; }
+  report_diagnostic
   degrade "Codex produced no review output (rc=$CODEX_RC)."
 fi
 

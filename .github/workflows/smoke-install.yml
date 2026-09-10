@@ -49,10 +49,12 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
             echo "Not a pull_request event — running the full smoke."
             echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "gate_relevant=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           merge_base="$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)"
           relevant=false
+          gate_relevant=false
           while IFS= read -r f; do
             case "$f" in
               setup.sh|check-claude.sh|check-codex.sh|check-antigravity.sh|gh-bootstrap.sh|git-hygiene.sh|hygiene-status.sh|lib-*.sh|.bash_aliases|.bash_profile|.github/workflows/smoke-install.yml)
@@ -60,11 +62,24 @@ jobs:
                 relevant=true
                 ;;
             esac
-          done < <(git diff --name-only "$merge_base" HEAD)
+            case "$f" in
+              claude/scripts/codex-review-gate.sh|claude/scripts/gate-lib.sh|claude/scripts/review-receipt.py|claude/scripts/tests/codex-review-gate.test.sh|.github/workflows/smoke-install.yml)
+                gate_relevant=true
+                ;;
+            esac
+          done < <(git diff --no-renames --name-only "$merge_base" HEAD)
           echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          echo "gate_relevant=$gate_relevant" >> "$GITHUB_OUTPUT"
           if [ "$relevant" = false ]; then
-            echo "No smoke-relevant files changed — remaining steps skip, job reports success."
+            echo "No installer changes — installer smoke steps skip."
           fi
+
+      # The required ci.yml checks job already runs these fixtures on Linux.
+      # Native macOS adds BSD tempfile and foreground runtime coverage.
+      # Fixtures use a stub Codex, never an account or model.
+      - name: Codex review gate portability
+        if: steps.changes.outputs.gate_relevant == 'true' && runner.os == 'macOS'
+        run: bash claude/scripts/tests/codex-review-gate.test.sh
 
       - name: Syntax check shell scripts
         if: steps.changes.outputs.relevant == 'true'

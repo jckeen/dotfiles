@@ -150,14 +150,16 @@ review does not establish browser or runtime behavior.
    requires it. Do not create shadow trackers.
 3. Re-run every check affected by integration or simplification, then inspect
    the final diff and working tree for unrelated or generated state.
-4. Build the final review packet and run the fresh-context review on that
-   artifact. Any subsequent artifact edit invalidates approval: repeat affected
-   verification and final review, including required cross-family review.
-5. For shipping, use the `commit-push-pr` gate and receipt checks after the last
-   commit and immediately before push. Gate exit 0 alone does not establish a
-   completed review; distinguish successful reviews from explicit exemptions.
+4. For shipping, commit the final artifact and use the `commit-push-pr` gate as
+   the final fresh-context review, then validate its receipt before pushing.
+   For work that remains local, build the final review packet and review that
+   artifact. Add required cross-family or specialist review for distinct risks;
+   do not duplicate an ordinary final review of an unchanged artifact.
+5. Any subsequent artifact change invalidates approval: repeat affected checks
+   and required reviews. Gate exit 0 alone does not establish a completed
+   review; distinguish successful reviews from explicit exemptions.
 6. Publish, comment, merge, or perform another outward-facing action only when
-   the user requested it or already approved that exact action.
+   the user's request or an applicable standing authorization covers it.
 7. Persist a durable handoff or issue/PR verdict when project instructions
    require one.
 

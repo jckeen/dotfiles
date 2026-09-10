@@ -57,7 +57,9 @@ runtime evidence, regardless of the tool or model that produced it.
    observable evidence.
 
 Complete simplification, documentation, changelog, and generated-file updates
-before affected verification and final review. Any later artifact edit
+before affected verification and final review. For ordinary shipping work, the
+required committed-artifact gate serves as the final fresh-context review;
+another identical review is unnecessary. Any later artifact edit
 invalidates approval. Repeat affected checks and review after fixes, then
 validate the private review receipt immediately before shipping. Exit 0 alone
 is not proof of completed review; report tier/no-diff exemptions separately.
@@ -96,8 +98,10 @@ Mechanically:
 
 - **Gate-mediated refutation:** `codex-review-gate.sh --claim "<claim>"
   --repro "<cmd>"` injects the falsifiable payload into the structured Codex
-  review; browser/runtime claims go to Antigravity via the `browser-verify`
-  skill (target, flow, expected observable, claim to disprove).
+  review. Assign browser/runtime claims to a working tool that can exercise
+  the actual flow and retain inspectable evidence (target, flow, expected
+  observable, claim to disprove). Antigravity's `browser-verify` skill is one
+  available route; choose by capability rather than runtime name.
 - **Verdicts are artifacts:** the verifier persists its verdict (handoff note
   or issue comment; browser evidence under `~/.claude/handoffs/evidence/`)
   before the team acts on it. Output that only reached one terminal is lost.
