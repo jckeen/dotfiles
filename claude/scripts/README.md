@@ -167,8 +167,9 @@ shared review machinery before dispatch or exemptions. Supporting files in
 those installed skill bundles need the same independent review as `SKILL.md`.
 Use independent review before setting a scoped
 `CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` or
-`ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1` override. Changes to the shared
-machinery require review outside both gates, because they load the same code.
+`ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1` override. Changes to shared skills
+or machinery require review outside both gates, because both runtimes load
+those sources.
 An override records no independent approval by itself; retain the actual
 review evidence and validate the final artifact receipt before shipping.
 
