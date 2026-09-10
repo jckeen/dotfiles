@@ -107,6 +107,103 @@ class LifecycleTests(unittest.TestCase):
         (entry / 'task/123').symlink_to(entry, target_is_directory=True)
         return module, entry
 
+    def hidden_staged_work(self):
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        alternate = self.root / 'alternate-index'
+        shutil.copyfile(admin / 'index', alternate)
+        (self.worktree / 'file').write_bytes(b'UNIQUE STAGED OPERATOR DATA\n')
+        self.run_git(self.worktree, 'add', 'file')
+        staged = self.run_git(self.worktree, 'rev-parse', ':file').strip()
+        (self.worktree / 'file').write_bytes(b'feature\n')
+        self.assertEqual(self.run_git(self.worktree, 'status', '--porcelain'), 'MM file\n')
+        return admin, alternate, staged
+
+    def test_alternate_index_cannot_hide_staged_work_from_release(self):
+        admin, alternate, staged = self.hidden_staged_work()
+        before = (admin / 'index').read_bytes()
+        self.env['GIT_INDEX_FILE'] = str(alternate)
+        result = self.release()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('GIT_INDEX_FILE', result.stderr)
+        self.assertFalse((admin / 'worktree-release.json').exists())
+        self.assertEqual((admin / 'index').read_bytes(), before)
+        self.assertEqual(self.run_git(self.worktree, 'rev-parse', ':file').strip(), staged)
+
+    def test_alternate_index_cannot_hide_staged_work_from_retirement(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        admin, alternate, staged = self.hidden_staged_work()
+        before = (admin / 'index').read_bytes()
+        self.env['GIT_INDEX_FILE'] = str(alternate)
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('GIT_INDEX_FILE', result.stderr)
+        self.assertTrue(self.worktree.is_dir())
+        self.assertFalse((self.root / 'archive').exists())
+        self.assertEqual((admin / 'index').read_bytes(), before)
+        self.assertEqual(self.run_git(self.worktree, 'rev-parse', ':file').strip(), staged)
+
+    def test_git_evidence_overrides_refuse_direct_api_before_writes(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        admin = Path(self.run_git(self.worktree, 'rev-parse', '--absolute-git-dir').strip())
+        record = admin / 'worktree-release.json'
+        overrides = {
+            'GIT_DIR': str(admin), 'GIT_COMMON_DIR': str(self.repo / '.git'),
+            'GIT_WORK_TREE': str(self.worktree), 'GIT_IMPLICIT_WORK_TREE': '1',
+            'GIT_INDEX_FILE': str(admin / 'index'),
+            'GIT_OBJECT_DIRECTORY': str(self.repo / '.git/objects'),
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES': str(self.repo / '.git/objects'),
+            'GIT_NAMESPACE': 'fixture', 'GIT_PREFIX': 'fixture/',
+            'GIT_GRAFT_FILE': str(self.root / 'grafts'),
+            'GIT_SHALLOW_FILE': str(self.root / 'shallow'),
+            'GIT_REPLACE_REF_BASE': 'refs/fixture/', 'GIT_ATTR_SOURCE': 'HEAD',
+            'GIT_CONFIG': str(self.root / 'config'),
+            'GIT_CONFIG_GLOBAL': str(self.root / 'config'),
+            'GIT_CONFIG_SYSTEM': str(self.root / 'config'),
+            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_COUNT': '0',
+            'GIT_CONFIG_KEY_0': 'core.worktree',
+            'GIT_CONFIG_VALUE_0': 'PRIVATE CONFIG VALUE',
+            'GIT_CONFIG_PARAMETERS': "'core.worktree=PRIVATE CONFIG VALUE'",
+        }
+        for action in ('release', 'retire'):
+            if action == 'retire':
+                self.assertEqual(self.release().returncode, 0)
+            before = record.read_bytes() if record.exists() else None
+            for name, value in overrides.items():
+                with self.subTest(action=action, variable=name), patch.dict(os.environ, self.env | {name: value}):
+                    with self.assertRaisesRegex(ValueError, 'Git environment overrides.*' + name) as raised:
+                        if action == 'release':
+                            lifecycle.release(self.repo, self.worktree, self.head, 'fixture-session', 7, 'fixture/repo')
+                        else:
+                            lifecycle.retire(self.repo, self.worktree, True, self.root / 'archive')
+                    self.assertNotIn('PRIVATE CONFIG VALUE', str(raised.exception))
+                    self.assertEqual(record.read_bytes() if record.exists() else None, before)
+                    self.assertFalse((self.root / 'archive').exists())
+                    self.assertTrue(self.worktree.is_dir())
+
+    def test_git_transport_and_forced_defensive_environment_remain_supported(self):
+        from unittest.mock import patch
+
+        self.merged()
+        transport = {'GIT_SSH_COMMAND': 'ssh -o BatchMode=yes', 'GIT_SSH': '/fixture/ssh',
+                     'GIT_ASKPASS': '/fixture/askpass', 'SSH_AUTH_SOCK': '/fixture/agent.sock'}
+        self.env.update(transport, GIT_OPTIONAL_LOCKS='1', GIT_NO_REPLACE_OBJECTS='0', GIT_TERMINAL_PROMPT='1')
+        lifecycle, _ = self.process_fixture()
+        names = [*transport, 'GIT_OPTIONAL_LOCKS', 'GIT_NO_REPLACE_OBJECTS', 'GIT_TERMINAL_PROMPT']
+        with patch.dict(os.environ, self.env):
+            actual = json.loads(lifecycle.run([sys.executable, '-c',
+                'import json,os,sys; print(json.dumps({name:os.environ[name] for name in sys.argv[1:]}))', *names]))
+        self.assertEqual(actual, transport | {'GIT_OPTIONAL_LOCKS': '0', 'GIT_NO_REPLACE_OBJECTS': '1',
+                                             'GIT_TERMINAL_PROMPT': '0'})
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire('--apply', '--archive-dir', str(self.root / 'archive'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     @contextmanager
     def threaded_worker(self, topology, kind='fd', target=None):
         compiler = shutil.which('cc')

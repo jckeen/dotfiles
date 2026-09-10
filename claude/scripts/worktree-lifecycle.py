@@ -19,6 +19,16 @@ from datetime import datetime, timezone
 
 
 MARKER = 'worktree-release.json'
+# Repository-local overrides reported by `git rev-parse --local-env-vars`,
+# plus namespace and attribute-source routing. GIT_NO_REPLACE_OBJECTS is safe
+# because run() explicitly forces it; configuration overrides are matched as
+# a family below, including indexed runtime key/value pairs.
+GIT_EVIDENCE_ENV = {
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_OBJECT_DIRECTORY',
+    'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_COMMON_DIR',
+    'GIT_GRAFT_FILE', 'GIT_INDEX_FILE', 'GIT_REPLACE_REF_BASE',
+    'GIT_PREFIX', 'GIT_SHALLOW_FILE', 'GIT_NAMESPACE', 'GIT_ATTR_SOURCE',
+}
 
 
 def run(argv, cwd=None):
@@ -30,6 +40,14 @@ def run(argv, cwd=None):
 
 
 def git(repo, *args):
+    # -C does not override inherited index/repository routing. Refuse before
+    # any Git invocation so direct API callers and CLI actions inspect the
+    # selected checkout's actual evidence. Keep SSH and credential transport.
+    overrides = sorted(name for name in os.environ if name in GIT_EVIDENCE_ENV
+                       or name == 'GIT_CONFIG' or name.startswith('GIT_CONFIG_'))
+    if overrides:
+        raise ValueError('Git environment overrides prevent verifying the selected worktree; unset: '
+                         + ', '.join(overrides))
     return run(['git', '-c', 'core.fsmonitor=false', '-C', str(repo), *args])
 
 
