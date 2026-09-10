@@ -72,7 +72,9 @@ def source_instruction(path):
     parts = Path(path).parts
     layouts = (('agents', 'skills'), ('agents', 'canon'), ('claude', 'skills'), ('claude', 'agents'))
     # Bundles include references/support files, not just their SKILL.md entrypoint.
+    # Bare source ancestors can redirect installed links to different inputs.
     return (any(pair in layouts for pair in zip(parts, parts[1:]))
+            or parts[-1] in ('agents', 'claude') or parts[-2:] == ('claude', 'scripts')
             or parts[-2:] in (('claude', 'AgentPack.md'), ('claude', 'AGENTPACK.yaml'), ('claude', 'agentpack-meta.json')))
 
 
@@ -84,7 +86,8 @@ def instruction(path):
             or any(p in ('githooks', '.githooks') for p in parts)
             or ('claude', 'hooks') in zip(parts, parts[1:])
             or named_instruction(path)
-            or name in ('gate-lib.sh', 'review-receipt.py', 'codex-review-gate.sh', 'antigravity-review-gate.sh'))
+            or name in ('gate-lib.sh', 'review-receipt.py', 'codex-review-gate.sh',
+                        'antigravity-review-gate.sh', 'codex-review-schema.json'))
 
 
 def private_agent_data(path):
