@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Run real health checkers against isolated pre-retirement installations."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+import importlib.util
+import io
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -39,6 +42,13 @@ def snapshot(root):
     return result
 
 
+def load_retirement_helper(repo):
+    spec = importlib.util.spec_from_file_location("retirement", repo / "claude/scripts/retired-skill-links.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @contextmanager
 def fixture(runtime):
     with tempfile.TemporaryDirectory(prefix="retired-skill-test-") as temp:
@@ -48,16 +58,18 @@ def fixture(runtime):
         home.mkdir()
         for name in [f"check-{runtime}.sh", "lib-checks.sh", "lib-symlinks.sh"]:
             shutil.copy2(REPO / name, repo / name)
-        helper = Path("claude/scripts/retired-skill-links.sh")
-        if (REPO / helper).exists():
-            (repo / helper).parent.mkdir(parents=True)
-            shutil.copy2(REPO / helper, repo / helper)
+        helpers = [Path("claude/scripts") / name for name in ("retired-skill-links.sh", "retired-skill-links.py")]
+        for helper in helpers:
+            if (REPO / helper).exists():
+                (repo / helper).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO / helper, repo / helper)
         if runtime == "claude":
             (repo / "claude").mkdir(exist_ok=True)
             (repo / "claude/nolink.txt").write_text("nolink.txt\n")
             (home / ".claude").mkdir()
-            if (repo / helper).exists():
-                link_to(home / ".claude/scripts/retired-skill-links.sh", repo / helper)
+            for helper in helpers:
+                if (repo / helper).exists():
+                    link_to(home / ".claude/scripts" / helper.name, repo / helper)
         else:
             (repo / runtime).mkdir()
             names = ["AGENTS.md"] if runtime == "codex" else ["GEMINI.md", "hooks.json"]
@@ -301,6 +313,141 @@ class RetirementTests(unittest.TestCase):
                 run("--heal", "--strict")
                 self.assertFalse(destination.is_symlink())
                 self.assertEqual(destination.read_text(), "operator-owned replacement\n")
+
+    def test_real_file_replacing_checked_symlink_survives(self):
+        with fixture("claude") as (repo, home, _):
+            destination = home / LINKS["claude"][0][0]
+            source = repo / LINKS["claude"][0][1]
+            replacement = home / "operator-replacement"
+            replacement.write_text("operator-owned replacement during readlink\n")
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
+                 'green() { printf "%s\\n" "$*"; }; red() { printf "%s\\n" "$*"; }; '
+                 'readlink() { command readlink "$1"; mv -- "$REPLACEMENT" "$1"; }; '
+                 'heal_retired_skill_link "$2" "$3" "$4"',
+                 "replacement-test", str(repo / "claude/scripts/retired-skill-links.sh"),
+                 str(destination), str(source), str(source.parent)],
+                env={**os.environ, "REPLACEMENT": str(replacement)},
+                capture_output=True, text=True, timeout=3,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(destination.is_file(), result.stdout)
+            self.assertEqual(destination.read_text(), "operator-owned replacement during readlink\n")
+            self.assertNotIn("RETIRED", result.stdout)
+
+    def test_replacement_at_capture_is_restored(self):
+        for kind in ("file", "symlink"):
+            with self.subTest(kind=kind), fixture("claude") as (repo, home, _):
+                helper = load_retirement_helper(repo)
+                destination = home / LINKS["claude"][0][0]
+                source = repo / LINKS["claude"][0][1]
+                replacement = home / "replacement"
+                if kind == "file":
+                    replacement.write_text("replacement at capture\n")
+                else:
+                    replacement.symlink_to("operator-selected-target")
+                rename = os.rename
+
+                def replace_then_capture(*args, **kwargs):
+                    os.replace(replacement, destination)
+                    rename(*args, **kwargs)
+
+                with patch.object(helper.os, "rename", side_effect=replace_then_capture):
+                    result = helper.retire(str(destination), str(source), str(source.parent))
+                self.assertEqual(result, 1)
+                if kind == "file":
+                    self.assertEqual(destination.read_text(), "replacement at capture\n")
+                else:
+                    self.assertEqual(os.readlink(destination), "operator-selected-target")
+                self.assertEqual(list(destination.parent.glob(".retired-skill-*")), [])
+
+    def test_restore_collision_preserves_both_files_and_reports_recovery(self):
+        with fixture("claude") as (repo, home, _):
+            helper = load_retirement_helper(repo)
+            destination = home / LINKS["claude"][0][0]
+            source = repo / LINKS["claude"][0][1]
+            replacement = home / "replacement"
+            replacement.write_text("first replacement\n")
+            rename = os.rename
+
+            def replace_capture_then_replace_again(*args, **kwargs):
+                os.replace(replacement, destination)
+                rename(*args, **kwargs)
+                destination.write_text("second replacement\n")
+
+            output = io.StringIO()
+            with patch.object(helper.os, "rename", side_effect=replace_capture_then_replace_again), redirect_stdout(output):
+                result = helper.retire(str(destination), str(source), str(source.parent))
+            self.assertEqual(result, 2)
+            self.assertEqual(destination.read_text(), "second replacement\n")
+            retained = list(destination.parent.glob(".retired-skill-*/entry"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_text(), "first replacement\n")
+            self.assertEqual(retained[0].parent.stat().st_mode & 0o777, 0o700)
+            self.assertIn(str(retained[0]), output.getvalue())
+
+    def test_directory_replacing_link_is_retained_with_its_contents(self):
+        with fixture("claude") as (repo, home, _):
+            helper = load_retirement_helper(repo)
+            destination = home / LINKS["claude"][0][0]
+            source = repo / LINKS["claude"][0][1]
+            rename = os.rename
+
+            def replace_with_directory_then_capture(*args, **kwargs):
+                destination.unlink()
+                destination.mkdir()
+                (destination / "private.txt").write_text("operator directory content\n")
+                rename(*args, **kwargs)
+
+            output = io.StringIO()
+            with patch.object(helper.os, "rename", side_effect=replace_with_directory_then_capture), redirect_stdout(output):
+                result = helper.retire(str(destination), str(source), str(source.parent))
+            self.assertEqual(result, 2)
+            retained = list(destination.parent.glob(".retired-skill-*/entry"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual((retained[0] / "private.txt").read_text(), "operator directory content\n")
+            self.assertIn(str(retained[0]), output.getvalue())
+
+    def test_parent_replacement_cannot_redirect_capture(self):
+        with fixture("claude") as (repo, home, _):
+            helper = load_retirement_helper(repo)
+            destination = home / LINKS["claude"][0][0]
+            source = repo / LINKS["claude"][0][1]
+            external = home / "external"
+            external.mkdir()
+            (external / destination.name).write_text("external operator file\n")
+            original = home / "original-parent"
+            rename = os.rename
+
+            def replace_parent_then_capture(*args, **kwargs):
+                rename(destination.parent, original)
+                destination.parent.symlink_to(external)
+                rename(*args, **kwargs)
+
+            with patch.object(helper.os, "rename", side_effect=replace_parent_then_capture):
+                result = helper.retire(str(destination), str(source), str(source.parent))
+            self.assertEqual(result, 0)
+            self.assertEqual(destination.read_text(), "external operator file\n")
+            self.assertEqual(list(original.iterdir()), [])
+
+    def test_bundle_restored_during_capture_keeps_the_link(self):
+        with fixture("claude") as (repo, home, _):
+            helper = load_retirement_helper(repo)
+            destination = home / LINKS["claude"][0][0]
+            source = repo / LINKS["claude"][0][1]
+            rename = os.rename
+
+            def capture_then_restore_bundle(*args, **kwargs):
+                rename(*args, **kwargs)
+                source.parent.mkdir(parents=True)
+                source.write_text("restored source\n")
+
+            with patch.object(helper.os, "rename", side_effect=capture_then_restore_bundle):
+                result = helper.retire(str(destination), str(source), str(source.parent))
+            self.assertEqual(result, 1)
+            self.assertEqual(os.readlink(destination), str(source))
+            self.assertEqual(destination.read_text(), "restored source\n")
+            self.assertEqual(list(destination.parent.glob(".retired-skill-*")), [])
 
     def test_symlinked_source_roots_never_trigger_retirement(self):
         for runtime in LINKS:
