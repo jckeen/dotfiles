@@ -7,5 +7,19 @@
         "timeout": 10
       }
     ]
+  },
+  "permission-classifier": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|write_to_file|replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/agy-permission-classifier.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }

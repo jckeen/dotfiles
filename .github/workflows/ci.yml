@@ -239,6 +239,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/antigravity-config.test.sh
 
+      - name: Antigravity permission classifier (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 claude/scripts/tests/agy-permission-classifier.test.py
+
       - name: Claude memory sync boundary
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/memory-sync.test.sh
