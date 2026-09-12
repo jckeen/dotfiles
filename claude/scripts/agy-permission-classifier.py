@@ -134,12 +134,10 @@ def is_credential_env_var(text):
 
 
 def unquote_token(tok):
-    """Perform shell quote and escape removal on a token without splitting whitespace."""
+    """Return token directly (POSIX tokenization already removes shell quoting)."""
     if not tok or not isinstance(tok, str):
-        return tok
-    if len(tok) >= 2 and ((tok[0] == '"' and tok[-1] == '"') or (tok[0] == "'" and tok[-1] == "'")):
-        tok = tok[1:-1]
-    return re.sub(r'[\"\'\\]', '', tok)
+        return ''
+    return tok
 
 
 def expand_path(p_str, cwd=None):
@@ -443,9 +441,35 @@ def is_git_admin_path(path_str, cwd=None):
     return False
 
 
+def workspace_has_local_python_module(module_name, workspace_paths, cwd=None):
+    """Check if cwd or any workspace contains a local python file or package shadowing module_name."""
+    if not module_name or not isinstance(module_name, str):
+        return False
+    check_dirs = set()
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    check_dirs.add(effective_cwd)
+    if workspace_paths:
+        for ws in workspace_paths:
+            if ws and isinstance(ws, str):
+                check_dirs.add(expand_path(ws, cwd))
+
+    for d in check_dirs:
+        # Check <module>.py or <module>.pyc
+        mod_file = os.path.join(d, f"{module_name}.py")
+        if os.path.isfile(mod_file):
+            return True
+        # Check <module>/ directory with __init__.py or __main__.py
+        mod_pkg = os.path.join(d, module_name)
+        if os.path.isdir(mod_pkg):
+            if os.path.isfile(os.path.join(mod_pkg, '__init__.py')) or os.path.isfile(os.path.join(mod_pkg, '__main__.py')):
+                return True
+    return False
+
+
 DEV_TOOL_OUTPUT_FLAGS = (
     '-o', '--output', '--output-file', '--output-dir',
-    '--target-dir', '--junitxml', '--junit-xml', '--result-log',
+    '--target-dir', '--outDir', '-outDir', '--outFile', '-outFile',
+    '--junitxml', '--junit-xml', '--result-log',
     '--log-file', '--html-report', '--xml-report', '--txt-report',
     '--cobertura-xml-report', '--linecount-report', '--linecoverage-report',
 )
@@ -1168,6 +1192,24 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if has_no_install and tools:
                 tool = tools[0]
                 if tool in {'tsc', 'eslint', 'prettier', 'jest', 'vitest'}:
+                    tool_args = args[args.index(tool) + 1:]
+                    out_check = check_dev_tool_output(tool_args, workspace_paths, cwd, f"npx {tool}")
+                    if out_check:
+                        return out_check
+                    if tool == 'prettier' and any(a in ('-w', '--write') or a.startswith('--write') for a in tool_args):
+                        for a in tool_args:
+                            if not a.startswith('-'):
+                                if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                    return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
+                                if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                    return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
+                    if tool == 'tsc':
+                        for a in tool_args:
+                            if not a.startswith('-'):
+                                if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                    return 'deny', f"tsc accessing sensitive or system path is forbidden: {a}"
+                                if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                    return 'ask', f"tsc compiling file outside workspace requires confirmation: {a}"
                     return 'allow', f"Safe static tool via npx --no-install: {tool}"
             return 'ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
         return 'ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
@@ -1192,10 +1234,27 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if base_cmd == 'pylint' and any(a == '--init-hook' or a.startswith('--init-hook=') for a in args):
             return 'ask', f"pylint with --init-hook requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'pytest':
-            if any(a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args):
-                return 'ask', f"pytest with configuration override (-o/--override-ini) requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a in ('--pastebin', '-p') or a.startswith(('--pastebin=', '-p=')) for a in args):
-                return 'ask', f"pytest with pastebin or plugin options requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args):
+                return 'ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'black':
+            is_check = any(a in ('--check', '--diff') for a in args)
+            if not is_check:
+                for a in args:
+                    if not a.startswith('-'):
+                        if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                            return 'deny', f"black modifying sensitive or system path is forbidden: {a}"
+                        if not is_path_in_workspaces(a, workspace_paths, cwd):
+                            return 'ask', f"black modifying file outside workspace requires confirmation: {a}"
+        if base_cmd == 'ruff':
+            if any(a in ('format', '--fix') for a in args):
+                is_check = any(a in ('--check', '--diff') for a in args)
+                if not is_check:
+                    for a in args:
+                        if not a.startswith('-') and a not in ('format', 'check'):
+                            if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                return 'deny', f"ruff modifying sensitive or system path is forbidden: {a}"
+                            if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                return 'ask', f"ruff modifying file outside workspace requires confirmation: {a}"
         out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
         if out_check:
             return out_check
@@ -1205,12 +1264,23 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if args and args[0] == '-m' and len(args) > 1:
             module = args[1]
             if module in {'unittest', 'pytest', 'mypy', 'ruff', 'flake8'}:
+                if workspace_has_local_python_module(module, workspace_paths, cwd):
+                    return 'ask', f"python -m {module} with local workspace module shadowing requires confirmation: {' '.join(cmd_tokens)}"
+                mod_args = args[2:]
                 if module == 'pytest':
-                    if any(a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args[2:]):
-                        return 'ask', f"pytest with configuration override (-o/--override-ini) requires confirmation: {' '.join(cmd_tokens)}"
-                    if any(a in ('--pastebin', '-p') or a.startswith(('--pastebin=', '-p=')) for a in args[2:]):
-                        return 'ask', f"pytest with pastebin or plugin options requires confirmation: {' '.join(cmd_tokens)}"
-                out_check = check_dev_tool_output(args[2:], workspace_paths, cwd, f"python -m {module}")
+                    if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in mod_args):
+                        return 'ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
+                if module == 'ruff':
+                    if any(a in ('format', '--fix') for a in mod_args):
+                        is_check = any(a in ('--check', '--diff') for a in mod_args)
+                        if not is_check:
+                            for a in mod_args:
+                                if not a.startswith('-') and a not in ('format', 'check'):
+                                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                        return 'deny', f"ruff modifying sensitive or system path is forbidden: {a}"
+                                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                        return 'ask', f"ruff modifying file outside workspace requires confirmation: {a}"
+                out_check = check_dev_tool_output(mod_args, workspace_paths, cwd, f"python -m {module}")
                 if out_check:
                     return out_check
                 return 'allow', f"Safe python module: {module}"

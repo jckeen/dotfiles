@@ -1078,6 +1078,69 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload_ruff_out)
         self.assertEqual(res['decision'], 'ask')
 
+        # 53. Literal quote in command does not strip into safe command name ("l's" != "ls")
+        payload_quote_cmd = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': '"l\'s"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_quote_cmd)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 54. Dev tools modifying files outside workspace require confirmation
+        payload_black_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'black /tmp/outside.py', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_black_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_black_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'black {self.test_ws}/app.py', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_black_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        payload_prettier_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install prettier --write /tmp/outside.js', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_prettier_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_tsc_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install tsc --outDir /tmp/outside', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_tsc_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 55. Attached pytest plugin option (-pevil_plugin) requires confirmation
+        payload_pytest_plugin = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'pytest -pevil_plugin', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_pytest_plugin)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_py_m_plugin = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'python3 -m pytest -pevil_plugin', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_py_m_plugin)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 56. python3 -m pytest with local workspace pytest.py requires confirmation
+        fake_pytest = Path(self.test_ws) / 'pytest.py'
+        fake_pytest.write_text('# fake pytest\n')
+        payload_py_shadow = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'python3 -m pytest', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_py_shadow)
+        self.assertEqual(res['decision'], 'ask')
+        fake_pytest.unlink()
+
 
 if __name__ == '__main__':
     unittest.main()
