@@ -776,6 +776,74 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'deny')
 
+        # 32. Quoted semicolon must not split commands and bypass credential checks
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cat ';' echo .env", 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 33. Go -toolexec option requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go test -toolexec=./payload ./...', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go test -toolexec ./payload ./...', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 34. git cat-file --filters or --textconv requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git cat-file --filters HEAD:README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git cat-file -p HEAD:README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 35. echo / printf referencing credential environment variables is forbidden
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "$AWS_SECRET_ACCESS_KEY"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'printf "%s" "$OPENAI_API_KEY"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 36. echo with non-credential variable requires confirmation, literal echo is allowed
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "$HOME"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "Hello, world!"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

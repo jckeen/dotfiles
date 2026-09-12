@@ -108,6 +108,32 @@ def is_dangerous_env_var(var_name):
     return any(var_name.startswith(p) for p in DANGEROUS_ENV_PREFIXES)
 
 
+def is_credential_env_var(text):
+    """Check if text references credential environment variables."""
+    if not text or not isinstance(text, str):
+        return False
+    vars_found = re.findall(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?', text)
+    for v in vars_found:
+        v_upper = v.upper()
+        if any(term in v_upper for term in ('KEY', 'TOKEN', 'SECRET', 'PASS', 'AUTH', 'CRED', 'COOKIE', 'BEARER', 'PRIVATE', 'SIGNATURE')) or \
+           any(v_upper.startswith(prefix) for prefix in ('AWS_', 'GITHUB_', 'GH_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'CODEX_', 'CLAUDE_', 'GIT_ASKPASS')):
+            return True
+    return False
+
+
+def unquote_token(tok):
+    """Strip outermost matching quotes from a token if present."""
+    if not tok or not isinstance(tok, str):
+        return tok
+    if len(tok) >= 2 and ((tok[0] == '"' and tok[-1] == '"') or (tok[0] == "'" and tok[-1] == "'")):
+        try:
+            parts = shlex.split(tok)
+            return parts[0] if parts else tok[1:-1]
+        except Exception:
+            return tok[1:-1]
+    return tok
+
+
 def expand_path(p_str, cwd=None):
     """Safely expand user, variables, and relative paths against cwd."""
     if not p_str or not isinstance(p_str, str):
@@ -358,9 +384,9 @@ def is_git_admin_path(path_str, cwd=None):
 
 
 def tokenize_command_line(line):
-    """Tokenize a single shell command line without stripping comments prematurely."""
+    """Tokenize a single shell command line while preserving quotes around quoted literals."""
     try:
-        s = shlex.shlex(line, posix=True, punctuation_chars=True)
+        s = shlex.shlex(line, posix=False, punctuation_chars=True)
         s.whitespace_split = True
         s.commenters = ''
         raw_tokens = list(s)
@@ -368,7 +394,7 @@ def tokenize_command_line(line):
         for tok in raw_tokens:
             # Only split pure punctuation tokens (e.g. ;> or ;>> or ;|)
             # Quoted strings like 'README;echo' or word tokens must never be split
-            if len(tok) > 1 and ';' in tok and all(c in '();<>|&' for c in tok):
+            if len(tok) > 1 and ';' in tok and all(c in '();<>|&' for c in tok) and not (tok.startswith(('"', "'")) and tok.endswith(('"', "'"))):
                 parts = re.split(r'(;+)', tok)
                 refined.extend(p for p in parts if p)
             else:
@@ -391,6 +417,10 @@ def split_into_subcommands(tokens):
         tok = tokens[i]
         # Check two-character operator |&
         if tok == '|' and i + 1 < len(tokens) and tokens[i + 1] == '&':
+            if i > 0 and tokens[i - 1] == '\\':
+                current.append(tok)
+                i += 1
+                continue
             if current:
                 subcommands.append(current)
                 pipeline_links.append((len(subcommands) - 1, '|&'))
@@ -399,6 +429,10 @@ def split_into_subcommands(tokens):
             continue
 
         if tok in separators:
+            if i > 0 and tokens[i - 1] == '\\':
+                current.append(tok)
+                i += 1
+                continue
             if current:
                 subcommands.append(current)
                 if tok in ('|', '|&'):
@@ -449,30 +483,39 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     if not cmd_tokens:
         return 'allow', 'Environment assignment'
 
-    raw_cmd = cmd_tokens[0]
-    args = cmd_tokens[1:]
+    raw_cmd = unquote_token(cmd_tokens[0])
 
-    # Check for redirection operators and their destination targets
-    for i, tok in enumerate(tokens):
-        if tok in REDIRECTION_OPERATORS and i + 1 < len(tokens):
-            target = tokens[i + 1]
-            if target == '/dev/null':
-                continue
-            # Network pseudo-devices in bash /dev/tcp/... or /dev/udp/...
-            if target.startswith(('/dev/tcp/', '/dev/udp/')):
-                return 'ask', f"Network communication via redirection requires confirmation: {target}"
-            # If target has unexpanded variable or glob, we cannot verify containment safely
-            if '$' in target or '*' in target or '?' in target:
-                return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
-            if is_sensitive_credential_path(target, cwd):
-                return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
-            if tok != '<':
-                if is_system_write_path(target, cwd):
-                    return 'deny', f"Redirect targeting system write path is forbidden: {target}"
-                if is_git_admin_path(target, cwd):
-                    return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
-                if not is_path_in_workspaces(target, workspace_paths, cwd):
-                    return 'ask', f"Redirecting output outside workspace requires approval: {target}"
+    # Extract redirections and build unquoted arguments
+    filtered_args = []
+    skip_next_arg = False
+    for i, tok in enumerate(cmd_tokens[1:]):
+        if skip_next_arg:
+            skip_next_arg = False
+            continue
+        if tok in REDIRECTION_OPERATORS:
+            skip_next_arg = True
+            if i + 1 < len(cmd_tokens[1:]):
+                target = unquote_token(cmd_tokens[1:][i + 1])
+                if target == '/dev/null':
+                    continue
+                # Network pseudo-devices in bash /dev/tcp/... or /dev/udp/...
+                if target.startswith(('/dev/tcp/', '/dev/udp/')):
+                    return 'ask', f"Network communication via redirection requires confirmation: {target}"
+                # If target has unexpanded variable or glob, we cannot verify containment safely
+                if '$' in target or '*' in target or '?' in target:
+                    return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
+                if is_sensitive_credential_path(target, cwd):
+                    return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
+                if tok != '<':
+                    if is_system_write_path(target, cwd):
+                        return 'deny', f"Redirect targeting system write path is forbidden: {target}"
+                    if is_git_admin_path(target, cwd):
+                        return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
+                    if not is_path_in_workspaces(target, workspace_paths, cwd):
+                        return 'ask', f"Redirecting output outside workspace requires approval: {target}"
+            continue
+        filtered_args.append(unquote_token(tok))
+    args = filtered_args
 
     # Resolve executable: prevent ./malicious/ls or workspace PATH overrides
     if '/' in raw_cmd:
@@ -489,8 +532,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Running workspace-controlled executable requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
-    # Check for sensitive files being targeted in arguments
-    # Skip known text payloads (e.g. git commit messages, echo strings, grep search patterns)
+    # Check for sensitive files or credentials being targeted in arguments
+    # Skip known text payloads (e.g. git commit messages, grep search patterns)
     skip_next = False
     for i, arg in enumerate(args):
         if skip_next:
@@ -503,15 +546,14 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 continue
             if arg.startswith(('-m', '--message=')):
                 continue
-        # For echo / printf, positional text operands are output payloads
-        if base_cmd in {'echo', 'printf'}:
-            continue
         # For grep / rg / ag, skip the search pattern operand
         if base_cmd in {'grep', 'egrep', 'fgrep', 'rg', 'ag'}:
             has_pat_flag = any(a in ('-e', '-f') or a.startswith(('-e', '-f')) for a in args)
             positionals = [a for a in args if not a.startswith('-')]
             if not has_pat_flag and positionals and arg == positionals[0]:
                 continue
+        if is_credential_env_var(arg):
+            return 'deny', f"Access to credential environment variable is forbidden: {arg}"
         val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
         if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
             return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
@@ -723,6 +765,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if not has_no_textconv and git_has_external_diff_configured(cwd):
                 return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
+        # Git cat-file with filters or textconv executes external smudge/clean/textconv drivers
+        if git_sub == 'cat-file':
+            if any(a in ('--filters', '--textconv') or a.startswith(('--filters', '--textconv', '--path=')) for a in args):
+                return 'ask', f"git cat-file with filter or textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
@@ -745,8 +791,12 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
         if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq'}:
             for a in args:
-                if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
-                    return 'ask', f"Inspection command with wildcard, variable, or substitution requires confirmation: {' '.join(cmd_tokens)}"
+                if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
+                    return 'ask', f"Inspection command with wildcard, variable, substitution, or metacharacter requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd in {'echo', 'printf'}:
+            for a in args:
+                if any(c in a for c in ('$', '`')):
+                    return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'less':
             if any(a.startswith('+') or a in ('-o', '-O', '--log-file', '--LOG-FILE', '-T', '--tag-file') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=', '-T', '--tag-file=')) for a in args):
                 return 'ask', f"less with command execution (+), log file, or tag file option requires confirmation: {' '.join(cmd_tokens)}"
@@ -922,8 +972,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     if base_cmd == 'go':
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
-            if any(a in ('-exec', '--exec') or a.startswith(('-exec=', '--exec=')) for a in args):
-                return 'ask', f"go {args[0]} with custom exec program requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('-exec', '--exec', '-toolexec', '--toolexec') or a.startswith(('-exec=', '--exec=', '-toolexec=', '--toolexec=')) for a in args):
+                return 'ask', f"go {args[0]} with custom exec or toolexec program requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', f"Safe Go tool: go {args[0]}"
 
     if base_cmd == 'make':
