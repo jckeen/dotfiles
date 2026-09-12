@@ -123,11 +123,13 @@ def expand_path(p_str, cwd=None):
 
 def matches_sensitive_pattern(filename):
     """Check if a filename or glob pattern matches sensitive credential patterns."""
+    if not filename or not isinstance(filename, str):
+        return False
     basename = os.path.basename(filename)
     if basename in SENSITIVE_FILENAMES:
         return True
     for pat in SENSITIVE_PATTERNS:
-        if fnmatch.fnmatch(basename, pat) or fnmatch.fnmatch(pat, basename):
+        if fnmatch.fnmatch(basename, pat):
             return True
     return False
 
@@ -303,17 +305,15 @@ def git_has_external_diff_configured(cwd=None):
 def tokenize_command_line(line):
     """Tokenize a single shell command line without stripping comments prematurely."""
     try:
-        # Separate adjacent semicolons and redirection/pipe/operator characters
-        # e.g. ;> -> ; > or ;& -> ; & or ;>> -> ; >>
-        normalized = re.sub(r';+(?=[<>&|])', '; ', line)
-        normalized = re.sub(r'(?<=[<>&|]);+', ' ;', normalized)
-        s = shlex.shlex(normalized, posix=True, punctuation_chars=True)
+        s = shlex.shlex(line, posix=True, punctuation_chars=True)
         s.whitespace_split = True
         s.commenters = ''
         raw_tokens = list(s)
         refined = []
         for tok in raw_tokens:
-            if ';' in tok and len(tok) > 1:
+            # Only split pure punctuation tokens (e.g. ;> or ;>> or ;|)
+            # Quoted strings like 'README;echo' or word tokens must never be split
+            if len(tok) > 1 and ';' in tok and all(c in '();<>|&' for c in tok):
                 parts = re.split(r'(;+)', tok)
                 refined.extend(p for p in parts if p)
             else:
@@ -565,8 +565,9 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 if any(a.startswith(opt) for opt in MUTATING_BRANCH_FLAGS if not opt.startswith('--')):
                     return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
-            # Positional arguments in git branch create/reset branches unless --list / -l is used
-            if positionals and not any(a in ('-l', '--list') or a.startswith(('-l', '--list=')) for a in args):
+            # Positional arguments in git branch create/reset branches unless --list is explicitly used
+            # Note: -l means --create-reflog when creating a branch, so only --list is safe with positionals
+            if positionals and not any(a == '--list' or a.startswith('--list=') for a in args):
                 return 'ask', f"Branch creation or modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git branch query'
 
@@ -625,6 +626,12 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     return 'allow', 'Safe git worktree add within workspace'
                 return 'ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git worktree query'
+
+        # Git show, log, etc. run configured textconv drivers by default
+        if git_sub in {'show', 'log', 'whatchanged', 'format-patch'}:
+            has_no_textconv = any(a == '--no-textconv' for a in args)
+            if not has_no_textconv and git_has_external_diff_configured(cwd):
+                return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"

@@ -544,6 +544,55 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'allow')
 
+        # 11. Quoted punctuation inside filename preserves credential checking
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cat 'README;echo' ~/.aws/credentials", 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 12. git branch -l creates branches with reflog; only --list is safe with positionals
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch -l new-branch', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch --list new-branch', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 13. Ordinary wildcard search allowed in clean directory
+        clean_dir = Path(self.test_ws) / 'clean_test_dir'
+        clean_dir.mkdir(parents=True, exist_ok=True)
+        (clean_dir / 'app.py').write_text('print("ok")')
+        payload = {
+            'toolCall': {'name': 'find_by_name', 'args': {'SearchDirectory': str(clean_dir), 'Pattern': '*'}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 14. Git show and log detect configured textconv driver
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show HEAD', 'Cwd': str(git_repo_dir)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show --no-textconv HEAD', 'Cwd': str(git_repo_dir)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
