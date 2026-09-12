@@ -1024,6 +1024,60 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload_wt)
         self.assertEqual(res['decision'], 'ask')
 
+        # 49. Space in quoted path does not truncate path or bypass checks
+        payload_space_cred = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat "/tmp/ordinary directory/.env"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_space_cred)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_space_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'echo ok > "{self.test_ws}/ordinary /../../outside"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_space_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 50. git add with configured filter driver requires confirmation
+        payload_git_add = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add .', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(repo_dir)],
+        }
+        subprocess.run(['git', 'config', 'filter.test.clean', './payload'], cwd=str(repo_dir), check=True)
+        res = self.run_classifier(payload_git_add)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 51. cargo build with --config override requires confirmation
+        payload_cargo = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo build --config build.rustc=./payload', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_cargo)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 52. Dev tool output options outside workspace require confirmation
+        payload_go_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build -o /tmp/outside ./...', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_go_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_go_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'go build -o {self.test_ws}/bin/app ./...', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_go_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        payload_ruff_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ruff check --output-file /tmp/outside .', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_ruff_out)
+        self.assertEqual(res['decision'], 'ask')
+
 
 if __name__ == '__main__':
     unittest.main()

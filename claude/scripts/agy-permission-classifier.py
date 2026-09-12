@@ -134,14 +134,12 @@ def is_credential_env_var(text):
 
 
 def unquote_token(tok):
-    """Perform shell quote and escape removal on a token (matching POSIX shell semantics)."""
+    """Perform shell quote and escape removal on a token without splitting whitespace."""
     if not tok or not isinstance(tok, str):
         return tok
-    try:
-        parts = shlex.split(tok)
-        return parts[0] if parts else ''
-    except Exception:
-        return re.sub(r'[\"\'\\]', '', tok)
+    if len(tok) >= 2 and ((tok[0] == '"' and tok[-1] == '"') or (tok[0] == "'" and tok[-1] == "'")):
+        tok = tok[1:-1]
+    return re.sub(r'[\"\'\\]', '', tok)
 
 
 def expand_path(p_str, cwd=None):
@@ -199,13 +197,7 @@ def is_sensitive_credential_path(path_str, cwd=None):
                 return True
 
     # Strip shell quotes and backslash escapes (e.g. /etc/sha""dow or /etc/sha\dow)
-    clean = path_str
-    try:
-        parts = shlex.split(path_str)
-        if parts:
-            clean = parts[0]
-    except Exception:
-        clean = re.sub(r'[\"\'\\]', '', path_str)
+    clean = re.sub(r'[\"\'\\]', '', path_str)
 
     # Check for glob/bracket tricks like .en[v] or ~/.s[s]h/id_*
     clean = re.sub(r'\[(.)\]', r'\1', clean)
@@ -412,6 +404,25 @@ def git_has_active_hooks(cwd=None, hook_names=()):
     return False
 
 
+def git_has_filter_configured(cwd=None):
+    """Check if git has filter drivers (clean, process, smudge) configured that execute programs."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get-regexp', r'^filter\..*\.(clean|process|smudge)$'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def is_git_admin_path(path_str, cwd=None):
     """Check if path targets git internal administrative files (.git, .git/config, .git/hooks, bare repo .git, etc.)."""
     if not path_str or not isinstance(path_str, str):
@@ -430,6 +441,52 @@ def is_git_admin_path(path_str, cwd=None):
     except Exception:
         pass
     return False
+
+
+DEV_TOOL_OUTPUT_FLAGS = (
+    '-o', '--output', '--output-file', '--output-dir',
+    '--target-dir', '--junitxml', '--junit-xml', '--result-log',
+    '--log-file', '--html-report', '--xml-report', '--txt-report',
+    '--cobertura-xml-report', '--linecount-report', '--linecoverage-report',
+)
+
+
+def check_dev_tool_output(args, workspace_paths, cwd, tool_name='tool'):
+    """Check if dev tool output options target valid destinations within workspace.
+
+    Returns (verdict, reason) or None if safe.
+    """
+    i = 0
+    while i < len(args):
+        a = args[i]
+        dest = None
+        for flag in DEV_TOOL_OUTPUT_FLAGS:
+            if a == flag:
+                if i + 1 < len(args):
+                    dest = args[i + 1]
+                    i += 1
+                break
+            elif a.startswith(flag + '='):
+                dest = a.split('=', 1)[1]
+                break
+            elif flag.startswith('-') and not flag.startswith('--') and len(flag) == 2 and a.startswith(flag):
+                dest = a[2:]
+                break
+
+        if dest:
+            if dest == '/dev/null':
+                i += 1
+                continue
+            if is_sensitive_credential_path(dest, cwd):
+                return 'deny', f"{tool_name} output targeting sensitive path is forbidden: {dest}"
+            if is_system_write_path(dest, cwd):
+                return 'deny', f"{tool_name} output targeting system path is forbidden: {dest}"
+            if is_git_admin_path(dest, cwd):
+                return 'ask', f"{tool_name} output modifying git repository metadata or hooks requires confirmation: {dest}"
+            if not is_path_in_workspaces(dest, workspace_paths, cwd):
+                return 'ask', f"{tool_name} output targeting destination outside workspace requires confirmation: {dest}"
+        i += 1
+    return None
 
 
 def split_unquoted_shell_commands(cmd_str):
@@ -805,6 +862,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Switching with branch creation, reset, detach, or discard requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-checkout',)):
                 return 'ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_filter_configured(cwd):
+                return 'ask', f"git switch with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
 
         # Git branch: only allow read-only queries
@@ -878,6 +937,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                         return 'ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
                     if git_has_active_hooks(cwd, ('post-checkout',)):
                         return 'ask', f"git worktree add with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
+                    if git_has_filter_configured(cwd):
+                        return 'ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
                     sub_args = args[args.index('add') + 1:]
                     dir_operands = []
                     skip_next = False
@@ -920,6 +981,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'ask', 'Git config modification requires confirmation'
 
         if git_sub == 'add':
+            if git_has_filter_configured(cwd):
+                return 'ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git add'
 
         if git_sub == 'commit':
@@ -927,6 +990,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit')):
                 return 'ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_filter_configured(cwd):
+                return 'ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git commit'
 
     # 6. Inspection Commands
@@ -1108,6 +1173,13 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         return 'ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd == 'cargo':
+        if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):
+            return 'ask', f"cargo with configuration override (--config) requires confirmation: {' '.join(cmd_tokens)}"
+        if any(a == '-Z' or (a.startswith('-Z') and len(a) > 2) for a in args):
+            return 'ask', f"cargo with unstable flag (-Z) requires confirmation: {' '.join(cmd_tokens)}"
+        out_check = check_dev_tool_output(args, workspace_paths, cwd, 'cargo')
+        if out_check:
+            return out_check
         if args:
             sub = args[0]
             if sub in {'test', 'check', 'clippy', 'build', 'bench', 'fmt'}:
@@ -1119,12 +1191,28 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     if base_cmd in {'pytest', 'ruff', 'mypy', 'flake8', 'black', 'pylint'}:
         if base_cmd == 'pylint' and any(a == '--init-hook' or a.startswith('--init-hook=') for a in args):
             return 'ask', f"pylint with --init-hook requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'pytest':
+            if any(a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args):
+                return 'ask', f"pytest with configuration override (-o/--override-ini) requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('--pastebin', '-p') or a.startswith(('--pastebin=', '-p=')) for a in args):
+                return 'ask', f"pytest with pastebin or plugin options requires confirmation: {' '.join(cmd_tokens)}"
+        out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
+        if out_check:
+            return out_check
         return 'allow', f"Safe Python dev tool: {base_cmd}"
 
     if base_cmd in {'python', 'python3'}:
         if args and args[0] == '-m' and len(args) > 1:
             module = args[1]
             if module in {'unittest', 'pytest', 'mypy', 'ruff', 'flake8'}:
+                if module == 'pytest':
+                    if any(a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args[2:]):
+                        return 'ask', f"pytest with configuration override (-o/--override-ini) requires confirmation: {' '.join(cmd_tokens)}"
+                    if any(a in ('--pastebin', '-p') or a.startswith(('--pastebin=', '-p=')) for a in args[2:]):
+                        return 'ask', f"pytest with pastebin or plugin options requires confirmation: {' '.join(cmd_tokens)}"
+                out_check = check_dev_tool_output(args[2:], workspace_paths, cwd, f"python -m {module}")
+                if out_check:
+                    return out_check
                 return 'allow', f"Safe python module: {module}"
         return 'ask', f"Executing Python script requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -1132,6 +1220,9 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
             if any(a in ('-exec', '--exec', '-toolexec', '--toolexec') or a.startswith(('-exec=', '--exec=', '-toolexec=', '--toolexec=')) for a in args):
                 return 'ask', f"go {args[0]} with custom exec or toolexec program requires confirmation: {' '.join(cmd_tokens)}"
+            out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, f"go {args[0]}")
+            if out_check:
+                return out_check
             return 'allow', f"Safe Go tool: go {args[0]}"
 
     if base_cmd == 'make':
