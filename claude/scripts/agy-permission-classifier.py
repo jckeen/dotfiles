@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -411,7 +412,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if not is_path_in_workspaces(target, workspace_paths, cwd):
                 return 'ask', f"Redirecting output outside workspace requires approval: {target}"
 
-    # Resolve executable: prevent ./malicious/ls by checking if path is explicit
+    # Resolve executable: prevent ./malicious/ls or workspace PATH overrides
     if '/' in raw_cmd:
         resolved_exe = expand_path(raw_cmd, cwd)
         exe_dir = os.path.dirname(resolved_exe)
@@ -419,6 +420,11 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'ask', f"Running non-system executable requires confirmation: {raw_cmd}"
         base_cmd = os.path.basename(resolved_exe)
     else:
+        resolved_path = shutil.which(raw_cmd)
+        if resolved_path:
+            resolved_norm = expand_path(resolved_path, cwd)
+            if is_path_in_workspaces(resolved_norm, workspace_paths, cwd):
+                return 'ask', f"Running workspace-controlled executable requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
     # Check for sensitive files being targeted in arguments
@@ -601,7 +607,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub == 'worktree':
-            if any(a in ('add', 'remove', 'prune', 'lock', 'unlock', 'move') for a in args):
+            if any(a in ('add', 'remove', 'prune', 'lock', 'unlock', 'move', 'repair') for a in args):
                 if 'add' in args:
                     if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
                         return 'ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
@@ -747,8 +753,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if any(a == '--compress-program' or a.startswith(('--compress-program=', '--compress-program')) for a in args):
             return 'ask', f"sort with execution helper requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
-            if not a.startswith('-') and ('$' in a or '`' in a):
-                return 'ask', f"sort with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
+                return 'ask', f"sort with wildcard, variable, or substitution requires confirmation: {' '.join(cmd_tokens)}"
         out_target = None
         for i, a in enumerate(args):
             if a in ('-o', '--output') and i + 1 < len(args):
@@ -767,7 +773,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"find with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
-        if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprint0', '-fprintf') for a in args):
+        if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fls', '-fprint', '-fprint0', '-fprintf') or a.startswith(('-exec', '-ok', '-fls', '-fprint')) for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
         # Check search root
         for a in args:
@@ -777,6 +783,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 7. Test, Lint, and Build Runners
     if base_cmd in {'npm', 'pnpm', 'yarn', 'bun'}:
+        if any(a in ('--script-shell', '--shell') or a.startswith(('--script-shell=', '--shell=')) for a in args):
+            return 'ask', f"{base_cmd} with custom script shell requires confirmation: {' '.join(cmd_tokens)}"
         if args:
             sub = args[0]
             if sub == 'test' or sub.startswith('test'):

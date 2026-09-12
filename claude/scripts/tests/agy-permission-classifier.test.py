@@ -593,6 +593,56 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'allow')
 
+        # 15. find -fls requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'find . -fls /tmp/outside', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 16. sort wildcard operands require confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort .en?', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 17. npm with custom script-shell requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --script-shell=/tmp/payload', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 18. Bare executable resolving into workspace requires confirmation
+        ws_bin = Path(self.test_ws) / 'bin'
+        ws_bin.mkdir(parents=True, exist_ok=True)
+        fake_bin = ws_bin / 'custom_tool'
+        fake_bin.write_text('#!/bin/sh\necho ok')
+        fake_bin.chmod(0o755)
+        orig_path = os.environ.get('PATH', '')
+        try:
+            os.environ['PATH'] = f'{ws_bin}:{orig_path}'
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'custom_tool', 'Cwd': self.test_ws}},
+                'workspacePaths': [self.test_ws],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask')
+        finally:
+            os.environ['PATH'] = orig_path
+
+        # 19. git worktree repair requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git worktree repair /tmp/other', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
 
 if __name__ == '__main__':
     unittest.main()
