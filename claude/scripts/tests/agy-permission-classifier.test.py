@@ -265,6 +265,9 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'rg -iL . .',
             'jq -R . "${HOME:0}/.aws/credentials"',
             'git branch --set-upstream-to=origin/main',
+            'rm -f */victim',
+            'cat */credentials',
+            'npx --no-install --yes --package=untrusted-package tsc',
         ]
         for cmd in ask_commands:
             with self.subTest(cmd=cmd):
@@ -362,6 +365,27 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         }
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'ask')
+
+        # grep_search on directory with descendant .env file: ask
+        env_dir = Path(self.test_ws) / 'subdir_with_env'
+        env_dir.mkdir(parents=True, exist_ok=True)
+        env_file = env_dir / '.env'
+        try:
+            env_file.touch()
+            payload = {
+                'toolCall': {
+                    'name': 'grep_search',
+                    'args': {'SearchPath': str(env_dir)}
+                },
+                'workspacePaths': [self.test_ws],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask')
+        finally:
+            if env_file.exists():
+                env_file.unlink()
+            if env_dir.exists():
+                env_dir.rmdir()
 
     def test_no_tmp_bypass_file(self):
         tmp_file = Path('/tmp/agy-session-auto-allow')

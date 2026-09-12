@@ -211,8 +211,8 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
         return True
     if not workspace_paths:
         return False
-    # If target has unexpanded shell variables, brace expansions, or command substitutions
-    if any(c in target_path for c in ('$', '{', '}', '`')):
+    # If target has unexpanded shell variables, brace expansions, command substitutions, or wildcards
+    if any(c in target_path for c in ('$', '{', '}', '`', '*', '?', '[', ']')):
         return False
     try:
         norm_target = expand_path(target_path, cwd)
@@ -539,11 +539,11 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
-        # File inspection commands must prompt if args contain variable or command substitutions
+        # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
         if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq'}:
             for a in args:
-                if not a.startswith('-') and ('$' in a or '`' in a):
-                    return 'ask', f"Inspection command with variable or command substitution requires confirmation: {' '.join(cmd_tokens)}"
+                if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
+                    return 'ask', f"Inspection command with wildcard, variable, or substitution requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'less':
             if any(a.startswith('+') or a in ('-o', '-O', '--log-file', '--LOG-FILE', '-T', '--tag-file') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=', '-T', '--tag-file=')) for a in args):
                 return 'ask', f"less with command execution (+), log file, or tag file option requires confirmation: {' '.join(cmd_tokens)}"
@@ -673,6 +673,9 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     # npx: only safe when run with --no-install to avoid downloading unverified packages
     if base_cmd == 'npx':
         if args:
+            # Reject package overrides or auto-install flags that bypass --no-install
+            if any(a in ('-y', '--yes', '-p', '--package') or a.startswith(('-y', '--yes', '-p', '--package=', '--package')) for a in args):
+                return 'ask', f"npx with package download or auto-install options requires confirmation: {' '.join(cmd_tokens)}"
             has_no_install = '--no-install' in args
             tools = [a for a in args if not a.startswith('-')]
             if has_no_install and tools:
@@ -877,6 +880,57 @@ def classify_file_read(target_file, cwd):
     return 'allow', f"Safe file read: {os.path.basename(target_file)}"
 
 
+def classify_directory_search(target_dir, args, cwd):
+    """Classify recursive directory search tools (grep_search, find_by_name)."""
+    if not target_dir or not isinstance(target_dir, str):
+        target_dir = cwd
+
+    # If searching sensitive credential path: hard deny
+    if is_sensitive_credential_path(target_dir, cwd):
+        return 'deny', f"Searching sensitive credentials is forbidden: {target_dir}"
+
+    norm = expand_path(target_dir, cwd)
+    norm_dir = norm if norm.endswith(os.sep) else norm + os.sep
+
+    # Ancestor check for fixed credential prefixes
+    for prefix in get_sensitive_credential_prefixes():
+        norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
+        if norm_prefix.startswith(norm_dir):
+            return 'ask', f"Searching directory containing sensitive credentials requires approval: {target_dir}"
+
+    # Check search filter options (Includes, Pattern) for sensitive patterns
+    includes = args.get('Includes')
+    if isinstance(includes, list):
+        for inc in includes:
+            if isinstance(inc, str) and (matches_sensitive_pattern(inc) or any(c in inc for c in ('.env', 'id_', '.key', '.pem'))):
+                return 'deny', f"Search targeting sensitive pattern is forbidden: {inc}"
+
+    pattern = args.get('Pattern')
+    if isinstance(pattern, str) and (matches_sensitive_pattern(pattern) or any(c in pattern for c in ('.env', 'id_', '.key', '.pem'))):
+        return 'deny', f"Search targeting sensitive pattern is forbidden: {pattern}"
+
+    # If target is a directory, inspect if it contains descendant files matching sensitive patterns
+    if os.path.isdir(norm):
+        for root, dirs, files in os.walk(norm):
+            # Prune VCS and dependency caches
+            if '.git' in dirs:
+                dirs.remove('.git')
+            if 'node_modules' in dirs:
+                dirs.remove('node_modules')
+            # Check symlinked subdirectories to ensure they don't point outside or to sensitive paths
+            for d in list(dirs):
+                d_full = os.path.join(root, d)
+                if os.path.islink(d_full):
+                    link_target = str(Path(d_full).resolve())
+                    if is_sensitive_credential_path(link_target, cwd):
+                        return 'deny', f"Directory search includes symlink to sensitive path: {d_full}"
+            for f in files:
+                if matches_sensitive_pattern(f):
+                    return 'ask', f"Directory search includes sensitive descendant file ({f}): {target_dir}"
+
+    return 'allow', f"Safe directory search: {os.path.basename(target_dir) or target_dir}"
+
+
 def main():
     try:
         raw_input = sys.stdin.read()
@@ -941,9 +995,12 @@ def main():
         elif tool_name in ('write_to_file', 'replace_file_content', 'multi_replace_file_content'):
             target = args.get('TargetFile') or args.get('path') or ''
             decision, reason = classify_file_modification(target, workspace_paths, cwd)
-        elif tool_name in ('view_file', 'grep_search', 'find_by_name'):
-            target = args.get('AbsolutePath') or args.get('SearchPath') or args.get('SearchDirectory') or args.get('TargetFile') or ''
+        elif tool_name == 'view_file':
+            target = args.get('AbsolutePath') or args.get('TargetFile') or ''
             decision, reason = classify_file_read(target, cwd)
+        elif tool_name in ('grep_search', 'find_by_name'):
+            target = args.get('SearchPath') or args.get('SearchDirectory') or args.get('AbsolutePath') or ''
+            decision, reason = classify_directory_search(target, args, cwd)
         else:
             decision, reason = 'ask', f"Tool {tool_name} requires confirmation"
 
