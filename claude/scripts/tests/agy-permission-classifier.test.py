@@ -77,6 +77,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'git switch main',
             'git tag -l',
             'git tag --list',
+            'rg "token" README.md',
             'cat README.md > /dev/null',
             'ls /usr/bin',
         ]
@@ -120,6 +121,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         commands = [
             'git add .',
             'git commit -m "feat: implement classifier"',
+            'git commit -m "fix token parsing"',
             'git fetch origin',
         ]
         for cmd in commands:
@@ -257,6 +259,12 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'git commit --amend --no-edit',
             'git stash',
             'git stash apply',
+            'sort --compress-program=./evil -S 1b README.md',
+            'less +!./evil README.md',
+            'cp -RL src dest',
+            'rg -iL . .',
+            'jq -R . "${HOME:0}/.aws/credentials"',
+            'git branch --set-upstream-to=origin/main',
         ]
         for cmd in ask_commands:
             with self.subTest(cmd=cmd):

@@ -66,7 +66,6 @@ def get_sensitive_credential_prefixes():
 
 SENSITIVE_FILENAMES = {
     'antigravity-oauth-token',
-    'auth.json', 'token', '.token',
     'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
     '.bashrc', '.bash_profile', '.zshrc', '.profile',
     'hosts.yml',
@@ -75,7 +74,6 @@ SENSITIVE_FILENAMES = {
 # Glob patterns that match sensitive files
 SENSITIVE_PATTERNS = (
     '.env*', 'id_*', '*.pem', '*.key', 'antigravity-oauth-token',
-    '*auth*.json', '*token*',
     '*shadow*', '*sudoers*', 'hosts.yml',
 )
 
@@ -328,12 +326,6 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if not is_path_in_workspaces(target, workspace_paths, cwd):
                 return 'ask', f"Redirecting output outside workspace requires approval: {target}"
 
-    # Check for sensitive files being targeted in arguments (including glob bracket tricks)
-    for arg in args:
-        val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
-        if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
-            return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
-
     # Resolve executable: prevent ./malicious/ls by checking if path is explicit
     if '/' in raw_cmd:
         resolved_exe = expand_path(raw_cmd, cwd)
@@ -343,6 +335,31 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         base_cmd = os.path.basename(resolved_exe)
     else:
         base_cmd = raw_cmd
+
+    # Check for sensitive files being targeted in arguments
+    # Skip known text payloads (e.g. git commit messages, echo strings, grep search patterns)
+    skip_next = False
+    for i, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ('-m', '--message', '-C'):
+            skip_next = True
+            continue
+        if arg.startswith(('-m', '--message=')):
+            continue
+        # For echo / printf, positional text operands are output payloads
+        if base_cmd in {'echo', 'printf'}:
+            continue
+        # For grep / rg / ag, skip the search pattern operand
+        if base_cmd in {'grep', 'egrep', 'fgrep', 'rg', 'ag'}:
+            has_pat_flag = any(a in ('-e', '-f') or a.startswith(('-e', '-f')) for a in args)
+            positionals = [a for a in args if not a.startswith('-')]
+            if not has_pat_flag and positionals and arg == positionals[0]:
+                continue
+        val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
+        if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
+            return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
 
     # 1. Privilege Escalation (Hard Deny)
     if base_cmd in {'sudo', 'su', 'doas', 'pkexec', 'chroot'}:
@@ -434,11 +451,21 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         # Git branch: only allow read-only queries
         if git_sub == 'branch':
-            if any(a in ('-d', '-D', '-m', '-M', '-c', '-C', '-f', '--force', '--delete', '--move', '--copy', '--set-upstream-to', '-u', '--unset-upstream', '--edit-description') for a in args):
-                return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+            MUTATING_BRANCH_FLAGS = (
+                '-d', '-D', '-m', '-M', '-c', '-C', '-f', '--force',
+                '--delete', '--move', '--copy', '--set-upstream-to',
+                '-u', '--unset-upstream', '--edit-description',
+            )
+            for a in args[1:]:
+                if a in MUTATING_BRANCH_FLAGS:
+                    return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                if any(a.startswith(opt + '=') for opt in MUTATING_BRANCH_FLAGS if opt.startswith('--')):
+                    return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                if any(a.startswith(opt) for opt in MUTATING_BRANCH_FLAGS if not opt.startswith('--')):
+                    return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
             # Positional arguments in git branch create/reset branches unless --list / -l is used
-            if positionals and not any(a in ('-l', '--list') for a in args):
+            if positionals and not any(a in ('-l', '--list') or a.startswith(('-l', '--list=')) for a in args):
                 return 'ask', f"Branch creation or modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git branch query'
 
@@ -513,13 +540,13 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
         # File inspection commands must prompt if args contain variable or command substitutions
-        if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column'}:
+        if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq'}:
             for a in args:
                 if not a.startswith('-') and ('$' in a or '`' in a):
                     return 'ask', f"Inspection command with variable or command substitution requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'less':
-            if any(a in ('-o', '-O', '--log-file', '--LOG-FILE') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=')) for a in args):
-                return 'ask', f"less with log file option requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a.startswith('+') or a in ('-o', '-O', '--log-file', '--LOG-FILE', '-T', '--tag-file') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=', '-T', '--tag-file=')) for a in args):
+                return 'ask', f"less with command execution (+), log file, or tag file option requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'printf':
             if any(a == '-v' or a.startswith('-v') for a in args):
                 var_name = None
@@ -547,8 +574,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"rg with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
-        # Check for hidden files, ignoring gitignore, or symlink following
-        if any(a in ('-u', '-uu', '-uuu', '--hidden', '--no-ignore', '-L', '--follow') or a.startswith(('-u', '--hidden', '--no-ignore', '--follow')) for a in args):
+        # Check for hidden files, un-ignoring, or symlink following (including bundled short flags like -iL, -Lu)
+        if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in args):
             return 'ask', f"rg with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         positionals = [a for a in args if not a.startswith('-')]
         has_pattern_flag = any(a == '-e' or a.startswith('-e') for a in args)
@@ -596,8 +623,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
         return 'allow', 'Safe grep query'
 
-    # Sort: check -o / --output option and unexpanded variables
+    # Sort: check --compress-program, -o / --output option, and unexpanded variables
     if base_cmd == 'sort':
+        if any(a == '--compress-program' or a.startswith(('--compress-program=', '--compress-program')) for a in args):
+            return 'ask', f"sort with execution helper requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"sort with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
@@ -684,6 +713,9 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:
+        if base_cmd == 'cp':
+            if any(a in ('--recursive', '--dereference', '--archive') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R', 'L', 'a', 'H'))) or a.startswith(('--recursive', '--dereference', '--archive')) for a in args):
+                return 'ask', f"Recursive or symlink-dereferencing cp requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
