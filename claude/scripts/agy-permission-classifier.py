@@ -128,12 +128,32 @@ def matches_sensitive_pattern(filename):
     return False
 
 
+def expand_braces(text):
+    """Expand simple shell brace expressions like ~/{.aws,.ssh}/credentials."""
+    m = re.search(r'\{([^{}]+)\}', text)
+    if not m:
+        return [text]
+    prefix = text[:m.start()]
+    suffix = text[m.end():]
+    options = m.group(1).split(',')
+    results = []
+    for opt in options:
+        results.extend(expand_braces(prefix + opt + suffix))
+    return results
+
+
 def is_sensitive_credential_path(path_str, cwd=None):
-    """Check if a path targets credentials, private keys, or tokens (including globs)."""
+    """Check if a path targets credentials, private keys, or tokens (including globs and braces)."""
     if not path_str or not isinstance(path_str, str):
         return False
     if path_str == '/dev/null':
         return False
+
+    # Check for brace expansion like ~/{.aws,.ssh}/credentials
+    if '{' in path_str and '}' in path_str:
+        for exp in expand_braces(path_str):
+            if is_sensitive_credential_path(exp, cwd):
+                return True
 
     # Check for glob/bracket tricks like .en[v] or ~/.s[s]h/id_*
     clean = re.sub(r'\[(.)\]', r'\1', path_str)
@@ -401,10 +421,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if git_sub == 'checkout':
             return 'ask', f"Git checkout requires confirmation: {' '.join(cmd_tokens)}"
 
-        # Git switch: only allow without discarding changes
+        # Git switch: only allow without discarding changes or creating/resetting branches
         if git_sub == 'switch':
-            if any(a in ('--discard-changes', '-f', '--force') for a in args):
-                return 'ask', f"Discarding changes via git switch requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('--discard-changes', '-f', '--force', '-c', '-C', '--create', '--force-create') or a.startswith(('-c', '-C')) for a in args):
+                return 'ask', f"Switching with branch creation or forced reset requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
 
         # Git branch: only allow read-only queries
@@ -419,8 +439,11 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         # Git tag: only allow listing
         if git_sub == 'tag':
-            if any(a in ('-d', '--delete', '-a', '-f', '--force') for a in args):
+            if any(a in ('-d', '--delete', '-a', '-f', '--force', '-m', '-s', '-u') for a in args):
                 return 'ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
+            positionals = [a for a in args[1:] if not a.startswith('-')]
+            if positionals and not any(a in ('-l', '--list') for a in args):
+                return 'ask', f"Creating tags requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git tag query'
 
         # Git remote: only allow read queries
@@ -433,10 +456,22 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if git_sub == 'diff':
             return 'allow', 'Safe git diff'
 
-        if git_sub in {'stash', 'worktree'}:
-            if any(a in ('clear', 'drop', 'remove', 'prune') for a in args):
-                return 'ask', f"Git {git_sub} deletion requires confirmation: {' '.join(cmd_tokens)}"
-            return 'allow', f"Safe git {git_sub}"
+        if git_sub == 'stash':
+            if any(a in ('clear', 'drop', 'remove', 'pop') for a in args):
+                return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git stash query'
+
+        if git_sub == 'worktree':
+            if any(a in ('add', 'remove', 'prune', 'lock', 'unlock', 'move') for a in args):
+                if 'add' in args:
+                    targets = [a for a in args[1:] if not a.startswith('-') and a != 'add']
+                    if targets:
+                        target_dir = targets[0]
+                        if not is_path_in_workspaces(target_dir, workspace_paths, cwd) or is_system_write_path(target_dir, cwd):
+                            return 'ask', f"git worktree add outside workspace requires approval: {target_dir}"
+                    return 'allow', 'Safe git worktree add within workspace'
+                return 'ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git worktree query'
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
@@ -451,6 +486,14 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
+        # File inspection commands must prompt if args contain variable or command substitutions
+        if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column'}:
+            for a in args:
+                if not a.startswith('-') and ('$' in a or '`' in a):
+                    return 'ask', f"Inspection command with variable or command substitution requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'less':
+            if any(a in ('-o', '-O', '--log-file', '--LOG-FILE') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=')) for a in args):
+                return 'ask', f"less with log file option requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'uniq':
             positionals = [a for a in args if not a.startswith('-')]
             if len(positionals) > 1:
@@ -573,6 +616,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     if base_cmd == 'go':
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
+            if any(a in ('-exec', '--exec') or a.startswith(('-exec=', '--exec=')) for a in args):
+                return 'ask', f"go {args[0]} with custom exec program requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', f"Safe Go tool: go {args[0]}"
 
     if base_cmd == 'make':
@@ -689,7 +734,7 @@ def classify_file_read(target_file, cwd):
     norm_dir = norm if norm.endswith(os.sep) else norm + os.sep
     for prefix in get_sensitive_credential_prefixes():
         norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
-        if norm_prefix.startswith(norm_dir) and norm in ('/', os.path.expanduser('~')):
+        if norm_prefix.startswith(norm_dir):
             return 'ask', f"Searching directory containing sensitive credentials requires approval: {target_file}"
     return 'allow', f"Safe file read: {os.path.basename(target_file)}"
 
@@ -719,8 +764,8 @@ def main():
     if mode in ('disabled', 'off'):
         print(json.dumps({'decision': 'ask', 'reason': 'Classifier disabled via ANTIGRAVITY_CLASSIFIER_MODE'}))
         return
-    if mode in ('allow_all', 'bypass') or (mode != 'enforce' and os.path.exists('/tmp/agy-session-auto-allow')):
-        print(json.dumps({'decision': 'allow', 'reason': 'Auto-approved via session bypass (/tmp/agy-session-auto-allow)'}))
+    if mode in ('allow_all', 'bypass'):
+        print(json.dumps({'decision': 'allow', 'reason': 'Auto-approved via ANTIGRAVITY_CLASSIFIER_MODE'}))
         return
 
     try:
