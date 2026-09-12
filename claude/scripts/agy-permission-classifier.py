@@ -99,7 +99,7 @@ DANGEROUS_ENV_VARS = {
 PROTECTED_BRANCHES = {'main', 'master', 'release', 'prod', 'production'}
 
 # Redirection operators (ordered by descending length for greedy matching)
-REDIRECTION_OPERATORS = ('&>>', '>|', '&>', '>>', '>&', '>', '<>')
+REDIRECTION_OPERATORS = ('&>>', '>|', '&>', '>>', '>&', '>', '<>', '<')
 
 
 def is_dangerous_env_var(var_name):
@@ -303,6 +303,41 @@ def git_has_external_diff_configured(cwd=None):
     return False
 
 
+def git_has_fsmonitor_configured(cwd=None):
+    """Check if git has a core.fsmonitor hook configured that executes programs."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get', 'core.fsmonitor'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            val = res.stdout.strip().lower()
+            if val not in ('false', '0', 'no', 'off'):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def is_git_admin_path(path_str, cwd=None):
+    """Check if path targets git internal administrative files (.git/config, .git/hooks, etc.)."""
+    if not path_str or not isinstance(path_str, str):
+        return False
+    norm = expand_path(path_str, cwd)
+    parts = norm.split(os.sep)
+    if '.git' in parts:
+        git_idx = parts.index('.git')
+        subparts = parts[git_idx + 1:]
+        if not subparts or any(sp in ('config', 'hooks') or sp.startswith('hook') for sp in subparts):
+            return True
+    return False
+
+
 def tokenize_command_line(line):
     """Tokenize a single shell command line without stripping comments prematurely."""
     try:
@@ -404,13 +439,21 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             target = tokens[i + 1]
             if target == '/dev/null':
                 continue
+            # Network pseudo-devices in bash /dev/tcp/... or /dev/udp/...
+            if target.startswith(('/dev/tcp/', '/dev/udp/')):
+                return 'ask', f"Network communication via redirection requires confirmation: {target}"
             # If target has unexpanded variable or glob, we cannot verify containment safely
             if '$' in target or '*' in target or '?' in target:
                 return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
-            if is_sensitive_credential_path(target, cwd) or is_system_write_path(target, cwd):
-                return 'deny', f"Redirect targeting sensitive or system path is forbidden: {target}"
-            if not is_path_in_workspaces(target, workspace_paths, cwd):
-                return 'ask', f"Redirecting output outside workspace requires approval: {target}"
+            if is_sensitive_credential_path(target, cwd):
+                return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
+            if tok != '<':
+                if is_system_write_path(target, cwd):
+                    return 'deny', f"Redirect targeting system write path is forbidden: {target}"
+                if is_git_admin_path(target, cwd):
+                    return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
+                if not is_path_in_workspaces(target, workspace_paths, cwd):
+                    return 'ask', f"Redirecting output outside workspace requires approval: {target}"
 
     # Resolve executable: prevent ./malicious/ls or workspace PATH overrides
     if '/' in raw_cmd:
@@ -453,6 +496,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
         if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
             return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
+        if arg.startswith(('-o', '-t')) and len(arg) > 2 and not arg.startswith('--'):
+            sub_val = arg[2:].lstrip('=')
+            if sub_val != '/dev/null' and is_sensitive_credential_path(sub_val, cwd):
+                return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
 
     # 1. Privilege Escalation (Hard Deny)
     if base_cmd in {'sudo', 'su', 'doas', 'pkexec', 'chroot'}:
@@ -633,11 +680,17 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git worktree query'
 
-        # Git show, log, etc. run configured textconv drivers by default
-        if git_sub in {'show', 'log', 'whatchanged', 'format-patch'}:
+        # Git show, log, blame, etc. run configured textconv drivers by default
+        if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch'}:
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if not has_no_textconv and git_has_external_diff_configured(cwd):
                 return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Git status runs core.fsmonitor hook if configured
+        if git_sub == 'status':
+            has_no_fsmonitor = any(a == '--no-optional-locks' for a in args)
+            if not has_no_fsmonitor and git_has_fsmonitor_configured(cwd):
+                return 'ask', f"git status with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
@@ -764,7 +817,11 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             elif a.startswith('--output='):
                 out_target = a.split('=', 1)[1]
         if out_target:
-            if not is_path_in_workspaces(out_target, workspace_paths, cwd) or is_system_write_path(out_target, cwd):
+            if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
+                return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
+            if is_git_admin_path(out_target, cwd):
+                return 'ask', f"sort modifying git repository configuration or hooks requires confirmation: {out_target}"
+            if not is_path_in_workspaces(out_target, workspace_paths, cwd):
                 return 'ask', f"sort output outside workspace requires approval: {out_target}"
         return 'allow', 'Safe sort command'
 
@@ -996,6 +1053,9 @@ def classify_file_modification(target_file, workspace_paths, cwd):
 
     if is_sensitive_credential_path(target_file, cwd) or is_system_write_path(target_file, cwd):
         return 'deny', f"Modifying sensitive or system path is forbidden: {target_file}"
+
+    if is_git_admin_path(target_file, cwd):
+        return 'ask', f"Modifying git repository configuration or hooks requires confirmation: {target_file}"
 
     if is_path_in_workspaces(target_file, workspace_paths, cwd):
         return 'allow', f"File modification within workspace auto-approved: {os.path.basename(target_file)}"

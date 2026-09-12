@@ -643,6 +643,67 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'ask')
 
+        # 20. sort with attached -o.env is forbidden
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort README.md -o.env', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 21. git status with core.fsmonitor configured requires confirmation
+        fs_repo = Path(self.test_ws) / 'fs_repo'
+        fs_repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(fs_repo), check=True)
+        subprocess.run(['git', 'config', 'core.fsmonitor', '/bin/true'], cwd=str(fs_repo), check=True)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(fs_repo)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 22. git blame with configured textconv driver requires confirmation
+        subprocess.run(['git', 'config', 'diff.testdrv.textconv', '/bin/echo'], cwd=str(fs_repo), check=True)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git blame file.txt', 'Cwd': str(fs_repo)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git blame --no-textconv file.txt', 'Cwd': str(fs_repo)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 23. Modifying .git/config via write_to_file requires confirmation
+        git_cfg = fs_repo / '.git' / 'config'
+        payload = {
+            'toolCall': {'name': 'write_to_file', 'args': {'TargetFile': str(git_cfg), 'CodeContent': 'bad'}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 24. Input redirection over network device requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo ignored < /dev/tcp/example.com/80', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 25. Input redirection reading sensitive credentials is forbidden
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat < ~/.ssh/id_rsa', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
 
 if __name__ == '__main__':
     unittest.main()
