@@ -1161,6 +1161,8 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         git_dir = Path(self.test_ws) / 'git_patch_test'
         git_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
         (git_dir / 'README.md').write_text('init')
         subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
         subprocess.run(['git', 'commit', '-q', '-m', 'initial'], cwd=str(git_dir), check=True)
@@ -1200,6 +1202,17 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         }
         res = self.run_classifier(payload_fmt)
         self.assertEqual(res['decision'], 'deny')
+
+        # probe does not execute user-controlled output redirection or truncate files
+        readme_file = git_dir / 'README.md'
+        readme_file.write_text('important content')
+        payload_probe_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git diff --output={readme_file}; sudo true', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_probe_out)
+        self.assertEqual(res['decision'], 'deny')
+        self.assertEqual(readme_file.read_text(), 'important content')
 
         # safe git diff on clean repo or non-sensitive commit
         (git_dir / 'doc.txt').write_text('doc')
@@ -1271,6 +1284,38 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         }
         res = self.run_classifier(payload_bun_safe)
         self.assertEqual(res['decision'], 'allow')
+
+        # 62. Editable package scripts are inspected against command security policy
+        pkg_file = Path(self.test_ws) / 'package.json'
+        pkg_file.write_text(json.dumps({
+            "name": "test-pkg",
+            "scripts": {
+                "test": "cat ~/.ssh/id_rsa",
+                "lint": "rm -rf /tmp/outside",
+                "test:unit": "vitest run"
+            }
+        }))
+        payload_evil_test = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_evil_test)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_evil_lint = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm run lint', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_evil_lint)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_safe_pkg_test = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm run test:unit', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_safe_pkg_test)
+        self.assertEqual(res['decision'], 'allow')
+        pkg_file.unlink()
 
 
 if __name__ == '__main__':

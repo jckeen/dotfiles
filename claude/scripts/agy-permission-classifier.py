@@ -421,31 +421,45 @@ def git_has_filter_configured(cwd=None):
     return False
 
 
+def strip_git_output_options(args_list):
+    """Strip output redirection options (-o, --output, --output=..., etc.) from probe arguments."""
+    clean = []
+    skip_next = False
+    for a in args_list:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ('-o', '--output', '--output-directory'):
+            skip_next = True
+            continue
+        if a.startswith(('-o=', '--output=', '--output-directory=')):
+            continue
+        if a.startswith('-o') and len(a) > 2 and not a.startswith('--'):
+            continue
+        if a.startswith('--o') and '--output'.startswith(a.split('=', 1)[0]):
+            if '=' not in a:
+                skip_next = True
+            continue
+        clean.append(a)
+    return clean
+
+
 def git_command_touches_sensitive_files(git_sub, args, cwd):
     """Check if git diff / show / log / format-patch touches sensitive files in repository changes."""
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     try:
+        safe_args = strip_git_output_options(args[1:])
         if git_sub == 'diff':
-            cmd = ['git', 'diff', '--name-only'] + [a for a in args[1:] if a != '--name-only']
+            cmd = ['git', 'diff', '--name-only'] + [a for a in safe_args if a != '--name-only']
         elif git_sub == 'show':
-            cmd = ['git', 'show', '--name-only', '--format='] + [a for a in args[1:] if not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'show', '--name-only', '--format='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub in ('log', 'whatchanged') and any(a in ('-p', '-u', '--patch', '--stat', '--numstat', '--shortstat') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('p', 'u'))) for a in args):
-            cmd = ['git', 'log', '--name-only', '--format='] + [a for a in args[1:] if not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'log', '--name-only', '--format='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
-            cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in args[2:] if a != '--name-only']
+            safe_stash = strip_git_output_options(args[2:])
+            cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in safe_stash if a != '--name-only']
         elif git_sub == 'format-patch':
-            log_args = []
-            skip_next = False
-            for a in args[1:]:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if a in ('-o', '--output-directory'):
-                    skip_next = True
-                    continue
-                if a.startswith(('-o=', '--output-directory=', '--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k')):
-                    continue
-                log_args.append(a)
+            log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
             cmd = ['git', 'log', '--name-only', '--format='] + log_args
         else:
             return False
@@ -559,6 +573,40 @@ def check_dev_tool_output(args, workspace_paths, cwd, tool_name='tool'):
             if not is_path_in_workspaces(dest, workspace_paths, cwd):
                 return 'ask', f"{tool_name} output targeting destination outside workspace requires confirmation: {dest}"
         i += 1
+    return None
+
+
+def find_package_json(cwd, workspace_paths):
+    """Search for package.json starting from cwd up to workspace boundary or filesystem root."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        curr = Path(effective_cwd).resolve()
+    except Exception:
+        curr = Path(effective_cwd)
+    ws_roots = [Path(ws).resolve() for ws in (workspace_paths or [effective_cwd])]
+
+    while True:
+        pkg_file = curr / 'package.json'
+        if pkg_file.is_file():
+            return str(pkg_file)
+        if any(curr == ws for ws in ws_roots) or curr.parent == curr:
+            break
+        curr = curr.parent
+    return None
+
+
+def get_package_script(pkg_path, script_name):
+    """Read package.json and extract named script command."""
+    try:
+        with open(pkg_path, 'r', encoding='utf-8', errors='replace') as f:
+            data = json.load(f)
+        scripts = data.get('scripts')
+        if isinstance(scripts, dict) and script_name in scripts:
+            val = scripts[script_name]
+            if isinstance(val, str):
+                return val
+    except Exception:
+        pass
     return None
 
 
@@ -709,7 +757,7 @@ def parse_refspec_dest(refspec):
     return dest
 
 
-def classify_subcommand(tokens, workspace_paths, cwd):
+def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     """Classify a single atomic subcommand (list of tokens).
 
     Returns (verdict, reason) where verdict is 'allow', 'deny', or 'ask'.
@@ -1231,18 +1279,36 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'ask', f"{base_cmd} with custom script shell requires confirmation: {' '.join(cmd_tokens)}"
         if args:
             sub = args[0]
+            target_script = None
+            script_args = []
             if sub == 'test' or sub.startswith('test'):
-                out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, f"{base_cmd} {sub}")
+                target_script = 'test' if sub == 'test' else sub
+                script_args = args[1:]
+            elif sub == 'run' and len(args) > 1:
+                target_script = args[1]
+                script_args = args[2:]
+
+            if target_script:
+                if sub == 'run' and not any(target_script.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
+                    return 'ask', f"Package script requires confirmation: {base_cmd} run {target_script}"
+
+                out_check = check_dev_tool_output(script_args, workspace_paths, cwd, f"{base_cmd} {sub}")
                 if out_check:
                     return out_check
-                return 'allow', f"Safe package manager test: {base_cmd} {sub}"
-            if sub == 'run' and len(args) > 1:
-                run_target = args[1]
-                if any(run_target.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
-                    out_check = check_dev_tool_output(args[2:], workspace_paths, cwd, f"{base_cmd} run {run_target}")
-                    if out_check:
-                        return out_check
-                    return 'allow', f"Safe package script: {base_cmd} run {run_target}"
+
+                # Inspect and validate package.json script body if package.json exists
+                pkg_json = find_package_json(cwd, workspace_paths)
+                if pkg_json:
+                    script_body = get_package_script(pkg_json, target_script)
+                    if script_body is not None:
+                        # Evaluate script body through full classifier security policy
+                        s_verdict, s_reason = classify_command_line(script_body, workspace_paths, cwd, depth=depth + 1)
+                        if s_verdict != 'allow':
+                            return s_verdict, f"Package script '{target_script}' in package.json requires confirmation: {s_reason}"
+                    elif base_cmd != 'bun' or sub != 'test':
+                        return 'ask', f"Package script '{target_script}' not found in package.json requires confirmation: {' '.join(cmd_tokens)}"
+                return 'allow', f"Safe package manager {sub}: {base_cmd} {' '.join(args)}"
+
             if sub in {'install', 'i', 'add', 'remove', 'uninstall', 'update', 'publish'}:
                 return 'ask', f"Package management alters dependencies: {base_cmd} {sub}"
         return 'ask', f"Package manager command requires confirmation: {' '.join(cmd_tokens)}"
@@ -1295,6 +1361,56 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     return 'allow', f"Safe static tool via npx --no-install: {tool}"
             return 'ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
         return 'ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
+
+    if base_cmd in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc', 'tsc', 'eslint', 'prettier', 'standard', 'biome', 'vite', 'webpack', 'rollup', 'esbuild'}:
+        out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
+        if out_check:
+            return out_check
+        if base_cmd == 'eslint' and any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in args) and not any(a == '--fix-dry-run' for a in args):
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
+                    skip_next = True
+                    continue
+                if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
+                    continue
+                if not a.startswith('-'):
+                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                        return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
+                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                        return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
+        if base_cmd == 'prettier' and any(a in ('-w', '--write') or a.startswith('--write') for a in args):
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ('--config', '--ignore-path', '--plugin', '--config-precedence'):
+                    skip_next = True
+                    continue
+                if not a.startswith('-'):
+                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                        return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
+                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                        return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
+        if base_cmd == 'tsc':
+            for a in args:
+                if not a.startswith('-'):
+                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                        return 'deny', f"tsc accessing sensitive or system path is forbidden: {a}"
+                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                        return 'ask', f"tsc compiling file outside workspace requires confirmation: {a}"
+        return 'allow', f"Safe static dev tool: {base_cmd}"
+
+    if base_cmd in {'node', 'nodejs'}:
+        if args and args[0] in {'--test', 'test'}:
+            out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, 'node --test')
+            if out_check:
+                return out_check
+            return 'allow', 'Safe node test'
 
     if base_cmd == 'cargo':
         if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):
@@ -1474,8 +1590,11 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     return 'ask', f"Command requires confirmation: {' '.join(cmd_tokens)}"
 
 
-def classify_command_line(cmd_str, workspace_paths, cwd):
+def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
     """Classify an entire shell command line string across lines, chains, and pipelines."""
+    if depth > 5:
+        return 'ask', 'Nested command recursion limit exceeded'
+
     if not isinstance(cmd_str, str) or not cmd_str.strip():
         return 'ask', 'Empty command line or invalid type'
 
@@ -1523,7 +1642,7 @@ def classify_command_line(cmd_str, workspace_paths, cwd):
     # Evaluate all subcommands; deny strictly takes precedence over ask
     verdicts = []
     for sub in subcommands_all:
-        verdict, reason = classify_subcommand(sub, workspace_paths, cwd)
+        verdict, reason = classify_subcommand(sub, workspace_paths, cwd, depth=depth)
         verdicts.append((verdict, reason))
 
     for v, r in verdicts:
