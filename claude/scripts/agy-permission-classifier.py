@@ -421,6 +421,53 @@ def git_has_filter_configured(cwd=None):
     return False
 
 
+def git_command_touches_sensitive_files(git_sub, args, cwd):
+    """Check if git diff / show / log / format-patch touches sensitive files in repository changes."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        if git_sub == 'diff':
+            cmd = ['git', 'diff', '--name-only'] + [a for a in args[1:] if a != '--name-only']
+        elif git_sub == 'show':
+            cmd = ['git', 'show', '--name-only', '--format='] + [a for a in args[1:] if not a.startswith('--format=') and a != '--name-only']
+        elif git_sub in ('log', 'whatchanged') and any(a in ('-p', '-u', '--patch', '--stat', '--numstat', '--shortstat') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('p', 'u'))) for a in args):
+            cmd = ['git', 'log', '--name-only', '--format='] + [a for a in args[1:] if not a.startswith('--format=') and a != '--name-only']
+        elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
+            cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in args[2:] if a != '--name-only']
+        elif git_sub == 'format-patch':
+            log_args = []
+            skip_next = False
+            for a in args[1:]:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in ('-o', '--output-directory'):
+                    skip_next = True
+                    continue
+                if a.startswith(('-o=', '--output-directory=', '--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k')):
+                    continue
+                log_args.append(a)
+            cmd = ['git', 'log', '--name-only', '--format='] + log_args
+        else:
+            return False
+
+        res = subprocess.run(
+            cmd,
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.splitlines():
+                f = line.strip()
+                if f and (matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd)):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def is_git_admin_path(path_str, cwd=None):
     """Check if path targets git internal administrative files (.git, .git/config, .git/hooks, bare repo .git, etc.)."""
     if not path_str or not isinstance(path_str, str):
@@ -469,6 +516,8 @@ def workspace_has_local_python_module(module_name, workspace_paths, cwd=None):
 DEV_TOOL_OUTPUT_FLAGS = (
     '-o', '--output', '--output-file', '--output-dir',
     '--target-dir', '--outDir', '-outDir', '--outFile', '-outFile',
+    '--reporter-outfile', '--reporter-out-file', '--outputFile', '--report-dir',
+    '--coverage-dir', '--coverage-directory', '--coverageDirectory', '--results-dir', '--resultsDir',
     '--junitxml', '--junit-xml', '--result-log',
     '--log-file', '--html-report', '--xml-report', '--txt-report',
     '--cobertura-xml-report', '--linecount-report', '--linecoverage-report',
@@ -844,12 +893,11 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
                 return 'ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
-        # Check git arguments for <rev>:<path> expressions targeting sensitive files
+        # Check git arguments for sensitive file paths or <rev>:<path> expressions targeting sensitive files
         for a in args:
-            if not a.startswith('-') and ':' in a and not a.startswith(('http:', 'https:', 'ssh:', 'git:')):
-                git_path = a.split(':', 1)[1]
-                if git_path and (matches_sensitive_pattern(git_path) or is_sensitive_credential_path(git_path, cwd)):
-                    return 'deny', f"Git command targeting sensitive object path is forbidden: {a}"
+            clean_a = a.split(':', 1)[1] if (':' in a and not a.startswith(('http:', 'https:', 'ssh:', 'git:'))) else a
+            if not clean_a.startswith('-') and (matches_sensitive_pattern(clean_a) or is_sensitive_credential_path(clean_a, cwd)):
+                return 'deny', f"Git command targeting sensitive object or file path is forbidden: {a}"
 
         # Force push or direct push to protected branch detection
         if git_sub == 'push':
@@ -938,6 +986,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                 return 'ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+            if git_command_touches_sensitive_files(git_sub, args, cwd):
+                return 'deny', f"git diff touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git diff'
 
         if git_sub == 'stash':
@@ -951,6 +1001,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     has_no_textconv = any(a == '--no-textconv' for a in args)
                     if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                         return 'ask', f"git stash show with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+                    if git_command_touches_sensitive_files('stash', args, cwd):
+                        return 'deny', f"git stash show touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
                     return 'allow', 'Safe git stash show'
             return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -990,6 +1042,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if not has_no_textconv and git_has_external_diff_configured(cwd):
                 return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+            if git_command_touches_sensitive_files(git_sub, args, cwd):
+                return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
 
         # Git cat-file with filters or textconv executes external smudge/clean/textconv drivers
         if git_sub == 'cat-file':
@@ -1123,19 +1177,24 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
         return 'allow', 'Safe grep query'
 
-    # Sort: check --compress-program, -o / --output option, and unexpanded variables
+    # Sort: check --compress-program, -o / --output option (including GNU abbreviations), and unexpanded variables
     if base_cmd == 'sort':
         if any(a == '--compress-program' or a.startswith(('--compress-program=', '--compress-program')) for a in args):
             return 'ask', f"sort with execution helper requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
             if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
                 return 'ask', f"sort with wildcard, variable, or substitution requires confirmation: {' '.join(cmd_tokens)}"
-        out_target = None
         for i, a in enumerate(args):
-            if a in ('-o', '--output') and i + 1 < len(args):
+            out_target = None
+            if a.startswith('--o') and '=' in a:
+                opt, val = a.split('=', 1)
+                if '--output'.startswith(opt):
+                    out_target = val
+            elif a.startswith('--o') and '--output'.startswith(a):
+                if i + 1 < len(args):
+                    out_target = args[i + 1]
+            elif a == '-o' and i + 1 < len(args):
                 out_target = args[i + 1]
-            elif a.startswith('--output='):
-                out_target = a.split('=', 1)[1]
             elif a.startswith('-') and not a.startswith('--') and 'o' in a:
                 o_idx = a.index('o')
                 rest = a[o_idx + 1:]
@@ -1143,13 +1202,14 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     out_target = rest.lstrip('=')
                 elif i + 1 < len(args):
                     out_target = args[i + 1]
-        if out_target:
-            if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
-                return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
-            if is_git_admin_path(out_target, cwd):
-                return 'ask', f"sort modifying git repository configuration or hooks requires confirmation: {out_target}"
-            if not is_path_in_workspaces(out_target, workspace_paths, cwd):
-                return 'ask', f"sort output outside workspace requires approval: {out_target}"
+
+            if out_target:
+                if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
+                    return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
+                if is_git_admin_path(out_target, cwd):
+                    return 'ask', f"sort modifying git repository configuration or hooks requires confirmation: {out_target}"
+                if not is_path_in_workspaces(out_target, workspace_paths, cwd):
+                    return 'ask', f"sort output outside workspace requires approval: {out_target}"
         return 'allow', 'Safe sort command'
 
     # Find: safe ONLY without destructive, execution, or file writing options
@@ -1172,10 +1232,16 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if args:
             sub = args[0]
             if sub == 'test' or sub.startswith('test'):
+                out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, f"{base_cmd} {sub}")
+                if out_check:
+                    return out_check
                 return 'allow', f"Safe package manager test: {base_cmd} {sub}"
             if sub == 'run' and len(args) > 1:
                 run_target = args[1]
                 if any(run_target.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
+                    out_check = check_dev_tool_output(args[2:], workspace_paths, cwd, f"{base_cmd} run {run_target}")
+                    if out_check:
+                        return out_check
                     return 'allow', f"Safe package script: {base_cmd} run {run_target}"
             if sub in {'install', 'i', 'add', 'remove', 'uninstall', 'update', 'publish'}:
                 return 'ask', f"Package management alters dependencies: {base_cmd} {sub}"
@@ -1196,6 +1262,22 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     out_check = check_dev_tool_output(tool_args, workspace_paths, cwd, f"npx {tool}")
                     if out_check:
                         return out_check
+                    if tool == 'eslint' and any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in tool_args) and not any(a == '--fix-dry-run' for a in tool_args):
+                        skip_next = False
+                        for a in tool_args:
+                            if skip_next:
+                                skip_next = False
+                                continue
+                            if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
+                                skip_next = True
+                                continue
+                            if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
+                                continue
+                            if not a.startswith('-'):
+                                if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                    return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
+                                if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                    return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
                     if tool == 'prettier' and any(a in ('-w', '--write') or a.startswith('--write') for a in tool_args):
                         for a in tool_args:
                             if not a.startswith('-'):
@@ -1246,7 +1328,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                         if not is_path_in_workspaces(a, workspace_paths, cwd):
                             return 'ask', f"black modifying file outside workspace requires confirmation: {a}"
         if base_cmd == 'ruff':
-            if any(a in ('format', '--fix') for a in args):
+            if any(a == 'format' or a.startswith('--fix') for a in args):
                 is_check = any(a in ('--check', '--diff') for a in args)
                 if not is_check:
                     for a in args:
@@ -1271,7 +1353,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in mod_args):
                         return 'ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
                 if module == 'ruff':
-                    if any(a in ('format', '--fix') for a in mod_args):
+                    if any(a == 'format' or a.startswith('--fix') for a in mod_args):
                         is_check = any(a in ('--check', '--diff') for a in mod_args)
                         if not is_check:
                             for a in mod_args:

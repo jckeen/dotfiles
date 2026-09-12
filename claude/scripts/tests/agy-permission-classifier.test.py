@@ -1141,6 +1141,137 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res['decision'], 'ask')
         fake_pytest.unlink()
 
+    def test_round_20_findings(self):
+        # 57. Abbreviated sort output options (--out=/tmp/outside) require confirmation
+        payload_sort_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort README.md --out=/tmp/outside', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_sort_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_sort_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'sort README.md --out={self.test_ws}/sorted.txt', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_sort_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 58. Implicit git patch reads touching sensitive files are forbidden
+        git_dir = Path(self.test_ws) / 'git_patch_test'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'initial'], cwd=str(git_dir), check=True)
+
+        env_file = git_dir / '.env'
+        env_file.write_text('SECRET=123')
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+
+        # git diff with staged sensitive file is forbidden
+        payload_diff = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --cached', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_diff)
+        self.assertEqual(res['decision'], 'deny')
+
+        # commit the sensitive file to test show, log -p, and format-patch
+        subprocess.run(['git', 'commit', '-q', '-m', 'add env'], cwd=str(git_dir), check=True)
+
+        payload_show = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_show)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_log_p = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -p -1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_log_p)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_fmt = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git format-patch -1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_fmt)
+        self.assertEqual(res['decision'], 'deny')
+
+        # safe git diff on clean repo or non-sensitive commit
+        (git_dir / 'doc.txt').write_text('doc')
+        subprocess.run(['git', 'add', 'doc.txt'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'add doc'], cwd=str(git_dir), check=True)
+
+        payload_show_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_show_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 59. ESLint fix mode modifying files outside workspace requires confirmation
+        payload_eslint_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install eslint --fix /tmp/outside.js', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_eslint_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_eslint_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'npx --no-install eslint --fix {self.test_ws}/app.js', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_eslint_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        payload_eslint_dry = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install eslint --fix --fix-dry-run /tmp/outside.js', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_eslint_dry)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 60. Ruff --fix-only modifying files outside workspace requires confirmation
+        payload_ruff_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ruff check --fix-only /tmp/outside.py', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_ruff_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_ruff_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'ruff check --fix-only {self.test_ws}/app.py', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_ruff_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        payload_pym_ruff_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'python3 -m ruff check --fix-only /tmp/outside.py', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_pym_ruff_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 61. Package test reporter output targeting destination outside workspace requires confirmation
+        payload_bun_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'bun test --reporter=junit --reporter-outfile=/tmp/outside', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_bun_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_bun_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'bun test --reporter=junit --reporter-outfile={self.test_ws}/report.xml', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_bun_safe)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
