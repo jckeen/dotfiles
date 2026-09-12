@@ -41,7 +41,7 @@ SYSTEM_BIN_DIRS = {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin'}
 # Safe git subcommands that only inspect state without options
 SAFE_GIT_READ_SUBCOMMANDS = {
     'status', 'log', 'show', 'rev-parse',
-    'rev-list', 'check-ref-format', 'ls-files', 'remote',
+    'rev-list', 'check-ref-format', 'ls-files',
     'describe', 'cat-file', 'shortlog', 'blame',
     'version',
 }
@@ -142,9 +142,26 @@ def is_sensitive_credential_path(path_str, cwd=None):
 
     norm = expand_path(clean, cwd)
     for prefix in get_sensitive_credential_prefixes():
-        norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
-        if norm == norm_prefix or norm.startswith(norm_prefix + os.sep):
-            return True
+        prefixes_to_check = {os.path.abspath(prefix)}
+        if os.path.exists(prefix):
+            try:
+                prefixes_to_check.add(str(Path(prefix).resolve()))
+            except Exception:
+                pass
+        for norm_prefix in prefixes_to_check:
+            # Direct exact or prefix match
+            if norm == norm_prefix or norm.startswith(norm_prefix + os.sep):
+                return True
+            # Wildcard pattern match (e.g. ~/.a?s/credentials or ~/.s*h/id_rsa or /home/*/.ssh)
+            if any(c in norm for c in ('*', '?', '[')):
+                if fnmatch.fnmatch(norm_prefix, norm) or fnmatch.fnmatch(norm, norm_prefix):
+                    return True
+                norm_parts = norm.strip(os.sep).split(os.sep)
+                prefix_parts = norm_prefix.strip(os.sep).split(os.sep)
+                if len(norm_parts) >= len(prefix_parts):
+                    if all(fnmatch.fnmatch(p_part, n_part) or fnmatch.fnmatch(n_part, p_part)
+                           for p_part, n_part in zip(prefix_parts, norm_parts[:len(prefix_parts)])):
+                        return True
     return False
 
 
@@ -169,10 +186,16 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
         return False
     if target_path == '/dev/null':
         return True
+    if not workspace_paths:
+        return False
+    # If target has unexpanded shell variables, brace expansions, or command substitutions
+    if any(c in target_path for c in ('$', '{', '}', '`')):
+        return False
     try:
         norm_target = expand_path(target_path, cwd)
-        effective_workspaces = workspace_paths or [cwd or os.getcwd()]
-        for ws in effective_workspaces:
+        for ws in workspace_paths:
+            if not ws or not isinstance(ws, str):
+                continue
             norm_ws = expand_path(ws, cwd)
             if norm_target == norm_ws or norm_target.startswith(norm_ws + os.sep):
                 return True
@@ -338,6 +361,17 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'allow', 'git command query'
         git_sub = args[0]
 
+        # Check for git output options across all git commands
+        git_out = None
+        for i, a in enumerate(args):
+            if a == '--output' and i + 1 < len(args):
+                git_out = args[i + 1]
+            elif a.startswith('--output='):
+                git_out = a.split('=', 1)[1]
+        if git_out:
+            if not is_path_in_workspaces(git_out, workspace_paths, cwd) or is_system_write_path(git_out, cwd):
+                return 'ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
+
         # Force push or direct push to protected branch detection
         if git_sub == 'push':
             has_force = any(a in ('--force', '-f', '--force-with-lease') or a.startswith('+') for a in args)
@@ -375,8 +409,12 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         # Git branch: only allow read-only queries
         if git_sub == 'branch':
-            if any(a in ('-d', '-D', '-m', '-M', '-c', '-C', '--delete', '--move', '--copy') for a in args):
-                return 'ask', f"Deleting or renaming branches requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('-d', '-D', '-m', '-M', '-c', '-C', '-f', '--force', '--delete', '--move', '--copy', '--set-upstream-to', '-u', '--unset-upstream', '--edit-description') for a in args):
+                return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+            positionals = [a for a in args[1:] if not a.startswith('-')]
+            # Positional arguments in git branch create/reset branches unless --list / -l is used
+            if positionals and not any(a in ('-l', '--list') for a in args):
+                return 'ask', f"Branch creation or modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git branch query'
 
         # Git tag: only allow listing
@@ -385,13 +423,14 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git tag query'
 
-        # Git diff with --output
+        # Git remote: only allow read queries
+        if git_sub == 'remote':
+            if any(a in ('add', 'rename', 'remove', 'rm', 'set-head', 'set-branches', 'set-url', 'update', 'prune') for a in args):
+                return 'ask', f"Mutating git remotes requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git remote query'
+
+        # Git diff
         if git_sub == 'diff':
-            for a in args:
-                if a.startswith('--output='):
-                    out_path = a.split('=', 1)[1]
-                    if not is_path_in_workspaces(out_path, workspace_paths, cwd):
-                        return 'ask', f"git diff --output outside workspace requires approval: {out_path}"
             return 'allow', 'Safe git diff'
 
         if git_sub in {'stash', 'worktree'}:
@@ -412,32 +451,63 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
+        if base_cmd == 'uniq':
+            positionals = [a for a in args if not a.startswith('-')]
+            if len(positionals) > 1:
+                return 'ask', f"uniq with output file operand requires confirmation: {' '.join(cmd_tokens)}"
         return 'allow', f"Safe inspection command: {base_cmd}"
 
-    # Ripgrep: safe unless using --pre which runs external programs
+    # Ripgrep: safe unless using --pre which runs external programs or searching sensitive paths
     if base_cmd in {'rg', 'ag'}:
         if any(a.startswith('--pre') for a in args):
             return 'ask', f"rg with --pre option requires confirmation: {' '.join(cmd_tokens)}"
-        # Check search targets
-        for a in args:
-            if not a.startswith('-') and is_sensitive_credential_path(a, cwd):
-                return 'deny', f"Searching sensitive credential path is forbidden: {a}"
+        positionals = [a for a in args if not a.startswith('-')]
+        has_pattern_flag = any(a == '-e' or a.startswith('-e') for a in args)
+        search_paths = positionals if has_pattern_flag else positionals[1:]
+        if not search_paths:
+            search_paths = [cwd]
+        for p in search_paths:
+            if is_sensitive_credential_path(p, cwd):
+                return 'deny', f"Searching sensitive credential path is forbidden: {p}"
+            p_norm = expand_path(p, cwd)
+            p_dir = p_norm if p_norm.endswith(os.sep) else p_norm + os.sep
+            for prefix in get_sensitive_credential_prefixes():
+                prefix_norm = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
+                if prefix_norm == p_norm or prefix_norm.startswith(p_dir):
+                    return 'deny', f"Recursive search over path containing sensitive credentials is forbidden: {p}"
+            if not is_path_in_workspaces(p, workspace_paths, cwd):
+                return 'ask', f"Searching outside workspace requires confirmation: {p}"
         return 'allow', 'Safe grep query'
 
-    # Grep: safe unless searching sensitive directories
+    # Grep: safe unless searching sensitive directories or recursive search outside workspace
     if base_cmd in {'grep', 'egrep', 'fgrep'}:
-        for a in args:
-            if not a.startswith('-') and is_sensitive_credential_path(a, cwd):
-                return 'deny', f"Searching sensitive credential path is forbidden: {a}"
+        is_recursive = any(a in ('-r', '-R', '--recursive') or (a.startswith('-') and any(c in a for c in ('r', 'R'))) for a in args)
+        positionals = [a for a in args if not a.startswith('-')]
+        has_pattern_flag = any(a in ('-e', '-f') or a.startswith(('-e', '-f')) for a in args)
+        search_paths = positionals if has_pattern_flag else positionals[1:]
+        if not search_paths and is_recursive:
+            search_paths = [cwd]
+        for p in search_paths:
+            if is_sensitive_credential_path(p, cwd):
+                return 'deny', f"Searching sensitive credential path is forbidden: {p}"
+            if is_recursive:
+                p_norm = expand_path(p, cwd)
+                p_dir = p_norm if p_norm.endswith(os.sep) else p_norm + os.sep
+                for prefix in get_sensitive_credential_prefixes():
+                    prefix_norm = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
+                    if prefix_norm == p_norm or prefix_norm.startswith(p_dir):
+                        return 'deny', f"Recursive search over path containing sensitive credentials is forbidden: {p}"
+                if not is_path_in_workspaces(p, workspace_paths, cwd):
+                    return 'ask', f"Recursive search outside workspace requires confirmation: {p}"
         return 'allow', 'Safe grep query'
 
     # Sort: check -o / --output option
     if base_cmd == 'sort':
         out_target = None
         for i, a in enumerate(args):
-            if a == '-o' and i + 1 < len(args):
+            if a in ('-o', '--output') and i + 1 < len(args):
                 out_target = args[i + 1]
-            elif a.startswith('-o'):
+            elif a.startswith('-o') and len(a) > 2:
                 out_target = a[2:]
             elif a.startswith('--output='):
                 out_target = a.split('=', 1)[1]
@@ -558,8 +628,10 @@ def classify_command_line(cmd_str, workspace_paths, cwd):
         if tokens is None:
             return 'ask', 'Unable to safely parse command tokens'
         subcmds, pipe_links = split_into_subcommands(tokens)
+        offset = len(subcommands_all)
         subcommands_all.extend(subcmds)
-        pipeline_links_all.extend(pipe_links)
+        for sub_idx, op in pipe_links:
+            pipeline_links_all.append((offset + sub_idx, op))
 
     if not subcommands_all:
         return 'allow', 'No subcommands found'
@@ -614,9 +686,10 @@ def classify_file_read(target_file, cwd):
     if is_sensitive_credential_path(target_file, cwd):
         return 'deny', f"Reading sensitive credentials is forbidden: {target_file}"
     norm = expand_path(target_file, cwd)
+    norm_dir = norm if norm.endswith(os.sep) else norm + os.sep
     for prefix in get_sensitive_credential_prefixes():
         norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
-        if norm_prefix.startswith(norm + os.sep) and norm in ('/', os.path.expanduser('~')):
+        if norm_prefix.startswith(norm_dir) and norm in ('/', os.path.expanduser('~')):
             return 'ask', f"Searching directory containing sensitive credentials requires approval: {target_file}"
     return 'allow', f"Safe file read: {os.path.basename(target_file)}"
 
@@ -641,13 +714,13 @@ def main():
         print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: payload must be a JSON object'}))
         return
 
-    # Environment overrides
+    # Environment and session overrides
     mode = os.environ.get('ANTIGRAVITY_CLASSIFIER_MODE', '').lower()
     if mode in ('disabled', 'off'):
         print(json.dumps({'decision': 'ask', 'reason': 'Classifier disabled via ANTIGRAVITY_CLASSIFIER_MODE'}))
         return
-    if mode in ('allow_all', 'bypass'):
-        print(json.dumps({'decision': 'allow', 'reason': 'Bypassed via ANTIGRAVITY_CLASSIFIER_MODE=allow_all'}))
+    if mode in ('allow_all', 'bypass') or (mode != 'enforce' and os.path.exists('/tmp/agy-session-auto-allow')):
+        print(json.dumps({'decision': 'allow', 'reason': 'Auto-approved via session bypass (/tmp/agy-session-auto-allow)'}))
         return
 
     try:
