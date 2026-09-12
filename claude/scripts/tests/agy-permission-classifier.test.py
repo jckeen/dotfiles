@@ -897,6 +897,51 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'allow')
 
+        # 41. rm -fR and rm -Rf targeting workspace root are forbidden
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'rm -fR {self.test_ws}', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'rm -Rf {self.test_ws}', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 42. jq -n env and jq -n '$ENV' accessing process environment are forbidden
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'jq -n env', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "jq -n '$ENV'", 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 43. file -C compiles magic database (writes output) and requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file -C -m magic', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file script.sh', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

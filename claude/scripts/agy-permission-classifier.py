@@ -590,9 +590,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 4. Destructive Deletions (rm)
     if base_cmd == 'rm':
-        is_recursive = any(a in ('-r', '-R', '-rf', '-fr') or (a.startswith('-') and 'r' in a) for a in args)
+        is_recursive = any(a in ('-r', '-R', '-rf', '-fr', '--recursive') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R'))) for a in args)
+        is_dir = any(a in ('-d', '--dir') or (a.startswith('-') and not a.startswith('--') and 'd' in a) for a in args)
         targets = [a for a in args if not a.startswith('-')]
-        if is_recursive:
+        if is_recursive or is_dir:
             for t in targets:
                 t_norm = expand_path(t, cwd)
                 if t in ('/', '/*', '~', '~/*', '$HOME') or t_norm in ('/', expand_path('~', cwd)):
@@ -601,7 +602,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     ws_norm = expand_path(ws, cwd)
                     if t_norm == ws_norm:
                         return 'deny', f"Recursive deletion of entire workspace root is forbidden: rm {t}"
-            return 'ask', f"Recursive directory deletion requires confirmation: {' '.join(cmd_tokens)}"
+            return 'ask', f"Recursive or directory deletion requires confirmation: {' '.join(cmd_tokens)}"
         # Non-recursive rm on individual files inside workspace
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) for t in targets):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
@@ -804,6 +805,14 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
+        if base_cmd == 'jq':
+            if any(re.search(r'(\benv\b|(?<![A-Za-z0-9_])\$ENV\b)', a) for a in args):
+                return 'deny', f"jq accessing process environment is forbidden: {' '.join(cmd_tokens)}"
+            if any(a in ('-f', '--from-file') or a.startswith(('-f', '--from-file=')) for a in args):
+                return 'ask', f"jq reading filter from file requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'file':
+            if any(a in ('-C', '--compile') or (a.startswith('-') and not a.startswith('--') and 'C' in a) for a in args):
+                return 'ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
         if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq'}:
             for a in args:
