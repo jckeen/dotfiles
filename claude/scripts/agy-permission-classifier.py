@@ -96,6 +96,11 @@ DANGEROUS_ENV_VARS = {
     'RUBYOPT', 'RUBYLIB',
 }
 
+SAFE_INLINE_ENV_VARS = {
+    'CI', 'NODE_ENV', 'LANG', 'LC_ALL', 'LC_CTYPE',
+    'PYTHONUNBUFFERED', 'TERM', 'NO_COLOR', 'FORCE_COLOR', 'TZ',
+}
+
 PROTECTED_BRANCHES = {'main', 'master', 'release', 'prod', 'production'}
 
 # Redirection operators (ordered by descending length for greedy matching)
@@ -108,15 +113,22 @@ def is_dangerous_env_var(var_name):
     return any(var_name.startswith(p) for p in DANGEROUS_ENV_PREFIXES)
 
 
+def is_credential_var_name(var_name):
+    """Check if variable name represents credentials, tokens, secrets, or keys."""
+    if not var_name or not isinstance(var_name, str):
+        return False
+    v_upper = var_name.upper()
+    return any(term in v_upper for term in ('KEY', 'TOKEN', 'SECRET', 'PASS', 'AUTH', 'CRED', 'COOKIE', 'BEARER', 'PRIVATE', 'SIGNATURE')) or \
+           any(v_upper.startswith(prefix) for prefix in ('AWS_', 'GITHUB_', 'GH_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'CODEX_', 'CLAUDE_', 'GIT_ASKPASS'))
+
+
 def is_credential_env_var(text):
     """Check if text references credential environment variables."""
     if not text or not isinstance(text, str):
         return False
     vars_found = re.findall(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?', text)
     for v in vars_found:
-        v_upper = v.upper()
-        if any(term in v_upper for term in ('KEY', 'TOKEN', 'SECRET', 'PASS', 'AUTH', 'CRED', 'COOKIE', 'BEARER', 'PRIVATE', 'SIGNATURE')) or \
-           any(v_upper.startswith(prefix) for prefix in ('AWS_', 'GITHUB_', 'GH_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'CODEX_', 'CLAUDE_', 'GIT_ASKPASS')):
+        if is_credential_var_name(v):
             return True
     return False
 
@@ -370,6 +382,36 @@ def git_has_fsmonitor_configured(cwd=None):
     return False
 
 
+def git_has_active_hooks(cwd=None, hook_names=()):
+    """Check if git repository has active (executable) repository hooks."""
+    if not hook_names:
+        return False
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'rev-parse', '--git-path', 'hooks'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode != 0:
+            return False
+        hooks_dir = res.stdout.strip()
+        if not hooks_dir:
+            return False
+        if not os.path.isabs(hooks_dir):
+            hooks_dir = os.path.join(effective_cwd, hooks_dir)
+        for h in hook_names:
+            h_path = os.path.join(hooks_dir, h)
+            if os.path.isfile(h_path) and os.access(h_path, os.X_OK):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def is_git_admin_path(path_str, cwd=None):
     """Check if path targets git internal administrative files (.git, .git/config, .git/hooks, bare repo .git, etc.)."""
     if not path_str or not isinstance(path_str, str):
@@ -390,69 +432,140 @@ def is_git_admin_path(path_str, cwd=None):
     return False
 
 
-def tokenize_command_line(line):
-    """Tokenize a single shell command line while preserving quotes around quoted literals."""
-    try:
-        s = shlex.shlex(line, posix=False, punctuation_chars=True)
-        s.whitespace_split = True
-        s.commenters = ''
-        raw_tokens = list(s)
-        refined = []
-        for tok in raw_tokens:
-            # Only split pure punctuation tokens (e.g. ;> or ;>> or ;|)
-            # Quoted strings like 'README;echo' or word tokens must never be split
-            if len(tok) > 1 and ';' in tok and all(c in '();<>|&' for c in tok) and not (tok.startswith(('"', "'")) and tok.endswith(('"', "'"))):
-                parts = re.split(r'(;+)', tok)
-                refined.extend(p for p in parts if p)
-            else:
-                refined.append(tok)
-        return refined
-    except Exception:
-        return None
+def split_unquoted_shell_commands(cmd_str):
+    """Split a shell command line string into individual subcommand strings on unquoted operators.
 
-
-def split_into_subcommands(tokens):
-    """Split tokens on command chaining and pipeline operators."""
+    Operators recognized as command separators:
+    '&&', '||', '|&', ';', '\\n', '|', '&'
+    Redirections involving '&' (e.g. '&>', '&>>', '>&', '<&') are preserved within the subcommand.
+    Returns (subcommands, pipeline_links) where:
+      - subcommands is a list of stripped subcommand strings
+      - pipeline_links is a list of tuples: (subcommand_index, operator)
+    Returns (None, None) on syntax errors, unclosed quotes, or dangling operators.
+    """
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
     subcommands = []
-    current = []
     pipeline_links = []
-
-    separators = {'&&', '||', ';', '|&', '|', '&'}
+    current_chars = []
 
     i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        # Check two-character operator |&
-        if tok == '|' and i + 1 < len(tokens) and tokens[i + 1] == '&':
-            if i > 0 and tokens[i - 1] == '\\':
-                current.append(tok)
-                i += 1
-                continue
-            if current:
-                subcommands.append(current)
-                pipeline_links.append((len(subcommands) - 1, '|&'))
-                current = []
+    n = len(cmd_str)
+    expect_command = False
+
+    while i < n:
+        c = cmd_str[i]
+        if escaped:
+            current_chars.append(c)
+            escaped = False
+            i += 1
+            continue
+
+        # Line continuation: \\ followed immediately by \\n
+        if c == '\\' and i + 1 < n and cmd_str[i + 1] == '\n':
             i += 2
             continue
 
-        if tok in separators:
-            if i > 0 and tokens[i - 1] == '\\':
-                current.append(tok)
+        if c == '\\':
+            if in_single_quote:
+                current_chars.append(c)
+            elif in_double_quote:
+                if i + 1 < n and cmd_str[i + 1] in ('"', '\\', '$', '`', '\n'):
+                    escaped = True
+                    current_chars.append(c)
+                else:
+                    current_chars.append(c)
+            else:
+                escaped = True
+                current_chars.append(c)
+            i += 1
+            continue
+
+        if c == "'":
+            if not in_double_quote:
+                in_single_quote = not in_single_quote
+            current_chars.append(c)
+            i += 1
+            continue
+
+        if c == '"':
+            if not in_single_quote:
+                in_double_quote = not in_double_quote
+            current_chars.append(c)
+            i += 1
+            continue
+
+        if not in_single_quote and not in_double_quote:
+            # Comment check: unquoted # preceded by start of line/command or whitespace/separator
+            if c == '#' and (i == 0 or cmd_str[i - 1].isspace() or cmd_str[i - 1] in (';', '&', '|')):
+                while i < n and cmd_str[i] != '\n':
+                    i += 1
+                continue
+
+            two = cmd_str[i:i + 2]
+            if two == ';;':
+                return None, None
+
+            if two in ('&&', '||', '|&'):
+                sub_str = ''.join(current_chars).strip()
+                if not sub_str:
+                    return None, None
+                subcommands.append(sub_str)
+                if two == '|&':
+                    pipeline_links.append((len(subcommands) - 1, '|&'))
+                current_chars = []
+                expect_command = True
+                i += 2
+                continue
+
+            # Redirections with &: &>, &>>, >&, <&
+            if two in ('&>',):
+                current_chars.append(two)
+                i += 2
+                continue
+            if i > 0 and cmd_str[i - 1] in ('>', '<') and c == '&':
+                current_chars.append(c)
                 i += 1
                 continue
-            if current:
-                subcommands.append(current)
-                if tok in ('|', '|&'):
-                    pipeline_links.append((len(subcommands) - 1, tok))
-                current = []
-        else:
-            current.append(tok)
+
+            if c in (';', '\n', '|', '&'):
+                sub_str = ''.join(current_chars).strip()
+                if not sub_str and c in ('|', ';', '&'):
+                    return None, None
+                if sub_str:
+                    subcommands.append(sub_str)
+                    if c == '|':
+                        pipeline_links.append((len(subcommands) - 1, '|'))
+                current_chars = []
+                expect_command = (c in ('|',))
+                i += 1
+                continue
+
+        current_chars.append(c)
         i += 1
 
-    if current:
-        subcommands.append(current)
+    rem = ''.join(current_chars).strip()
+    if rem:
+        subcommands.append(rem)
+    elif expect_command:
+        return None, None
+
+    if in_single_quote or in_double_quote or escaped:
+        return None, None
 
     return subcommands, pipeline_links
+
+
+def tokenize_subcommand(subcmd_str):
+    """Tokenize a single shell subcommand using POSIX tokenization rules."""
+    try:
+        s = shlex.shlex(subcmd_str, posix=True, punctuation_chars=True)
+        s.whitespace_split = True
+        s.commenters = ''
+        return list(s)
+    except Exception:
+        return None
 
 
 def parse_refspec_dest(refspec):
@@ -481,14 +594,21 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     # Check for leading environment variable assignments
     idx = 0
     while idx < len(tokens) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', tokens[idx]):
-        var_name = tokens[idx].split('=', 1)[0]
+        tok = tokens[idx]
+        var_name, val = tok.split('=', 1)
         if is_dangerous_env_var(var_name):
             return 'deny', f"Setting execution-altering environment variable is forbidden: {var_name}"
+        if is_credential_var_name(var_name) or is_credential_env_var(tok):
+            return 'deny', f"Environment assignment referencing credentials is forbidden: {var_name}"
+        if var_name not in SAFE_INLINE_ENV_VARS:
+            return 'ask', f"Command with inline environment variable assignment requires confirmation: {tok}"
+        if not re.match(r'^[A-Za-z0-9_.:+-]*$', val):
+            return 'ask', f"Command with complex environment variable assignment requires confirmation: {tok}"
         idx += 1
 
     cmd_tokens = tokens[idx:]
     if not cmd_tokens:
-        return 'allow', 'Environment assignment'
+        return 'ask', f"Standalone environment assignment requires confirmation: {' '.join(tokens)}"
 
     raw_cmd = unquote_token(cmd_tokens[0])
 
@@ -681,8 +801,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         # Git switch: only allow without discarding changes or creating/resetting branches
         if git_sub == 'switch':
-            if any(a.startswith(('-c', '-C', '-f', '--create', '--force-create', '--force', '--discard-changes')) for a in args):
-                return 'ask', f"Switching with branch creation, reset, or discard requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a.startswith(('-c', '-C', '-f', '--create', '--force-create', '--force', '--discard-changes', '--orphan')) or a in ('-d', '--detach', '--orphan') for a in args):
+                return 'ask', f"Switching with branch creation, reset, detach, or discard requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_active_hooks(cwd, ('post-checkout',)):
+                return 'ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
 
         # Git branch: only allow read-only queries
@@ -754,6 +876,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 if 'add' in args:
                     if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
                         return 'ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
+                    if git_has_active_hooks(cwd, ('post-checkout',)):
+                        return 'ask', f"git worktree add with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
                     sub_args = args[args.index('add') + 1:]
                     dir_operands = []
                     skip_next = False
@@ -801,6 +925,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if git_sub == 'commit':
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
                 return 'ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit')):
+                return 'ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git commit'
 
     # 6. Inspection Commands
@@ -1114,22 +1240,20 @@ def classify_command_line(cmd_str, workspace_paths, cwd):
     if re.search(r'(\$\(|\`|<(?=\()|>(?=\())', cmd_str):
         return 'ask', 'Command contains command or process substitution'
 
-    lines = [line.strip() for line in cmd_str.splitlines() if line.strip()]
-    if not lines:
+    subcmd_strings, pipeline_links_all = split_unquoted_shell_commands(cmd_str)
+    if subcmd_strings is None:
+        return 'ask', 'Unable to safely parse command line (syntax error, unclosed quote, or dangling escape)'
+
+    if not subcmd_strings:
         return 'allow', 'Empty command'
 
     subcommands_all = []
-    pipeline_links_all = []
-
-    for line in lines:
-        tokens = tokenize_command_line(line)
+    for sub_str in subcmd_strings:
+        tokens = tokenize_subcommand(sub_str)
         if tokens is None:
-            return 'ask', 'Unable to safely parse command tokens'
-        subcmds, pipe_links = split_into_subcommands(tokens)
-        offset = len(subcommands_all)
-        subcommands_all.extend(subcmds)
-        for sub_idx, op in pipe_links:
-            pipeline_links_all.append((offset + sub_idx, op))
+            return 'ask', f"Unable to safely parse command tokens: {sub_str}"
+        if tokens:
+            subcommands_all.append(tokens)
 
     if not subcommands_all:
         return 'allow', 'No subcommands found'

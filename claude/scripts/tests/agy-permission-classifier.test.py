@@ -942,6 +942,88 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'allow')
 
+        # 44. Quoted command concatenation does not bypass executable path checks
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': '"echo"/../payload', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat \';\' echo .env', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 45. Inline environment variable assignments requiring confirmation or denial
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'RIPGREP_CONFIG_PATH=./config rg pattern README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'SAFE_VAR=1 npm test', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 46. git switch --orphan and -d require confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch --orphan fresh', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch -d main', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 47. git commit requires confirmation when executable repository hooks exist
+        repo_dir = Path(self.test_ws) / 'hook_repo'
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init'], cwd=str(repo_dir), check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m "test"', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(repo_dir)],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        hook_path = repo_dir / '.git' / 'hooks' / 'pre-commit'
+        hook_path.write_text('#!/bin/sh\nexit 0\n')
+        hook_path.chmod(0o755)
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 48. git switch and worktree add require confirmation when post-checkout hook exists
+        hook_path.unlink()
+        post_checkout = repo_dir / '.git' / 'hooks' / 'post-checkout'
+        post_checkout.write_text('#!/bin/sh\nexit 0\n')
+        post_checkout.chmod(0o755)
+
+        payload_switch = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch main', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(repo_dir)],
+        }
+        res = self.run_classifier(payload_switch)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_wt = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git worktree add {repo_dir}/wt main', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(repo_dir)],
+        }
+        res = self.run_classifier(payload_wt)
+        self.assertEqual(res['decision'], 'ask')
+
 
 if __name__ == '__main__':
     unittest.main()
