@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / 'agy-permission-classifier.py'
@@ -14,11 +15,16 @@ SCRIPT_PATH = Path(__file__).resolve().parent.parent / 'agy-permission-classifie
 class TestAgyPermissionClassifier(unittest.TestCase):
 
     def setUp(self):
-        self.test_ws = str(Path.home() / 'test-workspace')
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self.test_ws = self._tmp_dir.name
         self._prev_mode = os.environ.get('ANTIGRAVITY_CLASSIFIER_MODE')
         os.environ['ANTIGRAVITY_CLASSIFIER_MODE'] = 'enforce'
 
     def tearDown(self):
+        try:
+            self._tmp_dir.cleanup()
+        except Exception:
+            pass
         if self._prev_mode is not None:
             os.environ['ANTIGRAVITY_CLASSIFIER_MODE'] = self._prev_mode
         else:
@@ -470,6 +476,73 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             }
             res = self.run_classifier(payload)
             self.assertEqual(res['decision'], 'ask')
+
+        # 6. Global message option scope (sort -m must not skip credentials)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort -m ~/.aws/credentials', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 7. Date clock setting validation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date --set=2030-01-01', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 8. Recursive rg detects sensitive descendant files
+        pem_dir = Path(self.test_ws) / 'pem_test_dir'
+        pem_dir.mkdir(parents=True, exist_ok=True)
+        pem_file = pem_dir / 'private.pem'
+        pem_file.write_text('PRIVATE_KEY')
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'rg pattern {pem_dir}', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 9. Directory search detects file symlinks pointing to sensitive files
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_key = Path(ext_dir) / 'id_rsa'
+            ext_key.write_text('KEY')
+            link_file = pem_dir / 'ssh_link.txt'
+            link_file.symlink_to(ext_key)
+            payload = {
+                'toolCall': {'name': 'find_by_name', 'args': {'SearchDirectory': str(pem_dir), 'Pattern': '*'}},
+                'workspacePaths': [self.test_ws],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+
+        # 10. Git diff detects configured external diff driver
+        git_repo_dir = Path(self.test_ws) / 'git_repo_ext'
+        git_repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_repo_dir), check=True)
+        subprocess.run(['git', 'config', 'diff.external', '/bin/echo'], cwd=str(git_repo_dir), check=True)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff', 'Cwd': str(git_repo_dir)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --no-ext-diff --no-textconv', 'Cwd': str(git_repo_dir)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
 
 
 if __name__ == '__main__':

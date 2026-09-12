@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 
 # Commands that are strictly read-only inspection and safe to auto-approve without options that execute code or write
@@ -229,6 +230,76 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
     return False
 
 
+def check_directory_descendants(target_dir, cwd=None):
+    """Inspect directory for sensitive descendant files or sensitive symlinks.
+
+    Returns (verdict, reason) where verdict is 'deny', 'ask', or 'allow'.
+    """
+    if not target_dir or not isinstance(target_dir, str):
+        return 'allow', 'Not a directory'
+    norm = expand_path(target_dir, cwd)
+    if not os.path.isdir(norm):
+        return 'allow', 'Not a directory'
+
+    try:
+        for root, dirs, files in os.walk(norm):
+            # Prune VCS and dependency caches
+            if '.git' in dirs:
+                dirs.remove('.git')
+            if 'node_modules' in dirs:
+                dirs.remove('node_modules')
+
+            # Check symlinked subdirectories
+            for d in list(dirs):
+                d_full = os.path.join(root, d)
+                if os.path.islink(d_full):
+                    try:
+                        link_target = str(Path(d_full).resolve())
+                        if is_sensitive_credential_path(link_target, cwd):
+                            return 'deny', f"contains symlink to sensitive directory ({d} -> {link_target})"
+                    except Exception:
+                        pass
+
+            # Pass 1: check symlinked files for sensitive targets (hard deny)
+            for f in files:
+                f_full = os.path.join(root, f)
+                if os.path.islink(f_full):
+                    try:
+                        link_target = str(Path(f_full).resolve())
+                        if matches_sensitive_pattern(os.path.basename(link_target)) or is_sensitive_credential_path(link_target, cwd):
+                            return 'deny', f"contains symlink to sensitive file ({f} -> {link_target})"
+                    except Exception:
+                        pass
+
+            # Pass 2: check files for sensitive patterns (ask)
+            for f in files:
+                if matches_sensitive_pattern(f):
+                    return 'ask', f"contains sensitive descendant file ({f})"
+    except Exception:
+        pass
+
+    return 'allow', 'Directory clean'
+
+
+def git_has_external_diff_configured(cwd=None):
+    """Check if git has an external diff or textconv driver configured that executes programs."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get-regexp', r'^diff\.(external|.*\.command|.*\.textconv)$'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def tokenize_command_line(line):
     """Tokenize a single shell command line without stripping comments prematurely."""
     try:
@@ -357,11 +428,13 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if skip_next:
             skip_next = False
             continue
-        if arg in ('-m', '--message', '-C'):
-            skip_next = True
-            continue
-        if arg.startswith(('-m', '--message=')):
-            continue
+        # For git commit/tag, skip the commit message string operand
+        if base_cmd == 'git' and len(args) > 0 and args[0] in {'commit', 'tag'}:
+            if arg in ('-m', '--message'):
+                skip_next = True
+                continue
+            if arg.startswith(('-m', '--message=')):
+                continue
         # For echo / printf, positional text operands are output payloads
         if base_cmd in {'echo', 'printf'}:
             continue
@@ -514,6 +587,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         # Git diff
         if git_sub == 'diff':
+            has_no_ext = any(a == '--no-ext-diff' for a in args)
+            has_no_textconv = any(a == '--no-textconv' for a in args)
+            if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
+                return 'ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git diff'
 
         if git_sub == 'stash':
@@ -575,6 +652,9 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if base_cmd == 'less':
             if any(a.startswith('+') or a in ('-o', '-O', '--log-file', '--LOG-FILE', '-T', '--tag-file') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=', '-T', '--tag-file=')) for a in args):
                 return 'ask', f"less with command execution (+), log file, or tag file option requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'date':
+            if any(a in ('-s', '--set') or a.startswith(('-s', '--set=')) for a in args):
+                return 'ask', f"date with system clock setting requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'printf':
             if any(a == '-v' or a.startswith('-v') for a in args):
                 var_name = None
@@ -621,6 +701,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                     return 'deny', f"Recursive search over path containing sensitive credentials is forbidden: {p}"
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
+            if os.path.isdir(p_norm):
+                desc_verdict, desc_reason = check_directory_descendants(p_norm, cwd)
+                if desc_verdict != 'allow':
+                    return desc_verdict, f"Directory search {desc_reason}: {p}"
         return 'allow', 'Safe grep query'
 
     # Grep: safe unless searching sensitive directories or recursive search
@@ -948,24 +1032,11 @@ def classify_directory_search(target_dir, args, cwd):
     if isinstance(pattern, str) and (matches_sensitive_pattern(pattern) or any(c in pattern for c in ('.env', 'id_', '.key', '.pem'))):
         return 'deny', f"Search targeting sensitive pattern is forbidden: {pattern}"
 
-    # If target is a directory, inspect if it contains descendant files matching sensitive patterns
+    # If target is a directory, inspect if it contains descendant sensitive files or symlinks
     if os.path.isdir(norm):
-        for root, dirs, files in os.walk(norm):
-            # Prune VCS and dependency caches
-            if '.git' in dirs:
-                dirs.remove('.git')
-            if 'node_modules' in dirs:
-                dirs.remove('node_modules')
-            # Check symlinked subdirectories to ensure they don't point outside or to sensitive paths
-            for d in list(dirs):
-                d_full = os.path.join(root, d)
-                if os.path.islink(d_full):
-                    link_target = str(Path(d_full).resolve())
-                    if is_sensitive_credential_path(link_target, cwd):
-                        return 'deny', f"Directory search includes symlink to sensitive path: {d_full}"
-            for f in files:
-                if matches_sensitive_pattern(f):
-                    return 'ask', f"Directory search includes sensitive descendant file ({f}): {target_dir}"
+        desc_verdict, desc_reason = check_directory_descendants(norm, cwd)
+        if desc_verdict != 'allow':
+            return desc_verdict, f"Directory search {desc_reason}: {target_dir}"
 
     return 'allow', f"Safe directory search: {os.path.basename(target_dir) or target_dir}"
 
