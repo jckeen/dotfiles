@@ -422,7 +422,7 @@ def git_has_filter_configured(cwd=None):
 
 
 def strip_git_output_options(args_list):
-    """Strip output redirection options (-o, --output, --output=..., etc.) from probe arguments."""
+    """Strip output redirection options (-o, --output, --output=..., etc.) and exit-code flags from probe arguments."""
     clean = []
     skip_next = False
     for a in args_list:
@@ -436,16 +436,24 @@ def strip_git_output_options(args_list):
             continue
         if a.startswith('-o') and len(a) > 2 and not a.startswith('--'):
             continue
-        if a.startswith('--o') and '--output'.startswith(a.split('=', 1)[0]):
+        if a.startswith('--o') and ('--output'.startswith(a.split('=', 1)[0]) or '--output-directory'.startswith(a.split('=', 1)[0])):
             if '=' not in a:
                 skip_next = True
+            continue
+        if a in ('--exit-code', '--quiet', '-q'):
             continue
         clean.append(a)
     return clean
 
 
 def git_command_touches_sensitive_files(git_sub, args, cwd):
-    """Check if git diff / show / log / format-patch touches sensitive files in repository changes."""
+    """Check if git diff / show / log / format-patch touches sensitive files in repository changes.
+
+    Returns:
+        'sensitive' if sensitive files are touched in patch output,
+        'safe' if verified clean,
+        'unknown' if git probe failed, timed out, or encountered an error.
+    """
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     try:
         safe_args = strip_git_output_options(args[1:])
@@ -462,7 +470,7 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
             log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
             cmd = ['git', 'log', '--name-only', '--format='] + log_args
         else:
-            return False
+            return 'safe'
 
         res = subprocess.run(
             cmd,
@@ -472,14 +480,20 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
             text=True,
             timeout=2,
         )
-        if res.returncode == 0 and res.stdout:
-            for line in res.stdout.splitlines():
-                f = line.strip()
-                if f and (matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd)):
-                    return True
+        if res.returncode in (0, 1):
+            if res.stdout:
+                for line in res.stdout.splitlines():
+                    f = line.strip()
+                    if f and (matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd)):
+                        return 'sensitive'
+            return 'safe'
+        if res.returncode in (128, 129) and not res.stdout:
+            # Git fatal error (e.g. not a git repo, revision does not exist, empty repo without HEAD).
+            # No patch or diff output is generated, so no credentials can be leaked.
+            return 'safe'
+        return 'unknown'
     except Exception:
-        pass
-    return False
+        return 'unknown'
 
 
 def is_git_admin_path(path_str, cwd=None):
@@ -912,13 +926,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'allow', 'git command query'
         git_sub = args[0]
 
-        # Check for git output options across all git commands
+        # Check for git output options across all git commands (including GNU option abbreviations)
         git_out = None
         for i, a in enumerate(args):
-            if a in ('--output', '-o', '--output-directory') and i + 1 < len(args):
+            if a.startswith('--o') and '=' in a:
+                opt, val = a.split('=', 1)
+                if '--output'.startswith(opt) or '--output-directory'.startswith(opt):
+                    git_out = val
+            elif a.startswith('--o') and ('--output'.startswith(a) or '--output-directory'.startswith(a)):
+                if i + 1 < len(args):
+                    git_out = args[i + 1]
+            elif a in ('--output', '-o', '--output-directory') and i + 1 < len(args):
                 git_out = args[i + 1]
-            elif a.startswith(('--output=', '--output-directory=')):
-                git_out = a.split('=', 1)[1]
             elif a.startswith('-o') and len(a) > 2 and not a.startswith('--'):
                 git_out = a[2:].lstrip('=')
         if git_out:
@@ -1034,8 +1053,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                 return 'ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
-            if git_command_touches_sensitive_files(git_sub, args, cwd):
+            probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
+            if probe_res == 'sensitive':
                 return 'deny', f"git diff touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+            if probe_res == 'unknown':
+                return 'ask', f"git diff patch cannot be verified safely: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git diff'
 
         if git_sub == 'stash':
@@ -1049,8 +1071,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     has_no_textconv = any(a == '--no-textconv' for a in args)
                     if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                         return 'ask', f"git stash show with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
-                    if git_command_touches_sensitive_files('stash', args, cwd):
+                    probe_res = git_command_touches_sensitive_files('stash', args, cwd)
+                    if probe_res == 'sensitive':
                         return 'deny', f"git stash show touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+                    if probe_res == 'unknown':
+                        return 'ask', f"git stash show patch cannot be verified safely: {' '.join(cmd_tokens)}"
                     return 'allow', 'Safe git stash show'
             return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -1090,8 +1115,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if not has_no_textconv and git_has_external_diff_configured(cwd):
                 return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
-            if git_command_touches_sensitive_files(git_sub, args, cwd):
-                return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+            is_blob_show = git_sub == 'show' and any(':' in a and not a.startswith(('-', 'http:', 'https:', 'ssh:', 'git:')) for a in args[1:])
+            if not is_blob_show:
+                probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
+                if probe_res == 'sensitive':
+                    return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+                if probe_res == 'unknown':
+                    return 'ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
 
         # Git cat-file with filters or textconv executes external smudge/clean/textconv drivers
         if git_sub == 'cat-file':
@@ -1277,6 +1307,31 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     if base_cmd in {'npm', 'pnpm', 'yarn', 'bun'}:
         if any(a in ('--script-shell', '--shell') or a.startswith(('--script-shell=', '--shell=')) for a in args):
             return 'ask', f"{base_cmd} with custom script shell requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Workspace selection options (e.g. npm -w, --workspace, --workspaces, pnpm --filter) require confirmation
+        if any(a in ('-w', '--workspace', '-ws', '--workspaces', '--filter', '-F', '--recursive', '-r') or
+               a.startswith(('-w=', '--workspace=', '--filter=', '-F=')) for a in args):
+            return 'ask', f"Package workspace selection options require confirmation: {' '.join(cmd_tokens)}"
+
+        # Package directory / prefix options
+        target_dir = cwd
+        skip_next_dir = False
+        for i, a in enumerate(args):
+            if skip_next_dir:
+                skip_next_dir = False
+                continue
+            if a in ('--prefix', '-C', '--dir', '--cwd') and i + 1 < len(args):
+                target_dir = args[i + 1]
+                skip_next_dir = True
+            elif a.startswith(('--prefix=', '--dir=', '--cwd=')):
+                target_dir = a.split('=', 1)[1]
+            elif a.startswith('-C') and len(a) > 2:
+                target_dir = a[2:]
+
+        norm_target_dir = expand_path(target_dir, cwd)
+        if not is_path_in_workspaces(norm_target_dir, workspace_paths, cwd):
+            return 'ask', f"Package directory option targeting path outside workspace requires confirmation: {target_dir}"
+
         if args:
             sub = args[0]
             target_script = None
@@ -1292,21 +1347,33 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 if sub == 'run' and not any(target_script.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
                     return 'ask', f"Package script requires confirmation: {base_cmd} run {target_script}"
 
-                out_check = check_dev_tool_output(script_args, workspace_paths, cwd, f"{base_cmd} {sub}")
+                out_check = check_dev_tool_output(script_args, workspace_paths, norm_target_dir, f"{base_cmd} {sub}")
                 if out_check:
                     return out_check
 
-                # Inspect and validate package.json script body if package.json exists
-                pkg_json = find_package_json(cwd, workspace_paths)
+                # Inspect and validate package.json script body and lifecycle hooks if package.json exists
+                pkg_json = find_package_json(norm_target_dir, workspace_paths)
                 if pkg_json:
-                    script_body = get_package_script(pkg_json, target_script)
-                    if script_body is not None:
-                        # Evaluate script body through full classifier security policy
-                        s_verdict, s_reason = classify_command_line(script_body, workspace_paths, cwd, depth=depth + 1)
-                        if s_verdict != 'allow':
-                            return s_verdict, f"Package script '{target_script}' in package.json requires confirmation: {s_reason}"
-                    elif base_cmd != 'bun' or sub != 'test':
-                        return 'ask', f"Package script '{target_script}' not found in package.json requires confirmation: {' '.join(cmd_tokens)}"
+                    has_ignore_scripts = any(a == '--ignore-scripts' or a.startswith('--ignore-scripts=') for a in script_args)
+                    scripts_to_check = []
+                    if not has_ignore_scripts:
+                        pre_s = 'pre' + target_script
+                        if get_package_script(pkg_json, pre_s) is not None:
+                            scripts_to_check.append(pre_s)
+                    scripts_to_check.append(target_script)
+                    if not has_ignore_scripts:
+                        post_s = 'post' + target_script
+                        if get_package_script(pkg_json, post_s) is not None:
+                            scripts_to_check.append(post_s)
+
+                    for s_name in scripts_to_check:
+                        script_body = get_package_script(pkg_json, s_name)
+                        if script_body is not None:
+                            s_verdict, s_reason = classify_command_line(script_body, workspace_paths, norm_target_dir, depth=depth + 1)
+                            if s_verdict != 'allow':
+                                return s_verdict, f"Package lifecycle script '{s_name}' in package.json requires confirmation: {s_reason}"
+                        elif s_name == target_script and (base_cmd != 'bun' or sub != 'test'):
+                            return 'ask', f"Package script '{target_script}' not found in package.json requires confirmation: {' '.join(cmd_tokens)}"
                 return 'allow', f"Safe package manager {sub}: {base_cmd} {' '.join(args)}"
 
             if sub in {'install', 'i', 'add', 'remove', 'uninstall', 'update', 'publish'}:
@@ -1404,13 +1471,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     if not is_path_in_workspaces(a, workspace_paths, cwd):
                         return 'ask', f"tsc compiling file outside workspace requires confirmation: {a}"
         return 'allow', f"Safe static dev tool: {base_cmd}"
-
-    if base_cmd in {'node', 'nodejs'}:
-        if args and args[0] in {'--test', 'test'}:
-            out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, 'node --test')
-            if out_check:
-                return out_check
-            return 'allow', 'Safe node test'
 
     if base_cmd == 'cargo':
         if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):

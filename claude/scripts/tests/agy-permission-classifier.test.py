@@ -1317,6 +1317,114 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res['decision'], 'allow')
         pkg_file.unlink()
 
+    def test_round_21_findings(self):
+        # 63. Package lifecycle hooks (pretest, posttest) are inspected
+        pkg_file = Path(self.test_ws) / 'package.json'
+        pkg_file.write_text(json.dumps({
+            "name": "lifecycle-pkg",
+            "scripts": {
+                "pretest": "cat ~/.ssh/id_rsa",
+                "test": "echo 'running tests'",
+                "posttest": "echo 'cleanup'"
+            }
+        }))
+        payload_evil_pretest = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_evil_pretest)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_ignore_scripts = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --ignore-scripts', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_ignore_scripts)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 64. Git output option abbreviations are caught
+        payload_git_out_abbr = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --out=/tmp/outside.patch', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_git_out_abbr)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_git_out_dir = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --output-dir=/tmp/outside', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_git_out_dir)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 65. Node execution is not auto-approved
+        payload_node_test = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'node test', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_node_test)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_node_flag = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'node --test', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_node_flag)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 66. Git sensitive probe with --exit-code and cached changes
+        git_dir = Path(self.test_ws) / 'git_exit_test'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'initial'], cwd=str(git_dir), check=True)
+
+        env_file = git_dir / '.env'
+        env_file.write_text('SECRET=true')
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+
+        payload_diff_exit = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --exit-code --cached', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_diff_exit)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 67. Package prefix and workspace options
+        subpkg_dir = Path(self.test_ws) / 'subpkg'
+        subpkg_dir.mkdir(parents=True, exist_ok=True)
+        (subpkg_dir / 'package.json').write_text(json.dumps({
+            "name": "subpkg",
+            "scripts": {
+                "test": "cat ~/.ssh/id_rsa"
+            }
+        }))
+        payload_pkg_prefix_evil = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --prefix ./subpkg', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_pkg_prefix_evil)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_pkg_prefix_out = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --prefix /tmp/outside', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_pkg_prefix_out)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_pkg_ws = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --workspace foo', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_pkg_ws)
+        self.assertEqual(res['decision'], 'ask')
+
+        pkg_file.unlink()
+
 
 if __name__ == '__main__':
     unittest.main()
