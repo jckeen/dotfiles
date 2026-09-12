@@ -57,12 +57,16 @@ def get_sensitive_credential_prefixes():
         os.path.join(home, '.aws'),
         os.path.join(home, '.gnupg'),
         os.path.join(home, '.netrc'),
+        os.path.join(home, '.codex'),
+        os.path.join(home, '.claude'),
+        os.path.join(home, '.gemini', 'antigravity-cli'),
         '/etc/shadow',
         '/etc/sudoers',
     )
 
 SENSITIVE_FILENAMES = {
     'antigravity-oauth-token',
+    'auth.json', 'token', '.token',
     'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
     '.bashrc', '.bash_profile', '.zshrc', '.profile',
     'hosts.yml',
@@ -71,6 +75,7 @@ SENSITIVE_FILENAMES = {
 # Glob patterns that match sensitive files
 SENSITIVE_PATTERNS = (
     '.env*', 'id_*', '*.pem', '*.key', 'antigravity-oauth-token',
+    '*auth*.json', '*token*',
     '*shadow*', '*sudoers*', 'hosts.yml',
 )
 
@@ -423,8 +428,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         # Git switch: only allow without discarding changes or creating/resetting branches
         if git_sub == 'switch':
-            if any(a in ('--discard-changes', '-f', '--force', '-c', '-C', '--create', '--force-create') or a.startswith(('-c', '-C')) for a in args):
-                return 'ask', f"Switching with branch creation or forced reset requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a.startswith(('-c', '-C', '-f', '--create', '--force-create', '--force', '--discard-changes')) for a in args):
+                return 'ask', f"Switching with branch creation, reset, or discard requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
 
         # Git branch: only allow read-only queries
@@ -457,16 +462,32 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'allow', 'Safe git diff'
 
         if git_sub == 'stash':
-            if any(a in ('clear', 'drop', 'remove', 'pop') for a in args):
-                return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
-            return 'allow', 'Safe git stash query'
+            # Only strictly read-only queries are auto-approved
+            if len(args) > 1 and args[1] in {'list', 'show'}:
+                return 'allow', f"Safe git stash query: git stash {args[1]}"
+            return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub == 'worktree':
             if any(a in ('add', 'remove', 'prune', 'lock', 'unlock', 'move') for a in args):
                 if 'add' in args:
-                    targets = [a for a in args[1:] if not a.startswith('-') and a != 'add']
-                    if targets:
-                        target_dir = targets[0]
+                    if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
+                        return 'ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
+                    sub_args = args[args.index('add') + 1:]
+                    dir_operands = []
+                    skip_next = False
+                    for a in sub_args:
+                        if skip_next:
+                            skip_next = False
+                            continue
+                        if a in ('-b', '-B', '--reason'):
+                            skip_next = True
+                            continue
+                        if a.startswith(('-b', '-B', '--reason=')):
+                            continue
+                        if not a.startswith('-'):
+                            dir_operands.append(a)
+                    if dir_operands:
+                        target_dir = dir_operands[0]
                         if not is_path_in_workspaces(target_dir, workspace_paths, cwd) or is_system_write_path(target_dir, cwd):
                             return 'ask', f"git worktree add outside workspace requires approval: {target_dir}"
                     return 'allow', 'Safe git worktree add within workspace'
@@ -481,8 +502,13 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'allow', 'Safe git config query'
             return 'ask', 'Git config modification requires confirmation'
 
-        if git_sub in {'add', 'commit'}:
-            return 'allow', f"Safe git {git_sub}"
+        if git_sub == 'add':
+            return 'allow', 'Safe git add'
+
+        if git_sub == 'commit':
+            if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
+                return 'ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git commit'
 
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
@@ -494,16 +520,36 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if base_cmd == 'less':
             if any(a in ('-o', '-O', '--log-file', '--LOG-FILE') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=')) for a in args):
                 return 'ask', f"less with log file option requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'printf':
+            if any(a == '-v' or a.startswith('-v') for a in args):
+                var_name = None
+                for i, a in enumerate(args):
+                    if a == '-v' and i + 1 < len(args):
+                        var_name = args[i + 1]
+                        break
+                    elif a.startswith('-v') and len(a) > 2:
+                        var_name = a[2:]
+                        break
+                if var_name and is_dangerous_env_var(var_name):
+                    return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {var_name}"
+                return 'ask', f"printf with variable assignment (-v) requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'uniq':
             positionals = [a for a in args if not a.startswith('-')]
             if len(positionals) > 1:
                 return 'ask', f"uniq with output file operand requires confirmation: {' '.join(cmd_tokens)}"
         return 'allow', f"Safe inspection command: {base_cmd}"
 
-    # Ripgrep: safe unless using --pre which runs external programs or searching sensitive paths
+    # Ripgrep: safe unless using --pre which runs external programs, searching hidden/symlink, or searching sensitive paths
     if base_cmd in {'rg', 'ag'}:
         if any(a.startswith('--pre') for a in args):
             return 'ask', f"rg with --pre option requires confirmation: {' '.join(cmd_tokens)}"
+        # Check for unexpanded variables
+        for a in args:
+            if not a.startswith('-') and ('$' in a or '`' in a):
+                return 'ask', f"rg with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+        # Check for hidden files, ignoring gitignore, or symlink following
+        if any(a in ('-u', '-uu', '-uuu', '--hidden', '--no-ignore', '-L', '--follow') or a.startswith(('-u', '--hidden', '--no-ignore', '--follow')) for a in args):
+            return 'ask', f"rg with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         positionals = [a for a in args if not a.startswith('-')]
         has_pattern_flag = any(a == '-e' or a.startswith('-e') for a in args)
         search_paths = positionals if has_pattern_flag else positionals[1:]
@@ -522,30 +568,39 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
         return 'allow', 'Safe grep query'
 
-    # Grep: safe unless searching sensitive directories or recursive search outside workspace
+    # Grep: safe unless searching sensitive directories or recursive search
     if base_cmd in {'grep', 'egrep', 'fgrep'}:
-        is_recursive = any(a in ('-r', '-R', '--recursive') or (a.startswith('-') and any(c in a for c in ('r', 'R'))) for a in args)
+        # Check for unexpanded variables
+        for a in args:
+            if not a.startswith('-') and ('$' in a or '`' in a):
+                return 'ask', f"grep with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         positionals = [a for a in args if not a.startswith('-')]
         has_pattern_flag = any(a in ('-e', '-f') or a.startswith(('-e', '-f')) for a in args)
         search_paths = positionals if has_pattern_flag else positionals[1:]
-        if not search_paths and is_recursive:
-            search_paths = [cwd]
         for p in search_paths:
             if is_sensitive_credential_path(p, cwd):
                 return 'deny', f"Searching sensitive credential path is forbidden: {p}"
-            if is_recursive:
-                p_norm = expand_path(p, cwd)
-                p_dir = p_norm if p_norm.endswith(os.sep) else p_norm + os.sep
-                for prefix in get_sensitive_credential_prefixes():
-                    prefix_norm = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
-                    if prefix_norm == p_norm or prefix_norm.startswith(p_dir):
-                        return 'deny', f"Recursive search over path containing sensitive credentials is forbidden: {p}"
-                if not is_path_in_workspaces(p, workspace_paths, cwd):
-                    return 'ask', f"Recursive search outside workspace requires confirmation: {p}"
+            p_norm = expand_path(p, cwd)
+            p_dir = p_norm if p_norm.endswith(os.sep) else p_norm + os.sep
+            for prefix in get_sensitive_credential_prefixes():
+                prefix_norm = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
+                if prefix_norm == p_norm or prefix_norm.startswith(p_dir):
+                    return 'deny', f"Recursive search over path containing sensitive credentials is forbidden: {p}"
+
+        is_recursive = any(a in ('-r', '-R', '--recursive') or (a.startswith('-') and any(c in a for c in ('r', 'R'))) for a in args)
+        if is_recursive:
+            return 'ask', f"Recursive grep may expose sensitive workspace files or traverse symlinks: {' '.join(cmd_tokens)}"
+
+        for p in search_paths:
+            if not is_path_in_workspaces(p, workspace_paths, cwd):
+                return 'ask', f"Searching outside workspace requires confirmation: {p}"
         return 'allow', 'Safe grep query'
 
-    # Sort: check -o / --output option
+    # Sort: check -o / --output option and unexpanded variables
     if base_cmd == 'sort':
+        for a in args:
+            if not a.startswith('-') and ('$' in a or '`' in a):
+                return 'ask', f"sort with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         out_target = None
         for i, a in enumerate(args):
             if a in ('-o', '--output') and i + 1 < len(args):
@@ -561,6 +616,9 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # Find: safe ONLY without destructive, execution, or file writing options
     if base_cmd == 'find':
+        for a in args:
+            if not a.startswith('-') and ('$' in a or '`' in a):
+                return 'ask', f"find with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprint0', '-fprintf') for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
         # Check search root
@@ -626,23 +684,64 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:
-        targets = []
+        for a in args:
+            if not a.startswith('-') and ('$' in a or '`' in a):
+                return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+        target_dir = None
+        positionals = []
         i = 0
         while i < len(args):
             a = args[i]
             if a.startswith('--target-directory='):
-                targets.append(a.split('=', 1)[1])
+                target_dir = a.split('=', 1)[1]
             elif a == '-t' and i + 1 < len(args):
-                targets.append(args[i + 1])
+                target_dir = args[i + 1]
                 i += 1
             elif a.startswith('-t') and len(a) > 2:
-                targets.append(a[2:])
+                target_dir = a[2:]
             elif not a.startswith('-'):
-                targets.append(a)
+                positionals.append(a)
             i += 1
-        if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_system_write_path(t, cwd) for t in targets):
-            return 'allow', f"Safe file move/copy within workspace: {base_cmd}"
-        return 'ask', f"File copy/move outside workspace requires approval: {' '.join(cmd_tokens)}"
+
+        if not positionals and not target_dir:
+            return 'ask', f"{base_cmd} missing operands"
+
+        if target_dir:
+            dest_dir = target_dir
+            sources = positionals
+        elif len(positionals) >= 2:
+            dest_dir = positionals[-1]
+            sources = positionals[:-1]
+        else:
+            return 'ask', f"{base_cmd} requires at least source and destination"
+
+        effective_dests = []
+        dest_norm = expand_path(dest_dir, cwd)
+        is_dest_dir = os.path.isdir(dest_norm) or dest_dir.endswith(os.sep) or len(sources) > 1
+
+        for src in sources:
+            if is_dest_dir:
+                effective_dest = os.path.join(dest_dir, os.path.basename(src.rstrip(os.sep)))
+            else:
+                effective_dest = dest_dir
+            effective_dests.append(effective_dest)
+
+        all_paths = list(sources) + [dest_dir] + effective_dests
+        for p in all_paths:
+            if not is_path_in_workspaces(p, workspace_paths, cwd):
+                return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
+            if is_sensitive_credential_path(p, cwd) or is_system_write_path(p, cwd):
+                return 'deny', f"{base_cmd} targeting sensitive or system path is forbidden: {p}"
+
+        for ed in effective_dests:
+            ed_norm = expand_path(ed, cwd)
+            if os.path.islink(ed_norm):
+                link_target = str(Path(ed_norm).resolve())
+                if not is_path_in_workspaces(link_target, workspace_paths, cwd) or is_sensitive_credential_path(link_target, cwd) or is_system_write_path(link_target, cwd):
+                    return 'deny', f"{base_cmd} destination is a symlink pointing to sensitive or external target: {ed}"
+                return 'ask', f"{base_cmd} destination is an existing symlink: {ed}"
+
+        return 'allow', f"Safe file {base_cmd} within workspace"
 
     if base_cmd in {'mkdir', 'touch'}:
         targets = [a for a in args if not a.startswith('-')]
@@ -680,6 +779,13 @@ def classify_command_line(cmd_str, workspace_paths, cwd):
 
     if not subcommands_all:
         return 'allow', 'No subcommands found'
+
+    # If a compound command has a standalone variable assignment before other commands,
+    # the environment is stateful across the command line.
+    if len(subcommands_all) > 1:
+        for sub in subcommands_all[:-1]:
+            if sub and all('=' in tok and not tok.startswith('-') and tok.split('=', 1)[0].isidentifier() for tok in sub):
+                return 'ask', f"Compound command with stateful variable assignment requires confirmation: {cmd_str}"
 
     # Check for network downloads piped into interpreters
     for sub_idx, op in pipeline_links_all:
