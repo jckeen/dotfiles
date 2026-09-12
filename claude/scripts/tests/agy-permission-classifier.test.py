@@ -704,6 +704,78 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'deny')
 
+        # 26. cp into .git/hooks or .git/config requires confirmation
+        git_ws = Path(self.test_ws) / 'git_dest_repo'
+        git_ws.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_ws), check=True)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp payload .git/hooks/pre-commit', 'Cwd': str(git_ws)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp payload .git/config', 'Cwd': str(git_ws)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 27. git diff --output targeting .git/config requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --output=.git/config', 'Cwd': str(git_ws)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 28. git diff with core.fsmonitor configured requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff', 'Cwd': str(fs_repo)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 29. git ls-files with core.fsmonitor configured requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git ls-files', 'Cwd': str(fs_repo)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 30. git stash show with configured textconv driver requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash show', 'Cwd': str(fs_repo)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash show --no-textconv --no-ext-diff', 'Cwd': str(git_ws)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 31. cat /proc/self/environ and /proc/<pid>/environ are forbidden
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat /proc/self/environ', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat /proc/1/environ', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
 
 if __name__ == '__main__':
     unittest.main()

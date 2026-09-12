@@ -170,6 +170,19 @@ def is_sensitive_credential_path(path_str, cwd=None):
     norm = expand_path(clean, cwd)
     if matches_sensitive_pattern(os.path.basename(norm)) or matches_sensitive_pattern(norm):
         return True
+
+    # Check for process environment reads (/proc/*/environ, /proc/self/environ, etc.)
+    norm_proc = norm.replace('\\', '/')
+    clean_proc = clean.replace('\\', '/')
+    if (norm_proc.startswith('/proc/') and ('/environ' in norm_proc or os.path.basename(norm_proc) == 'environ')) or \
+       (clean_proc.startswith('/proc/') and ('/environ' in clean_proc or os.path.basename(clean_proc) == 'environ')):
+        return True
+    try:
+        resolved = str(Path(norm).resolve()).replace('\\', '/')
+        if resolved.startswith('/proc/') and ('/environ' in resolved or os.path.basename(resolved) == 'environ'):
+            return True
+    except Exception:
+        pass
     for prefix in get_sensitive_credential_prefixes():
         prefixes_to_check = {os.path.abspath(prefix)}
         if os.path.exists(prefix):
@@ -325,16 +338,22 @@ def git_has_fsmonitor_configured(cwd=None):
 
 
 def is_git_admin_path(path_str, cwd=None):
-    """Check if path targets git internal administrative files (.git/config, .git/hooks, etc.)."""
+    """Check if path targets git internal administrative files (.git, .git/config, .git/hooks, bare repo .git, etc.)."""
     if not path_str or not isinstance(path_str, str):
         return False
     norm = expand_path(path_str, cwd)
     parts = norm.split(os.sep)
-    if '.git' in parts:
-        git_idx = parts.index('.git')
-        subparts = parts[git_idx + 1:]
-        if not subparts or any(sp in ('config', 'hooks') or sp.startswith('hook') for sp in subparts):
+    for p in parts:
+        if p == '.git' or p.endswith('.git'):
             return True
+    try:
+        resolved = str(Path(norm).resolve())
+        res_parts = resolved.split(os.sep)
+        for p in res_parts:
+            if p == '.git' or p.endswith('.git'):
+                return True
+    except Exception:
+        pass
     return False
 
 
@@ -533,7 +552,7 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                         return 'deny', f"Recursive deletion of entire workspace root is forbidden: rm {t}"
             return 'ask', f"Recursive directory deletion requires confirmation: {' '.join(cmd_tokens)}"
         # Non-recursive rm on individual files inside workspace
-        if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) for t in targets):
+        if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) for t in targets):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
         return 'ask', f"File deletion requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -546,13 +565,17 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         # Check for git output options across all git commands
         git_out = None
         for i, a in enumerate(args):
-            if a == '--output' and i + 1 < len(args):
+            if a in ('--output', '-o', '--output-directory') and i + 1 < len(args):
                 git_out = args[i + 1]
-            elif a.startswith('--output='):
+            elif a.startswith(('--output=', '--output-directory=')):
                 git_out = a.split('=', 1)[1]
+            elif a.startswith('-o') and len(a) > 2 and not a.startswith('--'):
+                git_out = a[2:].lstrip('=')
         if git_out:
             if is_sensitive_credential_path(git_out, cwd) or is_system_write_path(git_out, cwd):
                 return 'deny', f"git {git_sub} --output targeting sensitive or system path is forbidden: {git_out}"
+            if is_git_admin_path(git_out, cwd):
+                return 'ask', f"git {git_sub} --output targeting git administrative file requires confirmation: {git_out}"
             if not is_path_in_workspaces(git_out, workspace_paths, cwd):
                 return 'ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
 
@@ -639,6 +662,12 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Mutating git remotes requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git remote query'
 
+        # Git commands that inspect or refresh the index/working tree execute core.fsmonitor if configured
+        if git_sub in {'status', 'diff', 'ls-files', 'stash', 'add', 'commit', 'checkout', 'restore', 'reset', 'worktree', 'describe'}:
+            has_no_fsmonitor = any(a == '--no-optional-locks' for a in args)
+            if not has_no_fsmonitor and git_has_fsmonitor_configured(cwd):
+                return 'ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
+
         # Git diff
         if git_sub == 'diff':
             has_no_ext = any(a == '--no-ext-diff' for a in args)
@@ -649,8 +678,16 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         if git_sub == 'stash':
             # Only strictly read-only queries are auto-approved
-            if len(args) > 1 and args[1] in {'list', 'show'}:
-                return 'allow', f"Safe git stash query: git stash {args[1]}"
+            if len(args) > 1:
+                stash_sub = args[1]
+                if stash_sub == 'list':
+                    return 'allow', 'Safe git stash list'
+                if stash_sub == 'show':
+                    has_no_ext = any(a == '--no-ext-diff' for a in args)
+                    has_no_textconv = any(a == '--no-textconv' for a in args)
+                    if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
+                        return 'ask', f"git stash show with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'allow', 'Safe git stash show'
             return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub == 'worktree':
@@ -686,11 +723,6 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if not has_no_textconv and git_has_external_diff_configured(cwd):
                 return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
-        # Git status runs core.fsmonitor hook if configured
-        if git_sub == 'status':
-            has_no_fsmonitor = any(a == '--no-optional-locks' for a in args)
-            if not has_no_fsmonitor and git_has_fsmonitor_configured(cwd):
-                return 'ask', f"git status with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
@@ -963,6 +995,14 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
 
+        for ed in [dest_dir] + effective_dests:
+            if is_git_admin_path(ed, cwd):
+                return 'ask', f"{base_cmd} destination targeting git administrative file requires confirmation: {ed}"
+        if base_cmd == 'mv':
+            for src in sources:
+                if is_git_admin_path(src, cwd):
+                    return 'ask', f"mv removing git administrative file requires confirmation: {src}"
+
         for ed in effective_dests:
             ed_norm = expand_path(ed, cwd)
             if os.path.islink(ed_norm):
@@ -975,6 +1015,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
     if base_cmd in {'mkdir', 'touch'}:
         targets = [a for a in args if not a.startswith('-')]
+        if any(is_git_admin_path(t, cwd) for t in targets):
+            return 'ask', f"{base_cmd} targeting git administrative path requires confirmation: {' '.join(cmd_tokens)}"
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_system_write_path(t, cwd) for t in targets):
             return 'allow', f"Safe directory/file creation within workspace: {base_cmd}"
 
