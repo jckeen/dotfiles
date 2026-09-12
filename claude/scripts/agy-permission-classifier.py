@@ -16,6 +16,7 @@ Contract:
 - Always exits 0 with a valid JSON decision to prevent wedging the agent loop.
 """
 
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -23,46 +24,42 @@ import re
 import shlex
 import sys
 
-# Commands that are strictly read-only inspection and safe to auto-approve
+# Commands that are strictly read-only inspection and safe to auto-approve without options that execute code or write
 SAFE_INSPECTION_COMMANDS = {
     'ls', 'dir', 'vdir', 'pwd', 'echo', 'printf',
     'cat', 'head', 'tail', 'less', 'more', 'wc',
-    'grep', 'egrep', 'fgrep', 'rg', 'ag',
-    'file', 'stat', 'diff', 'cmp',
+    'file', 'stat', 'cmp',
     'which', 'whereis', 'type',
     'date', 'uptime', 'whoami', 'id', 'uname',
     'true', 'false', 'test', '[',
-    'sort', 'uniq', 'cut', 'column', 'jq',
+    'uniq', 'cut', 'column', 'jq',
 }
 
 # Standard directories containing system binaries
 SYSTEM_BIN_DIRS = {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin'}
 
-# Safe git subcommands that only inspect state
+# Safe git subcommands that only inspect state without options
 SAFE_GIT_READ_SUBCOMMANDS = {
-    'status', 'diff', 'log', 'show', 'branch', 'rev-parse',
+    'status', 'log', 'show', 'rev-parse',
     'rev-list', 'check-ref-format', 'ls-files', 'remote',
-    'describe', 'cat-file', 'tag', 'shortlog', 'blame',
+    'describe', 'cat-file', 'shortlog', 'blame',
     'version',
-}
-
-# Safe git subcommands that modify local stage/working copy without destroying work
-SAFE_GIT_WORKFLOW_SUBCOMMANDS = {
-    'add', 'commit', 'fetch',
 }
 
 # Subcommands / script prefixes for package managers that are safe to run
 SAFE_RUN_PREFIXES = ('test', 'lint', 'check', 'typecheck', 'build', 'format', 'compile', 'verify', 'doc')
 
-# Sensitive files and credential paths that should NEVER be read or written
-SENSITIVE_CREDENTIAL_PREFIXES = (
-    os.path.expanduser('~/.ssh'),
-    os.path.expanduser('~/.aws'),
-    os.path.expanduser('~/.gnupg'),
-    os.path.expanduser('~/.netrc'),
-    '/etc/shadow',
-    '/etc/sudoers',
-)
+def get_sensitive_credential_prefixes():
+    """Dynamically resolve sensitive credential prefixes against current HOME."""
+    home = os.path.expanduser('~')
+    return (
+        os.path.join(home, '.ssh'),
+        os.path.join(home, '.aws'),
+        os.path.join(home, '.gnupg'),
+        os.path.join(home, '.netrc'),
+        '/etc/shadow',
+        '/etc/sudoers',
+    )
 
 SENSITIVE_FILENAMES = {
     'antigravity-oauth-token',
@@ -71,51 +68,83 @@ SENSITIVE_FILENAMES = {
     'hosts.yml',
 }
 
+# Glob patterns that match sensitive files
+SENSITIVE_PATTERNS = (
+    '.env*', 'id_*', '*.pem', '*.key', 'antigravity-oauth-token',
+    '*shadow*', '*sudoers*', 'hosts.yml',
+)
+
 # System directories that should never be modified/written to
 SYSTEM_WRITE_PREFIXES = (
     '/etc', '/boot', '/sys', '/proc', '/dev', '/usr', '/bin', '/sbin', '/var', '/lib',
 )
 
-# Dangerous environment variables that alter binary loading or runtime execution
+# Dangerous environment variables that alter binary loading, paths, or runtime execution
+DANGEROUS_ENV_PREFIXES = (
+    'LD_', 'DYLD_', 'GIT_', 'BASH_',
+)
 DANGEROUS_ENV_VARS = {
-    'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
-    'PYTHONPATH', 'NODE_OPTIONS', 'PERL5OPT', 'RUBYOPT', 'BASH_ENV', 'ENV',
+    'PATH', 'ENV', 'IFS', 'SHELL', 'SHLVL',
+    'NODE_OPTIONS', 'NODE_PATH',
+    'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'PYTHONEXECUTABLE',
+    'PERL5OPT', 'PERL5LIB', 'PERLLIB',
+    'RUBYOPT', 'RUBYLIB',
 }
 
 PROTECTED_BRANCHES = {'main', 'master', 'release', 'prod', 'production'}
+
+# Redirection operators (ordered by descending length for greedy matching)
+REDIRECTION_OPERATORS = ('&>>', '>|', '&>', '>>', '>&', '>', '<>')
+
+
+def is_dangerous_env_var(var_name):
+    if var_name in DANGEROUS_ENV_VARS:
+        return True
+    return any(var_name.startswith(p) for p in DANGEROUS_ENV_PREFIXES)
 
 
 def expand_path(p_str, cwd=None):
     """Safely expand user, variables, and relative paths against cwd."""
     if not p_str or not isinstance(p_str, str):
         return ''
-    # Expand ~ and environment variables ($HOME, etc.)
     expanded = os.path.expanduser(os.path.expandvars(p_str))
-    effective_cwd = cwd or os.getcwd()
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     if not os.path.isabs(expanded):
         expanded = os.path.join(effective_cwd, expanded)
     try:
-        # Resolve symlinks to prevent path traversal via symlinks
         return str(Path(expanded).resolve())
     except Exception:
         return os.path.abspath(expanded)
 
 
+def matches_sensitive_pattern(filename):
+    """Check if a filename or glob pattern matches sensitive credential patterns."""
+    basename = os.path.basename(filename)
+    if basename in SENSITIVE_FILENAMES:
+        return True
+    for pat in SENSITIVE_PATTERNS:
+        if fnmatch.fnmatch(basename, pat) or fnmatch.fnmatch(pat, basename):
+            return True
+    return False
+
+
 def is_sensitive_credential_path(path_str, cwd=None):
-    """Check if a path targets credentials, private keys, or tokens."""
+    """Check if a path targets credentials, private keys, or tokens (including globs)."""
     if not path_str or not isinstance(path_str, str):
         return False
     if path_str == '/dev/null':
         return False
-    norm = expand_path(path_str, cwd)
-    for prefix in SENSITIVE_CREDENTIAL_PREFIXES:
+
+    # Check for glob/bracket tricks like .en[v] or ~/.s[s]h/id_*
+    clean = re.sub(r'\[(.)\]', r'\1', path_str)
+    if matches_sensitive_pattern(clean) or matches_sensitive_pattern(path_str):
+        return True
+
+    norm = expand_path(clean, cwd)
+    for prefix in get_sensitive_credential_prefixes():
         norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
         if norm == norm_prefix or norm.startswith(norm_prefix + os.sep):
             return True
-    if os.path.basename(norm) in SENSITIVE_FILENAMES:
-        return True
-    if re.search(r'(^|/)\.env(\..+)?$', norm):
-        return True
     return False
 
 
@@ -125,7 +154,8 @@ def is_system_write_path(path_str, cwd=None):
         return False
     if path_str == '/dev/null':
         return False
-    norm = expand_path(path_str, cwd)
+    clean = re.sub(r'\[(.)\]', r'\1', path_str)
+    norm = expand_path(clean, cwd)
     for prefix in SYSTEM_WRITE_PREFIXES:
         norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
         if norm == norm_prefix or norm.startswith(norm_prefix + os.sep):
@@ -168,17 +198,29 @@ def split_into_subcommands(tokens):
     current = []
     pipeline_links = []
 
-    separators = {'&&', '||', ';', '|', '&'}
+    separators = {'&&', '||', ';', '|&', '|', '&'}
 
-    for tok in tokens:
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        # Check two-character operator |&
+        if tok == '|' and i + 1 < len(tokens) and tokens[i + 1] == '&':
+            if current:
+                subcommands.append(current)
+                pipeline_links.append((len(subcommands) - 1, '|&'))
+                current = []
+            i += 2
+            continue
+
         if tok in separators:
             if current:
                 subcommands.append(current)
-                if tok == '|':
-                    pipeline_links.append((len(subcommands) - 1, '|'))
+                if tok in ('|', '|&'):
+                    pipeline_links.append((len(subcommands) - 1, tok))
                 current = []
         else:
             current.append(tok)
+        i += 1
 
     if current:
         subcommands.append(current)
@@ -193,7 +235,6 @@ def parse_refspec_dest(refspec):
         dest = spec.split(':', 1)[1]
     else:
         dest = spec
-    # Strip leading refs/heads/ or refs/remotes/
     dest = re.sub(r'^refs/(heads|remotes/[^/]+)/', '', dest)
     return dest
 
@@ -214,8 +255,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     idx = 0
     while idx < len(tokens) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', tokens[idx]):
         var_name = tokens[idx].split('=', 1)[0]
-        if var_name in DANGEROUS_ENV_VARS:
-            return 'deny', f"Setting dangerous runtime execution variable is forbidden: {var_name}"
+        if is_dangerous_env_var(var_name):
+            return 'deny', f"Setting execution-altering environment variable is forbidden: {var_name}"
         idx += 1
 
     cmd_tokens = tokens[idx:]
@@ -225,46 +266,41 @@ def classify_subcommand(tokens, workspace_paths, cwd):
     raw_cmd = cmd_tokens[0]
     args = cmd_tokens[1:]
 
-    # Resolve executable: prevent ./malicious/ls by checking if path is explicit
-    if '/' in raw_cmd:
-        resolved_exe = expand_path(raw_cmd, cwd)
-        exe_dir = os.path.dirname(resolved_exe)
-        if exe_dir not in SYSTEM_BIN_DIRS:
-            # Running an arbitrary script or binary outside system PATH
-            # Exception: designated local test/hygiene scripts in workspace
-            script_name = os.path.basename(resolved_exe)
-            if re.match(r'^(check-.*\.sh|git-hygiene\.sh|hygiene-status\.sh)$', script_name) and is_path_in_workspaces(resolved_exe, workspace_paths, cwd):
-                base_cmd = script_name
-            else:
-                return 'ask', f"Running non-system executable requires confirmation: {raw_cmd}"
-        else:
-            base_cmd = os.path.basename(resolved_exe)
-    else:
-        base_cmd = raw_cmd
-
-    # 1. Output redirections: verify redirection targets
+    # Check for redirection operators and their destination targets
     for i, tok in enumerate(tokens):
-        if tok in ('>', '>>', '>&') and i + 1 < len(tokens):
+        if tok in REDIRECTION_OPERATORS and i + 1 < len(tokens):
             target = tokens[i + 1]
             if target == '/dev/null':
                 continue
+            # If target has unexpanded variable or glob, we cannot verify containment safely
+            if '$' in target or '*' in target or '?' in target:
+                return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
             if is_sensitive_credential_path(target, cwd) or is_system_write_path(target, cwd):
                 return 'deny', f"Redirect targeting sensitive or system path is forbidden: {target}"
             if not is_path_in_workspaces(target, workspace_paths, cwd):
                 return 'ask', f"Redirecting output outside workspace requires approval: {target}"
 
-    # 2. Check for sensitive files being read or targeted in arguments
+    # Check for sensitive files being targeted in arguments (including glob bracket tricks)
     for arg in args:
-        # Ignore options with values unless they specify paths
         val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
         if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
             return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
 
-    # 3. Privilege Escalation (Hard Deny)
+    # Resolve executable: prevent ./malicious/ls by checking if path is explicit
+    if '/' in raw_cmd:
+        resolved_exe = expand_path(raw_cmd, cwd)
+        exe_dir = os.path.dirname(resolved_exe)
+        if exe_dir not in SYSTEM_BIN_DIRS:
+            return 'ask', f"Running non-system executable requires confirmation: {raw_cmd}"
+        base_cmd = os.path.basename(resolved_exe)
+    else:
+        base_cmd = raw_cmd
+
+    # 1. Privilege Escalation (Hard Deny)
     if base_cmd in {'sudo', 'su', 'doas', 'pkexec', 'chroot'}:
         return 'deny', f"Privilege escalation command is forbidden: {base_cmd}"
 
-    # 4. Destructive Disk Operations (Hard Deny)
+    # 2. Destructive Disk Operations (Hard Deny)
     if base_cmd.startswith('mkfs') or base_cmd in {'fdisk', 'gdisk', 'parted', 'wipefs'}:
         return 'deny', f"Destructive disk partitioning or formatting is forbidden: {base_cmd}"
     if base_cmd == 'dd':
@@ -272,12 +308,12 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             if arg.startswith('of=/dev/') and arg != 'of=/dev/null':
                 return 'deny', f"Direct device overwrite with dd is forbidden: {arg}"
 
-    # 5. Reverse Shells & Network Exfiltration (Hard Deny)
+    # 3. Reverse Shells & Network Exfiltration (Hard Deny)
     if base_cmd in {'nc', 'ncat', 'socat'}:
         if any(a in ('-e', '-c', 'exec') for a in args):
             return 'deny', f"Reverse shell execution is forbidden: {base_cmd}"
 
-    # 6. Destructive Deletions (rm)
+    # 4. Destructive Deletions (rm)
     if base_cmd == 'rm':
         is_recursive = any(a in ('-r', '-R', '-rf', '-fr') or (a.startswith('-') and 'r' in a) for a in args)
         targets = [a for a in args if not a.startswith('-')]
@@ -296,82 +332,131 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
         return 'ask', f"File deletion requires confirmation: {' '.join(cmd_tokens)}"
 
-    # 7. Git Operations
+    # 5. Git Operations
     if base_cmd == 'git':
         if not args:
             return 'allow', 'git command query'
         git_sub = args[0]
 
-        # Force push detection (including refspecs and + prefixes)
+        # Force push or direct push to protected branch detection
         if git_sub == 'push':
             has_force = any(a in ('--force', '-f', '--force-with-lease') or a.startswith('+') for a in args)
             refspecs = [a for a in args[1:] if not a.startswith('-') and a != 'origin']
             for spec in refspecs:
                 dest = parse_refspec_dest(spec)
                 if dest in PROTECTED_BRANCHES:
-                    return 'deny', f"Force push or direct push to protected branch '{dest}' is forbidden: {' '.join(cmd_tokens)}"
+                    return 'deny', f"Push targeting protected branch '{dest}' is forbidden: {' '.join(cmd_tokens)}"
             if has_force:
                 if not refspecs:
                     return 'deny', f"Unscoped force push is forbidden: {' '.join(cmd_tokens)}"
                 return 'ask', f"Force push requires confirmation: {' '.join(cmd_tokens)}"
             return 'ask', f"Git push modifies remote repository: {' '.join(cmd_tokens)}"
 
-        # Destructive git operations
-        if git_sub == 'clean':
-            return 'ask', f"Git clean alters working tree: {' '.join(cmd_tokens)}"
-        if git_sub == 'reset':
-            return 'ask', f"Git reset alters working tree: {' '.join(cmd_tokens)}"
-        if git_sub == 'restore':
-            return 'ask', f"Git restore discards working changes: {' '.join(cmd_tokens)}"
+        # Fetch with refspecs: can overwrite local branch references
+        if git_sub == 'fetch':
+            refspecs = [a for a in args[1:] if not a.startswith('-') and a != 'origin']
+            if refspecs or any(a.startswith('+') for a in args):
+                return 'ask', f"Git fetch with refspecs requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git fetch'
+
+        # Destructive or state-discarding git commands
+        if git_sub in {'clean', 'reset', 'restore'}:
+            return 'ask', f"Git {git_sub} alters working tree: {' '.join(cmd_tokens)}"
+
+        # Git checkout: disallow file checkouts (which discard changes) and forced checkouts
         if git_sub == 'checkout':
-            if any(a in ('-f', '--force', '--') for a in args):
-                return 'ask', f"Forced checkout or discard requires confirmation: {' '.join(cmd_tokens)}"
-            return 'allow', 'Safe git checkout'
+            return 'ask', f"Git checkout requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Git switch: only allow without discarding changes
         if git_sub == 'switch':
             if any(a in ('--discard-changes', '-f', '--force') for a in args):
                 return 'ask', f"Discarding changes via git switch requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
-        if git_sub == 'stash':
-            if any(a in ('clear', 'drop') for a in args):
-                return 'ask', f"Dropping stash requires confirmation: {' '.join(cmd_tokens)}"
-            return 'allow', 'Safe git stash'
-        if git_sub == 'worktree':
-            if any(a in ('remove', 'prune') for a in args):
-                return 'ask', f"Removing worktree requires confirmation: {' '.join(cmd_tokens)}"
-            return 'allow', 'Safe git worktree'
 
-        # Safe read queries
+        # Git branch: only allow read-only queries
+        if git_sub == 'branch':
+            if any(a in ('-d', '-D', '-m', '-M', '-c', '-C', '--delete', '--move', '--copy') for a in args):
+                return 'ask', f"Deleting or renaming branches requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git branch query'
+
+        # Git tag: only allow listing
+        if git_sub == 'tag':
+            if any(a in ('-d', '--delete', '-a', '-f', '--force') for a in args):
+                return 'ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', 'Safe git tag query'
+
+        # Git diff with --output
+        if git_sub == 'diff':
+            for a in args:
+                if a.startswith('--output='):
+                    out_path = a.split('=', 1)[1]
+                    if not is_path_in_workspaces(out_path, workspace_paths, cwd):
+                        return 'ask', f"git diff --output outside workspace requires approval: {out_path}"
+            return 'allow', 'Safe git diff'
+
+        if git_sub in {'stash', 'worktree'}:
+            if any(a in ('clear', 'drop', 'remove', 'prune') for a in args):
+                return 'ask', f"Git {git_sub} deletion requires confirmation: {' '.join(cmd_tokens)}"
+            return 'allow', f"Safe git {git_sub}"
+
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
 
-        # Git config
         if git_sub == 'config':
             if any(a in ('--get', '--get-all', '--list', '-l') for a in args):
                 return 'allow', 'Safe git config query'
             return 'ask', 'Git config modification requires confirmation'
 
-        # Safe workflow
-        if git_sub in SAFE_GIT_WORKFLOW_SUBCOMMANDS:
-            return 'allow', f"Safe git workflow: git {git_sub}"
+        if git_sub in {'add', 'commit'}:
+            return 'allow', f"Safe git {git_sub}"
 
-        if git_sub == 'branch':
-            return 'allow', 'Safe local branch operation'
-
-    # 8. Inspection Commands
+    # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
         return 'allow', f"Safe inspection command: {base_cmd}"
 
-    # find command: safe ONLY without destructive or execution options
+    # Ripgrep: safe unless using --pre which runs external programs
+    if base_cmd in {'rg', 'ag'}:
+        if any(a.startswith('--pre') for a in args):
+            return 'ask', f"rg with --pre option requires confirmation: {' '.join(cmd_tokens)}"
+        # Check search targets
+        for a in args:
+            if not a.startswith('-') and is_sensitive_credential_path(a, cwd):
+                return 'deny', f"Searching sensitive credential path is forbidden: {a}"
+        return 'allow', 'Safe grep query'
+
+    # Grep: safe unless searching sensitive directories
+    if base_cmd in {'grep', 'egrep', 'fgrep'}:
+        for a in args:
+            if not a.startswith('-') and is_sensitive_credential_path(a, cwd):
+                return 'deny', f"Searching sensitive credential path is forbidden: {a}"
+        return 'allow', 'Safe grep query'
+
+    # Sort: check -o / --output option
+    if base_cmd == 'sort':
+        out_target = None
+        for i, a in enumerate(args):
+            if a == '-o' and i + 1 < len(args):
+                out_target = args[i + 1]
+            elif a.startswith('-o'):
+                out_target = a[2:]
+            elif a.startswith('--output='):
+                out_target = a.split('=', 1)[1]
+        if out_target:
+            if not is_path_in_workspaces(out_target, workspace_paths, cwd) or is_system_write_path(out_target, cwd):
+                return 'ask', f"sort output outside workspace requires approval: {out_target}"
+        return 'allow', 'Safe sort command'
+
+    # Find: safe ONLY without destructive, execution, or file writing options
     if base_cmd == 'find':
-        if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir') for a in args):
-            return 'ask', f"find with action options requires confirmation: {' '.join(cmd_tokens)}"
+        if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprint0', '-fprintf') for a in args):
+            return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
+        # Check search root
+        for a in args:
+            if not a.startswith('-') and is_sensitive_credential_path(a, cwd):
+                return 'deny', f"find searching sensitive path is forbidden: {a}"
         return 'allow', 'Safe find command'
 
-    # Local Repository Health Checks
-    if re.match(r'^(check-.*\.sh|git-hygiene\.sh|hygiene-status\.sh)$', base_cmd):
-        return 'allow', f"Safe local repository health check: {base_cmd}"
-
-    # 9. Test, Lint, and Build Runners
+    # 7. Test, Lint, and Build Runners
     if base_cmd in {'npm', 'pnpm', 'yarn', 'bun'}:
         if args:
             sub = args[0]
@@ -385,14 +470,16 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"Package management alters dependencies: {base_cmd} {sub}"
         return 'ask', f"Package manager command requires confirmation: {' '.join(cmd_tokens)}"
 
+    # npx: only safe when run with --no-install to avoid downloading unverified packages
     if base_cmd == 'npx':
         if args:
-            tool = args[0]
-            # Disallow installation operations like npx playwright install
-            if any(a in ('install', 'init', 'create', 'download') for a in args[1:]):
-                return 'ask', f"npx tool installation requires confirmation: {' '.join(cmd_tokens)}"
-            if tool in {'tsc', 'eslint', 'prettier', 'jest', 'vitest'}:
-                return 'allow', f"Safe static tool via npx: {tool}"
+            has_no_install = '--no-install' in args
+            tools = [a for a in args if not a.startswith('-')]
+            if has_no_install and tools:
+                tool = tools[0]
+                if tool in {'tsc', 'eslint', 'prettier', 'jest', 'vitest'}:
+                    return 'allow', f"Safe static tool via npx --no-install: {tool}"
+            return 'ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
         return 'ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd == 'cargo':
@@ -412,7 +499,6 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             module = args[1]
             if module in {'unittest', 'pytest', 'mypy', 'ruff', 'flake8'}:
                 return 'allow', f"Safe python module: {module}"
-        # Arbitrary python scripts should require approval to prevent write-and-execute bypasses
         return 'ask', f"Executing Python script requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd == 'go':
@@ -423,15 +509,22 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if not args or all(a in {'test', 'check', 'lint', 'build', 'clean', 'all'} for a in args):
             return 'allow', f"Safe make target: {' '.join(args) or 'default'}"
 
-    # 10. Safe Local File Operations (cp / mv)
+    # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:
-        # Check destinations inside options like --target-directory=...
         targets = []
-        for a in args:
+        i = 0
+        while i < len(args):
+            a = args[i]
             if a.startswith('--target-directory='):
                 targets.append(a.split('=', 1)[1])
+            elif a == '-t' and i + 1 < len(args):
+                targets.append(args[i + 1])
+                i += 1
+            elif a.startswith('-t') and len(a) > 2:
+                targets.append(a[2:])
             elif not a.startswith('-'):
                 targets.append(a)
+            i += 1
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_system_write_path(t, cwd) for t in targets):
             return 'allow', f"Safe file move/copy within workspace: {base_cmd}"
         return 'ask', f"File copy/move outside workspace requires approval: {' '.join(cmd_tokens)}"
@@ -441,7 +534,6 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_system_write_path(t, cwd) for t in targets):
             return 'allow', f"Safe directory/file creation within workspace: {base_cmd}"
 
-    # Fallback to interactive confirmation for unknown or state-changing commands
     return 'ask', f"Command requires confirmation: {' '.join(cmd_tokens)}"
 
 
@@ -454,38 +546,49 @@ def classify_command_line(cmd_str, workspace_paths, cwd):
     if re.search(r'(\$\(|\`|<(?=\()|>(?=\())', cmd_str):
         return 'ask', 'Command contains command or process substitution'
 
-    # Split on newlines first so newlines cannot hide subsequent commands
     lines = [line.strip() for line in cmd_str.splitlines() if line.strip()]
     if not lines:
         return 'allow', 'Empty command'
+
+    subcommands_all = []
+    pipeline_links_all = []
 
     for line in lines:
         tokens = tokenize_command_line(line)
         if tokens is None:
             return 'ask', 'Unable to safely parse command tokens'
+        subcmds, pipe_links = split_into_subcommands(tokens)
+        subcommands_all.extend(subcmds)
+        pipeline_links_all.extend(pipe_links)
 
-        subcommands, pipeline_links = split_into_subcommands(tokens)
-        if not subcommands:
-            continue
+    if not subcommands_all:
+        return 'allow', 'No subcommands found'
 
-        # Check for network commands piped directly into shells (curl ... | bash)
-        for sub_idx, op in pipeline_links:
-            if sub_idx + 1 < len(subcommands):
-                left_sub = subcommands[sub_idx]
-                right_sub = subcommands[sub_idx + 1]
+    # Check for network downloads piped into interpreters
+    for sub_idx, op in pipeline_links_all:
+        if sub_idx + 1 < len(subcommands_all):
+            left_sub = subcommands_all[sub_idx]
+            right_sub = subcommands_all[sub_idx + 1]
 
-                left_base = os.path.basename(left_sub[0]) if left_sub else ''
-                right_base = os.path.basename(right_sub[0]) if right_sub else ''
+            left_base = os.path.basename(left_sub[0]) if left_sub else ''
+            right_base = os.path.basename(right_sub[0]) if right_sub else ''
 
-                if left_base in {'curl', 'wget', 'fetch'} and right_base in {'sh', 'bash', 'zsh', 'python', 'python3', 'node', 'perl', 'ruby'}:
-                    return 'deny', f"Piping remote download ({left_base}) directly into interpreter ({right_base}) is forbidden"
+            if left_base in {'curl', 'wget', 'fetch'} and right_base in {'sh', 'bash', 'zsh', 'python', 'python3', 'node', 'perl', 'ruby'}:
+                return 'deny', f"Piping remote download ({left_base}) directly into interpreter ({right_base}) is forbidden"
 
-        for sub in subcommands:
-            verdict, reason = classify_subcommand(sub, workspace_paths, cwd)
-            if verdict == 'deny':
-                return 'deny', reason
-            elif verdict == 'ask':
-                return 'ask', reason
+    # Evaluate all subcommands; deny strictly takes precedence over ask
+    verdicts = []
+    for sub in subcommands_all:
+        verdict, reason = classify_subcommand(sub, workspace_paths, cwd)
+        verdicts.append((verdict, reason))
+
+    for v, r in verdicts:
+        if v == 'deny':
+            return 'deny', r
+
+    for v, r in verdicts:
+        if v == 'ask':
+            return 'ask', r
 
     return 'allow', 'Safe command auto-approved by classifier'
 
@@ -510,6 +613,11 @@ def classify_file_read(target_file, cwd):
         return 'allow', 'File read query'
     if is_sensitive_credential_path(target_file, cwd):
         return 'deny', f"Reading sensitive credentials is forbidden: {target_file}"
+    norm = expand_path(target_file, cwd)
+    for prefix in get_sensitive_credential_prefixes():
+        norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
+        if norm_prefix.startswith(norm + os.sep) and norm in ('/', os.path.expanduser('~')):
+            return 'ask', f"Searching directory containing sensitive credentials requires approval: {target_file}"
     return 'allow', f"Safe file read: {os.path.basename(target_file)}"
 
 
@@ -542,44 +650,51 @@ def main():
         print(json.dumps({'decision': 'allow', 'reason': 'Bypassed via ANTIGRAVITY_CLASSIFIER_MODE=allow_all'}))
         return
 
-    tool_call = data.get('toolCall')
-    if not isinstance(tool_call, dict):
-        print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: toolCall object missing or invalid'}))
-        return
+    try:
+        tool_call = data.get('toolCall')
+        if not isinstance(tool_call, dict):
+            print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: toolCall object missing or invalid'}))
+            return
 
-    tool_name = tool_call.get('name')
-    if not isinstance(tool_name, str) or not tool_name:
-        print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: tool name missing or invalid'}))
-        return
+        tool_name = tool_call.get('name')
+        if not isinstance(tool_name, str) or not tool_name:
+            print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: tool name missing or invalid'}))
+            return
 
-    args = tool_call.get('args')
-    if not isinstance(args, dict):
-        print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: tool args must be an object'}))
-        return
+        args = tool_call.get('args')
+        if not isinstance(args, dict):
+            print(json.dumps({'decision': 'ask', 'reason': 'Permission classifier: tool args must be an object'}))
+            return
 
-    workspace_paths = data.get('workspacePaths')
-    if not isinstance(workspace_paths, list):
-        workspace_paths = []
+        workspace_paths = data.get('workspacePaths')
+        if not isinstance(workspace_paths, list):
+            workspace_paths = []
 
-    cwd = args.get('Cwd') or args.get('cwd') or os.getcwd()
-
-    if tool_name == 'run_command':
-        cmd = args.get('CommandLine') or args.get('command')
-        if cmd is None or not isinstance(cmd, str):
-            decision, reason = 'ask', 'run_command CommandLine argument is missing or invalid'
+        raw_cwd = args.get('Cwd') or args.get('cwd')
+        if isinstance(raw_cwd, str) and raw_cwd.strip():
+            cwd = raw_cwd
         else:
-            decision, reason = classify_command_line(cmd, workspace_paths, cwd)
-    elif tool_name in ('write_to_file', 'replace_file_content', 'multi_replace_file_content'):
-        target = args.get('TargetFile') or args.get('path') or ''
-        decision, reason = classify_file_modification(target, workspace_paths, cwd)
-    elif tool_name in ('view_file', 'grep_search', 'find_by_name'):
-        target = args.get('AbsolutePath') or args.get('SearchPath') or args.get('SearchDirectory') or args.get('TargetFile') or ''
-        decision, reason = classify_file_read(target, cwd)
-    else:
-        # Unknown or unspecified tools require confirmation
-        decision, reason = 'ask', f"Tool {tool_name} requires confirmation"
+            cwd = os.getcwd()
 
-    print(json.dumps({'decision': decision, 'reason': reason}))
+        if tool_name == 'run_command':
+            cmd = args.get('CommandLine') or args.get('command')
+            if cmd is None or not isinstance(cmd, str):
+                decision, reason = 'ask', 'run_command CommandLine argument is missing or invalid'
+            else:
+                decision, reason = classify_command_line(cmd, workspace_paths, cwd)
+        elif tool_name in ('write_to_file', 'replace_file_content', 'multi_replace_file_content'):
+            target = args.get('TargetFile') or args.get('path') or ''
+            decision, reason = classify_file_modification(target, workspace_paths, cwd)
+        elif tool_name in ('view_file', 'grep_search', 'find_by_name'):
+            target = args.get('AbsolutePath') or args.get('SearchPath') or args.get('SearchDirectory') or args.get('TargetFile') or ''
+            decision, reason = classify_file_read(target, cwd)
+        else:
+            decision, reason = 'ask', f"Tool {tool_name} requires confirmation"
+
+        print(json.dumps({'decision': decision, 'reason': reason}))
+    except Exception as e:
+        # Failsafe: never crash unhandled, always emit a valid JSON decision
+        print(json.dumps({'decision': 'ask', 'reason': f"Permission classifier internal error: {e}"}))
 
 
 if __name__ == '__main__':
