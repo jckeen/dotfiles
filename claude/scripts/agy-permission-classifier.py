@@ -164,6 +164,8 @@ def is_sensitive_credential_path(path_str, cwd=None):
         return True
 
     norm = expand_path(clean, cwd)
+    if matches_sensitive_pattern(os.path.basename(norm)) or matches_sensitive_pattern(norm):
+        return True
     for prefix in get_sensitive_credential_prefixes():
         prefixes_to_check = {os.path.abspath(prefix)}
         if os.path.exists(prefix):
@@ -230,10 +232,22 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
 def tokenize_command_line(line):
     """Tokenize a single shell command line without stripping comments prematurely."""
     try:
-        s = shlex.shlex(line, posix=True, punctuation_chars=True)
+        # Separate adjacent semicolons and redirection/pipe/operator characters
+        # e.g. ;> -> ; > or ;& -> ; & or ;>> -> ; >>
+        normalized = re.sub(r';+(?=[<>&|])', '; ', line)
+        normalized = re.sub(r'(?<=[<>&|]);+', ' ;', normalized)
+        s = shlex.shlex(normalized, posix=True, punctuation_chars=True)
         s.whitespace_split = True
         s.commenters = ''
-        return list(s)
+        raw_tokens = list(s)
+        refined = []
+        for tok in raw_tokens:
+            if ';' in tok and len(tok) > 1:
+                parts = re.split(r'(;+)', tok)
+                refined.extend(p for p in parts if p)
+            else:
+                refined.append(tok)
+        return refined
     except Exception:
         return None
 
@@ -411,8 +425,22 @@ def classify_subcommand(tokens, workspace_paths, cwd):
             elif a.startswith('--output='):
                 git_out = a.split('=', 1)[1]
         if git_out:
-            if not is_path_in_workspaces(git_out, workspace_paths, cwd) or is_system_write_path(git_out, cwd):
+            if is_sensitive_credential_path(git_out, cwd) or is_system_write_path(git_out, cwd):
+                return 'deny', f"git {git_sub} --output targeting sensitive or system path is forbidden: {git_out}"
+            if not is_path_in_workspaces(git_out, workspace_paths, cwd):
                 return 'ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
+
+        # External diff/textconv drivers can execute arbitrary commands configured in gitconfig/attributes
+        for a in args:
+            if a in ('--ext-diff', '--textconv') or a.startswith(('--ext-diff=', '--textconv=')):
+                return 'ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Check git arguments for <rev>:<path> expressions targeting sensitive files
+        for a in args:
+            if not a.startswith('-') and ':' in a and not a.startswith(('http:', 'https:', 'ssh:', 'git:')):
+                git_path = a.split(':', 1)[1]
+                if git_path and (matches_sensitive_pattern(git_path) or is_sensitive_credential_path(git_path, cwd)):
+                    return 'deny', f"Git command targeting sensitive object path is forbidden: {a}"
 
         # Force push or direct push to protected branch detection
         if git_sub == 'push':
@@ -724,16 +752,27 @@ def classify_subcommand(tokens, workspace_paths, cwd):
                 return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         target_dir = None
         positionals = []
+        end_of_options = False
         i = 0
         while i < len(args):
             a = args[i]
-            if a.startswith('--target-directory='):
+            if end_of_options:
+                positionals.append(a)
+            elif a == '--':
+                end_of_options = True
+            elif a.startswith('--target-directory='):
                 target_dir = a.split('=', 1)[1]
-            elif a == '-t' and i + 1 < len(args):
+            elif a == '--target-directory' and i + 1 < len(args):
                 target_dir = args[i + 1]
                 i += 1
-            elif a.startswith('-t') and len(a) > 2:
-                target_dir = a[2:]
+            elif a.startswith('-') and not a.startswith('--') and 't' in a:
+                t_idx = a.index('t')
+                rest = a[t_idx + 1:]
+                if rest:
+                    target_dir = rest.lstrip('=')
+                elif i + 1 < len(args):
+                    target_dir = args[i + 1]
+                    i += 1
             elif not a.startswith('-'):
                 positionals.append(a)
             i += 1
@@ -763,10 +802,10 @@ def classify_subcommand(tokens, workspace_paths, cwd):
 
         all_paths = list(sources) + [dest_dir] + effective_dests
         for p in all_paths:
-            if not is_path_in_workspaces(p, workspace_paths, cwd):
-                return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
             if is_sensitive_credential_path(p, cwd) or is_system_write_path(p, cwd):
                 return 'deny', f"{base_cmd} targeting sensitive or system path is forbidden: {p}"
+            if not is_path_in_workspaces(p, workspace_paths, cwd):
+                return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
 
         for ed in effective_dests:
             ed_norm = expand_path(ed, cwd)

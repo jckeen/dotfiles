@@ -401,6 +401,76 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             if tmp_file.exists():
                 tmp_file.unlink()
 
+    def test_round_8_hardening(self):
+        # 1. Grouped shell punctuation redirection evasion
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo ok;>~/.ssh/authorized_keys', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 2. Bundled target-directory options in cp
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp -ft/tmp README.md CHANGELOG.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp -ft~/.ssh README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 3. Resolved symlink target to sensitive credential
+        symlink_dir = Path(self.test_ws) / 'symlink_test_dir'
+        symlink_dir.mkdir(parents=True, exist_ok=True)
+        env_target = symlink_dir / '.env'
+        link_path = symlink_dir / 'public.txt'
+        try:
+            env_target.write_text('SECRET=123')
+            link_path.symlink_to(env_target)
+            payload = {
+                'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': str(link_path)}},
+                'workspacePaths': [self.test_ws],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+        finally:
+            if link_path.is_symlink() or link_path.exists():
+                link_path.unlink()
+            if env_target.exists():
+                env_target.unlink()
+            if symlink_dir.exists():
+                symlink_dir.rmdir()
+
+        # 4. Git object expressions targeting sensitive files
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show HEAD:.env', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show HEAD:README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 5. Git external diff / textconv drivers
+        for ext_flag in ['--ext-diff', '--textconv']:
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git diff {ext_flag}', 'Cwd': self.test_ws}},
+                'workspacePaths': [self.test_ws],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask')
+
 
 if __name__ == '__main__':
     unittest.main()
