@@ -844,6 +844,59 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertEqual(res['decision'], 'allow')
 
+        # 37. Shell quote removal and backslash evasion for sensitive paths
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat /etc/sha""dow', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat /etc/sha\\dow', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat ~/.s"s"h/id_rsa', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 38. Bundled sort output options like -so/tmp/outside require confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort -so/tmp/outside README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 39. git fetch --upload-pack requires confirmation
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch --upload-pack=./payload origin', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 40. pylint --init-hook requires confirmation, safe pylint is allowed
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "pylint --init-hook 'print(42)' app.py", 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'pylint app.py', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

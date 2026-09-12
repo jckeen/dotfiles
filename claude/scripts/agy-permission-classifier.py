@@ -122,16 +122,14 @@ def is_credential_env_var(text):
 
 
 def unquote_token(tok):
-    """Strip outermost matching quotes from a token if present."""
+    """Perform shell quote and escape removal on a token (matching POSIX shell semantics)."""
     if not tok or not isinstance(tok, str):
         return tok
-    if len(tok) >= 2 and ((tok[0] == '"' and tok[-1] == '"') or (tok[0] == "'" and tok[-1] == "'")):
-        try:
-            parts = shlex.split(tok)
-            return parts[0] if parts else tok[1:-1]
-        except Exception:
-            return tok[1:-1]
-    return tok
+    try:
+        parts = shlex.split(tok)
+        return parts[0] if parts else ''
+    except Exception:
+        return re.sub(r'[\"\'\\]', '', tok)
 
 
 def expand_path(p_str, cwd=None):
@@ -188,8 +186,17 @@ def is_sensitive_credential_path(path_str, cwd=None):
             if is_sensitive_credential_path(exp, cwd):
                 return True
 
+    # Strip shell quotes and backslash escapes (e.g. /etc/sha""dow or /etc/sha\dow)
+    clean = path_str
+    try:
+        parts = shlex.split(path_str)
+        if parts:
+            clean = parts[0]
+    except Exception:
+        clean = re.sub(r'[\"\'\\]', '', path_str)
+
     # Check for glob/bracket tricks like .en[v] or ~/.s[s]h/id_*
-    clean = re.sub(r'\[(.)\]', r'\1', path_str)
+    clean = re.sub(r'\[(.)\]', r'\1', clean)
     if matches_sensitive_pattern(clean) or matches_sensitive_pattern(path_str):
         return True
 
@@ -557,10 +564,12 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
         if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
             return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
-        if arg.startswith(('-o', '-t')) and len(arg) > 2 and not arg.startswith('--'):
-            sub_val = arg[2:].lstrip('=')
-            if sub_val != '/dev/null' and is_sensitive_credential_path(sub_val, cwd):
-                return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
+        if arg.startswith('-') and not arg.startswith('--') and any(c in arg for c in ('o', 't')):
+            for flag in ('o', 't'):
+                if flag in arg:
+                    sub_val = arg[arg.index(flag) + 1:].lstrip('=')
+                    if sub_val and sub_val != '/dev/null' and is_sensitive_credential_path(sub_val, cwd):
+                        return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
 
     # 1. Privilege Escalation (Hard Deny)
     if base_cmd in {'sudo', 'su', 'doas', 'pkexec', 'chroot'}:
@@ -625,6 +634,13 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         for a in args:
             if a in ('--ext-diff', '--textconv') or a.startswith(('--ext-diff=', '--textconv=')):
                 return 'ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Git upload-pack, receive-pack, or exec options can run arbitrary executables
+        for a in args:
+            if a in ('--upload-pack', '--receive-pack', '--exec') or a.startswith(('--upload-pack=', '--receive-pack=', '--exec=')):
+                return 'ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
+            if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
+                return 'ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
         # Check git arguments for <rev>:<path> expressions targeting sensitive files
         for a in args:
@@ -894,10 +910,15 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         for i, a in enumerate(args):
             if a in ('-o', '--output') and i + 1 < len(args):
                 out_target = args[i + 1]
-            elif a.startswith('-o') and len(a) > 2:
-                out_target = a[2:]
             elif a.startswith('--output='):
                 out_target = a.split('=', 1)[1]
+            elif a.startswith('-') and not a.startswith('--') and 'o' in a:
+                o_idx = a.index('o')
+                rest = a[o_idx + 1:]
+                if rest:
+                    out_target = rest.lstrip('=')
+                elif i + 1 < len(args):
+                    out_target = args[i + 1]
         if out_target:
             if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
                 return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
@@ -961,6 +982,8 @@ def classify_subcommand(tokens, workspace_paths, cwd):
         return 'ask', f"Cargo command requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd in {'pytest', 'ruff', 'mypy', 'flake8', 'black', 'pylint'}:
+        if base_cmd == 'pylint' and any(a == '--init-hook' or a.startswith('--init-hook=') for a in args):
+            return 'ask', f"pylint with --init-hook requires confirmation: {' '.join(cmd_tokens)}"
         return 'allow', f"Safe Python dev tool: {base_cmd}"
 
     if base_cmd in {'python', 'python3'}:
