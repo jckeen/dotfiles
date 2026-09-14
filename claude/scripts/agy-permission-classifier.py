@@ -115,6 +115,8 @@ DANGEROUS_ENV_VARS = {
 SAFE_INLINE_ENV_VARS = {
     'CI', 'NODE_ENV', 'LANG', 'LC_ALL', 'LC_CTYPE',
     'PYTHONUNBUFFERED', 'TERM', 'NO_COLOR', 'FORCE_COLOR', 'TZ',
+    'CODEX_GATE_MAX_LINES', 'CODEX_GATE_REQUIRED', 'CODEX_GATE_ALLOW_INSTRUCTION_DIFF',
+    'GATE_FORCE_FULL', 'CODEX_GATE_MAX_ISSUES',
 }
 
 PROTECTED_BRANCHES = {'main', 'master', 'release', 'prod', 'production'}
@@ -134,6 +136,8 @@ def is_credential_var_name(var_name):
     if not var_name or not isinstance(var_name, str):
         return False
     v_upper = var_name.upper()
+    if v_upper.startswith(('CODEX_GATE_', 'AGY_GATE_', 'GATE_')):
+        return False
     return any(term in v_upper for term in ('KEY', 'TOKEN', 'SECRET', 'PASS', 'AUTH', 'CRED', 'COOKIE', 'BEARER', 'PRIVATE', 'SIGNATURE')) or \
            any(v_upper.startswith(prefix) for prefix in ('AWS_', 'GITHUB_', 'GH_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'CODEX_', 'CLAUDE_', 'GIT_ASKPASS'))
 
