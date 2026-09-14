@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 # Commands that are strictly read-only inspection and safe to auto-approve without options that execute code or write
 SAFE_INSPECTION_COMMANDS = {
@@ -292,16 +293,37 @@ def check_directory_descendants(target_dir, cwd=None):
     if not os.path.isdir(norm):
         return 'allow', 'Not a directory'
 
+    start_time = time.monotonic()
+    inspected_count = 0
+    try:
+        norm_parts_len = len(Path(norm).resolve().parts)
+    except Exception:
+        norm_parts_len = len(Path(norm).parts)
+    MAX_DEPTH = 4
+    MAX_ENTRIES = 2000
+    MAX_ELAPSED = 0.5
+
     try:
         for root, dirs, files in os.walk(norm):
+            if time.monotonic() - start_time > MAX_ELAPSED or inspected_count > MAX_ENTRIES:
+                break
             # Prune VCS and dependency caches
             if '.git' in dirs:
                 dirs.remove('.git')
             if 'node_modules' in dirs:
                 dirs.remove('node_modules')
 
+            # Depth bound: stop recursing beyond MAX_DEPTH
+            try:
+                current_depth = len(Path(root).resolve().parts) - norm_parts_len
+            except Exception:
+                current_depth = 0
+            if current_depth >= MAX_DEPTH:
+                dirs.clear()
+
             # Check symlinked subdirectories
             for d in list(dirs):
+                inspected_count += 1
                 d_full = os.path.join(root, d)
                 if os.path.islink(d_full):
                     try:
@@ -313,6 +335,7 @@ def check_directory_descendants(target_dir, cwd=None):
 
             # Pass 1: check symlinked files for sensitive targets (hard deny)
             for f in files:
+                inspected_count += 1
                 f_full = os.path.join(root, f)
                 if os.path.islink(f_full):
                     try:
@@ -416,6 +439,49 @@ def git_has_filter_configured(cwd=None):
         )
         if res.returncode == 0 and res.stdout.strip():
             return True
+    except Exception:
+        pass
+    return False
+
+
+def git_has_gpgsign_configured(cwd=None):
+    """Check if git repository has commit.gpgSign configured to sign commits."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--bool', 'commit.gpgsign'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip() == 'true':
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def git_remotes_have_credentials(cwd=None):
+    """Check if any git remote URL contains embedded user/password/token credentials."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get-regexp', r'^remote\..*\.url$'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    url = parts[1].strip()
+                    if '://' in url and '@' in url.split('://', 1)[1]:
+                        return True
     except Exception:
         pass
     return False
@@ -1033,6 +1099,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git switch: only allow without discarding changes or creating/resetting branches
         if git_sub == 'switch':
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'ask', f"git switch in directory outside workspace requires confirmation: {cwd}"
             SAFE_SWITCH_FLAGS = {'-q', '--quiet', '--progress', '--guess', '--no-guess', '--ignore-other-worktrees', '--'}
             for a in args[1:]:
                 if a.startswith('-') and a != '-' and a not in SAFE_SWITCH_FLAGS:
@@ -1076,10 +1144,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'ask', f"Creating tags requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git tag query'
 
-        # Git remote: only allow read queries
+        # Git remote: only allow read queries that do not expose credentials
         if git_sub == 'remote':
             if any(a in ('add', 'rename', 'remove', 'rm', 'set-head', 'set-branches', 'set-url', 'update', 'prune') for a in args):
                 return 'ask', f"Mutating git remotes requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('-v', '--verbose', 'get-url', 'show') or a.startswith(('--verbose', 'get-url')) for a in args):
+                if git_remotes_have_credentials(cwd):
+                    return 'deny', f"git remote query exposing embedded credentials in remote URL is forbidden: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git remote query'
 
         # Git commands that inspect or refresh the index/working tree execute core.fsmonitor if configured
@@ -1173,11 +1244,20 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'allow', f"Safe git read query: git {git_sub}"
 
         if git_sub == 'config':
-            if any(a in ('--get', '--get-all', '--list', '-l') for a in args):
+            if any(a in ('--list', '-l', '--get-regexp') or a.startswith(('--list', '--get-regexp=')) for a in args):
+                return 'ask', f"Listing all git configuration may disclose credentials or tokens: {' '.join(cmd_tokens)}"
+            # Check for sensitive config keys
+            for a in args[1:]:
+                clean_key = a.lower()
+                if any(k in clean_key for k in ('header', 'token', 'secret', 'key', 'pass', 'auth', 'cred', 'cookie', 'proxy', 'extraheader')):
+                    return 'deny', f"git config targeting sensitive credential key is forbidden: {a}"
+            if any(a in ('--get', '--get-all') for a in args) or (len(args) == 2 and not args[1].startswith('-')):
                 return 'allow', 'Safe git config query'
             return 'ask', 'Git config modification requires confirmation'
 
         if git_sub == 'add':
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'ask', f"git add in directory outside workspace requires confirmation: {cwd}"
             if git_has_active_hooks(cwd, ('post-index-change',)):
                 return 'ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
@@ -1185,6 +1265,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'allow', 'Safe git add'
 
         if git_sub == 'commit':
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
+            has_msg = any(a in ('-m', '--message', '-F', '--file') or a.startswith(('-m=', '--message=', '-F=', '--file=')) for a in args)
+            if not has_msg:
+                return 'ask', f"git commit without inline message invokes editor: {' '.join(cmd_tokens)}"
+            has_sign = any(a in ('-S', '--gpg-sign') or a.startswith(('-S', '--gpg-sign=')) for a in args)
+            has_no_sign = any(a == '--no-gpg-sign' for a in args)
+            if (has_sign or git_has_gpgsign_configured(cwd)) and not has_no_sign:
+                return 'ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
                 return 'ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit')):
@@ -1458,30 +1547,38 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     out_check = check_dev_tool_output(tool_args, workspace_paths, cwd, f"npx {tool}")
                     if out_check:
                         return out_check
-                    if tool == 'eslint' and any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in tool_args) and not any(a == '--fix-dry-run' for a in tool_args):
-                        skip_next = False
-                        for a in tool_args:
-                            if skip_next:
-                                skip_next = False
-                                continue
-                            if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
-                                skip_next = True
-                                continue
-                            if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
-                                continue
-                            if not a.startswith('-'):
-                                if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                    return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
-                                if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                    return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
-                    if tool == 'prettier' and any(a in ('-w', '--write') or a.startswith('--write') for a in tool_args):
-                        for a in tool_args:
-                            if not a.startswith('-'):
-                                if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                    return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
-                                if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                    return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
+                    if tool == 'eslint':
+                        if any(a in ('--rulesdir', '--resolve-plugins-relative-to', '--plugin') or a.startswith(('--rulesdir=', '--resolve-plugins-relative-to=', '--plugin=')) for a in tool_args):
+                            return 'ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
+                        if any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in tool_args) and not any(a == '--fix-dry-run' for a in tool_args):
+                            skip_next = False
+                            for a in tool_args:
+                                if skip_next:
+                                    skip_next = False
+                                    continue
+                                if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
+                                    skip_next = True
+                                    continue
+                                if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
+                                    continue
+                                if not a.startswith('-'):
+                                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                        return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
+                                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                        return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
+                    if tool == 'prettier':
+                        if any(a == '--plugin' or a.startswith(('--plugin=', '--plugin')) for a in tool_args):
+                            return 'ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
+                        if any(a in ('-w', '--write') or a.startswith('--write') for a in tool_args):
+                            for a in tool_args:
+                                if not a.startswith('-'):
+                                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                                        return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
+                                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                                        return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
                     if tool == 'tsc':
+                        if any(a in ('--plugins', '--transform') or a.startswith(('--plugins=', '--transform=')) for a in tool_args):
+                            return 'ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
                         for a in tool_args:
                             if not a.startswith('-'):
                                 if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
@@ -1496,37 +1593,45 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
         if out_check:
             return out_check
-        if base_cmd == 'eslint' and any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in args) and not any(a == '--fix-dry-run' for a in args):
-            skip_next = False
-            for a in args:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
-                    skip_next = True
-                    continue
-                if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
-                    continue
-                if not a.startswith('-'):
-                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                        return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
-                    if not is_path_in_workspaces(a, workspace_paths, cwd):
-                        return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
-        if base_cmd == 'prettier' and any(a in ('-w', '--write') or a.startswith('--write') for a in args):
-            skip_next = False
-            for a in args:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if a in ('--config', '--ignore-path', '--plugin', '--config-precedence'):
-                    skip_next = True
-                    continue
-                if not a.startswith('-'):
-                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                        return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
-                    if not is_path_in_workspaces(a, workspace_paths, cwd):
-                        return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
+        if base_cmd == 'eslint':
+            if any(a in ('--rulesdir', '--resolve-plugins-relative-to', '--plugin') or a.startswith(('--rulesdir=', '--resolve-plugins-relative-to=', '--plugin=')) for a in args):
+                return 'ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in args) and not any(a == '--fix-dry-run' for a in args):
+                skip_next = False
+                for a in args:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
+                        skip_next = True
+                        continue
+                    if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
+                        continue
+                    if not a.startswith('-'):
+                        if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                            return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
+                        if not is_path_in_workspaces(a, workspace_paths, cwd):
+                            return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
+        if base_cmd == 'prettier':
+            if any(a == '--plugin' or a.startswith(('--plugin=', '--plugin')) for a in args):
+                return 'ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('-w', '--write') or a.startswith('--write') for a in args):
+                skip_next = False
+                for a in args:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    if a in ('--config', '--ignore-path', '--plugin', '--config-precedence'):
+                        skip_next = True
+                        continue
+                    if not a.startswith('-'):
+                        if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
+                            return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
+                        if not is_path_in_workspaces(a, workspace_paths, cwd):
+                            return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
         if base_cmd == 'tsc':
+            if any(a in ('--plugins', '--transform') or a.startswith(('--plugins=', '--transform=')) for a in args):
+                return 'ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
             for a in args:
                 if not a.startswith('-'):
                     if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
@@ -1552,8 +1657,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         return 'ask', f"Cargo command requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd in {'pytest', 'ruff', 'mypy', 'flake8', 'black', 'pylint'}:
-        if base_cmd == 'pylint' and any(a == '--init-hook' or a.startswith('--init-hook=') for a in args):
-            return 'ask', f"pylint with --init-hook requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'pylint' and any(a in ('--init-hook', '--load-plugins') or a.startswith(('--init-hook=', '--load-plugins=')) for a in args):
+            return 'ask', f"pylint with plugin or init hook requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'pytest':
             if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args):
                 return 'ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
@@ -1617,8 +1722,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'allow', f"Safe Go tool: go {args[0]}"
 
     if base_cmd == 'make':
-        if not args or all(a in {'test', 'check', 'lint', 'build', 'clean', 'all'} for a in args):
-            return 'allow', f"Safe make target: {' '.join(args) or 'default'}"
+        return 'ask', f"make executes repository-controlled Makefile recipes: {' '.join(cmd_tokens)}"
 
     # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:

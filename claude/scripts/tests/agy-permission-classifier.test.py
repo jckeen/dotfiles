@@ -112,7 +112,6 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'pytest tests/',
             'python3 -m unittest discover',
             'go test ./...',
-            'make test',
         ]
         for cmd in commands:
             with self.subTest(cmd=cmd):
@@ -202,6 +201,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
     def test_state_modifying_or_risky_commands_ask(self):
         ask_commands = [
+            'make test',
             'victim=/tmp/outside; rm "$victim"',
             'rm {../outside,local}',
             'uniq README.md /tmp/outside',
@@ -395,8 +395,10 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
     def test_no_tmp_bypass_file(self):
         tmp_file = Path('/tmp/agy-session-auto-allow')
+        existed_before = tmp_file.exists()
         try:
-            tmp_file.touch()
+            if not existed_before:
+                tmp_file.touch()
             payload = {
                 'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sudo id', 'Cwd': self.test_ws}},
                 'workspacePaths': [self.test_ws],
@@ -404,7 +406,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             res = self.run_classifier(payload, env={'ANTIGRAVITY_CLASSIFIER_MODE': ''})
             self.assertEqual(res['decision'], 'deny')
         finally:
-            if tmp_file.exists():
+            if not existed_before and tmp_file.exists():
                 tmp_file.unlink()
 
     def test_round_8_hardening(self):
@@ -1524,6 +1526,130 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         }
         res = self.run_classifier(payload_diff_z)
         self.assertEqual(res['decision'], 'deny')
+
+    def test_round_24_hardening(self):
+        # 74. Code-loading dev runners require confirmation
+        runners = [
+            'make test',
+            'make',
+            'prettier --plugin ./payload.mjs --check README.md',
+            'npx prettier --plugin=./payload.mjs --check README.md',
+            'pylint --load-plugins=payload app.py',
+            'pylint --load-plugins payload app.py',
+            'eslint --plugin payload .',
+            'npx eslint --rulesdir ./rules .',
+            'tsc --plugins custom-plugin',
+            'npx tsc --transform ./transformer.js',
+        ]
+        for cmd in runners:
+            with self.subTest(cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'ask', f"Expected {cmd} to require confirmation, got: {res}")
+
+        # 75. Caller-controlled Cwd outside workspace requires confirmation
+        with tempfile.TemporaryDirectory() as outside_dir:
+            cwd_outside_cmds = [
+                'git add .',
+                'git switch main',
+                'git commit -m "commit outside"',
+            ]
+            for cmd in cwd_outside_cmds:
+                with self.subTest(cmd=cmd):
+                    payload = {
+                        'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': outside_dir}},
+                        'workspacePaths': [self.test_ws],
+                    }
+                    res = self.run_classifier(payload)
+                    self.assertEqual(res['decision'], 'ask', f"Expected {cmd} outside workspace to require confirmation, got: {res}")
+
+        # 76. git commit without inline message invokes editor -> ask
+        payload_no_msg = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_no_msg)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 77. git commit with GPG signing invokes external gpg program -> ask
+        payload_sign_flag = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -S -m "signed commit"', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_sign_flag)
+        self.assertEqual(res['decision'], 'ask')
+
+        git_dir = Path(self.test_ws) / 'gpg_commit_test'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'commit.gpgsign', 'true'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('gpg test')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
+
+        payload_sign_config = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m "auto sign"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_sign_config)
+        self.assertEqual(res['decision'], 'ask')
+
+        # git commit with --no-gpg-sign overrides commit.gpgsign -> allow
+        payload_no_gpg_override = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --no-gpg-sign -m "no sign"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_no_gpg_override)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 78. Git config queries and sensitive keys
+        payload_cfg_list = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --list', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_cfg_list)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_cfg_sensitive = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get http.extraHeader', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_cfg_sensitive)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_cfg_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config user.name', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_cfg_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 79. Git remote with embedded credentials -> deny
+        remote_git_dir = Path(self.test_ws) / 'remote_cred_test'
+        remote_git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(remote_git_dir), check=True)
+        subprocess.run(['git', 'remote', 'add', 'origin', 'https://user:token123@github.com/org/repo.git'], cwd=str(remote_git_dir), check=True)
+
+        payload_remote_v = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git remote -v', 'Cwd': str(remote_git_dir)}},
+            'workspacePaths': [str(remote_git_dir)],
+        }
+        res = self.run_classifier(payload_remote_v)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_remote_get_url = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git remote get-url origin', 'Cwd': str(remote_git_dir)}},
+            'workspacePaths': [str(remote_git_dir)],
+        }
+        res = self.run_classifier(payload_remote_get_url)
+        self.assertEqual(res['decision'], 'deny')
+
+        # Normal remote without credentials -> allow
+        subprocess.run(['git', 'remote', 'set-url', 'origin', 'https://github.com/org/repo.git'], cwd=str(remote_git_dir), check=True)
+        res_clean = self.run_classifier(payload_remote_v)
+        self.assertEqual(res_clean['decision'], 'allow')
 
 
 if __name__ == '__main__':
