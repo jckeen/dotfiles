@@ -1334,6 +1334,35 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if not git_sub:
             return 'allow', 'git command query'
 
+        # Check and validate git directory overrides (-C, --git-dir, --work-tree)
+        git_dir_opts = []
+        effective_cwd = cwd
+        skip_dir_opt = False
+        for idx, a in enumerate(args):
+            if skip_dir_opt:
+                skip_dir_opt = False
+                continue
+            if a == '-C' and idx + 1 < len(args):
+                git_dir_opts.append(('-C', args[idx + 1]))
+                skip_dir_opt = True
+            elif a.startswith('-C') and len(a) > 2 and not a.startswith('--'):
+                git_dir_opts.append(('-C', a[2:]))
+            elif a in ('--git-dir', '--work-tree') and idx + 1 < len(args):
+                git_dir_opts.append((a, args[idx + 1]))
+                skip_dir_opt = True
+            elif a.startswith(('--git-dir=', '--work-tree=')):
+                opt_k, opt_v = a.split('=', 1)
+                git_dir_opts.append((opt_k, opt_v))
+
+        for opt_k, opt_v in git_dir_opts:
+            if is_sensitive_credential_path(opt_v, effective_cwd):
+                return 'deny', f"git directory option {opt_k} targeting sensitive path is forbidden: {opt_v}"
+            if not is_path_in_workspaces(opt_v, workspace_paths, effective_cwd):
+                return 'force_ask', f"git {opt_k} targeting directory outside workspace requires confirmation: {opt_v}"
+            if opt_k == '-C':
+                effective_cwd = expand_path(opt_v, effective_cwd)
+
+        cwd = effective_cwd
         sub_args = args[git_sub_idx:]
 
         # Check for git output options across all git commands (including GNU option abbreviations)
@@ -1901,7 +1930,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if any(a in ('-C', '--compile') or (a.startswith('-') and not a.startswith('--') and 'C' in a) for a in args):
                 return 'force_ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
-        if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq'}:
+        if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq', 'date'}:
             for a in args:
                 if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
                     return 'ask', f"Inspection command with wildcard, variable, substitution, or metacharacter requires confirmation: {' '.join(cmd_tokens)}"
@@ -1920,6 +1949,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 pos = [a for a in args if not a.startswith('-')]
                 if len(pos) > 1:
                     file_operands.extend(pos[1:])
+            elif base_cmd == 'date':
+                i = 0
+                while i < len(args):
+                    a = args[i]
+                    if a in ('-f', '--file', '-r', '--reference') and i + 1 < len(args):
+                        file_operands.append(args[i + 1])
+                        i += 2
+                        continue
+                    elif a.startswith(('-f=', '--file=', '-r=', '--reference=')):
+                        file_operands.append(a.split('=', 1)[1])
+                    elif a.startswith(('-f', '-r')) and len(a) > 2 and not a.startswith('--'):
+                        file_operands.append(a[2:])
+                    elif a in ('-d', '--date') and i + 1 < len(args):
+                        i += 2
+                        continue
+                    elif a.startswith(('-d=', '--date=')):
+                        i += 1
+                        continue
+                    elif not a.startswith('-') and not a.startswith('+'):
+                        file_operands.append(a)
+                    i += 1
             else:
                 INSPECTION_OPTS_WITH_ARG = {
                     'head': {'-n', '--lines', '-c', '--bytes'},
@@ -1929,7 +1979,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     'uniq': {'-f', '--skip-fields', '-s', '--skip-chars', '-w', '--check-chars'},
                     'stat': {'-c', '--format', '--printf'},
                     'cmp': {'-i', '--ignore-initial', '-n', '--bytes'},
-                    'date': {'-d', '--date', '-r', '--reference'},
                 }
                 opts_with_arg = INSPECTION_OPTS_WITH_ARG.get(base_cmd, set())
                 skip_val = False
@@ -1990,17 +2039,25 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'ask', f"uniq with output file operand requires confirmation: {' '.join(cmd_tokens)}"
         return 'allow', f"Safe inspection command: {base_cmd}"
 
-    # Ripgrep: safe unless using --pre which runs external programs, searching hidden/symlink, or searching sensitive paths
+    # Ripgrep and Silver Searcher: safe unless using external preprocessors/pagers, searching hidden/symlink, or searching sensitive paths
     if base_cmd in {'rg', 'ag'}:
-        if any(a.startswith('--pre') for a in args):
-            return 'ask', f"rg with --pre option requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'ag':
+            # Silver Searcher passes --pager argument to popen()
+            if any(a == '--pager' or a.startswith('--pager=') for a in args):
+                return 'force_ask', f"ag with custom pager program requires confirmation: {' '.join(cmd_tokens)}"
+            # ag -f or --follow traverses symlinks
+            if any(a in ('-f', '--follow') or (a.startswith('-') and not a.startswith('--') and 'f' in a) for a in args):
+                return 'ask', f"ag following symlinks (-f/--follow) requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd == 'rg':
+            if any(a.startswith('--pre') for a in args):
+                return 'force_ask', f"rg with --pre option requires confirmation: {' '.join(cmd_tokens)}"
         # Check for unexpanded variables
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
-                return 'ask', f"rg with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+                return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         # Check for hidden files, un-ignoring, or symlink following (including bundled short flags like -iL, -Lu)
         if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in args):
-            return 'ask', f"rg with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
+            return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         positionals = [a for a in args if not a.startswith('-')]
         has_pattern_flag = any(a == '-e' or a.startswith('-e') for a in args)
         search_paths = positionals if has_pattern_flag else positionals[1:]

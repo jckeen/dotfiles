@@ -2603,6 +2603,89 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             res = self.run_classifier(payload)
             self.assertEqual(res['decision'], 'ask')
 
+    def test_round_31_hardening(self):
+        """Regression tests for Round 31 findings:
+        1. ag --pager custom pager command execution
+        2. git -C, --git-dir, --work-tree outside workspace
+        3. ag -f and --follow symlink traversal
+        4. date -f and -r reading files outside workspace or sensitive files
+        """
+        git_dir = Path(self.test_ws) / 'r31_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. ag --pager custom pager
+        for ag_pager in ('ag --pager ./payload pattern README.md', 'ag --pager=./payload pattern README.md'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': ag_pager, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        payload_ag_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ag pattern README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_ag_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 2. git -C, --git-dir, --work-tree outside workspace
+        with tempfile.TemporaryDirectory() as ext_dir:
+            for git_ext in (
+                f'git -C {ext_dir} add .',
+                f'git --git-dir={ext_dir}/.git --work-tree={ext_dir} status',
+                f'git -C {ext_dir} status',
+            ):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': git_ext, 'Cwd': str(git_dir)}},
+                    'workspacePaths': [str(git_dir)],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask')
+
+        # 3. ag -f and --follow symlinks
+        for ag_follow in ('ag -f pattern .', 'ag --follow pattern .', 'ag -if pattern .'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': ag_follow, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask')
+
+        # 4. date -f and -r file operand containment
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_file = Path(ext_dir) / 'private-notes'
+            ext_file.write_text('notes')
+            for date_ext in (f'date -f {ext_file}', f'date --file={ext_file}', f'date -r {ext_file}', f'date --reference={ext_file}'):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': date_ext, 'Cwd': str(git_dir)}},
+                    'workspacePaths': [str(git_dir)],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'ask')
+
+        (git_dir / '.env').write_text('SECRET=true')
+        payload_date_sensitive = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -f .env', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_date_sensitive)
+        self.assertEqual(res['decision'], 'deny')
+        (git_dir / '.env').unlink(missing_ok=True)
+
+        payload_date_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -r README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_date_safe)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
