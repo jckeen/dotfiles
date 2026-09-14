@@ -60,6 +60,10 @@ def get_sensitive_credential_prefixes():
         os.path.join(home, '.aws'),
         os.path.join(home, '.gnupg'),
         os.path.join(home, '.netrc'),
+        os.path.join(home, '.git-credentials'),
+        os.path.join(home, '.npmrc'),
+        os.path.join(home, '.pypirc'),
+        os.path.join(home, '.docker'),
         os.path.join(home, '.codex'),
         os.path.join(home, '.claude'),
         os.path.join(home, '.gemini', 'antigravity-cli'),
@@ -72,6 +76,9 @@ SENSITIVE_FILENAMES = {
     'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
     '.bashrc', '.bash_profile', '.zshrc', '.profile',
     'hosts.yml',
+    '.git-credentials', 'git-credentials',
+    '.npmrc',
+    '.pypirc',
 }
 
 # Glob patterns that match sensitive files
@@ -219,6 +226,17 @@ def is_sensitive_credential_path(path_str, cwd=None):
             return True
     except Exception:
         pass
+
+    # Check for Git config or common credential stores
+    norm_slash = norm.replace('\\', '/')
+    clean_slash = clean.replace('\\', '/')
+    if (norm_slash.endswith('/.git/config') or clean_slash.endswith('/.git/config') or
+        norm_slash == '.git/config' or clean_slash == '.git/config' or
+        '/.git/config/' in norm_slash or
+        norm_slash.endswith('/.git-credentials') or clean_slash.endswith('/.git-credentials') or
+        norm_slash.endswith('/.docker/config.json') or clean_slash.endswith('/.docker/config.json')):
+        return True
+
     for prefix in get_sensitive_credential_prefixes():
         prefixes_to_check = {os.path.abspath(prefix)}
         if os.path.exists(prefix):
@@ -285,7 +303,7 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
 def check_directory_descendants(target_dir, cwd=None):
     """Inspect directory for sensitive descendant files or sensitive symlinks.
 
-    Returns (verdict, reason) where verdict is 'deny', 'ask', or 'allow'.
+    Returns (verdict, reason) where verdict is 'deny', 'force_ask', or 'allow'.
     """
     if not target_dir or not isinstance(target_dir, str):
         return 'allow', 'Not a directory'
@@ -299,13 +317,15 @@ def check_directory_descendants(target_dir, cwd=None):
         norm_parts_len = len(Path(norm).resolve().parts)
     except Exception:
         norm_parts_len = len(Path(norm).parts)
-    MAX_DEPTH = 4
-    MAX_ENTRIES = 2000
-    MAX_ELAPSED = 0.5
+    MAX_DEPTH = 6
+    MAX_ENTRIES = 5000
+    MAX_ELAPSED = 0.8
+    truncated = False
 
     try:
         for root, dirs, files in os.walk(norm):
             if time.monotonic() - start_time > MAX_ELAPSED or inspected_count > MAX_ENTRIES:
+                truncated = True
                 break
             # Prune VCS and dependency caches
             if '.git' in dirs:
@@ -319,7 +339,9 @@ def check_directory_descendants(target_dir, cwd=None):
             except Exception:
                 current_depth = 0
             if current_depth >= MAX_DEPTH:
-                dirs.clear()
+                if dirs:
+                    truncated = True
+                    dirs.clear()
 
             # Check symlinked subdirectories
             for d in list(dirs):
@@ -331,7 +353,7 @@ def check_directory_descendants(target_dir, cwd=None):
                         if is_sensitive_credential_path(link_target, cwd):
                             return 'deny', f"contains symlink to sensitive directory ({d} -> {link_target})"
                     except Exception:
-                        pass
+                        truncated = True
 
             # Pass 1: check symlinked files for sensitive targets (hard deny)
             for f in files:
@@ -343,14 +365,17 @@ def check_directory_descendants(target_dir, cwd=None):
                         if matches_sensitive_pattern(os.path.basename(link_target)) or is_sensitive_credential_path(link_target, cwd):
                             return 'deny', f"contains symlink to sensitive file ({f} -> {link_target})"
                     except Exception:
-                        pass
+                        truncated = True
 
-            # Pass 2: check files for sensitive patterns (ask)
+            # Pass 2: check files for sensitive patterns (force_ask)
             for f in files:
-                if matches_sensitive_pattern(f):
-                    return 'ask', f"contains sensitive descendant file ({f})"
-    except Exception:
-        pass
+                if matches_sensitive_pattern(f) or is_sensitive_credential_path(os.path.join(root, f), cwd):
+                    return 'force_ask', f"contains sensitive descendant file ({f})"
+    except Exception as e:
+        return 'force_ask', f"Directory scan error ({e}) requires confirmation: {target_dir}"
+
+    if truncated:
+        return 'force_ask', f"Directory scan incomplete (depth, entry, or time limit reached) requires confirmation: {target_dir}"
 
     return 'allow', 'Directory clean'
 
@@ -487,6 +512,44 @@ def git_remotes_have_credentials(cwd=None):
     return False
 
 
+def git_has_transport_executable_configured(cwd=None):
+    """Check if git repository has transport or remote execution helpers configured (core.sshCommand, remote.*.vcs, remote.*.uploadpack)."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get-regexp', r'^(core\.sshcommand|remote\..*\.vcs|remote\..*\.uploadpack)$'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def git_has_gpg_program_configured(cwd=None):
+    """Check if git repository has a custom gpg.program or gpg.*.program configured."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get-regexp', r'^gpg\..*program$'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def strip_git_output_options(args_list):
     """Strip output redirection options (-o, --output, --output=..., etc.) and exit-code flags from probe arguments."""
     clean = []
@@ -506,6 +569,8 @@ def strip_git_output_options(args_list):
             if '=' not in a:
                 skip_next = True
             continue
+        if a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')):
+            continue
         if a in ('--exit-code', '--quiet', '-q', '-z', '--null'):
             continue
         clean.append(a)
@@ -524,17 +589,17 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
     try:
         safe_args = strip_git_output_options(args[1:])
         if git_sub == 'diff':
-            cmd = ['git', 'diff', '--name-only'] + [a for a in safe_args if a != '--name-only']
+            cmd = ['git', 'diff', '--name-only', '--no-show-signature'] + [a for a in safe_args if a != '--name-only']
         elif git_sub == 'show':
-            cmd = ['git', 'show', '--name-only', '--format='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub in ('log', 'whatchanged') and any(a in ('-p', '-u', '--patch', '--stat', '--numstat', '--shortstat') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('p', 'u'))) for a in args):
-            cmd = ['git', 'log', '--name-only', '--format='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
-            cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in safe_stash if a != '--name-only']
+            cmd = ['git', 'stash', 'show', '--name-only', '--no-show-signature'] + [a for a in safe_stash if a != '--name-only']
         elif git_sub == 'format-patch':
             log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
-            cmd = ['git', 'log', '--name-only', '--format='] + log_args
+            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + log_args
         else:
             return 'safe'
 
@@ -654,9 +719,70 @@ def check_dev_tool_output(args, workspace_paths, cwd, tool_name='tool'):
             if is_system_write_path(dest, cwd):
                 return 'deny', f"{tool_name} output targeting system path is forbidden: {dest}"
             if is_git_admin_path(dest, cwd):
-                return 'ask', f"{tool_name} output modifying git repository metadata or hooks requires confirmation: {dest}"
+                return 'force_ask', f"{tool_name} output modifying git repository metadata or hooks requires confirmation: {dest}"
             if not is_path_in_workspaces(dest, workspace_paths, cwd):
-                return 'ask', f"{tool_name} output targeting destination outside workspace requires confirmation: {dest}"
+                return 'force_ask', f"{tool_name} output targeting destination outside workspace requires confirmation: {dest}"
+        i += 1
+    return None
+
+
+DEV_TOOL_CONFIG_FLAGS = {
+    '-c', '--config',
+    '--manifest-path',
+    '-p', '--project',
+    '--rcfile',
+    '--rootdir',
+    '--rulesdir',
+    '--resolve-plugins-relative-to',
+    '--ignore-path',
+    '--target-dir',
+}
+
+
+def check_dev_tool_inputs(args, workspace_paths, cwd, tool_name='tool'):
+    """Validate that development runner inputs, configs, and target files remain within workspace."""
+    if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+        return 'force_ask', f"{tool_name} with working directory outside workspace requires confirmation: {cwd}"
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        val = None
+        for flag in DEV_TOOL_CONFIG_FLAGS:
+            if a == flag:
+                if i + 1 < len(args):
+                    val = args[i + 1]
+                    i += 1
+                break
+            elif a.startswith(flag + '='):
+                val = a.split('=', 1)[1]
+                break
+            elif flag.startswith('-') and not flag.startswith('--') and len(flag) == 2 and a.startswith(flag):
+                val = a[2:]
+                break
+
+        if val:
+            if is_sensitive_credential_path(val, cwd):
+                return 'deny', f"{tool_name} targeting sensitive config is forbidden: {val}"
+            if is_system_write_path(val, cwd):
+                return 'deny', f"{tool_name} targeting system path is forbidden: {val}"
+            if not is_path_in_workspaces(val, workspace_paths, cwd):
+                return 'force_ask', f"{tool_name} config outside workspace requires confirmation: {val}"
+            i += 1
+            continue
+
+        # Check positional arguments for path targets outside workspace
+        if not a.startswith('-'):
+            # Ignore subcommands and flags
+            if a not in {'test', 'check', 'lint', 'build', 'run', 'vet', 'fmt', 'clippy', 'bench', 'format', 'typecheck', 'verify', 'doc'}:
+                # If argument appears to be a file/path target (has slash, dot, or exists)
+                if '/' in a or '\\' in a or a.startswith('.') or os.path.isabs(a) or (os.path.exists(os.path.join(cwd or '', a)) and not a.startswith('-')):
+                    if is_sensitive_credential_path(a, cwd):
+                        return 'deny', f"{tool_name} targeting sensitive path is forbidden: {a}"
+                    if is_system_write_path(a, cwd):
+                        return 'deny', f"{tool_name} targeting system path is forbidden: {a}"
+                    if not is_path_in_workspaces(a, workspace_paths, cwd):
+                        return 'force_ask', f"{tool_name} target outside workspace requires confirmation: {a}"
         i += 1
     return None
 
@@ -943,14 +1069,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         resolved_exe = expand_path(raw_cmd, cwd)
         exe_dir = os.path.dirname(resolved_exe)
         if exe_dir not in SYSTEM_BIN_DIRS:
-            return 'ask', f"Running non-system executable requires confirmation: {raw_cmd}"
+            return 'force_ask', f"Running non-system executable requires confirmation: {raw_cmd}"
         base_cmd = os.path.basename(resolved_exe)
     else:
         resolved_path = shutil.which(raw_cmd)
         if resolved_path:
             resolved_norm = expand_path(resolved_path, cwd)
             if is_path_in_workspaces(resolved_norm, workspace_paths, cwd):
-                return 'ask', f"Running workspace-controlled executable requires confirmation: {raw_cmd} ({resolved_path})"
+                return 'force_ask', f"Running workspace-controlled executable requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
     # Check for sensitive files or credentials being targeted in arguments
@@ -1016,11 +1142,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     ws_norm = expand_path(ws, cwd)
                     if t_norm == ws_norm:
                         return 'deny', f"Recursive deletion of entire workspace root is forbidden: rm {t}"
-            return 'ask', f"Recursive or directory deletion requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"Recursive or directory deletion requires confirmation: {' '.join(cmd_tokens)}"
         # Non-recursive rm on individual files inside workspace
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) for t in targets):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
-        return 'ask', f"File deletion requires confirmation: {' '.join(cmd_tokens)}"
+        return 'force_ask', f"File deletion requires confirmation: {' '.join(cmd_tokens)}"
 
     # 5. Git Operations
     if base_cmd == 'git':
@@ -1046,21 +1172,21 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if is_sensitive_credential_path(git_out, cwd) or is_system_write_path(git_out, cwd):
                 return 'deny', f"git {git_sub} --output targeting sensitive or system path is forbidden: {git_out}"
             if is_git_admin_path(git_out, cwd):
-                return 'ask', f"git {git_sub} --output targeting git administrative file requires confirmation: {git_out}"
+                return 'force_ask', f"git {git_sub} --output targeting git administrative file requires confirmation: {git_out}"
             if not is_path_in_workspaces(git_out, workspace_paths, cwd):
-                return 'ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
+                return 'force_ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
 
         # External diff/textconv drivers can execute arbitrary commands configured in gitconfig/attributes
         for a in args:
             if a in ('--ext-diff', '--textconv') or a.startswith(('--ext-diff=', '--textconv=')):
-                return 'ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
         # Git upload-pack, receive-pack, or exec options can run arbitrary executables
         for a in args:
             if a in ('--upload-pack', '--receive-pack', '--exec') or a.startswith(('--upload-pack=', '--receive-pack=', '--exec=')):
-                return 'ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
             if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
-                return 'ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
         # Check git arguments for sensitive file paths or <rev>:<path> expressions targeting sensitive files
         for a in args:
@@ -1079,39 +1205,45 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if has_force:
                 if not refspecs:
                     return 'deny', f"Unscoped force push is forbidden: {' '.join(cmd_tokens)}"
-                return 'ask', f"Force push requires confirmation: {' '.join(cmd_tokens)}"
-            return 'ask', f"Git push modifies remote repository: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Force push requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"Git push modifies remote repository: {' '.join(cmd_tokens)}"
 
-        # Fetch with refspecs: can overwrite local branch references
+        # Fetch with refspecs or custom transport helpers: can overwrite local branch references or run programs
         if git_sub == 'fetch':
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'force_ask', f"git fetch in directory outside workspace requires confirmation: {cwd}"
+            if git_has_transport_executable_configured(cwd):
+                return 'force_ask', f"Git fetch with configured transport program (core.sshCommand, remote.vcs, or uploadpack) requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('-u', '--upload-pack') or a.startswith(('-u=', '--upload-pack=')) for a in args):
+                return 'force_ask', f"Git fetch with custom upload-pack program requires confirmation: {' '.join(cmd_tokens)}"
             refspecs = [a for a in args[1:] if not a.startswith('-') and a != 'origin']
             if refspecs or any(a.startswith('+') for a in args):
-                return 'ask', f"Git fetch with refspecs requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git fetch with refspecs requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git fetch'
 
         # Destructive or state-discarding git commands
         if git_sub in {'clean', 'reset', 'restore'}:
-            return 'ask', f"Git {git_sub} alters working tree: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"Git {git_sub} alters working tree: {' '.join(cmd_tokens)}"
 
         # Git checkout: disallow file checkouts (which discard changes) and forced checkouts
         if git_sub == 'checkout':
-            return 'ask', f"Git checkout requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"Git checkout requires confirmation: {' '.join(cmd_tokens)}"
 
         # Git switch: only allow without discarding changes or creating/resetting branches
         if git_sub == 'switch':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
-                return 'ask', f"git switch in directory outside workspace requires confirmation: {cwd}"
+                return 'force_ask', f"git switch in directory outside workspace requires confirmation: {cwd}"
             SAFE_SWITCH_FLAGS = {'-q', '--quiet', '--progress', '--guess', '--no-guess', '--ignore-other-worktrees', '--'}
             for a in args[1:]:
                 if a.startswith('-') and a != '-' and a not in SAFE_SWITCH_FLAGS:
-                    return 'ask', f"Switching with option requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'force_ask', f"Switching with option requires confirmation: {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-') or a == '-']
             if len(positionals) != 1:
-                return 'ask', f"Git switch requires explicit branch target: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git switch requires explicit branch target: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-checkout',)):
-                return 'ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
-                return 'ask', f"git switch with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git switch with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
 
         # Git branch: only allow read-only queries
@@ -1123,31 +1255,31 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             )
             for a in args[1:]:
                 if a in MUTATING_BRANCH_FLAGS:
-                    return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
                 if any(a.startswith(opt + '=') for opt in MUTATING_BRANCH_FLAGS if opt.startswith('--')):
-                    return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
                 if any(a.startswith(opt) for opt in MUTATING_BRANCH_FLAGS if not opt.startswith('--')):
-                    return 'ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
             # Positional arguments in git branch create/reset branches unless --list is explicitly used
             # Note: -l means --create-reflog when creating a branch, so only --list is safe with positionals
             if positionals and not any(a == '--list' or a.startswith('--list=') for a in args):
-                return 'ask', f"Branch creation or modification requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Branch creation or modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git branch query'
 
         # Git tag: only allow listing
         if git_sub == 'tag':
             if any(a in ('-d', '--delete', '-a', '-f', '--force', '-m', '-s', '-u') for a in args):
-                return 'ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
             if positionals and not any(a in ('-l', '--list') for a in args):
-                return 'ask', f"Creating tags requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Creating tags requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git tag query'
 
         # Git remote: only allow read queries that do not expose credentials
         if git_sub == 'remote':
             if any(a in ('add', 'rename', 'remove', 'rm', 'set-head', 'set-branches', 'set-url', 'update', 'prune') for a in args):
-                return 'ask', f"Mutating git remotes requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Mutating git remotes requires confirmation: {' '.join(cmd_tokens)}"
             if any(a in ('-v', '--verbose', 'get-url', 'show') or a.startswith(('--verbose', 'get-url')) for a in args):
                 if git_remotes_have_credentials(cwd):
                     return 'deny', f"git remote query exposing embedded credentials in remote URL is forbidden: {' '.join(cmd_tokens)}"
@@ -1157,19 +1289,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub in {'status', 'diff', 'ls-files', 'stash', 'add', 'commit', 'checkout', 'restore', 'reset', 'worktree', 'describe'}:
             has_no_fsmonitor = any(a == '--no-optional-locks' for a in args)
             if not has_no_fsmonitor and git_has_fsmonitor_configured(cwd):
-                return 'ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
         # Git diff
         if git_sub == 'diff':
             has_no_ext = any(a == '--no-ext-diff' for a in args)
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
-                return 'ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
             probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
             if probe_res == 'sensitive':
                 return 'deny', f"git diff touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
             if probe_res == 'unknown':
-                return 'ask', f"git diff patch cannot be verified safely: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git diff patch cannot be verified safely: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git diff'
 
         if git_sub == 'stash':
@@ -1182,24 +1314,24 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     has_no_ext = any(a == '--no-ext-diff' for a in args)
                     has_no_textconv = any(a == '--no-textconv' for a in args)
                     if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
-                        return 'ask', f"git stash show with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+                        return 'force_ask', f"git stash show with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
                     probe_res = git_command_touches_sensitive_files('stash', args, cwd)
                     if probe_res == 'sensitive':
                         return 'deny', f"git stash show touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
                     if probe_res == 'unknown':
-                        return 'ask', f"git stash show patch cannot be verified safely: {' '.join(cmd_tokens)}"
+                        return 'force_ask', f"git stash show patch cannot be verified safely: {' '.join(cmd_tokens)}"
                     return 'allow', 'Safe git stash show'
-            return 'ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub == 'worktree':
             if any(a in ('add', 'remove', 'prune', 'lock', 'unlock', 'move', 'repair') for a in args):
                 if 'add' in args:
                     if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
-                        return 'ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
+                        return 'force_ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
                     if git_has_active_hooks(cwd, ('post-checkout',)):
-                        return 'ask', f"git worktree add with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
+                        return 'force_ask', f"git worktree add with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
                     if git_has_filter_configured(cwd):
-                        return 'ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+                        return 'force_ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
                     sub_args = args[args.index('add') + 1:]
                     dir_operands = []
                     skip_next = False
@@ -1217,35 +1349,55 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     if dir_operands:
                         target_dir = dir_operands[0]
                         if not is_path_in_workspaces(target_dir, workspace_paths, cwd) or is_system_write_path(target_dir, cwd):
-                            return 'ask', f"git worktree add outside workspace requires approval: {target_dir}"
+                            return 'force_ask', f"git worktree add outside workspace requires approval: {target_dir}"
                     return 'allow', 'Safe git worktree add within workspace'
-                return 'ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git worktree query'
 
-        # Git show, log, blame, etc. run configured textconv drivers by default
+        # Git show, log, blame, etc. run configured textconv drivers or signature verification by default
         if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch'}:
+            has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
+                          (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
+            if has_sig:
+                return 'force_ask', f"git {git_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
+            if git_has_gpg_program_configured(cwd) and any(a.startswith(('--format=', '--pretty=')) for a in args):
+                return 'force_ask', f"git {git_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if not has_no_textconv and git_has_external_diff_configured(cwd):
-                return 'ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
             is_blob_show = git_sub == 'show' and any(':' in a and not a.startswith(('-', 'http:', 'https:', 'ssh:', 'git:')) for a in args[1:])
             if not is_blob_show:
                 probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
                 if probe_res == 'sensitive':
                     return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
                 if probe_res == 'unknown':
-                    return 'ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
+                    return 'force_ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
 
-        # Git cat-file with filters or textconv executes external smudge/clean/textconv drivers
+        # Git cat-file with batch modes, filters, textconv, or sensitive objects
         if git_sub == 'cat-file':
-            if any(a in ('--filters', '--textconv') or a.startswith(('--filters', '--textconv', '--path=')) for a in args):
-                return 'ask', f"git cat-file with filter or textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'force_ask', f"git cat-file in directory outside workspace requires confirmation: {cwd}"
+            if any(a in ('--batch', '--batch-check', '--batch-command', '--batch-all-objects') or 
+                   a.startswith(('--batch=', '--batch-check=', '--batch-command=')) for a in args):
+                return 'force_ask', f"git cat-file batch mode reads arbitrary objects from stdin or repository history: {' '.join(cmd_tokens)}"
+            if any(a.startswith(('--filters', '--textconv', '--path=')) or a in ('--filters', '--textconv') for a in args):
+                return 'force_ask', f"git cat-file with filter or textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+            for a in args[1:]:
+                if not a.startswith('-'):
+                    if ':' in a:
+                        obj_path = a.split(':', 1)[1]
+                        if matches_sensitive_pattern(obj_path) or is_sensitive_credential_path(obj_path, cwd):
+                            return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
+                    elif matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
+                        return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
+            return 'allow', 'Safe git cat-file query'
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
 
         if git_sub == 'config':
             if any(a in ('--list', '-l', '--get-regexp') or a.startswith(('--list', '--get-regexp=')) for a in args):
-                return 'ask', f"Listing all git configuration may disclose credentials or tokens: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Listing all git configuration may disclose credentials or tokens: {' '.join(cmd_tokens)}"
             # Check for sensitive config keys
             for a in args[1:]:
                 clean_key = a.lower()
@@ -1253,33 +1405,33 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     return 'deny', f"git config targeting sensitive credential key is forbidden: {a}"
             if any(a in ('--get', '--get-all') for a in args) or (len(args) == 2 and not args[1].startswith('-')):
                 return 'allow', 'Safe git config query'
-            return 'ask', 'Git config modification requires confirmation'
+            return 'force_ask', 'Git config modification requires confirmation'
 
         if git_sub == 'add':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
-                return 'ask', f"git add in directory outside workspace requires confirmation: {cwd}"
+                return 'force_ask', f"git add in directory outside workspace requires confirmation: {cwd}"
             if git_has_active_hooks(cwd, ('post-index-change',)):
-                return 'ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
-                return 'ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git add'
 
         if git_sub == 'commit':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
-                return 'ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
+                return 'force_ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
             has_msg = any(a in ('-m', '--message', '-F', '--file') or a.startswith(('-m=', '--message=', '-F=', '--file=')) for a in args)
             if not has_msg:
-                return 'ask', f"git commit without inline message invokes editor: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git commit without inline message invokes editor: {' '.join(cmd_tokens)}"
             has_sign = any(a in ('-S', '--gpg-sign') or a.startswith(('-S', '--gpg-sign=')) for a in args)
             has_no_sign = any(a == '--no-gpg-sign' for a in args)
             if (has_sign or git_has_gpgsign_configured(cwd)) and not has_no_sign:
-                return 'ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
-                return 'ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit')):
-                return 'ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
-                return 'ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git commit'
 
     # 6. Inspection Commands
@@ -1288,10 +1440,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if any(re.search(r'(\benv\b|(?<![A-Za-z0-9_])\$ENV\b)', a) for a in args):
                 return 'deny', f"jq accessing process environment is forbidden: {' '.join(cmd_tokens)}"
             if any(a in ('-f', '--from-file') or a.startswith(('-f', '--from-file=')) for a in args):
-                return 'ask', f"jq reading filter from file requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"jq reading filter from file requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'file':
             if any(a in ('-C', '--compile') or (a.startswith('-') and not a.startswith('--') and 'C' in a) for a in args):
-                return 'ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
         if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq'}:
             for a in args:
@@ -1534,7 +1686,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if args:
             # Reject package overrides or auto-install flags that bypass --no-install
             if any(a in ('-y', '--yes', '-p', '--package') or a.startswith(('-y', '--yes', '-p', '--package=', '--package')) for a in args):
-                return 'ask', f"npx with package download or auto-install options requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"npx with package download or auto-install options requires confirmation: {' '.join(cmd_tokens)}"
             has_no_install = '--no-install' in args
             tools = [a for a in args if not a.startswith('-')]
             if has_no_install and tools:
@@ -1542,14 +1694,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 if tool in {'tsc', 'eslint', 'prettier', 'jest', 'vitest'}:
                     ws_exe = find_npx_workspace_executable(tool, cwd, workspace_paths)
                     if ws_exe:
-                        return 'ask', f"Running workspace-controlled executable via npx requires confirmation: {tool} ({ws_exe})"
+                        return 'force_ask', f"Running workspace-controlled executable via npx requires confirmation: {tool} ({ws_exe})"
                     tool_args = args[args.index(tool) + 1:]
+                    in_check = check_dev_tool_inputs(tool_args, workspace_paths, cwd, f"npx {tool}")
+                    if in_check:
+                        return in_check
                     out_check = check_dev_tool_output(tool_args, workspace_paths, cwd, f"npx {tool}")
                     if out_check:
                         return out_check
                     if tool == 'eslint':
                         if any(a in ('--rulesdir', '--resolve-plugins-relative-to', '--plugin') or a.startswith(('--rulesdir=', '--resolve-plugins-relative-to=', '--plugin=')) for a in tool_args):
-                            return 'ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
+                            return 'force_ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
                         if any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in tool_args) and not any(a == '--fix-dry-run' for a in tool_args):
                             skip_next = False
                             for a in tool_args:
@@ -1565,37 +1720,40 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                                     if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                                         return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
                                     if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                        return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
+                                        return 'force_ask', f"eslint modifying file outside workspace requires confirmation: {a}"
                     if tool == 'prettier':
                         if any(a == '--plugin' or a.startswith(('--plugin=', '--plugin')) for a in tool_args):
-                            return 'ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
+                            return 'force_ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
                         if any(a in ('-w', '--write') or a.startswith('--write') for a in tool_args):
                             for a in tool_args:
                                 if not a.startswith('-'):
                                     if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                                         return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
                                     if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                        return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
+                                        return 'force_ask', f"prettier modifying file outside workspace requires confirmation: {a}"
                     if tool == 'tsc':
                         if any(a in ('--plugins', '--transform') or a.startswith(('--plugins=', '--transform=')) for a in tool_args):
-                            return 'ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
+                            return 'force_ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
                         for a in tool_args:
                             if not a.startswith('-'):
                                 if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                                     return 'deny', f"tsc accessing sensitive or system path is forbidden: {a}"
                                 if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                    return 'ask', f"tsc compiling file outside workspace requires confirmation: {a}"
+                                    return 'force_ask', f"tsc compiling file outside workspace requires confirmation: {a}"
                     return 'allow', f"Safe static tool via npx --no-install: {tool}"
-            return 'ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
-        return 'ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
+        return 'force_ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc', 'tsc', 'eslint', 'prettier', 'standard', 'biome', 'vite', 'webpack', 'rollup', 'esbuild'}:
+        in_check = check_dev_tool_inputs(args, workspace_paths, cwd, base_cmd)
+        if in_check:
+            return in_check
         out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
         if out_check:
             return out_check
         if base_cmd == 'eslint':
             if any(a in ('--rulesdir', '--resolve-plugins-relative-to', '--plugin') or a.startswith(('--rulesdir=', '--resolve-plugins-relative-to=', '--plugin=')) for a in args):
-                return 'ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
             if any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in args) and not any(a == '--fix-dry-run' for a in args):
                 skip_next = False
                 for a in args:
@@ -1611,10 +1769,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                         if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                             return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
                         if not is_path_in_workspaces(a, workspace_paths, cwd):
-                            return 'ask', f"eslint modifying file outside workspace requires confirmation: {a}"
+                            return 'force_ask', f"eslint modifying file outside workspace requires confirmation: {a}"
         if base_cmd == 'prettier':
             if any(a == '--plugin' or a.startswith(('--plugin=', '--plugin')) for a in args):
-                return 'ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
             if any(a in ('-w', '--write') or a.startswith('--write') for a in args):
                 skip_next = False
                 for a in args:
@@ -1628,23 +1786,26 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                         if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                             return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
                         if not is_path_in_workspaces(a, workspace_paths, cwd):
-                            return 'ask', f"prettier modifying file outside workspace requires confirmation: {a}"
+                            return 'force_ask', f"prettier modifying file outside workspace requires confirmation: {a}"
         if base_cmd == 'tsc':
             if any(a in ('--plugins', '--transform') or a.startswith(('--plugins=', '--transform=')) for a in args):
-                return 'ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
             for a in args:
                 if not a.startswith('-'):
                     if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                         return 'deny', f"tsc accessing sensitive or system path is forbidden: {a}"
                     if not is_path_in_workspaces(a, workspace_paths, cwd):
-                        return 'ask', f"tsc compiling file outside workspace requires confirmation: {a}"
+                        return 'force_ask', f"tsc compiling file outside workspace requires confirmation: {a}"
         return 'allow', f"Safe static dev tool: {base_cmd}"
 
     if base_cmd == 'cargo':
         if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):
-            return 'ask', f"cargo with configuration override (--config) requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"cargo with configuration override (--config) requires confirmation: {' '.join(cmd_tokens)}"
         if any(a == '-Z' or (a.startswith('-Z') and len(a) > 2) for a in args):
-            return 'ask', f"cargo with unstable flag (-Z) requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"cargo with unstable flag (-Z) requires confirmation: {' '.join(cmd_tokens)}"
+        in_check = check_dev_tool_inputs(args, workspace_paths, cwd, 'cargo')
+        if in_check:
+            return in_check
         out_check = check_dev_tool_output(args, workspace_paths, cwd, 'cargo')
         if out_check:
             return out_check
@@ -1653,15 +1814,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if sub in {'test', 'check', 'clippy', 'build', 'bench', 'fmt'}:
                 return 'allow', f"Safe cargo command: cargo {sub}"
             if sub in {'install', 'publish', 'add', 'remove'}:
-                return 'ask', f"Cargo dependency modification requires confirmation: cargo {sub}"
-        return 'ask', f"Cargo command requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Cargo dependency modification requires confirmation: cargo {sub}"
+        return 'force_ask', f"Cargo command requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd in {'pytest', 'ruff', 'mypy', 'flake8', 'black', 'pylint'}:
         if base_cmd == 'pylint' and any(a in ('--init-hook', '--load-plugins') or a.startswith(('--init-hook=', '--load-plugins=')) for a in args):
-            return 'ask', f"pylint with plugin or init hook requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"pylint with plugin or init hook requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'pytest':
             if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args):
-                return 'ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
+        in_check = check_dev_tool_inputs(args, workspace_paths, cwd, base_cmd)
+        if in_check:
+            return in_check
         if base_cmd == 'black':
             is_check = any(a in ('--check', '--diff') for a in args)
             if not is_check:
@@ -1670,7 +1834,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                         if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                             return 'deny', f"black modifying sensitive or system path is forbidden: {a}"
                         if not is_path_in_workspaces(a, workspace_paths, cwd):
-                            return 'ask', f"black modifying file outside workspace requires confirmation: {a}"
+                            return 'force_ask', f"black modifying file outside workspace requires confirmation: {a}"
         if base_cmd == 'ruff':
             if any(a == 'format' or a.startswith('--fix') for a in args):
                 is_check = any(a in ('--check', '--diff') for a in args)
@@ -1680,7 +1844,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                             if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                                 return 'deny', f"ruff modifying sensitive or system path is forbidden: {a}"
                             if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                return 'ask', f"ruff modifying file outside workspace requires confirmation: {a}"
+                                return 'force_ask', f"ruff modifying file outside workspace requires confirmation: {a}"
         out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
         if out_check:
             return out_check
@@ -1691,11 +1855,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             module = args[1]
             if module in {'unittest', 'pytest', 'mypy', 'ruff', 'flake8'}:
                 if workspace_has_local_python_module(module, workspace_paths, cwd):
-                    return 'ask', f"python -m {module} with local workspace module shadowing requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'force_ask', f"python -m {module} with local workspace module shadowing requires confirmation: {' '.join(cmd_tokens)}"
                 mod_args = args[2:]
+                in_check = check_dev_tool_inputs(mod_args, workspace_paths, cwd, f"python -m {module}")
+                if in_check:
+                    return in_check
                 if module == 'pytest':
                     if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in mod_args):
-                        return 'ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
+                        return 'force_ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
                 if module == 'ruff':
                     if any(a == 'format' or a.startswith('--fix') for a in mod_args):
                         is_check = any(a in ('--check', '--diff') for a in mod_args)
@@ -1705,24 +1872,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                                     if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
                                         return 'deny', f"ruff modifying sensitive or system path is forbidden: {a}"
                                     if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                        return 'ask', f"ruff modifying file outside workspace requires confirmation: {a}"
+                                        return 'force_ask', f"ruff modifying file outside workspace requires confirmation: {a}"
                 out_check = check_dev_tool_output(mod_args, workspace_paths, cwd, f"python -m {module}")
                 if out_check:
                     return out_check
                 return 'allow', f"Safe python module: {module}"
-        return 'ask', f"Executing Python script requires confirmation: {' '.join(cmd_tokens)}"
+        return 'force_ask', f"Executing Python script requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd == 'go':
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
             if any(a in ('-exec', '--exec', '-toolexec', '--toolexec') or a.startswith(('-exec=', '--exec=', '-toolexec=', '--toolexec=')) for a in args):
-                return 'ask', f"go {args[0]} with custom exec or toolexec program requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"go {args[0]} with custom exec or toolexec program requires confirmation: {' '.join(cmd_tokens)}"
+            in_check = check_dev_tool_inputs(args[1:], workspace_paths, cwd, f"go {args[0]}")
+            if in_check:
+                return in_check
             out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, f"go {args[0]}")
             if out_check:
                 return out_check
             return 'allow', f"Safe Go tool: go {args[0]}"
 
     if base_cmd == 'make':
-        return 'ask', f"make executes repository-controlled Makefile recipes: {' '.join(cmd_tokens)}"
+        return 'force_ask', f"make executes repository-controlled Makefile recipes: {' '.join(cmd_tokens)}"
 
     # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:
@@ -1877,6 +2047,10 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
             return 'deny', r
 
     for v, r in verdicts:
+        if v == 'force_ask':
+            return 'force_ask', r
+
+    for v, r in verdicts:
         if v == 'ask':
             return 'ask', r
 
@@ -1886,18 +2060,18 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
 def classify_file_modification(target_file, workspace_paths, cwd):
     """Classify file write or replacement tools."""
     if not target_file or not isinstance(target_file, str):
-        return 'ask', 'No target file specified or invalid type'
+        return 'force_ask', 'No target file specified or invalid type'
 
     if is_sensitive_credential_path(target_file, cwd) or is_system_write_path(target_file, cwd):
         return 'deny', f"Modifying sensitive or system path is forbidden: {target_file}"
 
     if is_git_admin_path(target_file, cwd):
-        return 'ask', f"Modifying git repository configuration or hooks requires confirmation: {target_file}"
+        return 'force_ask', f"Modifying git repository configuration or hooks requires confirmation: {target_file}"
 
     if is_path_in_workspaces(target_file, workspace_paths, cwd):
         return 'allow', f"File modification within workspace auto-approved: {os.path.basename(target_file)}"
 
-    return 'ask', f"File modification outside workspace requires approval: {target_file}"
+    return 'force_ask', f"File modification outside workspace requires approval: {target_file}"
 
 
 def classify_file_read(target_file, cwd):
@@ -1911,7 +2085,7 @@ def classify_file_read(target_file, cwd):
     for prefix in get_sensitive_credential_prefixes():
         norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
         if norm_prefix.startswith(norm_dir):
-            return 'ask', f"Searching directory containing sensitive credentials requires approval: {target_file}"
+            return 'force_ask', f"Searching directory containing sensitive credentials requires approval: {target_file}"
     return 'allow', f"Safe file read: {os.path.basename(target_file)}"
 
 
@@ -1931,7 +2105,7 @@ def classify_directory_search(target_dir, args, cwd):
     for prefix in get_sensitive_credential_prefixes():
         norm_prefix = str(Path(prefix).resolve()) if os.path.exists(prefix) else os.path.abspath(prefix)
         if norm_prefix.startswith(norm_dir):
-            return 'ask', f"Searching directory containing sensitive credentials requires approval: {target_dir}"
+            return 'force_ask', f"Searching directory containing sensitive credentials requires approval: {target_dir}"
 
     # Check search filter options (Includes, Pattern) for sensitive patterns
     includes = args.get('Includes')

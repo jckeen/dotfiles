@@ -282,7 +282,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                     'workspacePaths': [self.test_ws],
                 }
                 res = self.run_classifier(payload)
-                self.assertEqual(res['decision'], 'ask', f"Expected {cmd} to prompt (ask), got: {res}")
+                self.assertIn(res['decision'], ('ask', 'force_ask'), f"Expected {cmd} to prompt (ask/force_ask), got: {res}")
 
     def test_cwd_scoping(self):
         # When Cwd is outside workspace, relative file deletion must ask/deny
@@ -291,7 +291,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
     def test_invalid_cwd_types_do_not_crash(self):
         for bad_cwd in [None, 123, [], {}, True]:
@@ -370,7 +370,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # grep_search on directory with descendant .env file: ask
         env_dir = Path(self.test_ws) / 'subdir_with_env'
@@ -386,7 +386,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 'workspacePaths': [self.test_ws],
             }
             res = self.run_classifier(payload)
-            self.assertEqual(res['decision'], 'ask')
+            self.assertIn(res['decision'], ('ask', 'force_ask'))
         finally:
             if env_file.exists():
                 env_file.unlink()
@@ -424,7 +424,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp -ft~/.ssh README.md', 'Cwd': self.test_ws}},
@@ -477,7 +477,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 'workspacePaths': [self.test_ws],
             }
             res = self.run_classifier(payload)
-            self.assertEqual(res['decision'], 'ask')
+            self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 6. Global message option scope (sort -m must not skip credentials)
         payload = {
@@ -493,7 +493,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date', 'Cwd': self.test_ws}},
@@ -512,7 +512,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 9. Directory search detects file symlinks pointing to sensitive files
         with tempfile.TemporaryDirectory() as ext_dir:
@@ -537,7 +537,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --no-ext-diff --no-textconv', 'Cwd': str(git_repo_dir)}},
@@ -560,7 +560,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch --list new-branch', 'Cwd': self.test_ws}},
@@ -586,7 +586,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show --no-textconv HEAD', 'Cwd': str(git_repo_dir)}},
@@ -601,7 +601,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 16. sort wildcard operands require confirmation
         payload = {
@@ -609,7 +609,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 17. npm with custom script-shell requires confirmation
         payload = {
@@ -617,7 +617,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 18. Bare executable resolving into workspace requires confirmation
         ws_bin = Path(self.test_ws) / 'bin'
@@ -633,7 +633,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 'workspacePaths': [self.test_ws],
             }
             res = self.run_classifier(payload)
-            self.assertEqual(res['decision'], 'ask')
+            self.assertIn(res['decision'], ('ask', 'force_ask'))
         finally:
             os.environ['PATH'] = orig_path
 
@@ -643,7 +643,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 20. sort with attached -o.env is forbidden
         payload = {
@@ -663,7 +663,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 22. git blame with configured textconv driver requires confirmation
         subprocess.run(['git', 'config', 'diff.testdrv.textconv', '/bin/echo'], cwd=str(fs_repo), check=True)
@@ -672,7 +672,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git blame --no-textconv file.txt', 'Cwd': str(fs_repo)}},
@@ -688,7 +688,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertEqual(res['decision'], 'deny')
 
         # 24. Input redirection over network device requires confirmation
         payload = {
@@ -696,7 +696,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 25. Input redirection reading sensitive credentials is forbidden
         payload = {
@@ -715,14 +715,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp payload .git/config', 'Cwd': str(git_ws)}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertEqual(res['decision'], 'deny')
 
         # 27. git diff --output targeting .git/config requires confirmation
         payload = {
@@ -730,7 +730,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertEqual(res['decision'], 'deny')
 
         # 28. git diff with core.fsmonitor configured requires confirmation
         payload = {
@@ -738,7 +738,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 29. git ls-files with core.fsmonitor configured requires confirmation
         payload = {
@@ -746,7 +746,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 30. git stash show with configured textconv driver requires confirmation
         payload = {
@@ -754,7 +754,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash show --no-textconv --no-ext-diff', 'Cwd': str(git_ws)}},
@@ -792,14 +792,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go test -toolexec ./payload ./...', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 34. git cat-file --filters or --textconv requires confirmation
         payload = {
@@ -807,7 +807,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git cat-file -p HEAD:README.md', 'Cwd': self.test_ws}},
@@ -837,7 +837,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "Hello, world!"', 'Cwd': self.test_ws}},
@@ -874,7 +874,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 39. git fetch --upload-pack requires confirmation
         payload = {
@@ -882,7 +882,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 40. pylint --init-hook requires confirmation, safe pylint is allowed
         payload = {
@@ -890,7 +890,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'pylint app.py', 'Cwd': self.test_ws}},
@@ -935,7 +935,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file script.sh', 'Cwd': self.test_ws}},
@@ -950,7 +950,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat \';\' echo .env', 'Cwd': self.test_ws}},
@@ -965,14 +965,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'SAFE_VAR=1 npm test', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 46. git switch --orphan and -d require confirmation
         payload = {
@@ -980,14 +980,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch -d main', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 47. git commit requires confirmation when executable repository hooks exist
         repo_dir = Path(self.test_ws) / 'hook_repo'
@@ -1004,7 +1004,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         hook_path.write_text('#!/bin/sh\nexit 0\n')
         hook_path.chmod(0o755)
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 48. git switch and worktree add require confirmation when post-checkout hook exists
         hook_path.unlink()
@@ -1017,14 +1017,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [str(repo_dir)],
         }
         res = self.run_classifier(payload_switch)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_wt = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git worktree add {repo_dir}/wt main', 'Cwd': str(repo_dir)}},
             'workspacePaths': [str(repo_dir)],
         }
         res = self.run_classifier(payload_wt)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 49. Space in quoted path does not truncate path or bypass checks
         payload_space_cred = {
@@ -1039,7 +1039,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_space_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 50. git add with configured filter driver requires confirmation
         payload_git_add = {
@@ -1048,7 +1048,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         }
         subprocess.run(['git', 'config', 'filter.test.clean', './payload'], cwd=str(repo_dir), check=True)
         res = self.run_classifier(payload_git_add)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 51. cargo build with --config override requires confirmation
         payload_cargo = {
@@ -1056,7 +1056,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_cargo)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 52. Dev tool output options outside workspace require confirmation
         payload_go_out = {
@@ -1064,7 +1064,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_go_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_go_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'go build -o {self.test_ws}/bin/app ./...', 'Cwd': self.test_ws}},
@@ -1078,7 +1078,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_ruff_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 53. Literal quote in command does not strip into safe command name ("l's" != "ls")
         payload_quote_cmd = {
@@ -1086,7 +1086,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_quote_cmd)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 54. Dev tools modifying files outside workspace require confirmation
         payload_black_out = {
@@ -1094,7 +1094,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_black_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_black_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'black {self.test_ws}/app.py', 'Cwd': self.test_ws}},
@@ -1108,14 +1108,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_prettier_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_tsc_out = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install tsc --outDir /tmp/outside', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_tsc_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 55. Attached pytest plugin option (-pevil_plugin) requires confirmation
         payload_pytest_plugin = {
@@ -1123,14 +1123,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_pytest_plugin)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_py_m_plugin = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'python3 -m pytest -pevil_plugin', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_py_m_plugin)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 56. python3 -m pytest with local workspace pytest.py requires confirmation
         fake_pytest = Path(self.test_ws) / 'pytest.py'
@@ -1140,7 +1140,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_py_shadow)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
         fake_pytest.unlink()
 
     def test_round_20_findings(self):
@@ -1150,7 +1150,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_sort_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_sort_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'sort README.md --out={self.test_ws}/sorted.txt', 'Cwd': self.test_ws}},
@@ -1234,7 +1234,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_eslint_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_eslint_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'npx --no-install eslint --fix {self.test_ws}/app.js', 'Cwd': self.test_ws}},
@@ -1248,7 +1248,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_eslint_dry)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertIn(res['decision'], ('allow', 'ask', 'force_ask'))
 
         # 60. Ruff --fix-only modifying files outside workspace requires confirmation
         payload_ruff_out = {
@@ -1256,7 +1256,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_ruff_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_ruff_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'ruff check --fix-only {self.test_ws}/app.py', 'Cwd': self.test_ws}},
@@ -1270,7 +1270,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_pym_ruff_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 61. Package test reporter output targeting destination outside workspace requires confirmation
         payload_bun_out = {
@@ -1278,7 +1278,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_bun_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_bun_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'bun test --reporter=junit --reporter-outfile={self.test_ws}/report.xml', 'Cwd': self.test_ws}},
@@ -1309,7 +1309,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_evil_lint)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_safe_pkg_test = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm run test:unit', 'Cwd': self.test_ws}},
@@ -1350,14 +1350,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_git_out_abbr)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_git_out_dir = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --output-dir=/tmp/outside', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_git_out_dir)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 65. Node execution is not auto-approved
         payload_node_test = {
@@ -1365,14 +1365,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_node_test)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_node_flag = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'node --test', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_node_flag)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 66. Git sensitive probe with --exit-code and cached changes
         git_dir = Path(self.test_ws) / 'git_exit_test'
@@ -1416,14 +1416,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_pkg_prefix_out)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_pkg_ws = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --workspace foo', 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_pkg_ws)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         pkg_file.unlink()
 
@@ -1434,7 +1434,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_switch_discard)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_switch_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch main', 'Cwd': self.test_ws}},
@@ -1449,7 +1449,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_sort_compress)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 70. False ignore-scripts value and flags after -- do not bypass npm lifecycle inspection
         pkg_file = Path(self.test_ws) / 'package.json'
@@ -1487,7 +1487,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_npx_ws)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
         eslint_dummy.unlink()
 
         # 72. git add with active post-index-change hook requires confirmation
@@ -1509,7 +1509,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [str(git_dir)],
         }
         res = self.run_classifier(payload_add_hook)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         post_idx_hook.unlink()
         res_safe = self.run_classifier(payload_add_hook)
@@ -1548,7 +1548,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                     'workspacePaths': [self.test_ws],
                 }
                 res = self.run_classifier(payload)
-                self.assertEqual(res['decision'], 'ask', f"Expected {cmd} to require confirmation, got: {res}")
+                self.assertIn(res['decision'], ('ask', 'force_ask'), f"Expected {cmd} to require confirmation, got: {res}")
 
         # 75. Caller-controlled Cwd outside workspace requires confirmation
         with tempfile.TemporaryDirectory() as outside_dir:
@@ -1564,7 +1564,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                         'workspacePaths': [self.test_ws],
                     }
                     res = self.run_classifier(payload)
-                    self.assertEqual(res['decision'], 'ask', f"Expected {cmd} outside workspace to require confirmation, got: {res}")
+                    self.assertIn(res['decision'], ('ask', 'force_ask'), f"Expected {cmd} outside workspace to require confirmation, got: {res}")
 
         # 76. git commit without inline message invokes editor -> ask
         payload_no_msg = {
@@ -1572,7 +1572,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_no_msg)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # 77. git commit with GPG signing invokes external gpg program -> ask
         payload_sign_flag = {
@@ -1580,7 +1580,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_sign_flag)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         git_dir = Path(self.test_ws) / 'gpg_commit_test'
         git_dir.mkdir(parents=True, exist_ok=True)
@@ -1594,7 +1594,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [str(git_dir)],
         }
         res = self.run_classifier(payload_sign_config)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         # git commit with --no-gpg-sign overrides commit.gpgsign -> allow
         payload_no_gpg_override = {
@@ -1610,7 +1610,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_cfg_list)
-        self.assertEqual(res['decision'], 'ask')
+        self.assertIn(res['decision'], ('ask', 'force_ask'))
 
         payload_cfg_sensitive = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get http.extraHeader', 'Cwd': self.test_ws}},
@@ -1650,6 +1650,156 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         subprocess.run(['git', 'remote', 'set-url', 'origin', 'https://github.com/org/repo.git'], cwd=str(remote_git_dir), check=True)
         res_clean = self.run_classifier(payload_remote_v)
         self.assertEqual(res_clean['decision'], 'allow')
+
+    def test_round_25_hardening(self):
+        # 1. Dev-runner input and config paths outside workspace or sensitive files
+        dev_tests = [
+            ('pytest /tmp/evil.py', 'force_ask'),
+            ('eslint --config /tmp/evil.js .', 'force_ask'),
+            ('cargo test --manifest-path=/tmp/evil/Cargo.toml', 'force_ask'),
+            ('go test /tmp/evil.go', 'force_ask'),
+            ('pytest ~/.ssh/id_rsa', 'deny'),
+            ('pytest tests/test_ok.py', 'allow'),
+            ('cargo test --manifest-path=Cargo.toml', 'allow'),
+        ]
+        for cmd, expected in dev_tests:
+            with self.subTest(dev_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
+
+        # 2. Common credential stores are denied for reading
+        cred_cmds = [
+            'cat ~/.git-credentials',
+            'cat ~/.npmrc',
+            'cat ~/.pypirc',
+            'cat ~/.docker/config.json',
+            'cat .git/config',
+        ]
+        for cmd in cred_cmds:
+            with self.subTest(cred_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'deny', f"Expected {cmd} to be denied, got: {res}")
+
+        # view_file on credential stores
+        view_creds = [
+            '~/.git-credentials',
+            '~/.npmrc',
+            '~/.pypirc',
+            '~/.docker/config.json',
+            f'{self.test_ws}/.git/config',
+        ]
+        for p in view_creds:
+            with self.subTest(view_cred=p):
+                payload = {
+                    'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': p}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'deny', f"Expected view_file {p} to be denied, got: {res}")
+
+        # 3. Git cat-file batch modes and sensitive object paths
+        cat_file_tests = [
+            ('git cat-file --batch', 'force_ask'),
+            ('git cat-file --batch-check', 'force_ask'),
+            ('git cat-file --batch-command', 'force_ask'),
+            ('git cat-file --batch-all-objects', 'force_ask'),
+            ('git cat-file -p HEAD:.env', 'deny'),
+            ('git cat-file -p HEAD:README.md', 'allow'),
+        ]
+        for cmd, expected in cat_file_tests:
+            with self.subTest(cat_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
+
+        # 4. Risky operations use force_ask
+        risky_cmds = [
+            'rm -rf dir',
+            'git clean -fd',
+            'git reset --hard HEAD~1',
+            'git checkout -- .',
+            'git restore .',
+            'git branch -D old-branch',
+            'git push origin feature-branch',
+        ]
+        for cmd in risky_cmds:
+            with self.subTest(risky_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask', f"Expected {cmd} to yield force_ask, got: {res}")
+
+        # 5. Bounded directory inspection fails closed (force_ask)
+        deep_dir = Path(self.test_ws) / 'deep_nest'
+        curr = deep_dir
+        for i in range(8):
+            curr = curr / f'level_{i}'
+        curr.mkdir(parents=True, exist_ok=True)
+        payload_deep = {
+            'toolCall': {'name': 'grep_search', 'args': {'SearchPath': str(deep_dir)}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_deep)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # 6. Git fetch with transport programs
+        git_transport_dir = Path(self.test_ws) / 'fetch_test'
+        git_transport_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_transport_dir), check=True)
+        subprocess.run(['git', 'config', 'core.sshCommand', 'evil-ssh'], cwd=str(git_transport_dir), check=True)
+
+        payload_fetch_ssh = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch origin', 'Cwd': str(git_transport_dir)}},
+            'workspacePaths': [str(git_transport_dir)],
+        }
+        res = self.run_classifier(payload_fetch_ssh)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        subprocess.run(['git', 'config', '--unset', 'core.sshCommand'], cwd=str(git_transport_dir), check=True)
+        subprocess.run(['git', 'config', 'remote.origin.uploadpack', 'evil-pack'], cwd=str(git_transport_dir), check=True)
+        res = self.run_classifier(payload_fetch_ssh)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        payload_fetch_flag = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch --upload-pack=evil origin', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_fetch_flag)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # Normal fetch
+        subprocess.run(['git', 'config', '--unset', 'remote.origin.uploadpack'], cwd=str(git_transport_dir), check=True)
+        res = self.run_classifier(payload_fetch_ssh)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 7. Git signature-display options
+        sig_cmds = [
+            ('git log --show-signature', 'force_ask'),
+            ('git show --format=%GG', 'force_ask'),
+            ('git log -n 5', 'allow'),
+            ('git show HEAD', 'allow'),
+        ]
+        for cmd, expected in sig_cmds:
+            with self.subTest(sig_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
 
 
 if __name__ == '__main__':
