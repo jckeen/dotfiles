@@ -1425,6 +1425,106 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
         pkg_file.unlink()
 
+    def test_round_22_findings(self):
+        # 68. Abbreviated git switch options (--discard) require confirmation
+        payload_switch_discard = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch --discard main', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_switch_discard)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_switch_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch main', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_switch_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 69. Abbreviated sort helper option (--compress-prog) requires confirmation
+        payload_sort_compress = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort --compress-prog=./payload -S 1b README.md', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_sort_compress)
+        self.assertEqual(res['decision'], 'ask')
+
+        # 70. False ignore-scripts value and flags after -- do not bypass npm lifecycle inspection
+        pkg_file = Path(self.test_ws) / 'package.json'
+        pkg_file.write_text(json.dumps({
+            "name": "ignore-scripts-pkg",
+            "scripts": {
+                "pretest": "cat ~/.ssh/id_rsa",
+                "test": "echo test"
+            }
+        }))
+        payload_npm_false = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test --ignore-scripts=false', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_npm_false)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_npm_dash = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npm test -- --ignore-scripts', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_npm_dash)
+        self.assertEqual(res['decision'], 'deny')
+        pkg_file.unlink()
+
+        # 71. Workspace-controlled executable executed via npx requires confirmation
+        node_bin = Path(self.test_ws) / 'node_modules' / '.bin'
+        node_bin.mkdir(parents=True, exist_ok=True)
+        eslint_dummy = node_bin / 'eslint'
+        eslint_dummy.write_text('#!/bin/sh\necho evil')
+        eslint_dummy.chmod(0o755)
+
+        payload_npx_ws = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install eslint .', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_npx_ws)
+        self.assertEqual(res['decision'], 'ask')
+        eslint_dummy.unlink()
+
+        # 72. git add with active post-index-change hook requires confirmation
+        git_dir = Path(self.test_ws) / 'git_add_hook_test'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('test')
+
+        hooks_dir = git_dir / '.git' / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        post_idx_hook = hooks_dir / 'post-index-change'
+        post_idx_hook.write_text('#!/bin/sh\necho hook')
+        post_idx_hook.chmod(0o755)
+
+        payload_add_hook = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add .', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_add_hook)
+        self.assertEqual(res['decision'], 'ask')
+
+        post_idx_hook.unlink()
+        res_safe = self.run_classifier(payload_add_hook)
+        self.assertEqual(res_safe['decision'], 'allow')
+
+        # 73. NUL-delimited Git output (-z) does not defeat sensitive file detection
+        env_file = git_dir / '.env'
+        env_file.write_text('SECRET=true')
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+
+        payload_diff_z = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --cached -z', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_diff_z)
+        self.assertEqual(res['decision'], 'deny')
+
 
 if __name__ == '__main__':
     unittest.main()

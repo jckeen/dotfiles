@@ -440,7 +440,7 @@ def strip_git_output_options(args_list):
             if '=' not in a:
                 skip_next = True
             continue
-        if a in ('--exit-code', '--quiet', '-q'):
+        if a in ('--exit-code', '--quiet', '-q', '-z', '--null'):
             continue
         clean.append(a)
     return clean
@@ -482,9 +482,14 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
         )
         if res.returncode in (0, 1):
             if res.stdout:
-                for line in res.stdout.splitlines():
-                    f = line.strip()
-                    if f and (matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd)):
+                parts = []
+                for chunk in res.stdout.split('\0'):
+                    for line in chunk.splitlines():
+                        f = line.strip().rstrip('\0')
+                        if f:
+                            parts.append(f)
+                for f in parts:
+                    if matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd):
                         return 'sensitive'
             return 'safe'
         if res.returncode in (128, 129) and not res.stdout:
@@ -621,6 +626,37 @@ def get_package_script(pkg_path, script_name):
                 return val
     except Exception:
         pass
+    return None
+
+
+def find_npx_workspace_executable(tool, cwd, workspace_paths):
+    """Check if npx would resolve tool to a workspace-controlled executable."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        curr = Path(effective_cwd).resolve()
+    except Exception:
+        curr = Path(effective_cwd)
+    ws_roots = [Path(ws).resolve() for ws in (workspace_paths or [effective_cwd])]
+
+    while True:
+        candidate = curr / 'node_modules' / '.bin' / tool
+        if candidate.is_file() or candidate.is_symlink():
+            try:
+                norm_cand = str(candidate.resolve())
+            except Exception:
+                norm_cand = str(candidate)
+            if is_path_in_workspaces(norm_cand, workspace_paths, effective_cwd) or is_path_in_workspaces(str(candidate), workspace_paths, effective_cwd):
+                return str(candidate)
+        if any(curr == ws for ws in ws_roots) or curr.parent == curr:
+            break
+        curr = curr.parent
+
+    # Also check if tool in PATH resolves to a workspace-controlled executable
+    res = shutil.which(tool)
+    if res:
+        norm_res = expand_path(res, effective_cwd)
+        if is_path_in_workspaces(norm_res, workspace_paths, effective_cwd):
+            return res
     return None
 
 
@@ -997,8 +1033,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git switch: only allow without discarding changes or creating/resetting branches
         if git_sub == 'switch':
-            if any(a.startswith(('-c', '-C', '-f', '--create', '--force-create', '--force', '--discard-changes', '--orphan')) or a in ('-d', '--detach', '--orphan') for a in args):
-                return 'ask', f"Switching with branch creation, reset, detach, or discard requires confirmation: {' '.join(cmd_tokens)}"
+            SAFE_SWITCH_FLAGS = {'-q', '--quiet', '--progress', '--guess', '--no-guess', '--ignore-other-worktrees', '--'}
+            for a in args[1:]:
+                if a.startswith('-') and a != '-' and a not in SAFE_SWITCH_FLAGS:
+                    return 'ask', f"Switching with option requires confirmation: {' '.join(cmd_tokens)}"
+            positionals = [a for a in args[1:] if not a.startswith('-') or a == '-']
+            if len(positionals) != 1:
+                return 'ask', f"Git switch requires explicit branch target: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-checkout',)):
                 return 'ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
@@ -1137,6 +1178,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'ask', 'Git config modification requires confirmation'
 
         if git_sub == 'add':
+            if git_has_active_hooks(cwd, ('post-index-change',)):
+                return 'ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git add'
@@ -1257,7 +1300,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
     # Sort: check --compress-program, -o / --output option (including GNU abbreviations), and unexpanded variables
     if base_cmd == 'sort':
-        if any(a == '--compress-program' or a.startswith(('--compress-program=', '--compress-program')) for a in args):
+        if any(a.startswith('--co') and '--compress-program'.startswith(a.split('=', 1)[0]) for a in args):
             return 'ask', f"sort with execution helper requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
             if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
@@ -1354,7 +1397,24 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 # Inspect and validate package.json script body and lifecycle hooks if package.json exists
                 pkg_json = find_package_json(norm_target_dir, workspace_paths)
                 if pkg_json:
-                    has_ignore_scripts = any(a == '--ignore-scripts' or a.startswith('--ignore-scripts=') for a in script_args)
+                    # Determine whether lifecycle scripts are ignored
+                    # Only flags before '--' are npm options; flags after '--' are passed to the script
+                    npm_opts = []
+                    for a in script_args:
+                        if a == '--':
+                            break
+                        npm_opts.append(a)
+
+                    has_ignore_scripts = False
+                    for a in npm_opts:
+                        if a == '--ignore-scripts' or a == '--ignore-scripts=true':
+                            has_ignore_scripts = True
+                        elif a.startswith('--ignore-scripts='):
+                            val = a.split('=', 1)[1].lower()
+                            has_ignore_scripts = (val not in ('false', '0', 'no', 'off'))
+                        elif a in ('--no-ignore-scripts', '--ignore-scripts=false'):
+                            has_ignore_scripts = False
+
                     scripts_to_check = []
                     if not has_ignore_scripts:
                         pre_s = 'pre' + target_script
@@ -1391,6 +1451,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if has_no_install and tools:
                 tool = tools[0]
                 if tool in {'tsc', 'eslint', 'prettier', 'jest', 'vitest'}:
+                    ws_exe = find_npx_workspace_executable(tool, cwd, workspace_paths)
+                    if ws_exe:
+                        return 'ask', f"Running workspace-controlled executable via npx requires confirmation: {tool} ({ws_exe})"
                     tool_args = args[args.index(tool) + 1:]
                     out_check = check_dev_tool_output(tool_args, workspace_paths, cwd, f"npx {tool}")
                     if out_check:
