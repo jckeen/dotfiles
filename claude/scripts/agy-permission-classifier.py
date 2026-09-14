@@ -49,8 +49,8 @@ SAFE_GIT_READ_SUBCOMMANDS = {
     'version',
 }
 
-# Subcommands / script prefixes for package managers that are safe to run
-SAFE_RUN_PREFIXES = ('test', 'lint', 'check', 'typecheck', 'build', 'format', 'compile', 'verify', 'doc')
+# Subcommands / script prefixes for package managers that are safe to run (excluding test and build runners)
+SAFE_RUN_PREFIXES = ('lint', 'check', 'typecheck', 'format', 'verify', 'doc')
 
 def get_sensitive_credential_prefixes():
     """Dynamically resolve sensitive credential prefixes against current HOME."""
@@ -343,9 +343,12 @@ def check_directory_descendants(target_dir, cwd=None):
                     truncated = True
                     dirs.clear()
 
-            # Check symlinked subdirectories
+            # Check symlinked subdirectories with per-entry limits
             for d in list(dirs):
                 inspected_count += 1
+                if inspected_count > MAX_ENTRIES or (time.monotonic() - start_time) > MAX_ELAPSED:
+                    truncated = True
+                    break
                 d_full = os.path.join(root, d)
                 if os.path.islink(d_full):
                     try:
@@ -354,10 +357,15 @@ def check_directory_descendants(target_dir, cwd=None):
                             return 'deny', f"contains symlink to sensitive directory ({d} -> {link_target})"
                     except Exception:
                         truncated = True
+            if truncated:
+                break
 
-            # Pass 1: check symlinked files for sensitive targets (hard deny)
+            # Single pass over files with per-entry bounds check
             for f in files:
                 inspected_count += 1
+                if inspected_count > MAX_ENTRIES or (time.monotonic() - start_time) > MAX_ELAPSED:
+                    truncated = True
+                    break
                 f_full = os.path.join(root, f)
                 if os.path.islink(f_full):
                     try:
@@ -366,11 +374,10 @@ def check_directory_descendants(target_dir, cwd=None):
                             return 'deny', f"contains symlink to sensitive file ({f} -> {link_target})"
                     except Exception:
                         truncated = True
-
-            # Pass 2: check files for sensitive patterns (force_ask)
-            for f in files:
-                if matches_sensitive_pattern(f) or is_sensitive_credential_path(os.path.join(root, f), cwd):
+                elif matches_sensitive_pattern(f) or is_sensitive_credential_path(f_full, cwd):
                     return 'force_ask', f"contains sensitive descendant file ({f})"
+            if truncated:
+                break
     except Exception as e:
         return 'force_ask', f"Directory scan error ({e}) requires confirmation: {target_dir}"
 
@@ -513,11 +520,11 @@ def git_remotes_have_credentials(cwd=None):
 
 
 def git_has_transport_executable_configured(cwd=None):
-    """Check if git repository has transport or remote execution helpers configured (core.sshCommand, remote.*.vcs, remote.*.uploadpack)."""
+    """Check if git repository has transport or remote execution helpers configured in local repo config (core.sshCommand, core.askPass, core.pager, credential.helper, remote.*.vcs, remote.*.uploadpack, remote.*.receivepack, proxy helpers)."""
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     try:
         res = subprocess.run(
-            ['git', 'config', '--get-regexp', r'^(core\.sshcommand|remote\..*\.vcs|remote\..*\.uploadpack)$'],
+            ['git', 'config', '--local', '--get-regexp', r'^(core\.sshcommand|core\.askpass|core\.pager|credential\..*helper|credential\.helper|remote\..*\.vcs|remote\..*\.uploadpack|remote\..*\.receivepack|remote\..*\.proxy|http\..*proxy)$'],
             cwd=effective_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -526,6 +533,30 @@ def git_has_transport_executable_configured(cwd=None):
         )
         if res.returncode == 0 and res.stdout.strip():
             return True
+    except Exception:
+        pass
+    return False
+
+
+def git_remotes_have_executable_helpers(cwd=None):
+    """Check if any git remote URL uses an external helper protocol like ext:: or custom helpers."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'config', '--get-regexp', r'^remote\..*\.url$'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    url = parts[1].strip()
+                    if url.startswith('ext::') or re.match(r'^[a-zA-Z0-9_-]+::', url):
+                        return True
     except Exception:
         pass
     return False
@@ -1176,6 +1207,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if not is_path_in_workspaces(git_out, workspace_paths, cwd):
                 return 'force_ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
 
+        # Check for config overrides via -c or --config-env setting transport, helper, or filter programs
+        for i, a in enumerate(args):
+            cfg_opt = None
+            if a in ('-c', '--config-env') and i + 1 < len(args):
+                cfg_opt = args[i + 1]
+            elif a.startswith('-c') and len(a) > 2 and not a.startswith('--'):
+                cfg_opt = a[2:].lstrip('=')
+            if cfg_opt:
+                cfg_key = cfg_opt.split('=', 1)[0].strip().lower()
+                if re.match(r'^(core\.sshcommand|core\.askpass|core\.pager|credential|remote\..*\.(vcs|uploadpack|receivepack|proxy)|http\..*proxy|diff\..*\.command|filter\..*\.clean|filter\..*\.smudge)', cfg_key):
+                    return 'force_ask', f"Git command with configuration override requires confirmation: git -c {cfg_opt}"
+
         # External diff/textconv drivers can execute arbitrary commands configured in gitconfig/attributes
         for a in args:
             if a in ('--ext-diff', '--textconv') or a.startswith(('--ext-diff=', '--textconv=')):
@@ -1213,7 +1256,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git fetch in directory outside workspace requires confirmation: {cwd}"
             if git_has_transport_executable_configured(cwd):
-                return 'force_ask', f"Git fetch with configured transport program (core.sshCommand, remote.vcs, or uploadpack) requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git fetch with configured transport program or credential helper requires confirmation: {' '.join(cmd_tokens)}"
+            if git_remotes_have_executable_helpers(cwd):
+                return 'force_ask', f"Git fetch with configured remote helper URL (ext:: or ::) requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a.startswith(('ext::', 'fd::')) or re.match(r'^[a-zA-Z0-9_-]+::', a) for a in args[1:] if not a.startswith('-')):
+                return 'force_ask', f"Git fetch with custom remote helper protocol requires confirmation: {' '.join(cmd_tokens)}"
             if any(a in ('-u', '--upload-pack') or a.startswith(('-u=', '--upload-pack=')) for a in args):
                 return 'force_ask', f"Git fetch with custom upload-pack program requires confirmation: {' '.join(cmd_tokens)}"
             refspecs = [a for a in args[1:] if not a.startswith('-') and a != 'origin']
@@ -1388,9 +1435,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                         obj_path = a.split(':', 1)[1]
                         if matches_sensitive_pattern(obj_path) or is_sensitive_credential_path(obj_path, cwd):
                             return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
+                    elif re.match(r'^[0-9a-fA-F]{7,64}$', a):
+                        return 'force_ask', f"Reading raw git object by hash can disclose sensitive repository history: {a}"
                     elif matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
                         return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
             return 'allow', 'Safe git cat-file query'
+
+        if git_sub == 'rev-list':
+            if any(a == '--objects' or a.startswith('--objects') for a in args):
+                return 'force_ask', f"git rev-list --objects can list all repository history objects: {' '.join(cmd_tokens)}"
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"
@@ -1628,9 +1681,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 script_args = args[2:]
 
             if target_script:
-                if sub == 'run' and not any(target_script.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
-                    return 'ask', f"Package script requires confirmation: {base_cmd} run {target_script}"
-
                 out_check = check_dev_tool_output(script_args, workspace_paths, norm_target_dir, f"{base_cmd} {sub}")
                 if out_check:
                     return out_check
@@ -1671,10 +1721,20 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                         script_body = get_package_script(pkg_json, s_name)
                         if script_body is not None:
                             s_verdict, s_reason = classify_command_line(script_body, workspace_paths, norm_target_dir, depth=depth + 1)
+                            if s_verdict == 'deny':
+                                return 'deny', f"Package lifecycle script '{s_name}' in package.json is forbidden: {s_reason}"
                             if s_verdict != 'allow':
                                 return s_verdict, f"Package lifecycle script '{s_name}' in package.json requires confirmation: {s_reason}"
                         elif s_name == target_script and (base_cmd != 'bun' or sub != 'test'):
                             return 'ask', f"Package script '{target_script}' not found in package.json requires confirmation: {' '.join(cmd_tokens)}"
+
+                if sub == 'test' or sub.startswith('test') or target_script in {'test', 'check-tests'} or target_script.startswith('test'):
+                    return 'force_ask', f"Package manager test runner executes workspace test code and requires confirmation: {base_cmd} {' '.join(args)}"
+                if target_script in {'build', 'compile'} or target_script.startswith(('build', 'compile')):
+                    return 'force_ask', f"Package manager build script executes workspace build code and requires confirmation: {base_cmd} {' '.join(args)}"
+                if sub == 'run' and not any(target_script.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
+                    return 'ask', f"Package script requires confirmation: {base_cmd} run {target_script}"
+
                 return 'allow', f"Safe package manager {sub}: {base_cmd} {' '.join(args)}"
 
             if sub in {'install', 'i', 'add', 'remove', 'uninstall', 'update', 'publish'}:
@@ -1691,7 +1751,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             tools = [a for a in args if not a.startswith('-')]
             if has_no_install and tools:
                 tool = tools[0]
-                if tool in {'tsc', 'eslint', 'prettier', 'jest', 'vitest'}:
+                if tool in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc'}:
+                    return 'force_ask', f"Running test runner via npx executes workspace test code and requires confirmation: {tool}"
+                if tool in {'tsc', 'eslint', 'prettier', 'biome', 'standard'}:
                     ws_exe = find_npx_workspace_executable(tool, cwd, workspace_paths)
                     if ws_exe:
                         return 'force_ask', f"Running workspace-controlled executable via npx requires confirmation: {tool} ({ws_exe})"
@@ -1744,7 +1806,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'force_ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
         return 'force_ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
 
-    if base_cmd in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc', 'tsc', 'eslint', 'prettier', 'standard', 'biome', 'vite', 'webpack', 'rollup', 'esbuild'}:
+    if base_cmd in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc'}:
+        return 'force_ask', f"Test runner executes workspace test code and requires confirmation: {base_cmd}"
+
+    if base_cmd in {'tsc', 'eslint', 'prettier', 'standard', 'biome', 'vite', 'webpack', 'rollup', 'esbuild'}:
         in_check = check_dev_tool_inputs(args, workspace_paths, cwd, base_cmd)
         if in_check:
             return in_check
@@ -1811,8 +1876,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return out_check
         if args:
             sub = args[0]
-            if sub in {'test', 'check', 'clippy', 'build', 'bench', 'fmt'}:
+            if sub in {'check', 'clippy', 'fmt'}:
                 return 'allow', f"Safe cargo command: cargo {sub}"
+            if sub in {'test', 'bench', 'run', 'build'}:
+                return 'force_ask', f"Cargo command executes workspace code or build scripts and requires confirmation: cargo {sub}"
             if sub in {'install', 'publish', 'add', 'remove'}:
                 return 'force_ask', f"Cargo dependency modification requires confirmation: cargo {sub}"
         return 'force_ask', f"Cargo command requires confirmation: {' '.join(cmd_tokens)}"
@@ -1821,8 +1888,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if base_cmd == 'pylint' and any(a in ('--init-hook', '--load-plugins') or a.startswith(('--init-hook=', '--load-plugins=')) for a in args):
             return 'force_ask', f"pylint with plugin or init hook requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'pytest':
-            if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in args):
-                return 'force_ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
+            return 'force_ask', f"pytest executes workspace test code and conftest.py and requires confirmation: {' '.join(cmd_tokens)}"
         in_check = check_dev_tool_inputs(args, workspace_paths, cwd, base_cmd)
         if in_check:
             return in_check
@@ -1853,16 +1919,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     if base_cmd in {'python', 'python3'}:
         if args and args[0] == '-m' and len(args) > 1:
             module = args[1]
-            if module in {'unittest', 'pytest', 'mypy', 'ruff', 'flake8'}:
+            if module in {'unittest', 'pytest'}:
+                return 'force_ask', f"python -m {module} executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
+            if module in {'mypy', 'ruff', 'flake8'}:
                 if workspace_has_local_python_module(module, workspace_paths, cwd):
                     return 'force_ask', f"python -m {module} with local workspace module shadowing requires confirmation: {' '.join(cmd_tokens)}"
                 mod_args = args[2:]
                 in_check = check_dev_tool_inputs(mod_args, workspace_paths, cwd, f"python -m {module}")
                 if in_check:
                     return in_check
-                if module == 'pytest':
-                    if any(a.startswith('-p') or a.startswith('--pastebin') or a in ('-o', '--override-ini') or a.startswith(('-o=', '--override-ini=')) for a in mod_args):
-                        return 'force_ask', f"pytest with plugin, pastebin, or override option requires confirmation: {' '.join(cmd_tokens)}"
                 if module == 'ruff':
                     if any(a == 'format' or a.startswith('--fix') for a in mod_args):
                         is_check = any(a in ('--check', '--diff') for a in mod_args)
@@ -1883,13 +1948,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
             if any(a in ('-exec', '--exec', '-toolexec', '--toolexec') or a.startswith(('-exec=', '--exec=', '-toolexec=', '--toolexec=')) for a in args):
                 return 'force_ask', f"go {args[0]} with custom exec or toolexec program requires confirmation: {' '.join(cmd_tokens)}"
+            if args[0] == 'test':
+                return 'force_ask', f"go test executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
             in_check = check_dev_tool_inputs(args[1:], workspace_paths, cwd, f"go {args[0]}")
             if in_check:
                 return in_check
             out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, f"go {args[0]}")
             if out_check:
                 return out_check
-            return 'allow', f"Safe Go tool: go {args[0]}"
+            return 'allow', f"Safe Go static tool: go {args[0]}"
 
     if base_cmd == 'make':
         return 'force_ask', f"make executes repository-controlled Makefile recipes: {' '.join(cmd_tokens)}"

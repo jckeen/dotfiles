@@ -97,23 +97,16 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 self.assertEqual(res['decision'], 'allow', f"Expected {cmd} to be allowed, got: {res}")
 
     def test_safe_test_and_lint_runners_allowed(self):
-        commands = [
-            'npm test',
+        static_commands = [
             'npm run lint',
             'npm run typecheck',
-            'npm run build',
-            'pnpm test',
-            'bun test',
-            'cargo test',
             'cargo check',
             'cargo clippy',
+            'go build .',
             'npx --no-install tsc --noEmit',
             'npx --no-install eslint .',
-            'pytest tests/',
-            'python3 -m unittest discover',
-            'go test ./...',
         ]
-        for cmd in commands:
+        for cmd in static_commands:
             with self.subTest(cmd=cmd):
                 payload = {
                     'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
@@ -121,6 +114,26 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 }
                 res = self.run_classifier(payload)
                 self.assertEqual(res['decision'], 'allow', f"Expected {cmd} to be allowed, got: {res}")
+
+        code_executing_runners = [
+            'npm test',
+            'npm run build',
+            'pnpm test',
+            'bun test',
+            'cargo test',
+            'cargo build',
+            'pytest tests/',
+            'python3 -m unittest discover',
+            'go test ./...',
+        ]
+        for cmd in code_executing_runners:
+            with self.subTest(cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask', f"Expected {cmd} to require confirmation, got: {res}")
 
     def test_safe_git_stage_and_commit_allowed(self):
         commands = [
@@ -140,9 +153,9 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
     def test_safe_compound_commands_allowed(self):
         commands = [
-            'git status && npm test',
+            'git status && npm run lint',
             'git diff HEAD~1 | cat',
-            'CI=1 NODE_ENV=test npm test',
+            'CI=1 NODE_ENV=test npm run lint',
             'ls -la; git status; pwd',
         ]
         for cmd in commands:
@@ -1285,7 +1298,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_bun_safe)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         # 62. Editable package scripts are inspected against command security policy
         pkg_file = Path(self.test_ws) / 'package.json'
@@ -1316,7 +1329,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_safe_pkg_test)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
         pkg_file.unlink()
 
     def test_round_21_findings(self):
@@ -1342,7 +1355,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_ignore_scripts)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         # 64. Git output option abbreviations are caught
         payload_git_out_abbr = {
@@ -1659,8 +1672,9 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             ('cargo test --manifest-path=/tmp/evil/Cargo.toml', 'force_ask'),
             ('go test /tmp/evil.go', 'force_ask'),
             ('pytest ~/.ssh/id_rsa', 'deny'),
-            ('pytest tests/test_ok.py', 'allow'),
-            ('cargo test --manifest-path=Cargo.toml', 'allow'),
+            ('pytest tests/test_ok.py', 'force_ask'),
+            ('cargo test --manifest-path=Cargo.toml', 'force_ask'),
+            ('cargo check --manifest-path=Cargo.toml', 'allow'),
         ]
         for cmd, expected in dev_tests:
             with self.subTest(dev_cmd=cmd):
@@ -1705,7 +1719,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 res = self.run_classifier(payload)
                 self.assertEqual(res['decision'], 'deny', f"Expected view_file {p} to be denied, got: {res}")
 
-        # 3. Git cat-file batch modes and sensitive object paths
+        # 3. Git cat-file batch modes, raw object IDs, and sensitive object paths
         cat_file_tests = [
             ('git cat-file --batch', 'force_ask'),
             ('git cat-file --batch-check', 'force_ask'),
@@ -1713,6 +1727,9 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             ('git cat-file --batch-all-objects', 'force_ask'),
             ('git cat-file -p HEAD:.env', 'deny'),
             ('git cat-file -p HEAD:README.md', 'allow'),
+            ('git cat-file -p 4b825dc642cb6eb9a060e54bf8d69288fbee4904', 'force_ask'),
+            ('git rev-list --objects --all', 'force_ask'),
+            ('git rev-list --count HEAD', 'allow'),
         ]
         for cmd, expected in cat_file_tests:
             with self.subTest(cat_cmd=cmd):
@@ -1778,6 +1795,26 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_fetch_flag)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # Git fetch with credential helper in local config
+        subprocess.run(['git', 'config', 'credential.helper', '!evil-helper'], cwd=str(git_transport_dir), check=True)
+        res = self.run_classifier(payload_fetch_ssh)
+        self.assertEqual(res['decision'], 'force_ask')
+        subprocess.run(['git', 'config', '--unset', 'credential.helper'], cwd=str(git_transport_dir), check=True)
+
+        payload_fetch_ext = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch ext::evil', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_fetch_ext)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        payload_fetch_c = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git -c credential.helper=evil fetch origin', 'Cwd': self.test_ws}},
+            'workspacePaths': [self.test_ws],
+        }
+        res = self.run_classifier(payload_fetch_c)
         self.assertEqual(res['decision'], 'force_ask')
 
         # Normal fetch
