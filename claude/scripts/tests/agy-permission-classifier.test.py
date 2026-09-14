@@ -2018,6 +2018,163 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 self.assertEqual(res['decision'], 'deny', f"Expected {cmd} on main to be denied, got: {res}")
 
 
+    def test_round_27_hardening(self):
+        # 1. Non-system executables in PATH outside workspace require confirmation
+        with tempfile.TemporaryDirectory() as evil_bin_dir:
+            evil_tool = Path(evil_bin_dir) / 'evil_tool'
+            evil_tool.write_text('#!/bin/sh\necho evil\n')
+            evil_tool.chmod(0o755)
+            payload_evil_path = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'evil_tool', 'Cwd': self.test_ws}},
+                'workspacePaths': [self.test_ws],
+            }
+            res = self.run_classifier(payload_evil_path, env={'PATH': f"{evil_bin_dir}:{os.environ.get('PATH', '')}"})
+            self.assertEqual(res['decision'], 'force_ask')
+
+        # 2. File inspection commands reading outside workspace or /run/secrets
+        insp_tests = [
+            ('cat /run/secrets/database_password', 'deny'),
+            ('cat /tmp/outside.txt', 'ask'),
+            ("jq --rawfile x /run/secrets/database_password '.'", 'deny'),
+            ("jq --rawfile x /tmp/outside.txt '.'", 'ask'),
+            ("jq --slurpfile x /run/secrets/database_password '.'", 'deny'),
+            ("jq --slurpfile x /tmp/outside.txt '.'", 'ask'),
+        ]
+        for cmd, expected in insp_tests:
+            with self.subTest(insp_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
+
+        # 3. view_file boundary and validation
+        view_tests = [
+            (f'{self.test_ws}/README.md', 'allow'),
+            ('/tmp/outside.txt', 'ask'),
+            ('/run/secrets/database_password', 'deny'),
+            ('', 'ask'),
+            (None, 'ask'),
+        ]
+        for p, expected in view_tests:
+            with self.subTest(view_p=p):
+                payload = {
+                    'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': p}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected view_file {p} to yield {expected}, got: {res}")
+
+        # 4. Directory search tools validate workspace boundary
+        search_tests = [
+            ('grep_search', {'SearchPath': self.test_ws, 'Query': 'hello'}, 'allow'),
+            ('grep_search', {'SearchPath': '/tmp/outside', 'Query': 'hello'}, 'ask'),
+            ('grep_search', {'SearchPath': '/run/secrets', 'Query': 'hello'}, 'deny'),
+            ('find_by_name', {'SearchDirectory': self.test_ws, 'Pattern': '*.py'}, 'allow'),
+            ('find_by_name', {'SearchDirectory': '/tmp/outside', 'Pattern': '*.py'}, 'ask'),
+            ('find_by_name', {'SearchDirectory': '/run/secrets', 'Pattern': '*.py'}, 'deny'),
+        ]
+        for tool_name, tool_args, expected in search_tests:
+            with self.subTest(tool=tool_name, target=tool_args.get('SearchPath') or tool_args.get('SearchDirectory')):
+                payload = {
+                    'toolCall': {'name': tool_name, 'args': tool_args},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {tool_name} to yield {expected}, got: {res}")
+
+        # 5. git remote show contacts remote and requires confirmation
+        git_remote_tests = [
+            ('git remote show origin', 'force_ask'),
+            ('git remote show', 'force_ask'),
+            ('git remote', 'allow'),
+            ('git remote -v', 'allow'),
+        ]
+        for cmd, expected in git_remote_tests:
+            with self.subTest(remote_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
+
+        # 6. Broad git add and git commit check sensitive files
+        git_test_dir = Path(self.test_ws) / 'git_add_commit_sec_test'
+        git_test_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_test_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_test_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_test_dir), check=True)
+        (git_test_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_test_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_test_dir), check=True)
+
+        # git add -f requires confirmation
+        payload_add_f = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add -f .', 'Cwd': str(git_test_dir)}},
+            'workspacePaths': [str(git_test_dir)],
+        }
+        res = self.run_classifier(payload_add_f)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # git add . with untracked .env is denied
+        env_file = git_test_dir / '.env'
+        env_file.write_text('SECRET=true')
+        payload_add_dot = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add .', 'Cwd': str(git_test_dir)}},
+            'workspacePaths': [str(git_test_dir)],
+        }
+        res = self.run_classifier(payload_add_dot)
+        self.assertEqual(res['decision'], 'deny')
+
+        # git commit with staged sensitive file is denied
+        subprocess.run(['git', 'add', '-f', '.env'], cwd=str(git_test_dir), check=True)
+        payload_commit_sec = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m "add secrets"', 'Cwd': str(git_test_dir)}},
+            'workspacePaths': [str(git_test_dir)],
+        }
+        res = self.run_classifier(payload_commit_sec)
+        self.assertEqual(res['decision'], 'deny')
+
+        # Clean up .env
+        subprocess.run(['git', 'reset', '--hard', 'HEAD'], cwd=str(git_test_dir), check=True)
+        if env_file.exists():
+            env_file.unlink()
+
+        # 7. Protected branches detected for --all and --mirror push from feature branch
+        subprocess.run(['git', 'checkout', '-b', 'feat/test', '-q'], cwd=str(git_test_dir), check=True)
+        payload_push_all = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git push --all', 'Cwd': str(git_test_dir)}},
+            'workspacePaths': [str(git_test_dir)],
+        }
+        res = self.run_classifier(payload_push_all)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_push_mirror = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git push --mirror', 'Cwd': str(git_test_dir)}},
+            'workspacePaths': [str(git_test_dir)],
+        }
+        res = self.run_classifier(payload_push_mirror)
+        self.assertEqual(res['decision'], 'deny')
+
+        # 8. find searches outside workspace require approval
+        find_tests = [
+            ('find / -name config', 'ask'),
+            ('find /tmp -name "*.py"', 'ask'),
+            ('find . -name "*.py"', 'allow'),
+        ]
+        for cmd, expected in find_tests:
+            with self.subTest(find_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
+
+
 if __name__ == '__main__':
     unittest.main()
+
 

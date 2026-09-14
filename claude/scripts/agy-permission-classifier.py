@@ -74,6 +74,7 @@ def get_sensitive_credential_prefixes():
         os.path.join(home, '.config', 'gh'),
         '/etc/shadow',
         '/etc/sudoers',
+        '/run/secrets',
     )
 
 SENSITIVE_FILENAMES = {
@@ -394,43 +395,51 @@ def check_directory_descendants(target_dir, cwd=None):
     return 'allow', 'Directory clean'
 
 
-def git_has_external_diff_configured(cwd=None):
-    """Check if git has an external diff or textconv driver configured that executes programs."""
+def get_safe_git_executable():
+    """Resolve trusted git executable to prevent executing shadowed binaries in probe subprocesses."""
+    for candidate in ('/usr/bin/git', '/bin/git', '/usr/local/bin/git'):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    git_which = shutil.which('git')
+    if git_which:
+        norm = os.path.abspath(git_which)
+        if not norm.startswith(('/tmp', '/var/tmp', '/dev/shm')):
+            return norm
+    return 'git'
+
+
+def git_run_probe(args, cwd=None, timeout=1):
+    """Run internal git probe command using a trusted git executable."""
+    git_bin = get_safe_git_executable()
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     try:
-        res = subprocess.run(
-            ['git', 'config', '--get-regexp', r'^diff\.(external|.*\.command|.*\.textconv)$'],
+        return subprocess.run(
+            [git_bin] + args,
             cwd=effective_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=1,
+            timeout=timeout,
         )
-        if res.returncode == 0 and res.stdout.strip():
-            return True
     except Exception:
-        pass
+        return None
+
+
+def git_has_external_diff_configured(cwd=None):
+    """Check if git has an external diff or textconv driver configured that executes programs."""
+    res = git_run_probe(['config', '--get-regexp', r'^diff\.(external|.*\.command|.*\.textconv)$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        return True
     return False
 
 
 def git_has_fsmonitor_configured(cwd=None):
     """Check if git has a core.fsmonitor hook configured that executes programs."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--get', 'core.fsmonitor'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            val = res.stdout.strip().lower()
-            if val not in ('false', '0', 'no', 'off'):
-                return True
-    except Exception:
-        pass
+    res = git_run_probe(['config', '--get', 'core.fsmonitor'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        val = res.stdout.strip().lower()
+        if val not in ('false', '0', 'no', 'off'):
+            return True
     return False
 
 
@@ -439,169 +448,167 @@ def git_has_active_hooks(cwd=None, hook_names=()):
     if not hook_names:
         return False
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'rev-parse', '--git-path', 'hooks'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode != 0:
-            return False
-        hooks_dir = res.stdout.strip()
-        if not hooks_dir:
-            return False
-        if not os.path.isabs(hooks_dir):
-            hooks_dir = os.path.join(effective_cwd, hooks_dir)
-        for h in hook_names:
-            h_path = os.path.join(hooks_dir, h)
-            if os.path.isfile(h_path) and os.access(h_path, os.X_OK):
-                return True
-    except Exception:
-        pass
+    res = git_run_probe(['rev-parse', '--git-path', 'hooks'], cwd=cwd)
+    if not res or res.returncode != 0:
+        return False
+    hooks_dir = res.stdout.strip()
+    if not hooks_dir:
+        return False
+    if not os.path.isabs(hooks_dir):
+        hooks_dir = os.path.join(effective_cwd, hooks_dir)
+    for h in hook_names:
+        h_path = os.path.join(hooks_dir, h)
+        if os.path.isfile(h_path) and os.access(h_path, os.X_OK):
+            return True
     return False
 
 
 def git_has_filter_configured(cwd=None):
     """Check if git has filter drivers (clean, process, smudge) configured that execute programs."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--get-regexp', r'^filter\..*\.(clean|process|smudge)$'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return True
-    except Exception:
-        pass
+    res = git_run_probe(['config', '--get-regexp', r'^filter\..*\.(clean|process|smudge)$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        return True
     return False
 
 
 def git_has_gpgsign_configured(cwd=None):
     """Check if git repository has commit.gpgSign configured to sign commits."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--bool', 'commit.gpgsign'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout.strip() == 'true':
-            return True
-    except Exception:
-        pass
+    res = git_run_probe(['config', '--bool', 'commit.gpgsign'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip() == 'true':
+        return True
     return False
 
 
 def git_remotes_have_credentials(cwd=None):
     """Check if any git remote URL contains embedded user/password/token credentials."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--get-regexp', r'^remote\..*\.url$'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout:
-            for line in res.stdout.splitlines():
-                parts = line.split(None, 1)
-                if len(parts) == 2:
-                    url = parts[1].strip()
-                    if '://' in url and '@' in url.split('://', 1)[1]:
-                        return True
-    except Exception:
-        pass
+    res = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout:
+        for line in res.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                url = parts[1].strip()
+                if '://' in url and '@' in url.split('://', 1)[1]:
+                    return True
     return False
 
 
 def git_has_transport_executable_configured(cwd=None):
-    """Check if git repository has transport or remote execution helpers configured in local repo config (core.sshCommand, core.askPass, core.pager, credential.helper, remote.*.vcs, remote.*.uploadpack, remote.*.receivepack, proxy helpers)."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--local', '--get-regexp', r'^(core\.sshcommand|core\.askpass|core\.pager|credential\..*helper|credential\.helper|remote\..*\.vcs|remote\..*\.uploadpack|remote\..*\.receivepack|remote\..*\.proxy|http\..*proxy)$'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return True
-    except Exception:
-        pass
+    """Check if git repository has transport or remote execution helpers configured in local repo config."""
+    res = git_run_probe(['config', '--local', '--get-regexp', r'^(core\.sshcommand|core\.askpass|core\.pager|credential\..*helper|credential\.helper|remote\..*\.vcs|remote\..*\.uploadpack|remote\..*\.receivepack|remote\..*\.proxy|http\..*proxy)$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        return True
     return False
 
 
 def git_remotes_have_executable_helpers(cwd=None):
     """Check if any git remote URL uses an external helper protocol like ext:: or custom helpers."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--get-regexp', r'^remote\..*\.url$'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout:
-            for line in res.stdout.splitlines():
-                parts = line.split(None, 1)
-                if len(parts) == 2:
-                    url = parts[1].strip()
-                    if url.startswith('ext::') or re.match(r'^[a-zA-Z0-9_-]+::', url):
-                        return True
-    except Exception:
-        pass
+    res = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout:
+        for line in res.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                url = parts[1].strip()
+                if url.startswith('ext::') or re.match(r'^[a-zA-Z0-9_-]+::', url):
+                    return True
     return False
 
 
 def git_has_gpg_program_configured(cwd=None):
     """Check if git repository has a custom gpg.program or gpg.*.program configured."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'config', '--get-regexp', r'^gpg\..*program$'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return True
-    except Exception:
-        pass
+    res = git_run_probe(['config', '--get-regexp', r'^gpg\..*program$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        return True
+    return False
+
+
 def git_get_current_branch(cwd=None):
     """Resolve current git branch name in repository."""
-    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-    try:
-        res = subprocess.run(
-            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        if res.returncode == 0:
-            return res.stdout.strip()
-    except Exception:
-        pass
+    res = git_run_probe(['rev-parse', '--abbrev-ref', 'HEAD'], cwd=cwd)
+    if res and res.returncode == 0:
+        return res.stdout.strip()
     return ''
+
+
+def git_get_local_protected_branches(cwd=None):
+    """List any local branches in repository that are in PROTECTED_BRANCHES."""
+    res = git_run_probe(['for-each-ref', '--format=%(refname:short)', 'refs/heads/'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout:
+        branches = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        return [b for b in branches if b in PROTECTED_BRANCHES]
+    return []
+
+
+def git_probe_uncommitted_sensitive_files(cwd=None):
+    """Check if repository contains modified or untracked sensitive files that broad git add would stage."""
+    res = git_run_probe(['status', '--porcelain', '-uall'], cwd=cwd)
+    if not res:
+        return 'unknown'
+    if res.returncode != 0:
+        return 'safe'
+    for line in res.stdout.splitlines():
+        if len(line) >= 4:
+            path_part = line[3:].strip()
+            if ' -> ' in path_part:
+                path_part = path_part.split(' -> ', 1)[1]
+            if matches_sensitive_pattern(path_part) or is_sensitive_credential_path(path_part, cwd):
+                return 'sensitive'
+    return 'safe'
+
+
+def git_probe_staged_sensitive_files(cwd=None, include_unstaged_tracked=False):
+    """Check if git staged index (or unstaged tracked files if -a) contains sensitive files."""
+    res = git_run_probe(['diff', '--cached', '--name-only'], cwd=cwd)
+    if not res:
+        return 'unknown'
+    if res.returncode != 0:
+        return 'safe'
+    for path in res.stdout.splitlines():
+        path = path.strip()
+        if path and (matches_sensitive_pattern(path) or is_sensitive_credential_path(path, cwd)):
+            return 'sensitive'
+
+    if include_unstaged_tracked:
+        res_unstaged = git_run_probe(['diff', '--name-only'], cwd=cwd)
+        if res_unstaged and res_unstaged.returncode == 0:
+            for path in res_unstaged.stdout.splitlines():
+                path = path.strip()
+                if path and (matches_sensitive_pattern(path) or is_sensitive_credential_path(path, cwd)):
+                    return 'sensitive'
+    return 'safe'
+
+
+def is_trusted_executable_path(exe_path, workspace_paths, cwd):
+    """Verify that resolved executable is in a system or user toolchain directory and not in workspace or tmp."""
+    if not exe_path or not isinstance(exe_path, str):
+        return False
+    norm_exe = expand_path(exe_path, cwd)
+    if is_path_in_workspaces(norm_exe, workspace_paths, cwd):
+        return False
+    untrusted_prefixes = ('/tmp', '/var/tmp', '/dev/shm')
+    for p in untrusted_prefixes:
+        if norm_exe == p or norm_exe.startswith(p + os.sep):
+            return False
+    exe_dir = os.path.dirname(norm_exe)
+    if exe_dir in SYSTEM_BIN_DIRS or exe_dir in {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin', '/snap/bin', '/usr/games'}:
+        return True
+    home = os.path.expanduser('~')
+    trusted_home_dirs = (
+        os.path.join(home, '.local', 'bin'),
+        os.path.join(home, '.cargo', 'bin'),
+        os.path.join(home, 'go', 'bin'),
+        os.path.join(home, '.local', 'share'),
+        os.path.join(home, '.npm-global', 'bin'),
+        os.path.join(home, '.nvm'),
+        os.path.join(home, '.fnm'),
+        os.path.join(home, '.asdf'),
+        os.path.join(home, '.pyenv'),
+    )
+    for td in trusted_home_dirs:
+        if exe_dir == td or norm_exe.startswith(td + os.sep):
+            return True
+    if norm_exe.startswith('/opt/') or norm_exe.startswith(os.path.join(os.sep + 'home', 'linuxbrew', '')):
+        return True
+    return False
 
 
 def strip_git_output_options(args_list):
@@ -657,14 +664,9 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
         else:
             return 'safe'
 
-        res = subprocess.run(
-            cmd,
-            cwd=effective_cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=2,
-        )
+        res = git_run_probe(cmd[1:], cwd=effective_cwd, timeout=2)
+        if not res:
+            return 'unknown'
         if res.returncode in (0, 1):
             if res.stdout:
                 parts = []
@@ -1118,19 +1120,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         filtered_args.append(unquote_token(tok))
     args = filtered_args
 
-    # Resolve executable: prevent ./malicious/ls or workspace PATH overrides
+    # Resolve executable: prevent ./malicious/ls or workspace/untrusted PATH overrides
     if '/' in raw_cmd:
         resolved_exe = expand_path(raw_cmd, cwd)
-        exe_dir = os.path.dirname(resolved_exe)
-        if exe_dir not in SYSTEM_BIN_DIRS:
+        if not is_trusted_executable_path(resolved_exe, workspace_paths, cwd):
             return 'force_ask', f"Running non-system executable requires confirmation: {raw_cmd}"
         base_cmd = os.path.basename(resolved_exe)
     else:
         resolved_path = shutil.which(raw_cmd)
         if resolved_path:
-            resolved_norm = expand_path(resolved_path, cwd)
-            if is_path_in_workspaces(resolved_norm, workspace_paths, cwd):
-                return 'force_ask', f"Running workspace-controlled executable requires confirmation: {raw_cmd} ({resolved_path})"
+            if not is_trusted_executable_path(resolved_path, workspace_paths, cwd):
+                return 'force_ask', f"Running untrusted or shadowed executable requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
     # Check for sensitive files or credentials being targeted in arguments
@@ -1304,10 +1304,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 curr_branch = git_get_current_branch(cwd)
                 if curr_branch in PROTECTED_BRANCHES:
                     return 'deny', f"Push targeting protected branch '{curr_branch}' is forbidden: {' '.join(cmd_tokens)}"
-            if any(a in ('--all', '--mirror') for a in args):
-                curr_branch = git_get_current_branch(cwd)
-                if curr_branch in PROTECTED_BRANCHES:
-                    return 'deny', f"Push targeting protected branch '{curr_branch}' is forbidden: {' '.join(cmd_tokens)}"
+            if any(a == '--mirror' for a in args):
+                return 'deny', f"Push with --mirror can overwrite protected remote branches: {' '.join(cmd_tokens)}"
+            if any(a == '--all' for a in args):
+                local_protected = git_get_local_protected_branches(cwd)
+                if local_protected:
+                    return 'deny', f"Push with --all pushes protected branch '{local_protected[0]}' to remote: {' '.join(cmd_tokens)}"
             if has_force:
                 if not refspecs:
                     return 'deny', f"Unscoped force push is forbidden: {' '.join(cmd_tokens)}"
@@ -1386,11 +1388,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"Creating tags requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git tag query'
 
-        # Git remote: only allow read queries that do not expose credentials
+        # Git remote: only allow read queries that do not expose credentials or invoke transport programs
         if git_sub == 'remote':
             if any(a in ('add', 'rename', 'remove', 'rm', 'set-head', 'set-branches', 'set-url', 'update', 'prune') for a in args):
                 return 'force_ask', f"Mutating git remotes requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a in ('-v', '--verbose', 'get-url', 'show') or a.startswith(('--verbose', 'get-url')) for a in args):
+            if any(a == 'show' for a in args):
+                return 'force_ask', f"git remote show contacts remote and may execute transport/credential programs: {' '.join(cmd_tokens)}"
+            if git_has_transport_executable_configured(cwd):
+                return 'force_ask', f"git remote query with configured transport program requires confirmation: {' '.join(cmd_tokens)}"
+            if git_remotes_have_executable_helpers(cwd):
+                return 'force_ask', f"git remote query with configured remote helper URL requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a in ('-v', '--verbose', 'get-url') or a.startswith(('--verbose', 'get-url')) for a in args):
                 if git_remotes_have_credentials(cwd):
                     return 'deny', f"git remote query exposing embedded credentials in remote URL is forbidden: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git remote query'
@@ -1526,10 +1534,28 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'add':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git add in directory outside workspace requires confirmation: {cwd}"
+            if any(a in ('-f', '--force') for a in args):
+                return 'force_ask', f"git add with --force can stage ignored sensitive files: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-index-change',)):
                 return 'force_ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+
+            # Check individual positional arguments
+            for a in args[1:]:
+                if not a.startswith('-') and a not in ('.', '*', ':/'):
+                    if is_sensitive_credential_path(a, cwd) or matches_sensitive_pattern(a):
+                        return 'deny', f"git add targeting sensitive file is forbidden: {a}"
+
+            # Check broad staging (e.g. git add ., git add -A, git add --all, git add -u, git add *)
+            is_broad = any(a in ('.', '*', '-A', '--all', '-u', '--update', ':/') for a in args[1:])
+            if is_broad:
+                probe_res = git_probe_uncommitted_sensitive_files(cwd)
+                if probe_res == 'sensitive':
+                    return 'deny', f"git add would stage sensitive credential files: {' '.join(cmd_tokens)}"
+                if probe_res == 'unknown':
+                    return 'force_ask', f"git add cannot safely verify files to be staged: {' '.join(cmd_tokens)}"
+
             return 'allow', 'Safe git add'
 
         if git_sub == 'commit':
@@ -1548,6 +1574,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+
+            # Inspect staged files to prevent committing credentials
+            has_all_flag = any(a in ('-a', '--all') for a in args)
+            probe_res = git_probe_staged_sensitive_files(cwd, include_unstaged_tracked=has_all_flag)
+            if probe_res == 'sensitive':
+                return 'deny', f"git commit committing sensitive credential files is forbidden: {' '.join(cmd_tokens)}"
+            if probe_res == 'unknown':
+                return 'force_ask', f"git commit cannot safely verify staged files: {' '.join(cmd_tokens)}"
+
             return 'allow', 'Safe git commit'
 
     # 6. Inspection Commands
@@ -1565,6 +1600,40 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             for a in args:
                 if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
                     return 'ask', f"Inspection command with wildcard, variable, substitution, or metacharacter requires confirmation: {' '.join(cmd_tokens)}"
+            # Verify file operands are within workspace and do not target sensitive paths
+            file_operands = []
+            if base_cmd == 'jq':
+                i = 0
+                while i < len(args):
+                    a = args[i]
+                    if a in ('--rawfile', '--slurpfile') and i + 2 < len(args):
+                        file_operands.append(args[i + 2])
+                        i += 2
+                    elif a.startswith(('--rawfile=', '--slurpfile=')):
+                        file_operands.append(a.split('=', 1)[1])
+                    i += 1
+                pos = [a for a in args if not a.startswith('-')]
+                if len(pos) > 1:
+                    file_operands.extend(pos[1:])
+            else:
+                skip_val = False
+                for a in args:
+                    if skip_val:
+                        skip_val = False
+                        continue
+                    if a in ('-n', '-c', '-s', '-d', '-f', '-w'):
+                        skip_val = True
+                        continue
+                    if not a.startswith('-'):
+                        file_operands.append(a)
+
+            for f_op in file_operands:
+                if f_op in ('/dev/null', '/dev/zero', '/dev/stdin', '-'):
+                    continue
+                if is_sensitive_credential_path(f_op, cwd):
+                    return 'deny', f"Access to sensitive credential or key is forbidden: {f_op}"
+                if not is_path_in_workspaces(f_op, workspace_paths, cwd):
+                    return 'ask', f"Inspection command reading file outside workspace requires approval: {f_op}"
         if base_cmd in {'echo', 'printf'}:
             for a in args:
                 if any(c in a for c in ('$', '`')):
@@ -1697,10 +1766,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'ask', f"find with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fls', '-fprint', '-fprint0', '-fprintf') or a.startswith(('-exec', '-ok', '-fls', '-fprint')) for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
-        # Check search root
+        # Check search roots (operands before the first option or expression operator)
+        search_roots = []
         for a in args:
-            if not a.startswith('-') and is_sensitive_credential_path(a, cwd):
-                return 'deny', f"find searching sensitive path is forbidden: {a}"
+            if a.startswith(('-', '(', ')', '!', ',')):
+                break
+            search_roots.append(a)
+        if not search_roots:
+            search_roots = [cwd]
+        for root in search_roots:
+            if is_sensitive_credential_path(root, cwd):
+                return 'deny', f"find searching sensitive path is forbidden: {root}"
+            if not is_path_in_workspaces(root, workspace_paths, cwd):
+                return 'ask', f"find searching directory outside workspace requires approval: {root}"
         return 'allow', 'Safe find command'
 
     # 7. Test, Lint, and Build Runners
@@ -2066,12 +2144,14 @@ def classify_file_modification(target_file, workspace_paths, cwd):
     return 'force_ask', f"File modification outside workspace requires approval: {target_file}"
 
 
-def classify_file_read(target_file, cwd):
+def classify_file_read(target_file, workspace_paths, cwd):
     """Classify read-only file access tools."""
-    if not target_file or not isinstance(target_file, str):
-        return 'allow', 'File read query'
+    if not target_file or not isinstance(target_file, str) or not target_file.strip():
+        return 'ask', 'File read query with missing or invalid path requires confirmation'
     if is_sensitive_credential_path(target_file, cwd):
         return 'deny', f"Reading sensitive credentials is forbidden: {target_file}"
+    if not is_path_in_workspaces(target_file, workspace_paths, cwd):
+        return 'ask', f"Reading file outside workspace requires approval: {target_file}"
     norm = expand_path(target_file, cwd)
     norm_dir = norm if norm.endswith(os.sep) else norm + os.sep
     for prefix in get_sensitive_credential_prefixes():
@@ -2081,14 +2161,17 @@ def classify_file_read(target_file, cwd):
     return 'allow', f"Safe file read: {os.path.basename(target_file)}"
 
 
-def classify_directory_search(target_dir, args, cwd):
+def classify_directory_search(target_dir, args, workspace_paths, cwd):
     """Classify recursive directory search tools (grep_search, find_by_name)."""
-    if not target_dir or not isinstance(target_dir, str):
+    if not target_dir or not isinstance(target_dir, str) or not target_dir.strip():
         target_dir = cwd
 
     # If searching sensitive credential path: hard deny
     if is_sensitive_credential_path(target_dir, cwd):
         return 'deny', f"Searching sensitive credentials is forbidden: {target_dir}"
+
+    if not is_path_in_workspaces(target_dir, workspace_paths, cwd):
+        return 'ask', f"Searching directory outside workspace requires approval: {target_dir}"
 
     norm = expand_path(target_dir, cwd)
     norm_dir = norm if norm.endswith(os.sep) else norm + os.sep
@@ -2185,10 +2268,10 @@ def main():
             decision, reason = classify_file_modification(target, workspace_paths, cwd)
         elif tool_name == 'view_file':
             target = args.get('AbsolutePath') or args.get('TargetFile') or ''
-            decision, reason = classify_file_read(target, cwd)
+            decision, reason = classify_file_read(target, workspace_paths, cwd)
         elif tool_name in ('grep_search', 'find_by_name'):
             target = args.get('SearchPath') or args.get('SearchDirectory') or args.get('AbsolutePath') or ''
-            decision, reason = classify_directory_search(target, args, cwd)
+            decision, reason = classify_directory_search(target, args, workspace_paths, cwd)
         else:
             decision, reason = 'ask', f"Tool {tool_name} requires confirmation"
 
