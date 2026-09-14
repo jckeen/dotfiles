@@ -597,15 +597,14 @@ def git_remotes_have_executable_helpers(cwd=None):
     if res and res.returncode == 0 and res.stdout:
         remotes = [r.strip() for r in res.stdout.splitlines() if r.strip()]
 
-    if not remotes:
-        res_cfg = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
-        if res_cfg and res_cfg.returncode == 0 and res_cfg.stdout:
-            for line in res_cfg.stdout.splitlines():
-                parts = line.split(None, 1)
-                if len(parts) == 2:
-                    url = parts[1].strip()
-                    if is_unsafe_git_remote_url(url):
-                        return True
+    res_cfg = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
+    if res_cfg and res_cfg.returncode == 0 and res_cfg.stdout:
+        for line in res_cfg.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                url = parts[1].strip()
+                if is_unsafe_git_remote_url(url):
+                    return True
 
     MAX_REMOTES_TO_RESOLVE = 5
     for r in remotes[:MAX_REMOTES_TO_RESOLVE]:
@@ -622,8 +621,7 @@ def git_remotes_have_executable_helpers(cwd=None):
                     return True
 
     if len(remotes) > MAX_REMOTES_TO_RESOLVE:
-        if res_inst and res_inst.returncode == 0 and res_inst.stdout.strip():
-            return True
+        return True
 
     return False
 
@@ -1512,8 +1510,26 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"Git fetch with configured transport program or credential helper requires confirmation: {' '.join(cmd_tokens)}"
             if git_remotes_have_executable_helpers(cwd):
                 return 'force_ask', f"Git fetch with configured remote helper URL or rewrite requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a in ('-u', '--upload-pack') or a.startswith(('-u=', '--upload-pack=')) for a in args):
+            def is_upload_pack_opt(a):
+                if a == '-u' or a.startswith('-u='):
+                    return True
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if opt.startswith('--upload') and '--upload-pack'.startswith(opt):
+                        return True
+                return False
+            if any(is_upload_pack_opt(a) for a in args):
                 return 'force_ask', f"Git fetch with custom upload-pack program requires confirmation: {' '.join(cmd_tokens)}"
+            def is_fetch_prune_opt(a):
+                if a in ('-p', '-P') or a.startswith(('-p=', '-P=')):
+                    return True
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if ('--prune'.startswith(opt) and len(opt) >= 5) or ('--prune-tags'.startswith(opt) and len(opt) >= 8):
+                        return True
+                return False
+            if any(is_fetch_prune_opt(a) for a in args):
+                return 'force_ask', f"Git fetch with prune option ({a}) requires confirmation: {' '.join(cmd_tokens)}"
 
             # Inspect positional arguments (remote / URL / refspecs)
             pos_args = [a for a in args[1:] if not a.startswith('-')]
@@ -1544,13 +1560,24 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'switch':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git switch in directory outside workspace requires confirmation: {cwd}"
-            SAFE_SWITCH_FLAGS = {'-q', '--quiet', '--progress', '--guess', '--no-guess', '--ignore-other-worktrees', '--'}
+            SAFE_SWITCH_FLAGS = {'-q', '--quiet', '--progress', '--no-guess', '--ignore-other-worktrees', '--'}
             for a in args[1:]:
                 if a.startswith('-') and a != '-' and a not in SAFE_SWITCH_FLAGS:
                     return 'force_ask', f"Switching with option requires confirmation: {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-') or a == '-']
             if len(positionals) != 1:
                 return 'force_ask', f"Git switch requires explicit branch target: {' '.join(cmd_tokens)}"
+            target_branch = positionals[0]
+            if target_branch != '-':
+                has_no_guess = any(a == '--no-guess' for a in args)
+                if not has_no_guess:
+                    res_repo = git_run_probe(['rev-parse', '--is-inside-work-tree'], cwd=cwd)
+                    if res_repo and res_repo.returncode == 0:
+                        res_local = git_run_probe(['show-ref', '--verify', '--quiet', f'refs/heads/{target_branch}'], cwd=cwd)
+                        if not res_local or res_local.returncode != 0:
+                            res_remote = git_run_probe(['for-each-ref', '--format=%(refname)', f'refs/remotes/*/{target_branch}'], cwd=cwd)
+                            if res_remote and res_remote.returncode == 0 and res_remote.stdout.strip():
+                                return 'force_ask', f"git switch creates local tracking branch from remote for '{target_branch}': {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-checkout',)):
                 return 'force_ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
@@ -1559,18 +1586,25 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git branch: only allow read-only queries
         if git_sub == 'branch':
-            MUTATING_BRANCH_FLAGS = (
-                '-d', '-D', '-m', '-M', '-c', '-C', '-f', '--force',
-                '--delete', '--move', '--copy', '--set-upstream-to',
-                '-u', '--unset-upstream', '--edit-description',
+            MUTATING_BRANCH_LONGS = (
+                '--edit-description',
+                '--set-upstream-to',
+                '--unset-upstream',
+                '--delete',
+                '--move',
+                '--copy',
+                '--force',
             )
             for a in args[1:]:
-                if a in MUTATING_BRANCH_FLAGS:
+                if a in ('-d', '-D', '-m', '-M', '-c', '-C', '-f', '-u'):
                     return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
-                if any(a.startswith(opt + '=') for opt in MUTATING_BRANCH_FLAGS if opt.startswith('--')):
+                if a.startswith(('-d=', '-D=', '-m=', '-M=', '-c=', '-C=', '-f=', '-u=')):
                     return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
-                if any(a.startswith(opt) for opt in MUTATING_BRANCH_FLAGS if not opt.startswith('--')):
-                    return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    for target_long in MUTATING_BRANCH_LONGS:
+                        if target_long.startswith(opt) and len(opt) >= 5:
+                            return 'force_ask', f"Mutating branches requires confirmation ({opt}): {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
             # Positional arguments in git branch create/reset branches unless --list is explicitly used
             # Note: -l means --create-reflog when creating a branch, so only --list is safe with positionals
@@ -1597,7 +1631,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"git remote query with configured transport program requires confirmation: {' '.join(cmd_tokens)}"
             if git_remotes_have_executable_helpers(cwd):
                 return 'force_ask', f"git remote query with configured remote helper URL requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a in ('-v', '--verbose', 'get-url') or a.startswith(('--verbose', 'get-url')) for a in args):
+            is_verbose_or_get_url = any(
+                (a.startswith('-') and not a.startswith('--') and 'v' in a) or
+                (a.startswith('--') and ('--verbose'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)) or
+                a == 'get-url' or a.startswith('get-url')
+                for a in args
+            )
+            if is_verbose_or_get_url:
                 if git_remotes_have_credentials(cwd):
                     return 'deny', f"git remote query exposing embedded credentials in remote URL is forbidden: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git remote query'
@@ -1858,14 +1898,45 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     except Exception:
                         return 'force_ask', f"git add unable to verify pathspec file: {pf}"
 
+            def strip_magic_pathspec(p):
+                if not p or not isinstance(p, str):
+                    return ''
+                if p.startswith(':(') and ')' in p:
+                    return p.split(')', 1)[1]
+                if p.startswith(':/'):
+                    return p[2:]
+                if p.startswith(':'):
+                    return p.lstrip(':')
+                return p
+
+            def is_broad_git_pathspec(p, cwd):
+                if not p or not isinstance(p, str):
+                    return False
+                if p in ('.', '*', ':/', '-A', '--all', '-u', '--update'):
+                    return True
+                if p.startswith(':/') or p.startswith(':('):
+                    return True
+                if '*' in p or '?' in p:
+                    return True
+                try:
+                    resolved = expand_path(p, cwd)
+                    if os.path.isdir(resolved):
+                        return True
+                except Exception:
+                    pass
+                return False
+
             # Check individual positional arguments
             for a in args[1:]:
-                if not a.startswith('-') and a not in ('.', '*', ':/'):
-                    if is_sensitive_credential_path(a, cwd) or matches_sensitive_pattern(a):
+                if not a.startswith('-'):
+                    clean_p = strip_magic_pathspec(a)
+                    if clean_p and (is_sensitive_credential_path(clean_p, cwd) or matches_sensitive_pattern(clean_p)):
+                        return 'deny', f"git add targeting sensitive file is forbidden: {a}"
+                    if matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
                         return 'deny', f"git add targeting sensitive file is forbidden: {a}"
 
-            # Check broad staging (e.g. git add ., git add -A, git add --all, git add -u, git add *, or pathspec file)
-            is_broad = any(a in ('.', '*', '-A', '--all', '-u', '--update', ':/') for a in args[1:]) or has_add_pathspec_file
+            # Check broad staging (e.g. git add ., git add -A, git add --all, git add -u, git add *, or pathspec file, or magic pathspec)
+            is_broad = has_add_pathspec_file or any(is_broad_git_pathspec(a, cwd) for a in args[1:] if not a.startswith('-') or a in ('-A', '--all', '-u', '--update'))
             if is_broad:
                 probe_res = git_probe_uncommitted_sensitive_files(cwd)
                 if probe_res == 'sensitive':
@@ -1998,10 +2069,23 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     continue
                 commit_pathspecs.append(a)
 
+            def strip_magic_pathspec_commit(p):
+                if not p or not isinstance(p, str):
+                    return ''
+                if p.startswith(':(') and ')' in p:
+                    return p.split(')', 1)[1]
+                if p.startswith(':/'):
+                    return p[2:]
+                if p.startswith(':'):
+                    return p.lstrip(':')
+                return p
+
             for a in commit_pathspecs:
-                if matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
+                clean_p = strip_magic_pathspec_commit(a)
+                if (clean_p and (matches_sensitive_pattern(clean_p) or is_sensitive_credential_path(clean_p, cwd))) or matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
                     return 'deny', f"git commit targeting sensitive pathspec is forbidden: {a}"
-                if not is_path_in_workspaces(a, workspace_paths, cwd):
+                target_check = clean_p if clean_p else a
+                if not is_path_in_workspaces(target_check, workspace_paths, cwd):
                     return 'force_ask', f"git commit pathspec outside workspace requires approval: {a}"
             if commit_pathspecs:
                 has_pathspec = True
@@ -2112,11 +2196,29 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 if any(c in a for c in ('$', '`')):
                     return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'less':
-            if any(a.startswith('+') or a in ('-o', '-O', '--log-file', '--LOG-FILE', '-T', '--tag-file') or a.startswith(('-o', '-O', '--log-file=', '--LOG-FILE=', '-T', '--tag-file=')) for a in args):
+            def is_unsafe_less_opt(a):
+                if a.startswith('+'):
+                    return True
+                if a in ('-o', '-O', '-T') or a.startswith(('-o', '-O', '-T')):
+                    return True
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0].lower()
+                    if ('--log-file'.startswith(opt) and len(opt) >= 5) or ('--tag-file'.startswith(opt) and len(opt) >= 5):
+                        return True
+                return False
+            if any(is_unsafe_less_opt(a) for a in args):
                 return 'ask', f"less with command execution (+), log file, or tag file option requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'date':
-            if any(a in ('-s', '--set') or a.startswith(('-s', '--set=')) for a in args):
-                return 'ask', f"date with system clock setting requires confirmation: {' '.join(cmd_tokens)}"
+            def is_date_set_opt(a):
+                if a in ('-s', '--set') or a.startswith('-s'):
+                    return True
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if '--set'.startswith(opt) and len(opt) >= 4:
+                        return True
+                return False
+            if any(is_date_set_opt(a) for a in args):
+                return 'force_ask', f"date with system clock setting requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'printf':
             if any(a == '-v' or a.startswith('-v') for a in args):
                 var_name = None
@@ -2184,7 +2286,21 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"grep with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
 
-        is_recursive = any(a in ('-r', '-R', '--recursive') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R'))) for a in args)
+        is_recursive = any(
+            a in ('-r', '-R', '--recursive') or
+            (a.startswith('--') and '--recursive'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5) or
+            (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R')))
+            for a in args
+        )
+        for idx, a in enumerate(args):
+            if a in ('-d', '--directories') or (a.startswith('--') and '--directories'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5):
+                val = a.split('=', 1)[1] if '=' in a else (args[idx + 1] if idx + 1 < len(args) else '')
+                if val in ('recurse', 'r'):
+                    is_recursive = True
+            elif a.startswith('-d') and len(a) > 2 and not a.startswith('--'):
+                val = a[2:].lstrip('=')
+                if val in ('recurse', 'r'):
+                    is_recursive = True
 
         GREP_OPTS_WITH_ARG = {
             '-e', '--regexp',

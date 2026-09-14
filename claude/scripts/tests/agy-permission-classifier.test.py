@@ -2807,6 +2807,204 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         (git_dir / '.env').unlink(missing_ok=True)
         paths_file.unlink(missing_ok=True)
 
+    def test_round_33_hardening(self):
+        """Regression tests for Round 33 findings:
+        1. Abbreviated --upload-pack bypasses the fetch execution guard
+        2. Destructive fetch pruning is auto-approved
+        3. Abbreviated branch mutation can execute a configured editor
+        4. grep -d recurse bypasses recursive-search protection
+        5. Bundled verbose Git remote flags can expose embedded credentials
+        6. Remote helper scan fails open after five remotes
+        7. Abbreviated less log options can write outside the workspace
+        8. Safe switch path can implicitly create a branch
+        9. Abbreviated date --set is auto-approved
+        10. Git magic pathspecs bypass broad-add credential scanning
+        """
+        git_dir = Path(self.test_ws) / 'r33_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. Abbreviated --upload-pack in git fetch
+        for upload_cmd in (
+            'git fetch --upload-p=./payload .',
+            'git fetch --upload-pack=./payload .',
+            'git fetch -u ./payload .',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': upload_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {upload_cmd} to require force_ask, got: {res}")
+
+        # 2. Destructive fetch pruning
+        for prune_cmd in (
+            'git fetch --prune origin',
+            'git fetch --prune-tags origin',
+            'git fetch -p origin',
+            'git fetch -P origin',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': prune_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {prune_cmd} to require force_ask, got: {res}")
+
+        # 3. Abbreviated branch mutation
+        for branch_cmd in (
+            'git branch --edit-desc',
+            'git branch --edit-description',
+            'git branch --set-upstream-to=origin/main',
+            'git branch --unset-upstream',
+            'git branch --del old-branch',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': branch_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {branch_cmd} to require force_ask, got: {res}")
+
+        # Safe branch listing
+        payload_branch_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch -l', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_branch_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 4. grep -d recurse
+        for grep_rec in (
+            'grep -d recurse SECRET .',
+            'grep --directories=recurse SECRET .',
+            'grep -drecurse SECRET README.md',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': grep_rec, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask', f"Expected {grep_rec} to require confirmation, got: {res}")
+
+        # 5. Bundled verbose Git remote flags with credentials
+        subprocess.run(['git', 'remote', 'add', 'origin', 'https://user:token123@github.com/org/repo.git'], cwd=str(git_dir), check=True)
+        for remote_cmd in ('git remote -v', 'git remote -vv', 'git remote --verbose', 'git remote --verb'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': remote_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny', f"Expected {remote_cmd} with creds to be denied, got: {res}")
+
+        subprocess.run(['git', 'remote', 'set-url', 'origin', 'https://github.com/org/repo.git'], cwd=str(git_dir), check=True)
+        payload_remote_clean = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git remote -vv', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_remote_clean)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 6. Remote helper scan fails closed after five remotes
+        for i in range(1, 7):
+            subprocess.run(['git', 'remote', 'add', f'remote{i}', f'https://github.com/org/repo{i}.git'], cwd=str(git_dir), check=True)
+        payload_fetch_many = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch origin', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_fetch_many)
+        self.assertEqual(res['decision'], 'force_ask')
+        for i in range(1, 7):
+            subprocess.run(['git', 'remote', 'remove', f'remote{i}'], cwd=str(git_dir), check=True)
+
+        # 7. Abbreviated less log options
+        for less_cmd in (
+            'less --log-fil=/tmp/target README.md',
+            'less --LOG-FIL=/tmp/target README.md',
+            'less -o /tmp/target README.md',
+            'less -O /tmp/target README.md',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': less_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask', f"Expected {less_cmd} to require confirmation, got: {res}")
+
+        payload_less_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'less README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_less_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 8. Safe switch path can implicitly create a branch
+        subprocess.run(['git', 'update-ref', 'refs/remotes/origin/remote-branch', 'HEAD'], cwd=str(git_dir), check=True)
+        payload_switch_remote = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch remote-branch', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_switch_remote)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        payload_switch_guess = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch --guess main', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_switch_guess)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        payload_switch_main = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch main', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_switch_main)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 9. Abbreviated date --set
+        for date_set in ('date --se=2030-01-01', 'date --set=2030-01-01', 'date -s 2030-01-01'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': date_set, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {date_set} to require force_ask, got: {res}")
+
+        payload_date_read = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date +%Y-%m-%d', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_date_read)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 10. Git magic pathspecs bypass broad-add credential scanning
+        (git_dir / '.env').write_text('SECRET=true')
+        for magic_add in (
+            'git add :(top,glob)**',
+            'git add :(top).',
+            'git add :/*',
+            'git add :(top).env',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': magic_add, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny', f"Expected {magic_add} with uncommitted .env to be denied, got: {res}")
+
+        (git_dir / '.env').unlink(missing_ok=True)
+        payload_add_clean = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_add_clean)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
