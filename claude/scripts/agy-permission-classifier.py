@@ -508,6 +508,23 @@ def git_has_transport_executable_configured(cwd=None):
     return False
 
 
+def git_has_pager_configured(cwd=None, git_sub=None):
+    """Check if git repository or config has core.pager or pager.<cmd> configured."""
+    patterns = [r'^core\.pager$']
+    if git_sub:
+        patterns.append(rf'^pager\.{re.escape(git_sub)}$')
+    res = git_run_probe(['config', '--get-regexp', '|'.join(patterns)], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        for line in res.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                val = parts[1].strip()
+                if val.lower() in ('false', '0'):
+                    continue
+                return True
+    return False
+
+
 SAFE_GIT_REMOTE_SCHEMES = {'http', 'https', 'ssh', 'git', 'file', 'ftp', 'ftps'}
 
 
@@ -1210,7 +1227,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             skip_next = False
             continue
         # For git commit/tag, skip the commit message string operand
-        if base_cmd == 'git' and len(args) > 0 and args[0] in {'commit', 'tag'}:
+        if base_cmd == 'git' and any(sub in args for sub in ('commit', 'tag')):
             if arg in ('-m', '--message'):
                 skip_next = True
                 continue
@@ -1218,8 +1235,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 continue
         # For grep / rg / ag, skip the search pattern operand
         if base_cmd in {'grep', 'egrep', 'fgrep', 'rg', 'ag'}:
-            has_pat_flag = any(a in ('-e', '-f') or a.startswith(('-e', '-f')) for a in args)
-            positionals = [a for a in args if not a.startswith('-')]
+            has_pat_flag = any(a in ('-e', '-f', '--regexp', '--file') or a.startswith(('-e', '-f', '--regexp=', '--file=')) for a in args)
+            consumed_tokens = set()
+            for idx_a, val_a in enumerate(args):
+                if val_a in ('-e', '-f', '--regexp', '--file') and idx_a + 1 < len(args):
+                    consumed_tokens.add(args[idx_a + 1])
+            positionals = [a for a in args if not a.startswith('-') and a not in consumed_tokens]
             if not has_pat_flag and positionals and arg == positionals[0]:
                 continue
         if is_credential_env_var(arg):
@@ -1285,7 +1306,28 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     if base_cmd == 'git':
         if not args:
             return 'allow', 'git command query'
-        git_sub = args[0]
+
+        git_sub = None
+        git_sub_idx = -1
+        skip_next = False
+        for idx, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ('-C', '--git-dir', '--work-tree', '--namespace', '-c', '--config-env'):
+                skip_next = True
+                continue
+            if a.startswith(('-C', '--git-dir=', '--work-tree=', '--namespace=', '-c', '--config-env=')):
+                continue
+            if not a.startswith('-'):
+                git_sub = a
+                git_sub_idx = idx
+                break
+
+        if not git_sub:
+            return 'allow', 'git command query'
+
+        sub_args = args[git_sub_idx:]
 
         # Check for git output options across all git commands (including GNU option abbreviations)
         git_out = None
@@ -1333,11 +1375,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
                 return 'force_ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
+        # Configured core.pager or pager.<cmd> can execute arbitrary commands
+        if git_sub in {'log', 'show', 'diff', 'blame', 'shortlog', 'whatchanged', 'reflog', 'branch'}:
+            has_no_pager = any(a in ('--no-pager', '-P') for a in tokens)
+            if not has_no_pager and git_has_pager_configured(cwd, git_sub):
+                return 'force_ask', f"git {git_sub} with configured pager requires confirmation: {' '.join(cmd_tokens)}"
+
         # Check git arguments for sensitive file paths or <rev>:<path> expressions targeting sensitive files
         for a in args:
             clean_a = a.split(':', 1)[1] if (':' in a and not a.startswith(('http:', 'https:', 'ssh:', 'git:'))) else a
             if not clean_a.startswith('-') and (matches_sensitive_pattern(clean_a) or is_sensitive_credential_path(clean_a, cwd)):
-                return 'deny', f"Git command targeting sensitive object or file path is forbidden: {a}"
+                return "deny", "Forbidden sensitive path"
+        # Subcommand-specific evaluation operates on sub_args where sub_args[0] is git_sub
+        args = sub_args
 
         # Force push or direct push to protected branch detection
         if git_sub == 'push':
@@ -1485,7 +1535,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git commands that inspect or refresh the index/working tree execute core.fsmonitor if configured
         if git_sub in {'status', 'diff', 'ls-files', 'stash', 'add', 'commit', 'checkout', 'restore', 'reset', 'worktree', 'describe'}:
-            has_no_fsmonitor = any(a == '--no-optional-locks' for a in args)
+            has_no_fsmonitor = any(a == '--no-optional-locks' for a in tokens)
             if not has_no_fsmonitor and git_has_fsmonitor_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -1690,6 +1740,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'add':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git add in directory outside workspace requires confirmation: {cwd}"
+            if any(a in ('-e', '--edit') for a in args):
+                return 'force_ask', f"git add with -e/--edit invokes editor: {' '.join(cmd_tokens)}"
             if any(a in ('-f', '--force') for a in args):
                 return 'force_ask', f"git add with --force can stage ignored sensitive files: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-index-change',)):
@@ -1717,6 +1769,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'commit':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
+            has_no_edit = any(a == '--no-edit' for a in args)
+            has_edit_flag = any(a in ('-e', '--edit', '-t', '--template', '-c', '--reedit-message') or
+                                a.startswith(('-e=', '--edit=', '-t=', '--template=', '-c=', '--reedit-message=')) for a in args)
+            if has_edit_flag and not has_no_edit:
+                return 'force_ask', f"git commit with editor invocation requires confirmation: {' '.join(cmd_tokens)}"
             has_inline_msg = any(a in ('-m', '--message') or a.startswith(('-m=', '--message=')) for a in args)
             commit_file_args = []
             for i, a in enumerate(args):
@@ -1750,8 +1807,52 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
+            # Check --pathspec-from-file
+            pathspec_files = []
+            for i, a in enumerate(args):
+                if a == '--pathspec-from-file' and i + 1 < len(args):
+                    pathspec_files.append(args[i + 1])
+                elif a.startswith('--pathspec-from-file='):
+                    pathspec_files.append(a.split('=', 1)[1])
+
+            has_pathspec = bool(pathspec_files)
+            for pf in pathspec_files:
+                if pf == '-':
+                    return 'force_ask', f"git commit reading pathspecs from stdin requires confirmation: {' '.join(cmd_tokens)}"
+                if matches_sensitive_pattern(pf) or is_sensitive_credential_path(pf, cwd):
+                    return 'deny', f"git commit pathspec file targeting sensitive or credential file is forbidden: {pf}"
+                if not is_path_in_workspaces(pf, workspace_paths, cwd):
+                    return 'force_ask', f"git commit pathspec file outside workspace requires approval: {pf}"
+                pf_resolved = expand_path(pf, cwd)
+                if os.path.isfile(pf_resolved):
+                    try:
+                        content = Path(pf_resolved).read_text(errors='replace')
+                        delim = '\0' if any(a == '--pathspec-file-nul' for a in args) else '\n'
+                        for line in content.split(delim):
+                            p = line.strip()
+                            if p:
+                                if matches_sensitive_pattern(p) or is_sensitive_credential_path(p, cwd):
+                                    return 'deny', f"git commit pathspec file references sensitive file: {p}"
+                                if not is_path_in_workspaces(p, workspace_paths, cwd):
+                                    return 'force_ask', f"git commit pathspec file references path outside workspace: {p}"
+                    except Exception:
+                        return 'force_ask', f"git commit unable to verify pathspec file: {pf}"
+
+            # Check positional pathspecs (after options, or after --)
+            commit_pathspecs = []
+            if '--' in args:
+                idx = args.index('--')
+                commit_pathspecs.extend(args[idx + 1:])
+            for a in commit_pathspecs:
+                if matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
+                    return 'deny', f"git commit targeting sensitive pathspec is forbidden: {a}"
+                if not is_path_in_workspaces(a, workspace_paths, cwd):
+                    return 'force_ask', f"git commit pathspec outside workspace requires approval: {a}"
+            if commit_pathspecs:
+                has_pathspec = True
+
             # Inspect staged files to prevent committing credentials
-            has_all_flag = any(a in ('-a', '--all') for a in args)
+            has_all_flag = any(a in ('-a', '--all') for a in args) or has_pathspec
             probe_res = git_probe_staged_sensitive_files(cwd, include_unstaged_tracked=has_all_flag)
             if probe_res == 'sensitive':
                 return 'deny', f"git commit committing sensitive credential files is forbidden: {' '.join(cmd_tokens)}"
@@ -1877,11 +1978,91 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"grep with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
-        positionals = [a for a in args if not a.startswith('-')]
-        has_pattern_flag = any(a in ('-e', '-f') or a.startswith(('-e', '-f')) for a in args)
-        search_paths = positionals if has_pattern_flag else positionals[1:]
+
+        is_recursive = any(a in ('-r', '-R', '--recursive') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R'))) for a in args)
+
+        GREP_OPTS_WITH_ARG = {
+            '-e', '--regexp',
+            '-f', '--file',
+            '-m', '--max-count',
+            '-A', '--after-context',
+            '-B', '--before-context',
+            '-C', '--context',
+            '-D', '--devices',
+            '-d', '--directories',
+            '--exclude', '--exclude-from', '--exclude-dir',
+            '--include', '--label',
+        }
+
+        has_pattern = False
+        pattern_files = []
+        positionals = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == '--':
+                positionals.extend(args[i + 1:])
+                break
+            if a.startswith('--'):
+                opt_name = a.split('=', 1)[0]
+                val = a.split('=', 1)[1] if '=' in a else None
+                if opt_name == '--file' or opt_name.startswith('--file'):
+                    has_pattern = True
+                    if val is not None:
+                        pattern_files.append(val)
+                    elif i + 1 < len(args):
+                        pattern_files.append(args[i + 1])
+                        i += 1
+                elif opt_name == '--regexp' or opt_name.startswith('--regexp'):
+                    has_pattern = True
+                    if val is None and i + 1 < len(args):
+                        i += 1
+                elif opt_name in ('--exclude-from',):
+                    if val is not None:
+                        pattern_files.append(val)
+                    elif i + 1 < len(args):
+                        pattern_files.append(args[i + 1])
+                        i += 1
+                elif val is None and (opt_name in GREP_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in GREP_OPTS_WITH_ARG if long_opt.startswith('--'))):
+                    if i + 1 < len(args):
+                        i += 1
+                i += 1
+                continue
+            elif a.startswith('-') and len(a) > 1:
+                flag = a[1]
+                if flag == 'e':
+                    has_pattern = True
+                    if len(a) == 2 and i + 1 < len(args):
+                        i += 1
+                elif flag == 'f':
+                    has_pattern = True
+                    if len(a) > 2:
+                        pattern_files.append(a[2:].lstrip('='))
+                    elif i + 1 < len(args):
+                        pattern_files.append(args[i + 1])
+                        i += 1
+                elif flag in ('m', 'A', 'B', 'C', 'D', 'd'):
+                    if len(a) == 2 and i + 1 < len(args):
+                        i += 1
+                i += 1
+                continue
+            else:
+                positionals.append(a)
+                i += 1
+
+        # Check pattern files (from -f / --file / --exclude-from)
+        for pf in pattern_files:
+            if pf == '-':
+                continue
+            if is_sensitive_credential_path(pf, cwd) or matches_sensitive_pattern(pf):
+                return 'deny', f"grep pattern file targeting sensitive path is forbidden: {pf}"
+            if not is_path_in_workspaces(pf, workspace_paths, cwd):
+                return 'ask', f"grep pattern file outside workspace requires approval: {pf}"
+
+        search_paths = positionals if has_pattern else positionals[1:]
+
         for p in search_paths:
-            if is_sensitive_credential_path(p, cwd):
+            if is_sensitive_credential_path(p, cwd) or matches_sensitive_pattern(p):
                 return 'deny', f"Searching sensitive credential path is forbidden: {p}"
             p_norm = expand_path(p, cwd)
             p_dir = p_norm if p_norm.endswith(os.sep) else p_norm + os.sep
@@ -1890,48 +2071,129 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 if prefix_norm == p_norm or prefix_norm.startswith(p_dir):
                     return 'deny', f"Recursive search over path containing sensitive credentials is forbidden: {p}"
 
-        is_recursive = any(a in ('-r', '-R', '--recursive') or (a.startswith('-') and any(c in a for c in ('r', 'R'))) for a in args)
         if is_recursive:
             return 'ask', f"Recursive grep may expose sensitive workspace files or traverse symlinks: {' '.join(cmd_tokens)}"
 
         for p in search_paths:
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
+
         return 'allow', 'Safe grep query'
 
-    # Sort: check --compress-program, -o / --output option (including GNU abbreviations), and unexpanded variables
+    # Sort: check --compress-program, output redirection, temporary directory, and input file operands
     if base_cmd == 'sort':
         if any(a.startswith('--co') and '--compress-program'.startswith(a.split('=', 1)[0]) for a in args):
             return 'ask', f"sort with execution helper requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
             if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
                 return 'ask', f"sort with wildcard, variable, or substitution requires confirmation: {' '.join(cmd_tokens)}"
-        for i, a in enumerate(args):
-            out_target = None
-            if a.startswith('--o') and '=' in a:
-                opt, val = a.split('=', 1)
-                if '--output'.startswith(opt):
-                    out_target = val
-            elif a.startswith('--o') and '--output'.startswith(a):
-                if i + 1 < len(args):
-                    out_target = args[i + 1]
-            elif a == '-o' and i + 1 < len(args):
-                out_target = args[i + 1]
-            elif a.startswith('-') and not a.startswith('--') and 'o' in a:
-                o_idx = a.index('o')
-                rest = a[o_idx + 1:]
-                if rest:
-                    out_target = rest.lstrip('=')
-                elif i + 1 < len(args):
-                    out_target = args[i + 1]
 
-            if out_target:
-                if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
-                    return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
-                if is_git_admin_path(out_target, cwd):
-                    return 'ask', f"sort modifying git repository configuration or hooks requires confirmation: {out_target}"
-                if not is_path_in_workspaces(out_target, workspace_paths, cwd):
-                    return 'ask', f"sort output outside workspace requires approval: {out_target}"
+        SORT_OPTS_WITH_ARG = {
+            '-o', '--output',
+            '-T', '--temporary-directory',
+            '-k', '--key',
+            '-t', '--field-separator',
+            '-S', '--buffer-size',
+            '--batch-size',
+            '--compress-program',
+            '--parallel',
+            '--files0-from',
+        }
+        input_files = []
+        out_target = None
+        temp_dir = None
+        files0_from = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == '--':
+                input_files.extend(args[i + 1:])
+                break
+            if a.startswith('--'):
+                opt_name = a.split('=', 1)[0]
+                if '=' in a:
+                    val = a.split('=', 1)[1]
+                    if '--output'.startswith(opt_name):
+                        out_target = val
+                    elif '--temporary-directory'.startswith(opt_name):
+                        temp_dir = val
+                    elif '--files0-from'.startswith(opt_name):
+                        files0_from = val
+                    i += 1
+                    continue
+                elif opt_name in SORT_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in SORT_OPTS_WITH_ARG if long_opt.startswith('--')):
+                    if i + 1 < len(args):
+                        val = args[i + 1]
+                        if '--output'.startswith(opt_name):
+                            out_target = val
+                        elif '--temporary-directory'.startswith(opt_name):
+                            temp_dir = val
+                        elif '--files0-from'.startswith(opt_name):
+                            files0_from = val
+                        i += 2
+                        continue
+                i += 1
+                continue
+            elif a.startswith('-') and not a.startswith('--'):
+                if 'o' in a:
+                    o_idx = a.index('o')
+                    rest = a[o_idx + 1:].lstrip('=')
+                    if rest:
+                        out_target = rest
+                    elif i + 1 < len(args):
+                        out_target = args[i + 1]
+                        i += 1
+                elif 'T' in a:
+                    t_idx = a.index('T')
+                    rest = a[t_idx + 1:].lstrip('=')
+                    if rest:
+                        temp_dir = rest
+                    elif i + 1 < len(args):
+                        temp_dir = args[i + 1]
+                        i += 1
+                elif any(c in a for c in ('k', 't', 'S')):
+                    for c in ('k', 't', 'S'):
+                        if c in a:
+                            idx_c = a.index(c)
+                            if idx_c == len(a) - 1 and i + 1 < len(args):
+                                i += 1
+                            break
+                i += 1
+                continue
+            else:
+                input_files.append(a)
+                i += 1
+
+        if out_target:
+            if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
+                return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
+            if is_git_admin_path(out_target, cwd):
+                return 'ask', f"sort modifying git repository configuration or hooks requires confirmation: {out_target}"
+            if not is_path_in_workspaces(out_target, workspace_paths, cwd):
+                return 'ask', f"sort output outside workspace requires approval: {out_target}"
+
+        if temp_dir:
+            if is_sensitive_credential_path(temp_dir, cwd) or is_system_write_path(temp_dir, cwd):
+                return 'deny', f"sort temporary directory targeting sensitive or system path is forbidden: {temp_dir}"
+            if not is_path_in_workspaces(temp_dir, workspace_paths, cwd):
+                return 'ask', f"sort temporary directory outside workspace requires approval: {temp_dir}"
+
+        if files0_from:
+            if files0_from == '-':
+                return 'ask', f"sort reading file list from stdin requires confirmation: {' '.join(cmd_tokens)}"
+            if is_sensitive_credential_path(files0_from, cwd):
+                return 'deny', f"sort reading file list from sensitive path is forbidden: {files0_from}"
+            if not is_path_in_workspaces(files0_from, workspace_paths, cwd):
+                return 'ask', f"sort reading file list outside workspace requires approval: {files0_from}"
+
+        for inf in input_files:
+            if inf == '-':
+                continue
+            if is_sensitive_credential_path(inf, cwd) or matches_sensitive_pattern(inf):
+                return 'deny', f"sort reading sensitive file is forbidden: {inf}"
+            if not is_path_in_workspaces(inf, workspace_paths, cwd):
+                return 'ask', f"sort reading file outside workspace requires approval: {inf}"
+
         return 'allow', 'Safe sort command'
 
     # Find: safe ONLY without destructive, execution, or file writing options
@@ -1941,12 +2203,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'ask', f"find with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fls', '-fprint', '-fprint0', '-fprintf') or a.startswith(('-exec', '-ok', '-fls', '-fprint')) for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
-        # Check search roots (operands before the first option or expression operator)
+
+        # Check search roots (handling leading flags like -H, -L, -P, -D, -O)
         search_roots = []
-        for a in args:
-            if a.startswith(('-', '(', ')', '!', ',')):
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ('-H', '-L', '-P'):
+                i += 1
+                continue
+            if a in ('-D', '-O'):
+                i += 2
+                continue
+            if a.startswith(('-D', '-O')):
+                i += 1
+                continue
+            # Any option starting with '-' or expression operator marks the end of search roots
+            if a.startswith(('-', '(', ')', '!', ',')) or a in ('-not', '-and', '-or'):
                 break
             search_roots.append(a)
+            i += 1
+
         if not search_roots:
             search_roots = [cwd]
         for root in search_roots:

@@ -2350,6 +2350,144 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         hook_timeout = pre_tool_hooks[0]['hooks'][0]['timeout']
         self.assertGreaterEqual(hook_timeout, 15)
 
+    def test_round_29_hardening(self):
+        """Regression tests for Round 29 findings:
+        1. GNU grep --file option parsing and credential protection
+        2. git add -e / --edit invokes editor
+        3. git commit -m msg --edit / -e invokes editor
+        4. git commit --pathspec-from-file unstaged / sensitive file containment
+        5. sort input file containment outside workspace
+        6. git log / show / diff with configured core.pager
+        7. find leading options (-H, -L, -P, etc.) and search root containment
+        """
+        git_dir = Path(self.test_ws) / 'r29_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        (git_dir / 'app.py').write_text('print("ok")')
+        (git_dir / 'pat.txt').write_text('print')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. GNU grep --file parsing and credential reads
+        ssh_key = Path.home() / '.ssh' / 'id_rsa'
+        payload_grep_key = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'grep --file=pat.txt {ssh_key}', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_grep_key)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_grep_env = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep --file=.env app.py', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_grep_env)
+        self.assertEqual(res['decision'], 'deny')
+
+        payload_grep_ok = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep --file=pat.txt app.py', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_grep_ok)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 2. git add -e / --edit invokes editor
+        for add_flag in ('-e', '--edit'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git add {add_flag}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        # 3. git commit -m safe --edit invokes editor
+        for edit_flag in ('--edit', '-e'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git commit -m safe {edit_flag}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        # 4. git commit --pathspec-from-file with sensitive file
+        paths_file = git_dir / 'paths.txt'
+        paths_file.write_text('.env\n')
+        (git_dir / '.env').write_text('SECRET=true')
+        payload_commit_pathspec = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m safe --pathspec-from-file=paths.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_commit_pathspec)
+        self.assertEqual(res['decision'], 'deny')
+
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_pathspec = Path(ext_dir) / 'ext_paths.txt'
+            ext_pathspec.write_text('README.md\n')
+            payload_ext_pathspec = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git commit -m safe --pathspec-from-file={ext_pathspec}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload_ext_pathspec)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        (git_dir / '.env').unlink(missing_ok=True)
+        paths_file.unlink(missing_ok=True)
+
+        # 5. sort reads outside workspace
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_notes = Path(ext_dir) / 'private-notes'
+            ext_notes.write_text('notes')
+            payload_sort_ext = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'sort {ext_notes}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload_sort_ext)
+            self.assertEqual(res['decision'], 'ask')
+
+        payload_sort_ok = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_sort_ok)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 6. git log / show with configured core.pager
+        subprocess.run(['git', 'config', 'core.pager', '/usr/bin/less -R'], cwd=str(git_dir), check=True)
+        payload_log_pager = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -n 1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_log_pager)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # --no-pager bypasses configured pager safely
+        payload_log_no_pager = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git --no-pager log -n 1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_log_no_pager)
+        self.assertEqual(res['decision'], 'allow')
+
+        subprocess.run(['git', 'config', '--unset', 'core.pager'], cwd=str(git_dir), check=True)
+
+        # 7. find with leading flags before search roots
+        payload_find_root = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'find -H / -name README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_find_root)
+        self.assertEqual(res['decision'], 'ask')
+
+        payload_find_ok = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'find -H . -name README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_find_ok)
+        self.assertEqual(res['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

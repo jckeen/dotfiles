@@ -51,3 +51,8 @@ codex-memory/
 .codex/state_*.sqlite*
 .codex/sessions/
 .codex/shell_snapshots/
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+
