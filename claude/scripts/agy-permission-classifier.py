@@ -174,6 +174,16 @@ def expand_path(p_str, cwd=None):
         return os.path.abspath(expanded)
 
 
+PUBLIC_NON_CREDENTIAL_SUFFIXES = (
+    '.example', '.sample', '.template', '.dist', '.default',
+)
+SOURCE_FILE_EXTENSIONS = (
+    '.py', '.ts', '.js', '.jsx', '.tsx', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
+    '.java', '.rb', '.php', '.css', '.scss', '.html', '.md', '.txt', '.json',
+    '.yaml', '.yml', '.toml', '.xml', '.svg', '.png', '.jpg',
+)
+
+
 def matches_sensitive_pattern(filename):
     """Check if a filename or glob pattern matches sensitive credential patterns."""
     if not filename or not isinstance(filename, str):
@@ -181,9 +191,18 @@ def matches_sensitive_pattern(filename):
     basename = os.path.basename(filename)
     if basename in SENSITIVE_FILENAMES:
         return True
-    for pat in SENSITIVE_PATTERNS:
-        if fnmatch.fnmatch(basename, pat):
+    if any(basename.endswith(sfx) for sfx in PUBLIC_NON_CREDENTIAL_SUFFIXES):
+        return False
+    if any(basename.endswith(ext) for ext in SOURCE_FILE_EXTENSIONS):
+        if basename.endswith(('.pem', '.key')):
             return True
+        if basename == '.env' or (basename.startswith('.env.') and not any(basename.endswith(s) for s in PUBLIC_NON_CREDENTIAL_SUFFIXES)):
+            return True
+        return False
+    if basename == '.env' or basename.startswith('.env.'):
+        return True
+    if any(fnmatch.fnmatch(basename, pat) for pat in ('id_rsa*', 'id_ed25519*', 'id_ecdsa*', 'id_dsa*', '*.pem', '*.key', 'antigravity-oauth-token')):
+        return True
     return False
 
 
@@ -246,7 +265,9 @@ def is_sensitive_credential_path(path_str, cwd=None):
         norm_slash == '.git/config' or clean_slash == '.git/config' or
         '/.git/config/' in norm_slash or
         norm_slash.endswith('/.git-credentials') or clean_slash.endswith('/.git-credentials') or
-        norm_slash.endswith('/.docker/config.json') or clean_slash.endswith('/.docker/config.json')):
+        norm_slash.endswith('/.docker/config.json') or clean_slash.endswith('/.docker/config.json') or
+        any(norm_slash == p or norm_slash.startswith(p + '/') or clean_slash == p or clean_slash.startswith(p + '/')
+            for p in ('/etc/shadow', '/etc/gshadow', '/etc/sudoers', '/etc/sudoers.d'))):
         return True
 
     for prefix in get_sensitive_credential_prefixes():
@@ -586,7 +607,8 @@ def git_remotes_have_executable_helpers(cwd=None):
                     if is_unsafe_git_remote_url(url):
                         return True
 
-    for r in remotes:
+    MAX_REMOTES_TO_RESOLVE = 5
+    for r in remotes[:MAX_REMOTES_TO_RESOLVE]:
         # Check resolved URL via ls-remote --get-url (which expands url.*.insteadOf without contacting network)
         res_url = git_run_probe(['ls-remote', '--get-url', r], cwd=cwd)
         if res_url and res_url.returncode == 0 and res_url.stdout.strip():
@@ -598,6 +620,10 @@ def git_remotes_have_executable_helpers(cwd=None):
             if res_raw and res_raw.returncode == 0 and res_raw.stdout.strip():
                 if is_unsafe_git_remote_url(res_raw.stdout.strip()):
                     return True
+
+    if len(remotes) > MAX_REMOTES_TO_RESOLVE:
+        if res_inst and res_inst.returncode == 0 and res_inst.stdout.strip():
+            return True
 
     return False
 
@@ -691,6 +717,9 @@ def is_trusted_executable_path(exe_path, workspace_paths, cwd):
         os.path.join(home, '.fnm'),
         os.path.join(home, '.asdf'),
         os.path.join(home, '.pyenv'),
+        os.path.join(home, '.codex'),
+        os.path.join(home, '.claude'),
+        os.path.join(home, '.gemini'),
     )
     for td in trusted_home_dirs:
         if exe_dir == td or norm_exe.startswith(td + os.sep):
@@ -1359,6 +1388,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'deny', f"git directory option {opt_k} targeting sensitive path is forbidden: {opt_v}"
             if not is_path_in_workspaces(opt_v, workspace_paths, effective_cwd):
                 return 'force_ask', f"git {opt_k} targeting directory outside workspace requires confirmation: {opt_v}"
+            if opt_k in ('--git-dir', '--work-tree'):
+                return 'force_ask', f"git with alternate repository or work-tree ({opt_k}) requires confirmation: {' '.join(cmd_tokens)}"
             if opt_k == '-C':
                 effective_cwd = expand_path(opt_v, effective_cwd)
 
@@ -1796,14 +1827,45 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
+            # Check --pathspec-from-file
+            pathspec_files = []
+            for i, a in enumerate(args[1:], start=1):
+                if a == '--pathspec-from-file' and i + 1 < len(args):
+                    pathspec_files.append(args[i + 1])
+                elif a.startswith('--pathspec-from-file='):
+                    pathspec_files.append(a.split('=', 1)[1])
+
+            has_add_pathspec_file = bool(pathspec_files)
+            for pf in pathspec_files:
+                if pf == '-':
+                    return 'force_ask', f"git add reading pathspecs from stdin requires confirmation: {' '.join(cmd_tokens)}"
+                if matches_sensitive_pattern(pf) or is_sensitive_credential_path(pf, cwd):
+                    return 'deny', f"git add pathspec file targeting sensitive or credential file is forbidden: {pf}"
+                if not is_path_in_workspaces(pf, workspace_paths, cwd):
+                    return 'force_ask', f"git add pathspec file outside workspace requires approval: {pf}"
+                pf_resolved = expand_path(pf, cwd)
+                if os.path.isfile(pf_resolved):
+                    try:
+                        content = Path(pf_resolved).read_text(errors='replace')
+                        delim = '\0' if any(a == '--pathspec-file-nul' for a in args) else '\n'
+                        for line in content.split(delim):
+                            p = line.strip()
+                            if p:
+                                if matches_sensitive_pattern(p) or is_sensitive_credential_path(p, cwd):
+                                    return 'deny', f"git add pathspec file references sensitive file: {p}"
+                                if not is_path_in_workspaces(p, workspace_paths, cwd):
+                                    return 'force_ask', f"git add pathspec file references path outside workspace: {p}"
+                    except Exception:
+                        return 'force_ask', f"git add unable to verify pathspec file: {pf}"
+
             # Check individual positional arguments
             for a in args[1:]:
                 if not a.startswith('-') and a not in ('.', '*', ':/'):
                     if is_sensitive_credential_path(a, cwd) or matches_sensitive_pattern(a):
                         return 'deny', f"git add targeting sensitive file is forbidden: {a}"
 
-            # Check broad staging (e.g. git add ., git add -A, git add --all, git add -u, git add *)
-            is_broad = any(a in ('.', '*', '-A', '--all', '-u', '--update', ':/') for a in args[1:])
+            # Check broad staging (e.g. git add ., git add -A, git add --all, git add -u, git add *, or pathspec file)
+            is_broad = any(a in ('.', '*', '-A', '--all', '-u', '--update', ':/') for a in args[1:]) or has_add_pathspec_file
             if is_broad:
                 probe_res = git_probe_uncommitted_sensitive_files(cwd)
                 if probe_res == 'sensitive':
@@ -1897,10 +1959,45 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                         return 'force_ask', f"git commit unable to verify pathspec file: {pf}"
 
             # Check positional pathspecs (after options, or after --)
+            GIT_COMMIT_OPTS_WITH_ARG = {
+                '-m', '--message',
+                '-F', '--file',
+                '-c', '-C', '--reedit-message', '--reuse-message',
+                '-t', '--template',
+                '--author', '--date',
+                '-u', '--untracked-files',
+                '-S', '--gpg-sign',
+                '--cleanup',
+                '--pathspec-from-file',
+            }
             commit_pathspecs = []
-            if '--' in args:
-                idx = args.index('--')
-                commit_pathspecs.extend(args[idx + 1:])
+            skip_arg = False
+            in_dash_dash = False
+            for i, a in enumerate(args[1:], start=1):
+                if skip_arg:
+                    skip_arg = False
+                    continue
+                if in_dash_dash:
+                    commit_pathspecs.append(a)
+                    continue
+                if a == '--':
+                    in_dash_dash = True
+                    continue
+                if a.startswith('--'):
+                    opt_name = a.split('=', 1)[0]
+                    if '=' in a:
+                        continue
+                    if opt_name in GIT_COMMIT_OPTS_WITH_ARG:
+                        skip_arg = True
+                        continue
+                    continue
+                if a.startswith('-') and len(a) > 1:
+                    if a in ('-m', '-F', '-c', '-C', '-t', '-S', '-u'):
+                        skip_arg = True
+                        continue
+                    continue
+                commit_pathspecs.append(a)
+
             for a in commit_pathspecs:
                 if matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
                     return 'deny', f"git commit targeting sensitive pathspec is forbidden: {a}"
@@ -2524,11 +2621,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 '-compiler', '--compiler',
                 '-gccgoflags', '--gccgoflags',
                 '-ldflags', '--ldflags',
+                '-modfile', '--modfile',
+                '-overlay', '--overlay',
+                '-pkgdir', '--pkgdir',
+                '-toolchain', '--toolchain',
             }
             for a in args[1:]:
                 opt_name = a.split('=', 1)[0]
                 if opt_name in UNSAFE_GO_FLAGS or any(opt_name.startswith(f) for f in UNSAFE_GO_FLAGS):
                     return 'force_ask', f"go {args[0]} with custom tool or execution flag ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+                if opt_name in ('-mod', '--mod'):
+                    if a not in ('-mod=readonly', '-mod=vendor', '--mod=readonly', '--mod=vendor'):
+                        return 'force_ask', f"go {args[0]} with dependency downloading or mutating module flag ({a}) requires confirmation: {' '.join(cmd_tokens)}"
             if args[0] == 'test':
                 return 'force_ask', f"go test executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
             in_check = check_dev_tool_inputs(args[1:], workspace_paths, cwd, f"go {args[0]}")
@@ -2643,20 +2747,44 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_system_write_path(t, cwd) for t in targets):
             return 'allow', f"Safe directory/file creation within workspace: {base_cmd}"
 
-    return 'ask', f"Command requires confirmation: {' '.join(cmd_tokens)}"
+    # Shell interpreter wrappers (bash, sh, zsh, etc.)
+    if base_cmd in {'sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh'}:
+        cmd_arg = None
+        for i, a in enumerate(args):
+            if a in ('-c', '-lc') and i + 1 < len(args):
+                cmd_arg = args[i + 1]
+                break
+            elif a.startswith('-c') and len(a) > 2 and not a.startswith('--'):
+                cmd_arg = a[2:].lstrip('=')
+                break
+        if cmd_arg:
+            inner_verdict, inner_reason = classify_command_line(cmd_arg, workspace_paths, cwd, depth + 1)
+            if inner_verdict == 'deny':
+                return 'deny', f"Shell command executes forbidden command: {inner_reason}"
+            return 'force_ask', f"Shell wrapper execution requires confirmation: {' '.join(cmd_tokens)}"
+        return 'force_ask', f"Interactive shell execution requires confirmation: {' '.join(cmd_tokens)}"
+
+    return 'force_ask', f"Command requires confirmation: {' '.join(cmd_tokens)}"
 
 
 def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
     """Classify an entire shell command line string across lines, chains, and pipelines."""
     if depth > 5:
-        return 'ask', 'Nested command recursion limit exceeded'
+        return 'force_ask', 'Nested command recursion limit exceeded'
 
     if not isinstance(cmd_str, str) or not cmd_str.strip():
         return 'ask', 'Empty command line or invalid type'
 
     # Check for command substitutions $(...) or `...` or process substitutions <(...) >(...)
-    if re.search(r'(\$\(|\`|<(?=\()|>(?=\())', cmd_str):
-        return 'ask', 'Command contains command or process substitution'
+    subst_matches = re.findall(r'\$\((.*?)\)|`([^`]+)`|<(?:\((.*?)\))|>(?:\((.*?)\))', cmd_str)
+    if subst_matches or re.search(r'(\$\(|\`|<(?=\()|>(?=\())', cmd_str):
+        for match_tuple in subst_matches:
+            inner = next((m for m in match_tuple if m), '')
+            if inner and inner.strip():
+                inner_verdict, inner_reason = classify_command_line(inner.strip(), workspace_paths, cwd, depth + 1)
+                if inner_verdict == 'deny':
+                    return 'deny', f"Command substitution contains forbidden operation: {inner_reason}"
+        return 'force_ask', 'Command contains command or process substitution'
 
     subcmd_strings, pipeline_links_all = split_unquoted_shell_commands(cmd_str)
     if subcmd_strings is None:
