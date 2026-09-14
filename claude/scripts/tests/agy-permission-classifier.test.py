@@ -3005,6 +3005,37 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload_add_clean)
         self.assertEqual(res['decision'], 'allow')
 
+        # 11. Bash tilde forms (~+ and ~-) expanding outside workspace require confirmation
+        for tilde_cmd in (
+            'cp README.md ~+/../outside.txt',
+            'cat ~+/../outside.txt',
+            'cat ~-/outside.txt',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': tilde_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertIn(res['decision'], ('ask', 'force_ask'), f"Expected {tilde_cmd} to require confirmation, got: {res}")
+
+        # 12. Git pagination flags (-p / --paginate) force pager execution
+        for page_cmd in ('git -p status', 'git --paginate status'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': page_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {page_cmd} to require force_ask, got: {res}")
+
+        # 13. Go dev tools with outside targets require confirmation
+        for go_cmd in ('go fmt /tmp/outside.go', 'go build -o /tmp/outside.bin .'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': go_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {go_cmd} to require force_ask, got: {res}")
+
 
 if __name__ == '__main__':
     unittest.main()

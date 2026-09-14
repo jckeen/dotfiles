@@ -164,8 +164,15 @@ def expand_path(p_str, cwd=None):
     """Safely expand user, variables, and relative paths against cwd."""
     if not p_str or not isinstance(p_str, str):
         return ''
-    expanded = os.path.expanduser(os.path.expandvars(p_str))
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    expanded = p_str
+    # Expand bash tilde forms ~+ ($PWD) and ~- ($OLDPWD)
+    if expanded == '~+' or expanded.startswith(('~+/', '~+\\')):
+        expanded = effective_cwd + expanded[2:]
+    elif expanded == '~-' or expanded.startswith(('~-/', '~-\\')):
+        oldpwd = os.environ.get('OLDPWD', effective_cwd)
+        expanded = oldpwd + expanded[2:]
+    expanded = os.path.expanduser(os.path.expandvars(expanded))
     if not os.path.isabs(expanded):
         expanded = os.path.join(effective_cwd, expanded)
     try:
@@ -1443,6 +1450,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
         # Configured core.pager or pager.<cmd> can execute arbitrary commands
+        has_paginate = any(
+            a == '-p' or (a.startswith('--') and '--paginate'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)
+            for a in args[:git_sub_idx]
+        )
+        if has_paginate:
+            return 'force_ask', f"git with pagination flag forces configured pager execution: {' '.join(cmd_tokens)}"
         if git_sub in {'log', 'show', 'diff', 'blame', 'shortlog', 'whatchanged', 'reflog', 'branch'}:
             has_no_pager = any(a in ('--no-pager', '-P') for a in tokens)
             if not has_no_pager and git_has_pager_configured(cwd, git_sub):
