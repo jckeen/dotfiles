@@ -2488,6 +2488,121 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload_find_ok)
         self.assertEqual(res['decision'], 'allow')
 
+    def test_round_30_hardening(self):
+        """Regression tests for Round 30 findings:
+        1. Git -c / --config-env with execution-bearing keys (core.fsmonitor, core.hooksPath, etc.)
+        2. go vet with -vettool and go build with -ldflags / custom tools
+        3. core.fsmonitor requires confirmation even with --no-optional-locks
+        4. Input redirection (<) enforces workspace containment
+        5. Boolean inspection flags (cat -n, tail -f, wc -c) do not skip filename operands
+        6. Abbreviated git edit flags (git add --edi, git commit -m safe --edi)
+        7. find -L / -follow and -files0-from require approval
+        """
+        git_dir = Path(self.test_ws) / 'r30_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        (git_dir / 'app.go').write_text('package main\nfunc main() {}\n')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. Git -c / --config-env with execution-bearing settings
+        for cfg in ('core.fsmonitor=./payload', 'core.hooksPath=/tmp/hooks', 'filter.test.process=./p', 'pager.log=./less', 'diff.foo.textconv=./conv'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git -c {cfg} status', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        payload_cfg_env = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git --config-env=core.fsmonitor=ENV status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_cfg_env)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # 2. Go commands with custom execution tools
+        for go_cmd in ('go vet -vettool=/tmp/payload ./...', 'go build -ldflags "-extld=/tmp/ld" .', 'go vet -toolexec=/tmp/tool ./...'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': go_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        payload_go_safe = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go vet ./...', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_go_safe)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 3. fsmonitor safeguard with --no-optional-locks
+        subprocess.run(['git', 'config', 'core.fsmonitor', './fsmonitor-watchman'], cwd=str(git_dir), check=True)
+        payload_fsmonitor = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git --no-optional-locks status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_fsmonitor)
+        self.assertEqual(res['decision'], 'force_ask')
+        subprocess.run(['git', 'config', '--unset', 'core.fsmonitor'], cwd=str(git_dir), check=True)
+
+        # 4. Input redirection (<) enforces workspace containment
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_file = Path(ext_dir) / 'private-notes'
+            ext_file.write_text('secret notes')
+            payload_in_redir_ext = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'cat < {ext_file}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload_in_redir_ext)
+            self.assertEqual(res['decision'], 'ask')
+
+            payload_in_redir_ok = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat < README.md', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload_in_redir_ok)
+            self.assertEqual(res['decision'], 'allow')
+
+            # 5. Boolean inspection flags do not skip outside-workspace filenames
+            for inspect_cmd in (f'cat -n {ext_file}', f'tail -f {ext_file}', f'wc -c {ext_file}'):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': inspect_cmd, 'Cwd': str(git_dir)}},
+                    'workspacePaths': [str(git_dir)],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'ask')
+
+        for inspect_safe in ('cat -n README.md', 'tail -f README.md', 'wc -c README.md'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': inspect_safe, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'allow')
+
+        # 6. Abbreviated git edit flags
+        for abbrev_cmd in ('git add --edi', 'git commit -m safe --edi', 'git commit -m safe --templa=t.txt'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': abbrev_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+        # 7. find -L / -follow and -files0-from
+        for find_unsafe in ('find -L . -print', 'find -follow . -print', 'find -files0-from roots -print'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': find_unsafe, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask')
+
 
 if __name__ == '__main__':
     unittest.main()

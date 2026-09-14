@@ -1199,7 +1199,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
                 if is_sensitive_credential_path(target, cwd):
                     return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
-                if tok != '<':
+                if tok == '<':
+                    if not is_path_in_workspaces(target, workspace_paths, cwd):
+                        return 'ask', f"Input redirection reading outside workspace requires approval: {target}"
+                else:
                     if is_system_write_path(target, cwd):
                         return 'deny', f"Redirect targeting system write path is forbidden: {target}"
                     if is_git_admin_path(target, cwd):
@@ -1360,12 +1363,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             cfg_opt = None
             if a in ('-c', '--config-env') and i + 1 < len(args):
                 cfg_opt = args[i + 1]
+            elif a.startswith('--config-env='):
+                cfg_opt = a.split('=', 1)[1]
             elif a.startswith('-c') and len(a) > 2 and not a.startswith('--'):
                 cfg_opt = a[2:].lstrip('=')
             if cfg_opt:
                 cfg_key = cfg_opt.split('=', 1)[0].strip().lower()
-                if re.match(r'^(core\.sshcommand|core\.askpass|core\.pager|credential|remote\..*\.(vcs|uploadpack|receivepack|proxy)|http\..*proxy|diff\..*\.command|filter\..*\.clean|filter\..*\.smudge)', cfg_key):
-                    return 'force_ask', f"Git command with configuration override requires confirmation: git -c {cfg_opt}"
+                if re.match(r'^(core\.(sshcommand|askpass|pager|fsmonitor|hookspath|editor)|sequence\.editor|credential|remote\..*\.(vcs|uploadpack|receivepack|proxy)|http\..*proxy|diff\..*\.(command|textconv)|filter\..*\.(clean|smudge|process)|pager(\..*)?|merge\..*\.driver|protocol\..*\.allow|alias\..*|interactive\.difffilter|include(if)?\..*)', cfg_key):
+                    return 'force_ask', f"Git command with configuration override requires confirmation: {a} {cfg_opt}"
 
         # External diff/textconv drivers can execute arbitrary commands configured in gitconfig/attributes
         for a in args:
@@ -1539,8 +1544,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git commands that inspect or refresh the index/working tree execute core.fsmonitor if configured
         if git_sub in {'status', 'diff', 'ls-files', 'stash', 'add', 'commit', 'checkout', 'restore', 'reset', 'worktree', 'describe'}:
-            has_no_fsmonitor = any(a == '--no-optional-locks' for a in tokens)
-            if not has_no_fsmonitor and git_has_fsmonitor_configured(cwd):
+            if git_has_fsmonitor_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
         # Git diff
@@ -1744,8 +1748,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'add':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git add in directory outside workspace requires confirmation: {cwd}"
-            if any(a in ('-e', '--edit') for a in args):
-                return 'force_ask', f"git add with -e/--edit invokes editor: {' '.join(cmd_tokens)}"
+            def is_git_add_interactive_opt(opt):
+                if opt in ('-e', '-p', '-i'):
+                    return True
+                if opt.startswith('--'):
+                    clean_opt = opt.split('=', 1)[0]
+                    for dangerous_long in ('--edit', '--interactive', '--patch'):
+                        if dangerous_long.startswith(clean_opt) and len(clean_opt) >= 3:
+                            return True
+                return False
+
+            if any(is_git_add_interactive_opt(a) for a in args):
+                return 'force_ask', f"git add with editor or interactive option requires confirmation: {' '.join(cmd_tokens)}"
             if any(a in ('-f', '--force') for a in args):
                 return 'force_ask', f"git add with --force can stage ignored sensitive files: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-index-change',)):
@@ -1773,9 +1787,20 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'commit':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
-            has_no_edit = any(a == '--no-edit' for a in args)
-            has_edit_flag = any(a in ('-e', '--edit', '-t', '--template', '-c', '--reedit-message') or
-                                a.startswith(('-e=', '--edit=', '-t=', '--template=', '-c=', '--reedit-message=')) for a in args)
+            def is_git_commit_edit_opt(opt):
+                if opt in ('-e', '-t', '-c', '-p', '-i'):
+                    return True
+                if opt.startswith(('-e=', '-t=', '-c=')):
+                    return True
+                if opt.startswith('--'):
+                    clean_opt = opt.split('=', 1)[0]
+                    for dangerous_long in ('--edit', '--template', '--reedit-message', '--patch', '--interactive'):
+                        if dangerous_long.startswith(clean_opt) and len(clean_opt) >= 3:
+                            return True
+                return False
+
+            has_no_edit = any(a == '--no-edit' or (a.startswith('--') and '--no-edit'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5) for a in args)
+            has_edit_flag = any(is_git_commit_edit_opt(a) for a in args)
             if has_edit_flag and not has_no_edit:
                 return 'force_ask', f"git commit with editor invocation requires confirmation: {' '.join(cmd_tokens)}"
             has_inline_msg = any(a in ('-m', '--message') or a.startswith(('-m=', '--message=')) for a in args)
@@ -1896,16 +1921,38 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 if len(pos) > 1:
                     file_operands.extend(pos[1:])
             else:
+                INSPECTION_OPTS_WITH_ARG = {
+                    'head': {'-n', '--lines', '-c', '--bytes'},
+                    'tail': {'-n', '--lines', '-c', '--bytes', '-s', '--sleep-interval', '--max-unchanged-stats', '--pid'},
+                    'cut': {'-d', '--delimiter', '-f', '--fields', '-b', '--bytes', '-c', '--characters'},
+                    'column': {'-s', '--separator', '-c', '--output-width', '-N', '--table-columns', '-o', '--output-separator', '-W', '--table-wrap'},
+                    'uniq': {'-f', '--skip-fields', '-s', '--skip-chars', '-w', '--check-chars'},
+                    'stat': {'-c', '--format', '--printf'},
+                    'cmp': {'-i', '--ignore-initial', '-n', '--bytes'},
+                    'date': {'-d', '--date', '-r', '--reference'},
+                }
+                opts_with_arg = INSPECTION_OPTS_WITH_ARG.get(base_cmd, set())
                 skip_val = False
                 for a in args:
                     if skip_val:
                         skip_val = False
                         continue
-                    if a in ('-n', '-c', '-s', '-d', '-f', '-w'):
-                        skip_val = True
+                    if a == '--':
                         continue
-                    if not a.startswith('-'):
-                        file_operands.append(a)
+                    if a.startswith('--'):
+                        opt_name = a.split('=', 1)[0]
+                        if '=' in a:
+                            continue
+                        if opt_name in opts_with_arg:
+                            skip_val = True
+                            continue
+                        continue
+                    if a.startswith('-') and len(a) > 1:
+                        if a in opts_with_arg:
+                            skip_val = True
+                            continue
+                        continue
+                    file_operands.append(a)
 
             for f_op in file_operands:
                 if f_op in ('/dev/null', '/dev/zero', '/dev/stdin', '-'):
@@ -2208,12 +2255,31 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fls', '-fprint', '-fprint0', '-fprintf') or a.startswith(('-exec', '-ok', '-fls', '-fprint')) for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
 
-        # Check search roots (handling leading flags like -H, -L, -P, -D, -O)
+        # Following symbolic links (-L or -follow) allows find to escape workspace boundaries
+        if any(a in ('-L', '-follow') for a in args):
+            return 'ask', f"find following symbolic links can traverse outside workspace: {' '.join(cmd_tokens)}"
+
+        # -files0-from reads search roots from an external file or stdin
+        files0_from = None
+        for i, a in enumerate(args):
+            if a in ('-files0-from', '--files0-from') and i + 1 < len(args):
+                files0_from = args[i + 1]
+            elif a.startswith(('-files0-from=', '--files0-from=')):
+                files0_from = a.split('=', 1)[1]
+
+        if files0_from:
+            if files0_from == '-':
+                return 'ask', f"find reading search roots from stdin requires confirmation: {' '.join(cmd_tokens)}"
+            if is_sensitive_credential_path(files0_from, cwd):
+                return 'deny', f"find reading search roots from sensitive path is forbidden: {files0_from}"
+            return 'ask', f"find reading search roots from file requires confirmation: {files0_from}"
+
+        # Check search roots (handling leading flags like -H, -P, -D, -O)
         search_roots = []
         i = 0
         while i < len(args):
             a = args[i]
-            if a in ('-H', '-L', '-P'):
+            if a in ('-H', '-P'):
                 i += 1
                 continue
             if a in ('-D', '-O'):
@@ -2394,8 +2460,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
     if base_cmd == 'go':
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
-            if any(a in ('-exec', '--exec', '-toolexec', '--toolexec') or a.startswith(('-exec=', '--exec=', '-toolexec=', '--toolexec=')) for a in args):
-                return 'force_ask', f"go {args[0]} with custom exec or toolexec program requires confirmation: {' '.join(cmd_tokens)}"
+            UNSAFE_GO_FLAGS = {
+                '-exec', '--exec',
+                '-toolexec', '--toolexec',
+                '-vettool', '--vettool',
+                '-compiler', '--compiler',
+                '-gccgoflags', '--gccgoflags',
+                '-ldflags', '--ldflags',
+            }
+            for a in args[1:]:
+                opt_name = a.split('=', 1)[0]
+                if opt_name in UNSAFE_GO_FLAGS or any(opt_name.startswith(f) for f in UNSAFE_GO_FLAGS):
+                    return 'force_ask', f"go {args[0]} with custom tool or execution flag ({a}) requires confirmation: {' '.join(cmd_tokens)}"
             if args[0] == 'test':
                 return 'force_ask', f"go test executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
             in_check = check_dev_tool_inputs(args[1:], workspace_paths, cwd, f"go {args[0]}")
