@@ -98,13 +98,8 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
     def test_safe_test_and_lint_runners_allowed(self):
         static_commands = [
-            'npm run lint',
-            'npm run typecheck',
-            'cargo check',
-            'cargo clippy',
             'go build .',
-            'npx --no-install tsc --noEmit',
-            'npx --no-install eslint .',
+            'cargo fmt',
         ]
         for cmd in static_commands:
             with self.subTest(cmd=cmd):
@@ -116,6 +111,12 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 self.assertEqual(res['decision'], 'allow', f"Expected {cmd} to be allowed, got: {res}")
 
         code_executing_runners = [
+            'npm run lint',
+            'npm run typecheck',
+            'cargo check',
+            'cargo clippy',
+            'npx --no-install tsc --noEmit',
+            'npx --no-install eslint .',
             'npm test',
             'npm run build',
             'pnpm test',
@@ -153,9 +154,9 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
     def test_safe_compound_commands_allowed(self):
         commands = [
-            'git status && npm run lint',
+            'git status && git diff',
             'git diff HEAD~1 | cat',
-            'CI=1 NODE_ENV=test npm run lint',
+            'CI=1 NODE_ENV=test ls -la',
             'ls -la; git status; pwd',
         ]
         for cmd in commands:
@@ -897,7 +898,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         res = self.run_classifier(payload)
         self.assertIn(res['decision'], ('ask', 'force_ask'))
 
-        # 40. pylint --init-hook requires confirmation, safe pylint is allowed
+        # 40. pylint executes repo-configured plugins and requires confirmation
         payload = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': "pylint --init-hook 'print(42)' app.py", 'Cwd': self.test_ws}},
             'workspacePaths': [self.test_ws],
@@ -910,7 +911,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         # 41. rm -fR and rm -Rf targeting workspace root are forbidden
         payload = {
@@ -1114,7 +1115,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_black_safe)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         payload_prettier_out = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install prettier --write /tmp/outside.js', 'Cwd': self.test_ws}},
@@ -1254,7 +1255,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_eslint_safe)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         payload_eslint_dry = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'npx --no-install eslint --fix --fix-dry-run /tmp/outside.js', 'Cwd': self.test_ws}},
@@ -1276,7 +1277,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [self.test_ws],
         }
         res = self.run_classifier(payload_ruff_safe)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         payload_pym_ruff_out = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'python3 -m ruff check --fix-only /tmp/outside.py', 'Cwd': self.test_ws}},
@@ -1674,7 +1675,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             ('pytest ~/.ssh/id_rsa', 'deny'),
             ('pytest tests/test_ok.py', 'force_ask'),
             ('cargo test --manifest-path=Cargo.toml', 'force_ask'),
-            ('cargo check --manifest-path=Cargo.toml', 'allow'),
+            ('cargo check --manifest-path=Cargo.toml', 'force_ask'),
         ]
         for cmd, expected in dev_tests:
             with self.subTest(dev_cmd=cmd):
@@ -1839,5 +1840,184 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
 
 
+    def test_round_26_hardening(self):
+        # 1. Abbreviated rm --recursive and --dir options
+        rm_tests = [
+            ('rm --r dir', 'force_ask'),
+            ('rm --rec dir', 'force_ask'),
+            ('rm --recursiv dir', 'force_ask'),
+            ('rm --d empty_dir', 'force_ask'),
+            ('rm --r /', 'deny'),
+            ('rm --rec /', 'deny'),
+            ('rm --recursiv /', 'deny'),
+            (f'rm --r {self.test_ws}', 'deny'),
+        ]
+        for cmd, expected in rm_tests:
+            with self.subTest(rm_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
+
+        # 2. Package scripts execute workspace-controlled binaries
+        pkg_scripts = [
+            'npm run lint',
+            'npm run build',
+            'yarn build',
+            'pnpm build',
+            'bun run build',
+        ]
+        for cmd in pkg_scripts:
+            with self.subTest(pkg_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask', f"Expected {cmd} to yield force_ask, got: {res}")
+
+        # 3. JS tools execute repo configuration or plugins
+        js_tools = [
+            'eslint .',
+            'prettier .',
+            'vite build',
+            'webpack',
+        ]
+        for cmd in js_tools:
+            with self.subTest(js_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask', f"Expected {cmd} to yield force_ask, got: {res}")
+
+        # 4. Cargo check and clippy can execute build scripts/macros
+        cargo_cmds = [
+            'cargo check',
+            'cargo clippy',
+        ]
+        for cmd in cargo_cmds:
+            with self.subTest(cargo_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask', f"Expected {cmd} to yield force_ask, got: {res}")
+
+        # 5. Python linters can execute plugins configured by workspace
+        py_tools = [
+            'pylint app.py',
+            'mypy app.py',
+            'flake8 app.py',
+        ]
+        for cmd in py_tools:
+            with self.subTest(py_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'force_ask', f"Expected {cmd} to yield force_ask, got: {res}")
+
+        # 6. Abbreviated recursive/dereferencing cp options require confirmation
+        cp_abbrev_tests = [
+            'cp --recursiv src dst',
+            'cp --rec src dst',
+            'cp --r src dst',
+            'cp --dereferenc a b',
+            'cp --deref a b',
+            'cp --arch a b',
+        ]
+        for cmd in cp_abbrev_tests:
+            with self.subTest(cp_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'ask', f"Expected {cmd} to yield ask, got: {res}")
+
+        # 7. Common credential stores are denied
+        cred_paths = [
+            'cat ~/.kube/config',
+            'cat ~/.config/gcloud/application_default_credentials.json',
+            'cat ~/.azure/credentials',
+            'cat ~/.vault-token',
+            'cat ~/.config/gh/hosts.yml',
+        ]
+        for cmd in cred_paths:
+            with self.subTest(cred_read=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'deny', f"Expected {cmd} to be denied, got: {res}")
+
+        view_cred_paths = [
+            '~/.kube/config',
+            '~/.config/gcloud/application_default_credentials.json',
+            '~/.azure/credentials',
+            '~/.vault-token',
+            '~/.config/gh/hosts.yml',
+        ]
+        for p in view_cred_paths:
+            with self.subTest(view_cred=p):
+                payload = {
+                    'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': p}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'deny', f"Expected view_file {p} to be denied, got: {res}")
+
+        # 8. Abbreviated target-directory options in cp/mv
+        target_dir_tests = [
+            'cp --target=/tmp a b',
+            'cp --tar=/tmp a b',
+            'cp --t=/tmp a b',
+            'mv --target=/tmp a b',
+            'mv --tar=/tmp a b',
+            'mv --t=/tmp a b',
+        ]
+        for cmd in target_dir_tests:
+            with self.subTest(target_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': self.test_ws}},
+                    'workspacePaths': [self.test_ws],
+                }
+                res = self.run_classifier(payload)
+                self.assertIn(res['decision'], ('ask', 'force_ask'), f"Expected {cmd} to require confirmation, got: {res}")
+
+        # 9. Implicit pushes from protected branch are denied
+        git_repo_dir = Path(self.test_ws) / 'push_protected_repo'
+        git_repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_repo_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_repo_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_repo_dir), check=True)
+        (git_repo_dir / 'README.md').write_text('initial')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_repo_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'initial'], cwd=str(git_repo_dir), check=True)
+
+        implicit_push_cmds = [
+            'git push',
+            'git push origin',
+            'git push upstream',
+            'git push -u origin',
+        ]
+        for cmd in implicit_push_cmds:
+            with self.subTest(push_cmd=cmd):
+                payload = {
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd, 'Cwd': str(git_repo_dir)}},
+                    'workspacePaths': [str(git_repo_dir)],
+                }
+                res = self.run_classifier(payload)
+                self.assertEqual(res['decision'], 'deny', f"Expected {cmd} on main to be denied, got: {res}")
+
+
 if __name__ == '__main__':
     unittest.main()
+

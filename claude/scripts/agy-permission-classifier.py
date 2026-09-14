@@ -67,6 +67,11 @@ def get_sensitive_credential_prefixes():
         os.path.join(home, '.codex'),
         os.path.join(home, '.claude'),
         os.path.join(home, '.gemini', 'antigravity-cli'),
+        os.path.join(home, '.kube'),
+        os.path.join(home, '.config', 'gcloud'),
+        os.path.join(home, '.azure'),
+        os.path.join(home, '.vault-token'),
+        os.path.join(home, '.config', 'gh'),
         '/etc/shadow',
         '/etc/sudoers',
     )
@@ -79,6 +84,8 @@ SENSITIVE_FILENAMES = {
     '.git-credentials', 'git-credentials',
     '.npmrc',
     '.pypirc',
+    'application_default_credentials.json',
+    '.vault-token',
 }
 
 # Glob patterns that match sensitive files
@@ -578,7 +585,23 @@ def git_has_gpg_program_configured(cwd=None):
             return True
     except Exception:
         pass
-    return False
+def git_get_current_branch(cwd=None):
+    """Resolve current git branch name in repository."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    try:
+        res = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            cwd=effective_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ''
 
 
 def strip_git_output_options(args_list):
@@ -1161,8 +1184,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
     # 4. Destructive Deletions (rm)
     if base_cmd == 'rm':
-        is_recursive = any(a in ('-r', '-R', '-rf', '-fr', '--recursive') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R'))) for a in args)
-        is_dir = any(a in ('-d', '--dir') or (a.startswith('-') and not a.startswith('--') and 'd' in a) for a in args)
+        is_recursive = any(
+            a in ('-r', '-R', '-rf', '-fr') or
+            (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R'))) or
+            (a.startswith('--') and '--recursive'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 3)
+            for a in args
+        )
+        is_dir = any(
+            a in ('-d',) or
+            (a.startswith('-') and not a.startswith('--') and 'd' in a) or
+            (a.startswith('--') and '--dir'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 3)
+            for a in args
+        )
         targets = [a for a in args if not a.startswith('-')]
         if is_recursive or is_dir:
             for t in targets:
@@ -1240,11 +1273,41 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         # Force push or direct push to protected branch detection
         if git_sub == 'push':
             has_force = any(a in ('--force', '-f', '--force-with-lease') or a.startswith('+') for a in args)
-            refspecs = [a for a in args[1:] if not a.startswith('-') and a != 'origin']
+            has_repo_opt = any(a == '--repo' or a.startswith('--repo=') for a in args)
+            pos_args = []
+            skip_next = False
+            for i, a in enumerate(args[1:], start=1):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a == '--':
+                    pos_args.extend(args[i + 1:])
+                    break
+                if a.startswith('-'):
+                    if a in ('--repo', '--receive-pack', '--exec', '-o', '--push-option') and i + 1 < len(args):
+                        skip_next = True
+                    continue
+                pos_args.append(a)
+
+            if has_repo_opt:
+                refspecs = pos_args
+            elif len(pos_args) > 1:
+                refspecs = pos_args[1:]
+            else:
+                refspecs = []
+
             for spec in refspecs:
                 dest = parse_refspec_dest(spec)
                 if dest in PROTECTED_BRANCHES:
                     return 'deny', f"Push targeting protected branch '{dest}' is forbidden: {' '.join(cmd_tokens)}"
+            if not refspecs:
+                curr_branch = git_get_current_branch(cwd)
+                if curr_branch in PROTECTED_BRANCHES:
+                    return 'deny', f"Push targeting protected branch '{curr_branch}' is forbidden: {' '.join(cmd_tokens)}"
+            if any(a in ('--all', '--mirror') for a in args):
+                curr_branch = git_get_current_branch(cwd)
+                if curr_branch in PROTECTED_BRANCHES:
+                    return 'deny', f"Push targeting protected branch '{curr_branch}' is forbidden: {' '.join(cmd_tokens)}"
             if has_force:
                 if not refspecs:
                     return 'deny', f"Unscoped force push is forbidden: {' '.join(cmd_tokens)}"
@@ -1679,6 +1742,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             elif sub == 'run' and len(args) > 1:
                 target_script = args[1]
                 script_args = args[2:]
+            elif base_cmd in {'yarn', 'pnpm', 'bun'} and sub not in {'install', 'i', 'add', 'remove', 'uninstall', 'update', 'publish', 'pack', 'init', 'create', 'info', 'why', 'list', 'outdated', 'audit', 'login', 'logout'}:
+                target_script = sub
+                script_args = args[1:]
 
             if target_script:
                 out_check = check_dev_tool_output(script_args, workspace_paths, norm_target_dir, f"{base_cmd} {sub}")
@@ -1689,7 +1755,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 pkg_json = find_package_json(norm_target_dir, workspace_paths)
                 if pkg_json:
                     # Determine whether lifecycle scripts are ignored
-                    # Only flags before '--' are npm options; flags after '--' are passed to the script
                     npm_opts = []
                     for a in script_args:
                         if a == '--':
@@ -1726,85 +1791,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                             if s_verdict != 'allow':
                                 return s_verdict, f"Package lifecycle script '{s_name}' in package.json requires confirmation: {s_reason}"
                         elif s_name == target_script and (base_cmd != 'bun' or sub != 'test'):
-                            return 'ask', f"Package script '{target_script}' not found in package.json requires confirmation: {' '.join(cmd_tokens)}"
+                            return 'force_ask', f"Package script '{target_script}' not found in package.json requires confirmation: {' '.join(cmd_tokens)}"
 
-                if sub == 'test' or sub.startswith('test') or target_script in {'test', 'check-tests'} or target_script.startswith('test'):
-                    return 'force_ask', f"Package manager test runner executes workspace test code and requires confirmation: {base_cmd} {' '.join(args)}"
-                if target_script in {'build', 'compile'} or target_script.startswith(('build', 'compile')):
-                    return 'force_ask', f"Package manager build script executes workspace build code and requires confirmation: {base_cmd} {' '.join(args)}"
-                if sub == 'run' and not any(target_script.startswith(prefix) for prefix in SAFE_RUN_PREFIXES):
-                    return 'ask', f"Package script requires confirmation: {base_cmd} run {target_script}"
-
-                return 'allow', f"Safe package manager {sub}: {base_cmd} {' '.join(args)}"
+                return 'force_ask', f"Package manager script executes repository-defined scripts or node_modules binaries: {base_cmd} {' '.join(args)}"
 
             if sub in {'install', 'i', 'add', 'remove', 'uninstall', 'update', 'publish'}:
                 return 'ask', f"Package management alters dependencies: {base_cmd} {sub}"
         return 'ask', f"Package manager command requires confirmation: {' '.join(cmd_tokens)}"
 
-    # npx: only safe when run with --no-install to avoid downloading unverified packages
-    if base_cmd == 'npx':
-        if args:
-            # Reject package overrides or auto-install flags that bypass --no-install
-            if any(a in ('-y', '--yes', '-p', '--package') or a.startswith(('-y', '--yes', '-p', '--package=', '--package')) for a in args):
-                return 'force_ask', f"npx with package download or auto-install options requires confirmation: {' '.join(cmd_tokens)}"
-            has_no_install = '--no-install' in args
-            tools = [a for a in args if not a.startswith('-')]
-            if has_no_install and tools:
-                tool = tools[0]
-                if tool in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc'}:
-                    return 'force_ask', f"Running test runner via npx executes workspace test code and requires confirmation: {tool}"
-                if tool in {'tsc', 'eslint', 'prettier', 'biome', 'standard'}:
-                    ws_exe = find_npx_workspace_executable(tool, cwd, workspace_paths)
-                    if ws_exe:
-                        return 'force_ask', f"Running workspace-controlled executable via npx requires confirmation: {tool} ({ws_exe})"
-                    tool_args = args[args.index(tool) + 1:]
-                    in_check = check_dev_tool_inputs(tool_args, workspace_paths, cwd, f"npx {tool}")
-                    if in_check:
-                        return in_check
-                    out_check = check_dev_tool_output(tool_args, workspace_paths, cwd, f"npx {tool}")
-                    if out_check:
-                        return out_check
-                    if tool == 'eslint':
-                        if any(a in ('--rulesdir', '--resolve-plugins-relative-to', '--plugin') or a.startswith(('--rulesdir=', '--resolve-plugins-relative-to=', '--plugin=')) for a in tool_args):
-                            return 'force_ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
-                        if any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in tool_args) and not any(a == '--fix-dry-run' for a in tool_args):
-                            skip_next = False
-                            for a in tool_args:
-                                if skip_next:
-                                    skip_next = False
-                                    continue
-                                if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
-                                    skip_next = True
-                                    continue
-                                if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
-                                    continue
-                                if not a.startswith('-'):
-                                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                        return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
-                                    if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                        return 'force_ask', f"eslint modifying file outside workspace requires confirmation: {a}"
-                    if tool == 'prettier':
-                        if any(a == '--plugin' or a.startswith(('--plugin=', '--plugin')) for a in tool_args):
-                            return 'force_ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
-                        if any(a in ('-w', '--write') or a.startswith('--write') for a in tool_args):
-                            for a in tool_args:
-                                if not a.startswith('-'):
-                                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                        return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
-                                    if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                        return 'force_ask', f"prettier modifying file outside workspace requires confirmation: {a}"
-                    if tool == 'tsc':
-                        if any(a in ('--plugins', '--transform') or a.startswith(('--plugins=', '--transform=')) for a in tool_args):
-                            return 'force_ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
-                        for a in tool_args:
-                            if not a.startswith('-'):
-                                if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                    return 'deny', f"tsc accessing sensitive or system path is forbidden: {a}"
-                                if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                    return 'force_ask', f"tsc compiling file outside workspace requires confirmation: {a}"
-                    return 'allow', f"Safe static tool via npx --no-install: {tool}"
-            return 'force_ask', f"npx execution without --no-install requires confirmation: {' '.join(cmd_tokens)}"
-        return 'force_ask', f"npx execution requires confirmation: {' '.join(cmd_tokens)}"
+    # npx / bunx: always requires confirmation since it executes local binaries or packages
+    if base_cmd in {'npx', 'bunx'}:
+        return 'force_ask', f"{base_cmd} execution requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd in {'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc'}:
         return 'force_ask', f"Test runner executes workspace test code and requires confirmation: {base_cmd}"
@@ -1816,52 +1813,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
         if out_check:
             return out_check
-        if base_cmd == 'eslint':
-            if any(a in ('--rulesdir', '--resolve-plugins-relative-to', '--plugin') or a.startswith(('--rulesdir=', '--resolve-plugins-relative-to=', '--plugin=')) for a in args):
-                return 'force_ask', f"eslint with plugin or custom rules requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a == '--fix' or a.startswith(('--fix', '--fix-type')) for a in args) and not any(a == '--fix-dry-run' for a in args):
-                skip_next = False
-                for a in args:
-                    if skip_next:
-                        skip_next = False
-                        continue
-                    if a in ('-c', '--config', '--rulesdir', '--resolve-plugins-relative-to', '--ignore-path', '--rule', '--env', '-f', '--format', '-o', '--output-file'):
-                        skip_next = True
-                        continue
-                    if a.startswith(('-c=', '--config=', '--rulesdir=', '--resolve-plugins-relative-to=', '--ignore-path=', '--rule=', '--env=', '-f=', '--format=', '-o=', '--output-file=', '--fix-type=')):
-                        continue
-                    if not a.startswith('-'):
-                        if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                            return 'deny', f"eslint modifying sensitive or system path is forbidden: {a}"
-                        if not is_path_in_workspaces(a, workspace_paths, cwd):
-                            return 'force_ask', f"eslint modifying file outside workspace requires confirmation: {a}"
-        if base_cmd == 'prettier':
-            if any(a == '--plugin' or a.startswith(('--plugin=', '--plugin')) for a in args):
-                return 'force_ask', f"prettier with plugin option requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a in ('-w', '--write') or a.startswith('--write') for a in args):
-                skip_next = False
-                for a in args:
-                    if skip_next:
-                        skip_next = False
-                        continue
-                    if a in ('--config', '--ignore-path', '--plugin', '--config-precedence'):
-                        skip_next = True
-                        continue
-                    if not a.startswith('-'):
-                        if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                            return 'deny', f"prettier modifying sensitive or system path is forbidden: {a}"
-                        if not is_path_in_workspaces(a, workspace_paths, cwd):
-                            return 'force_ask', f"prettier modifying file outside workspace requires confirmation: {a}"
-        if base_cmd == 'tsc':
-            if any(a in ('--plugins', '--transform') or a.startswith(('--plugins=', '--transform=')) for a in args):
-                return 'force_ask', f"tsc with plugin requires confirmation: {' '.join(cmd_tokens)}"
-            for a in args:
-                if not a.startswith('-'):
-                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                        return 'deny', f"tsc accessing sensitive or system path is forbidden: {a}"
-                    if not is_path_in_workspaces(a, workspace_paths, cwd):
-                        return 'force_ask', f"tsc compiling file outside workspace requires confirmation: {a}"
-        return 'allow', f"Safe static dev tool: {base_cmd}"
+        return 'force_ask', f"JavaScript build or linter tool loads repository-controlled configuration or plugins: {base_cmd}"
 
     if base_cmd == 'cargo':
         if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):
@@ -1876,72 +1828,34 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return out_check
         if args:
             sub = args[0]
-            if sub in {'check', 'clippy', 'fmt'}:
+            if sub == 'fmt':
                 return 'allow', f"Safe cargo command: cargo {sub}"
-            if sub in {'test', 'bench', 'run', 'build'}:
-                return 'force_ask', f"Cargo command executes workspace code or build scripts and requires confirmation: cargo {sub}"
+            if sub in {'check', 'clippy', 'test', 'bench', 'run', 'build'}:
+                return 'force_ask', f"Cargo command may execute build scripts or procedural macros: cargo {sub}"
             if sub in {'install', 'publish', 'add', 'remove'}:
                 return 'force_ask', f"Cargo dependency modification requires confirmation: cargo {sub}"
         return 'force_ask', f"Cargo command requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd in {'pytest', 'ruff', 'mypy', 'flake8', 'black', 'pylint'}:
-        if base_cmd == 'pylint' and any(a in ('--init-hook', '--load-plugins') or a.startswith(('--init-hook=', '--load-plugins=')) for a in args):
-            return 'force_ask', f"pylint with plugin or init hook requires confirmation: {' '.join(cmd_tokens)}"
-        if base_cmd == 'pytest':
-            return 'force_ask', f"pytest executes workspace test code and conftest.py and requires confirmation: {' '.join(cmd_tokens)}"
         in_check = check_dev_tool_inputs(args, workspace_paths, cwd, base_cmd)
         if in_check:
             return in_check
-        if base_cmd == 'black':
-            is_check = any(a in ('--check', '--diff') for a in args)
-            if not is_check:
-                for a in args:
-                    if not a.startswith('-'):
-                        if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                            return 'deny', f"black modifying sensitive or system path is forbidden: {a}"
-                        if not is_path_in_workspaces(a, workspace_paths, cwd):
-                            return 'force_ask', f"black modifying file outside workspace requires confirmation: {a}"
-        if base_cmd == 'ruff':
-            if any(a == 'format' or a.startswith('--fix') for a in args):
-                is_check = any(a in ('--check', '--diff') for a in args)
-                if not is_check:
-                    for a in args:
-                        if not a.startswith('-') and a not in ('format', 'check'):
-                            if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                return 'deny', f"ruff modifying sensitive or system path is forbidden: {a}"
-                            if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                return 'force_ask', f"ruff modifying file outside workspace requires confirmation: {a}"
         out_check = check_dev_tool_output(args, workspace_paths, cwd, base_cmd)
         if out_check:
             return out_check
-        return 'allow', f"Safe Python dev tool: {base_cmd}"
+        return 'force_ask', f"Python tool may execute repository-configured plugins or test code: {base_cmd}"
 
     if base_cmd in {'python', 'python3'}:
         if args and args[0] == '-m' and len(args) > 1:
             module = args[1]
-            if module in {'unittest', 'pytest'}:
-                return 'force_ask', f"python -m {module} executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
-            if module in {'mypy', 'ruff', 'flake8'}:
-                if workspace_has_local_python_module(module, workspace_paths, cwd):
-                    return 'force_ask', f"python -m {module} with local workspace module shadowing requires confirmation: {' '.join(cmd_tokens)}"
-                mod_args = args[2:]
-                in_check = check_dev_tool_inputs(mod_args, workspace_paths, cwd, f"python -m {module}")
-                if in_check:
-                    return in_check
-                if module == 'ruff':
-                    if any(a == 'format' or a.startswith('--fix') for a in mod_args):
-                        is_check = any(a in ('--check', '--diff') for a in mod_args)
-                        if not is_check:
-                            for a in mod_args:
-                                if not a.startswith('-') and a not in ('format', 'check'):
-                                    if is_sensitive_credential_path(a, cwd) or is_system_write_path(a, cwd):
-                                        return 'deny', f"ruff modifying sensitive or system path is forbidden: {a}"
-                                    if not is_path_in_workspaces(a, workspace_paths, cwd):
-                                        return 'force_ask', f"ruff modifying file outside workspace requires confirmation: {a}"
-                out_check = check_dev_tool_output(mod_args, workspace_paths, cwd, f"python -m {module}")
-                if out_check:
-                    return out_check
-                return 'allow', f"Safe python module: {module}"
+            mod_args = args[2:]
+            in_check = check_dev_tool_inputs(mod_args, workspace_paths, cwd, f"python -m {module}")
+            if in_check:
+                return in_check
+            out_check = check_dev_tool_output(mod_args, workspace_paths, cwd, f"python -m {module}")
+            if out_check:
+                return out_check
+            return 'force_ask', f"python -m {module} executes repository-defined code or plugins: {' '.join(cmd_tokens)}"
         return 'force_ask', f"Executing Python script requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd == 'go':
@@ -1964,7 +1878,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:
         if base_cmd == 'cp':
-            if any(a in ('--recursive', '--dereference', '--archive') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R', 'L', 'a', 'H'))) or a.startswith(('--recursive', '--dereference', '--archive')) for a in args):
+            has_risky_cp = False
+            for a in args:
+                if a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R', 'L', 'a', 'H')):
+                    has_risky_cp = True
+                    break
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if any(long_opt.startswith(opt) for long_opt in ('--recursive', '--dereference', '--archive') if len(opt) >= 3):
+                        has_risky_cp = True
+                        break
+            if has_risky_cp:
                 return 'ask', f"Recursive or symlink-dereferencing cp requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
@@ -1979,11 +1903,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 positionals.append(a)
             elif a == '--':
                 end_of_options = True
-            elif a.startswith('--target-directory='):
-                target_dir = a.split('=', 1)[1]
-            elif a == '--target-directory' and i + 1 < len(args):
-                target_dir = args[i + 1]
-                i += 1
+            elif a.startswith('--') and any('--target-directory'.startswith(opt) for opt in (a.split('=', 1)[0],) if len(opt) >= 3):
+                if '=' in a:
+                    target_dir = a.split('=', 1)[1]
+                elif i + 1 < len(args):
+                    target_dir = args[i + 1]
+                    i += 1
             elif a.startswith('-') and not a.startswith('--') and 't' in a:
                 t_idx = a.index('t')
                 rest = a[t_idx + 1:]
