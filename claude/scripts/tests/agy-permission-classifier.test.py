@@ -2173,6 +2173,183 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 res = self.run_classifier(payload)
                 self.assertEqual(res['decision'], expected, f"Expected {cmd} to yield {expected}, got: {res}")
 
+    def test_round_28_hardening(self):
+        """Regression tests for Round 28 findings:
+        1. git diff sensitive file detection in staged patches
+        2. git diff --no-index workspace containment and sensitive paths
+        3. git commit -F workspace containment and sensitive paths
+        4. git blame --contents workspace containment and sensitive paths, plus blob show sensitive checks
+        5. git fetch custom scheme helpers and url.<base>.insteadOf rewrites
+        6. antigravity/hooks.json timeout budget
+        """
+        git_dir = Path(self.test_ws) / 'r28_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. git diff --cached with staged sensitive file is denied
+        (git_dir / '.env').write_text('SECRET=123')
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --cached', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'deny')
+
+        # Clean staged sensitive file
+        subprocess.run(['git', 'reset', 'HEAD', '.env'], cwd=str(git_dir), check=True)
+        (git_dir / '.env').unlink()
+
+        # 2. git diff --no-index checks workspace containment and sensitive files
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_secret = Path(ext_dir) / 'secret.txt'
+            ext_secret.write_text('external secret')
+
+            # Outside workspace -> force_ask
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git diff --no-index {ext_secret} /dev/null', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+            # Sensitive file -> deny
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git diff --no-index {git_dir}/.env /dev/null', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+
+            # Both in workspace -> allow
+            f1 = git_dir / 'a.txt'
+            f2 = git_dir / 'b.txt'
+            f1.write_text('hello')
+            f2.write_text('world')
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git diff --no-index {f1} {f2}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'allow')
+
+        # 3. git commit -F checks workspace containment, sensitive files, and stdin
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_msg = Path(ext_dir) / 'msg.txt'
+            ext_msg.write_text('commit message')
+
+            # External message file -> force_ask
+            (git_dir / 'change.txt').write_text('change')
+            subprocess.run(['git', 'add', 'change.txt'], cwd=str(git_dir), check=True)
+
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git commit -F {ext_msg}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+            # Sensitive message file -> deny
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -F .env', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+
+            # Stdin message -> force_ask
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -F -', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+            # In-workspace message file -> allow
+            ws_msg = git_dir / 'commit_msg.txt'
+            ws_msg.write_text('safe commit')
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git commit -F {ws_msg}', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'allow')
+            subprocess.run(['git', 'commit', '-F', str(ws_msg)], cwd=str(git_dir), check=True)
+
+        # 4. git blame --contents and path checks
+        with tempfile.TemporaryDirectory() as ext_dir:
+            ext_contents = Path(ext_dir) / 'secret_contents.txt'
+            ext_contents.write_text('opaque secret')
+
+            # External contents -> force_ask
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git blame --contents {ext_contents} HEAD -- README.md', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask')
+
+            # Sensitive contents -> deny
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git blame --contents .env HEAD -- README.md', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+
+            # Sensitive file operand -> deny
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git blame .env', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+
+            # git show targeting sensitive blob -> deny
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git show HEAD:.env', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'deny')
+
+        # 5. git fetch custom scheme and url.<base>.insteadOf rewrites
+        # Custom scheme in fetch command -> force_ask
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch custom://server/repo.git', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # insteadOf rewrite to ext:: helper -> force_ask
+        subprocess.run(['git', 'config', 'remote.origin.url', 'https://github.com/example/repo.git'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'url.ext::cat %s.insteadOf', 'https://github.com/'], cwd=str(git_dir), check=True)
+        payload = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch origin', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # Remove rewrite config -> allow
+        subprocess.run(['git', 'config', '--unset', 'url.ext::cat %s.insteadOf'], cwd=str(git_dir), check=True)
+        res = self.run_classifier(payload)
+        self.assertEqual(res['decision'], 'allow')
+
+        # 6. Verify antigravity/hooks.json timeout
+        hooks_json_path = Path(__file__).resolve().parent.parent.parent.parent / 'antigravity' / 'hooks.json'
+        hooks_data = json.loads(hooks_json_path.read_text())
+        pre_tool_hooks = hooks_data.get('permission-classifier', {}).get('PreToolUse', [])
+        self.assertTrue(len(pre_tool_hooks) > 0)
+        hook_timeout = pre_tool_hooks[0]['hooks'][0]['timeout']
+        self.assertGreaterEqual(hook_timeout, 15)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -408,19 +408,27 @@ def get_safe_git_executable():
     return 'git'
 
 
+_GIT_PROBE_CACHE = {}
+
+
 def git_run_probe(args, cwd=None, timeout=1):
     """Run internal git probe command using a trusted git executable."""
     git_bin = get_safe_git_executable()
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    cache_key = (effective_cwd, tuple(args))
+    if cache_key in _GIT_PROBE_CACHE:
+        return _GIT_PROBE_CACHE[cache_key]
     try:
-        return subprocess.run(
+        res = subprocess.run(
             [git_bin] + args,
             cwd=effective_cwd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
         )
+        _GIT_PROBE_CACHE[cache_key] = res
+        return res
     except Exception:
         return None
 
@@ -500,16 +508,76 @@ def git_has_transport_executable_configured(cwd=None):
     return False
 
 
+SAFE_GIT_REMOTE_SCHEMES = {'http', 'https', 'ssh', 'git', 'file', 'ftp', 'ftps'}
+
+
+def is_unsafe_git_remote_url(url):
+    """Check if a remote URL uses an external helper, custom scheme, or ext:: protocol."""
+    if not url or not isinstance(url, str):
+        return False
+    url = url.strip()
+    # Check for ext::, fd::, or any custom :: helper
+    if '::' in url:
+        return True
+    # Check for custom scheme:// (Git invokes git-remote-<scheme> for non-standard schemes)
+    if '://' in url:
+        scheme = url.split('://', 1)[0].lower()
+        if scheme not in SAFE_GIT_REMOTE_SCHEMES:
+            return True
+        return False
+    # Check for SCP-style ssh syntax: [user@]host:path
+    if ':' in url:
+        prefix = url.split(':', 1)[0]
+        # If prefix contains no slashes, it is SCP ssh syntax
+        if '/' not in prefix and '\\' not in prefix:
+            return False
+    # Local path (relative or absolute)
+    return False
+
+
 def git_remotes_have_executable_helpers(cwd=None):
-    """Check if any git remote URL uses an external helper protocol like ext:: or custom helpers."""
-    res = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
+    """Check if any git remote URL or rewritten URL uses an external helper protocol or custom scheme."""
+    # Check if any url.*.insteadof or url.*.pushinsteadof config rewrites to an unsafe scheme
+    res_inst = git_run_probe(['config', '--get-regexp', r'^url\..*\.(insteadof|pushinsteadof)$'], cwd=cwd)
+    if res_inst and res_inst.returncode == 0 and res_inst.stdout:
+        for line in res_inst.stdout.splitlines():
+            key = line.split(None, 1)[0].lower()
+            if key.startswith('url.'):
+                parts = key[4:].rsplit('.', 1)
+                if len(parts) == 2:
+                    base = parts[0]
+                    if is_unsafe_git_remote_url(base):
+                        return True
+
+    # Check configured remotes
+    res = git_run_probe(['remote'], cwd=cwd)
+    remotes = []
     if res and res.returncode == 0 and res.stdout:
-        for line in res.stdout.splitlines():
-            parts = line.split(None, 1)
-            if len(parts) == 2:
-                url = parts[1].strip()
-                if url.startswith('ext::') or re.match(r'^[a-zA-Z0-9_-]+::', url):
+        remotes = [r.strip() for r in res.stdout.splitlines() if r.strip()]
+
+    if not remotes:
+        res_cfg = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
+        if res_cfg and res_cfg.returncode == 0 and res_cfg.stdout:
+            for line in res_cfg.stdout.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    url = parts[1].strip()
+                    if is_unsafe_git_remote_url(url):
+                        return True
+
+    for r in remotes:
+        # Check resolved URL via ls-remote --get-url (which expands url.*.insteadOf without contacting network)
+        res_url = git_run_probe(['ls-remote', '--get-url', r], cwd=cwd)
+        if res_url and res_url.returncode == 0 and res_url.stdout.strip():
+            resolved = res_url.stdout.strip()
+            if is_unsafe_git_remote_url(resolved):
+                return True
+        else:
+            res_raw = git_run_probe(['config', f'remote.{r}.url'], cwd=cwd)
+            if res_raw and res_raw.returncode == 0 and res_raw.stdout.strip():
+                if is_unsafe_git_remote_url(res_raw.stdout.strip()):
                     return True
+
     return False
 
 
@@ -650,14 +718,14 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
     try:
         safe_args = strip_git_output_options(args[1:])
         if git_sub == 'diff':
-            cmd = ['git', 'diff', '--name-only', '--no-show-signature'] + [a for a in safe_args if a != '--name-only']
+            cmd = ['git', 'diff', '--name-only'] + [a for a in safe_args if a != '--name-only']
         elif git_sub == 'show':
             cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub in ('log', 'whatchanged') and any(a in ('-p', '-u', '--patch', '--stat', '--numstat', '--shortstat') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('p', 'u'))) for a in args):
             cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
-            cmd = ['git', 'stash', 'show', '--name-only', '--no-show-signature'] + [a for a in safe_stash if a != '--name-only']
+            cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in safe_stash if a != '--name-only']
         elif git_sub == 'format-patch':
             log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
             cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + log_args
@@ -679,10 +747,11 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
                     if matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd):
                         return 'sensitive'
             return 'safe'
-        if res.returncode in (128, 129) and not res.stdout:
-            # Git fatal error (e.g. not a git repo, revision does not exist, empty repo without HEAD).
-            # No patch or diff output is generated, so no credentials can be leaked.
-            return 'safe'
+        if not res.stdout and res.returncode != 0:
+            err = (res.stderr or '').lower()
+            # Non-git directory or missing revision in empty repository: no patch is produced so no credentials leak
+            if any(k in err for k in ('not a git repository', 'ambiguous argument', 'unknown revision', 'bad revision', 'does not have any commits yet')):
+                return 'safe'
         return 'unknown'
     except Exception:
         return 'unknown'
@@ -1323,12 +1392,23 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if git_has_transport_executable_configured(cwd):
                 return 'force_ask', f"Git fetch with configured transport program or credential helper requires confirmation: {' '.join(cmd_tokens)}"
             if git_remotes_have_executable_helpers(cwd):
-                return 'force_ask', f"Git fetch with configured remote helper URL (ext:: or ::) requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a.startswith(('ext::', 'fd::')) or re.match(r'^[a-zA-Z0-9_-]+::', a) for a in args[1:] if not a.startswith('-')):
-                return 'force_ask', f"Git fetch with custom remote helper protocol requires confirmation: {' '.join(cmd_tokens)}"
+                return 'force_ask', f"Git fetch with configured remote helper URL or rewrite requires confirmation: {' '.join(cmd_tokens)}"
             if any(a in ('-u', '--upload-pack') or a.startswith(('-u=', '--upload-pack=')) for a in args):
                 return 'force_ask', f"Git fetch with custom upload-pack program requires confirmation: {' '.join(cmd_tokens)}"
-            refspecs = [a for a in args[1:] if not a.startswith('-') and a != 'origin']
+
+            # Inspect positional arguments (remote / URL / refspecs)
+            pos_args = [a for a in args[1:] if not a.startswith('-')]
+            for a in pos_args:
+                if is_unsafe_git_remote_url(a):
+                    return 'force_ask', f"Git fetch with custom remote helper protocol or scheme requires confirmation: {a}"
+                # If a is a remote name or URL, check its resolved URL via ls-remote --get-url
+                res_resolved = git_run_probe(['ls-remote', '--get-url', a], cwd=cwd)
+                if res_resolved and res_resolved.returncode == 0 and res_resolved.stdout.strip():
+                    expanded = res_resolved.stdout.strip()
+                    if is_unsafe_git_remote_url(expanded):
+                        return 'force_ask', f"Git fetch with rewritten remote helper URL requires confirmation: {expanded}"
+
+            refspecs = [a for a in pos_args if a != 'origin']
             if refspecs or any(a.startswith('+') for a in args):
                 return 'force_ask', f"Git fetch with refspecs requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git fetch'
@@ -1411,10 +1491,39 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git diff
         if git_sub == 'diff':
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'force_ask', f"git diff in directory outside workspace requires confirmation: {cwd}"
             has_no_ext = any(a == '--no-ext-diff' for a in args)
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                 return 'force_ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+
+            # Inspect file operands and pathspecs for sensitive files and workspace containment
+            is_no_index = any(a == '--no-index' for a in args)
+            diff_operands = []
+            if '--' in args:
+                idx = args.index('--')
+                diff_operands.extend(args[idx + 1:])
+                pre_dash = args[1:idx]
+            else:
+                pre_dash = args[1:]
+
+            if is_no_index:
+                diff_operands.extend([a for a in pre_dash if not a.startswith('-')])
+            else:
+                for a in pre_dash:
+                    if not a.startswith('-'):
+                        if a.startswith(('/', '~')) or a.startswith('..' + os.sep) or a == '..':
+                            diff_operands.append(a)
+
+            for dop in diff_operands:
+                if dop in ('/dev/null', 'NUL'):
+                    continue
+                if matches_sensitive_pattern(dop) or is_sensitive_credential_path(dop, cwd):
+                    return 'deny', f"git diff targeting sensitive file is forbidden: {dop}"
+                if not is_path_in_workspaces(dop, workspace_paths, cwd):
+                    return 'force_ask', f"git diff operand outside workspace requires approval: {dop}"
+
             probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
             if probe_res == 'sensitive':
                 return 'deny', f"git diff touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
@@ -1474,6 +1583,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git show, log, blame, etc. run configured textconv drivers or signature verification by default
         if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch'}:
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'force_ask', f"git {git_sub} in directory outside workspace requires confirmation: {cwd}"
             has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
                           (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
             if has_sig:
@@ -1483,13 +1594,58 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             has_no_textconv = any(a == '--no-textconv' for a in args)
             if not has_no_textconv and git_has_external_diff_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+
+            if git_sub == 'blame':
+                # Check --contents <file>
+                blame_contents = None
+                for i, a in enumerate(args):
+                    if a == '--contents' and i + 1 < len(args):
+                        blame_contents = args[i + 1]
+                    elif a.startswith('--contents='):
+                        blame_contents = a.split('=', 1)[1]
+                if blame_contents is not None:
+                    if blame_contents == '-':
+                        return 'force_ask', f"git blame reading contents from stdin requires confirmation: {' '.join(cmd_tokens)}"
+                    if matches_sensitive_pattern(blame_contents) or is_sensitive_credential_path(blame_contents, cwd):
+                        return 'deny', f"git blame targeting sensitive contents file is forbidden: {blame_contents}"
+                    if not is_path_in_workspaces(blame_contents, workspace_paths, cwd):
+                        return 'force_ask', f"git blame contents file outside workspace requires approval: {blame_contents}"
+
+                # Check positional file operands and pathspecs
+                blame_operands = []
+                if '--' in args:
+                    idx = args.index('--')
+                    blame_operands.extend(args[idx + 1:])
+                    pre_dash = args[1:idx]
+                else:
+                    pre_dash = args[1:]
+                for a in pre_dash:
+                    if not a.startswith('-'):
+                        blame_operands.append(a)
+                for bop in blame_operands:
+                    if matches_sensitive_pattern(bop) or is_sensitive_credential_path(bop, cwd):
+                        return 'deny', f"git blame targeting sensitive file is forbidden: {bop}"
+                    if bop.startswith(('/', '~')) or bop.startswith('..' + os.sep) or bop == '..':
+                        if not is_path_in_workspaces(bop, workspace_paths, cwd):
+                            return 'force_ask', f"git blame operand outside workspace requires approval: {bop}"
+
             is_blob_show = git_sub == 'show' and any(':' in a and not a.startswith(('-', 'http:', 'https:', 'ssh:', 'git:')) for a in args[1:])
-            if not is_blob_show:
-                probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
-                if probe_res == 'sensitive':
-                    return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
-                if probe_res == 'unknown':
-                    return 'force_ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
+            if is_blob_show:
+                for a in args[1:]:
+                    if ':' in a and not a.startswith('-'):
+                        obj_path = a.split(':', 1)[1]
+                        if matches_sensitive_pattern(obj_path) or is_sensitive_credential_path(obj_path, cwd):
+                            return 'deny', f"git show targeting sensitive object is forbidden: {a}"
+                        if obj_path.startswith(('/', '~')) or '..' in obj_path.split('/'):
+                            if not is_path_in_workspaces(obj_path, workspace_paths, cwd):
+                                return 'force_ask', f"git show object path outside workspace requires approval: {a}"
+            else:
+                if git_sub != 'blame':
+                    probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
+                    if probe_res == 'sensitive':
+                        return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+                    if probe_res == 'unknown':
+                        return 'force_ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
 
         # Git cat-file with batch modes, filters, textconv, or sensitive objects
         if git_sub == 'cat-file':
@@ -1561,9 +1717,28 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'commit':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
-            has_msg = any(a in ('-m', '--message', '-F', '--file') or a.startswith(('-m=', '--message=', '-F=', '--file=')) for a in args)
-            if not has_msg:
-                return 'force_ask', f"git commit without inline message invokes editor: {' '.join(cmd_tokens)}"
+            has_inline_msg = any(a in ('-m', '--message') or a.startswith(('-m=', '--message=')) for a in args)
+            commit_file_args = []
+            for i, a in enumerate(args):
+                if a in ('-F', '--file'):
+                    if i + 1 < len(args):
+                        commit_file_args.append(args[i + 1])
+                elif a.startswith(('--file=', '-F=')):
+                    commit_file_args.append(a.split('=', 1)[1])
+                elif a.startswith('-F') and len(a) > 2 and not a.startswith('--'):
+                    commit_file_args.append(a[2:])
+
+            if commit_file_args:
+                for cf in commit_file_args:
+                    if cf == '-':
+                        return 'force_ask', f"git commit reading message from stdin requires confirmation: {' '.join(cmd_tokens)}"
+                    if matches_sensitive_pattern(cf) or is_sensitive_credential_path(cf, cwd):
+                        return 'deny', f"git commit message file targeting sensitive or credential file is forbidden: {cf}"
+                    if not is_path_in_workspaces(cf, workspace_paths, cwd):
+                        return 'force_ask', f"git commit message file outside workspace requires approval: {cf}"
+
+            if not has_inline_msg and not commit_file_args:
+                return 'force_ask', f"git commit without message requires confirmation: {' '.join(cmd_tokens)}"
             has_sign = any(a in ('-S', '--gpg-sign') or a.startswith(('-S', '--gpg-sign=')) for a in args)
             has_no_sign = any(a == '--no-gpg-sign' for a in args)
             if (has_sign or git_has_gpgsign_configured(cwd)) and not has_no_sign:

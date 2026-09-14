@@ -16,7 +16,7 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/scripts/agy-permission-classifier.py",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
