@@ -5467,6 +5467,68 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_log_l_direct['decision'], 'deny', f"Expected deny for git log -L targeting sensitive file, got: {res_log_l_direct}")
         self.assertIn('sensitive', res_log_l_direct['reason'].lower())
 
+        # 43. Ripgrep -z/--search-zip decompressor helper checks
+        res_rg_z = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -z needle archive.gz', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rg_z['decision'], 'force_ask', f"Expected force_ask for rg -z, got: {res_rg_z}")
+        self.assertIn('compressed', res_rg_z['reason'].lower())
+
+        res_rg_search_zip = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg --search-zip needle archive.gz', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rg_search_zip['decision'], 'force_ask', f"Expected force_ask for rg --search-zip, got: {res_rg_search_zip}")
+
+        res_rg_no_zip = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -z --no-search-zip needle README.md', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rg_no_zip['decision'], 'allow', f"Expected allow for rg -z --no-search-zip, got: {res_rg_no_zip}")
+
+        # 44. Go default compiler and tool helper validation
+        fake_gcc = ws_dir / 'gcc'
+        try:
+            fake_gcc.write_text('#!/bin/sh\nexit 0\n')
+            res_go_default_helper = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_default_helper['decision'], 'force_ask', f"Expected force_ask for go build with workspace default compiler helper, got: {res_go_default_helper}")
+            self.assertIn('default cc executable', res_go_default_helper['reason'].lower())
+        finally:
+            fake_gcc.unlink(missing_ok=True)
+
+        # 45. Moving parent directories inspecting arbitrary descendants for security files and credentials
+        bundle_dir = ws_dir / 'bundle'
+        bundle_dir.mkdir(exist_ok=True)
+        nested_scripts = bundle_dir / 'claude' / 'scripts'
+        nested_scripts.mkdir(parents=True, exist_ok=True)
+        (nested_scripts / 'agy-permission-classifier.py').write_text('# guard\n')
+        try:
+            res_mv_bundle_guard = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv bundle retired-bundle', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_mv_bundle_guard['decision'], 'force_ask', f"Expected force_ask for mv directory containing nested classifier guard, got: {res_mv_bundle_guard}")
+            self.assertIn('security configuration', res_mv_bundle_guard['reason'].lower())
+        finally:
+            shutil.rmtree(str(bundle_dir), ignore_errors=True)
+
+        bundle_sec = ws_dir / 'bundle_sec'
+        bundle_sec.mkdir(exist_ok=True)
+        (bundle_sec / '.env').write_text('TOKEN=secret\n')
+        try:
+            res_mv_bundle_cred = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv bundle_sec retired-sec', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_mv_bundle_cred['decision'], 'deny', f"Expected deny for mv directory containing credential file, got: {res_mv_bundle_cred}")
+            self.assertIn('sensitive', res_mv_bundle_cred['reason'].lower())
+        finally:
+            shutil.rmtree(str(bundle_sec), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()

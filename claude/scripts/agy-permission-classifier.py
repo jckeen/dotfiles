@@ -1288,10 +1288,12 @@ def is_security_guard_path(path_str, cwd=None):
     if basename in ('agy-permission-classifier.py', 'agy-inject-handoff.sh'):
         return True
 
-    # Check if target resolves to this running classifier file
+    # Check if target resolves to this running classifier file or contains it
     try:
         self_resolved = str(Path(__file__).resolve())
-        if resolved == self_resolved:
+        if resolved == self_resolved or self_resolved == norm:
+            return True
+        if self_resolved.startswith(resolved + os.sep) or self_resolved.startswith(norm + os.sep):
             return True
     except Exception:
         pass
@@ -1302,6 +1304,8 @@ def is_security_guard_path(path_str, cwd=None):
         d_path = os.path.join(home, agent_dir)
         norm_d = os.path.normpath(d_path)
         if norm == norm_d or norm.startswith(norm_d + os.sep) or resolved == norm_d or resolved.startswith(norm_d + os.sep):
+            return True
+        if norm_d.startswith(norm + os.sep) or norm_d.startswith(resolved + os.sep):
             return True
 
     # Check repository source paths that are symlinked or deployed into active runtime configuration
@@ -1337,17 +1341,73 @@ def is_security_guard_path(path_str, cwd=None):
     # Also check if norm is an existing directory containing security guard files on disk
     try:
         norm_path = Path(norm)
-        if norm_path.is_dir():
+        if norm_path.is_dir() and norm not in ('/', expand_path('~', cwd)) and not norm.startswith(('/usr', '/lib', '/bin', '/etc', '/var', '/proc', '/sys', '/dev')):
             if (norm_path / 'hooks.json').is_file():
                 return True
             if (norm_path / 'agy-permission-classifier.py').is_file():
                 return True
-            if norm_path.name in ('claude', '.claude', 'antigravity', '.gemini'):
-                if (norm_path / 'scripts' / 'agy-permission-classifier.py').is_file() or (norm_path / 'hooks.json').is_file() or (norm_path / 'settings.json').is_file():
-                    return True
+            for root, dirs, files in os.walk(norm):
+                if '.git' in dirs:
+                    dirs.remove('.git')
+                for f in files:
+                    if f in ('agy-permission-classifier.py', 'agy-inject-handoff.sh'):
+                        return True
+                    if f in ('hooks.json', 'settings.json'):
+                        sub_rel = os.path.relpath(os.path.join(root, f), norm).replace('\\', '/')
+                        if any(p in sub_rel.split('/') for p in ('.claude', 'claude', '.gemini', 'antigravity')):
+                            return True
+                for entry in files + dirs:
+                    item_p = os.path.join(root, entry)
+                    if os.path.islink(item_p):
+                        try:
+                            link_target = str(Path(item_p).resolve())
+                            if is_security_guard_path(link_target, cwd):
+                                return True
+                        except Exception:
+                            pass
     except Exception:
         pass
 
+    return False
+
+
+def directory_contains_sensitive_files(dir_path, cwd=None, workspace_paths=None):
+    """Check if an existing directory contains sensitive credential files in any descendants."""
+    if not dir_path or not isinstance(dir_path, str):
+        return False
+    norm = expand_path(dir_path, cwd)
+    try:
+        norm_p = Path(norm)
+        if not norm_p.is_dir():
+            return False
+        if norm in ('/', expand_path('~', cwd)) or norm.startswith(('/usr', '/lib', '/bin', '/etc', '/var', '/proc', '/sys', '/dev')):
+            return False
+        if workspace_paths:
+            if any(norm == expand_path(ws, cwd) for ws in workspace_paths):
+                return False
+        for root, dirs, files in os.walk(norm):
+            if '.git' in dirs:
+                dirs.remove('.git')
+            for f in files:
+                if matches_sensitive_pattern(f):
+                    return True
+                full_f = os.path.join(root, f)
+                if is_sensitive_credential_path(full_f, cwd):
+                    return True
+            for d in list(dirs):
+                if matches_sensitive_pattern(d):
+                    return True
+            for entry in files + dirs:
+                item_p = os.path.join(root, entry)
+                if os.path.islink(item_p):
+                    try:
+                        link_target = str(Path(item_p).resolve())
+                        if is_sensitive_credential_path(link_target, cwd):
+                            return True
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     return False
 
 
@@ -2162,6 +2222,8 @@ def load_ripgrep_config_tokens(args, cwd=None, written_files=None):
                         rg_cfg_tokens.extend(line_s.split())
             if any(tok.startswith(('--pre', '--hostname-bin')) or tok in ('--pre', '--hostname-bin') for tok in rg_cfg_tokens):
                 return 'force_ask', f"rg with RIPGREP_CONFIG_PATH configuring preprocessor or helper program requires confirmation: {rg_cfg}", []
+            if any(tok in ('-z', '--search-zip') or tok.startswith('--search-zip') or (tok.startswith('-') and not tok.startswith('--') and 'z' in tok) for tok in rg_cfg_tokens):
+                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH configuring compressed file search (-z/--search-zip) requires confirmation: {rg_cfg}", []
             if any(tok.startswith(('--hidden', '--no-ignore', '--follow')) or (tok.startswith('-') and not tok.startswith('--') and any(c in tok for c in ('L', 'u'))) for tok in rg_cfg_tokens):
                 return 'ask', f"rg with RIPGREP_CONFIG_PATH configuring hidden files or symlink following requires confirmation: {rg_cfg}", []
             if any(is_credential_env_var(tok) for tok in rg_cfg_tokens):
@@ -4405,7 +4467,20 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if any(a in ('-f', '--follow') or (a.startswith('-') and not a.startswith('--') and 'f' in a) for a in args):
                 return 'ask', f"ag following symlinks (-f/--follow) requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'rg':
-            if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in args):
+            all_rg_tokens = list(rg_cfg_tokens) + list(args)
+            has_zip = False
+            for tok in all_rg_tokens:
+                if tok == '--':
+                    break
+                if tok == '--no-search-zip' or (tok.startswith('--') and '--no-search-zip'.startswith(tok.split('=', 1)[0]) and len(tok.split('=', 1)[0]) >= 6):
+                    has_zip = False
+                elif tok == '-z' or tok == '--search-zip' or (tok.startswith('--') and '--search-zip'.startswith(tok.split('=', 1)[0]) and len(tok.split('=', 1)[0]) >= 5):
+                    has_zip = True
+                elif tok.startswith('-') and not tok.startswith('--') and 'z' in tok:
+                    has_zip = True
+            if has_zip:
+                return 'force_ask', f"rg with compressed file search (-z/--search-zip) invokes external decompressor programs: {' '.join(cmd_tokens)}"
+            if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in all_rg_tokens):
                 return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
         # Check for unexpanded variables
         for a in args:
@@ -4933,8 +5008,16 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     if base_cmd == 'go':
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
-            GO_EXECUTABLE_HELPERS = ('CC', 'CXX', 'FC', 'GCCGO', 'AR', 'NM', 'PKG_CONFIG')
-            for helper_var in GO_EXECUTABLE_HELPERS:
+            GO_EXECUTABLE_HELPERS = {
+                'CC': ('gcc', 'clang'),
+                'CXX': ('g++', 'clang++'),
+                'FC': ('gfortran',),
+                'GCCGO': ('gccgo',),
+                'AR': ('ar',),
+                'NM': ('nm',),
+                'PKG_CONFIG': ('pkg-config',),
+            }
+            for helper_var, default_candidates in GO_EXECUTABLE_HELPERS.items():
                 hval = get_inherited_go_setting(helper_var)
                 if hval and hval.strip():
                     try:
@@ -4963,6 +5046,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         norm_opt = os.path.normpath(expand_path(opt_clean, cwd))
                         if is_path_in_workspaces(norm_opt, workspace_paths, cwd) or any(norm_opt.startswith(p) for p in ('/tmp', '/var/tmp', '/dev/shm')):
                             return 'force_ask', f"go {args[0]} with {helper_var} referencing untrusted or workspace path requires confirmation: {opt}"
+                else:
+                    # When helper is not explicitly set, validate default helper binaries resolved through PATH or workspace
+                    for cand in default_candidates:
+                        cand_local = expand_path(cand, cwd)
+                        if os.path.isfile(cand_local) and not is_trusted_executable_path(cand_local, workspace_paths, cwd, cand):
+                            return 'force_ask', f"go {args[0]} workspace-controlled default {helper_var} executable ({cand}) requires confirmation: {cand_local}"
+                        resolved_cand = shutil.which(cand)
+                        if resolved_cand:
+                            if not is_trusted_executable_path(resolved_cand, workspace_paths, cwd, cand):
+                                return 'force_ask', f"go {args[0]} default {helper_var} ({cand}) resolves to untrusted or workspace path: {resolved_cand}"
+                            if written_files:
+                                norm_cand = os.path.normpath(resolved_cand)
+                                for wf in written_files:
+                                    norm_wf = os.path.normpath(wf)
+                                    if norm_cand == norm_wf or norm_cand.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_cand + os.sep):
+                                        return 'force_ask', f"go {args[0]} default {helper_var} executable ({cand}) modified earlier in command line requires confirmation: {resolved_cand}"
 
             for root_var in ('GOTOOLDIR', 'GOROOT'):
                 rval = get_inherited_go_setting(root_var)
@@ -5311,6 +5410,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'deny', f"{base_cmd} targeting sensitive or system path is forbidden: {p}"
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
+            if directory_contains_sensitive_files(p, cwd, workspace_paths):
+                return 'deny', f"{base_cmd} targeting directory containing sensitive credential files is forbidden: {p}"
 
         if written_files:
             for p in all_paths:
