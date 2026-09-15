@@ -3393,6 +3393,8 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         git_dir = Path(self.test_ws) / 'repo_r38'
         git_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run(['git', 'init', '-b', 'main'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
         (git_dir / 'README.md').write_text('init\n')
         subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
         subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
@@ -3513,6 +3515,107 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [str(git_dir)],
         })
         self.assertEqual(res_remote_token['decision'], 'deny')
+
+    def test_round_39_hardening(self):
+        """Regression tests for Round 39 findings:
+        1. Raw Git blob reads bypass credential protection (git show <blob-hash> -> force_ask)
+        2. Git switch returns before checking post-index-change / fsmonitor
+        3. Bundled git add flags bypass editor / force guards (git add -pe, git add -f)
+        4. Configured signature display (log.showSignature=true) invokes gpg
+        5. Directory scanning inspects node_modules files for sensitive credentials
+        """
+        git_dir = Path(self.test_ws) / 'repo_r39'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('hello\n')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. Raw Git blob read by hash
+        res_hash = subprocess.run(['git', 'rev-parse', 'HEAD:README.md'], cwd=str(git_dir), capture_output=True, text=True, check=True)
+        blob_hash = res_hash.stdout.strip()
+        res_blob = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git show {blob_hash}', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_blob['decision'], 'force_ask')
+        self.assertIn('raw git blob', res_blob['reason'])
+
+        # Git show commit hash is allowed
+        res_commit_hash = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=str(git_dir), capture_output=True, text=True, check=True)
+        commit_hash = res_commit_hash.stdout.strip()
+        res_commit_show = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git show {commit_hash}', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_show['decision'], 'allow')
+
+        # 2. Git switch checks post-index-change and fsmonitor
+        hooks_dir = git_dir / '.git' / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        idx_hook = hooks_dir / 'post-index-change'
+        idx_hook.write_text('#!/bin/sh\nexit 0\n')
+        idx_hook.chmod(0o755)
+        res_switch_hook = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch main', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_switch_hook['decision'], 'force_ask')
+        self.assertIn('active repository hook', res_switch_hook['reason'])
+        idx_hook.unlink()
+
+        subprocess.run(['git', 'config', 'core.fsmonitor', 'true'], cwd=str(git_dir), check=True)
+        res_switch_fsmon = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch main', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_switch_fsmon['decision'], 'force_ask')
+        self.assertIn('core.fsmonitor', res_switch_fsmon['reason'])
+        subprocess.run(['git', 'config', '--unset', 'core.fsmonitor'], cwd=str(git_dir), check=True)
+
+        # 3. Bundled git add flags
+        res_add_pe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add -pe', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_add_pe['decision'], 'force_ask')
+        self.assertIn('editor or interactive option', res_add_pe['reason'])
+
+        res_add_fn = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add -fn .', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_add_fn['decision'], 'force_ask')
+        self.assertIn('force', res_add_fn['reason'])
+
+        # 4. Configured signature display (log.showSignature=true)
+        subprocess.run(['git', 'config', 'log.showSignature', 'true'], cwd=str(git_dir), check=True)
+        res_log_sig = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -n 1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_log_sig['decision'], 'force_ask')
+        self.assertIn('signature display', res_log_sig['reason'])
+
+        res_log_no_sig = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -n 1 --no-show-signature', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_log_no_sig['decision'], 'allow')
+        subprocess.run(['git', 'config', '--unset', 'log.showSignature'], cwd=str(git_dir), check=True)
+
+        # 5. Directory scanning inspects node_modules for sensitive files
+        nm_dir = git_dir / 'node_modules' / 'some-pkg'
+        nm_dir.mkdir(parents=True, exist_ok=True)
+        (nm_dir / '.env').write_text('SECRET=123\n')
+        res_scan_nm = self.run_classifier({
+            'toolCall': {'name': 'grep_search', 'args': {'SearchPath': str(git_dir), 'Query': 'hello'}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_scan_nm['decision'], 'force_ask')
+        self.assertIn('sensitive descendant file', res_scan_nm['reason'])
 
 
 if __name__ == '__main__':

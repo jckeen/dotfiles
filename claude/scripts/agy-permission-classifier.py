@@ -441,11 +441,9 @@ def check_directory_descendants(target_dir, cwd=None):
             if time.monotonic() - start_time > MAX_ELAPSED or inspected_count > MAX_ENTRIES:
                 truncated = True
                 break
-            # Prune VCS and dependency caches
+            # Prune VCS directory
             if '.git' in dirs:
                 dirs.remove('.git')
-            if 'node_modules' in dirs:
-                dirs.remove('node_modules')
 
             # Depth bound: stop recursing beyond MAX_DEPTH
             try:
@@ -588,6 +586,14 @@ def git_has_filter_configured(cwd=None):
 def git_has_gpgsign_configured(cwd=None):
     """Check if git repository has commit.gpgSign configured to sign commits."""
     res = git_run_probe(['config', '--bool', 'commit.gpgsign'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip() == 'true':
+        return True
+    return False
+
+
+def git_has_show_signature_configured(cwd=None):
+    """Check if git repository has log.showSignature configured to true."""
+    res = git_run_probe(['config', '--bool', 'log.showsignature'], cwd=cwd)
     if res and res.returncode == 0 and res.stdout.strip() == 'true':
         return True
     return False
@@ -892,6 +898,11 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
         if git_sub == 'diff':
             cmd = ['git', 'diff', '--name-only'] + [a for a in safe_args if a != '--name-only']
         elif git_sub == 'show':
+            for a in safe_args:
+                if not a.startswith('-') and ':' not in a:
+                    res_t = git_run_probe(['cat-file', '-t', a], cwd=effective_cwd)
+                    if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
+                        return 'unknown'
             cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub in ('log', 'whatchanged') and any(a in ('-p', '-u', '--patch', '--stat', '--numstat', '--shortstat') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('p', 'u'))) for a in args):
             cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
@@ -1986,8 +1997,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                             res_remote = git_run_probe(['for-each-ref', '--format=%(refname)', f'refs/remotes/*/{target_branch}'], cwd=cwd)
                             if res_remote and res_remote.returncode == 0 and res_remote.stdout.strip():
                                 return 'force_ask', f"git switch creates local tracking branch from remote for '{target_branch}': {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('post-checkout',)):
-                return 'force_ask', f"git switch with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction')):
+                return 'force_ask', f"git switch with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_fsmonitor_configured(cwd):
+                return 'force_ask', f"git switch with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git switch with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
@@ -2051,7 +2064,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
             return 'allow', 'Safe git remote query'
 
         # Git commands that inspect or refresh the index/working tree execute core.fsmonitor if configured
-        if git_sub in {'status', 'diff', 'ls-files', 'stash', 'add', 'commit', 'checkout', 'restore', 'reset', 'worktree', 'describe'}:
+        if git_sub in {'status', 'diff', 'ls-files', 'stash', 'add', 'commit', 'checkout', 'restore', 'reset', 'worktree', 'describe', 'switch'}:
             if git_has_fsmonitor_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -2153,9 +2166,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
 
         # Git show, log, blame, etc. run configured textconv drivers or signature verification by default
         if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch'}:
+            has_no_sig = any(a == '--no-show-signature' for a in args)
             has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
                           (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
-            if has_sig:
+            if has_sig or (not has_no_sig and git_sub in {'show', 'log', 'whatchanged'} and git_has_show_signature_configured(cwd)):
                 return 'force_ask', f"git {git_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
             if git_has_gpg_program_configured(cwd) and any(a.startswith(('--format=', '--pretty=')) for a in args):
                 return 'force_ask', f"git {git_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
@@ -2197,11 +2211,29 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                         if not is_path_in_workspaces(bop, workspace_paths, cwd):
                             return 'force_ask', f"git blame operand outside workspace requires approval: {bop}"
 
+            if git_sub == 'show':
+                show_objects = []
+                if '--' in args:
+                    idx = args.index('--')
+                    show_pre_dash = args[1:idx]
+                else:
+                    show_pre_dash = args[1:]
+                for a in show_pre_dash:
+                    if not a.startswith('-'):
+                        show_objects.append(a)
+                for obj in show_objects:
+                    if ':' not in obj:
+                        res_t = git_run_probe(['cat-file', '-t', obj], cwd=cwd)
+                        if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
+                            return 'force_ask', f"git show reading raw git blob by hash can disclose sensitive repository history: {obj}"
+
             is_blob_show = git_sub == 'show' and any(':' in a and not a.startswith(('-', 'http:', 'https:', 'ssh:', 'git:')) for a in args[1:])
             if is_blob_show:
                 for a in args[1:]:
                     if ':' in a and not a.startswith('-'):
-                        obj_path = a.split(':', 1)[1]
+                        obj_path = a.rsplit(':', 1)[1]
+                        if obj_path.startswith(('0:', '1:', '2:', '3:')):
+                            obj_path = obj_path[2:]
                         if matches_sensitive_pattern(obj_path) or is_sensitive_credential_path(obj_path, cwd):
                             return 'deny', f"git show targeting sensitive object is forbidden: {a}"
                         if obj_path.startswith(('/', '~')) or '..' in obj_path.split('/'):
@@ -2262,8 +2294,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git add in directory outside workspace requires confirmation: {cwd}"
             def is_git_add_interactive_opt(opt):
-                if opt in ('-e', '-p', '-i'):
-                    return True
+                if not opt:
+                    return False
+                if opt.startswith('-') and not opt.startswith('--') and opt != '-':
+                    if any(c in opt for c in ('e', 'p', 'i')):
+                        return True
                 if opt.startswith('--'):
                     clean_opt = opt.split('=', 1)[0]
                     for dangerous_long in ('--edit', '--interactive', '--patch'):
@@ -2273,7 +2308,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
 
             if any(is_git_add_interactive_opt(a) for a in args):
                 return 'force_ask', f"git add with editor or interactive option requires confirmation: {' '.join(cmd_tokens)}"
-            if any(a in ('-f', '--force') for a in args):
+            if any(a == '--force' or a.startswith('--force') or (a.startswith('-') and not a.startswith('--') and a != '-' and 'f' in a) for a in args):
                 return 'force_ask', f"git add with --force can stage ignored sensitive files: {' '.join(cmd_tokens)}"
             if git_has_active_hooks(cwd, ('post-index-change',)):
                 return 'force_ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
