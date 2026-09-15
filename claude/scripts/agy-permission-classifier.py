@@ -1385,6 +1385,8 @@ DEV_TOOL_OUTPUT_FLAGS = (
     '--junitxml', '--junit-xml', '--result-log',
     '--log-file', '--html-report', '--xml-report', '--txt-report',
     '--cobertura-xml-report', '--linecount-report', '--linecoverage-report',
+    '-asmhdr', '-linkobj', '-dclpacks',
+    '-traceprofile', '-blockprofile', '-memprofile', '-mutexprofile', '-cpuprofile',
 )
 
 
@@ -1582,8 +1584,8 @@ def split_unquoted_shell_commands(cmd_str):
             i += 1
             continue
 
-        # Line continuation: \\ followed immediately by \\n
-        if c == '\\' and i + 1 < n and cmd_str[i + 1] == '\n':
+        # Line continuation: \ followed immediately by \n (outside single quotes)
+        if not in_single_quote and c == '\\' and i + 1 < n and cmd_str[i + 1] == '\n':
             i += 2
             continue
 
@@ -4982,10 +4984,32 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if args[0] == 'test':
                 return 'force_ask', f"go test executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
             combined_go_args = list(args[1:]) + goflags_tokens
-            in_check = check_dev_tool_inputs(combined_go_args, workspace_paths, cwd, f"go {args[0]}")
+            nested_go_tool_args = []
+            idx_go = 0
+            while idx_go < len(combined_go_args):
+                ga = combined_go_args[idx_go]
+                g_val = None
+                if ga in ('-gcflags', '--gcflags', '-asmflags', '--asmflags'):
+                    if idx_go + 1 < len(combined_go_args):
+                        g_val = combined_go_args[idx_go + 1]
+                        idx_go += 1
+                elif ga.startswith(('-gcflags=', '--gcflags=', '-asmflags=', '--asmflags=')):
+                    g_val = ga.split('=', 1)[1]
+                if g_val is not None:
+                    if not g_val.startswith('-') and '=' in g_val:
+                        g_val = g_val.split('=', 1)[1]
+                    try:
+                        g_tokens = shlex.split(g_val)
+                    except Exception:
+                        g_tokens = g_val.split()
+                    nested_go_tool_args.extend(g_tokens)
+                idx_go += 1
+
+            all_go_check_args = combined_go_args + nested_go_tool_args
+            in_check = check_dev_tool_inputs(all_go_check_args, workspace_paths, cwd, f"go {args[0]}")
             if in_check:
                 return in_check
-            out_check = check_dev_tool_output(combined_go_args, workspace_paths, cwd, f"go {args[0]}")
+            out_check = check_dev_tool_output(all_go_check_args, workspace_paths, cwd, f"go {args[0]}")
             if out_check:
                 return out_check
             return 'allow', f"Safe Go static tool: go {args[0]}"

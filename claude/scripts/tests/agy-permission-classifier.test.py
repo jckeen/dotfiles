@@ -5374,6 +5374,41 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_wc_short['decision'], 'deny', f"Expected deny for wc --files= targeting sensitive path, got: {res_wc_short}")
         self.assertIn('sensitive', res_wc_short['reason'].lower())
 
+        # 38. Preserve backslash-newline inside single quotes
+        outside_dir = tempfile.TemporaryDirectory()
+        try:
+            victim = Path(outside_dir.name) / 'victim.txt'
+            victim.write_text('secret_data\n')
+            symlink_bsnl = ws_dir / 'a\\\nb'
+            try:
+                symlink_bsnl.symlink_to(victim)
+            except OSError:
+                pass
+            (ws_dir / 'ab').write_text('benign\n')
+            res_bsnl = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cat 'a\\\nb'", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_bsnl['decision'], 'ask', f"Expected ask for cat with backslash-newline symlink outside workspace, got: {res_bsnl}")
+            self.assertIn('outside workspace', res_bsnl['reason'].lower())
+        finally:
+            outside_dir.cleanup()
+
+        # 39. Validate compiler flags in Go builds
+        res_go_gcflags = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build -gcflags=-asmhdr=/outside/victim .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_go_gcflags['decision'], 'force_ask', f"Expected force_ask for go build with -asmhdr targeting outside workspace, got: {res_go_gcflags}")
+        self.assertIn('outside workspace', res_go_gcflags['reason'].lower())
+
+        res_go_gcflags_guard = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build -gcflags=all=-asmhdr=claude/scripts/agy-permission-classifier.py .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_go_gcflags_guard['decision'], 'force_ask', f"Expected force_ask for go build with -asmhdr targeting security guard, got: {res_go_gcflags_guard}")
+        self.assertIn('security configuration', res_go_gcflags_guard['reason'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()
