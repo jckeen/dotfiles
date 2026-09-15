@@ -63,6 +63,7 @@ for a in "$@"; do
   [ "$prev" = "--log-file" ] && [ -f "$AGY_FAKE_DIR/log" ] && cat "$AGY_FAKE_DIR/log" > "$a"
   prev="$a"
 done
+[ -f "$AGY_FAKE_DIR/stderr" ] && cat "$AGY_FAKE_DIR/stderr" >&2
 cat "$AGY_FAKE_DIR/output"
 EOF
 chmod +x "$SHIM_DIR/agy"
@@ -166,6 +167,78 @@ new_repo
 echo "change" >> "$R/code.txt"
 printf -- '- [P3] minor nit — code.txt:1\nthis is really a [P1] in disguise\n' > "$AGY_FAKE_DIR/output"
 check "prose [P1] alongside a valid P3 line blocks" 2 "Stray [P#] token" --uncommitted
+rm -rf "$R"
+
+# ── agy print-timeout expiry: partial output is never a verdict ────────
+# agy 1.2.3 exits 0 on --print-timeout expiry and prints
+# "[agy] print timeout after <d> with turn in progress; returning partial
+# output" on stderr, which the gate merges into the verdict file. A truncated
+# finding list must not ride the P3-only pass path.
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P3] nit — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr"
+check "expired print timeout with partial P3 output degrades open" 0 "output is partial" --uncommitted
+assert "expired print timeout mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+check "expired print timeout fails closed with --require" 3 "output is partial" --uncommitted --require
+assert "agy print-timeout pinned to the gate ceiling" "grep -qx -- '--print-timeout' '$AGY_FAKE_DIR/argv' && grep -qx -- '360s' '$AGY_FAKE_DIR/argv'"
+rm -rf "$R"
+
+# The guard reads agy's stderr only: a reviewed diff steering the model into
+# printing the expiry note on stdout must not reach the degrade-open path.
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P1] real finding — code.txt:1' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/output"
+check "expiry note imitated on stdout cannot degrade past a blocking finding" 2 "BLOCKING findings" --uncommitted
+rm -rf "$R"
+
+# A benign stderr diagnostic must not defeat a clean final-line verdict, and
+# empty stdout still reaches the canary path even when stderr has content.
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' 'W0915 some benign agy warning' > "$AGY_FAKE_DIR/stderr"
+check "benign stderr diagnostic does not block a clean verdict" 0 "LGTB verdict" --uncommitted
+rm -rf "$R"
+new_repo
+echo "change" >> "$R/code.txt"
+: > "$AGY_FAKE_DIR/output"
+printf '%s\n' 'E0915 something failed' > "$AGY_FAKE_DIR/stderr"
+check "empty stdout with stderr content still degrades, never passes" 0 "canary failed" --uncommitted
+assert "empty stdout with stderr content mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -rf "$R"
+
+# Leading zeros are decimal seconds, not octal.
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+ANTIGRAVITY_GATE_TIMEOUT=090 check "leading-zero ANTIGRAVITY_GATE_TIMEOUT is decimal" 0 "LGTB verdict" --uncommitted
+rm -rf "$R"
+
+# The ceiling is shell arithmetic and a Go duration; suffixed values fail closed.
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+ANTIGRAVITY_GATE_TIMEOUT=5m check "non-integer ANTIGRAVITY_GATE_TIMEOUT fails closed" 2 "integer number of seconds" --uncommitted
+rm -rf "$R"
+
+# ── large diffs: the empty-diff check must stay linear (#405 sibling) ──
+# Bash pattern substitution over a multi-megabyte diff spun for 30+ minutes
+# at 100% CPU; the check now runs in Python. Bound the run so a regression
+# fails loudly instead of hanging the suite.
+new_repo
+python3 - "$R/big.txt" <<'PYBIG'
+import sys
+with open(sys.argv[1], 'w') as f:
+    for i in range(30000):
+        f.write(f'line {i} ' + 'x' * 60 + '\n')
+PYBIG
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '#!/usr/bin/env bash\nexec timeout 120 "%s" "$@"\n' "$GATE" > "$SHIM_DIR/gate-bounded"
+chmod +x "$SHIM_DIR/gate-bounded"
+GATE_REAL="$GATE"; GATE="$SHIM_DIR/gate-bounded"
+ANTIGRAVITY_GATE_MAX_LINES=40000 check "30k-line diff completes within the bound" 0 "LGTB verdict" --uncommitted
+GATE="$GATE_REAL"
 rm -rf "$R"
 
 # ── #205: post-dispatch model-pin verification ────────────────────────
