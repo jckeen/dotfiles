@@ -1764,12 +1764,14 @@ def split_unquoted_shell_commands(cmd_str):
     i = 0
     n = len(cmd_str)
     expect_command = False
+    at_word_boundary = True
 
     while i < n:
         c = cmd_str[i]
         if escaped:
             current_chars.append(c)
             escaped = False
+            at_word_boundary = False
             i += 1
             continue
 
@@ -1781,15 +1783,18 @@ def split_unquoted_shell_commands(cmd_str):
         if c == '\\':
             if in_single_quote:
                 current_chars.append(c)
+                at_word_boundary = False
             elif in_double_quote:
                 if i + 1 < n and cmd_str[i + 1] in ('"', '\\', '$', '`', '\n'):
                     escaped = True
                     current_chars.append(c)
                 else:
                     current_chars.append(c)
+                at_word_boundary = False
             else:
                 escaped = True
                 current_chars.append(c)
+                at_word_boundary = False
             i += 1
             continue
 
@@ -1797,6 +1802,7 @@ def split_unquoted_shell_commands(cmd_str):
             if not in_double_quote:
                 in_single_quote = not in_single_quote
             current_chars.append(c)
+            at_word_boundary = False
             i += 1
             continue
 
@@ -1804,12 +1810,13 @@ def split_unquoted_shell_commands(cmd_str):
             if not in_single_quote:
                 in_double_quote = not in_double_quote
             current_chars.append(c)
+            at_word_boundary = False
             i += 1
             continue
 
         if not in_single_quote and not in_double_quote:
-            # Comment check: unquoted # preceded by start of line/command or whitespace/separator
-            if c == '#' and (i == 0 or cmd_str[i - 1].isspace() or cmd_str[i - 1] in (';', '&', '|')):
+            # Comment check: unquoted # at token beginning (start of command, or after unquoted whitespace/metacharacter)
+            if c == '#' and at_word_boundary:
                 while i < n and cmd_str[i] != '\n':
                     i += 1
                 continue
@@ -1827,16 +1834,19 @@ def split_unquoted_shell_commands(cmd_str):
                     pipeline_links.append((len(subcommands) - 1, '|&'))
                 current_chars = []
                 expect_command = True
+                at_word_boundary = True
                 i += 2
                 continue
 
             # Redirections with &: &>, &>>, >&, <&
             if two in ('&>',):
                 current_chars.append(two)
+                at_word_boundary = True
                 i += 2
                 continue
             if i > 0 and cmd_str[i - 1] in ('>', '<') and c == '&':
                 current_chars.append(c)
+                at_word_boundary = True
                 i += 1
                 continue
 
@@ -1849,11 +1859,20 @@ def split_unquoted_shell_commands(cmd_str):
                     if c == '|':
                         pipeline_links.append((len(subcommands) - 1, '|'))
                 current_chars = []
-                expect_command = (c in ('|',))
+                if c != '\n':
+                    expect_command = (c in ('|',))
+                at_word_boundary = True
+                i += 1
+                continue
+
+            if c.isspace() or c in ('<', '>', '(', ')'):
+                current_chars.append(c)
+                at_word_boundary = True
                 i += 1
                 continue
 
         current_chars.append(c)
+        at_word_boundary = False
         i += 1
 
     rem = ''.join(current_chars).strip()

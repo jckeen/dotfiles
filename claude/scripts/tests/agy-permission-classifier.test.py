@@ -5776,6 +5776,27 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             shutil.rmtree(str(cycle_dir), ignore_errors=True)
 
+        # 52. Escaped separators before # do not start comments
+        res_esc_semi = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r'echo \;#; sudo id', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_esc_semi['decision'], 'deny', f"Expected deny for echo \\;#; sudo id, got: {res_esc_semi}")
+        self.assertIn('sudo', res_esc_semi['reason'].lower())
+
+        res_unesc_semi = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r'echo \\;#; sudo id', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_unesc_semi['decision'], 'allow', f"Expected allow for unescaped semicolon before comment, got: {res_unesc_semi}")
+
+        res_esc_space = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r'echo \ #; sudo id', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_esc_space['decision'], 'deny', f"Expected deny for echo \\ #; sudo id, got: {res_esc_space}")
+        self.assertIn('sudo', res_esc_space['reason'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()
