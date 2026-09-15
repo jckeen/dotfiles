@@ -2350,6 +2350,10 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertTrue(len(pre_tool_hooks) > 0)
         hook_timeout = pre_tool_hooks[0]['hooks'][0]['timeout']
         self.assertGreaterEqual(hook_timeout, 15)
+        matcher = pre_tool_hooks[0]['matcher']
+        self.assertIn('send_input', matcher)
+        self.assertIn('manage_task', matcher)
+        self.assertIn('list_dir', matcher)
 
     def test_round_29_hardening(self):
         """Regression tests for Round 29 findings:
@@ -3118,6 +3122,105 @@ class TestAgyPermissionClassifier(unittest.TestCase):
 
         (git_dir / '.envrc').unlink(missing_ok=True)
         (git_dir / '.envrc.example').unlink(missing_ok=True)
+
+        # 18. Ripgrep --hostname-bin helper requires confirmation
+        payload_rg_host = {
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg --hostname-bin=./payload pattern README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        }
+        res = self.run_classifier(payload_rg_host)
+        self.assertEqual(res['decision'], 'force_ask')
+
+        # 19. Sort --files0-from validates referenced entries
+        (git_dir / 'sort_list_bad.txt').write_bytes(b'/proc/self/environ\0')
+        (git_dir / 'sort_list_good.txt').write_bytes(b'README.md\0')
+        res_sort_bad = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort --files0-from=sort_list_bad.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_sort_bad['decision'], 'deny')
+
+        res_sort_good = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort --files0-from=sort_list_good.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_sort_good['decision'], 'allow')
+
+        # 20. WC --files0-from validates referenced entries
+        res_wc_bad = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'wc --files0-from=sort_list_bad.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wc_bad['decision'], 'deny')
+
+        res_wc_good = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'wc --files0-from=sort_list_good.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wc_good['decision'], 'allow')
+
+        (git_dir / 'sort_list_bad.txt').unlink(missing_ok=True)
+        (git_dir / 'sort_list_good.txt').unlink(missing_ok=True)
+
+        # 21. User-writable executable directories cannot masquerade as system inspection binaries
+        res_attacker_ls = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': '~/.local/share/attacker/ls', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_attacker_ls['decision'], 'force_ask')
+
+        res_local_bin_ls = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': '~/.local/bin/ls', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_local_bin_ls['decision'], 'force_ask')
+
+        # 22. Git configuration overrides require confirmation
+        for cfg_cmd in (
+            'git -c http.sslVerify=false fetch origin',
+            'git --config-env=http.extraHeader=AUTH_HEADER fetch origin',
+        ):
+            res_cfg = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': cfg_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            })
+            self.assertEqual(res_cfg['decision'], 'force_ask', f"Expected {cfg_cmd} to require force_ask, got: {res_cfg}")
+
+        # 23. rg --files inspects its search roots
+        res_rg_secrets = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg --files /run/secrets', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_rg_secrets['decision'], 'deny')
+
+        res_rg_files_ws = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg --files .', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_rg_files_ws['decision'], 'allow')
+
+        # 24. System-path deletion is denied
+        for rm_sys in ('rm -f /etc/passwd', 'rm -rf /etc', 'rm /var/log/syslog'):
+            res_rm = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': rm_sys, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            })
+            self.assertEqual(res_rm['decision'], 'deny', f"Expected {rm_sys} to be denied, got: {res_rm}")
+
+        # 25. Git repository queries outside declared workspace require confirmation
+        outside_dir = Path(self.test_ws).parent
+        for git_out_cmd in ('git shortlog', 'git status', 'git log'):
+            res_git_out = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': git_out_cmd, 'Cwd': str(outside_dir)}},
+                'workspacePaths': [str(git_dir)],
+            })
+            self.assertEqual(res_git_out['decision'], 'force_ask', f"Expected {git_out_cmd} outside workspace to require force_ask, got: {res_git_out}")
+
+        res_git_ver = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git version', 'Cwd': str(outside_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_git_ver['decision'], 'allow')
 
 
 if __name__ == '__main__':

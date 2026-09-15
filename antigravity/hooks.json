@@ -11,7 +11,7 @@
   "permission-classifier": {
     "PreToolUse": [
       {
-        "matcher": "run_command|write_to_file|replace_file_content|multi_replace_file_content|view_file|grep_search|find_by_name",
+        "matcher": "run_command|write_to_file|replace_file_content|multi_replace_file_content|view_file|grep_search|find_by_name|list_dir|send_input|manage_task",
         "hooks": [
           {
             "type": "command",

@@ -342,6 +342,33 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
     return False
 
 
+def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd):
+    """Validate a --files0-from list file and all its NUL-delimited entries."""
+    if not files0_from or not isinstance(files0_from, str):
+        return None
+    if files0_from == '-':
+        return 'ask', f"{cmd_name} reading file list from stdin requires confirmation: {' '.join(cmd_tokens)}"
+    if is_sensitive_credential_path(files0_from, cwd) or matches_sensitive_pattern(files0_from):
+        return 'deny', f"{cmd_name} reading file list from sensitive path is forbidden: {files0_from}"
+    if not is_path_in_workspaces(files0_from, workspace_paths, cwd):
+        return 'ask', f"{cmd_name} reading file list outside workspace requires approval: {files0_from}"
+    f0_resolved = expand_path(files0_from, cwd)
+    if not os.path.isfile(f0_resolved):
+        return 'force_ask', f"{cmd_name} file list does not exist: {files0_from}"
+    try:
+        content = Path(f0_resolved).read_bytes()
+        for entry in content.split(b'\0'):
+            p = entry.decode(errors='replace').strip()
+            if p:
+                if is_sensitive_credential_path(p, cwd) or matches_sensitive_pattern(p):
+                    return 'deny', f"{cmd_name} file list references sensitive path: {p}"
+                if not is_path_in_workspaces(p, workspace_paths, cwd):
+                    return 'ask', f"{cmd_name} file list references path outside workspace: {p}"
+    except Exception:
+        return 'force_ask', f"{cmd_name} unable to verify file list: {files0_from}"
+    return None
+
+
 def check_directory_descendants(target_dir, cwd=None):
     """Inspect directory for sensitive descendant files or sensitive symlinks.
 
@@ -718,24 +745,19 @@ def is_trusted_executable_path(exe_path, workspace_paths, cwd):
     if exe_dir in SYSTEM_BIN_DIRS or exe_dir in {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin', '/snap/bin', '/usr/games'}:
         return True
     home = os.path.expanduser('~')
-    trusted_home_dirs = (
+    trusted_exact_bin_dirs = {
         os.path.join(home, '.local', 'bin'),
         os.path.join(home, '.cargo', 'bin'),
         os.path.join(home, 'go', 'bin'),
-        os.path.join(home, '.local', 'share'),
         os.path.join(home, '.npm-global', 'bin'),
-        os.path.join(home, '.nvm'),
-        os.path.join(home, '.fnm'),
-        os.path.join(home, '.asdf'),
-        os.path.join(home, '.pyenv'),
-        os.path.join(home, '.codex'),
-        os.path.join(home, '.claude'),
-        os.path.join(home, '.gemini'),
-    )
-    for td in trusted_home_dirs:
-        if exe_dir == td or norm_exe.startswith(td + os.sep):
+    }
+    if exe_dir in trusted_exact_bin_dirs:
+        return True
+    for vm in ('.nvm', '.fnm', '.asdf', '.pyenv'):
+        vm_dir = os.path.join(home, vm)
+        if norm_exe.startswith(vm_dir + os.sep) and (os.path.basename(exe_dir) in ('bin', 'shims')):
             return True
-    if norm_exe.startswith('/opt/') or norm_exe.startswith(os.path.join(os.sep + 'home', 'linuxbrew', '')):
+    if norm_exe.startswith(os.path.join(os.sep + 'home', 'linuxbrew', '')) and os.path.basename(exe_dir) == 'bin':
         return True
     return False
 
@@ -1258,12 +1280,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         resolved_exe = expand_path(raw_cmd, cwd)
         if not is_trusted_executable_path(resolved_exe, workspace_paths, cwd):
             return 'force_ask', f"Running non-system executable requires confirmation: {raw_cmd}"
-        base_cmd = os.path.basename(resolved_exe)
+        exe_dir = os.path.dirname(resolved_exe)
+        cand_base = os.path.basename(resolved_exe)
+        if cand_base in SAFE_INSPECTION_COMMANDS and exe_dir not in SYSTEM_BIN_DIRS and exe_dir not in {'/bin', '/usr/bin', '/usr/local/bin'}:
+            return 'force_ask', f"Running non-system inspection binary requires confirmation: {raw_cmd}"
+        base_cmd = cand_base
     else:
         resolved_path = shutil.which(raw_cmd)
         if resolved_path:
             if not is_trusted_executable_path(resolved_path, workspace_paths, cwd):
                 return 'force_ask', f"Running untrusted or shadowed executable requires confirmation: {raw_cmd} ({resolved_path})"
+            exe_dir = os.path.dirname(resolved_path)
+            if raw_cmd in SAFE_INSPECTION_COMMANDS and exe_dir not in SYSTEM_BIN_DIRS and exe_dir not in {'/bin', '/usr/bin', '/usr/local/bin'}:
+                return 'force_ask', f"Inspection command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
     # Check for sensitive files or credentials being targeted in arguments
@@ -1334,6 +1363,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             for a in args
         )
         targets = [a for a in args if not a.startswith('-')]
+        for t in targets:
+            if is_system_write_path(t, cwd):
+                return 'deny', f"Deletion targeting system path is forbidden: rm {t}"
+            if is_sensitive_credential_path(t, cwd) or matches_sensitive_pattern(t):
+                return 'deny', f"Deletion targeting sensitive credentials or keys is forbidden: rm {t}"
         if is_recursive or is_dir:
             for t in targets:
                 t_norm = expand_path(t, cwd)
@@ -1407,6 +1441,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         cwd = effective_cwd
         sub_args = args[git_sub_idx:]
 
+        # Git repository queries outside declared workspaces require confirmation
+        if git_sub not in {'version', 'check-ref-format'} and not is_path_in_workspaces(cwd, workspace_paths, cwd):
+            return 'force_ask', f"git {git_sub} in directory outside workspace requires confirmation: {cwd}"
+
         # Check for git output options across all git commands (including GNU option abbreviations)
         git_out = None
         for i, a in enumerate(args):
@@ -1429,7 +1467,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if not is_path_in_workspaces(git_out, workspace_paths, cwd):
                 return 'force_ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
 
-        # Check for config overrides via -c or --config-env setting transport, helper, or filter programs
+        # Check for config overrides via -c or --config-env
         for i, a in enumerate(args):
             cfg_opt = None
             if a in ('-c', '--config-env') and i + 1 < len(args):
@@ -1438,10 +1476,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 cfg_opt = a.split('=', 1)[1]
             elif a.startswith('-c') and len(a) > 2 and not a.startswith('--'):
                 cfg_opt = a[2:].lstrip('=')
-            if cfg_opt:
-                cfg_key = cfg_opt.split('=', 1)[0].strip().lower()
-                if re.match(r'^(core\.(sshcommand|askpass|pager|fsmonitor|hookspath|editor)|sequence\.editor|credential|remote\..*\.(vcs|uploadpack|receivepack|proxy)|http\..*proxy|diff\..*\.(command|textconv)|filter\..*\.(clean|smudge|process)|pager(\..*)?|merge\..*\.driver|protocol\..*\.allow|alias\..*|interactive\.difffilter|include(if)?\..*)', cfg_key):
-                    return 'force_ask', f"Git command with configuration override requires confirmation: {a} {cfg_opt}"
+            if cfg_opt is not None or a in ('-c', '--config-env') or a.startswith(('-c', '--config-env=')):
+                return 'force_ask', f"Git command with configuration override (-c/--config-env) requires confirmation: {' '.join(cmd_tokens)}"
 
         # External diff/textconv drivers can execute arbitrary commands configured in gitconfig/attributes
         for a in args:
@@ -2178,6 +2214,26 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     elif not a.startswith('-') and not a.startswith('+'):
                         file_operands.append(a)
                     i += 1
+            elif base_cmd == 'wc':
+                files0_from = None
+                i = 0
+                while i < len(args):
+                    a = args[i]
+                    if a == '--files0-from' and i + 1 < len(args):
+                        files0_from = args[i + 1]
+                        i += 2
+                        continue
+                    elif a.startswith('--files0-from='):
+                        files0_from = a.split('=', 1)[1]
+                        i += 1
+                        continue
+                    elif not a.startswith('-'):
+                        file_operands.append(a)
+                    i += 1
+                if files0_from:
+                    f0_verdict = validate_files0_from(files0_from, 'wc', cmd_tokens, workspace_paths, cwd)
+                    if f0_verdict:
+                        return f0_verdict
             else:
                 INSPECTION_OPTS_WITH_ARG = {
                     'head': {'-n', '--lines', '-c', '--bytes'},
@@ -2262,8 +2318,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if any(a in ('-f', '--follow') or (a.startswith('-') and not a.startswith('--') and 'f' in a) for a in args):
                 return 'ask', f"ag following symlinks (-f/--follow) requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'rg':
-            if any(a.startswith('--pre') for a in args):
-                return 'force_ask', f"rg with --pre option requires confirmation: {' '.join(cmd_tokens)}"
+            if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in args):
+                return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
         # Check for unexpanded variables
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
@@ -2272,7 +2328,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in args):
             return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         positionals = [a for a in args if not a.startswith('-')]
-        has_pattern_flag = any(a == '-e' or a.startswith('-e') for a in args)
+        has_pattern_flag = any(
+            a in ('-e', '--regexp', '-f', '--file', '--files') or
+            a.startswith(('-e', '--regexp=', '-f=', '--file=', '--files'))
+            for a in args
+        )
         search_paths = positionals if has_pattern_flag else positionals[1:]
         if not search_paths:
             search_paths = [cwd]
@@ -2514,12 +2574,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'ask', f"sort temporary directory outside workspace requires approval: {temp_dir}"
 
         if files0_from:
-            if files0_from == '-':
-                return 'ask', f"sort reading file list from stdin requires confirmation: {' '.join(cmd_tokens)}"
-            if is_sensitive_credential_path(files0_from, cwd):
-                return 'deny', f"sort reading file list from sensitive path is forbidden: {files0_from}"
-            if not is_path_in_workspaces(files0_from, workspace_paths, cwd):
-                return 'ask', f"sort reading file list outside workspace requires approval: {files0_from}"
+            f0_verdict = validate_files0_from(files0_from, 'sort', cmd_tokens, workspace_paths, cwd)
+            if f0_verdict:
+                return f0_verdict
 
         for inf in input_files:
             if inf == '-':
