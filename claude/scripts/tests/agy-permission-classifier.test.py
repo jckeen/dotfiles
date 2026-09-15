@@ -5985,7 +5985,28 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_grep_exp['decision'], 'ask', f"Expected ask for grep with shell expansion in option flag, got: {res_grep_exp}")
 
-        # d) Git probes in repository with submodule having core.fsmonitor configured
+        # d) Shell expansion in sort options
+        res_sort_exp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort --${AGY_REVIEW_UNSET:-compress-program}=sh input.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sort_exp['decision'], 'ask', f"Expected ask for sort with shell expansion in option, got: {res_sort_exp}")
+
+        # e) Shell expansion in go options
+        res_go_exp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go vet -${AGY_REVIEW_UNSET:-toolexec}=evil .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_go_exp['decision'], 'ask', f"Expected ask for go with shell expansion in option, got: {res_go_exp}")
+
+        # f) Shell expansion in cargo options
+        res_cargo_exp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt --${AGY_REVIEW_UNSET:-config}="unstable_features=true"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cargo_exp['decision'], 'ask', f"Expected ask for cargo with shell expansion in option, got: {res_cargo_exp}")
+
+        # g) Git probes in repository with submodule having core.fsmonitor configured
         submod_parent = ws_dir / 'submod_parent'
         submod_parent.mkdir(parents=True, exist_ok=True)
         try:

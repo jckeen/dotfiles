@@ -809,10 +809,10 @@ def git_run_probe(args, cwd=None, timeout=1):
         return _GIT_PROBE_CACHE[cache_key]
     try:
         probe_cmd = [git_bin]
-        if args and args[0] in ('status', 'diff', 'show', 'log', 'for-each-ref', 'rev-parse'):
+        if args and args[0] in ('status', 'diff', 'show', 'log', 'for-each-ref', 'rev-parse', 'stash', 'cat-file', 'ls-tree'):
             probe_cmd.extend(['-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'submodule.recurse=false'])
         cmd_args = list(args)
-        if args and args[0] in ('status', 'diff'):
+        if args and args[0] in ('status', 'diff', 'stash'):
             if not any(a.startswith('--ignore-submodules') for a in cmd_args):
                 cmd_args.append('--ignore-submodules=all')
         probe_cmd.extend(cmd_args)
@@ -5054,11 +5054,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     # Sort: check --compress-program, output redirection, temporary directory, and input file operands
     if base_cmd == 'sort':
+        for a in args:
+            if '$' in a or '`' in a:
+                return 'ask', f"sort with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if not a.startswith('-') and any(c in a for c in ('*', '?', '[', ']')):
+                return 'ask', f"sort with wildcard or substitution requires confirmation: {' '.join(cmd_tokens)}"
         if any(a.startswith('--co') and '--compress-program'.startswith(a.split('=', 1)[0]) for a in args):
             return 'ask', f"sort with execution helper requires confirmation: {' '.join(cmd_tokens)}"
-        for a in args:
-            if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']')):
-                return 'ask', f"sort with wildcard, variable, or substitution requires confirmation: {' '.join(cmd_tokens)}"
 
         SORT_OPTS_WITH_ARG = {
             '-o', '--output',
@@ -5346,6 +5348,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         return 'force_ask', f"JavaScript build or linter tool loads repository-controlled configuration or plugins: {base_cmd}"
 
     if base_cmd == 'cargo':
+        for a in args:
+            if '$' in a or '`' in a:
+                return 'ask', f"cargo with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):
             return 'force_ask', f"cargo with configuration override (--config) requires confirmation: {' '.join(cmd_tokens)}"
         if any(a == '-Z' or (a.startswith('-Z') and len(a) > 2) for a in args):
@@ -5559,6 +5564,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         return 'force_ask', f"Executing Python script requires confirmation: {' '.join(cmd_tokens)}"
 
     if base_cmd == 'go':
+        for a in args:
+            if '$' in a or '`' in a:
+                return 'ask', f"go with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
             GO_EXECUTABLE_HELPERS = {
                 'CC': ('gcc', 'clang'),
