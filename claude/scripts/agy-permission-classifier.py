@@ -125,6 +125,7 @@ DANGEROUS_ENV_VARS = {
     'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'PYTHONEXECUTABLE',
     'PERL5OPT', 'PERL5LIB', 'PERLLIB',
     'RUBYOPT', 'RUBYLIB',
+    'RUSTFMT',
 }
 
 SAFE_INLINE_ENV_VARS = {
@@ -1118,6 +1119,31 @@ def is_security_guard_path(path_str, cwd=None):
         parts = norm.split(os.sep)
         if any(p in ('antigravity', '.gemini', '.claude', 'claude') for p in parts):
             return True
+
+    # Check ancestor directories containing protected security hooks or classifiers
+    for anc_pattern in (
+        '*/antigravity', 'antigravity',
+        '*/claude/scripts', 'claude/scripts',
+        '*/claude', 'claude',
+        '*/.gemini', '.gemini',
+        '*/.claude', '.claude',
+    ):
+        if fnmatch.fnmatch(norm_slash, anc_pattern) or fnmatch.fnmatch(res_slash, anc_pattern):
+            return True
+
+    # Also check if norm is an existing directory containing security guard files on disk
+    try:
+        norm_path = Path(norm)
+        if norm_path.is_dir():
+            if (norm_path / 'hooks.json').is_file():
+                return True
+            if (norm_path / 'agy-permission-classifier.py').is_file():
+                return True
+            if norm_path.name in ('claude', '.claude', 'antigravity', '.gemini'):
+                if (norm_path / 'scripts' / 'agy-permission-classifier.py').is_file() or (norm_path / 'hooks.json').is_file() or (norm_path / 'settings.json').is_file():
+                    return True
+    except Exception:
+        pass
 
     return False
 
@@ -3857,6 +3883,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if args:
             sub = args[0]
             if sub == 'fmt':
+                rustfmt_env = os.environ.get('RUSTFMT')
+                if rustfmt_env and rustfmt_env.strip():
+                    return 'force_ask', f"cargo fmt with custom RUSTFMT executable requires confirmation: {rustfmt_env}"
+                if written_files:
+                    for wf in written_files:
+                        bname = os.path.basename(wf)
+                        if bname in ('rustfmt', 'rustfmt.toml', '.rustfmt.toml'):
+                            return 'force_ask', f"cargo fmt with formatter configuration or executable modified earlier in command line requires confirmation: {wf}"
                 search_dirs = [Path(cwd).resolve() if cwd else Path.cwd().resolve()]
                 for idx_arg, a in enumerate(args[1:]):
                     if a == '--manifest-path' and idx_arg + 1 < len(args[1:]):
@@ -3946,6 +3980,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     if a not in ('-mod=readonly', '-mod=vendor', '--mod=readonly', '--mod=vendor'):
                         return 'force_ask', f"go {args[0]} with dependency downloading or mutating module flag ({a}) requires confirmation: {' '.join(cmd_tokens)}"
             inherited_goflags = get_inherited_goflags()
+            goflags_tokens = []
             if inherited_goflags:
                 try:
                     goflags_tokens = shlex.split(inherited_goflags)
@@ -3967,10 +4002,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         return 'force_ask', f"go {args[0]} with Go environment configuration modified earlier in command line requires confirmation: {goenv_file}"
             if args[0] == 'test':
                 return 'force_ask', f"go test executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
-            in_check = check_dev_tool_inputs(args[1:], workspace_paths, cwd, f"go {args[0]}")
+            combined_go_args = list(args[1:]) + goflags_tokens
+            in_check = check_dev_tool_inputs(combined_go_args, workspace_paths, cwd, f"go {args[0]}")
             if in_check:
                 return in_check
-            out_check = check_dev_tool_output(args[1:], workspace_paths, cwd, f"go {args[0]}")
+            out_check = check_dev_tool_output(combined_go_args, workspace_paths, cwd, f"go {args[0]}")
             if out_check:
                 return out_check
             return 'allow', f"Safe Go static tool: go {args[0]}"

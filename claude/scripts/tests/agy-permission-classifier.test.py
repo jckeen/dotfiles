@@ -4435,6 +4435,121 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             else:
                 os.environ['GOENV'] = old_goenv
 
+    def test_round_49_hardening(self):
+        tmp_dir = tempfile.mkdtemp(prefix='agy_test_r49_')
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        ws_dir = Path(tmp_dir) / 'workspace'
+        ws_dir.mkdir()
+        antigravity_dir = ws_dir / 'antigravity'
+        antigravity_dir.mkdir()
+        (antigravity_dir / 'hooks.json').write_text('{}\n')
+        scripts_dir = ws_dir / 'claude' / 'scripts'
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / 'agy-permission-classifier.py').write_text('#!/usr/bin/env python3\n')
+        (ws_dir / 'safe.txt').write_text('safe\n')
+
+        # 1. Moving ancestor directories containing hooks or classifiers requires confirmation
+        res_mv_antigravity = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv antigravity retired-antigravity', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_mv_antigravity['decision'], 'force_ask')
+        self.assertIn('security configuration', res_mv_antigravity['reason'])
+
+        res_mv_scripts = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv claude/scripts retired-scripts', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_mv_scripts['decision'], 'force_ask')
+        self.assertIn('security configuration', res_mv_scripts['reason'])
+
+        res_mv_claude = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv claude retired-claude', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_mv_claude['decision'], 'force_ask')
+        self.assertIn('security configuration', res_mv_claude['reason'])
+
+        # Safe file move inside workspace is allowed
+        res_mv_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv safe.txt safe2.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_mv_safe['decision'], 'allow')
+
+        # 2. cargo fmt checks RUSTFMT in environment and dangerous inline vars
+        old_rustfmt = os.environ.get('RUSTFMT')
+        try:
+            os.environ['RUSTFMT'] = '/tmp/custom-rustfmt'
+            res_cargo_rustfmt = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cargo_rustfmt['decision'], 'force_ask')
+            self.assertIn('RUSTFMT', res_cargo_rustfmt['reason'])
+
+            # Clean RUSTFMT allows cargo fmt
+            os.environ.pop('RUSTFMT', None)
+            res_cargo_clean = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cargo_clean['decision'], 'allow')
+
+            # Inline RUSTFMT variable assignment is denied
+            res_cargo_inline = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'RUSTFMT=/tmp/custom-rustfmt cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cargo_inline['decision'], 'deny')
+
+            # Chained write to rustfmt executable requires confirmation
+            res_cargo_chained = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "#!/bin/sh" > rustfmt; cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cargo_chained['decision'], 'force_ask')
+            self.assertIn('rustfmt', res_cargo_chained['reason'])
+        finally:
+            if old_rustfmt is None:
+                os.environ.pop('RUSTFMT', None)
+            else:
+                os.environ['RUSTFMT'] = old_rustfmt
+
+        # 3. Inherited GOFLAGS output destination checks
+        old_goflags = os.environ.get('GOFLAGS')
+        try:
+            os.environ['GOFLAGS'] = '-o=/tmp/outside-binary'
+            res_go_out_outside = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_out_outside['decision'], 'force_ask')
+            self.assertIn('outside workspace', res_go_out_outside['reason'])
+
+            # GOFLAGS output targeting system path is denied
+            os.environ['GOFLAGS'] = '-o=/etc/passwd'
+            res_go_out_sys = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_out_sys['decision'], 'deny')
+            self.assertIn('system path', res_go_out_sys['reason'])
+
+            # GOFLAGS output inside workspace is allowed
+            safe_out = str(ws_dir / 'mybin')
+            os.environ['GOFLAGS'] = f'-o={safe_out}'
+            res_go_out_safe = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_out_safe['decision'], 'allow')
+        finally:
+            if old_goflags is None:
+                os.environ.pop('GOFLAGS', None)
+            else:
+                os.environ['GOFLAGS'] = old_goflags
+
 
 if __name__ == '__main__':
     unittest.main()
