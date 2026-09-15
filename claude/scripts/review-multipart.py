@@ -161,7 +161,7 @@ def check(directory, index, expected_session, expected_manifest):
     catalog_bytes = (directory / 'catalog.json').read_bytes()
     if digest(catalog_bytes) != manifest['catalogSha256']:
         raise ValueError('native model catalog changed')
-    expected_inputs = [(directory / f'part-{number}.txt').read_text(encoding='utf-8') for number in range(1, index + 1)]
+    expected_inputs = [(directory / f'part-{number}.txt').read_bytes().decode('utf-8') for number in range(1, index + 1)]
     maximum = audit_history(session_records(sessions[0]), expected_inputs, strict_json(catalog_bytes))
     (directory / 'context-window').write_text(str(maximum), encoding='utf-8')
     print(sessions[0])

@@ -25,7 +25,7 @@ class TransportTests(unittest.TestCase):
             manifest = json.loads((directory / 'manifest.json').read_text())
             fragments = []
             for index, part in enumerate(manifest['parts'], 1):
-                value = (directory / f'part-{index}.txt').read_text()
+                value = (directory / f'part-{index}.txt').read_bytes().decode('utf-8')
                 fence = value.split('Fragment fence: ', 1)[1].split('\n', 1)[0]
                 self.assertEqual(value.count('\n' + fence + '\n'), 2)
                 fragment = value.split('\n' + fence + '\n')[1]
@@ -34,6 +34,44 @@ class TransportTests(unittest.TestCase):
                 fragments.append(fragment)
             self.assertEqual(''.join(fragments), text)
             self.assertEqual(manifest['sha256'], transport.digest(packet.read_bytes()))
+
+    def test_native_input_check_preserves_crlf_and_bare_carriage_returns(self):
+        for ending in ('\r\n', '\r'):
+            with self.subTest(ending=repr(ending)), tempfile.TemporaryDirectory() as name:
+                directory = Path(name)
+                packet = directory/'request'
+                raw = ('gate header\n' + ('changed line'+ending)*100000 + 'last byte\n').encode('utf-8')
+                self.assertGreater(len(raw), 1048576)
+                packet.write_bytes(raw)
+                catalog = {'models':[{'slug':'fixture','max_context_window':872000,'effective_context_window_percent':95}]}
+                (directory/'catalog.json').write_bytes(json.dumps(catalog).encode('utf-8'))
+                transport.prepare(packet, directory)
+                manifest_bytes = (directory/'manifest.json').read_bytes()
+                count = len(json.loads(manifest_bytes)['parts'])
+                session = '11111111-1111-4111-8111-111111111111'
+                records = []
+                fragments = []
+                for index in range(1, count+1):
+                    value = (directory/f'part-{index}.txt').read_bytes().decode('utf-8')
+                    fence = value.split('Fragment fence: ', 1)[1].split('\n', 1)[0]
+                    fragments.append(value.split('\n'+fence+'\n')[1])
+                    records.extend([
+                        {'type':'response_item','payload':{'role':'user','content':[{'type':'input_text','text':value}]}},
+                        {'type':'turn_context','payload':{'model':'fixture','sandbox_policy':{'type':'read-only'}}},
+                        {'type':'event_msg','payload':{'type':'token_count','info':{'model_context_window':828400}}},
+                    ])
+                self.assertEqual(''.join(fragments).encode('utf-8'), raw)
+                events = [{'type':'thread.started','thread_id':session},{'type':'turn.completed'}]
+                (directory/'events.jsonl').write_bytes('\n'.join(json.dumps(event) for event in events).encode('utf-8'))
+                # Native JSON escapes carriage returns, so decoding it preserves
+                # the exact input; neither fixture nor checker may normalize it.
+                recorded = json.loads(json.dumps(records))
+                with mock.patch.object(transport, 'session_records', return_value=recorded):
+                    transport.check(directory, count, session, transport.digest(manifest_bytes))
+                recorded[0]['payload']['content'][0]['text'] = recorded[0]['payload']['content'][0]['text'].replace('\r\n','\n').replace('\r','\n')
+                with mock.patch.object(transport, 'session_records', return_value=recorded):
+                    with self.assertRaisesRegex(ValueError, 'missing or substituted'):
+                        transport.check(directory, count, session, transport.digest(manifest_bytes))
 
     def test_whitespace_check_is_linear_and_fail_closed(self):
         script = (SCRIPTS / 'codex-review-gate.sh').read_text()
