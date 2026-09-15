@@ -664,6 +664,7 @@ def git_run_probe(args, cwd=None, timeout=1):
         res = subprocess.run(
             [git_bin] + args,
             cwd=effective_cwd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1128,35 +1129,39 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     try:
         safe_args = strip_git_output_options(args[1:])
+        has_stdin = any(a == '--stdin' or (a.startswith('--') and len(a.split('=', 1)[0]) >= 5 and '--stdin'.startswith(a.split('=', 1)[0])) for a in safe_args)
+        if has_stdin:
+            return 'unknown'
+
         if git_sub == 'diff':
             if git_has_filter_configured(effective_cwd):
                 return 'unknown'
-            cmd = ['git', 'diff', '--name-only', '--line-prefix='] + [a for a in safe_args if a != '--name-only'] + ['--line-prefix=']
+            cmd = ['git', 'diff', '--name-status', '--line-prefix='] + [a for a in safe_args if a not in ('--name-only', '--name-status')] + ['--line-prefix=']
         elif git_sub == 'show':
             for a in safe_args:
                 if not a.startswith('-') and ':' not in a:
                     res_t = git_run_probe(['cat-file', '-t', a], cwd=effective_cwd)
                     if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
                         return 'unknown'
-            commit_args = [a for a in safe_args if ':' not in a and not a.startswith('--format=') and a != '--name-only']
-            cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + commit_args + ['--line-prefix=']
+            commit_args = [a for a in safe_args if ':' not in a and not a.startswith('--format=') and a not in ('--name-only', '--name-status')]
+            cmd = ['git', 'show', '--name-status', '--format=', '--no-show-signature', '--line-prefix='] + commit_args + ['--line-prefix=']
         elif git_sub in ('log', 'whatchanged') and git_log_has_diff_options(args):
             has_line_range = any(a == '-L' or (a.startswith('-L') and not a.startswith('--')) or
                                  (a.startswith('--') and '--line-range'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)
                                  for a in safe_args)
             if has_line_range:
-                cmd = ['git', 'log', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
+                cmd = ['git', 'log', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a not in ('--name-only', '--name-status')] + ['--line-prefix=']
             else:
-                cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
+                cmd = ['git', 'log', '--name-status', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a not in ('--name-only', '--name-status')] + ['--line-prefix=']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
-            cmd = ['git', 'stash', 'show', '--name-only', '--line-prefix='] + [a for a in safe_stash if a != '--name-only'] + ['--line-prefix=']
+            cmd = ['git', 'stash', 'show', '--name-status', '--line-prefix='] + [a for a in safe_stash if a not in ('--name-only', '--name-status')] + ['--line-prefix=']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'list' and git_log_has_diff_options(args):
             safe_stash = strip_git_output_options(args[2:])
-            cmd = ['git', 'stash', 'list', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_stash if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
+            cmd = ['git', 'stash', 'list', '--name-status', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_stash if not a.startswith('--format=') and a not in ('--name-only', '--name-status')] + ['--line-prefix=']
         elif git_sub == 'format-patch':
             log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
-            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + log_args + ['--line-prefix=']
+            cmd = ['git', 'log', '--name-status', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in log_args if a not in ('--name-only', '--name-status')] + ['--line-prefix=']
         else:
             return 'safe'
 
@@ -1171,7 +1176,14 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
                         f = line.strip().rstrip('\0')
                         if not f:
                             continue
-                        parts.append(f)
+                        if '\t' in f:
+                            tokens = f.split('\t')
+                            for tok in tokens[1:]:
+                                tok_s = tok.strip().strip('"')
+                                if tok_s:
+                                    parts.append(tok_s)
+                        else:
+                            parts.append(f)
                         if f.startswith('diff --git '):
                             rest = f[11:].strip()
                             m = re.match(r'^(?:\"a/([^\"]+)\"|a/(\S+))\s+(?:\"b/([^\"]+)\"|b/(\S+))$', rest)
@@ -3291,6 +3303,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             else:
                 pre_dash = args[1:]
             is_no_index = any(a == '--no-index' for a in pre_dash)
+            has_stdin = any(a == '--stdin' or (a.startswith('--') and len(a.split('=', 1)[0]) >= 5 and '--stdin'.startswith(a.split('=', 1)[0])) for a in pre_dash)
+            if has_stdin:
+                return 'force_ask', f"git diff reading inputs from stdin requires confirmation: {' '.join(cmd_tokens)}"
 
             if is_no_index:
                 diff_operands.extend([a for a in pre_dash if not a.startswith('-')])
@@ -3475,6 +3490,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return False
 
             args_options = args[:args.index('--')] if '--' in args else args
+            has_stdin = any(a == '--stdin' or (a.startswith('--') and len(a.split('=', 1)[0]) >= 5 and '--stdin'.startswith(a.split('=', 1)[0])) for a in args_options)
+            if has_stdin:
+                return 'force_ask', f"git {git_sub} reading revisions from stdin requires confirmation: {' '.join(cmd_tokens)}"
             has_no_sig = any(a == '--no-show-signature' for a in args_options)
             has_sig = git_has_sig_opt(args_options)
             if has_sig or (not has_no_sig and git_sub in {'show', 'log', 'whatchanged'} and git_has_show_signature_configured(cwd)):
@@ -3626,6 +3644,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if git_sub == 'rev-list':
             if any(a == '--objects' or a.startswith('--objects') for a in args):
                 return 'force_ask', f"git rev-list --objects can list all repository history objects: {' '.join(cmd_tokens)}"
+            if any(a == '--stdin' or (a.startswith('--') and len(a.split('=', 1)[0]) >= 5 and '--stdin'.startswith(a.split('=', 1)[0])) for a in args):
+                return 'force_ask', f"git rev-list reading revisions from stdin requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub in SAFE_GIT_READ_SUBCOMMANDS:
             return 'allow', f"Safe git read query: git {git_sub}"

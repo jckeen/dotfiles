@@ -5699,6 +5699,41 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             Path(rg_cfg_test).unlink(missing_ok=True)
 
+        # 50. Git rename probes retain source filename and git --stdin revisions require confirmation
+        git_rename_dir = ws_dir / 'r50_repo'
+        git_rename_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_rename_dir), check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(git_rename_dir), check=True)
+            subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_rename_dir), check=True)
+            (git_rename_dir / '.env').write_text('SECRET=12345\n')
+            subprocess.run(['git', 'add', '.env'], cwd=str(git_rename_dir), check=True)
+            subprocess.run(['git', 'commit', '-m', 'init', '-q'], cwd=str(git_rename_dir), check=True)
+            subprocess.run(['git', 'mv', '.env', 'README.md'], cwd=str(git_rename_dir), check=True)
+
+            res_diff_mv = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --cached -M', 'Cwd': str(git_rename_dir)}},
+                'workspacePaths': [str(git_rename_dir)],
+            })
+            self.assertEqual(res_diff_mv['decision'], 'deny', f"Expected deny for rename of sensitive file in patch output, got: {res_diff_mv}")
+            self.assertIn('sensitive credential files in patch output', res_diff_mv['reason'].lower())
+
+            res_log_stdin = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -p --stdin', 'Cwd': str(git_rename_dir)}},
+                'workspacePaths': [str(git_rename_dir)],
+            })
+            self.assertEqual(res_log_stdin['decision'], 'force_ask', f"Expected force_ask for git log --stdin, got: {res_log_stdin}")
+            self.assertIn('stdin', res_log_stdin['reason'].lower())
+
+            res_diff_stdin = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --stdin', 'Cwd': str(git_rename_dir)}},
+                'workspacePaths': [str(git_rename_dir)],
+            })
+            self.assertEqual(res_diff_stdin['decision'], 'force_ask', f"Expected force_ask for git diff --stdin, got: {res_diff_stdin}")
+            self.assertIn('stdin', res_diff_stdin['reason'].lower())
+        finally:
+            shutil.rmtree(str(git_rename_dir), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
