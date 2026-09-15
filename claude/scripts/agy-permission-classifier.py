@@ -699,6 +699,34 @@ def glob_matches_vcs(glob_pat):
     return False
 
 
+def is_unsafe_option_syntax(opt):
+    """Check if an option flag contains shell expansions, brace expansions, or wildcards."""
+    if not opt or not isinstance(opt, str):
+        return False
+    if not opt.startswith('-') or opt in ('-', '--'):
+        return False
+    # Check for variables, command substitutions, or brace expansions in options
+    if '$' in opt or '`' in opt:
+        return True
+    if opt != '{}' and '{' in opt and '}' in opt:
+        return True
+    # Check for wildcards / pathname expansion characters in option flags
+    if any(c in opt for c in ('*', '?', '[', ']')):
+        return True
+    return False
+
+
+def has_shell_expansion(token):
+    """Check if a token contains unexpanded shell parameter/command expansion or brace expansion."""
+    if not token or not isinstance(token, str):
+        return False
+    if '$' in token or '`' in token:
+        return True
+    if token != '{}' and '{' in token and '}' in token:
+        return True
+    return False
+
+
 def check_directory_descendants(target_dir, cwd=None, include_vcs=False):
     """Inspect directory for sensitive descendant files or sensitive symlinks.
 
@@ -814,7 +842,13 @@ def git_run_probe(args, cwd=None, timeout=1):
         cmd_args = list(args)
         if args and args[0] in ('status', 'diff', 'stash'):
             if not any(a.startswith('--ignore-submodules') for a in cmd_args):
-                cmd_args.append('--ignore-submodules=all')
+                if '--' in cmd_args:
+                    idx = cmd_args.index('--')
+                    cmd_args.insert(idx, '--ignore-submodules=all')
+                elif len(cmd_args) > 1:
+                    cmd_args.insert(1, '--ignore-submodules=all')
+                else:
+                    cmd_args.append('--ignore-submodules=all')
         probe_cmd.extend(cmd_args)
         res = subprocess.run(
             probe_cmd,
@@ -1397,7 +1431,7 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
         res = git_run_probe(cmd[1:], cwd=effective_cwd, timeout=2)
         if not res:
             return 'unknown'
-        if res.returncode in (0, 1):
+        if res.returncode == 0 or (res.returncode == 1 and res.stdout):
             if res.stdout:
                 parts = []
                 for chunk in res.stdout.split('\0'):
@@ -4922,8 +4956,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
         # Check for unexpanded variables
         for a in args:
-            if '$' in a or '`' in a:
-                return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if is_unsafe_option_syntax(a):
+                return 'ask', f"{base_cmd} with wildcard, variable, or brace expansion in option flag requires confirmation: {' '.join(cmd_tokens)}"
+            if has_shell_expansion(a):
+                return 'ask', f"{base_cmd} with unexpanded variable or brace expansion requires confirmation: {' '.join(cmd_tokens)}"
         # Check for hidden files, un-ignoring, or symlink following (including bundled short flags like -iL, -Lu)
         cli_options = []
         for a in args:
@@ -5001,8 +5037,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     if base_cmd in {'grep', 'egrep', 'fgrep'}:
         # Check for unexpanded variables
         for a in args:
-            if '$' in a or '`' in a:
-                return 'ask', f"grep with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if is_unsafe_option_syntax(a):
+                return 'ask', f"grep with wildcard, variable, or brace expansion in option flag requires confirmation: {' '.join(cmd_tokens)}"
+            if has_shell_expansion(a):
+                return 'ask', f"grep with unexpanded variable or brace expansion requires confirmation: {' '.join(cmd_tokens)}"
 
         has_pattern, pattern_files, is_recursive, positionals = parse_grep_args(args)
 
@@ -5055,8 +5093,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     # Sort: check --compress-program, output redirection, temporary directory, and input file operands
     if base_cmd == 'sort':
         for a in args:
-            if '$' in a or '`' in a:
-                return 'ask', f"sort with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if is_unsafe_option_syntax(a):
+                return 'ask', f"sort with wildcard, variable, or brace expansion in option flag requires confirmation: {' '.join(cmd_tokens)}"
+            if has_shell_expansion(a):
+                return 'ask', f"sort with unexpanded variable or brace expansion requires confirmation: {' '.join(cmd_tokens)}"
             if not a.startswith('-') and any(c in a for c in ('*', '?', '[', ']')):
                 return 'ask', f"sort with wildcard or substitution requires confirmation: {' '.join(cmd_tokens)}"
         if any(a.startswith('--co') and '--compress-program'.startswith(a.split('=', 1)[0]) for a in args):
@@ -5182,8 +5222,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     # Find: safe ONLY without destructive, execution, or file writing options
     if base_cmd == 'find':
         for a in args:
-            if '$' in a or '`' in a:
-                return 'ask', f"find with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if is_unsafe_option_syntax(a):
+                return 'ask', f"find with wildcard, variable, or brace expansion in option flag requires confirmation: {' '.join(cmd_tokens)}"
+            if has_shell_expansion(a):
+                return 'ask', f"find with unexpanded variable or brace expansion requires confirmation: {' '.join(cmd_tokens)}"
         if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fls', '-fprint', '-fprint0', '-fprintf') or a.startswith(('-exec', '-ok', '-fls', '-fprint')) for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -5349,8 +5391,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     if base_cmd == 'cargo':
         for a in args:
-            if '$' in a or '`' in a:
-                return 'ask', f"cargo with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if is_unsafe_option_syntax(a):
+                return 'ask', f"cargo with wildcard, variable, or brace expansion in option flag requires confirmation: {' '.join(cmd_tokens)}"
+            if has_shell_expansion(a):
+                return 'ask', f"cargo with unexpanded variable or brace expansion requires confirmation: {' '.join(cmd_tokens)}"
         if any(a == '--config' or a.startswith(('--config=', '--config')) for a in args):
             return 'force_ask', f"cargo with configuration override (--config) requires confirmation: {' '.join(cmd_tokens)}"
         if any(a == '-Z' or (a.startswith('-Z') and len(a) > 2) for a in args):
@@ -5565,8 +5609,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     if base_cmd == 'go':
         for a in args:
-            if '$' in a or '`' in a:
-                return 'ask', f"go with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
+            if is_unsafe_option_syntax(a):
+                return 'ask', f"go with wildcard, variable, or brace expansion in option flag requires confirmation: {' '.join(cmd_tokens)}"
+            if has_shell_expansion(a):
+                return 'ask', f"go with unexpanded variable or brace expansion requires confirmation: {' '.join(cmd_tokens)}"
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
             GO_EXECUTABLE_HELPERS = {
                 'CC': ('gcc', 'clang'),

@@ -6098,6 +6098,65 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             shutil.rmtree(str(rg_git_dir), ignore_errors=True)
 
+        # h) Shell brace expansions in command option flags
+        res_sort_brace = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort --{compress-program=sh,ignore-case} input.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sort_brace['decision'], 'ask', f"Expected ask for sort with brace expansion in option flag, got: {res_sort_brace}")
+
+        res_go_brace = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go vet -{toolexec=evil,v} .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_go_brace['decision'], 'ask', f"Expected ask for go with brace expansion in option flag, got: {res_go_brace}")
+
+        res_cargo_brace = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt --{config="unstable_features=true",verbose}', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cargo_brace['decision'], 'ask', f"Expected ask for cargo with brace expansion in option flag, got: {res_cargo_brace}")
+
+        res_find_brace = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'find . -{delete,name} foo', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_find_brace['decision'], 'ask', f"Expected ask for find with brace expansion in option flag, got: {res_find_brace}")
+
+        res_rg_brace = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -{pre=evil,v} pattern file', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rg_brace['decision'], 'ask', f"Expected ask for rg with brace expansion in option flag, got: {res_rg_brace}")
+
+        # i) Wildcards and bracket glob characters in option flags
+        res_sort_glob = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort --comp* input.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sort_glob['decision'], 'ask', f"Expected ask for sort with wildcard in option flag, got: {res_sort_glob}")
+
+        res_find_glob = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'find . -[e]xec id \\;', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_find_glob['decision'], 'ask', f"Expected ask for find with bracket in option flag, got: {res_find_glob}")
+
+        # j) Failed git probe with returncode 1 and empty stdout does not return safe
+        probe_repo = ws_dir / 'probe_repo'
+        probe_repo.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(probe_repo), check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(probe_repo), check=True)
+            subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(probe_repo), check=True)
+            res_stash_bad = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash show non_existent_ref_12345', 'Cwd': str(probe_repo)}},
+                'workspacePaths': [str(probe_repo)],
+            })
+            self.assertNotEqual(res_stash_bad['decision'], 'allow', f"Failed git stash show probe must not be auto-approved, got: {res_stash_bad}")
+        finally:
+            shutil.rmtree(str(probe_repo), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
