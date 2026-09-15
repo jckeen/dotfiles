@@ -1502,6 +1502,97 @@ def parse_grep_args(args):
     return has_pattern, pattern_files, is_recursive, positionals
 
 
+def parse_rg_args(args):
+    """Parse rg arguments to identify pattern flags, pattern files, and positional operands."""
+    RG_OPTS_WITH_ARG = {
+        '-e', '--regexp',
+        '-f', '--file',
+        '-m', '--max-count',
+        '-A', '--after-context',
+        '-B', '--before-context',
+        '-C', '--context',
+        '-t', '--type',
+        '-T', '--type-not',
+        '-g', '--glob',
+        '-r', '--replace',
+        '--pre', '--hostname-bin',
+        '--ignore-file', '--max-filesize',
+        '--max-depth', '--encoding',
+        '--sort', '--sort-by',
+        '--colors', '--type-add',
+    }
+    has_pattern = False
+    pattern_files = []
+    positionals = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == '--':
+            positionals.extend(args[i + 1:])
+            break
+        if a == '--files' or a.startswith('--files='):
+            has_pattern = True
+            i += 1
+            continue
+        if a.startswith('--'):
+            opt_name = a.split('=', 1)[0]
+            val = a.split('=', 1)[1] if '=' in a else None
+            if opt_name == '--file' or (len(opt_name) >= 5 and '--file'.startswith(opt_name)):
+                has_pattern = True
+                if val is not None:
+                    pattern_files.append(val)
+                elif i + 1 < len(args):
+                    i += 1
+                    pattern_files.append(args[i])
+            elif opt_name == '--regexp' or (len(opt_name) >= 5 and '--regexp'.startswith(opt_name)):
+                has_pattern = True
+                if val is None and i + 1 < len(args):
+                    i += 1
+            elif opt_name == '--ignore-file' or (len(opt_name) >= 10 and '--ignore-file'.startswith(opt_name)):
+                if val is not None:
+                    pattern_files.append(val)
+                elif i + 1 < len(args):
+                    i += 1
+                    pattern_files.append(args[i])
+            elif val is None and (opt_name in RG_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in RG_OPTS_WITH_ARG if long_opt.startswith('--'))):
+                if i + 1 < len(args):
+                    i += 1
+            i += 1
+            continue
+        elif a.startswith('-') and len(a) > 1:
+            if a[1:].isdigit():
+                i += 1
+                continue
+            j = 1
+            while j < len(a):
+                c = a[j]
+                if c in ('e', 'f', 'm', 'A', 'B', 'C', 't', 'T', 'g', 'r'):
+                    if j + 1 < len(a):
+                        arg_val = a[j + 1:]
+                        if arg_val.startswith('='):
+                            arg_val = arg_val[1:]
+                    elif i + 1 < len(args):
+                        i += 1
+                        arg_val = args[i]
+                    else:
+                        arg_val = ''
+                    if c == 'e':
+                        has_pattern = True
+                    elif c == 'f':
+                        has_pattern = True
+                        if arg_val:
+                            pattern_files.append(arg_val)
+                    break
+                else:
+                    j += 1
+            i += 1
+            continue
+        else:
+            positionals.append(a)
+            i += 1
+    return has_pattern, pattern_files, positionals
+
+
 def extract_file_operands(base_cmd, args):
     """
     Given base_cmd and its argument list, identify the arguments that represent
@@ -1520,38 +1611,23 @@ def extract_file_operands(base_cmd, args):
             files.extend(positionals[1:])
         return files
 
-    if base_cmd in {'rg', 'ag'}:
-        has_pat_flag = False
-        files = []
-        skip_next = False
-        positionals = []
-        for i, a in enumerate(args):
-            if skip_next:
-                skip_next = False
-                continue
-            if a in ('-e', '--regexp'):
-                has_pat_flag = True
-                if i + 1 < len(args):
-                    skip_next = True
-                continue
-            if a.startswith(('-e', '--regexp=')):
-                has_pat_flag = True
-                continue
-            if a in ('-f', '--file'):
-                if i + 1 < len(args):
-                    files.append(args[i + 1])
-                    skip_next = True
-                continue
-            if a.startswith(('-f=', '--file=')):
-                files.append(a.split('=', 1)[1])
-                continue
-            if not a.startswith('-'):
-                positionals.append(a)
+    if base_cmd == 'rg':
+        has_pat_flag, pattern_files, positionals = parse_rg_args(args)
+        files = list(pattern_files)
         if has_pat_flag:
             files.extend(positionals)
         elif len(positionals) > 1:
             files.extend(positionals[1:])
         return files
+
+    if base_cmd == 'ag':
+        positionals = [a for a in args if not a.startswith('-')]
+        has_pat_flag = any(a in ('-e', '--regexp') or a.startswith(('-e', '--regexp=')) for a in args)
+        if has_pat_flag:
+            return list(positionals)
+        elif len(positionals) > 1:
+            return list(positionals[1:])
+        return []
 
     if base_cmd == 'jq':
         has_file_filter = any(a in ('-f', '--from-file') or a.startswith(('-f=', '--from-file=')) for a in args)
@@ -2392,6 +2468,47 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if git_sub == 'config':
             if any(a in ('--list', '-l', '--get-regexp') or a.startswith(('--list', '--get-regexp=')) for a in args):
                 return 'force_ask', f"Listing all git configuration may disclose credentials or tokens: {' '.join(cmd_tokens)}"
+            if any(a == '--blob' or a.startswith('--blob=') for a in args):
+                return 'force_ask', f"git config reading from blob requires confirmation: {' '.join(cmd_tokens)}"
+
+            config_files = []
+            skip_cfg = False
+            for i, a in enumerate(args[1:], start=1):
+                if skip_cfg:
+                    skip_cfg = False
+                    continue
+                if a in ('-f', '--file') and i + 1 < len(args):
+                    config_files.append(args[i + 1])
+                    skip_cfg = True
+                    continue
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if '--file'.startswith(opt) and len(opt) >= 4:
+                        if '=' in a:
+                            config_files.append(a.split('=', 1)[1])
+                        elif i + 1 < len(args):
+                            config_files.append(args[i + 1])
+                            skip_cfg = True
+                        continue
+                elif a.startswith('-f') and len(a) > 2 and not a.startswith('--'):
+                    val = a[2:]
+                    if val.startswith('='):
+                        val = val[1:]
+                    config_files.append(val)
+                    continue
+
+            for cf in config_files:
+                if is_sensitive_credential_path(cf, cwd) or matches_sensitive_pattern(cf):
+                    return 'deny', f"git config targeting sensitive file is forbidden: {cf}"
+                if not is_path_in_workspaces(cf, workspace_paths, cwd):
+                    return 'ask', f"git config reading file outside workspace requires approval: {cf}"
+                if written_files:
+                    norm_cf = os.path.normpath(expand_path(cf, cwd))
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_cf == norm_wf or norm_cf.startswith(norm_wf + os.sep):
+                            return 'force_ask', f"git config file was modified or updated earlier in the command line: {cf}"
+
             # Check for sensitive config keys
             for a in args[1:]:
                 clean_key = a.lower()
@@ -2709,8 +2826,23 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if commit_pathspecs:
                 has_pathspec = True
 
+            def is_commit_all_flag(arg):
+                if arg in ('-a', '--all') or arg.startswith('--all='):
+                    return True
+                if arg.startswith('--'):
+                    opt = arg.split('=', 1)[0]
+                    return '--all'.startswith(opt) and len(opt) >= 4
+                if arg.startswith('-') and not arg.startswith('--') and arg != '-':
+                    flag_chars = []
+                    for c in arg[1:]:
+                        flag_chars.append(c)
+                        if c in ('m', 'F', 'c', 'C', 't', 'S', 'u'):
+                            break
+                    return 'a' in flag_chars
+                return False
+
             # Inspect staged files to prevent committing credentials
-            has_all_flag = any(a in ('-a', '--all') for a in args) or has_pathspec
+            has_all_flag = has_pathspec or any(is_commit_all_flag(a) for a in args[1:])
             probe_res = git_probe_staged_sensitive_files(cwd, include_unstaged_tracked=has_all_flag)
             if probe_res == 'sensitive':
                 return 'deny', f"git commit committing sensitive credential files is forbidden: {' '.join(cmd_tokens)}"
@@ -2830,6 +2962,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             for f_op in file_operands:
                 if f_op in ('/dev/null', '/dev/zero', '/dev/stdin', '-'):
                     continue
+                if written_files:
+                    norm_fop = os.path.normpath(expand_path(f_op, cwd))
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_fop == norm_wf or norm_fop.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_fop + os.sep):
+                            return 'force_ask', f"Inspection command reading file modified or updated earlier in the command line requires confirmation: {f_op}"
                 if is_sensitive_credential_path(f_op, cwd):
                     return 'deny', f"Access to sensitive credential or key is forbidden: {f_op}"
                 if not is_path_in_workspaces(f_op, workspace_paths, cwd):
@@ -2891,16 +3029,43 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         # Check for hidden files, un-ignoring, or symlink following (including bundled short flags like -iL, -Lu)
         if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in args):
             return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
-        positionals = [a for a in args if not a.startswith('-')]
-        has_pattern_flag = any(
-            a in ('-e', '--regexp', '-f', '--file', '--files') or
-            a.startswith(('-e', '--regexp=', '-f=', '--file=', '--files'))
-            for a in args
-        )
+        if base_cmd == 'rg':
+            has_pattern_flag, pattern_files, positionals = parse_rg_args(args)
+        else:
+            positionals = [a for a in args if not a.startswith('-')]
+            has_pattern_flag = any(
+                a in ('-e', '--regexp') or a.startswith(('-e', '--regexp='))
+                for a in args
+            )
+            pattern_files = []
+
+        # Validate pattern files
+        for pf in pattern_files:
+            if pf == '-':
+                continue
+            if is_sensitive_credential_path(pf, cwd) or matches_sensitive_pattern(pf):
+                return 'deny', f"{base_cmd} pattern file targeting sensitive path is forbidden: {pf}"
+            if not is_path_in_workspaces(pf, workspace_paths, cwd):
+                return 'ask', f"{base_cmd} pattern file outside workspace requires approval: {pf}"
+            if written_files:
+                norm_pf = os.path.normpath(expand_path(pf, cwd))
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_pf == norm_wf or norm_pf.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_pf + os.sep):
+                        return 'force_ask', f"{base_cmd} pattern file was modified or updated earlier in the command line: {pf}"
+
         search_paths = positionals if has_pattern_flag else positionals[1:]
         if not search_paths:
             search_paths = [cwd]
         for p in search_paths:
+            if p == '-':
+                continue
+            if written_files:
+                norm_p = os.path.normpath(expand_path(p, cwd))
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_p == norm_wf or norm_p.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_p + os.sep):
+                        return 'force_ask', f"{base_cmd} searching path modified or updated earlier in the command line: {p}"
             if is_sensitive_credential_path(p, cwd):
                 return 'deny', f"Searching sensitive credential path is forbidden: {p}"
             p_norm = expand_path(p, cwd)
@@ -2934,12 +3099,24 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'deny', f"grep pattern file targeting sensitive path is forbidden: {pf}"
             if not is_path_in_workspaces(pf, workspace_paths, cwd):
                 return 'ask', f"grep pattern file outside workspace requires approval: {pf}"
+            if written_files:
+                norm_pf = os.path.normpath(expand_path(pf, cwd))
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_pf == norm_wf or norm_pf.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_pf + os.sep):
+                        return 'force_ask', f"grep pattern file was modified or updated earlier in the command line: {pf}"
 
         search_paths = positionals if has_pattern else positionals[1:]
 
         for p in search_paths:
             if p == '-':
                 continue
+            if written_files:
+                norm_p = os.path.normpath(expand_path(p, cwd))
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_p == norm_wf or norm_p.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_p + os.sep):
+                        return 'force_ask', f"grep searching path modified or updated earlier in the command line: {p}"
             if is_sensitive_credential_path(p, cwd) or matches_sensitive_pattern(p):
                 return 'deny', f"Searching sensitive credential path is forbidden: {p}"
             p_norm = expand_path(p, cwd)
@@ -3066,6 +3243,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         for inf in input_files:
             if inf == '-':
                 continue
+            if written_files:
+                norm_inf = os.path.normpath(expand_path(inf, cwd))
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_inf == norm_wf or norm_inf.startswith(norm_wf + os.sep):
+                        return 'force_ask', f"sort reading file modified or updated earlier in the command line: {inf}"
             if is_sensitive_credential_path(inf, cwd) or matches_sensitive_pattern(inf):
                 return 'deny', f"sort reading sensitive file is forbidden: {inf}"
             if not is_path_in_workspaces(inf, workspace_paths, cwd):
@@ -3673,13 +3856,63 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                 a_unq = unquote_token(a)
                 if not a_unq.startswith('-') and a_unq != '/dev/null':
                     written_files.add(expand_path(a_unq, cwd))
-        elif sub_base in ('touch', 'cp', 'mv'):
-            pos = [unquote_token(a) for a in sub[1:] if not a.startswith('-') and a != '/dev/null']
-            if sub_base == 'touch':
+        elif sub_base in ('touch', 'mkdir', 'cp', 'mv', 'ln', 'install'):
+            pos = []
+            target_dir = None
+            skip_next = False
+            for i, a in enumerate(sub[1:]):
+                if skip_next:
+                    skip_next = False
+                    continue
+                a_unq = unquote_token(a)
+                if a_unq in ('-t', '--target-directory'):
+                    if i + 1 < len(sub[1:]):
+                        target_dir = unquote_token(sub[1:][i + 1])
+                        skip_next = True
+                    continue
+                if a_unq.startswith('--target-directory='):
+                    target_dir = a_unq.split('=', 1)[1]
+                    continue
+                if not a_unq.startswith('-') and a_unq != '/dev/null':
+                    pos.append(a_unq)
+            if sub_base in ('touch', 'mkdir'):
                 for p in pos:
                     written_files.add(expand_path(p, cwd))
+            elif target_dir:
+                written_files.add(expand_path(target_dir, cwd))
             elif pos:
                 written_files.add(expand_path(pos[-1], cwd))
+        elif sub_base == 'git':
+            sub_args = [unquote_token(a) for a in sub[1:]]
+            git_sub = None
+            for a in sub_args:
+                if not a.startswith('-'):
+                    git_sub = a
+                    break
+            if git_sub in ('switch', 'checkout', 'reset', 'restore'):
+                effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                res_top = git_run_probe(['rev-parse', '--show-toplevel'], cwd=effective_cwd)
+                if res_top and res_top.returncode == 0 and res_top.stdout.strip():
+                    written_files.add(os.path.normpath(res_top.stdout.strip()))
+                else:
+                    written_files.add(os.path.normpath(effective_cwd))
+            elif git_sub == 'worktree':
+                if 'add' in sub_args:
+                    add_idx = sub_args.index('add')
+                    wt_args = sub_args[add_idx + 1:]
+                    skip_next = False
+                    for wa in wt_args:
+                        if skip_next:
+                            skip_next = False
+                            continue
+                        if wa in ('-b', '-B', '--reason'):
+                            skip_next = True
+                            continue
+                        if wa.startswith(('-b', '-B', '--reason=')):
+                            continue
+                        if not wa.startswith('-'):
+                            written_files.add(expand_path(wa, cwd))
+                            break
 
     for v, r in verdicts:
         if v == 'deny':

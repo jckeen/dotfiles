@@ -3837,6 +3837,125 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_tag_bundle['decision'], 'force_ask')
         self.assertIn('Creating or deleting tags', res_tag_bundle['reason'])
 
+    def test_round_42_hardening(self):
+        """Verify Round 42 security hardening:
+        1. Attached ripgrep pattern-file flags (-fVALUE) and pattern file checks.
+        2. Compound command write tracking protecting subsequent reads against stale state.
+        3. Bundled commit flags (-qa, -am, --al) triggering unstaged sensitive file checks.
+        4. git config queries validating custom config files against workspace boundaries and sensitive paths.
+        """
+        git_dir = Path(self.test_ws) / 'r42_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('# Hello\n')
+        (git_dir / 'public.txt').write_text('harmless\n')
+        (git_dir / 'patterns.txt').write_text('harmless\n')
+        subprocess.run(['git', 'add', 'README.md', 'public.txt', 'patterns.txt'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'initial'], cwd=str(git_dir), check=True)
+
+        # 1. Ripgrep attached -fVALUE options
+        res_rg_outside = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -fpatterns.txt /outside/notes.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_rg_outside['decision'], 'ask')
+        self.assertIn('outside workspace', res_rg_outside['reason'])
+
+        res_rg_sensitive_pf = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -f.git/config public.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_rg_sensitive_pf['decision'], 'deny')
+        self.assertIn('sensitive', res_rg_sensitive_pf['reason'])
+
+        res_rg_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -fpatterns.txt public.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_rg_safe['decision'], 'allow')
+
+        # 2. Compound commands and stale filesystem state
+        subprocess.run(['git', 'branch', 'feature'], cwd=str(git_dir), check=True)
+        res_switch_cat = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch feature && cat public.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_switch_cat['decision'], 'force_ask')
+        self.assertIn('modified or updated earlier', res_switch_cat['reason'])
+
+        res_echo_cat = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo test > new_file.txt && cat new_file.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_echo_cat['decision'], 'force_ask')
+        self.assertIn('modified or updated earlier', res_echo_cat['reason'])
+
+        (git_dir / 'harmless.txt').write_text('content\n')
+        res_cp_cat = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp harmless.txt copy.txt && cat copy.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cp_cat['decision'], 'force_ask')
+        self.assertIn('modified or updated earlier', res_cp_cat['reason'])
+
+        res_ln_shadow = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ln -s /etc/shadow link.txt && cat link.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_ln_shadow['decision'], 'deny')
+
+        # 3. Bundled commit flags with unstaged tracked credentials
+        (git_dir / '.env').write_text('KEY=123\n')
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add env'], cwd=str(git_dir), check=True)
+        # Modify .env unstaged
+        (git_dir / '.env').write_text('KEY=456\n')
+
+        res_commit_qa = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -qa -m safe', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_qa['decision'], 'deny')
+        self.assertIn('sensitive', res_commit_qa['reason'])
+
+        res_commit_al = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --al -m safe', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_al['decision'], 'deny')
+        self.assertIn('sensitive', res_commit_al['reason'])
+
+        # Without -a flag, unstaged tracked files are not committed
+        res_commit_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --allow-empty -m safe', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_clean['decision'], 'allow')
+
+        # 4. git config queries validating custom config files
+        res_cfg_outside = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get --file=/outside/plain.conf user.name', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cfg_outside['decision'], 'ask')
+        self.assertIn('outside workspace', res_cfg_outside['reason'])
+
+        res_cfg_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get --file=.git/config user.name', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cfg_sensitive['decision'], 'deny')
+        self.assertIn('sensitive', res_cfg_sensitive['reason'])
+
+        (git_dir / 'local.conf').write_text('[user]\nname = Tester\n')
+        res_cfg_local = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get --file=local.conf user.name', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cfg_local['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
