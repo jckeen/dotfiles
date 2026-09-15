@@ -1674,13 +1674,15 @@ def normalize_shell_continuations(cmd_str: str) -> str:
             continue
 
         if c == "'":
-            in_single_quote = True
+            if not in_double_quote:
+                in_single_quote = True
             out.append(c)
             i += 1
             continue
 
         if c == '"':
-            in_double_quote = not in_double_quote
+            if not in_single_quote:
+                in_double_quote = not in_double_quote
             out.append(c)
             i += 1
             continue

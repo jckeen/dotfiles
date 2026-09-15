@@ -5662,6 +5662,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_cont['decision'], 'force_ask', f"Expected force_ask for continuation bypass, got: {res_cont}")
         self.assertIn('substitution', res_cont['reason'].lower())
 
+        cmd_cont_apos = 'true "\' $' + '\\\n' + '(printf CLASSIFIER_REVIEW_MARKER >&2)"'
+        res_cont_apos = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd_cont_apos, 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cont_apos['decision'], 'force_ask', f"Expected force_ask for continuation with apostrophe in double quotes, got: {res_cont_apos}")
+        self.assertIn('substitution', res_cont_apos['reason'].lower())
+
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
             f.write('--pre /bin/echo\n')
             rg_cfg_test = f.name
