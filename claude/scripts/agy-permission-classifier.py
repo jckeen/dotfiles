@@ -985,9 +985,15 @@ def strip_git_output_options(args_list):
             if '=' not in a:
                 skip_next = True
             continue
+        if a == '--line-prefix' or (a.startswith('--') and '--line-prefix'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 4):
+            if '=' not in a:
+                skip_next = True
+            continue
+        if a.startswith('--line-prefix='):
+            continue
         if a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')):
             continue
-        if a in ('--exit-code', '--quiet', '-q', '-z', '--null'):
+        if a in ('--exit-code', '--quiet', '-q', '-z', '--null', '--no-color'):
             continue
         clean.append(a)
     return clean
@@ -1022,7 +1028,7 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
         if git_sub == 'diff':
             if git_has_filter_configured(effective_cwd):
                 return 'unknown'
-            cmd = ['git', 'diff', '--name-only'] + [a for a in safe_args if a != '--name-only']
+            cmd = ['git', 'diff', '--name-only', '--line-prefix='] + [a for a in safe_args if a != '--name-only'] + ['--line-prefix=']
         elif git_sub == 'show':
             for a in safe_args:
                 if not a.startswith('-') and ':' not in a:
@@ -1030,18 +1036,18 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
                     if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
                         return 'unknown'
             commit_args = [a for a in safe_args if ':' not in a and not a.startswith('--format=') and a != '--name-only']
-            cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + commit_args
+            cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + commit_args + ['--line-prefix=']
         elif git_sub in ('log', 'whatchanged') and git_log_has_diff_options(args):
-            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
-            cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in safe_stash if a != '--name-only']
+            cmd = ['git', 'stash', 'show', '--name-only', '--line-prefix='] + [a for a in safe_stash if a != '--name-only'] + ['--line-prefix=']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'list' and git_log_has_diff_options(args):
             safe_stash = strip_git_output_options(args[2:])
-            cmd = ['git', 'stash', 'list', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_stash if not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'stash', 'list', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_stash if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
         elif git_sub == 'format-patch':
             log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
-            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + log_args
+            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + log_args + ['--line-prefix=']
         else:
             return 'safe'
 
@@ -4591,13 +4597,23 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 has_backup = True
                 if '=' in a:
                     backup_type = a.split('=', 1)[1]
-            elif a in ('-S', '--suffix') and i_arg + 1 < len(args):
-                backup_suffix = args[i_arg + 1]
-                i_arg += 1
-            elif a.startswith('--suffix='):
-                backup_suffix = a.split('=', 1)[1]
-            elif a.startswith('-S') and len(a) > 2:
-                backup_suffix = a[2:].lstrip('=')
+
+            if a.startswith('--'):
+                opt = a.split('=', 1)[0]
+                if '--suffix'.startswith(opt) and len(opt) >= 4:
+                    if '=' in a:
+                        backup_suffix = a.split('=', 1)[1]
+                    elif i_arg + 1 < len(args):
+                        backup_suffix = args[i_arg + 1]
+                        i_arg += 1
+            elif a.startswith('-') and not a.startswith('--') and 'S' in a:
+                idx_s = a.index('S')
+                rest = a[idx_s + 1:].lstrip('=')
+                if rest:
+                    backup_suffix = rest
+                elif i_arg + 1 < len(args):
+                    backup_suffix = args[i_arg + 1]
+                    i_arg += 1
             i_arg += 1
 
         if has_backup and backup_type not in ('none', 'off', 'never'):

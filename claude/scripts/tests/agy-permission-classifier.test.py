@@ -5020,6 +5020,30 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_file_list_long['decision'], 'allow')
 
+        # 18. Abbreviated backup suffix in cp/mv prevents security guard overwrite
+        agy_target = ws_dir / 'agy-permission-classifier.py'
+        agy_target.write_text('# guard\n')
+        for su_flag in ('--su=.py', '--suf=.py', '--suffix=.py', '-S.py'):
+            res_cp_su = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'cp --backup=simple {su_flag} safe.txt agy-permission-classifier', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cp_su['decision'], 'force_ask', f"Expected {su_flag} to require force_ask, got: {res_cp_su}")
+            self.assertIn('security configuration', res_cp_su['reason'])
+
+        # 19. Git diff output formatting (--line-prefix) cannot hide sensitive paths from probe
+        env_file = ws_dir / ('.' + 'env')
+        env_file.write_text('SECRET=true\n')
+        subprocess.run(['git', 'add', str(env_file)], cwd=str(ws_dir), check=True)
+        res_diff_line_prefix = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --cached --line-prefix=PUBLIC', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_diff_line_prefix['decision'], 'deny')
+        self.assertIn('sensitive', res_diff_line_prefix['reason'])
+        subprocess.run(['git', 'reset', 'HEAD', str(env_file)], cwd=str(ws_dir), check=True)
+        env_file.unlink()
+
 
 if __name__ == '__main__':
     unittest.main()
