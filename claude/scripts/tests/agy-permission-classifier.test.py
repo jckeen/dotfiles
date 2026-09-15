@@ -3242,16 +3242,18 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
 
         # 1. Hook interpreter isolation in antigravity/hooks.json
-        hooks_json_path = Path(__file__).resolve().parents[2] / 'antigravity' / 'hooks.json'
-        if hooks_json_path.is_file():
-            hooks_data = json.loads(hooks_json_path.read_text())
-            cmd_found = False
-            for hook in hooks_data.get('hooks', {}).get('PreToolUse', []):
-                for h in hook.get('hooks', []):
-                    if 'agy-permission-classifier.py' in h.get('command', ''):
-                        cmd_found = True
-                        self.assertTrue(h['command'].startswith('/usr/bin/python3 -I'), f"Expected /usr/bin/python3 -I isolation, got: {h['command']}")
-            self.assertTrue(cmd_found, "agy-permission-classifier hook command not found in antigravity/hooks.json")
+        hooks_json_path = Path(__file__).resolve().parents[3] / 'antigravity' / 'hooks.json'
+        self.assertTrue(hooks_json_path.is_file(), f"hooks.json not found at {hooks_json_path}")
+        hooks_data = json.loads(hooks_json_path.read_text())
+        cmd_found = False
+        for group in hooks_data.values():
+            if isinstance(group, dict):
+                for hook_entry in group.get('PreToolUse', []):
+                    for h in hook_entry.get('hooks', []):
+                        if 'agy-permission-classifier.py' in h.get('command', ''):
+                            cmd_found = True
+                            self.assertTrue(h['command'].startswith('/usr/bin/python3 -I'), f"Expected /usr/bin/python3 -I isolation, got: {h['command']}")
+        self.assertTrue(cmd_found, "agy-permission-classifier hook command not found in antigravity/hooks.json")
 
         # 2. Scoping Shell Startup Profiles: workspace dotfiles allowed, home dotfiles denied
         ws_bashrc = git_dir / '.bashrc'
@@ -3291,6 +3293,10 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'git fetch --update-head-ok',
             'git fetch --update-shallow',
             'git fetch --refmap=+refs/heads/*:refs/remotes/origin/*',
+            'git fetch --stdin',
+            'git fetch origin --stdin',
+            'git fetch -p origin',
+            'git fetch --prune origin',
         ):
             res_fetch = self.run_classifier({
                 'toolCall': {'name': 'run_command', 'args': {'CommandLine': fetch_cmd, 'Cwd': str(git_dir)}},

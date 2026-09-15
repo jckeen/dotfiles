@@ -1698,8 +1698,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                     if ('--prune'.startswith(opt) and len(opt) >= 5) or ('--prune-tags'.startswith(opt) and len(opt) >= 8):
                         return True
                 return False
-            if any(is_fetch_prune_opt(a) for a in args):
-                return 'force_ask', f"Git fetch with prune option ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+            for a in args:
+                if is_fetch_prune_opt(a):
+                    return 'force_ask', f"Git fetch with prune option ({a}) requires confirmation: {' '.join(cmd_tokens)}"
 
             has_fetch_force = any(
                 a in ('-f', '--force', '--update-head-ok', '--update-shallow', '--refmap') or
@@ -1715,6 +1716,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             )
             if has_fetch_force:
                 return 'force_ask', f"Git fetch with force or update-head-ok option requires confirmation: {' '.join(cmd_tokens)}"
+
+            if any(a == '--stdin' or (a.startswith('--') and len(a.split('=', 1)[0]) >= 5 and '--stdin'.startswith(a.split('=', 1)[0])) for a in args):
+                return 'force_ask', f"Git fetch reading refspecs from stdin requires confirmation: {' '.join(cmd_tokens)}"
 
             # Inspect positional arguments (remote / URL / refspecs)
             pos_args = [a for a in args[1:] if not a.startswith('-')]
