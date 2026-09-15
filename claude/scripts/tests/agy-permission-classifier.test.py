@@ -4709,7 +4709,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_echo_clean['decision'], 'allow')
 
         # 2. Git validates every --output destination, not just the last one
-        subprocess.run(['git', 'init'], cwd=str(ws_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'init', '-b', 'master'], cwd=str(ws_dir), check=True, capture_output=True)
         subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(ws_dir), check=True)
         subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(ws_dir), check=True)
         subprocess.run(['git', 'add', 'safe.txt'], cwd=str(ws_dir), check=True)
@@ -5577,6 +5577,21 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [str(ws_dir)],
         })
         self.assertEqual(res_touch_ls_normal['decision'], 'allow', f"Expected allow for touch file.txt; ls, got: {res_touch_ls_normal}")
+
+        # 47. Bash prompt expansion (@P) parameter transformation executes commands
+        res_prompt_expand = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'true "${PROMPT@P}"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_prompt_expand['decision'], 'force_ask', f"Expected force_ask for prompt expansion @P, got: {res_prompt_expand}")
+        self.assertIn('prompt expansion (@p)', res_prompt_expand['reason'].lower())
+
+        res_prompt_expand_raw = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "${PS1@P}"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_prompt_expand_raw['decision'], 'force_ask', f"Expected force_ask for prompt expansion @P, got: {res_prompt_expand_raw}")
+        self.assertIn('prompt expansion (@p)', res_prompt_expand_raw['reason'].lower())
 
 
 if __name__ == '__main__':

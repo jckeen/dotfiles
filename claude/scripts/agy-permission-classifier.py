@@ -5850,6 +5850,10 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
             if re.search(r'\bBASH_CMDS\b', p_inner):
                 return 'deny', f"Referencing or modifying BASH_CMDS via parameter expansion is forbidden: ${{{p_inner}}}"
 
+            # Prompt expansion operator (@P) expands prompt escapes and executes embedded command substitutions
+            if re.search(r'@\s*["\']?[Pp]["\']?', p_inner):
+                return 'force_ask', f"Parameter expansion with prompt expansion (@P) may execute arbitrary commands: ${{{p_inner}}}"
+
             # Check for credential variables referenced inside parameter expansion
             if is_credential_env_var('${' + p_inner + '}'):
                 return 'deny', f"Access to credential environment variable via parameter expansion is forbidden: ${{{p_inner}}}"
