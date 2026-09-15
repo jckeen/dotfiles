@@ -73,6 +73,22 @@ class TransportTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'missing or substituted'):
                         transport.check(directory, count, session, transport.digest(manifest_bytes))
 
+                for previous in range(1, count):
+                    with self.subTest(previous_part=previous):
+                        path = directory/f'part-{previous}.txt'
+                        original = path.read_bytes()
+                        changed = original + b'Injected replacement of earlier input'
+                        recorded = json.loads(json.dumps(records))
+                        recorded[(previous-1)*3]['payload']['content'][0]['text'] = changed.decode('utf-8')
+                        path.write_bytes(changed)
+                        try:
+                            self.assertEqual((directory/'manifest.json').read_bytes(), manifest_bytes)
+                            with mock.patch.object(transport, 'session_records', return_value=recorded):
+                                with self.assertRaisesRegex(ValueError, 'transport input changed'):
+                                    transport.check(directory, count, session, transport.digest(manifest_bytes))
+                        finally:
+                            path.write_bytes(original)
+
     def test_whitespace_check_is_linear_and_fail_closed(self):
         script = (SCRIPTS / 'codex-review-gate.sh').read_text()
         block = script.split('<<\'PYSPACE\'\n', 1)[1].split('\nPYSPACE', 1)[0]

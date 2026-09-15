@@ -142,8 +142,12 @@ def check(directory, index, expected_session, expected_manifest):
         raise ValueError('transport manifest changed')
     manifest = strict_json(manifest_bytes)
     part = manifest['parts'][index - 1]
-    if digest((directory / f'part-{index}.txt').read_bytes()) != part['inputSha256']:
-        raise ValueError('transport input changed')
+    expected_inputs = []
+    for number in range(1, index + 1):
+        raw_input = (directory / f'part-{number}.txt').read_bytes()
+        if digest(raw_input) != manifest['parts'][number - 1]['inputSha256']:
+            raise ValueError('transport input changed')
+        expected_inputs.append(raw_input.decode('utf-8'))
     events = [strict_json(line) for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
     sessions = [event['thread_id'] for event in events if event.get('type') == 'thread.started']
     if len(sessions) != 1 or str(uuid.UUID(sessions[0])) != sessions[0]:
@@ -161,7 +165,6 @@ def check(directory, index, expected_session, expected_manifest):
     catalog_bytes = (directory / 'catalog.json').read_bytes()
     if digest(catalog_bytes) != manifest['catalogSha256']:
         raise ValueError('native model catalog changed')
-    expected_inputs = [(directory / f'part-{number}.txt').read_bytes().decode('utf-8') for number in range(1, index + 1)]
     maximum = audit_history(session_records(sessions[0]), expected_inputs, strict_json(catalog_bytes))
     (directory / 'context-window').write_text(str(maximum), encoding='utf-8')
     print(sessions[0])
