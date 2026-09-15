@@ -611,7 +611,7 @@ original_gate="$GATE"
 for scope in committed uncommitted; do
   new_repo
   mkdir -p "$R/claude/scripts"
-  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json; do
+  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py review-multipart.py codex-review-schema.json; do
     cp "$SCRIPT_DIR/../$source_file" "$R/claude/scripts/"
   done
   git -C "$R" add claude/scripts
@@ -632,13 +632,29 @@ for scope in committed uncommitted; do
 done
 GATE="$original_gate"
 
+# The transport helper is executed before a verdict and is itself gate machinery.
+for scope in committed uncommitted; do
+  new_repo
+  mkdir -p "$R/claude/scripts"
+  cp "$SCRIPT_DIR/../review-multipart.py" "$R/claude/scripts/"
+  git -C "$R" add claude/scripts
+  git -C "$R" commit -qm 'baseline transport helper'
+  git -C "$R" checkout -qb feature
+  printf '\n# modified transport\n' >> "$R/claude/scripts/review-multipart.py"
+  if [[ "$scope" == committed ]]; then git -C "$R" commit -qam 'change transport'; fi
+  approve_clean
+  check "$scope transport helper cannot authorize review" 2 "instruction surface" "--$scope" --require --no-issues
+  assert "transport edit cannot dispatch or issue approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+  rm -rf "$R"
+done
+
 # Gate ancestor symlinks also redirect the installed helper symlink farm.
 original_gate="$GATE"
 for ancestor in claude claude/scripts .claude .claude/scripts; do
   for route in direct installed; do
     new_repo
     versions="$(mktemp -d "$SHIM_DIR/gate-ancestors.XXXXXX")"
-    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json)
+    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py review-multipart.py codex-review-schema.json)
     for version in before after; do
       source_scripts="$versions/$version"
       [[ "$ancestor" == */scripts ]] || source_scripts+=/scripts
@@ -1073,7 +1089,7 @@ new_repo
 echo source-directory >> "$R/code.txt"
 copied_scripts="$SHIM_DIR/scripts"$'\n'
 mkdir -p "$copied_scripts"
-cp "$SCRIPT_DIR/../codex-review-gate.sh" "$SCRIPT_DIR/../gate-lib.sh" "$SCRIPT_DIR/../review-receipt.py" "$SCRIPT_DIR/../codex-review-schema.json" "$copied_scripts/"
+cp "$SCRIPT_DIR/../codex-review-gate.sh" "$SCRIPT_DIR/../gate-lib.sh" "$SCRIPT_DIR/../review-receipt.py" "$SCRIPT_DIR/../review-multipart.py" "$SCRIPT_DIR/../codex-review-schema.json" "$copied_scripts/"
 original_gate="$GATE"
 GATE="$copied_scripts/codex-review-gate.sh"
 approve_clean

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest import mock
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('transport', SCRIPTS / 'review-multipart.py')
+transport = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(transport)
+
+
+class TransportTests(unittest.TestCase):
+    def test_complete_utf8_packet_and_fences(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            text = 'gate instructions\n' + ('😀\nUNTRUSTED_DIFF_marker\n' * 60000) + 'last byte\n'
+            packet = directory / 'request'
+            packet.write_text(text)
+            (directory/'catalog.json').write_text('{}')
+            transport.prepare(packet, directory)
+            manifest = json.loads((directory / 'manifest.json').read_text())
+            fragments = []
+            for index, part in enumerate(manifest['parts'], 1):
+                value = (directory / f'part-{index}.txt').read_text()
+                fence = value.split('Fragment fence: ', 1)[1].split('\n', 1)[0]
+                self.assertEqual(value.count('\n' + fence + '\n'), 2)
+                fragment = value.split('\n' + fence + '\n')[1]
+                self.assertEqual(transport.digest(fragment.encode()), part['sha256'])
+                self.assertLess(len(value.encode()), 1048576)
+                fragments.append(fragment)
+            self.assertEqual(''.join(fragments), text)
+            self.assertEqual(manifest['sha256'], transport.digest(packet.read_bytes()))
+
+    def test_whitespace_check_is_linear_and_fail_closed(self):
+        script = (SCRIPTS / 'codex-review-gate.sh').read_text()
+        block = script.split('<<\'PYSPACE\'\n', 1)[1].split('\nPYSPACE', 1)[0]
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / 'diff'
+            for data, expected in ((b' \t\n\r\v\f' * 400000, '0'), (b' ' * 2400000 + b'x', '1')):
+                path.write_bytes(data)
+                result = subprocess.run(['python3', '-c', block, str(path)], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.strip(), expected)
+            path.unlink()
+            result = subprocess.run(['python3', '-c', block, str(path)], capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_native_history_missing_compacted_or_widened_cannot_pass(self):
+        catalog = {'models': [{'slug':'fixture', 'max_context_window':872000, 'effective_context_window_percent':95}]}
+        records = [
+            {'type':'response_item','payload':{'role':'user','content':[{'type':'input_text','text':'exact input'}]}},
+            {'type':'turn_context','payload':{'model':'fixture','sandbox_policy':{'type':'read-only'}}},
+            {'type':'event_msg','payload':{'type':'token_count','info':{'model_context_window':258400}}},
+        ]
+        self.assertEqual(transport.audit_history(records, ['exact input'], catalog), 872000)
+        for corrupt in [records+[{'type':'compacted','payload':{}}], records[1:], records+[{'type':'future_history_replacement'}]]:
+            with self.assertRaises(ValueError): transport.audit_history(corrupt, ['exact input'], catalog)
+        records[1]['payload']['sandbox_policy']={'type':'workspace-write'}
+        with self.assertRaises(ValueError): transport.audit_history(records, ['exact input'], catalog)
+
+    def test_fragment_fence_collision_is_lengthened(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            fence = 'REVIEW_PART_' + '0'*64
+            packet = directory/'request'
+            packet.write_text(fence + '\n' + fence + '_\n')
+            (directory/'catalog.json').write_text('{}')
+            with mock.patch.object(transport, 'digest', return_value='0'*64):
+                transport.prepare(packet, directory)
+            value=(directory/'part-1.txt').read_text()
+            self.assertIn('Fragment fence: '+fence+'__\n', value)
+            self.assertEqual(value.count('\n'+fence+'__\n'), 2)
+
+    def test_invalid_utf8_fails_without_parts(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            packet = directory / 'request'
+            packet.write_bytes(b'\xff')
+            with self.assertRaises(UnicodeDecodeError):
+                transport.prepare(packet, directory)
+            self.assertFalse(list(directory.glob('part-*')))
+
+
+if __name__ == '__main__':
+    unittest.main()
