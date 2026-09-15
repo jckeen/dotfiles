@@ -4892,6 +4892,73 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_printf_escaped_percent['decision'], 'allow')
 
+        # 12. Redirection target preserves literal filename quotes without double-unquoting
+        symlink_alias = ws_dir / '"alias"'
+        os.symlink(str(outside_victim), str(symlink_alias))
+        res_echo_literal_quotes_symlink = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo changed > \'"alias"\'', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_literal_quotes_symlink['decision'], 'ask')
+        self.assertIn('outside workspace', res_echo_literal_quotes_symlink['reason'])
+
+        res_echo_clean_literal_quotes = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo changed > \'"safe_quote"\'', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_clean_literal_quotes['decision'], 'allow')
+
+        # 13. file command decompression and sandbox-disabling options require confirmation
+        for file_cmd in (
+            'file -z -S archive.tar.gz',
+            'file -zS archive.tar.gz',
+            'file --uncompress archive.tar.gz',
+            'file --no-sandbox archive.tar.gz',
+            'file -Z archive.tar.gz',
+            'file -z archive.tar.gz',
+        ):
+            res_file_uncomp = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': file_cmd, 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_file_uncomp['decision'], 'force_ask', f"Expected {file_cmd} to require force_ask, got: {res_file_uncomp}")
+            self.assertIn('decompressor', res_file_uncomp['reason'])
+
+        res_file_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file safe.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_file_safe['decision'], 'allow')
+
+        # 14. git shortlog signature display and custom gpg.program execution checks
+        for shortlog_sig in (
+            'git --no-pager shortlog --format=%G? HEAD',
+            "git shortlog --format '%G?' HEAD",
+            'git shortlog --show-signature HEAD',
+        ):
+            res_shortlog_sig = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': shortlog_sig, 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_shortlog_sig['decision'], 'force_ask', f"Expected {shortlog_sig} to require force_ask, got: {res_shortlog_sig}")
+            self.assertIn('signature', res_shortlog_sig['reason'])
+
+        res_shortlog_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git shortlog HEAD', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_shortlog_clean['decision'], 'allow')
+
+        # Custom gpg.program with shortlog format requires confirmation
+        subprocess.run(['git', 'config', 'gpg.program', '/custom/gpg'], cwd=str(ws_dir), check=True)
+        res_shortlog_custom_gpg = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git shortlog --format='%h %s' HEAD", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_shortlog_custom_gpg['decision'], 'force_ask')
+        self.assertIn('gpg.program', res_shortlog_custom_gpg['reason'])
+        subprocess.run(['git', 'config', '--unset', 'gpg.program'], cwd=str(ws_dir), check=True)
+
 
 if __name__ == '__main__':
     unittest.main()

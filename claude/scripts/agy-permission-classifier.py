@@ -1667,6 +1667,25 @@ def extract_unquoted_redirections(subcmd_str):
                             t_esc = True
                             i += 1
                             continue
+                    if tc == '$' and not t_in_sq and not t_in_dq and i + 1 < n and subcmd_str[i + 1] == "'":
+                        i += 2
+                        ansi_chars = []
+                        while i < n and subcmd_str[i] != "'":
+                            if subcmd_str[i] == '\\' and i + 1 < n:
+                                ansi_chars.append(subcmd_str[i:i + 2])
+                                i += 2
+                            else:
+                                ansi_chars.append(subcmd_str[i])
+                                i += 1
+                        if i >= n:
+                            return None, None
+                        i += 1
+                        try:
+                            decoded_ansi = codecs.decode(''.join(ansi_chars), 'unicode_escape')
+                            target_chars.extend(list(decoded_ansi))
+                        except Exception:
+                            return None, None
+                        continue
                     if tc == "'" and not t_in_dq:
                         t_in_sq = not t_in_sq
                         i += 1
@@ -2129,9 +2148,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     # Validate extracted redirections
     if extracted_redirections:
         for tok, target_raw in extracted_redirections:
-            target = decode_shell_target(target_raw)
-            if (target.startswith('"') and target.endswith('"')) or (target.startswith("'") and target.endswith("'")):
-                target = target[1:-1]
+            target = target_raw
             if target == '/dev/null':
                 continue
             if tok in ('>&', '<&') and target.isdigit():
@@ -2861,17 +2878,53 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git worktree query'
 
-        # Git show, log, blame, etc. run configured textconv drivers or signature verification by default
-        if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch'}:
+        # Git show, log, blame, shortlog, etc. run configured textconv drivers or signature verification by default
+        if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch', 'shortlog'}:
+            def git_has_sig_opt(args_list):
+                for i, a in enumerate(args_list):
+                    if a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')):
+                        return True
+                    if a.startswith(('--format=', '--pretty=')):
+                        val = a.split('=', 1)[1]
+                        if any(g in val for g in ('%G', '%g')):
+                            return True
+                    elif a in ('--format', '--pretty') and i + 1 < len(args_list):
+                        val = args_list[i + 1]
+                        if any(g in val for g in ('%G', '%g')):
+                            return True
+                    elif a.startswith('--'):
+                        opt = a.split('=', 1)[0]
+                        if ('--format'.startswith(opt) and len(opt) >= 4) or ('--pretty'.startswith(opt) and len(opt) >= 4):
+                            if '=' in a:
+                                val = a.split('=', 1)[1]
+                                if any(g in val for g in ('%G', '%g')):
+                                    return True
+                            elif i + 1 < len(args_list):
+                                val = args_list[i + 1]
+                                if any(g in val for g in ('%G', '%g')):
+                                    return True
+                return False
+
+            def git_has_fmt_opt(args_list):
+                for i, a in enumerate(args_list):
+                    if a.startswith(('--format=', '--pretty=')):
+                        return True
+                    elif a in ('--format', '--pretty'):
+                        return True
+                    elif a.startswith('--'):
+                        opt = a.split('=', 1)[0]
+                        if ('--format'.startswith(opt) and len(opt) >= 4) or ('--pretty'.startswith(opt) and len(opt) >= 4):
+                            return True
+                return False
+
             has_no_sig = any(a == '--no-show-signature' for a in args)
-            has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
-                          (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
+            has_sig = git_has_sig_opt(args)
             if has_sig or (not has_no_sig and git_sub in {'show', 'log', 'whatchanged'} and git_has_show_signature_configured(cwd)):
                 return 'force_ask', f"git {git_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
-            if git_has_gpg_program_configured(cwd) and any(a.startswith(('--format=', '--pretty=')) for a in args):
+            if git_has_gpg_program_configured(cwd) and git_has_fmt_opt(args):
                 return 'force_ask', f"git {git_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
             has_no_textconv = any(a == '--no-textconv' for a in args)
-            if not has_no_textconv and git_has_external_diff_configured(cwd):
+            if not has_no_textconv and git_sub != 'shortlog' and git_has_external_diff_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
             if git_sub == 'blame':
@@ -3426,6 +3479,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if base_cmd == 'file':
             if any(a in ('-C', '--compile') or (a.startswith('-') and not a.startswith('--') and 'C' in a) for a in args):
                 return 'force_ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
+            def is_file_uncompress_or_sandbox_opt(a):
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if any(long_opt.startswith(opt) and len(opt) >= 3 for long_opt in ('--uncompress', '--uncompress-noreport', '--no-sandbox')):
+                        return True
+                    return False
+                if a.startswith('-') and len(a) > 1:
+                    return any(c in a[1:] for c in ('z', 'Z', 'S'))
+                return False
+            if any(is_file_uncompress_or_sandbox_opt(a) for a in args):
+                return 'force_ask', f"file with uncompress or sandbox-disabling option (-z/-Z/-S) executes external decompressors and requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd in {'test', '['}:
             for a in args:
                 if any(c in a for c in ('$', '`')):
@@ -4815,7 +4879,7 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
             if ext_redirs:
                 for r_tok, r_target in ext_redirs:
                     if is_output_redirection(r_tok, r_target):
-                        t_clean = decode_shell_target(r_target)
+                        t_clean = r_target
                         if t_clean and t_clean != '/dev/null':
                             written_files.add(expand_path(t_clean, cwd))
         for i_tok, tok in enumerate(sub):
