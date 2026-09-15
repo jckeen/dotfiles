@@ -328,7 +328,7 @@ check "Antigravity rejects concurrent HEAD change" 2 "changed during review" --r
 rm -rf "$R"
 
 # Own instructions and shared gate code cannot authorize their own review.
-for protected in GEMINI.md nested/GEMINI.local.md .gemini/commands/check.md antigravity/policy.lock .antigravity/settings.json claude/scripts/gate-lib.sh claude/scripts/review-receipt.py claude/scripts/codex-review-gate.sh claude/scripts/antigravity-review-gate.sh; do
+for protected in GEMINI.md nested/GEMINI.local.md .gemini/commands/check.md antigravity/policy.lock .antigravity/settings.json claude/scripts/gate-lib.sh claude/scripts/review-receipt.py claude/scripts/review-multipart.py claude/scripts/codex-review-gate.sh claude/scripts/antigravity-review-gate.sh; do
   for scope in committed uncommitted; do
     new_repo
     git -C "$R" checkout -qb feature
@@ -363,7 +363,7 @@ original_gate="$GATE"
 for scope in committed uncommitted; do
   new_repo
   mkdir -p "$R/claude/scripts"
-  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json; do
+  for source_file in codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py review-multipart.py codex-review-schema.json; do
     cp "$SCRIPT_DIR/../$source_file" "$R/claude/scripts/"
   done
   git -C "$R" add claude/scripts
@@ -391,7 +391,7 @@ for ancestor in claude claude/scripts .claude .claude/scripts; do
   for route in direct installed; do
     new_repo
     versions="$(mktemp -d "$SHIM_DIR/gate-ancestors.XXXXXX")"
-    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py codex-review-schema.json)
+    gate_files=(codex-review-gate.sh antigravity-review-gate.sh gate-lib.sh review-receipt.py review-multipart.py codex-review-schema.json)
     for version in before after; do
       source_scripts="$versions/$version"
       [[ "$ancestor" == */scripts ]] || source_scripts+=/scripts

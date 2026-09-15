@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-15 — fix: preserve complete large review requests
+
+- Large Codex reviews use contiguous input parts in one read-only session with
+  supported context capacity. Missing input, compaction, changed permissions,
+  and incomplete responses cannot authorize publication.
+- Both review gates and receipt validation protect the new transport helper
+  against self-review. Diff preparation checks whitespace without quadratic
+  shell substitution.
+
 ## 2026-09-10 — fix: preserve late writes and verify shipped artifacts
 
 ### What changed
