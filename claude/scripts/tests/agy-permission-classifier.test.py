@@ -4743,6 +4743,49 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_git_clean_out['decision'], 'allow')
 
+        # 3. Redirection target preserves exact whitespace without collapsing
+        outside_victim = Path(tmp_dir) / 'outside_victim.txt'
+        outside_victim.write_text('external\n')
+        symlink_path = ws_dir / 'a  b'
+        os.symlink(str(outside_victim), str(symlink_path))
+
+        res_echo_symlink_spaces = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo changed > 'a  b'", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_symlink_spaces['decision'], 'ask')
+        self.assertIn('outside workspace', res_echo_symlink_spaces['reason'])
+
+        clean_spaces_file = ws_dir / 'c  d'
+        clean_spaces_file.write_text('clean\n')
+        res_echo_clean_spaces = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo clean > 'c  d'", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_clean_spaces['decision'], 'allow')
+
+        # 4. Git commit checks post-index-change hook
+        hook_path = ws_dir / '.git' / 'hooks' / 'post-index-change'
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text('#!/bin/sh\nexit 0\n')
+        hook_path.chmod(0o755)
+
+        res_git_commit_hook = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git commit -a -m review", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_commit_hook['decision'], 'force_ask')
+        self.assertIn('active repository hook', res_git_commit_hook['reason'])
+
+        hook_path.unlink()
+        (ws_dir / 'safe.txt').write_text('modified safe\n')
+        subprocess.run(['git', 'add', 'safe.txt'], cwd=str(ws_dir), check=True)
+        res_git_commit_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git commit -m clean", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_commit_clean['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -203,19 +203,18 @@ def decode_shell_arg(arg):
 
 
 def decode_shell_target(target_str):
-    """Safely decode shell-escaped and quoted sequences in redirection targets and file paths."""
+    """Safely decode shell-escaped and quoted sequences in redirection targets and file paths without collapsing whitespace."""
     if not target_str or not isinstance(target_str, str):
         return target_str
-    s = decode_shell_arg(target_str)
-    try:
-        parts = shlex.split(s)
-        if parts:
-            return ' '.join(parts)
-    except Exception:
-        pass
-    clean = s.strip('\'"')
-    clean = re.sub(r'\\(.)', r'\1', clean)
-    return clean
+    s = target_str
+    if "$'" in s:
+        try:
+            s = re.sub(r"\$'([^']*)'", lambda m: codecs.decode(m.group(1), 'unicode_escape'), s)
+        except Exception:
+            pass
+    if len(s) >= 2 and ((s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'"))):
+        s = s[1:-1]
+    return re.sub(r'\\(.)', r'\1', s)
 
 
 def subcmd_has_unquoted_expansions(subcmd_str):
@@ -2797,7 +2796,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if 'add' in args:
                     if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
                         return 'force_ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
-                    if git_has_active_hooks(cwd, ('post-checkout', 'reference-transaction'), written_files=written_files):
+                    if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction'), written_files=written_files):
                         return 'force_ask', f"git worktree add with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
                     if git_has_filter_configured(cwd):
                         return 'force_ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
@@ -3241,7 +3240,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
                 return 'force_ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'reference-transaction'), written_files=written_files):
+            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'post-index-change', 'reference-transaction'), written_files=written_files):
                 return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
