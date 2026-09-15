@@ -756,8 +756,23 @@ def git_has_transport_executable_configured(cwd=None):
     return False
 
 
+def git_has_help_viewer_configured(cwd=None):
+    """Check if git repository or config has help or man viewer configuration that can execute external programs."""
+    res = git_run_probe(['config', '--get-regexp', r'^(help\.(format|browser|htmlpath)|man\..*|browser\..*)$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        for line in res.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                val = parts[1].strip()
+                if val and val.lower() not in ('false', '0'):
+                    return True
+    return False
+
+
 def git_has_pager_configured(cwd=None, git_sub=None):
-    """Check if git repository or config has core.pager or pager.<cmd> configured."""
+    """Check if git repository or config has core.pager, pager.<cmd>, or help viewer configured."""
+    if git_sub == 'help' and git_has_help_viewer_configured(cwd):
+        return True
     patterns = []
     if git_sub:
         patterns.append(rf'^pager\.{re.escape(git_sub)}$')
@@ -2158,7 +2173,14 @@ def extract_file_operands(base_cmd, args, rg_cfg_tokens=None):
         return files
 
     files = []
+    in_pos_only = False
     for a in args:
+        if in_pos_only:
+            files.append(a)
+            continue
+        if a == '--':
+            in_pos_only = True
+            continue
         val = a.split('=', 1)[1] if a.startswith('--') and '=' in a else a
         files.append(val)
     return files
@@ -2458,6 +2480,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 git_sub_idx = idx
                 break
 
+        # Check for git help commands or options that invoke external viewers
+        has_help = any(
+            a == '--help' or (a.startswith('--') and '--help'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)
+            for a in args
+        )
+        if git_sub == 'help' or has_help:
+            return 'force_ask', f"Git help option or command dispatches to external viewer (help.format / man.viewer) and requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Git upload-pack, receive-pack, exec-path, or exec options can run arbitrary executables
+        if any(is_git_unsafe_exec_opt(a) for a in args):
+            return 'force_ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
+
         if not git_sub:
             return 'allow', 'git command query'
 
@@ -2586,6 +2620,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         )
         if not has_no_pager and git_has_pager_configured(cwd, git_sub):
             return 'force_ask', f"git {git_sub} with configured pager requires confirmation: {' '.join(cmd_tokens)}"
+
 
         # Reject unverified shell parameter expansions and substitutions in Git arguments
         for a in args:
@@ -3652,10 +3687,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
             return 'allow', 'Safe test/[ evaluation'
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
-        if base_cmd in {'cat', 'head', 'tail', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq', 'date'}:
+        if base_cmd in {'cat', 'head', 'tail', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq', 'date', 'ls', 'dir', 'vdir'}:
             for a in args:
-                if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
-                    return 'ask', f"Inspection command with wildcard, variable, substitution, or metacharacter requires confirmation: {' '.join(cmd_tokens)}"
+                if any(c in a for c in ('$', '`')):
+                    return 'ask', f"Inspection command with variable or substitution requires confirmation: {' '.join(cmd_tokens)}"
+                if not a.startswith('-') and any(c in a for c in ('*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
+                    return 'ask', f"Inspection command with wildcard or metacharacter requires confirmation: {' '.join(cmd_tokens)}"
             # Verify file operands are within workspace and do not target sensitive paths
             file_operands = []
             if base_cmd == 'jq':
@@ -3835,9 +3872,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     i += 1
             elif base_cmd == 'wc':
                 files0_from = None
+                in_positional_only = False
                 i = 0
                 while i < len(args):
                     a = args[i]
+                    if in_positional_only:
+                        file_operands.append(a)
+                        i += 1
+                        continue
+                    if a == '--':
+                        in_positional_only = True
+                        i += 1
+                        continue
                     if a.startswith('--'):
                         opt = a.split('=', 1)[0]
                         if '--files0-from'.startswith(opt) and len(opt) >= 8:
@@ -3868,14 +3914,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     'uniq': {'-f', '--skip-fields', '-s', '--skip-chars', '-w', '--check-chars'},
                     'stat': {'-c', '--format', '--printf'},
                     'cmp': {'-i', '--ignore-initial', '-n', '--bytes'},
+                    'ls': {'-w', '--width', '-T', '--tabsize', '-I', '--ignore', '--hide', '--block-size', '--format', '--quoting-style', '--time-style', '--sort', '--time'},
+                    'dir': {'-w', '--width', '-T', '--tabsize', '-I', '--ignore', '--hide', '--block-size', '--format', '--quoting-style', '--time-style', '--sort', '--time'},
+                    'vdir': {'-w', '--width', '-T', '--tabsize', '-I', '--ignore', '--hide', '--block-size', '--format', '--quoting-style', '--time-style', '--sort', '--time'},
                 }
                 opts_with_arg = INSPECTION_OPTS_WITH_ARG.get(base_cmd, set())
                 skip_val = False
+                in_positional_only = False
                 for a in args:
+                    if in_positional_only:
+                        file_operands.append(a)
+                        continue
                     if skip_val:
                         skip_val = False
                         continue
                     if a == '--':
+                        in_positional_only = True
                         continue
                     if a.startswith('--'):
                         opt_name = a.split('=', 1)[0]
@@ -3892,19 +3946,25 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         continue
                     file_operands.append(a)
 
+            if base_cmd in {'ls', 'dir', 'vdir'} and not file_operands:
+                if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                    return 'ask', f"{base_cmd} listing directory outside workspace requires approval: {cwd}"
+
             for f_op in file_operands:
                 if f_op in ('/dev/null', '/dev/zero', '/dev/stdin', '-'):
                     continue
                 if any(c in f_op for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
                     return 'ask', f"Inspection command operand with wildcard, variable, substitution, or metacharacter requires confirmation: {f_op}"
+                norm_fop = os.path.normpath(expand_path(f_op, cwd))
                 if written_files:
-                    norm_fop = os.path.normpath(expand_path(f_op, cwd))
                     for wf in written_files:
                         norm_wf = os.path.normpath(wf)
                         if norm_fop == norm_wf or norm_fop.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_fop + os.sep):
                             return 'force_ask', f"Inspection command reading file modified or updated earlier in the command line requires confirmation: {f_op}"
                 if is_sensitive_credential_path(f_op, cwd):
                     return 'deny', f"Access to sensitive credential or key is forbidden: {f_op}"
+                if base_cmd in {'ls', 'dir', 'vdir'} and (norm_fop in SYSTEM_BIN_DIRS or os.path.dirname(norm_fop) in SYSTEM_BIN_DIRS):
+                    continue
                 if not is_path_in_workspaces(f_op, workspace_paths, cwd):
                     return 'ask', f"Inspection command reading file outside workspace requires approval: {f_op}"
         if base_cmd in {'echo', 'printf'}:
@@ -4791,7 +4851,31 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         return 'allow', f"Safe file {base_cmd} within workspace"
 
     if base_cmd in {'mkdir', 'touch'}:
-        targets = [a for a in args if not a.startswith('-')]
+        targets = []
+        in_positional_only = False
+        skip_next = False
+        for i, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if in_positional_only:
+                targets.append(a)
+                continue
+            if a == '--':
+                in_positional_only = True
+                continue
+            if base_cmd == 'mkdir' and a in ('-m', '--mode') and i + 1 < len(args):
+                skip_next = True
+                continue
+            if base_cmd == 'mkdir' and (a.startswith('-m') or a.startswith('--mode=')):
+                continue
+            if base_cmd == 'touch' and a in ('-d', '--date', '-r', '--reference', '-t') and i + 1 < len(args):
+                skip_next = True
+                continue
+            if base_cmd == 'touch' and a.startswith(('-d', '--date=', '-r', '--reference=', '-t')):
+                continue
+            if not a.startswith('-'):
+                targets.append(a)
         if any(is_git_admin_path(t, cwd) for t in targets):
             return 'ask', f"{base_cmd} targeting git administrative path requires confirmation: {' '.join(cmd_tokens)}"
         if any(is_security_guard_path(t, cwd) for t in targets):
@@ -4824,6 +4908,101 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         return 'force_ask', f"Interactive shell execution requires confirmation: {' '.join(cmd_tokens)}"
 
     return 'force_ask', f"Command requires confirmation: {' '.join(cmd_tokens)}"
+
+
+def extract_parameter_expansions(cmd_str):
+    """
+    Extract all parameter expansions (${...}) from a shell command string,
+    respecting quote contexts and properly balancing nested braces and quotes.
+    Returns a list of inner parameter strings (without the enclosing ${ and }).
+    """
+    if not cmd_str or not isinstance(cmd_str, str):
+        return []
+
+    expansions = []
+    i = 0
+    n = len(cmd_str)
+    in_single_quote = False
+    in_double_quote = False
+    escape = False
+
+    while i < n:
+        c = cmd_str[i]
+
+        if escape:
+            escape = False
+            i += 1
+            continue
+
+        if c == '\\' and not in_single_quote:
+            escape = True
+            i += 1
+            continue
+
+        if c == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            i += 1
+            continue
+
+        if c == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            i += 1
+            continue
+
+        if not in_single_quote:
+            if c == '$' and i + 1 < n and cmd_str[i + 1] == '{':
+                j = i + 2
+                depth = 1
+                inner_chars = []
+                inner_single_quote = False
+                inner_double_quote = False
+                inner_escape = False
+                found_closing = False
+
+                while j < n:
+                    cj = cmd_str[j]
+                    if inner_escape:
+                        inner_escape = False
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '\\' and not inner_single_quote:
+                        inner_escape = True
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == "'" and not inner_double_quote:
+                        inner_single_quote = not inner_single_quote
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '"' and not inner_single_quote:
+                        inner_double_quote = not inner_double_quote
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if not inner_single_quote and not inner_double_quote:
+                        if cj == '{':
+                            depth += 1
+                        elif cj == '}':
+                            depth -= 1
+                            if depth == 0:
+                                found_closing = True
+                                break
+                    inner_chars.append(cj)
+                    j += 1
+
+                exp_content = ''.join(inner_chars)
+                expansions.append(exp_content)
+                nested = extract_parameter_expansions(exp_content)
+                if nested:
+                    expansions.extend(nested)
+                i = j + 1 if found_closing else n
+                continue
+
+        i += 1
+
+    return expansions
 
 
 def extract_command_substitutions(cmd_str):
@@ -5017,6 +5196,44 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
 
     if not isinstance(cmd_str, str) or not cmd_str.strip():
         return 'ask', 'Empty command line or invalid type'
+
+    # Check for parameter expansions ${...} that modify shell state or reference sensitive/dangerous targets
+    param_expansions = extract_parameter_expansions(cmd_str)
+    if param_expansions:
+        for p_inner in param_expansions:
+            if not p_inner or not p_inner.strip():
+                continue
+            # Any reference or modification of BASH_CMDS is strictly forbidden
+            if re.search(r'\bBASH_CMDS\b', p_inner):
+                return 'deny', f"Referencing or modifying BASH_CMDS via parameter expansion is forbidden: ${{{p_inner}}}"
+
+            # Check for credential variables referenced inside parameter expansion
+            if is_credential_env_var('${' + p_inner + '}'):
+                return 'deny', f"Access to credential environment variable via parameter expansion is forbidden: ${{{p_inner}}}"
+            m_var = re.match(r'^[!#]?(?P<name>[A-Za-z_][A-Za-z0-9_]*)', p_inner)
+            if m_var:
+                ref_var = m_var.group('name')
+                if is_credential_var_name(ref_var):
+                    return 'deny', f"Access to credential environment variable via parameter expansion is forbidden: ${{{p_inner}}}"
+
+            # Check for parameter assignments (${VAR:=val}, ${VAR=val}, ${ARR[idx]:=val}, ${ARR[idx]=val})
+            m_assign = re.match(r'^[!#]?(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\[(?P<subscript>[^\]]*)\])?(?P<op>:=|=)', p_inner)
+            if m_assign:
+                assigned_var = m_assign.group('name')
+                if is_dangerous_env_var(assigned_var):
+                    return 'deny', f"Setting execution-altering environment variable via parameter expansion is forbidden: {assigned_var}"
+                if is_credential_var_name(assigned_var):
+                    return 'deny', f"Setting credential variable via parameter expansion is forbidden: {assigned_var}"
+                return 'force_ask', f"Parameter expansion with variable assignment requires confirmation: ${{{p_inner}}}"
+
+            # Check for arithmetic or inner assignments within subscripts or expressions
+            for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)', p_inner):
+                v_name = m.group(1)
+                if is_dangerous_env_var(v_name):
+                    return 'deny', f"Setting execution-altering environment variable via parameter expansion is forbidden: {v_name}"
+                if is_credential_var_name(v_name):
+                    return 'deny', f"Setting credential variable via parameter expansion is forbidden: {v_name}"
+                return 'force_ask', f"Parameter expansion with variable assignment requires confirmation: ${{{p_inner}}}"
 
     # Check for command substitutions $(...) or `...` or process substitutions <(...) >(...)
     substitutions = extract_command_substitutions(cmd_str)

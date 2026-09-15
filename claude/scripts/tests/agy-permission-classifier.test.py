@@ -5140,6 +5140,37 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 os.environ['GOTOOLDIR'] = old_gotooldir
             fake_cc.unlink(missing_ok=True)
 
+        # 23. Shell parameter expansion cannot alter command lookup or set dangerous variables
+        res_bash_cmds = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ls ${BASH_CMDS[ls]:=/bin/echo}', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_bash_cmds['decision'], 'deny', f"Expected deny for BASH_CMDS parameter expansion, got: {res_bash_cmds}")
+        self.assertIn('BASH_CMDS', res_bash_cmds['reason'])
+
+        res_ls_var = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ls $DIR', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_ls_var['decision'], 'ask', f"Expected ask for ls with unexpanded variable, got: {res_ls_var}")
+
+        # 24. Git help commands and options dispatch to external viewers and require confirmation
+        for git_help_cmd in ('git status --help', 'git log --help', 'git --help', 'git help diff'):
+            res_git_help = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': git_help_cmd, 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_git_help['decision'], 'force_ask', f"Expected force_ask for {git_help_cmd}, got: {res_git_help}")
+            self.assertIn('help', res_git_help['reason'].lower())
+
+        # 25. Operands after -- are retained as positional operands and validated against workspace
+        res_cat_dashdash = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat -- -/../../../home/you/private-notes.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cat_dashdash['decision'], 'ask', f"Expected ask for cat targeting file outside workspace after --, got: {res_cat_dashdash}")
+        self.assertIn('outside workspace', res_cat_dashdash['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()
