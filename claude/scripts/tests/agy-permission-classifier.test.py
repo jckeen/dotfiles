@@ -4959,6 +4959,67 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertIn('gpg.program', res_shortlog_custom_gpg['reason'])
         subprocess.run(['git', 'config', '--unset', 'gpg.program'], cwd=str(ws_dir), check=True)
 
+        # 15. Git diff with configured filter driver requires confirmation
+        subprocess.run(['git', 'config', 'filter.review.clean', '/custom/clean'], cwd=str(ws_dir), check=True)
+        res_diff_filter = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_diff_filter['decision'], 'force_ask')
+        self.assertIn('filter driver', res_diff_filter['reason'])
+        subprocess.run(['git', 'config', '--unset', 'filter.review.clean'], cwd=str(ws_dir), check=True)
+
+        res_diff_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_diff_clean['decision'], 'allow')
+
+        # 16. Bash $[...] and $((...)) arithmetic expansion and dangerous env var assignments
+        res_arith_path = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ls $[PATH=0]', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_arith_path['decision'], 'deny')
+        self.assertIn('execution-altering environment variable', res_arith_path['reason'])
+
+        res_arith_paren_path = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ls $((PATH=0))', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_arith_paren_path['decision'], 'deny')
+        self.assertIn('execution-altering environment variable', res_arith_paren_path['reason'])
+
+        res_arith_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'ls $[1+1]', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_arith_safe['decision'], 'force_ask')
+        self.assertIn('substitution', res_arith_safe['reason'])
+
+        # 17. File command list operands (-f / --files-from) validate list entries
+        file_list_path = ws_dir / 'paths.txt'
+        file_list_path.write_text('.' + 'env\n')
+        res_file_list_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file -f paths.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_file_list_sensitive['decision'], 'deny')
+        self.assertIn('sensitive path', res_file_list_sensitive['reason'])
+
+        file_list_path.write_text('safe.txt\n')
+        res_file_list_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file -f paths.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_file_list_clean['decision'], 'allow')
+
+        res_file_list_long = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file --files-from=paths.txt', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_file_list_long['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

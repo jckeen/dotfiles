@@ -450,42 +450,54 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
     return False
 
 
-def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd, written_files=None):
-    """Validate a --files0-from list file and all its NUL-delimited entries."""
-    if not files0_from or not isinstance(files0_from, str):
+def validate_file_list_entries(list_file, cmd_name, cmd_tokens, workspace_paths, cwd, written_files=None, nul_delimited=False):
+    """Validate an external file list and all its entries (newline or NUL delimited)."""
+    if not list_file or not isinstance(list_file, str):
         return None
-    if files0_from == '-':
+    if list_file in ('-', '/dev/stdin'):
         return 'ask', f"{cmd_name} reading file list from stdin requires confirmation: {' '.join(cmd_tokens)}"
-    if is_sensitive_credential_path(files0_from, cwd) or matches_sensitive_pattern(files0_from):
-        return 'deny', f"{cmd_name} reading file list from sensitive path is forbidden: {files0_from}"
-    if not is_path_in_workspaces(files0_from, workspace_paths, cwd):
-        return 'ask', f"{cmd_name} reading file list outside workspace requires approval: {files0_from}"
-    f0_resolved = expand_path(files0_from, cwd)
-    norm_f0 = os.path.normpath(f0_resolved)
+    if is_sensitive_credential_path(list_file, cwd) or matches_sensitive_pattern(list_file):
+        return 'deny', f"{cmd_name} reading file list from sensitive path is forbidden: {list_file}"
+    if not is_path_in_workspaces(list_file, workspace_paths, cwd):
+        return 'ask', f"{cmd_name} reading file list outside workspace requires approval: {list_file}"
+    f_resolved = expand_path(list_file, cwd)
+    norm_f = os.path.normpath(f_resolved)
     if written_files:
         for wf in written_files:
             norm_wf = os.path.normpath(wf)
-            if norm_f0 == norm_wf or norm_f0.startswith(norm_wf + os.sep):
-                return 'force_ask', f"{cmd_name} file list was modified or redirected to in the command line: {files0_from}"
+            if norm_f == norm_wf or norm_f.startswith(norm_wf + os.sep):
+                return 'force_ask', f"{cmd_name} file list was modified or redirected to in the command line: {list_file}"
     for i_tok, tok in enumerate(cmd_tokens):
         if is_output_redirection(tok, cmd_tokens[i_tok + 1] if i_tok + 1 < len(cmd_tokens) else None) and i_tok + 1 < len(cmd_tokens):
             redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
-            if os.path.normpath(redir_target) == norm_f0:
-                return 'force_ask', f"{cmd_name} file list is redirected to within the same command: {files0_from}"
-    if not os.path.isfile(f0_resolved):
-        return 'force_ask', f"{cmd_name} file list does not exist: {files0_from}"
+            if os.path.normpath(redir_target) == norm_f:
+                return 'force_ask', f"{cmd_name} file list is redirected to within the same command: {list_file}"
+    if not os.path.isfile(f_resolved):
+        return 'force_ask', f"{cmd_name} file list does not exist: {list_file}"
     try:
-        content = Path(f0_resolved).read_bytes()
-        for entry in content.split(b'\0'):
-            p = entry.decode(errors='replace').strip()
+        content = Path(f_resolved).read_bytes()
+        raw_entries = content.split(b'\0') if nul_delimited else content.splitlines()
+        for entry in raw_entries:
+            p = entry.decode(errors='replace').strip().rstrip('\0')
             if p:
                 if is_sensitive_credential_path(p, cwd) or matches_sensitive_pattern(p):
                     return 'deny', f"{cmd_name} file list references sensitive path: {p}"
                 if not is_path_in_workspaces(p, workspace_paths, cwd):
                     return 'ask', f"{cmd_name} file list references path outside workspace: {p}"
+                if written_files:
+                    norm_p = os.path.normpath(expand_path(p, cwd))
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_p == norm_wf or norm_p.startswith(norm_wf + os.sep):
+                            return 'force_ask', f"{cmd_name} file list entry was modified or updated earlier: {p}"
     except Exception:
-        return 'force_ask', f"{cmd_name} unable to verify file list: {files0_from}"
+        return 'force_ask', f"{cmd_name} unable to verify file list: {list_file}"
     return None
+
+
+def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd, written_files=None):
+    """Validate a --files0-from list file and all its NUL-delimited entries."""
+    return validate_file_list_entries(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd, written_files=written_files, nul_delimited=True)
 
 
 def check_directory_descendants(target_dir, cwd=None):
@@ -1008,6 +1020,8 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
     try:
         safe_args = strip_git_output_options(args[1:])
         if git_sub == 'diff':
+            if git_has_filter_configured(effective_cwd):
+                return 'unknown'
             cmd = ['git', 'diff', '--name-only'] + [a for a in safe_args if a != '--name-only']
         elif git_sub == 'show':
             for a in safe_args:
@@ -2781,6 +2795,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             has_no_textconv = (textconv_enabled is False)
             if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                 return 'force_ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+            if git_has_filter_configured(cwd):
+                return 'force_ask', f"git diff with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
             # Inspect file operands and pathspecs for sensitive files and workspace containment
             is_no_index = any(a == '--no-index' for a in args)
@@ -3564,6 +3580,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     file_operands.extend(pos[1:])
             elif base_cmd == 'file':
                 in_positional_only = False
+                files_from_list = []
                 i = 0
                 while i < len(args):
                     a = args[i]
@@ -3579,11 +3596,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         opt = a.split('=', 1)[0]
                         val = a.split('=', 1)[1] if '=' in a else None
                         if '--files-from'.startswith(opt) and len(opt) >= 3:
-                            if val is not None:
-                                file_operands.append(val)
-                            elif i + 1 < len(args):
-                                file_operands.append(args[i + 1])
+                            ff_val = val if val is not None else (args[i + 1] if i + 1 < len(args) else None)
+                            if val is None and i + 1 < len(args):
                                 i += 1
+                            if ff_val:
+                                file_operands.append(ff_val)
+                                files_from_list.append(ff_val)
                             i += 1
                             continue
                         if '--magic-file'.startswith(opt) and len(opt) >= 3:
@@ -3608,11 +3626,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         for idx_char, ch in enumerate(a[1:], start=1):
                             if ch == 'f':
                                 rest = a[idx_char + 1:].lstrip('=')
-                                if rest:
-                                    file_operands.append(rest)
-                                elif i + 1 < len(args):
-                                    file_operands.append(args[i + 1])
+                                ff_val = rest if rest else (args[i + 1] if i + 1 < len(args) else None)
+                                if not rest and i + 1 < len(args):
                                     i += 1
+                                if ff_val:
+                                    file_operands.append(ff_val)
+                                    files_from_list.append(ff_val)
                                 break
                             elif ch == 'm':
                                 rest = a[idx_char + 1:].lstrip('=')
@@ -3633,6 +3652,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         continue
                     file_operands.append(a)
                     i += 1
+                for ff in files_from_list:
+                    v_res = validate_file_list_entries(ff, 'file', cmd_tokens, workspace_paths, cwd, written_files=written_files, nul_delimited=False)
+                    if v_res is not None:
+                        return v_res
             elif base_cmd == 'date':
                 i = 0
                 while i < len(args):
@@ -4741,7 +4764,56 @@ def extract_command_substitutions(cmd_str):
                 continue
 
             is_dollar_sub = (c == '$' and i + 1 < n and cmd_str[i + 1] == '(')
+            is_dollar_bracket = (c == '$' and i + 1 < n and cmd_str[i + 1] == '[')
             is_proc_sub = (c in ('<', '>') and i + 1 < n and cmd_str[i + 1] == '(' and not in_double_quote)
+
+            if is_dollar_bracket:
+                j = i + 2
+                depth = 1
+                inner_chars = []
+                sub_single_quote = False
+                sub_double_quote = False
+                sub_escape = False
+                found_closing = False
+
+                while j < n:
+                    cj = cmd_str[j]
+                    if sub_escape:
+                        sub_escape = False
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '\\' and not sub_single_quote:
+                        sub_escape = True
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == "'" and not sub_double_quote:
+                        sub_single_quote = not sub_single_quote
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '"' and not sub_single_quote:
+                        sub_double_quote = not sub_double_quote
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if not sub_single_quote and not sub_double_quote:
+                        if cj == '[':
+                            depth += 1
+                        elif cj == ']':
+                            depth -= 1
+                            if depth == 0:
+                                found_closing = True
+                                break
+
+                    inner_chars.append(cj)
+                    j += 1
+
+                sub_content = ''.join(inner_chars)
+                substitutions.append(sub_content)
+                i = j + 1 if found_closing else n
+                continue
 
             if is_dollar_sub or is_proc_sub:
                 j = i + 2
@@ -4821,6 +4893,12 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
     if substitutions:
         for inner in substitutions:
             if inner and inner.strip():
+                for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)', inner):
+                    var_name = m.group(1)
+                    if is_dangerous_env_var(var_name):
+                        return 'deny', f"Setting execution-altering environment variable via substitution or arithmetic expansion is forbidden: {var_name}"
+                    if is_credential_var_name(var_name):
+                        return 'deny', f"Setting credential variable via substitution or arithmetic expansion is forbidden: {var_name}"
                 inner_verdict, inner_reason = classify_command_line(inner.strip(), workspace_paths, cwd, depth + 1)
                 if inner_verdict == 'deny':
                     return 'deny', f"Command substitution contains forbidden operation: {inner_reason}"
