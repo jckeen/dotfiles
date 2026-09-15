@@ -4676,6 +4676,73 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_cp_clean['decision'], 'allow')
 
+    def test_round_52_hardening(self):
+        tmp_dir = tempfile.mkdtemp(prefix='agy_test_r52_')
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        ws_dir = Path(tmp_dir) / 'workspace'
+        ws_dir.mkdir()
+        antigravity_dir = ws_dir / 'antigravity'
+        antigravity_dir.mkdir()
+        (antigravity_dir / 'hooks.json').write_text('{}\n')
+        (ws_dir / 'safe.txt').write_text('safe\n')
+
+        # 1. Shell-escaped redirection targets are decoded and validated
+        res_echo_escaped_hooks = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"echo x > antigravity/hook\s.json", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_escaped_hooks['decision'], 'force_ask')
+        self.assertIn('security configuration', res_echo_escaped_hooks['reason'])
+
+        res_echo_escaped_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"echo x > ~/.ssh/auth\orized_keys", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_escaped_sensitive['decision'], 'deny')
+        self.assertIn('sensitive', res_echo_escaped_sensitive['reason'])
+
+        # Clean redirection inside workspace is allowed
+        res_echo_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo x > safe.txt", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_clean['decision'], 'allow')
+
+        # 2. Git validates every --output destination, not just the last one
+        subprocess.run(['git', 'init'], cwd=str(ws_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'add', 'safe.txt'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(ws_dir), check=True, capture_output=True)
+
+        res_git_multi_out_outside = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git diff --output=/outside/victim --output=safe.patch", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_multi_out_outside['decision'], 'force_ask')
+        self.assertIn('outside workspace', res_git_multi_out_outside['reason'])
+
+        res_git_multi_out_reversed = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git diff --output=safe.patch --output=/outside/victim", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_multi_out_reversed['decision'], 'force_ask')
+        self.assertIn('outside workspace', res_git_multi_out_reversed['reason'])
+
+        res_git_multi_out_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git diff --output=~/.ssh/id_rsa --output=safe.patch", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_multi_out_sensitive['decision'], 'deny')
+        self.assertIn('sensitive', res_git_multi_out_sensitive['reason'])
+
+        # Clean git diff with safe output destination is allowed
+        res_git_clean_out = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git diff --output=safe.patch", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_clean_out['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

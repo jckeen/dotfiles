@@ -202,6 +202,22 @@ def decode_shell_arg(arg):
     return decoded
 
 
+def decode_shell_target(target_str):
+    """Safely decode shell-escaped and quoted sequences in redirection targets and file paths."""
+    if not target_str or not isinstance(target_str, str):
+        return target_str
+    s = decode_shell_arg(target_str)
+    try:
+        parts = shlex.split(s)
+        if parts:
+            return ' '.join(parts)
+    except Exception:
+        pass
+    clean = s.strip('\'"')
+    clean = re.sub(r'\\(.)', r'\1', clean)
+    return clean
+
+
 def subcmd_has_unquoted_expansions(subcmd_str):
     """Check if subcmd_str contains unquoted/double-quoted variable expansions ($ or ` outside single quotes)."""
     if not subcmd_str or not isinstance(subcmd_str, str):
@@ -1623,7 +1639,6 @@ def extract_unquoted_redirections(subcmd_str):
                         continue
                     if tc == '\\' and not t_in_sq:
                         t_esc = True
-                        target_chars.append(tc)
                         i += 1
                         continue
                     if tc == "'" and not t_in_dq:
@@ -1639,6 +1654,9 @@ def extract_unquoted_redirections(subcmd_str):
                             break
                     target_chars.append(tc)
                     i += 1
+
+                if t_esc or t_in_sq or t_in_dq:
+                    return None, None
 
                 target_str = ''.join(target_chars)
                 if not target_str:
@@ -2085,7 +2103,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     # Validate extracted redirections
     if extracted_redirections:
         for tok, target_raw in extracted_redirections:
-            target = unquote_token(target_raw)
+            target = decode_shell_target(target_raw)
             if (target.startswith('"') and target.endswith('"')) or (target.startswith("'") and target.endswith("'")):
                 target = target[1:-1]
             if target == '/dev/null':
@@ -2128,7 +2146,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if tok in REDIRECTION_OPERATORS:
                 skip_next_arg = True
                 if i + 1 < len(cmd_tokens[1:]):
-                    target = unquote_token(cmd_tokens[1:][i + 1])
+                    target = decode_shell_target(cmd_tokens[1:][i + 1])
                     if target == '/dev/null':
                         continue
                     if target.startswith(('/dev/tcp/', '/dev/udp/')):
@@ -2362,29 +2380,34 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     return 'force_ask', f"git {git_sub} repository directory ({git_dir_path}) outside workspace requires confirmation: {cwd}"
 
         # Check for git output options across all git commands (including GNU option abbreviations)
-        git_out = None
-        skip_msg = False
+        git_outs = []
+        skip_arg = False
         for i, a in enumerate(args):
-            if skip_msg:
-                skip_msg = False
+            if skip_arg:
+                skip_arg = False
                 continue
             if git_sub in ('commit', 'tag') and a in ('-m', '--message'):
-                skip_msg = True
+                skip_arg = True
                 continue
             if git_sub in ('commit', 'tag') and (a.startswith('-m') or a.startswith('--message=')):
                 continue
             if a.startswith('--o') and '=' in a:
                 opt, val = a.split('=', 1)
-                if '--output'.startswith(opt) or '--output-directory'.startswith(opt):
-                    git_out = val
-            elif a.startswith('--o') and ('--output'.startswith(a) or '--output-directory'.startswith(a)):
+                if ('--output'.startswith(opt) and len(opt) >= 4) or ('--output-directory'.startswith(opt) and len(opt) >= 4):
+                    git_outs.append(decode_shell_target(val))
+            elif a.startswith('--o') and (('--output'.startswith(a) and len(a) >= 4) or ('--output-directory'.startswith(a) and len(a) >= 4)):
                 if i + 1 < len(args):
-                    git_out = args[i + 1]
+                    git_outs.append(decode_shell_target(args[i + 1]))
+                    skip_arg = True
             elif a in ('--output', '-o', '--output-directory') and i + 1 < len(args):
-                git_out = args[i + 1]
+                git_outs.append(decode_shell_target(args[i + 1]))
+                skip_arg = True
             elif a.startswith('-o') and len(a) > 2 and not a.startswith('--'):
-                git_out = a[2:].lstrip('=')
-        if git_out:
+                git_outs.append(decode_shell_target(a[2:].lstrip('=')))
+
+        for git_out in git_outs:
+            if not git_out:
+                continue
             if is_sensitive_credential_path(git_out, cwd) or is_system_write_path(git_out, cwd):
                 return 'deny', f"git {git_sub} --output targeting sensitive or system path is forbidden: {git_out}"
             if is_git_admin_path(git_out, cwd) or is_security_guard_path(git_out, cwd):
@@ -3894,8 +3917,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             '--files0-from',
         }
         input_files = []
-        out_target = None
-        temp_dir = None
+        out_targets = []
+        temp_dirs = []
         files0_from = None
         i = 0
         while i < len(args):
@@ -3907,22 +3930,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 opt_name = a.split('=', 1)[0]
                 if '=' in a:
                     val = a.split('=', 1)[1]
-                    if '--output'.startswith(opt_name):
-                        out_target = val
-                    elif '--temporary-directory'.startswith(opt_name):
-                        temp_dir = val
-                    elif '--files0-from'.startswith(opt_name):
+                    if '--output'.startswith(opt_name) and len(opt_name) >= 4:
+                        out_targets.append(decode_shell_target(val))
+                    elif '--temporary-directory'.startswith(opt_name) and len(opt_name) >= 4:
+                        temp_dirs.append(decode_shell_target(val))
+                    elif '--files0-from'.startswith(opt_name) and len(opt_name) >= 4:
                         files0_from = val
                     i += 1
                     continue
                 elif opt_name in SORT_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in SORT_OPTS_WITH_ARG if long_opt.startswith('--')):
                     if i + 1 < len(args):
                         val = args[i + 1]
-                        if '--output'.startswith(opt_name):
-                            out_target = val
-                        elif '--temporary-directory'.startswith(opt_name):
-                            temp_dir = val
-                        elif '--files0-from'.startswith(opt_name):
+                        if '--output'.startswith(opt_name) and len(opt_name) >= 4:
+                            out_targets.append(decode_shell_target(val))
+                        elif '--temporary-directory'.startswith(opt_name) and len(opt_name) >= 4:
+                            temp_dirs.append(decode_shell_target(val))
+                        elif '--files0-from'.startswith(opt_name) and len(opt_name) >= 4:
                             files0_from = val
                         i += 2
                         continue
@@ -3933,17 +3956,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     o_idx = a.index('o')
                     rest = a[o_idx + 1:].lstrip('=')
                     if rest:
-                        out_target = rest
+                        out_targets.append(decode_shell_target(rest))
                     elif i + 1 < len(args):
-                        out_target = args[i + 1]
+                        out_targets.append(decode_shell_target(args[i + 1]))
                         i += 1
                 elif 'T' in a:
                     t_idx = a.index('T')
                     rest = a[t_idx + 1:].lstrip('=')
                     if rest:
-                        temp_dir = rest
+                        temp_dirs.append(decode_shell_target(rest))
                     elif i + 1 < len(args):
-                        temp_dir = args[i + 1]
+                        temp_dirs.append(decode_shell_target(args[i + 1]))
                         i += 1
                 elif any(c in a for c in ('k', 't', 'S')):
                     for c in ('k', 't', 'S'):
@@ -3958,7 +3981,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 input_files.append(a)
                 i += 1
 
-        if out_target:
+        for out_target in out_targets:
+            if not out_target:
+                continue
             if is_sensitive_credential_path(out_target, cwd) or is_system_write_path(out_target, cwd):
                 return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
             if is_git_admin_path(out_target, cwd):
@@ -3968,7 +3993,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if not is_path_in_workspaces(out_target, workspace_paths, cwd):
                 return 'ask', f"sort output outside workspace requires approval: {out_target}"
 
-        if temp_dir:
+        for temp_dir in temp_dirs:
+            if not temp_dir:
+                continue
             if is_sensitive_credential_path(temp_dir, cwd) or is_system_write_path(temp_dir, cwd):
                 return 'deny', f"sort temporary directory targeting sensitive or system path is forbidden: {temp_dir}"
             if not is_path_in_workspaces(temp_dir, workspace_paths, cwd):
@@ -4708,9 +4735,17 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
         verdicts.append((verdict, reason))
 
         # Record files written or redirected to by this subcommand
+        if raw_s:
+            _, ext_redirs = extract_unquoted_redirections(raw_s)
+            if ext_redirs:
+                for r_tok, r_target in ext_redirs:
+                    if r_tok in ('>', '>>', '>|', '&>', '&>>'):
+                        t_clean = decode_shell_target(r_target)
+                        if t_clean and t_clean != '/dev/null':
+                            written_files.add(expand_path(t_clean, cwd))
         for i_tok, tok in enumerate(sub):
             if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(sub):
-                t_raw = unquote_token(sub[i_tok + 1])
+                t_raw = decode_shell_target(unquote_token(sub[i_tok + 1]))
                 if t_raw and t_raw != '/dev/null':
                     written_files.add(expand_path(t_raw, cwd))
         sub_base = os.path.basename(unquote_token(sub[0])) if sub else ''
@@ -4835,6 +4870,26 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                         if not wa.startswith('-'):
                             written_files.add(expand_path(wa, effective_git_cwd))
                             break
+
+            # Record git output destinations
+            skip_sub = False
+            for idx_a, a_sub in enumerate(sub_args):
+                if skip_sub:
+                    skip_sub = False
+                    continue
+                if a_sub.startswith('--o') and '=' in a_sub:
+                    opt, val = a_sub.split('=', 1)
+                    if ('--output'.startswith(opt) and len(opt) >= 4) or ('--output-directory'.startswith(opt) and len(opt) >= 4):
+                        written_files.add(expand_path(decode_shell_target(val), effective_git_cwd))
+                elif a_sub.startswith('--o') and (('--output'.startswith(a_sub) and len(a_sub) >= 4) or ('--output-directory'.startswith(a_sub) and len(a_sub) >= 4)):
+                    if idx_a + 1 < len(sub_args):
+                        written_files.add(expand_path(decode_shell_target(sub_args[idx_a + 1]), effective_git_cwd))
+                        skip_sub = True
+                elif a_sub in ('--output', '-o', '--output-directory') and idx_a + 1 < len(sub_args):
+                    written_files.add(expand_path(decode_shell_target(sub_args[idx_a + 1]), effective_git_cwd))
+                    skip_sub = True
+                elif a_sub.startswith('-o') and len(a_sub) > 2 and not a_sub.startswith('--'):
+                    written_files.add(expand_path(decode_shell_target(a_sub[2:].lstrip('=')), effective_git_cwd))
 
     for v, r in verdicts:
         if v == 'deny':
