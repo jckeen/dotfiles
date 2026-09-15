@@ -4845,6 +4845,53 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_files0_redir_both['decision'], 'force_ask')
         self.assertIn('modified or redirected to', res_files0_redir_both['reason'])
 
+        # 10. Double-quoted backslash in redirection filename preserves literal backslash for non-escapes
+        res_echo_dq_symlink_bs = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo x > "a\\b"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_dq_symlink_bs['decision'], 'ask')
+        self.assertIn('outside workspace', res_echo_dq_symlink_bs['reason'])
+
+        res_echo_dq_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo x > "clean_dq.txt"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_dq_clean['decision'], 'allow')
+
+        # 11. Bash printf %n variable assignment and dangerous env var bypass checks
+        res_printf_n_path = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "printf '%n' PATH; ls", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_printf_n_path['decision'], 'deny')
+        self.assertIn('execution-altering environment variable', res_printf_n_path['reason'])
+
+        res_printf_n_cred = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "printf '%10n' GITHUB_TOKEN", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_printf_n_cred['decision'], 'deny')
+
+        res_printf_n_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "printf '%n' my_counter", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_printf_n_safe['decision'], 'ask')
+        self.assertIn('%n variable assignment requires confirmation', res_printf_n_safe['reason'])
+
+        res_printf_literal_n = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"printf '%s\n' '%n'", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_printf_literal_n['decision'], 'allow')
+
+        res_printf_escaped_percent = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "printf '%%n' PATH", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_printf_escaped_percent['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1647,9 +1647,26 @@ def extract_unquoted_redirections(subcmd_str):
                         i += 1
                         continue
                     if tc == '\\' and not t_in_sq:
-                        t_esc = True
-                        i += 1
-                        continue
+                        if t_in_dq:
+                            if i + 1 < n:
+                                next_c = subcmd_str[i + 1]
+                                if next_c in ('"', '\\', '$', '`'):
+                                    target_chars.append(next_c)
+                                    i += 2
+                                    continue
+                                elif next_c == '\n':
+                                    i += 2
+                                    continue
+                                else:
+                                    target_chars.append('\\')
+                                    i += 1
+                                    continue
+                            else:
+                                return None, None
+                        else:
+                            t_esc = True
+                            i += 1
+                            continue
                     if tc == "'" and not t_in_dq:
                         t_in_sq = not t_in_sq
                         i += 1
@@ -3730,18 +3747,56 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if any(is_date_set_opt(a) for a in args) or any(re.match(r'^\d{8,12}(\.\d{2})?$', a) for a in args if not a.startswith('-') and not a.startswith('+')):
                 return 'force_ask', f"date with system clock setting requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'printf':
+            v_var = None
             if any(a == '-v' or a.startswith('-v') for a in args):
-                var_name = None
                 for i, a in enumerate(args):
                     if a == '-v' and i + 1 < len(args):
-                        var_name = args[i + 1]
+                        v_var = args[i + 1]
                         break
                     elif a.startswith('-v') and len(a) > 2:
-                        var_name = a[2:]
+                        v_var = a[2:]
                         break
-                if var_name and is_dangerous_env_var(var_name):
-                    return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {var_name}"
+                if v_var and (is_dangerous_env_var(v_var) or is_credential_var_name(v_var)):
+                    return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {v_var}"
+
+            def has_printf_n_specifier(fmt_str: str) -> bool:
+                clean = fmt_str.replace('%%', '')
+                return bool(re.search(r"%[-+ #0']*(?:\d+\$)?(?:\*|\d+)?(?:\.(?:\*|\d+))?(?:hh|h|ll|l|L|j|z|t)?n", clean))
+
+            fmt_arg = None
+            pos_args = []
+            idx_a = 0
+            while idx_a < len(args):
+                a_tok = args[idx_a]
+                if a_tok == '--':
+                    idx_a += 1
+                    if idx_a < len(args):
+                        fmt_arg = args[idx_a]
+                        pos_args = args[idx_a + 1:]
+                    break
+                if a_tok == '-v':
+                    idx_a += 2
+                    continue
+                if a_tok.startswith('-v'):
+                    idx_a += 1
+                    continue
+                if a_tok.startswith('-'):
+                    idx_a += 1
+                    continue
+                fmt_arg = a_tok
+                pos_args = args[idx_a + 1:]
+                break
+
+            n_spec = fmt_arg is not None and has_printf_n_specifier(fmt_arg)
+            if n_spec:
+                for pa in pos_args:
+                    if is_dangerous_env_var(pa) or is_credential_var_name(pa):
+                        return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {pa}"
+
+            if v_var is not None:
                 return 'ask', f"printf with variable assignment (-v) requires confirmation: {' '.join(cmd_tokens)}"
+            if n_spec:
+                return 'ask', f"printf with %n variable assignment requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'uniq':
             positionals = [a for a in args if not a.startswith('-')]
             if len(positionals) > 1:
