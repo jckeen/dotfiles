@@ -129,6 +129,7 @@ DANGEROUS_ENV_VARS = {
     'PERL5OPT', 'PERL5LIB', 'PERLLIB',
     'RUBYOPT', 'RUBYLIB',
     'RUSTFMT',
+    'GOTOOLCHAIN', 'GOROOT', 'GOTOOLDIR',
 }
 
 SAFE_INLINE_ENV_VARS = {
@@ -5237,8 +5238,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                                             rs_text = rf.read()
                                         if 'path' not in rs_text:
                                             continue
-                                        for mp in re.finditer(r'#!?\[\s*path\s*=\s*["\']([^"\']+)["\']\s*\]', rs_text):
-                                            m_target = mp.group(1).strip()
+                                        for mp in re.finditer(r'#!?\[\s*path\s*=\s*(?:r(#*)"(.*?)"\1|["\']([^"\']*)["\'])\s*\]', rs_text):
+                                            m_target = (mp.group(2) if mp.group(2) is not None else mp.group(3)).strip()
                                             mod_full = os.path.normpath(expand_path(m_target, root_d))
                                             if not is_path_in_workspaces(mod_full, workspace_paths, cwd):
                                                 return 'force_ask', f"cargo fmt module path attribute in {fname} points outside workspace: {m_target}"
@@ -5261,8 +5262,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                                 with open(wf, 'r', encoding='utf-8', errors='replace') as rf:
                                     rs_text = rf.read()
                                 if 'path' in rs_text:
-                                    for mp in re.finditer(r'#!?\[\s*path\s*=\s*["\']([^"\']+)["\']\s*\]', rs_text):
-                                        m_target = mp.group(1).strip()
+                                    for mp in re.finditer(r'#!?\[\s*path\s*=\s*(?:r(#*)"(.*?)"\1|["\']([^"\']*)["\'])\s*\]', rs_text):
+                                        m_target = (mp.group(2) if mp.group(2) is not None else mp.group(3)).strip()
                                         mod_full = os.path.normpath(expand_path(m_target, os.path.dirname(wf)))
                                         if not is_path_in_workspaces(mod_full, workspace_paths, cwd):
                                             return 'force_ask', f"cargo fmt module path attribute in {os.path.basename(wf)} points outside workspace: {m_target}"
@@ -5381,6 +5382,88 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             norm_wf = os.path.normpath(wf)
                             if norm_rv == norm_wf or norm_rv.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_rv + os.sep):
                                 return 'force_ask', f"go {args[0]} with {root_var} modified earlier in command line requires confirmation: {rval}"
+
+            gtc = get_inherited_go_setting('GOTOOLCHAIN')
+            if gtc and gtc.strip():
+                gtc_clean = gtc.strip()
+                if is_sensitive_credential_path(gtc_clean, cwd) or matches_sensitive_pattern(gtc_clean):
+                    return 'deny', f"go {args[0]} with GOTOOLCHAIN targeting sensitive path is forbidden: {gtc}"
+                if '/' in gtc_clean or '\\' in gtc_clean:
+                    norm_gtc = os.path.normpath(expand_path(gtc_clean, cwd))
+                    if is_path_in_workspaces(norm_gtc, workspace_paths, cwd) or any(norm_gtc.startswith(p) for p in ('/tmp', '/var/tmp', '/dev/shm')):
+                        return 'force_ask', f"go {args[0]} with untrusted or workspace-controlled GOTOOLCHAIN requires confirmation: {gtc}"
+                    if written_files:
+                        for wf in written_files:
+                            norm_wf = os.path.normpath(wf)
+                            if norm_gtc == norm_wf or norm_gtc.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_gtc + os.sep):
+                                return 'force_ask', f"go {args[0]} with GOTOOLCHAIN modified earlier in command line requires confirmation: {gtc}"
+                gtc_base = gtc_clean.split('+', 1)[0].strip()
+                if gtc_base not in ('', 'local', 'default', 'auto', 'path'):
+                    cand_local = expand_path(gtc_base, cwd)
+                    if written_files:
+                        norm_local = os.path.normpath(cand_local)
+                        for wf in written_files:
+                            norm_wf = os.path.normpath(wf)
+                            if norm_local == norm_wf or norm_local.startswith(norm_wf + os.sep):
+                                return 'force_ask', f"go {args[0]} GOTOOLCHAIN executable ({gtc_base}) created or modified earlier in command line requires confirmation: {cand_local}"
+                    if os.path.isfile(cand_local) and not is_trusted_executable_path(cand_local, workspace_paths, cwd, gtc_base):
+                        return 'force_ask', f"go {args[0]} workspace-controlled GOTOOLCHAIN executable ({gtc_base}) requires confirmation: {cand_local}"
+                    resolved_cand = shutil.which(gtc_base)
+                    if resolved_cand:
+                        if not is_trusted_executable_path(resolved_cand, workspace_paths, cwd, gtc_base):
+                            return 'force_ask', f"go {args[0]} GOTOOLCHAIN ({gtc}) resolves to untrusted or workspace path: {resolved_cand}"
+                        if written_files:
+                            norm_cand = os.path.normpath(resolved_cand)
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if norm_cand == norm_wf or norm_cand.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_cand + os.sep):
+                                    return 'force_ask', f"go {args[0]} GOTOOLCHAIN executable ({gtc_base}) modified earlier in command line requires confirmation: {resolved_cand}"
+                    else:
+                        return 'force_ask', f"go {args[0]} with custom or non-local GOTOOLCHAIN ({gtc}) requires confirmation"
+
+            if written_files:
+                for wf in written_files:
+                    if os.path.basename(wf) in ('go.mod', 'go.work'):
+                        return 'force_ask', f"go {args[0]} with {os.path.basename(wf)} modified earlier in command line requires confirmation: {wf}"
+
+            if (gtc or '').strip().split('+', 1)[0].strip() != 'local':
+                effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                curr_go = Path(effective_cwd).resolve()
+                while True:
+                    for tc_fname in ('go.work', 'go.mod'):
+                        tc_f = curr_go / tc_fname
+                        if tc_f.is_file():
+                            try:
+                                tc_text = tc_f.read_text(errors='replace')
+                                m_tc = re.search(r'(?m)^\s*toolchain\s+([^\s\r\n]+)', tc_text)
+                                if m_tc:
+                                    tc_name = m_tc.group(1).strip()
+                                    tc_base = tc_name.split('+', 1)[0].strip()
+                                    if tc_base not in ('', 'local', 'default', 'auto', 'path'):
+                                        cand_local = expand_path(tc_base, str(curr_go))
+                                        if os.path.isfile(cand_local) and not is_trusted_executable_path(cand_local, workspace_paths, cwd, tc_base):
+                                            return 'force_ask', f"go {args[0]} with workspace-controlled toolchain ({tc_base}) in {tc_fname} requires confirmation: {cand_local}"
+                                        resolved_tc = shutil.which(tc_base)
+                                        if resolved_tc:
+                                            if not is_trusted_executable_path(resolved_tc, workspace_paths, cwd, tc_base):
+                                                return 'force_ask', f"go {args[0]} toolchain ({tc_name}) in {tc_fname} resolves to untrusted or workspace path: {resolved_tc}"
+                                        else:
+                                            return 'force_ask', f"go {args[0]} with custom toolchain ({tc_name}) in {tc_fname} requires confirmation"
+                                m_gv = re.search(r'(?m)^\s*go\s+([0-9]+(?:\.[0-9]+)*)', tc_text)
+                                if m_gv:
+                                    gv_str = m_gv.group(1).strip()
+                                    gv_cand = f"go{gv_str}"
+                                    cand_local = expand_path(gv_cand, str(curr_go))
+                                    if os.path.isfile(cand_local) and not is_trusted_executable_path(cand_local, workspace_paths, cwd, gv_cand):
+                                        return 'force_ask', f"go {args[0]} with workspace-controlled Go version executable ({gv_cand}) in {tc_fname} requires confirmation: {cand_local}"
+                                    resolved_gv = shutil.which(gv_cand)
+                                    if resolved_gv and not is_trusted_executable_path(resolved_gv, workspace_paths, cwd, gv_cand):
+                                        return 'force_ask', f"go {args[0]} Go version executable ({gv_cand}) in {tc_fname} resolves to untrusted or workspace path: {resolved_gv}"
+                            except Exception:
+                                pass
+                    if curr_go.parent == curr_go:
+                        break
+                    curr_go = curr_go.parent
 
             cgo_flag_vars = ('CGO_CFLAGS', 'CGO_CPPFLAGS', 'CGO_CXXFLAGS', 'CGO_FFLAGS', 'CGO_LDFLAGS')
             for flag_var in cgo_flag_vars:

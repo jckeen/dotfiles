@@ -5797,6 +5797,60 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_esc_space['decision'], 'deny', f"Expected deny for echo \\ #; sudo id, got: {res_esc_space}")
         self.assertIn('sudo', res_esc_space['reason'].lower())
 
+        # 53. Go toolchain validation and Rust raw-string module path attributes
+        go_ws = ws_dir / 'go_tc_test'
+        go_ws.mkdir(parents=True, exist_ok=True)
+        try:
+            (go_ws / 'main.go').write_text("package main\nfunc main() {}\n")
+            (go_ws / 'go.mod').write_text("module example.com/test\ngo 1.21\ntoolchain go1.99.0\n")
+            res_go_mod_tc = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_ws)}},
+                'workspacePaths': [str(go_ws)],
+            })
+            self.assertEqual(res_go_mod_tc['decision'], 'force_ask', f"Expected force_ask for custom toolchain in go.mod, got: {res_go_mod_tc}")
+            self.assertIn('toolchain', res_go_mod_tc['reason'].lower())
+
+            old_tc = os.environ.get('GOTOOLCHAIN')
+            try:
+                (go_ws / 'go.mod').write_text("module example.com/test\ngo 1.21\n")
+                os.environ['GOTOOLCHAIN'] = 'go1.99.0+path'
+                res_gtc_env = self.run_classifier({
+                    'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_ws)}},
+                    'workspacePaths': [str(go_ws)],
+                })
+                self.assertEqual(res_gtc_env['decision'], 'force_ask', f"Expected force_ask for GOTOOLCHAIN=go1.99.0+path, got: {res_gtc_env}")
+                self.assertIn('toolchain', res_gtc_env['reason'].lower())
+            finally:
+                if old_tc is not None:
+                    os.environ['GOTOOLCHAIN'] = old_tc
+                else:
+                    os.environ.pop('GOTOOLCHAIN', None)
+        finally:
+            shutil.rmtree(str(go_ws), ignore_errors=True)
+
+        rust_ws = ws_dir / 'rust_raw_test'
+        rust_ws.mkdir(parents=True, exist_ok=True)
+        try:
+            (rust_ws / 'Cargo.toml').write_text('[package]\nname = "test"\nversion = "0.1.0"\n')
+            (rust_ws / 'src').mkdir(exist_ok=True)
+            (rust_ws / 'src' / 'main.rs').write_text('#[path = r"../../outside/lib.rs"]\nmod foo;\nfn main() {}\n')
+            res_rs_raw = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(rust_ws)}},
+                'workspacePaths': [str(rust_ws)],
+            })
+            self.assertEqual(res_rs_raw['decision'], 'force_ask', f"Expected force_ask for Rust raw-string module path outside workspace, got: {res_rs_raw}")
+            self.assertIn('outside workspace', res_rs_raw['reason'].lower())
+
+            (rust_ws / 'src' / 'main.rs').write_text('#[path = r#"../../outside/lib.rs"#]\nmod foo;\nfn main() {}\n')
+            res_rs_raw_hash = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(rust_ws)}},
+                'workspacePaths': [str(rust_ws)],
+            })
+            self.assertEqual(res_rs_raw_hash['decision'], 'force_ask', f"Expected force_ask for Rust raw-string with hash outside workspace, got: {res_rs_raw_hash}")
+            self.assertIn('outside workspace', res_rs_raw_hash['reason'].lower())
+        finally:
+            shutil.rmtree(str(rust_ws), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
