@@ -1540,6 +1540,120 @@ def tokenize_subcommand(subcmd_str):
         return None
 
 
+def extract_unquoted_redirections(subcmd_str):
+    """Extract unquoted shell redirections from a subcommand string while respecting quotes and escapes.
+
+    Returns (cleaned_cmd_str, list of (operator, target)).
+    If a redirection syntax error occurs (e.g. operator with no target), returns (None, None).
+    """
+    if not subcmd_str or not isinstance(subcmd_str, str):
+        return subcmd_str, []
+
+    redirections = []
+    cleaned_chars = []
+    i = 0
+    n = len(subcmd_str)
+    in_sq = False
+    in_dq = False
+    escape = False
+
+    while i < n:
+        c = subcmd_str[i]
+
+        if escape:
+            cleaned_chars.append(c)
+            escape = False
+            i += 1
+            continue
+
+        if c == '\\' and not in_sq:
+            escape = True
+            cleaned_chars.append(c)
+            i += 1
+            continue
+
+        if c == "'" and not in_dq:
+            in_sq = not in_sq
+            cleaned_chars.append(c)
+            i += 1
+            continue
+
+        if c == '"' and not in_sq:
+            in_dq = not in_dq
+            cleaned_chars.append(c)
+            i += 1
+            continue
+
+        if not in_sq and not in_dq:
+            # Check for redirection operator starting at i
+            # Check if there was a preceding fd number (e.g. 2>, 1>)
+            fd = None
+            if c in ('>', '<') or subcmd_str[i:i + 2] in ('&>',):
+                k = len(cleaned_chars)
+                while k > 0 and cleaned_chars[k - 1].isdigit():
+                    k -= 1
+                if k < len(cleaned_chars) and (k == 0 or cleaned_chars[k - 1].isspace()):
+                    fd = ''.join(cleaned_chars[k:])
+                    cleaned_chars = cleaned_chars[:k]
+
+            op = None
+            for cand in ('&>>', '&>', '>>', '>|', '>&', '<&', '<>', '>', '<'):
+                if subcmd_str.startswith(cand, i):
+                    op = cand
+                    break
+
+            if op is not None:
+                i += len(op)
+                while i < n and subcmd_str[i].isspace():
+                    i += 1
+
+                if i >= n:
+                    return None, None
+
+                target_chars = []
+                t_in_sq = False
+                t_in_dq = False
+                t_esc = False
+                while i < n:
+                    tc = subcmd_str[i]
+                    if t_esc:
+                        target_chars.append(tc)
+                        t_esc = False
+                        i += 1
+                        continue
+                    if tc == '\\' and not t_in_sq:
+                        t_esc = True
+                        target_chars.append(tc)
+                        i += 1
+                        continue
+                    if tc == "'" and not t_in_dq:
+                        t_in_sq = not t_in_sq
+                        i += 1
+                        continue
+                    if tc == '"' and not t_in_sq:
+                        t_in_dq = not t_in_dq
+                        i += 1
+                        continue
+                    if not t_in_sq and not t_in_dq:
+                        if tc.isspace() or tc in (';', '&', '|', '>', '<'):
+                            break
+                    target_chars.append(tc)
+                    i += 1
+
+                target_str = ''.join(target_chars)
+                if not target_str:
+                    return None, None
+                redirections.append((op, target_str))
+                cleaned_chars.append(' ')
+                continue
+
+        cleaned_chars.append(c)
+        i += 1
+
+    cleaned_str = ''.join(cleaned_chars).strip()
+    return cleaned_str, redirections
+
+
 def parse_refspec_dest(refspec, cwd=None):
     """Extract the destination branch name from a git refspec, resolving HEAD/@ to current branch."""
     spec = refspec.lstrip('+')
@@ -1943,49 +2057,113 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     if not cmd_tokens:
         return 'ask', f"Standalone environment assignment requires confirmation: {' '.join(tokens)}"
 
-    raw_cmd = unquote_token(cmd_tokens[0])
+    extracted_redirections = []
+    if raw_subcmd:
+        cleaned_cmd, extracted_redirections = extract_unquoted_redirections(raw_subcmd)
+        if extracted_redirections is None:
+            return 'ask', f"Subcommand with invalid redirection syntax requires confirmation: {raw_subcmd}"
+        if cleaned_cmd:
+            new_tokens = tokenize_subcommand(cleaned_cmd)
+            if new_tokens is not None:
+                idx = 0
+                while idx < len(new_tokens) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', new_tokens[idx]):
+                    tok = new_tokens[idx]
+                    var_name, val = tok.split('=', 1)
+                    if is_dangerous_env_var(var_name):
+                        return 'deny', f"Setting execution-altering environment variable is forbidden: {var_name}"
+                    if is_credential_var_name(var_name) or is_credential_env_var(tok):
+                        return 'deny', f"Environment assignment referencing credentials is forbidden: {var_name}"
+                    if var_name not in SAFE_INLINE_ENV_VARS:
+                        return 'ask', f"Command with inline environment variable assignment requires confirmation: {tok}"
+                    if not re.match(r'^[A-Za-z0-9_.:+-]*$', val):
+                        return 'ask', f"Command with complex environment variable assignment requires confirmation: {tok}"
+                    idx += 1
+                cmd_tokens = new_tokens[idx:]
+        else:
+            cmd_tokens = []
 
-    # Extract redirections and build unquoted arguments
-    filtered_args = []
-    skip_next_arg = False
-    for i, tok in enumerate(cmd_tokens[1:]):
-        if skip_next_arg:
-            skip_next_arg = False
-            continue
-        if tok in REDIRECTION_OPERATORS:
-            skip_next_arg = True
-            if i + 1 < len(cmd_tokens[1:]):
-                target = unquote_token(cmd_tokens[1:][i + 1])
-                if target == '/dev/null':
-                    continue
-                # Network pseudo-devices in bash /dev/tcp/... or /dev/udp/...
-                if target.startswith(('/dev/tcp/', '/dev/udp/')):
-                    return 'ask', f"Network communication via redirection requires confirmation: {target}"
-                # If target has unexpanded variable or glob, we cannot verify containment safely
-                if '$' in target or '*' in target or '?' in target:
-                    return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
-                if is_sensitive_credential_path(target, cwd):
-                    return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
-                if written_files:
-                    norm_target = os.path.normpath(expand_path(target, cwd))
-                    for wf in written_files:
-                        norm_wf = os.path.normpath(wf)
-                        if norm_target == norm_wf or norm_target.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_target + os.sep):
-                            return 'force_ask', f"Redirection targeting path modified or created earlier in the command line requires confirmation: {target}"
-                if tok == '<':
-                    if not is_path_in_workspaces(target, workspace_paths, cwd):
-                        return 'ask', f"Input redirection reading outside workspace requires approval: {target}"
-                else:
-                    if is_system_write_path(target, cwd):
-                        return 'deny', f"Redirect targeting system write path is forbidden: {target}"
-                    if is_git_admin_path(target, cwd):
-                        return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
-                    if is_security_guard_path(target, cwd):
-                        return 'force_ask', f"Redirect modifying security configuration requires confirmation: {target}"
-                    if not is_path_in_workspaces(target, workspace_paths, cwd):
-                        return 'ask', f"Redirecting output outside workspace requires approval: {target}"
-            continue
-        filtered_args.append(unquote_token(tok))
+    # Validate extracted redirections
+    if extracted_redirections:
+        for tok, target_raw in extracted_redirections:
+            target = unquote_token(target_raw)
+            if (target.startswith('"') and target.endswith('"')) or (target.startswith("'") and target.endswith("'")):
+                target = target[1:-1]
+            if target == '/dev/null':
+                continue
+            if tok in ('>&', '<&') and target.isdigit():
+                continue
+            if target.startswith(('/dev/tcp/', '/dev/udp/')):
+                return 'ask', f"Network communication via redirection requires confirmation: {target}"
+            if '$' in target or '*' in target or '?' in target:
+                return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
+            if is_sensitive_credential_path(target, cwd):
+                return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
+            if written_files:
+                norm_target = os.path.normpath(expand_path(target, cwd))
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_target == norm_wf or norm_target.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_target + os.sep):
+                        return 'force_ask', f"Redirection targeting path modified or created earlier in the command line requires confirmation: {target}"
+            if tok == '<':
+                if not is_path_in_workspaces(target, workspace_paths, cwd):
+                    return 'ask', f"Input redirection reading outside workspace requires approval: {target}"
+            else:
+                if is_system_write_path(target, cwd):
+                    return 'deny', f"Redirect targeting system write path is forbidden: {target}"
+                if is_git_admin_path(target, cwd):
+                    return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
+                if is_security_guard_path(target, cwd):
+                    return 'force_ask', f"Redirect modifying security configuration requires confirmation: {target}"
+                if not is_path_in_workspaces(target, workspace_paths, cwd):
+                    return 'ask', f"Redirecting output outside workspace requires approval: {target}"
+        filtered_args = [unquote_token(t) for t in cmd_tokens[1:]]
+    else:
+        # Fallback: extract redirections from tokens if raw_subcmd was not provided
+        filtered_args = []
+        skip_next_arg = False
+        for i, tok in enumerate(cmd_tokens[1:]):
+            if skip_next_arg:
+                skip_next_arg = False
+                continue
+            if tok in REDIRECTION_OPERATORS:
+                skip_next_arg = True
+                if i + 1 < len(cmd_tokens[1:]):
+                    target = unquote_token(cmd_tokens[1:][i + 1])
+                    if target == '/dev/null':
+                        continue
+                    if target.startswith(('/dev/tcp/', '/dev/udp/')):
+                        return 'ask', f"Network communication via redirection requires confirmation: {target}"
+                    if '$' in target or '*' in target or '?' in target:
+                        return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
+                    if is_sensitive_credential_path(target, cwd):
+                        return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
+                    if written_files:
+                        norm_target = os.path.normpath(expand_path(target, cwd))
+                        for wf in written_files:
+                            norm_wf = os.path.normpath(wf)
+                            if norm_target == norm_wf or norm_target.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_target + os.sep):
+                                return 'force_ask', f"Redirection targeting path modified or created earlier in the command line requires confirmation: {target}"
+                    if tok == '<':
+                        if not is_path_in_workspaces(target, workspace_paths, cwd):
+                            return 'ask', f"Input redirection reading outside workspace requires approval: {target}"
+                    else:
+                        if is_system_write_path(target, cwd):
+                            return 'deny', f"Redirect targeting system write path is forbidden: {target}"
+                        if is_git_admin_path(target, cwd):
+                            return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
+                        if is_security_guard_path(target, cwd):
+                            return 'force_ask', f"Redirect modifying security configuration requires confirmation: {target}"
+                        if not is_path_in_workspaces(target, workspace_paths, cwd):
+                            return 'ask', f"Redirecting output outside workspace requires approval: {target}"
+                continue
+            filtered_args.append(unquote_token(tok))
+
+    if not cmd_tokens:
+        if extracted_redirections:
+            return 'allow', 'Safe redirection command'
+        return 'ask', f"Standalone environment assignment requires confirmation: {' '.join(tokens)}"
+
+    raw_cmd = unquote_token(cmd_tokens[0])
     args = filtered_args
 
     # Resolve executable: prevent ./malicious/ls or workspace/untrusted PATH overrides
@@ -4203,6 +4381,43 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             else:
                 effective_dest = dest_dir
             effective_dests.append(effective_dest)
+
+        # Check for backup options in cp and mv
+        has_backup = False
+        backup_suffix = os.environ.get('SIMPLE_BACKUP_SUFFIX') or '~'
+        backup_type = os.environ.get('VERSION_CONTROL') or 'simple'
+
+        i_arg = 0
+        while i_arg < len(args):
+            a = args[i_arg]
+            if a == '-b':
+                has_backup = True
+            elif a.startswith('-') and not a.startswith('--') and 'b' in a:
+                has_backup = True
+            elif a == '--backup' or a.startswith('--backup='):
+                has_backup = True
+                if '=' in a:
+                    backup_type = a.split('=', 1)[1]
+            elif a.startswith('--') and any(opt.startswith(a.split('=', 1)[0]) for opt in ('--backup',)) and len(a.split('=', 1)[0]) >= 4:
+                has_backup = True
+                if '=' in a:
+                    backup_type = a.split('=', 1)[1]
+            elif a in ('-S', '--suffix') and i_arg + 1 < len(args):
+                backup_suffix = args[i_arg + 1]
+                i_arg += 1
+            elif a.startswith('--suffix='):
+                backup_suffix = a.split('=', 1)[1]
+            elif a.startswith('-S') and len(a) > 2:
+                backup_suffix = a[2:].lstrip('=')
+            i_arg += 1
+
+        if has_backup and backup_type not in ('none', 'off', 'never'):
+            backup_dests = []
+            for ed in effective_dests:
+                backup_dests.append(ed + backup_suffix)
+                if backup_type in ('numbered', 't') or (backup_type in ('existing', 'nil')):
+                    backup_dests.append(f"{ed}.~1~")
+            effective_dests.extend(backup_dests)
 
         all_paths = list(sources) + [dest_dir] + effective_dests
         for p in all_paths:

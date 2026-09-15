@@ -4619,6 +4619,63 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_git_clean_diff['decision'], 'allow')
 
+    def test_round_51_hardening(self):
+        tmp_dir = tempfile.mkdtemp(prefix='agy_test_r51_')
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        ws_dir = Path(tmp_dir) / 'workspace'
+        ws_dir.mkdir()
+        antigravity_dir = ws_dir / 'antigravity'
+        antigravity_dir.mkdir()
+        (antigravity_dir / 'hooks.json').write_text('{}\n')
+        (ws_dir / 'a').write_text('content_a\n')
+        (ws_dir / 'agy-permission-classifier').write_text('dummy\n')
+        (ws_dir / 'agy-permission-classifier.py').write_text('#!/usr/bin/env python3\n')
+        (ws_dir / 'safe.txt').write_text('safe\n')
+
+        # 1. Quoted punctuation does not mask shell redirection operators
+        res_echo_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo '>' > ~/.ssh/authorized_keys", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_sensitive['decision'], 'deny')
+        self.assertIn('sensitive', res_echo_sensitive['reason'])
+
+        res_echo_hooks = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo '>' > antigravity/hooks.json", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_hooks['decision'], 'force_ask')
+        self.assertIn('security configuration', res_echo_hooks['reason'])
+
+        # Safe redirection inside workspace is allowed
+        res_echo_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo 'hello' > safe.txt", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_safe['decision'], 'allow')
+
+        # 2. cp and mv backup destinations validate security guard paths
+        res_cp_backup_guard = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cp --backup=simple --suffix=.py a agy-permission-classifier", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cp_backup_guard['decision'], 'force_ask')
+        self.assertIn('security configuration', res_cp_backup_guard['reason'])
+
+        res_mv_backup_guard = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "mv --backup=simple --suffix=.py a agy-permission-classifier", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_mv_backup_guard['decision'], 'force_ask')
+        self.assertIn('security configuration', res_mv_backup_guard['reason'])
+
+        # Clean cp inside workspace is allowed
+        res_cp_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cp a safe2.txt", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cp_clean['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
