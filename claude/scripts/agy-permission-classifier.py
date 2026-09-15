@@ -26,6 +26,10 @@ import shutil
 import subprocess
 import sys
 import time
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 
 # Commands that are strictly read-only inspection and safe to auto-approve without options that execute code or write
 SAFE_INSPECTION_COMMANDS = {
@@ -387,7 +391,7 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
     return False
 
 
-def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd):
+def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd, written_files=None):
     """Validate a --files0-from list file and all its NUL-delimited entries."""
     if not files0_from or not isinstance(files0_from, str):
         return None
@@ -398,6 +402,17 @@ def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd
     if not is_path_in_workspaces(files0_from, workspace_paths, cwd):
         return 'ask', f"{cmd_name} reading file list outside workspace requires approval: {files0_from}"
     f0_resolved = expand_path(files0_from, cwd)
+    norm_f0 = os.path.normpath(f0_resolved)
+    if written_files:
+        for wf in written_files:
+            norm_wf = os.path.normpath(wf)
+            if norm_f0 == norm_wf or norm_f0.startswith(norm_wf + os.sep):
+                return 'force_ask', f"{cmd_name} file list was modified or redirected to in the command line: {files0_from}"
+    for i_tok, tok in enumerate(cmd_tokens):
+        if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(cmd_tokens):
+            redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
+            if os.path.normpath(redir_target) == norm_f0:
+                return 'force_ask', f"{cmd_name} file list is redirected to within the same command: {files0_from}"
     if not os.path.isfile(f0_resolved):
         return 'force_ask', f"{cmd_name} file list does not exist: {files0_from}"
     try:
@@ -884,6 +899,21 @@ def strip_git_output_options(args_list):
     return clean
 
 
+def git_log_has_diff_options(args):
+    """Check if git log / whatchanged options produce diffs, patches, or file listings."""
+    for a in args:
+        if a in ('-p', '-u', '-c', '--patch', '--patch-with-stat', '--patch-with-raw',
+                 '--cc', '--raw', '--stat', '--numstat', '--shortstat', '--dirstat',
+                 '--summary', '--name-only', '--name-status'):
+            return True
+        if a.startswith(('--patch', '--stat', '--numstat', '--shortstat', '--dirstat',
+                         '--summary', '--raw', '--diff-merges', '--word-diff')):
+            return True
+        if a.startswith('-') and not a.startswith('--') and a != '-' and any(c in a for c in ('p', 'u', 'c')):
+            return True
+    return False
+
+
 def git_command_touches_sensitive_files(git_sub, args, cwd):
     """Check if git diff / show / log / format-patch touches sensitive files in repository changes.
 
@@ -904,7 +934,7 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
                     if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
                         return 'unknown'
             cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
-        elif git_sub in ('log', 'whatchanged') and any(a in ('-p', '-u', '--patch', '--stat', '--numstat', '--shortstat') or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('p', 'u'))) for a in args):
+        elif git_sub in ('log', 'whatchanged') and git_log_has_diff_options(args):
             cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
@@ -1543,7 +1573,7 @@ def extract_file_operands(base_cmd, args):
     return files
 
 
-def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
+def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, written_files=None):
     """Classify a single atomic subcommand (list of tokens).
 
     Returns (verdict, reason) where verdict is 'allow', 'deny', or 'ask'.
@@ -1814,10 +1844,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
             if a in ('--ext-diff', '--textconv') or a.startswith(('--ext-diff=', '--textconv=')):
                 return 'force_ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
-        # Git upload-pack, receive-pack, or exec options can run arbitrary executables
+        # Git upload-pack, receive-pack, exec-path, or exec options can run arbitrary executables
         for a in args:
-            if a in ('--upload-pack', '--receive-pack', '--exec') or a.startswith(('--upload-pack=', '--receive-pack=', '--exec=')):
-                return 'force_ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
+            if a in ('--exec-path', '--upload-pack', '--receive-pack', '--exec') or a.startswith(('--exec-path=', '--upload-pack=', '--receive-pack=', '--exec=')):
+                return 'force_ask', f"Git command with custom exec-path or remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
             if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
                 return 'force_ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -2259,13 +2289,23 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
             for a in args[1:]:
                 if not a.startswith('-'):
                     if ':' in a:
-                        obj_path = a.split(':', 1)[1]
+                        obj_path = a.rsplit(':', 1)[1]
+                        if obj_path.startswith(('0:', '1:', '2:', '3:')):
+                            obj_path = obj_path[2:]
                         if matches_sensitive_pattern(obj_path) or is_sensitive_credential_path(obj_path, cwd):
                             return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
-                    elif re.match(r'^[0-9a-fA-F]{7,64}$', a):
-                        return 'force_ask', f"Reading raw git object by hash can disclose sensitive repository history: {a}"
-                    elif matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
-                        return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
+                        if obj_path.startswith(('/', '~')) or '..' in obj_path.split('/'):
+                            if not is_path_in_workspaces(obj_path, workspace_paths, cwd):
+                                return 'force_ask', f"git cat-file object path outside workspace requires approval: {a}"
+                    else:
+                        clean_obj = re.sub(r'[\^~].*$', '', a)
+                        is_hash = bool(re.match(r'^[0-9a-fA-F]{7,64}$', clean_obj))
+                        res_t = git_run_probe(['cat-file', '-t', a], cwd=cwd)
+                        is_blob = bool(res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob')
+                        if is_hash or is_blob:
+                            return 'force_ask', f"Reading raw git object can disclose sensitive repository history: {a}"
+                        if matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
+                            return 'deny', f"git cat-file targeting sensitive object is forbidden: {a}"
             return 'allow', 'Safe git cat-file query'
 
         if git_sub == 'rev-list':
@@ -2332,6 +2372,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                 if not is_path_in_workspaces(pf, workspace_paths, cwd):
                     return 'force_ask', f"git add pathspec file outside workspace requires approval: {pf}"
                 pf_resolved = expand_path(pf, cwd)
+                norm_pf = os.path.normpath(pf_resolved)
+                if written_files:
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_pf == norm_wf or norm_pf.startswith(norm_wf + os.sep):
+                            return 'force_ask', f"git add pathspec file was modified or redirected to in the command line: {pf}"
+                for i_tok, tok in enumerate(cmd_tokens):
+                    if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(cmd_tokens):
+                        redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
+                        if os.path.normpath(redir_target) == norm_pf:
+                            return 'force_ask', f"git add pathspec file is redirected to within the same command: {pf}"
                 if os.path.isfile(pf_resolved):
                     try:
                         content = Path(pf_resolved).read_text(errors='replace')
@@ -2398,10 +2449,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git commit in directory outside workspace requires confirmation: {cwd}"
             def is_git_commit_edit_opt(opt):
+                if not opt:
+                    return False
                 if opt in ('-e', '-t', '-c', '-p', '-i'):
                     return True
                 if opt.startswith(('-e=', '-t=', '-c=')):
                     return True
+                if opt.startswith('-') and not opt.startswith('--') and opt != '-':
+                    if any(c in opt for c in ('e', 't', 'c', 'p', 'i')):
+                        return True
                 if opt.startswith('--'):
                     clean_opt = opt.split('=', 1)[0]
                     for dangerous_long in ('--edit', '--template', '--reedit-message', '--patch', '--interactive'):
@@ -2409,9 +2465,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                             return True
                 return False
 
-            has_no_edit = any(a == '--no-edit' or (a.startswith('--') and '--no-edit'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5) for a in args)
-            has_edit_flag = any(is_git_commit_edit_opt(a) for a in args)
-            if has_edit_flag and not has_no_edit:
+            def is_git_commit_no_edit_opt(opt):
+                if not opt:
+                    return False
+                if opt == '--no-edit' or (opt.startswith('--') and '--no-edit'.startswith(opt.split('=', 1)[0]) and len(opt.split('=', 1)[0]) >= 5):
+                    return True
+                return False
+
+            last_edit_idx = -1
+            last_no_edit_idx = -1
+            for i, a in enumerate(args):
+                if is_git_commit_edit_opt(a):
+                    last_edit_idx = i
+                if is_git_commit_no_edit_opt(a):
+                    last_no_edit_idx = i
+
+            if last_edit_idx != -1 and last_edit_idx > last_no_edit_idx:
                 return 'force_ask', f"git commit with editor invocation requires confirmation: {' '.join(cmd_tokens)}"
             has_inline_msg = any(a in ('-m', '--message') or a.startswith(('-m=', '--message=')) for a in args)
             commit_file_args = []
@@ -2435,9 +2504,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
 
             if not has_inline_msg and not commit_file_args:
                 return 'force_ask', f"git commit without message requires confirmation: {' '.join(cmd_tokens)}"
-            has_sign = any(a in ('-S', '--gpg-sign') or a.startswith(('-S', '--gpg-sign=')) for a in args)
-            has_no_sign = any(a == '--no-gpg-sign' for a in args)
-            if (has_sign or git_has_gpgsign_configured(cwd)) and not has_no_sign:
+
+            last_sign_idx = -1
+            last_no_sign_idx = -1
+            for i, a in enumerate(args):
+                if a in ('-S', '--gpg-sign') or a.startswith(('-S', '--gpg-sign=')):
+                    last_sign_idx = i
+                elif a == '--no-gpg-sign' or (a.startswith('--') and '--no-gpg-sign'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5):
+                    last_no_sign_idx = i
+
+            is_signing = False
+            if last_sign_idx != -1 and last_sign_idx > last_no_sign_idx:
+                is_signing = True
+            elif git_has_gpgsign_configured(cwd) and last_no_sign_idx == -1:
+                is_signing = True
+
+            if is_signing:
                 return 'force_ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
                 return 'force_ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
@@ -2466,6 +2548,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                 if not is_path_in_workspaces(pf, workspace_paths, cwd):
                     return 'force_ask', f"git commit pathspec file outside workspace requires approval: {pf}"
                 pf_resolved = expand_path(pf, cwd)
+                norm_pf = os.path.normpath(pf_resolved)
+                if written_files:
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_pf == norm_wf or norm_pf.startswith(norm_wf + os.sep):
+                            return 'force_ask', f"git commit pathspec file was modified or redirected to in the command line: {pf}"
+                for i_tok, tok in enumerate(cmd_tokens):
+                    if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(cmd_tokens):
+                        redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
+                        if os.path.normpath(redir_target) == norm_pf:
+                            return 'force_ask', f"git commit pathspec file is redirected to within the same command: {pf}"
                 if os.path.isfile(pf_resolved):
                     try:
                         content = Path(pf_resolved).read_text(errors='replace')
@@ -2624,7 +2717,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                         file_operands.append(a)
                     i += 1
                 if files0_from:
-                    f0_verdict = validate_files0_from(files0_from, 'wc', cmd_tokens, workspace_paths, cwd)
+                    f0_verdict = validate_files0_from(files0_from, 'wc', cmd_tokens, workspace_paths, cwd, written_files=written_files)
                     if f0_verdict:
                         return f0_verdict
             else:
@@ -2892,7 +2985,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
                 return 'ask', f"sort temporary directory outside workspace requires approval: {temp_dir}"
 
         if files0_from:
-            f0_verdict = validate_files0_from(files0_from, 'sort', cmd_tokens, workspace_paths, cwd)
+            f0_verdict = validate_files0_from(files0_from, 'sort', cmd_tokens, workspace_paths, cwd, written_files=written_files)
             if f0_verdict:
                 return f0_verdict
 
@@ -3085,9 +3178,31 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
         out_check = check_dev_tool_output(args, workspace_paths, cwd, 'cargo')
         if out_check:
             return out_check
+        if any(a.startswith('+') for a in args):
+            return 'force_ask', f"cargo with toolchain override requires confirmation: {' '.join(cmd_tokens)}"
         if args:
             sub = args[0]
             if sub == 'fmt':
+                curr = Path(cwd).resolve() if cwd else Path.cwd().resolve()
+                while True:
+                    for tc_name in ('rust-toolchain.toml', 'rust-toolchain'):
+                        tc_file = curr / tc_name
+                        if tc_file.is_file():
+                            try:
+                                tc_text = tc_file.read_text(errors='replace')
+                                if re.search(r'(?m)^\s*path\s*=', tc_text) or 'toolchain.path' in tc_text:
+                                    return 'force_ask', f"cargo fmt with custom toolchain path in {tc_name} requires confirmation: {' '.join(cmd_tokens)}"
+                                if tomllib:
+                                    tc_data = tomllib.loads(tc_text)
+                                    if isinstance(tc_data, dict):
+                                        tc_section = tc_data.get('toolchain')
+                                        if isinstance(tc_section, dict) and 'path' in tc_section:
+                                            return 'force_ask', f"cargo fmt with custom toolchain path in {tc_name} requires confirmation: {' '.join(cmd_tokens)}"
+                            except Exception:
+                                pass
+                    if curr.parent == curr:
+                        break
+                    curr = curr.parent
                 return 'allow', f"Safe cargo command: cargo {sub}"
             if sub in {'check', 'clippy', 'test', 'bench', 'run', 'build'}:
                 return 'force_ask', f"Cargo command may execute build scripts or procedural macros: cargo {sub}"
@@ -3466,10 +3581,31 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
 
     # Evaluate all subcommands; deny strictly takes precedence over ask
     verdicts = []
+    written_files = set()
     for idx_sub, sub in enumerate(subcommands_all):
         raw_s = subcmd_raw_all[idx_sub] if idx_sub < len(subcmd_raw_all) else None
-        verdict, reason = classify_subcommand(sub, workspace_paths, cwd, depth=depth, raw_subcmd=raw_s)
+        verdict, reason = classify_subcommand(sub, workspace_paths, cwd, depth=depth, raw_subcmd=raw_s, written_files=written_files)
         verdicts.append((verdict, reason))
+
+        # Record files written or redirected to by this subcommand
+        for i_tok, tok in enumerate(sub):
+            if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(sub):
+                t_raw = unquote_token(sub[i_tok + 1])
+                if t_raw and t_raw != '/dev/null':
+                    written_files.add(expand_path(t_raw, cwd))
+        sub_base = os.path.basename(unquote_token(sub[0])) if sub else ''
+        if sub_base == 'tee':
+            for a in sub[1:]:
+                a_unq = unquote_token(a)
+                if not a_unq.startswith('-') and a_unq != '/dev/null':
+                    written_files.add(expand_path(a_unq, cwd))
+        elif sub_base in ('touch', 'cp', 'mv'):
+            pos = [unquote_token(a) for a in sub[1:] if not a.startswith('-') and a != '/dev/null']
+            if sub_base == 'touch':
+                for p in pos:
+                    written_files.add(expand_path(p, cwd))
+            elif pos:
+                written_files.add(expand_path(pos[-1], cwd))
 
     for v, r in verdicts:
         if v == 'deny':

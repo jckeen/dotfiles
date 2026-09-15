@@ -3617,6 +3617,123 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_scan_nm['decision'], 'force_ask')
         self.assertIn('sensitive descendant file', res_scan_nm['reason'])
 
+    def test_round_40_hardening(self):
+        """Regression tests for Round 40 findings:
+        1. Git helper-path / exec-path overrides (--exec-path=...)
+        2. cargo fmt toolchain path in rust-toolchain.toml
+        3. A later --edit overrides --no-edit in git commit
+        4. Earlier writes invalidate later filesystem checks (printf ... > paths; sort --files0-from=paths)
+        5. Alternate Git patch flags (--patch-with-stat, --patch-with-raw, --cc)
+        6. Revision suffixes in git cat-file (<blob-hash>^{blob})
+        """
+        git_dir = Path(self.test_ws) / 'repo_r40'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('hello\n')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. Git --exec-path overrides
+        res_exec_path1 = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git --exec-path={git_dir}/helpers fetch origin', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_exec_path1['decision'], 'force_ask')
+        self.assertIn('exec-path', res_exec_path1['reason'])
+
+        res_exec_path2 = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git --exec-path {git_dir}/helpers fetch origin', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_exec_path2['decision'], 'force_ask')
+        self.assertIn('exec-path', res_exec_path2['reason'])
+
+        # 2. cargo fmt toolchain path in rust-toolchain.toml
+        tc_file = git_dir / 'rust-toolchain.toml'
+        tc_file.write_text('[toolchain]\npath = "local_toolchain"\n')
+        res_cargo_custom = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cargo_custom['decision'], 'force_ask')
+        self.assertIn('custom toolchain path', res_cargo_custom['reason'])
+
+        res_cargo_override = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo +nightly fmt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cargo_override['decision'], 'force_ask')
+        self.assertIn('toolchain override', res_cargo_override['reason'])
+        tc_file.unlink()
+
+        res_cargo_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cargo_clean['decision'], 'allow')
+
+        # 3. A later --edit overrides --no-edit in git commit
+        res_commit_edit_win = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --allow-empty -m safe --no-edit --edit', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_edit_win['decision'], 'force_ask')
+        self.assertIn('editor', res_commit_edit_win['reason'])
+
+        res_commit_no_edit_win = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --allow-empty -m safe --edit --no-edit', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_no_edit_win['decision'], 'allow')
+
+        # 4. Earlier writes invalidate later filesystem checks
+        paths_file = git_dir / 'paths'
+        paths_file.write_text('README.md\0')
+        res_write_chain = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "printf '/proc/self/environ\\0' > paths; sort --files0-from=paths", 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_write_chain['decision'], 'force_ask')
+        self.assertIn('modified or redirected to', res_write_chain['reason'])
+
+        # 5. Alternate Git patch flags (--patch-with-stat, --patch-with-raw, --cc)
+        (git_dir / '.env').write_text('SECRET=xyz\n')
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add env'], cwd=str(git_dir), check=True)
+
+        res_patch_stat = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log --patch-with-stat -1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_patch_stat['decision'], 'deny')
+        self.assertIn('sensitive', res_patch_stat['reason'])
+
+        res_patch_raw = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log --patch-with-raw -1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_patch_raw['decision'], 'deny')
+        self.assertIn('sensitive', res_patch_raw['reason'])
+
+        res_patch_cc = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log --cc -1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_patch_cc['decision'], 'deny')
+        self.assertIn('sensitive', res_patch_cc['reason'])
+
+        # 6. Revision suffixes in git cat-file (<blob-hash>^{blob})
+        res_hash = subprocess.run(['git', 'rev-parse', 'HEAD:README.md'], cwd=str(git_dir), capture_output=True, text=True, check=True)
+        blob_hash = res_hash.stdout.strip()
+        res_cat_suffix = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git cat-file -p {blob_hash}^{{blob}}', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cat_suffix['decision'], 'force_ask')
+        self.assertIn('raw git object', res_cat_suffix['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()
