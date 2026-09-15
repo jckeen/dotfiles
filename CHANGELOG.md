@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-15 — fix: keep large Antigravity reviews linear and reject partial output
+
+- The Antigravity gate checks for an empty diff in linear time; the quadratic
+  shell substitution that #406 removed from the Codex gate had been left here
+  and stalled multi-megabyte diffs for over thirty minutes.
+- agy's print timeout is pinned to the gate ceiling and an expired timeout can
+  never pass as a verdict. agy stderr stays out of the verdict file so model
+  output cannot imitate the expiry note and a benign diagnostic cannot defeat a
+  clean final-line verdict.
+
 ## 2026-09-15 — fix: preserve complete large review requests
 
 - Large Codex reviews use contiguous input parts in one read-only session with
