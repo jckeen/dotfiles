@@ -680,7 +680,26 @@ def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd
     return validate_file_list_entries(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd, written_files=written_files, nul_delimited=True)
 
 
-def check_directory_descendants(target_dir, cwd=None):
+def glob_matches_vcs(glob_pat):
+    """Check if a glob pattern can match .git or files within .git."""
+    if not glob_pat or not isinstance(glob_pat, str):
+        return False
+    clean_g = glob_pat.strip('\'"')
+    if clean_g.startswith('!'):
+        return False
+    if clean_g in ('**', '*', '*/**', '**/*', '.*', '.*/**', '.*/*', '**/.*', '**/*.*', '.*/*'):
+        return True
+    if '.git' in clean_g:
+        return True
+    for candidate in ('.git', '.git/config', '.git/credentials', '.git-credentials'):
+        if fnmatch.fnmatch(candidate, clean_g) or fnmatch.fnmatch(candidate, clean_g.lstrip('/')):
+            return True
+        if fnmatch.fnmatch(os.path.basename(candidate), clean_g):
+            return True
+    return False
+
+
+def check_directory_descendants(target_dir, cwd=None, include_vcs=False):
     """Inspect directory for sensitive descendant files or sensitive symlinks.
 
     Returns (verdict, reason) where verdict is 'deny', 'force_ask', or 'allow'.
@@ -707,8 +726,8 @@ def check_directory_descendants(target_dir, cwd=None):
             if time.monotonic() - start_time > MAX_ELAPSED or inspected_count > MAX_ENTRIES:
                 truncated = True
                 break
-            # Prune VCS directory
-            if '.git' in dirs:
+            # Prune VCS directory unless explicitly searching VCS files
+            if not include_vcs and '.git' in dirs:
                 dirs.remove('.git')
 
             # Depth bound: stop recursing beyond MAX_DEPTH
@@ -789,8 +808,16 @@ def git_run_probe(args, cwd=None, timeout=1):
     if cache_key in _GIT_PROBE_CACHE:
         return _GIT_PROBE_CACHE[cache_key]
     try:
+        probe_cmd = [git_bin]
+        if args and args[0] in ('status', 'diff', 'show', 'log', 'for-each-ref', 'rev-parse'):
+            probe_cmd.extend(['-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'submodule.recurse=false'])
+        cmd_args = list(args)
+        if args and args[0] in ('status', 'diff'):
+            if not any(a.startswith('--ignore-submodules') for a in cmd_args):
+                cmd_args.append('--ignore-submodules=all')
+        probe_cmd.extend(cmd_args)
         res = subprocess.run(
-            [git_bin] + args,
+            probe_cmd,
             cwd=effective_cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -829,12 +856,86 @@ def git_has_external_diff_configured(cwd=None):
 
 
 def git_has_fsmonitor_configured(cwd=None):
-    """Check if git has a core.fsmonitor hook configured that executes programs."""
-    res = git_run_probe(['config', '--get', 'core.fsmonitor'], cwd=cwd)
+    """Check if git repository or any of its submodules has a core.fsmonitor hook configured that executes programs."""
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    res = git_run_probe(['config', '--get', 'core.fsmonitor'], cwd=effective_cwd)
     if res and res.returncode == 0 and res.stdout.strip():
         val = res.stdout.strip().lower()
         if val not in ('false', '0', 'no', 'off'):
             return True
+
+    # Check submodule configurations in .git/modules
+    res_git_dir = git_run_probe(['rev-parse', '--git-dir'], cwd=effective_cwd)
+    if res_git_dir and res_git_dir.returncode == 0 and res_git_dir.stdout.strip():
+        git_dir = res_git_dir.stdout.strip()
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(effective_cwd, git_dir)
+        git_dir = os.path.normpath(git_dir)
+        modules_dir = os.path.join(git_dir, 'modules')
+        if os.path.isdir(modules_dir):
+            try:
+                for root, dirs, files in os.walk(modules_dir):
+                    if 'config' in files:
+                        cfg_path = os.path.join(root, 'config')
+                        try:
+                            with open(cfg_path, 'r', encoding='utf-8', errors='replace') as f:
+                                for line in f:
+                                    m = re.match(r'^\s*fsmonitor\s*=\s*(.*)', line, re.IGNORECASE)
+                                    if m:
+                                        val = m.group(1).strip().strip('"\'').lower()
+                                        if val not in ('false', '0', 'no', 'off'):
+                                            return True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    # Also check any submodules declared in .gitmodules or child git repositories in working tree
+    gitmodules_path = os.path.join(effective_cwd, '.gitmodules')
+    if os.path.isfile(gitmodules_path):
+        try:
+            with open(gitmodules_path, 'r', encoding='utf-8', errors='replace') as gf:
+                for gline in gf:
+                    m_path = re.match(r'^\s*path\s*=\s*(.*)', gline)
+                    if m_path:
+                        sub_rel = m_path.group(1).strip().strip('"\'')
+                        sub_full = os.path.join(effective_cwd, sub_rel)
+                        sub_git = os.path.join(sub_full, '.git')
+                        if os.path.isfile(sub_git):
+                            try:
+                                with open(sub_git, 'r', encoding='utf-8', errors='replace') as sf:
+                                    scontent = sf.read().strip()
+                                    if scontent.startswith('gitdir:'):
+                                        gdir = scontent.split(':', 1)[1].strip()
+                                        if not os.path.isabs(gdir):
+                                            gdir = os.path.join(sub_full, gdir)
+                                        sub_cfg = os.path.join(gdir, 'config')
+                                        if os.path.isfile(sub_cfg):
+                                            with open(sub_cfg, 'r', encoding='utf-8', errors='replace') as cf:
+                                                for cline in cf:
+                                                    m_fs = re.match(r'^\s*fsmonitor\s*=\s*(.*)', cline, re.IGNORECASE)
+                                                    if m_fs:
+                                                        val = m_fs.group(1).strip().strip('"\'').lower()
+                                                        if val not in ('false', '0', 'no', 'off'):
+                                                            return True
+                            except Exception:
+                                pass
+                        elif os.path.isdir(sub_git):
+                            sub_cfg = os.path.join(sub_git, 'config')
+                            if os.path.isfile(sub_cfg):
+                                try:
+                                    with open(sub_cfg, 'r', encoding='utf-8', errors='replace') as cf:
+                                        for cline in cf:
+                                            m_fs = re.match(r'^\s*fsmonitor\s*=\s*(.*)', cline, re.IGNORECASE)
+                                            if m_fs:
+                                                val = m_fs.group(1).strip().strip('"\'').lower()
+                                                if val not in ('false', '0', 'no', 'off'):
+                                                    return True
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
+
     return False
 
 
@@ -1108,7 +1209,7 @@ def git_get_local_protected_branches(cwd=None):
 
 def git_probe_uncommitted_sensitive_files(cwd=None):
     """Check if repository contains modified or untracked sensitive files that broad git add would stage."""
-    res = git_run_probe(['status', '--porcelain', '-uall'], cwd=cwd)
+    res = git_run_probe(['status', '--porcelain', '-uall', '--ignore-submodules=all'], cwd=cwd)
     if not res:
         return 'unknown'
     if res.returncode != 0:
@@ -1125,7 +1226,7 @@ def git_probe_uncommitted_sensitive_files(cwd=None):
 
 def git_probe_staged_sensitive_files(cwd=None, include_unstaged_tracked=False):
     """Check if git staged index (or unstaged tracked files if -a) contains sensitive files."""
-    res = git_run_probe(['diff', '--cached', '--name-only'], cwd=cwd)
+    res = git_run_probe(['diff', '--cached', '--name-only', '--ignore-submodules=all'], cwd=cwd)
     if not res:
         return 'unknown'
     if res.returncode != 0:
@@ -1136,7 +1237,7 @@ def git_probe_staged_sensitive_files(cwd=None, include_unstaged_tracked=False):
             return 'sensitive'
 
     if include_unstaged_tracked:
-        res_unstaged = git_run_probe(['diff', '--name-only'], cwd=cwd)
+        res_unstaged = git_run_probe(['diff', '--name-only', '--ignore-submodules=all'], cwd=cwd)
         if res_unstaged and res_unstaged.returncode == 0:
             for path in res_unstaged.stdout.splitlines():
                 path = path.strip()
@@ -2368,10 +2469,11 @@ RG_OPTS_WITH_ARG = {
 
 
 def parse_rg_args(args):
-    """Parse rg arguments to identify pattern flags, pattern files, and positional operands."""
+    """Parse rg arguments to identify pattern flags, pattern files, positional operands, and globs."""
     has_pattern = False
     pattern_files = []
     positionals = []
+    globs = []
     i = 0
     while i < len(args):
         a = args[i]
@@ -2402,6 +2504,12 @@ def parse_rg_args(args):
                 elif i + 1 < len(args):
                     i += 1
                     pattern_files.append(args[i])
+            elif opt_name in ('--glob', '--iglob') or (len(opt_name) >= 5 and ('--glob'.startswith(opt_name) or '--iglob'.startswith(opt_name))):
+                if val is not None:
+                    globs.append(val)
+                elif i + 1 < len(args):
+                    i += 1
+                    globs.append(args[i])
             elif val is None and (opt_name in RG_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in RG_OPTS_WITH_ARG if long_opt.startswith('--'))):
                 if i + 1 < len(args):
                     i += 1
@@ -2430,6 +2538,9 @@ def parse_rg_args(args):
                         has_pattern = True
                         if arg_val:
                             pattern_files.append(arg_val)
+                    elif c == 'g':
+                        if arg_val:
+                            globs.append(arg_val)
                     break
                 else:
                     j += 1
@@ -2438,7 +2549,7 @@ def parse_rg_args(args):
         else:
             positionals.append(a)
             i += 1
-    return has_pattern, pattern_files, positionals
+    return has_pattern, pattern_files, positionals, globs
 
 
 def is_ripgrep_no_config(args):
@@ -2515,7 +2626,7 @@ def load_ripgrep_config_tokens(args, cwd=None, written_files=None):
                 return 'ask', f"rg with RIPGREP_CONFIG_PATH configuring hidden files or symlink following requires confirmation: {rg_cfg}", []
             if any(is_credential_env_var(tok) for tok in rg_cfg_tokens):
                 return 'deny', f"rg with RIPGREP_CONFIG_PATH referencing credential variable is forbidden: {rg_cfg}", []
-            if any(not tok.startswith('-') and ('$' in tok or '`' in tok) for tok in rg_cfg_tokens):
+            if any('$' in tok or '`' in tok for tok in rg_cfg_tokens):
                 return 'ask', f"rg with RIPGREP_CONFIG_PATH containing unexpanded variable requires confirmation: {rg_cfg}", []
         except Exception:
             return 'force_ask', f"rg unable to safely read RIPGREP_CONFIG_PATH file: {rg_cfg}", []
@@ -2544,7 +2655,7 @@ def extract_file_operands(base_cmd, args, rg_cfg_tokens=None):
 
     if base_cmd == 'rg':
         effective_args = list(rg_cfg_tokens or []) + list(args)
-        has_pat_flag, pattern_files, positionals = parse_rg_args(effective_args)
+        has_pat_flag, pattern_files, positionals, *extra = parse_rg_args(effective_args)
         files = list(pattern_files)
         if has_pat_flag:
             files.extend(positionals)
@@ -4811,7 +4922,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
         # Check for unexpanded variables
         for a in args:
-            if not a.startswith('-') and ('$' in a or '`' in a):
+            if '$' in a or '`' in a:
                 return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         # Check for hidden files, un-ignoring, or symlink following (including bundled short flags like -iL, -Lu)
         cli_options = []
@@ -4823,7 +4934,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'rg':
             all_rg_tokens = list(rg_cfg_tokens) + list(args)
-            has_pattern_flag, pattern_files, positionals = parse_rg_args(all_rg_tokens)
+            has_pattern_flag, pattern_files, positionals, globs = parse_rg_args(all_rg_tokens)
         else:
             positionals = [a for a in args if not a.startswith('-')]
             has_pattern_flag = any(
@@ -4831,6 +4942,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 for a in args
             )
             pattern_files = []
+            globs = []
+
+        # Check globs for sensitive patterns
+        for g in globs:
+            if matches_sensitive_pattern(g) or any(c in g for c in ('.env', 'id_rsa', 'id_ed25519', '.key', '.pem')):
+                return 'deny', f"{base_cmd} with glob targeting sensitive pattern is forbidden: {g}"
+
+        include_vcs = (base_cmd == 'rg') and (
+            any(glob_matches_vcs(g) for g in globs) or
+            any(a == '--no-ignore-vcs' or a.startswith('--no-ignore-vcs') for a in all_rg_tokens)
+        )
 
         # Validate pattern files
         for pf in pattern_files:
@@ -4870,7 +4992,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
             if os.path.isdir(p_norm):
-                desc_verdict, desc_reason = check_directory_descendants(p_norm, cwd)
+                desc_verdict, desc_reason = check_directory_descendants(p_norm, cwd, include_vcs=include_vcs)
                 if desc_verdict != 'allow':
                     return desc_verdict, f"Directory search {desc_reason}: {p}"
         return 'allow', 'Safe grep query'
@@ -4879,7 +5001,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     if base_cmd in {'grep', 'egrep', 'fgrep'}:
         # Check for unexpanded variables
         for a in args:
-            if not a.startswith('-') and ('$' in a or '`' in a):
+            if '$' in a or '`' in a:
                 return 'ask', f"grep with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
 
         has_pattern, pattern_files, is_recursive, positionals = parse_grep_args(args)
@@ -5058,7 +5180,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     # Find: safe ONLY without destructive, execution, or file writing options
     if base_cmd == 'find':
         for a in args:
-            if not a.startswith('-') and ('$' in a or '`' in a):
+            if '$' in a or '`' in a:
                 return 'ask', f"find with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         if any(a in ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fls', '-fprint', '-fprint0', '-fprintf') or a.startswith(('-exec', '-ok', '-fls', '-fprint')) for a in args):
             return 'ask', f"find with execution or write options requires confirmation: {' '.join(cmd_tokens)}"
@@ -6874,20 +6996,27 @@ def classify_directory_search(target_dir, args, workspace_paths, cwd):
         if norm_prefix.startswith(norm_dir):
             return 'force_ask', f"Searching directory containing sensitive credentials requires approval: {target_dir}"
 
+    include_vcs = False
     # Check search filter options (Includes, Pattern) for sensitive patterns
     includes = args.get('Includes')
     if isinstance(includes, list):
         for inc in includes:
-            if isinstance(inc, str) and (matches_sensitive_pattern(inc) or any(c in inc for c in ('.env', 'id_', '.key', '.pem'))):
-                return 'deny', f"Search targeting sensitive pattern is forbidden: {inc}"
+            if isinstance(inc, str):
+                if matches_sensitive_pattern(inc) or any(c in inc for c in ('.env', 'id_', '.key', '.pem')):
+                    return 'deny', f"Search targeting sensitive pattern is forbidden: {inc}"
+                if glob_matches_vcs(inc):
+                    include_vcs = True
 
     pattern = args.get('Pattern')
-    if isinstance(pattern, str) and (matches_sensitive_pattern(pattern) or any(c in pattern for c in ('.env', 'id_', '.key', '.pem'))):
-        return 'deny', f"Search targeting sensitive pattern is forbidden: {pattern}"
+    if isinstance(pattern, str):
+        if matches_sensitive_pattern(pattern) or any(c in pattern for c in ('.env', 'id_', '.key', '.pem')):
+            return 'deny', f"Search targeting sensitive pattern is forbidden: {pattern}"
+        if glob_matches_vcs(pattern):
+            include_vcs = True
 
     # If target is a directory, inspect if it contains descendant sensitive files or symlinks
     if os.path.isdir(norm):
-        desc_verdict, desc_reason = check_directory_descendants(norm, cwd)
+        desc_verdict, desc_reason = check_directory_descendants(norm, cwd, include_vcs=include_vcs)
         if desc_verdict != 'allow':
             return desc_verdict, f"Directory search {desc_reason}: {target_dir}"
 

@@ -5963,6 +5963,120 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             shutil.rmtree(str(go_subpkg_dir), ignore_errors=True)
 
+        # 55. Shell expansions in find/rg/grep options, git probes with submodule fsmonitor, and rg explicit globs exposing VCS credentials
+        # a) Shell expansion in find option
+        res_find_exp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'find . -maxdepth 0 -${AGY_REVIEW_UNSET:-exec} /usr/bin/printf FIND_HELPER_EXECUTED \\;', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_find_exp['decision'], 'ask', f"Expected ask for find with shell expansion in option flag, got: {res_find_exp}")
+
+        # b) Shell expansion in rg option
+        res_rg_exp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -${AGY_REVIEW_UNSET:-pre} helper pattern .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rg_exp['decision'], 'ask', f"Expected ask for rg with shell expansion in option flag, got: {res_rg_exp}")
+
+        # c) Shell expansion in grep option
+        res_grep_exp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep -${AGY_REVIEW_UNSET:-f} patternfile .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_grep_exp['decision'], 'ask', f"Expected ask for grep with shell expansion in option flag, got: {res_grep_exp}")
+
+        # d) Git probes in repository with submodule having core.fsmonitor configured
+        submod_parent = ws_dir / 'submod_parent'
+        submod_parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(submod_parent), check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(submod_parent), check=True)
+            subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(submod_parent), check=True)
+            (submod_parent / 'README.md').write_text('# Parent\n')
+            subprocess.run(['git', 'add', '.'], cwd=str(submod_parent), check=True)
+            subprocess.run(['git', 'commit', '-m', 'init parent', '-q'], cwd=str(submod_parent), check=True)
+
+            sub_child = submod_parent / 'sub'
+            sub_child.mkdir(parents=True, exist_ok=True)
+            subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(sub_child), check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(sub_child), check=True)
+            subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(sub_child), check=True)
+            (sub_child / 'subfile.txt').write_text('child content\n')
+            subprocess.run(['git', 'add', '.'], cwd=str(sub_child), check=True)
+            subprocess.run(['git', 'commit', '-m', 'init child', '-q'], cwd=str(sub_child), check=True)
+
+            # Create a sentinel file if fsmonitor hook is executed
+            fsmon_sentinel = submod_parent / 'fsmon_sentinel.txt'
+            fsmon_hook = sub_child / 'hook.sh'
+            fsmon_hook.write_text(f"#!/bin/sh\necho executed > {fsmon_sentinel}\nexit 0\n")
+            os.chmod(str(fsmon_hook), 0o755)
+
+            # Configure fsmonitor in submodule config
+            subprocess.run(['git', 'config', 'core.fsmonitor', str(fsmon_hook)], cwd=str(sub_child), check=True)
+
+            # Declare submodule in .gitmodules
+            (submod_parent / '.gitmodules').write_text('[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n')
+
+            # Classify git status in parent repo -> should return force_ask due to submodule fsmonitor
+            res_git_status = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(submod_parent)}},
+                'workspacePaths': [str(submod_parent)],
+            })
+            self.assertEqual(res_git_status['decision'], 'force_ask', f"Expected force_ask for git status with submodule fsmonitor, got: {res_git_status}")
+            self.assertIn('fsmonitor', res_git_status['reason'].lower())
+            # Sentinel should NOT exist because probe passed -c core.fsmonitor=false --ignore-submodules=all
+            self.assertFalse(fsmon_sentinel.exists(), "Probe unexpectedly executed submodule fsmonitor hook!")
+
+            # Classify git add . in parent repo -> should return force_ask without executing hook
+            res_git_add = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git add .', 'Cwd': str(submod_parent)}},
+                'workspacePaths': [str(submod_parent)],
+            })
+            self.assertEqual(res_git_add['decision'], 'force_ask', f"Expected force_ask for git add with submodule fsmonitor, got: {res_git_add}")
+            self.assertFalse(fsmon_sentinel.exists(), "Probe unexpectedly executed submodule fsmonitor hook during git add classification!")
+        finally:
+            shutil.rmtree(str(submod_parent), ignore_errors=True)
+
+        # e) Explicit rg globs exposing skipped git credentials
+        rg_git_dir = ws_dir / 'rg_git_repo'
+        rg_git_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(rg_git_dir), check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(rg_git_dir), check=True)
+            subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(rg_git_dir), check=True)
+            (rg_git_dir / 'hello.py').write_text("print('hello world')\n")
+
+            # rg with -g '**' reaches .git/config which contains credentials -> force_ask
+            res_rg_glob_star = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "rg -g '**' hello .", 'Cwd': str(rg_git_dir)}},
+                'workspacePaths': [str(rg_git_dir)],
+            })
+            self.assertEqual(res_rg_glob_star['decision'], 'force_ask', f"Expected force_ask for rg -g '**' matching git credentials, got: {res_rg_glob_star}")
+            self.assertIn('sensitive descendant file', res_rg_glob_star['reason'])
+
+            # rg with glob targeting sensitive pattern -> deny
+            res_rg_glob_env = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "rg -g '.env' hello .", 'Cwd': str(rg_git_dir)}},
+                'workspacePaths': [str(rg_git_dir)],
+            })
+            self.assertEqual(res_rg_glob_env['decision'], 'deny', f"Expected deny for rg -g '.env', got: {res_rg_glob_env}")
+
+            # rg with -g '*.py' prunes .git -> allow
+            res_rg_glob_py = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "rg -g '*.py' hello .", 'Cwd': str(rg_git_dir)}},
+                'workspacePaths': [str(rg_git_dir)],
+            })
+            self.assertEqual(res_rg_glob_py['decision'], 'allow', f"Expected allow for rg -g '*.py', got: {res_rg_glob_py}")
+
+            # plain rg hello . prunes .git -> allow
+            res_rg_plain = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg hello .', 'Cwd': str(rg_git_dir)}},
+                'workspacePaths': [str(rg_git_dir)],
+            })
+            self.assertEqual(res_rg_plain['decision'], 'allow', f"Expected allow for plain rg, got: {res_rg_plain}")
+        finally:
+            shutil.rmtree(str(rg_git_dir), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
