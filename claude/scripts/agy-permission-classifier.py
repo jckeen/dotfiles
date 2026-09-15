@@ -30,7 +30,7 @@ import time
 # Commands that are strictly read-only inspection and safe to auto-approve without options that execute code or write
 SAFE_INSPECTION_COMMANDS = {
     'ls', 'dir', 'vdir', 'pwd', 'echo', 'printf',
-    'cat', 'head', 'tail', 'less', 'more', 'wc',
+    'cat', 'head', 'tail', 'wc',
     'file', 'stat', 'cmp',
     'which', 'whereis', 'type',
     'date', 'uptime', 'whoami', 'id', 'uname',
@@ -87,11 +87,13 @@ SENSITIVE_FILENAMES = {
     '.pypirc',
     'application_default_credentials.json',
     '.vault-token',
+    '.envrc',
 }
 
 # Glob patterns that match sensitive files
 SENSITIVE_PATTERNS = (
-    '.env*', 'id_*', '*.pem', '*.key', 'antigravity-oauth-token',
+    '.env*', 'id_rsa*', 'id_ed25519*', 'id_ecdsa*', 'id_dsa*',
+    '*.pem', '*.key', 'antigravity-oauth-token',
     '*shadow*', '*sudoers*', 'hosts.yml',
 )
 
@@ -203,12 +205,12 @@ def matches_sensitive_pattern(filename):
     if any(basename.endswith(ext) for ext in SOURCE_FILE_EXTENSIONS):
         if basename.endswith(('.pem', '.key')):
             return True
-        if basename == '.env' or (basename.startswith('.env.') and not any(basename.endswith(s) for s in PUBLIC_NON_CREDENTIAL_SUFFIXES)):
+        if basename.startswith('.env') and not any(basename.endswith(s) for s in PUBLIC_NON_CREDENTIAL_SUFFIXES):
             return True
         return False
-    if basename == '.env' or basename.startswith('.env.'):
+    if basename.startswith('.env'):
         return True
-    if any(fnmatch.fnmatch(basename, pat) for pat in ('id_rsa*', 'id_ed25519*', 'id_ecdsa*', 'id_dsa*', '*.pem', '*.key', 'antigravity-oauth-token')):
+    if any(fnmatch.fnmatch(basename, pat) for pat in SENSITIVE_PATTERNS):
         return True
     return False
 
@@ -542,9 +544,13 @@ def git_has_transport_executable_configured(cwd=None):
 
 def git_has_pager_configured(cwd=None, git_sub=None):
     """Check if git repository or config has core.pager or pager.<cmd> configured."""
-    patterns = [r'^core\.pager$']
+    patterns = []
     if git_sub:
         patterns.append(rf'^pager\.{re.escape(git_sub)}$')
+    if git_sub in {'log', 'show', 'diff', 'blame', 'shortlog', 'whatchanged', 'reflog', 'branch', 'tag'}:
+        patterns.append(r'^core\.pager$')
+    if not patterns:
+        return False
     res = git_run_probe(['config', '--get-regexp', '|'.join(patterns)], cwd=cwd)
     if res and res.returncode == 0 and res.stdout.strip():
         for line in res.stdout.splitlines():
@@ -1456,10 +1462,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         )
         if has_paginate:
             return 'force_ask', f"git with pagination flag forces configured pager execution: {' '.join(cmd_tokens)}"
-        if git_sub in {'log', 'show', 'diff', 'blame', 'shortlog', 'whatchanged', 'reflog', 'branch'}:
-            has_no_pager = any(a in ('--no-pager', '-P') for a in tokens)
-            if not has_no_pager and git_has_pager_configured(cwd, git_sub):
-                return 'force_ask', f"git {git_sub} with configured pager requires confirmation: {' '.join(cmd_tokens)}"
+        has_no_pager = any(a in ('--no-pager', '-P') for a in tokens)
+        if not has_no_pager and git_has_pager_configured(cwd, git_sub):
+            return 'force_ask', f"git {git_sub} with configured pager requires confirmation: {' '.join(cmd_tokens)}"
+
+        # Reject unverified shell parameter expansions and substitutions in Git arguments
+        for a in args:
+            if any(c in a for c in ('$', '`')) or a.startswith(('<(', '>(')):
+                return 'ask', f"Git command with shell parameter expansion or substitution requires confirmation: {' '.join(cmd_tokens)}"
 
         # Check git arguments for sensitive file paths or <rev>:<path> expressions targeting sensitive files
         for a in args:
@@ -2113,6 +2123,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
             return 'allow', 'Safe git commit'
 
+    # Interactive pagers support shell escapes and unclassified command execution
+    if base_cmd in {'less', 'more', 'most'}:
+        return 'force_ask', f"Interactive pager {base_cmd} can execute arbitrary shell commands and requires confirmation: {' '.join(cmd_tokens)}"
+
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
         if base_cmd == 'jq':
@@ -2124,7 +2138,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if any(a in ('-C', '--compile') or (a.startswith('-') and not a.startswith('--') and 'C' in a) for a in args):
                 return 'force_ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
-        if base_cmd in {'cat', 'head', 'tail', 'less', 'more', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq', 'date'}:
+        if base_cmd in {'cat', 'head', 'tail', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq', 'date'}:
             for a in args:
                 if not a.startswith('-') and any(c in a for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
                     return 'ask', f"Inspection command with wildcard, variable, substitution, or metacharacter requires confirmation: {' '.join(cmd_tokens)}"
@@ -2208,19 +2222,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             for a in args:
                 if any(c in a for c in ('$', '`')):
                     return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
-        if base_cmd == 'less':
-            def is_unsafe_less_opt(a):
-                if a.startswith('+'):
-                    return True
-                if a in ('-o', '-O', '-T') or a.startswith(('-o', '-O', '-T')):
-                    return True
-                if a.startswith('--'):
-                    opt = a.split('=', 1)[0].lower()
-                    if ('--log-file'.startswith(opt) and len(opt) >= 5) or ('--tag-file'.startswith(opt) and len(opt) >= 5):
-                        return True
-                return False
-            if any(is_unsafe_less_opt(a) for a in args):
-                return 'ask', f"less with command execution (+), log file, or tag file option requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'date':
             def is_date_set_opt(a):
                 if a in ('-s', '--set') or a.startswith('-s'):
@@ -3118,6 +3119,21 @@ def main():
         elif tool_name in ('grep_search', 'find_by_name'):
             target = args.get('SearchPath') or args.get('SearchDirectory') or args.get('AbsolutePath') or ''
             decision, reason = classify_directory_search(target, args, workspace_paths, cwd)
+        elif tool_name == 'list_dir':
+            target = args.get('DirectoryPath') or args.get('path') or ''
+            decision, reason = classify_directory_search(target, args, workspace_paths, cwd)
+        elif tool_name == 'send_input':
+            decision, reason = 'force_ask', 'Sending input to a running process can execute arbitrary commands and requires confirmation'
+        elif tool_name == 'manage_task':
+            action = (args.get('Action') or args.get('action') or '').lower()
+            if action == 'send_input':
+                decision, reason = 'force_ask', 'Sending input to a background task can execute arbitrary commands and requires confirmation'
+            elif action in ('list', 'status'):
+                decision, reason = 'allow', f"Safe task management query: {action}"
+            elif action == 'kill':
+                decision, reason = 'allow', 'Terminating background task is safe'
+            else:
+                decision, reason = 'ask', f"manage_task with action '{action}' requires confirmation"
         else:
             decision, reason = 'ask', f"Tool {tool_name} requires confirmation"
 

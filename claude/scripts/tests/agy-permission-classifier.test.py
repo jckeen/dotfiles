@@ -2934,14 +2934,14 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 'workspacePaths': [str(git_dir)],
             }
             res = self.run_classifier(payload)
-            self.assertEqual(res['decision'], 'ask', f"Expected {less_cmd} to require confirmation, got: {res}")
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {less_cmd} to require confirmation, got: {res}")
 
         payload_less_safe = {
             'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'less README.md', 'Cwd': str(git_dir)}},
             'workspacePaths': [str(git_dir)],
         }
         res = self.run_classifier(payload_less_safe)
-        self.assertEqual(res['decision'], 'allow')
+        self.assertEqual(res['decision'], 'force_ask')
 
         # 8. Safe switch path can implicitly create a branch
         subprocess.run(['git', 'update-ref', 'refs/remotes/origin/remote-branch', 'HEAD'], cwd=str(git_dir), check=True)
@@ -3035,6 +3035,89 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             }
             res = self.run_classifier(payload)
             self.assertEqual(res['decision'], 'force_ask', f"Expected {go_cmd} to require force_ask, got: {res}")
+
+        # 14. Git commands containing shell expansions require confirmation
+        for exp_cmd in (
+            'git show HEAD:${UNSET:-.env}',
+            'git cat-file blob HEAD:${UNSET:-.env}',
+            'git add ${UNSET:-.env}',
+            'git config --file ${UNSET:-.env} user.name',
+            'git diff HEAD:${UNSET:-.env}',
+        ):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': exp_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'ask', f"Expected {exp_cmd} to require confirmation, got: {res}")
+
+        # 15. Interactive pagers and task input
+        for pager_cmd in ('less README.md', 'more README.md'):
+            payload = {
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': pager_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            }
+            res = self.run_classifier(payload)
+            self.assertEqual(res['decision'], 'force_ask', f"Expected {pager_cmd} to require force_ask, got: {res}")
+
+        res_send = self.run_classifier({
+            'toolCall': {'name': 'send_input', 'args': {'Input': 'id\n'}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_send['decision'], 'force_ask')
+
+        res_manage_input = self.run_classifier({
+            'toolCall': {'name': 'manage_task', 'args': {'Action': 'send_input', 'Input': 'id\n'}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_manage_input['decision'], 'force_ask')
+
+        for safe_action in ('status', 'list', 'kill'):
+            res_safe_action = self.run_classifier({
+                'toolCall': {'name': 'manage_task', 'args': {'Action': safe_action, 'TaskId': '123'}},
+                'workspacePaths': [str(git_dir)],
+            })
+            self.assertEqual(res_safe_action['decision'], 'allow')
+
+        # 16. Configured pagers across git subcommands
+        subprocess.run(['git', 'config', 'pager.status', '/bin/evil_pager'], cwd=str(git_dir), check=True)
+        res_paged_status = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_paged_status['decision'], 'force_ask')
+
+        res_unpaged_status = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git --no-pager status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_unpaged_status['decision'], 'allow')
+        subprocess.run(['git', 'config', '--unset', 'pager.status'], cwd=str(git_dir), check=True)
+
+        # 17. .envrc is recognized as sensitive credential file
+        (git_dir / '.envrc').write_text('export SECRET=1')
+        (git_dir / '.envrc.example').write_text('export SECRET=example')
+
+        res_cat_envrc = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat .envrc', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cat_envrc['decision'], 'deny')
+
+        res_view_envrc = self.run_classifier({
+            'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': str(git_dir / '.envrc')}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_view_envrc['decision'], 'deny')
+
+        res_cat_example = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat .envrc.example', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cat_example['decision'], 'allow')
+
+        (git_dir / '.envrc').unlink(missing_ok=True)
+        (git_dir / '.envrc.example').unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
