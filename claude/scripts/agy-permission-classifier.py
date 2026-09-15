@@ -18,6 +18,7 @@ Contract:
 
 import codecs
 import fnmatch
+import glob
 import json
 import os
 from pathlib import Path
@@ -248,6 +249,31 @@ def subcmd_has_unquoted_expansions(subcmd_str):
             in_dq = not in_dq
             continue
         if not in_sq and c in ('$', '`'):
+            return True
+    return False
+
+
+def subcmd_has_unquoted_wildcards(subcmd_str):
+    """Check if subcmd_str contains unquoted glob wildcards (*, ?, [, ] outside single and double quotes)."""
+    if not subcmd_str or not isinstance(subcmd_str, str):
+        return False
+    in_sq = False
+    in_dq = False
+    escape = False
+    for c in subcmd_str:
+        if escape:
+            escape = False
+            continue
+        if c == '\\' and not in_sq:
+            escape = True
+            continue
+        if c == "'" and not in_dq:
+            in_sq = not in_sq
+            continue
+        if c == '"' and not in_sq:
+            in_dq = not in_dq
+            continue
+        if not in_sq and not in_dq and c in ('*', '?', '[', ']'):
             return True
     return False
 
@@ -634,12 +660,28 @@ def git_run_probe(args, cwd=None, timeout=1):
         return None
 
 
-def git_has_external_diff_configured(cwd=None):
-    """Check if git has an external diff or textconv driver configured that executes programs."""
-    res = git_run_probe(['config', '--get-regexp', r'^diff\.(external|.*\.command|.*\.textconv)$'], cwd=cwd)
+def git_has_ext_diff_driver(cwd=None):
+    """Check if git has an external diff driver configured via GIT_EXTERNAL_DIFF or diff.external."""
+    ext_diff_env = os.environ.get('GIT_EXTERNAL_DIFF')
+    if ext_diff_env and ext_diff_env.strip():
+        return True
+    res = git_run_probe(['config', '--get-regexp', r'^diff\.(external|.*\.command)$'], cwd=cwd)
     if res and res.returncode == 0 and res.stdout.strip():
         return True
     return False
+
+
+def git_has_textconv_driver(cwd=None):
+    """Check if git has a textconv driver configured that executes programs."""
+    res = git_run_probe(['config', '--get-regexp', r'^diff\..*\.textconv$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        return True
+    return False
+
+
+def git_has_external_diff_configured(cwd=None):
+    """Check if git has an external diff or textconv driver configured that executes programs."""
+    return git_has_ext_diff_driver(cwd) or git_has_textconv_driver(cwd)
 
 
 def git_has_fsmonitor_configured(cwd=None):
@@ -652,8 +694,8 @@ def git_has_fsmonitor_configured(cwd=None):
     return False
 
 
-def git_has_active_hooks(cwd=None, hook_names=(), written_files=None):
-    """Check if git repository has active (executable) repository hooks."""
+def git_has_active_hooks(cwd=None, hook_names=(), written_files=None, target_ref=None):
+    """Check if git repository has active (executable) repository hooks in working tree or target ref."""
     if not hook_names:
         return False
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
@@ -689,6 +731,22 @@ def git_has_active_hooks(cwd=None, hook_names=(), written_files=None):
         h_path = os.path.join(norm_hooks, h)
         if os.path.isfile(h_path) and os.access(h_path, os.X_OK):
             return True
+
+    # If target ref is provided (e.g. git switch <branch>), check if target ref commit tree contains hooks
+    if target_ref:
+        ref_to_probe = '@{-1}' if target_ref == '-' else target_ref
+        res_toplevel = git_run_probe(['rev-parse', '--show-toplevel'], cwd=cwd)
+        if res_toplevel and res_toplevel.returncode == 0 and res_toplevel.stdout.strip():
+            repo_root = os.path.normpath(res_toplevel.stdout.strip())
+            if norm_hooks == repo_root or norm_hooks.startswith(repo_root + os.sep):
+                rel_hooks = os.path.relpath(norm_hooks, repo_root)
+                for h in hook_names:
+                    rel_hook = os.path.normpath(os.path.join(rel_hooks, h))
+                    res_tree = git_run_probe(['ls-tree', ref_to_probe, '--', rel_hook], cwd=repo_root)
+                    if res_tree and res_tree.returncode == 0 and res_tree.stdout.strip():
+                        out = res_tree.stdout.strip()
+                        if out.startswith('100755') or 'blob' in out:
+                            return True
     return False
 
 
@@ -2798,7 +2856,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             res_remote = git_run_probe(['for-each-ref', '--format=%(refname)', f'refs/remotes/*/{target_branch}'], cwd=cwd)
                             if res_remote and res_remote.returncode == 0 and res_remote.stdout.strip():
                                 return 'force_ask', f"git switch creates local tracking branch from remote for '{target_branch}': {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction'), written_files=written_files):
+            if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction'), written_files=written_files, target_ref=target_branch):
                 return 'force_ask', f"git switch with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_fsmonitor_configured(cwd):
                 return 'force_ask', f"git switch with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
@@ -2906,8 +2964,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
             has_no_ext = (ext_diff_enabled is False)
             has_no_textconv = (textconv_enabled is False)
-            if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
-                return 'force_ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+            ext_diff_env = os.environ.get('GIT_EXTERNAL_DIFF')
+            if not has_no_ext and ext_diff_env and ext_diff_env.strip():
+                if is_sensitive_credential_path(ext_diff_env, cwd) or matches_sensitive_pattern(ext_diff_env):
+                    return 'deny', f"git diff with GIT_EXTERNAL_DIFF referencing sensitive path is forbidden: {ext_diff_env}"
+                return 'force_ask', f"git diff with inherited GIT_EXTERNAL_DIFF executable requires confirmation: {ext_diff_env}"
+            if not has_no_ext and git_has_ext_diff_driver(cwd):
+                return 'force_ask', f"git diff with configured external diff driver requires confirmation: {' '.join(cmd_tokens)}"
+            if not has_no_textconv and git_has_textconv_driver(cwd):
+                return 'force_ask', f"git diff with configured textconv driver requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git diff with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -2965,8 +3030,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
                     has_no_ext = any(a == '--no-ext-diff' for a in args)
                     has_no_textconv = any(a == '--no-textconv' for a in args)
-                    if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
-                        return 'force_ask', f"git stash {stash_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+                    ext_diff_env = os.environ.get('GIT_EXTERNAL_DIFF')
+                    if not has_no_ext and ext_diff_env and ext_diff_env.strip():
+                        if is_sensitive_credential_path(ext_diff_env, cwd) or matches_sensitive_pattern(ext_diff_env):
+                            return 'deny', f"git stash {stash_sub} with GIT_EXTERNAL_DIFF referencing sensitive path is forbidden: {ext_diff_env}"
+                        return 'force_ask', f"git stash {stash_sub} with inherited GIT_EXTERNAL_DIFF executable requires confirmation: {ext_diff_env}"
+                    if not has_no_ext and git_has_ext_diff_driver(cwd):
+                        return 'force_ask', f"git stash {stash_sub} with configured external diff driver requires confirmation: {' '.join(cmd_tokens)}"
+                    if not has_no_textconv and git_has_textconv_driver(cwd):
+                        return 'force_ask', f"git stash {stash_sub} with configured textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
                     has_diff = stash_sub == 'show' or git_log_has_diff_options(args)
                     if has_diff:
@@ -3063,7 +3135,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git {git_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
             if git_has_gpg_program_configured(cwd) and git_has_fmt_opt(args):
                 return 'force_ask', f"git {git_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
+            has_no_ext = any(is_git_no_ext_diff_opt(a) for a in args)
             has_no_textconv = any(a == '--no-textconv' for a in args)
+            ext_diff_env = os.environ.get('GIT_EXTERNAL_DIFF')
+            if not has_no_ext and ext_diff_env and ext_diff_env.strip():
+                if is_sensitive_credential_path(ext_diff_env, cwd) or matches_sensitive_pattern(ext_diff_env):
+                    return 'deny', f"git {git_sub} with GIT_EXTERNAL_DIFF referencing sensitive path is forbidden: {ext_diff_env}"
+                return 'force_ask', f"git {git_sub} with inherited GIT_EXTERNAL_DIFF executable requires confirmation: {ext_diff_env}"
             if not has_no_textconv and git_sub != 'shortlog' and git_has_external_diff_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -3916,7 +3994,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     f0_verdict = validate_files0_from(files0_from, 'wc', cmd_tokens, workspace_paths, cwd, written_files=written_files)
                     if f0_verdict:
                         return f0_verdict
-            else:
+            elif base_cmd in {'cat', 'head', 'tail', 'stat', 'cmp', 'ls', 'dir', 'vdir', 'uniq', 'cut', 'column'}:
                 INSPECTION_OPTS_WITH_ARG = {
                     'head': {'-n', '--lines', '-c', '--bytes'},
                     'tail': {'-n', '--lines', '-c', '--bytes', '-s', '--sleep-interval', '--max-unchanged-stats', '--pid'},
@@ -3978,14 +4056,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     continue
                 if not is_path_in_workspaces(f_op, workspace_paths, cwd):
                     return 'ask', f"Inspection command reading file outside workspace requires approval: {f_op}"
-        if base_cmd in {'echo', 'printf'}:
+        if base_cmd == 'echo':
             if raw_subcmd is not None:
                 if subcmd_has_unquoted_expansions(raw_subcmd):
-                    return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
+                    return 'ask', f"echo with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
             else:
                 for a in args:
                     if any(c in a for c in ('$', '`')):
-                        return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
+                        return 'ask', f"echo with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'date':
             def is_date_set_opt(a):
                 if a in ('-s', '--set') or (a.startswith('-s') and not a.startswith('--')):
@@ -4038,14 +4116,60 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 pos_args = args[idx_a + 1:]
                 break
 
-            n_spec = fmt_arg is not None and has_printf_n_specifier(fmt_arg)
-            if n_spec:
-                for pa in pos_args:
-                    if is_dangerous_env_var(pa) or is_credential_var_name(pa):
-                        return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {pa}"
+            cand_fmt_list = [fmt_arg] if fmt_arg is not None else []
+            if fmt_arg and any(c in fmt_arg for c in ('*', '?', '[')) and cwd and os.path.isdir(cwd):
+                try:
+                    expanded_fmts = glob.glob(os.path.join(cwd, fmt_arg))
+                    if expanded_fmts:
+                        cand_fmt_list.extend(os.path.basename(p) for p in expanded_fmts)
+                except Exception:
+                    pass
+
+            cand_pos_args = list(pos_args)
+            for pa in pos_args:
+                if any(c in pa for c in ('*', '?', '[')) and cwd and os.path.isdir(cwd):
+                    try:
+                        expanded_pas = glob.glob(os.path.join(cwd, pa))
+                        if expanded_pas:
+                            cand_pos_args.extend(os.path.basename(p) for p in expanded_pas)
+                    except Exception:
+                        pass
+
+            for cf in cand_fmt_list:
+                if cf and has_printf_n_specifier(cf):
+                    for pa in cand_pos_args:
+                        if is_dangerous_env_var(pa) or is_credential_var_name(pa):
+                            return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {pa}"
+
+            if v_var is not None:
+                cand_v = [v_var]
+                if any(c in v_var for c in ('*', '?', '[')) and cwd and os.path.isdir(cwd):
+                    try:
+                        expanded_vs = glob.glob(os.path.join(cwd, v_var))
+                        if expanded_vs:
+                            cand_v.extend(os.path.basename(p) for p in expanded_vs)
+                    except Exception:
+                        pass
+                for cv in cand_v:
+                    if cv and (is_dangerous_env_var(cv) or is_credential_var_name(cv)):
+                        return 'deny', f"Setting execution-altering environment variable via printf is forbidden: {cv}"
+
+            if raw_subcmd is not None:
+                if subcmd_has_unquoted_expansions(raw_subcmd):
+                    return 'ask', f"printf with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
+                if subcmd_has_unquoted_wildcards(raw_subcmd):
+                    return 'ask', f"printf with wildcard pattern requires confirmation: {' '.join(cmd_tokens)}"
+            else:
+                for a in args:
+                    if any(c in a for c in ('$', '`')):
+                        return 'ask', f"printf with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
+                    if any(c in a for c in ('*', '?', '[', ']')):
+                        return 'ask', f"printf with wildcard pattern requires confirmation: {' '.join(cmd_tokens)}"
 
             if v_var is not None:
                 return 'ask', f"printf with variable assignment (-v) requires confirmation: {' '.join(cmd_tokens)}"
+
+            n_spec = any(cf and has_printf_n_specifier(cf) for cf in cand_fmt_list)
             if n_spec:
                 return 'ask', f"printf with %n variable assignment requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'uniq':

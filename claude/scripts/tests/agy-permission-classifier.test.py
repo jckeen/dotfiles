@@ -5216,6 +5216,64 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_git_bracket_env['decision'], 'deny', f"Expected deny for bracket pathspec matching sensitive file, got: {res_git_bracket_env}")
         self.assertIn('sensitive', res_git_bracket_env['reason'].lower())
 
+        # 29. Shell globbing cannot bypass printf variable-assignment protection
+        f_n = ws_dir / '%n'
+        f_p = ws_dir / 'PATH'
+        f_n.touch()
+        f_p.touch()
+        try:
+            res_printf_glob = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'printf %? P*; ls', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_printf_glob['decision'], 'deny', f"Expected deny for printf globbing assigning dangerous variable, got: {res_printf_glob}")
+            self.assertIn('PATH', res_printf_glob['reason'])
+        finally:
+            f_n.unlink(missing_ok=True)
+            f_p.unlink(missing_ok=True)
+
+        res_printf_glob_ask = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'printf %? P*; ls', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_printf_glob_ask['decision'], 'ask', f"Expected ask for printf with unquoted wildcards, got: {res_printf_glob_ask}")
+
+        # 30. Branch switching detects hooks in target ref tree
+        subprocess.run(['git', 'config', 'core.hooksPath', 'hooks'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'checkout', '-b', 'hook_branch'], cwd=str(ws_dir), check=True, capture_output=True)
+        (ws_dir / 'hooks').mkdir(exist_ok=True)
+        hook_file = ws_dir / 'hooks' / 'post-checkout'
+        hook_file.write_text('#!/bin/sh\nexit 0\n')
+        hook_file.chmod(0o755)
+        subprocess.run(['git', 'add', '.'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add hook'], cwd=str(ws_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'checkout', 'master'], cwd=str(ws_dir), check=True, capture_output=True)
+        shutil.rmtree(str(ws_dir / 'hooks'), ignore_errors=True)
+        try:
+            res_switch_hook = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch hook_branch', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_switch_hook['decision'], 'force_ask', f"Expected force_ask for git switch to branch with hook, got: {res_switch_hook}")
+            self.assertIn('hook', res_switch_hook['reason'].lower())
+        finally:
+            subprocess.run(['git', 'config', '--unset', 'core.hooksPath'], cwd=str(ws_dir), check=True)
+            subprocess.run(['git', 'branch', '-D', 'hook_branch'], cwd=str(ws_dir), check=True, capture_output=True)
+
+        # 31. Inherited GIT_EXTERNAL_DIFF triggers force_ask on git diff
+        res_ext_diff = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        }, env={'GIT_EXTERNAL_DIFF': '/tmp/fake_diff'})
+        self.assertEqual(res_ext_diff['decision'], 'force_ask', f"Expected force_ask for git diff with GIT_EXTERNAL_DIFF, got: {res_ext_diff}")
+        self.assertIn('GIT_EXTERNAL_DIFF', res_ext_diff['reason'])
+
+        res_ext_diff_override = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --no-ext-diff', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        }, env={'GIT_EXTERNAL_DIFF': '/tmp/fake_diff'})
+        self.assertEqual(res_ext_diff_override['decision'], 'allow', f"Expected allow for git diff with --no-ext-diff, got: {res_ext_diff_override}")
+
 
 if __name__ == '__main__':
     unittest.main()
