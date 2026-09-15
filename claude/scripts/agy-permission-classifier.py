@@ -1286,15 +1286,25 @@ def is_git_admin_path(path_str, cwd=None):
     return False
 
 
-def is_security_guard_path(path_str, cwd=None):
+def is_security_guard_path(path_str, cwd=None, visited=None, depth=0):
     """Check if path targets active or repository source permission classifiers, hooks, or agent security settings."""
     if not path_str or not isinstance(path_str, str):
         return False
+    if depth > 3:
+        return False
+    if visited is None:
+        visited = set()
+
     norm = expand_path(path_str, cwd)
     try:
         resolved = str(Path(norm).resolve())
     except Exception:
         resolved = norm
+
+    visit_key = (norm, resolved)
+    if visit_key in visited:
+        return False
+    visited.add(visit_key)
 
     basename = os.path.basename(norm)
     if basename in ('agy-permission-classifier.py', 'agy-inject-handoff.sh'):
@@ -1358,7 +1368,11 @@ def is_security_guard_path(path_str, cwd=None):
                 return True
             if (norm_path / 'agy-permission-classifier.py').is_file():
                 return True
+            walk_budget = 50
             for root, dirs, files in os.walk(norm):
+                walk_budget -= 1
+                if walk_budget <= 0:
+                    break
                 if '.git' in dirs:
                     dirs.remove('.git')
                 for f in files:
@@ -1373,7 +1387,11 @@ def is_security_guard_path(path_str, cwd=None):
                     if os.path.islink(item_p):
                         try:
                             link_target = str(Path(item_p).resolve())
-                            if is_security_guard_path(link_target, cwd):
+                            norm_target = os.path.normpath(expand_path(link_target, cwd))
+                            real_target = os.path.realpath(norm_target)
+                            if (norm_target, real_target) in visited:
+                                continue
+                            if is_security_guard_path(link_target, cwd, visited=visited, depth=depth + 1):
                                 return True
                         except Exception:
                             pass
@@ -6182,6 +6200,23 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                 ref_var = m_var.group('name')
                 if is_credential_var_name(ref_var):
                     return 'deny', f"Access to credential environment variable via parameter expansion is forbidden: ${{{p_inner}}}"
+
+            # Check for array subscripts: in Bash, any non-literal subscript evaluates arithmetic
+            # and recursively expands variable values, which can execute embedded commands
+            for m_sub in re.finditer(r'\[([^\]]*)\]', p_inner):
+                sub_expr = m_sub.group(1).strip()
+                if sub_expr not in ('@', '*') and not re.match(r'^-?\d+$', sub_expr):
+                    return 'force_ask', f"Parameter expansion with dynamic or variable array subscript requires confirmation: ${{{p_inner}}}"
+
+            # Check for substring slicing (${var:offset} or ${var:offset:length}):
+            # in Bash, offset and length are evaluated as arithmetic expressions
+            p_body = re.sub(r'^[!#]?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?', '', p_inner)
+            if p_body.startswith(':') and not p_body.startswith((':=' , ':-', ':+', ':?')):
+                parts = p_body[1:].split(':')
+                for part in parts:
+                    p_clean = part.strip()
+                    if not re.match(r'^-?\d+$', p_clean) and not re.match(r'^\(-?\d+\)$', p_clean):
+                        return 'force_ask', f"Parameter expansion with dynamic slice offset or length requires confirmation: ${{{p_inner}}}"
 
             # Check for parameter assignments (${VAR:=val}, ${VAR=val}, ${ARR[idx]:=val}, ${ARR[idx]=val})
             m_assign = re.match(r'^[!#]?(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\[(?P<subscript>[^\]]*)\])?(?P<op>:=|=)', p_inner)

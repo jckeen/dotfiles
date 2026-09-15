@@ -5734,6 +5734,48 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             shutil.rmtree(str(git_rename_dir), ignore_errors=True)
 
+        # 51. Parameter expansion array subscripts / slice offsets and security-guard directory cycles
+        res_sub_dynamic = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'true "${v[a]}"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sub_dynamic['decision'], 'force_ask', f"Expected force_ask for dynamic array subscript, got: {res_sub_dynamic}")
+        self.assertIn('subscript', res_sub_dynamic['reason'].lower())
+
+        res_sub_static = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'true "${v[0]}"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sub_static['decision'], 'allow', f"Expected allow for static array subscript, got: {res_sub_static}")
+
+        res_slice_dynamic = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'true "${v:a:1}"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_slice_dynamic['decision'], 'force_ask', f"Expected force_ask for dynamic slice, got: {res_slice_dynamic}")
+        self.assertIn('slice', res_slice_dynamic['reason'].lower())
+
+        res_slice_static = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'true "${v:0:5}"', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_slice_static['decision'], 'allow', f"Expected allow for static slice, got: {res_slice_static}")
+
+        cycle_dir = ws_dir / 'cycle_test'
+        cycle_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(str(cycle_dir), str(cycle_dir / 'link1'))
+            os.symlink(str(cycle_dir), str(cycle_dir / 'link2'))
+            (cycle_dir / 'sub').mkdir(exist_ok=True)
+            os.symlink(str(cycle_dir), str(cycle_dir / 'sub' / 'backlink'))
+            res_cycle = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'cp README.md {cycle_dir}/copy.txt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cycle['decision'], 'allow', f"Expected allow without timeout for dir with symlink cycles, got: {res_cycle}")
+        finally:
+            shutil.rmtree(str(cycle_dir), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
