@@ -4827,6 +4827,24 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_compound_rm['decision'], 'force_ask')
         self.assertIn('created or modified earlier', res_compound_rm['reason'])
 
+        # 8. Encoded cp options decode and trigger recursive/symlink protections
+        res_cp_encoded = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"cp -$'\122\114' safe.txt safe_copy.txt", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cp_encoded['decision'], 'ask')
+        self.assertIn('Recursive or symlink-dereferencing', res_cp_encoded['reason'])
+
+        # 9. Bash >& redirection writes to written_files
+        paths_file = ws_dir / 'paths'
+        paths_file.write_bytes(b'safe.txt\0')
+        res_files0_redir_both = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"printf '/proc/self/environ\0' >& paths; sort --files0-from=paths", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_files0_redir_both['decision'], 'force_ask')
+        self.assertIn('modified or redirected to', res_files0_redir_both['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()

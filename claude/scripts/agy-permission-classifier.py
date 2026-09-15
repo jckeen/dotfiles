@@ -142,6 +142,16 @@ PROTECTED_BRANCHES = {'main', 'master', 'release', 'prod', 'production'}
 REDIRECTION_OPERATORS = ('&>>', '>|', '&>', '>>', '>&', '>', '<>', '<')
 
 
+def is_output_redirection(tok, target=None):
+    """Check if token is an output redirection operator (including >& when target is not a file descriptor)."""
+    if tok in ('>', '>>', '>|', '&>', '&>>', '<>'):
+        return True
+    if tok == '>&':
+        if target is None or not str(target).strip().isdigit():
+            return True
+    return False
+
+
 def is_dangerous_env_var(var_name):
     if var_name in DANGEROUS_ENV_VARS:
         return True
@@ -458,7 +468,7 @@ def validate_files0_from(files0_from, cmd_name, cmd_tokens, workspace_paths, cwd
             if norm_f0 == norm_wf or norm_f0.startswith(norm_wf + os.sep):
                 return 'force_ask', f"{cmd_name} file list was modified or redirected to in the command line: {files0_from}"
     for i_tok, tok in enumerate(cmd_tokens):
-        if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(cmd_tokens):
+        if is_output_redirection(tok, cmd_tokens[i_tok + 1] if i_tok + 1 < len(cmd_tokens) else None) and i_tok + 1 < len(cmd_tokens):
             redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
             if os.path.normpath(redir_target) == norm_f0:
                 return 'force_ask', f"{cmd_name} file list is redirected to within the same command: {files0_from}"
@@ -3104,7 +3114,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         if norm_pf == norm_wf or norm_pf.startswith(norm_wf + os.sep):
                             return 'force_ask', f"git add pathspec file was modified or redirected to in the command line: {pf}"
                 for i_tok, tok in enumerate(cmd_tokens):
-                    if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(cmd_tokens):
+                    if is_output_redirection(tok, cmd_tokens[i_tok + 1] if i_tok + 1 < len(cmd_tokens) else None) and i_tok + 1 < len(cmd_tokens):
                         redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
                         if os.path.normpath(redir_target) == norm_pf:
                             return 'force_ask', f"git add pathspec file is redirected to within the same command: {pf}"
@@ -3280,7 +3290,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         if norm_pf == norm_wf or norm_pf.startswith(norm_wf + os.sep):
                             return 'force_ask', f"git commit pathspec file was modified or redirected to in the command line: {pf}"
                 for i_tok, tok in enumerate(cmd_tokens):
-                    if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(cmd_tokens):
+                    if is_output_redirection(tok, cmd_tokens[i_tok + 1] if i_tok + 1 < len(cmd_tokens) else None) and i_tok + 1 < len(cmd_tokens):
                         redir_target = expand_path(unquote_token(cmd_tokens[i_tok + 1]), cwd)
                         if os.path.normpath(redir_target) == norm_pf:
                             return 'force_ask', f"git commit pathspec file is redirected to within the same command: {pf}"
@@ -4349,6 +4359,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     # 8. Safe Local File Operations (cp / mv)
     if base_cmd in {'cp', 'mv'}:
+        # Decode ANSI-C quotes and escape sequences across all arguments
+        args = [decode_shell_arg(a) for a in args]
+
         if base_cmd == 'cp':
             has_risky_cp = False
             for a in args:
@@ -4363,7 +4376,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if has_risky_cp:
                 return 'ask', f"Recursive or symlink-dereferencing cp requires confirmation: {' '.join(cmd_tokens)}"
         for a in args:
-            if not a.startswith('-') and ('$' in a or '`' in a):
+            if '$' in a or '`' in a:
                 return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         target_dir = None
         positionals = []
@@ -4746,12 +4759,12 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
             _, ext_redirs = extract_unquoted_redirections(raw_s)
             if ext_redirs:
                 for r_tok, r_target in ext_redirs:
-                    if r_tok in ('>', '>>', '>|', '&>', '&>>'):
+                    if is_output_redirection(r_tok, r_target):
                         t_clean = decode_shell_target(r_target)
                         if t_clean and t_clean != '/dev/null':
                             written_files.add(expand_path(t_clean, cwd))
         for i_tok, tok in enumerate(sub):
-            if tok in ('>', '>>', '>|', '&>', '&>>') and i_tok + 1 < len(sub):
+            if i_tok + 1 < len(sub) and is_output_redirection(tok, sub[i_tok + 1]):
                 t_raw = decode_shell_target(unquote_token(sub[i_tok + 1]))
                 if t_raw and t_raw != '/dev/null':
                     written_files.add(expand_path(t_raw, cwd))
