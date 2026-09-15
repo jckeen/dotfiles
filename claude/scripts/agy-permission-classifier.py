@@ -1070,6 +1070,88 @@ def is_git_admin_path(path_str, cwd=None):
     return False
 
 
+def is_security_guard_path(path_str, cwd=None):
+    """Check if path targets active or repository source permission classifiers, hooks, or agent security settings."""
+    if not path_str or not isinstance(path_str, str):
+        return False
+    norm = expand_path(path_str, cwd)
+    try:
+        resolved = str(Path(norm).resolve())
+    except Exception:
+        resolved = norm
+
+    basename = os.path.basename(norm)
+    if basename in ('agy-permission-classifier.py', 'agy-inject-handoff.sh'):
+        return True
+
+    # Check if target resolves to this running classifier file
+    try:
+        self_resolved = str(Path(__file__).resolve())
+        if resolved == self_resolved:
+            return True
+    except Exception:
+        pass
+
+    # Check deployed agent configuration directories (~/.claude, ~/.gemini)
+    home = os.path.expanduser('~')
+    for agent_dir in ('.claude', '.gemini'):
+        d_path = os.path.join(home, agent_dir)
+        norm_d = os.path.normpath(d_path)
+        if norm == norm_d or norm.startswith(norm_d + os.sep) or resolved == norm_d or resolved.startswith(norm_d + os.sep):
+            return True
+
+    # Check repository source paths that are symlinked or deployed into active runtime configuration
+    norm_slash = norm.replace('\\', '/')
+    res_slash = resolved.replace('\\', '/')
+    for pattern in (
+        '*/antigravity/hooks.json', 'antigravity/hooks.json',
+        '*/.gemini/*/hooks.json', '.gemini/*/hooks.json',
+        '*/.claude/*/hooks.json', '.claude/*/hooks.json',
+        '*/claude/scripts/agy-*.py', 'claude/scripts/agy-*.py',
+        '*/claude/scripts/agy-*.sh', 'claude/scripts/agy-*.sh',
+        '*/claude/settings.json', 'claude/settings.json',
+    ):
+        if fnmatch.fnmatch(norm_slash, pattern) or fnmatch.fnmatch(res_slash, pattern):
+            return True
+
+    if basename == 'hooks.json':
+        parts = norm.split(os.sep)
+        if any(p in ('antigravity', '.gemini', '.claude', 'claude') for p in parts):
+            return True
+
+    return False
+
+
+def get_inherited_goflags():
+    """Retrieve GOFLAGS from environment variable or persistent go env configuration file."""
+    env_flags = os.environ.get('GOFLAGS')
+    if env_flags is not None and env_flags.strip():
+        return env_flags.strip()
+    goenv = os.environ.get('GOENV')
+    candidate_paths = []
+    if goenv:
+        candidate_paths.append(Path(goenv).expanduser())
+    home = Path(os.path.expanduser('~'))
+    candidate_paths.extend([
+        home / '.config' / 'go' / 'env',
+        home / 'Library' / 'Application Support' / 'go' / 'env',
+    ])
+    for p in candidate_paths:
+        try:
+            if p.is_file():
+                content = p.read_text(errors='replace')
+                for line in content.splitlines():
+                    line = line.strip()
+                    if line.startswith('GOFLAGS='):
+                        val = line.split('=', 1)[1].strip()
+                        if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                            val = val[1:-1]
+                        return val.strip()
+        except Exception:
+            pass
+    return None
+
+
 def workspace_has_local_python_module(module_name, workspace_paths, cwd=None):
     """Check if cwd or any workspace contains a local python file or package shadowing module_name."""
     if not module_name or not isinstance(module_name, str):
@@ -1136,8 +1218,8 @@ def check_dev_tool_output(args, workspace_paths, cwd, tool_name='tool'):
                 return 'deny', f"{tool_name} output targeting sensitive path is forbidden: {dest}"
             if is_system_write_path(dest, cwd):
                 return 'deny', f"{tool_name} output targeting system path is forbidden: {dest}"
-            if is_git_admin_path(dest, cwd):
-                return 'force_ask', f"{tool_name} output modifying git repository metadata or hooks requires confirmation: {dest}"
+            if is_git_admin_path(dest, cwd) or is_security_guard_path(dest, cwd):
+                return 'force_ask', f"{tool_name} output modifying git repository metadata or security configuration requires confirmation: {dest}"
             if not is_path_in_workspaces(dest, workspace_paths, cwd):
                 return 'force_ask', f"{tool_name} output targeting destination outside workspace requires confirmation: {dest}"
         i += 1
@@ -1797,6 +1879,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         return 'deny', f"Redirect targeting system write path is forbidden: {target}"
                     if is_git_admin_path(target, cwd):
                         return 'ask', f"Redirect modifying git repository configuration or hooks requires confirmation: {target}"
+                    if is_security_guard_path(target, cwd):
+                        return 'force_ask', f"Redirect modifying security configuration requires confirmation: {target}"
                     if not is_path_in_workspaces(target, workspace_paths, cwd):
                         return 'ask', f"Redirecting output outside workspace requires approval: {target}"
             continue
@@ -1890,7 +1974,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         return 'deny', f"Recursive deletion of entire workspace root is forbidden: rm {t}"
             return 'force_ask', f"Recursive or directory deletion requires confirmation: {' '.join(cmd_tokens)}"
         # Non-recursive rm on individual files inside workspace
-        if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) for t in targets):
+        if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) and not is_security_guard_path(t, cwd) for t in targets):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
         return 'force_ask', f"File deletion requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -1995,8 +2079,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if git_out:
             if is_sensitive_credential_path(git_out, cwd) or is_system_write_path(git_out, cwd):
                 return 'deny', f"git {git_sub} --output targeting sensitive or system path is forbidden: {git_out}"
-            if is_git_admin_path(git_out, cwd):
-                return 'force_ask', f"git {git_sub} --output targeting git administrative file requires confirmation: {git_out}"
+            if is_git_admin_path(git_out, cwd) or is_security_guard_path(git_out, cwd):
+                return 'force_ask', f"git {git_sub} --output targeting git administrative file or security configuration requires confirmation: {git_out}"
             if not is_path_in_workspaces(git_out, workspace_paths, cwd):
                 return 'force_ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
 
@@ -3554,6 +3638,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'deny', f"sort output targeting sensitive or system path is forbidden: {out_target}"
             if is_git_admin_path(out_target, cwd):
                 return 'ask', f"sort modifying git repository configuration or hooks requires confirmation: {out_target}"
+            if is_security_guard_path(out_target, cwd):
+                return 'force_ask', f"sort modifying security configuration requires confirmation: {out_target}"
             if not is_path_in_workspaces(out_target, workspace_paths, cwd):
                 return 'ask', f"sort output outside workspace requires approval: {out_target}"
 
@@ -3859,6 +3945,26 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if opt_name in ('-mod', '--mod'):
                     if a not in ('-mod=readonly', '-mod=vendor', '--mod=readonly', '--mod=vendor'):
                         return 'force_ask', f"go {args[0]} with dependency downloading or mutating module flag ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+            inherited_goflags = get_inherited_goflags()
+            if inherited_goflags:
+                try:
+                    goflags_tokens = shlex.split(inherited_goflags)
+                except Exception:
+                    goflags_tokens = inherited_goflags.split()
+                for a in goflags_tokens:
+                    opt_name = a.split('=', 1)[0]
+                    if opt_name in UNSAFE_GO_FLAGS or any(opt_name.startswith(f) for f in UNSAFE_GO_FLAGS):
+                        return 'force_ask', f"go {args[0]} with inherited unsafe GOFLAGS ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+                    if opt_name in ('-mod', '--mod'):
+                        if a not in ('-mod=readonly', '-mod=vendor', '--mod=readonly', '--mod=vendor'):
+                            return 'force_ask', f"go {args[0]} with inherited module flag ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+            if written_files:
+                goenv_file = os.environ.get('GOENV') or os.path.expanduser('~/.config/go/env')
+                norm_goenv = os.path.normpath(goenv_file)
+                for wf in written_files:
+                    norm_wf = os.path.normpath(wf)
+                    if norm_goenv == norm_wf or norm_goenv.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_goenv + os.sep):
+                        return 'force_ask', f"go {args[0]} with Go environment configuration modified earlier in command line requires confirmation: {goenv_file}"
             if args[0] == 'test':
                 return 'force_ask', f"go test executes workspace test code and requires confirmation: {' '.join(cmd_tokens)}"
             in_check = check_dev_tool_inputs(args[1:], workspace_paths, cwd, f"go {args[0]}")
@@ -3969,9 +4075,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         for ed in [dest_dir] + effective_dests:
             if is_git_admin_path(ed, cwd):
                 return 'ask', f"{base_cmd} destination targeting git administrative file requires confirmation: {ed}"
+            if is_security_guard_path(ed, cwd):
+                return 'force_ask', f"{base_cmd} destination targeting security configuration requires confirmation: {ed}"
         for src in sources:
             if is_git_admin_path(src, cwd):
                 return 'ask', f"{base_cmd} accessing git administrative file requires confirmation: {src}"
+            if is_security_guard_path(src, cwd):
+                return 'force_ask', f"{base_cmd} accessing security configuration requires confirmation: {src}"
 
         for ed in [dest_dir] + effective_dests:
             ed_norm = expand_path(ed, cwd)
@@ -3993,6 +4103,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         targets = [a for a in args if not a.startswith('-')]
         if any(is_git_admin_path(t, cwd) for t in targets):
             return 'ask', f"{base_cmd} targeting git administrative path requires confirmation: {' '.join(cmd_tokens)}"
+        if any(is_security_guard_path(t, cwd) for t in targets):
+            return 'force_ask', f"{base_cmd} targeting security configuration requires confirmation: {' '.join(cmd_tokens)}"
         if written_files:
             for t in targets:
                 t_norm = os.path.normpath(expand_path(t, cwd))
@@ -4377,6 +4489,9 @@ def classify_file_modification(target_file, workspace_paths, cwd):
 
     if is_git_admin_path(target_file, cwd):
         return 'force_ask', f"Modifying git repository configuration or hooks requires confirmation: {target_file}"
+
+    if is_security_guard_path(target_file, cwd):
+        return 'force_ask', f"Modifying permission classifier, hooks, or security configuration requires confirmation: {target_file}"
 
     if is_path_in_workspaces(target_file, workspace_paths, cwd):
         return 'allow', f"File modification within workspace auto-approved: {os.path.basename(target_file)}"

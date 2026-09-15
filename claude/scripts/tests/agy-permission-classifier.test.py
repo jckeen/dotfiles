@@ -4267,6 +4267,8 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         sub_dir = main_repo / 'sub'
         sub_dir.mkdir()
         subprocess.run(['git', 'init', '-q'], cwd=str(main_repo), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(main_repo), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(main_repo), check=True)
         (main_repo / 'README.md').write_text('# Main\n')
         subprocess.run(['git', 'add', '.'], cwd=str(main_repo), check=True)
         subprocess.run(['git', 'commit', '-q', '-m', 'initial'], cwd=str(main_repo), check=True)
@@ -4342,6 +4344,96 @@ class TestAgyPermissionClassifier(unittest.TestCase):
                 os.environ.pop('RIPGREP_CONFIG_PATH', None)
             else:
                 os.environ['RIPGREP_CONFIG_PATH'] = old_rg_env
+
+    def test_round_48_hardening(self):
+        tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        ws_dir = Path(tmp_dir) / 'workspace'
+        ws_dir.mkdir()
+        (ws_dir / 'antigravity').mkdir()
+        (ws_dir / 'claude' / 'scripts').mkdir(parents=True)
+
+        # 1. Modifying deployed classifier or hook configuration requires confirmation even within workspace
+        classifier_file = ws_dir / 'claude' / 'scripts' / 'agy-permission-classifier.py'
+        classifier_file.write_text('#!/usr/bin/env python3\n')
+        res_write_classifier = self.run_classifier({
+            'toolCall': {'name': 'write_to_file', 'args': {'TargetFile': str(classifier_file), 'CodeContent': '# evil'}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_write_classifier['decision'], 'force_ask')
+        self.assertIn('permission classifier', res_write_classifier['reason'])
+
+        hooks_file = ws_dir / 'antigravity' / 'hooks.json'
+        hooks_file.write_text('{}\n')
+        res_replace_hooks = self.run_classifier({
+            'toolCall': {'name': 'replace_file_content', 'args': {
+                'TargetFile': str(hooks_file),
+                'TargetContent': '{}',
+                'ReplacementContent': '{"evil": 1}',
+            }},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_replace_hooks['decision'], 'force_ask')
+        self.assertIn('hooks', res_replace_hooks['reason'])
+
+        # Shell writes to hook or classifier files also require confirmation
+        res_sh_write_hooks = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "{}" > antigravity/hooks.json', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sh_write_hooks['decision'], 'force_ask')
+        self.assertIn('hooks', res_sh_write_hooks['reason'])
+
+        # rm on hooks.json requires confirmation
+        res_rm_hooks = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rm antigravity/hooks.json', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rm_hooks['decision'], 'force_ask')
+
+        # 2. Inherited GOFLAGS execution-helper checks
+        old_goflags = os.environ.get('GOFLAGS')
+        try:
+            os.environ['GOFLAGS'] = '-toolexec=/tmp/review-helper'
+            res_go_toolexec = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_toolexec['decision'], 'force_ask')
+            self.assertIn('GOFLAGS', res_go_toolexec['reason'])
+
+            # Clean GOFLAGS
+            os.environ['GOFLAGS'] = '-tags=integration'
+            res_go_clean = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_clean['decision'], 'allow')
+        finally:
+            if old_goflags is None:
+                os.environ.pop('GOFLAGS', None)
+            else:
+                os.environ['GOFLAGS'] = old_goflags
+
+        # 3. Persistent Go env configuration file
+        goenv_dir = ws_dir / '.config' / 'go'
+        goenv_dir.mkdir(parents=True)
+        goenv_file = goenv_dir / 'env'
+        goenv_file.write_text('GOFLAGS="-toolexec=/tmp/helper"\n')
+        old_goenv = os.environ.get('GOENV')
+        try:
+            os.environ['GOENV'] = str(goenv_file)
+            res_go_cfg = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_cfg['decision'], 'force_ask')
+            self.assertIn('GOFLAGS', res_go_cfg['reason'])
+        finally:
+            if old_goenv is None:
+                os.environ.pop('GOENV', None)
+            else:
+                os.environ['GOENV'] = old_goenv
 
 
 if __name__ == '__main__':
