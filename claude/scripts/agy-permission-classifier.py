@@ -570,7 +570,7 @@ def git_has_fsmonitor_configured(cwd=None):
     return False
 
 
-def git_has_active_hooks(cwd=None, hook_names=()):
+def git_has_active_hooks(cwd=None, hook_names=(), written_files=None):
     """Check if git repository has active (executable) repository hooks."""
     if not hook_names:
         return False
@@ -583,8 +583,28 @@ def git_has_active_hooks(cwd=None, hook_names=()):
         return False
     if not os.path.isabs(hooks_dir):
         hooks_dir = os.path.join(effective_cwd, hooks_dir)
+    norm_hooks = os.path.normpath(hooks_dir)
+
+    # If any file inside hooks_dir was created or modified earlier in the command line,
+    # assume an active hook was installed.
+    if written_files:
+        try:
+            resolved_hooks = str(Path(norm_hooks).resolve())
+        except Exception:
+            resolved_hooks = norm_hooks
+        for wf in written_files:
+            norm_wf = os.path.normpath(wf)
+            if norm_wf == norm_hooks or norm_wf.startswith(norm_hooks + os.sep) or norm_hooks.startswith(norm_wf + os.sep):
+                return True
+            try:
+                resolved_wf = str(Path(norm_wf).resolve())
+                if resolved_wf == resolved_hooks or resolved_wf.startswith(resolved_hooks + os.sep) or resolved_hooks.startswith(resolved_wf + os.sep):
+                    return True
+            except Exception:
+                pass
+
     for h in hook_names:
-        h_path = os.path.join(hooks_dir, h)
+        h_path = os.path.join(norm_hooks, h)
         if os.path.isfile(h_path) and os.access(h_path, os.X_OK):
             return True
     return False
@@ -971,7 +991,7 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
 
 
 def is_git_admin_path(path_str, cwd=None):
-    """Check if path targets git internal administrative files (.git, .git/config, .git/hooks, bare repo .git, etc.)."""
+    """Check if path targets git internal administrative files (.git, .git/config, .git/hooks, bare repo .git, core.hooksPath, etc.)."""
     if not path_str or not isinstance(path_str, str):
         return False
     norm = expand_path(path_str, cwd)
@@ -986,7 +1006,53 @@ def is_git_admin_path(path_str, cwd=None):
             if p == '.git' or p.endswith('.git'):
                 return True
     except Exception:
-        pass
+        resolved = norm
+
+    # Also check against resolved git hooks directory (e.g. custom core.hooksPath)
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    target_cwds = [effective_cwd]
+    curr_dir = norm if os.path.isdir(norm) else os.path.dirname(norm)
+    while curr_dir and curr_dir != os.path.dirname(curr_dir) and not os.path.exists(curr_dir):
+        curr_dir = os.path.dirname(curr_dir)
+    if curr_dir and os.path.exists(curr_dir) and curr_dir not in target_cwds:
+        target_cwds.append(curr_dir)
+
+    for probe_cwd in target_cwds:
+        res_hooks = git_run_probe(['rev-parse', '--path-format=absolute', '--git-path', 'hooks'], cwd=probe_cwd)
+        if not res_hooks or res_hooks.returncode != 0 or not res_hooks.stdout.strip():
+            res_hooks = git_run_probe(['rev-parse', '--git-path', 'hooks'], cwd=probe_cwd)
+        if res_hooks and res_hooks.returncode == 0 and res_hooks.stdout.strip():
+            hooks_dir = res_hooks.stdout.strip()
+            if not os.path.isabs(hooks_dir):
+                hooks_dir = os.path.join(probe_cwd, hooks_dir)
+            norm_hooks = os.path.normpath(hooks_dir)
+            if norm == norm_hooks or norm.startswith(norm_hooks + os.sep):
+                return True
+            try:
+                resolved_hooks = str(Path(norm_hooks).resolve())
+                if resolved == resolved_hooks or resolved.startswith(resolved_hooks + os.sep):
+                    return True
+            except Exception:
+                pass
+
+        # Also check against resolved git administrative directory (--git-dir)
+        res_git = git_run_probe(['rev-parse', '--path-format=absolute', '--git-dir'], cwd=probe_cwd)
+        if not res_git or res_git.returncode != 0 or not res_git.stdout.strip():
+            res_git = git_run_probe(['rev-parse', '--git-dir'], cwd=probe_cwd)
+        if res_git and res_git.returncode == 0 and res_git.stdout.strip():
+            git_dir = res_git.stdout.strip()
+            if not os.path.isabs(git_dir):
+                git_dir = os.path.join(probe_cwd, git_dir)
+            norm_git = os.path.normpath(git_dir)
+            if norm == norm_git or norm.startswith(norm_git + os.sep):
+                return True
+            try:
+                resolved_git = str(Path(norm_git).resolve())
+                if resolved == resolved_git or resolved.startswith(resolved_git + os.sep):
+                    return True
+            except Exception:
+                pass
+
     return False
 
 
@@ -1934,7 +2000,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if git_sub == 'fetch':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git fetch in directory outside workspace requires confirmation: {cwd}"
-            if git_has_active_hooks(cwd, ('reference-transaction',)):
+            if git_has_active_hooks(cwd, ('reference-transaction',), written_files=written_files):
                 return 'force_ask', f"Git fetch with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_transport_executable_configured(cwd):
                 return 'force_ask', f"Git fetch with configured transport program or credential helper requires confirmation: {' '.join(cmd_tokens)}"
@@ -2027,7 +2093,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             res_remote = git_run_probe(['for-each-ref', '--format=%(refname)', f'refs/remotes/*/{target_branch}'], cwd=cwd)
                             if res_remote and res_remote.returncode == 0 and res_remote.stdout.strip():
                                 return 'force_ask', f"git switch creates local tracking branch from remote for '{target_branch}': {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction')):
+            if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction'), written_files=written_files):
                 return 'force_ask', f"git switch with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_fsmonitor_configured(cwd):
                 return 'force_ask', f"git switch with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
@@ -2045,16 +2111,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 '--move',
                 '--copy',
                 '--force',
+                '--track',
+                '--set-upstream',
             )
             for a in args[1:]:
-                if a in ('-d', '-D', '-m', '-M', '-c', '-C', '-f', '-u'):
-                    return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
-                if a.startswith(('-d=', '-D=', '-m=', '-M=', '-c=', '-C=', '-f=', '-u=')):
-                    return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
+                if a.startswith('-') and not a.startswith('--') and a != '-':
+                    if any(c in a for c in ('d', 'D', 'm', 'M', 'c', 'C', 'f', 'u')):
+                        return 'force_ask', f"Mutating branches requires confirmation: {' '.join(cmd_tokens)}"
                 if a.startswith('--'):
                     opt = a.split('=', 1)[0]
                     for target_long in MUTATING_BRANCH_LONGS:
-                        if target_long.startswith(opt) and len(opt) >= 5:
+                        if target_long.startswith(opt) and len(opt) >= 3:
                             return 'force_ask', f"Mutating branches requires confirmation ({opt}): {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
             # Positional arguments in git branch create/reset branches unless --list is explicitly used
@@ -2065,10 +2132,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
         # Git tag: only allow listing
         if git_sub == 'tag':
-            if any(a in ('-d', '--delete', '-a', '-f', '--force', '-m', '-s', '-u') for a in args):
-                return 'force_ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
+            for a in args[1:]:
+                if a.startswith('-') and not a.startswith('--') and a != '-':
+                    if any(c in a for c in ('d', 'a', 'f', 'm', 's', 'u')):
+                        return 'force_ask', f"Creating or deleting tags requires confirmation: {' '.join(cmd_tokens)}"
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    for mut in ('--delete', '--force', '--annotate', '--sign'):
+                        if mut.startswith(opt) and len(opt) >= 3:
+                            return 'force_ask', f"Creating or deleting tags requires confirmation ({opt}): {' '.join(cmd_tokens)}"
             positionals = [a for a in args[1:] if not a.startswith('-')]
-            if positionals and not any(a in ('-l', '--list') for a in args):
+            if positionals and not any(a in ('-l', '--list') or a.startswith('--list=') for a in args):
                 return 'force_ask', f"Creating tags requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git tag query'
 
@@ -2164,8 +2238,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if 'add' in args:
                     if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
                         return 'force_ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
-                    if git_has_active_hooks(cwd, ('post-checkout',)):
-                        return 'force_ask', f"git worktree add with active repository hook (post-checkout) requires confirmation: {' '.join(cmd_tokens)}"
+                    if git_has_active_hooks(cwd, ('post-checkout', 'reference-transaction'), written_files=written_files):
+                        return 'force_ask', f"git worktree add with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
                     if git_has_filter_configured(cwd):
                         return 'force_ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
                     sub_args = args[args.index('add') + 1:]
@@ -2350,7 +2424,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git add with editor or interactive option requires confirmation: {' '.join(cmd_tokens)}"
             if any(a == '--force' or a.startswith('--force') or (a.startswith('-') and not a.startswith('--') and a != '-' and 'f' in a) for a in args):
                 return 'force_ask', f"git add with --force can stage ignored sensitive files: {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('post-index-change',)):
+            if git_has_active_hooks(cwd, ('post-index-change',), written_files=written_files):
                 return 'force_ask', f"git add with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
@@ -2523,7 +2597,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
                 return 'force_ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'reference-transaction')):
+            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'reference-transaction'), written_files=written_files):
                 return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"

@@ -3734,8 +3734,112 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_cat_suffix['decision'], 'force_ask')
         self.assertIn('raw git object', res_cat_suffix['reason'])
 
+    def test_round_41_hardening(self):
+        """Verify Round 41 security hardening:
+        1. core.hooksPath files recognized as git administrative paths and hook writes invalidate subsequent git commits.
+        2. Short branch flag abbreviations (--ed, --e) require confirmation.
+        3. git worktree add with active reference-transaction hook requires confirmation.
+        4. git tag deletion/creation flags with abbreviations or bundling require confirmation.
+        """
+        git_dir = Path(self.test_ws) / 'r41_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('# Hello\n')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'initial'], cwd=str(git_dir), check=True)
+
+        # 1. Custom core.hooksPath and write invalidation across compound commands
+        subprocess.run(['git', 'config', 'core.hooksPath', 'custom_hooks'], cwd=str(git_dir), check=True)
+        (git_dir / 'custom_hooks').mkdir(parents=True, exist_ok=True)
+        (git_dir / 'runner').write_text('#!/bin/sh\nexit 0\n')
+
+        # Direct write/cp to custom_hooks must be recognized as git admin path
+        res_cp = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp runner custom_hooks/pre-commit', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cp['decision'], 'ask')
+        self.assertIn('git administrative', res_cp['reason'])
+
+        res_write = self.run_classifier({
+            'toolCall': {'name': 'write_to_file', 'args': {'TargetFile': str(git_dir / 'custom_hooks' / 'pre-commit'), 'CodeContent': 'echo hi'}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_write['decision'], 'force_ask')
+        self.assertIn('git repository configuration or hooks', res_write['reason'])
+
+        # Compound command copying into custom_hooks and then committing
+        res_compound = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp runner custom_hooks/pre-commit; git commit --allow-empty -m safe', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_compound['decision'], 'force_ask')
+        self.assertIn('active repository hook', res_compound['reason'])
+
+        # 2. Short branch flag abbreviations (--ed, --e)
+        res_branch_ed = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch --ed', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_branch_ed['decision'], 'force_ask')
+        self.assertIn('Mutating branches', res_branch_ed['reason'])
+
+        res_branch_e = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch --e', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_branch_e['decision'], 'force_ask')
+        self.assertIn('Mutating branches', res_branch_e['reason'])
+
+        # Safe read-only branch commands still allowed
+        res_branch_list = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git branch --show-current', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_branch_list['decision'], 'allow')
+
+        # 3. Worktree creation with reference-transaction hook
+        subprocess.run(['git', 'config', '--unset', 'core.hooksPath'], cwd=str(git_dir), check=True)
+        wt_hook = git_dir / '.git' / 'hooks' / 'reference-transaction'
+        wt_hook.write_text('#!/bin/sh\nexit 0\n')
+        wt_hook.chmod(0o755)
+
+        res_wt = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git worktree add -b review child HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wt['decision'], 'force_ask')
+        self.assertIn('active repository hook', res_wt['reason'])
+
+        wt_hook.unlink()
+
+        # Without hook, worktree add within workspace is allowed
+        res_wt_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git worktree add -b review child HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wt_clean['decision'], 'allow')
+
+        # 4. git tag with abbreviations and short bundling
+        res_tag_del = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git tag --del v1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_tag_del['decision'], 'force_ask')
+        self.assertIn('Creating or deleting tags', res_tag_del['reason'])
+
+        res_tag_bundle = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git tag -df v1', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_tag_bundle['decision'], 'force_ask')
+        self.assertIn('Creating or deleting tags', res_tag_bundle['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
 
