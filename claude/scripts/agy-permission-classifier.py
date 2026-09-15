@@ -515,17 +515,31 @@ def validate_file_list_entries(list_file, cmd_name, cmd_tokens, workspace_paths,
         content = Path(f_resolved).read_bytes()
         raw_entries = content.split(b'\0') if nul_delimited else content.splitlines()
         for entry in raw_entries:
-            p = entry.decode(errors='replace').strip().rstrip('\0')
-            if p:
-                if is_sensitive_credential_path(p, cwd) or matches_sensitive_pattern(p):
+            if nul_delimited:
+                p = entry.decode(errors='replace')
+                if not p:
+                    continue
+            else:
+                p = entry.decode(errors='replace').rstrip('\r\n')
+                if not p:
+                    continue
+            check_targets = [p]
+            if p.strip() and p.strip() != p:
+                check_targets.append(p.strip())
+            for target in check_targets:
+                if is_sensitive_credential_path(target, cwd) or matches_sensitive_pattern(target):
                     return 'deny', f"{cmd_name} file list references sensitive path: {p}"
-                if not is_path_in_workspaces(p, workspace_paths, cwd):
+                if not is_path_in_workspaces(target, workspace_paths, cwd):
                     return 'ask', f"{cmd_name} file list references path outside workspace: {p}"
+                if is_security_guard_path(target, cwd):
+                    return 'force_ask', f"{cmd_name} file list references protected security guard: {p}"
+                if is_git_admin_path(target, cwd):
+                    return 'force_ask', f"{cmd_name} file list references git admin path: {p}"
                 if written_files:
-                    norm_p = os.path.normpath(expand_path(p, cwd))
+                    norm_target = os.path.normpath(expand_path(target, cwd))
                     for wf in written_files:
                         norm_wf = os.path.normpath(wf)
-                        if norm_p == norm_wf or norm_p.startswith(norm_wf + os.sep):
+                        if norm_target == norm_wf or norm_target.startswith(norm_wf + os.sep):
                             return 'force_ask', f"{cmd_name} file list entry was modified or updated earlier: {p}"
     except Exception:
         return 'force_ask', f"{cmd_name} unable to verify file list: {list_file}"
@@ -2862,6 +2876,35 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git switch with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git switch with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+            res_repo = git_run_probe(['rev-parse', '--is-inside-work-tree'], cwd=cwd)
+            if res_repo and res_repo.returncode == 0:
+                ref_to_probe = '@{-1}' if target_branch == '-' else target_branch
+                res_toplevel = git_run_probe(['rev-parse', '--show-toplevel'], cwd=cwd)
+                if res_toplevel and res_toplevel.returncode == 0 and res_toplevel.stdout.strip():
+                    repo_root = os.path.normpath(res_toplevel.stdout.strip())
+                    res_ref = git_run_probe(['rev-parse', '--verify', f'{ref_to_probe}^{{commit}}'], cwd=repo_root)
+                    if res_ref and res_ref.returncode == 0:
+                        res_head = git_run_probe(['rev-parse', '--verify', 'HEAD'], cwd=repo_root)
+                        if res_head and res_head.returncode == 0:
+                            res_diff = git_run_probe(['diff', '--name-only', 'HEAD', ref_to_probe], cwd=repo_root)
+                        else:
+                            res_diff = git_run_probe(['ls-tree', '-r', '--name-only', ref_to_probe], cwd=repo_root)
+                        if res_diff and res_diff.returncode == 0:
+                            for cf in res_diff.stdout.splitlines():
+                                cf = cf.strip()
+                                if not cf:
+                                    continue
+                                full_cf = os.path.normpath(os.path.join(repo_root, cf))
+                                if is_sensitive_credential_path(full_cf, cwd) or matches_sensitive_pattern(cf) or is_sensitive_credential_path(cf, cwd):
+                                    return 'deny', f"git switch modifying sensitive credential path is forbidden: {cf}"
+                                if is_security_guard_path(full_cf, cwd) or is_security_guard_path(cf, cwd):
+                                    return 'force_ask', f"git switch modifying protected security guard or classifier requires confirmation: {cf}"
+                                if is_git_admin_path(full_cf, cwd) or is_git_admin_path(cf, cwd):
+                                    return 'force_ask', f"git switch modifying git admin path requires confirmation: {cf}"
+                                if not is_path_in_workspaces(full_cf, workspace_paths, cwd):
+                                    return 'force_ask', f"git switch modifies path outside workspace: {cf}"
+                        else:
+                            return 'force_ask', f"git switch unable to verify target branch diff: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git switch'
 
         # Git branch: only allow read-only queries
@@ -3296,10 +3339,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     continue
 
             scope_args = []
+            has_includes = False
+            has_no_includes = False
             for a in args[1:]:
                 if a.startswith('--'):
                     opt = a.split('=', 1)[0]
-                    if '--global'.startswith(opt) and len(opt) >= 3:
+                    if '--includes'.startswith(opt) and len(opt) >= 3:
+                        has_includes = True
+                        has_no_includes = False
+                    elif '--no-includes'.startswith(opt) and len(opt) >= 6:
+                        has_no_includes = True
+                        has_includes = False
+                    elif '--global'.startswith(opt) and len(opt) >= 3:
                         scope_args.append('--global')
                     elif '--system'.startswith(opt) and len(opt) >= 3:
                         scope_args.append('--system')
@@ -3319,6 +3370,40 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         norm_wf = os.path.normpath(wf)
                         if norm_cf == norm_wf or norm_cf.startswith(norm_wf + os.sep):
                             return 'force_ask', f"git config file was modified or updated earlier in the command line: {cf}"
+
+            if has_includes and config_files:
+                for cf in config_files:
+                    f_path = expand_path(cf, cwd)
+                    res_origin = git_run_probe(['config', '--includes', '--file', f_path, '--list', '--show-origin'], cwd=cwd)
+                    if res_origin and res_origin.returncode == 0 and res_origin.stdout:
+                        for line in res_origin.stdout.splitlines():
+                            parts = line.split('\t', 1)
+                            origin_part = parts[0].strip()
+                            if origin_part.startswith('file:'):
+                                inc_file = origin_part[5:]
+                                if is_sensitive_credential_path(inc_file, cwd) or matches_sensitive_pattern(inc_file):
+                                    return 'deny', f"git config included sensitive file is forbidden: {inc_file}"
+                                if not is_path_in_workspaces(inc_file, workspace_paths, cwd):
+                                    return 'ask', f"git config included file outside workspace requires approval: {inc_file}"
+                                if is_security_guard_path(inc_file, cwd):
+                                    return 'force_ask', f"git config included security guard file requires confirmation: {inc_file}"
+                                if written_files:
+                                    norm_inc = os.path.normpath(expand_path(inc_file, cwd))
+                                    for wf in written_files:
+                                        norm_wf = os.path.normpath(wf)
+                                        if norm_inc == norm_wf or norm_inc.startswith(norm_wf + os.sep):
+                                            return 'force_ask', f"git config included file was modified earlier: {inc_file}"
+                            if len(parts) == 2:
+                                kv = parts[1].strip()
+                                if '=' in kv:
+                                    k_inc, v_inc = kv.split('=', 1)
+                                    k_inc_clean = k_inc.strip().lower()
+                                    if k_inc_clean.startswith(('include.', 'includeif.')):
+                                        inc_target = v_inc.strip()
+                                        if is_sensitive_credential_path(inc_target, cwd) or matches_sensitive_pattern(inc_target):
+                                            return 'deny', f"git config include target is sensitive: {inc_target}"
+                                        if not is_path_in_workspaces(inc_target, workspace_paths, cwd):
+                                            return 'ask', f"git config include target outside workspace requires approval: {inc_target}"
 
             # Collect keys queried or set
             config_keys = []
@@ -3345,11 +3430,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     sources_to_check = []
                     if config_files:
                         for cf in config_files:
-                            sources_to_check.append(['--file', expand_path(cf, cwd)])
+                            src = ['--file', expand_path(cf, cwd)]
+                            if has_includes:
+                                src.insert(0, '--includes')
+                            sources_to_check.append(src)
                     if scope_args:
-                        sources_to_check.append(scope_args)
+                        src = list(scope_args)
+                        if has_includes:
+                            src.insert(0, '--includes')
+                        sources_to_check.append(src)
                     if not sources_to_check:
-                        sources_to_check.append(None)
+                        if has_includes:
+                            sources_to_check.append(['--includes'])
+                        elif has_no_includes:
+                            sources_to_check.append(['--no-includes'])
+                        else:
+                            sources_to_check.append(None)
 
                     for src in sources_to_check:
                         if git_remotes_have_credentials(cwd, config_source_args=src):

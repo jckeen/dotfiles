@@ -5274,6 +5274,61 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         }, env={'GIT_EXTERNAL_DIFF': '/tmp/fake_diff'})
         self.assertEqual(res_ext_diff_override['decision'], 'allow', f"Expected allow for git diff with --no-ext-diff, got: {res_ext_diff_override}")
 
+        # 32. Git switch to branch modifying security guard files triggers force_ask
+        sec_branch_dir = ws_dir / 'claude' / 'scripts'
+        sec_branch_dir.mkdir(parents=True, exist_ok=True)
+        guard_file = sec_branch_dir / 'agy-permission-classifier.py'
+        guard_file.write_text('# initial guard\n')
+        subprocess.run(['git', 'add', '.'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add guard'], cwd=str(ws_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'checkout', '-b', 'mod_guard_branch'], cwd=str(ws_dir), check=True, capture_output=True)
+        guard_file.write_text('# modified guard\n')
+        subprocess.run(['git', 'commit', '-am', 'modify guard'], cwd=str(ws_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'checkout', 'master'], cwd=str(ws_dir), check=True, capture_output=True)
+        try:
+            res_switch_guard = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch mod_guard_branch', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_switch_guard['decision'], 'force_ask', f"Expected force_ask for git switch modifying guard, got: {res_switch_guard}")
+            self.assertIn('security guard', res_switch_guard['reason'].lower())
+        finally:
+            subprocess.run(['git', 'branch', '-D', 'mod_guard_branch'], cwd=str(ws_dir), check=True, capture_output=True)
+
+        # 33. sort --files0-from with whitespace in entry names does not bypass workspace check
+        outside_dir = tempfile.TemporaryDirectory()
+        try:
+            victim = Path(outside_dir.name) / 'victim.txt'
+            victim.write_text('secret_data\n')
+            symlink_spaced = ws_dir / 'alias '
+            try:
+                symlink_spaced.symlink_to(victim)
+            except OSError:
+                pass
+            (ws_dir / 'alias').write_text('benign\n')
+            paths_file = ws_dir / 'spaced_paths.txt'
+            paths_file.write_bytes(b'alias \0')
+            res_sort_spaced = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'sort --files0-from={paths_file.name}', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_sort_spaced['decision'], 'ask', f"Expected ask for sort --files0-from with outside symlink having trailing space, got: {res_sort_spaced}")
+            self.assertIn('outside workspace', res_sort_spaced['reason'].lower())
+        finally:
+            outside_dir.cleanup()
+
+        # 34. git config credential probe propagates --includes
+        secret_conf = ws_dir / 'secret.conf'
+        secret_conf.write_text('[remote "origin"]\n\turl = https://user:pass@github.com/repo.git\n')
+        clean_conf = ws_dir / 'clean.conf'
+        clean_conf.write_text(f'[include]\n\tpath = {secret_conf}\n')
+        res_cfg_includes = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git config --includes --file={clean_conf.name} --get remote.origin.url', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cfg_includes['decision'], 'deny', f"Expected deny for git config --includes exposing credential URL, got: {res_cfg_includes}")
+        self.assertIn('credential', res_cfg_includes['reason'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()
