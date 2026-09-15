@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/agy-permission-classifier.py",
+            "command": "/usr/bin/python3 -I ~/.claude/scripts/agy-permission-classifier.py",
             "timeout": 15
           }
         ]

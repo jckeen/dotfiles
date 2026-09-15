@@ -72,6 +72,10 @@ def get_sensitive_credential_prefixes():
         os.path.join(home, '.azure'),
         os.path.join(home, '.vault-token'),
         os.path.join(home, '.config', 'gh'),
+        os.path.join(home, '.bashrc'),
+        os.path.join(home, '.bash_profile'),
+        os.path.join(home, '.zshrc'),
+        os.path.join(home, '.profile'),
         '/etc/shadow',
         '/etc/sudoers',
         '/run/secrets',
@@ -80,7 +84,6 @@ def get_sensitive_credential_prefixes():
 SENSITIVE_FILENAMES = {
     'antigravity-oauth-token',
     'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
-    '.bashrc', '.bash_profile', '.zshrc', '.profile',
     'hosts.yml',
     '.git-credentials', 'git-credentials',
     '.npmrc',
@@ -550,7 +553,7 @@ def git_has_gpgsign_configured(cwd=None):
 
 def git_remotes_have_credentials(cwd=None):
     """Check if any git remote URL contains embedded user/password/token credentials."""
-    res = git_run_probe(['config', '--get-regexp', r'^remote\..*\.url$'], cwd=cwd)
+    res = git_run_probe(['config', '--get-regexp', r'^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$'], cwd=cwd)
     if res and res.returncode == 0 and res.stdout:
         for line in res.stdout.splitlines():
             parts = line.split(None, 1)
@@ -558,6 +561,14 @@ def git_remotes_have_credentials(cwd=None):
                 url = parts[1].strip()
                 if '://' in url and '@' in url.split('://', 1)[1]:
                     return True
+    return False
+
+
+def git_has_trailer_command_configured(cwd=None):
+    """Check if git repository or config has trailer.*.cmd or trailer.*.command configured."""
+    res = git_run_probe(['config', '--get-regexp', r'^trailer\..*\.(cmd|command)$'], cwd=cwd)
+    if res and res.returncode == 0 and res.stdout.strip():
+        return True
     return False
 
 
@@ -1207,6 +1218,103 @@ def parse_refspec_dest(refspec):
     return dest
 
 
+def parse_grep_args(args):
+    """Parse grep/egrep/fgrep argument list to identify pattern flags, pattern files, recursive mode, and positional arguments."""
+    GREP_OPTS_WITH_ARG = {
+        '-e', '--regexp',
+        '-f', '--file',
+        '-m', '--max-count',
+        '-A', '--after-context',
+        '-B', '--before-context',
+        '-C', '--context',
+        '-D', '--devices',
+        '-d', '--directories',
+        '--exclude', '--exclude-from', '--exclude-dir',
+        '--include', '--label',
+    }
+    has_pattern = False
+    is_recursive = False
+    pattern_files = []
+    positionals = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == '--':
+            positionals.extend(args[i + 1:])
+            break
+        if a.startswith('--'):
+            opt_name = a.split('=', 1)[0]
+            val = a.split('=', 1)[1] if '=' in a else None
+            if opt_name == '--recursive' or (len(opt_name) >= 5 and '--recursive'.startswith(opt_name)):
+                is_recursive = True
+            elif opt_name == '--directories' or (len(opt_name) >= 5 and '--directories'.startswith(opt_name)):
+                dir_val = val
+                if dir_val is None and i + 1 < len(args):
+                    i += 1
+                    dir_val = args[i]
+                if dir_val in ('recurse', 'r'):
+                    is_recursive = True
+            elif opt_name == '--file' or (len(opt_name) >= 5 and '--file'.startswith(opt_name)):
+                has_pattern = True
+                if val is not None:
+                    pattern_files.append(val)
+                elif i + 1 < len(args):
+                    i += 1
+                    pattern_files.append(args[i])
+            elif opt_name == '--regexp' or (len(opt_name) >= 5 and '--regexp'.startswith(opt_name)):
+                has_pattern = True
+                if val is None and i + 1 < len(args):
+                    i += 1
+            elif opt_name == '--exclude-from' or (len(opt_name) >= 10 and '--exclude-from'.startswith(opt_name)):
+                if val is not None:
+                    pattern_files.append(val)
+                elif i + 1 < len(args):
+                    i += 1
+                    pattern_files.append(args[i])
+            elif val is None and (opt_name in GREP_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in GREP_OPTS_WITH_ARG if long_opt.startswith('--'))):
+                if i + 1 < len(args):
+                    i += 1
+            i += 1
+            continue
+        elif a.startswith('-') and len(a) > 1:
+            if a[1:].isdigit():
+                i += 1
+                continue
+            j = 1
+            while j < len(a):
+                c = a[j]
+                if c in ('e', 'f', 'm', 'A', 'B', 'C', 'D', 'd'):
+                    if j + 1 < len(a):
+                        arg_val = a[j + 1:]
+                        if arg_val.startswith('='):
+                            arg_val = arg_val[1:]
+                    elif i + 1 < len(args):
+                        i += 1
+                        arg_val = args[i]
+                    else:
+                        arg_val = ''
+                    if c == 'e':
+                        has_pattern = True
+                    elif c == 'f':
+                        has_pattern = True
+                        if arg_val:
+                            pattern_files.append(arg_val)
+                    elif c == 'd':
+                        if arg_val in ('recurse', 'r'):
+                            is_recursive = True
+                    break
+                else:
+                    if c in ('r', 'R'):
+                        is_recursive = True
+                    j += 1
+            i += 1
+            continue
+        else:
+            positionals.append(a)
+            i += 1
+    return has_pattern, pattern_files, is_recursive, positionals
+
+
 def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     """Classify a single atomic subcommand (list of tokens).
 
@@ -1311,12 +1419,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 continue
         # For grep / rg / ag, skip the search pattern operand
         if base_cmd in {'grep', 'egrep', 'fgrep', 'rg', 'ag'}:
-            has_pat_flag = any(a in ('-e', '-f', '--regexp', '--file') or a.startswith(('-e', '-f', '--regexp=', '--file=')) for a in args)
-            consumed_tokens = set()
-            for idx_a, val_a in enumerate(args):
-                if val_a in ('-e', '-f', '--regexp', '--file') and idx_a + 1 < len(args):
-                    consumed_tokens.add(args[idx_a + 1])
-            positionals = [a for a in args if not a.startswith('-') and a not in consumed_tokens]
+            if base_cmd in {'grep', 'egrep', 'fgrep'}:
+                has_pat_flag, _, _, positionals = parse_grep_args(args)
+            else:
+                has_pat_flag = any(a in ('-e', '-f', '--regexp', '--file') or a.startswith(('-e', '-f', '--regexp=', '--file=')) for a in args)
+                consumed_tokens = set()
+                for idx_a, val_a in enumerate(args):
+                    if val_a in ('-e', '-f', '--regexp', '--file') and idx_a + 1 < len(args):
+                        consumed_tokens.add(args[idx_a + 1])
+                positionals = [a for a in args if not a.startswith('-') and a not in consumed_tokens]
             if not has_pat_flag and positionals and arg == positionals[0]:
                 continue
         if is_credential_env_var(arg):
@@ -1590,6 +1701,21 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if any(is_fetch_prune_opt(a) for a in args):
                 return 'force_ask', f"Git fetch with prune option ({a}) requires confirmation: {' '.join(cmd_tokens)}"
 
+            has_fetch_force = any(
+                a in ('-f', '--force', '--update-head-ok', '--update-shallow', '--refmap') or
+                a.split('=', 1)[0] in ('--force', '--update-head-ok', '--update-shallow', '--refmap') or
+                (a.startswith('--') and (
+                    ('--force'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5) or
+                    ('--update-head-ok'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 9) or
+                    ('--update-shallow'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 10) or
+                    ('--refmap'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)
+                )) or
+                (a.startswith('-') and not a.startswith('--') and 'f' in a)
+                for a in args
+            )
+            if has_fetch_force:
+                return 'force_ask', f"Git fetch with force or update-head-ok option requires confirmation: {' '.join(cmd_tokens)}"
+
             # Inspect positional arguments (remote / URL / refspecs)
             pos_args = [a for a in args[1:] if not a.startswith('-')]
             for a in pos_args:
@@ -1792,6 +1918,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                             dir_operands.append(a)
                     if dir_operands:
                         target_dir = dir_operands[0]
+                        if is_sensitive_credential_path(target_dir, cwd) or matches_sensitive_pattern(target_dir):
+                            return 'deny', f"git worktree add targeting sensitive path is forbidden: {target_dir}"
+                        if is_git_admin_path(target_dir, cwd):
+                            return 'force_ask', f"git worktree add targeting git administrative path requires confirmation: {target_dir}"
                         if not is_path_in_workspaces(target_dir, workspace_paths, cwd) or is_system_write_path(target_dir, cwd):
                             return 'force_ask', f"git worktree add outside workspace requires approval: {target_dir}"
                     return 'allow', 'Safe git worktree add within workspace'
@@ -1900,6 +2030,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 clean_key = a.lower()
                 if any(k in clean_key for k in ('header', 'token', 'secret', 'key', 'pass', 'auth', 'cred', 'cookie', 'proxy', 'extraheader')):
                     return 'deny', f"git config targeting sensitive credential key is forbidden: {a}"
+                if any(k in clean_key for k in ('url', 'remote', 'insteadof')):
+                    if git_remotes_have_credentials(cwd):
+                        return 'deny', f"git config query exposing embedded credentials in remote URL is forbidden: {a}"
             if any(a in ('--get', '--get-all') for a in args) or (len(args) == 2 and not args[1].startswith('-')):
                 return 'allow', 'Safe git config query'
             return 'force_ask', 'Git config modification requires confirmation'
@@ -2056,6 +2189,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+            has_trailer = any(a == '--trailer' or a.startswith('--trailer=') for a in args)
+            if has_trailer and git_has_trailer_command_configured(cwd):
+                return 'force_ask', f"git commit with --trailer and configured trailer command requires confirmation: {' '.join(cmd_tokens)}"
 
             # Check --pathspec-from-file
             pathspec_files = []
@@ -2099,6 +2235,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 '-S', '--gpg-sign',
                 '--cleanup',
                 '--pathspec-from-file',
+                '--trailer',
             }
             commit_pathspecs = []
             skip_arg = False
@@ -2360,90 +2497,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"grep with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
 
-        is_recursive = any(
-            a in ('-r', '-R', '--recursive') or
-            (a.startswith('--') and '--recursive'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5) or
-            (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R')))
-            for a in args
-        )
-        for idx, a in enumerate(args):
-            if a in ('-d', '--directories') or (a.startswith('--') and '--directories'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5):
-                val = a.split('=', 1)[1] if '=' in a else (args[idx + 1] if idx + 1 < len(args) else '')
-                if val in ('recurse', 'r'):
-                    is_recursive = True
-            elif a.startswith('-d') and len(a) > 2 and not a.startswith('--'):
-                val = a[2:].lstrip('=')
-                if val in ('recurse', 'r'):
-                    is_recursive = True
-
-        GREP_OPTS_WITH_ARG = {
-            '-e', '--regexp',
-            '-f', '--file',
-            '-m', '--max-count',
-            '-A', '--after-context',
-            '-B', '--before-context',
-            '-C', '--context',
-            '-D', '--devices',
-            '-d', '--directories',
-            '--exclude', '--exclude-from', '--exclude-dir',
-            '--include', '--label',
-        }
-
-        has_pattern = False
-        pattern_files = []
-        positionals = []
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == '--':
-                positionals.extend(args[i + 1:])
-                break
-            if a.startswith('--'):
-                opt_name = a.split('=', 1)[0]
-                val = a.split('=', 1)[1] if '=' in a else None
-                if opt_name == '--file' or opt_name.startswith('--file'):
-                    has_pattern = True
-                    if val is not None:
-                        pattern_files.append(val)
-                    elif i + 1 < len(args):
-                        pattern_files.append(args[i + 1])
-                        i += 1
-                elif opt_name == '--regexp' or opt_name.startswith('--regexp'):
-                    has_pattern = True
-                    if val is None and i + 1 < len(args):
-                        i += 1
-                elif opt_name in ('--exclude-from',):
-                    if val is not None:
-                        pattern_files.append(val)
-                    elif i + 1 < len(args):
-                        pattern_files.append(args[i + 1])
-                        i += 1
-                elif val is None and (opt_name in GREP_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in GREP_OPTS_WITH_ARG if long_opt.startswith('--'))):
-                    if i + 1 < len(args):
-                        i += 1
-                i += 1
-                continue
-            elif a.startswith('-') and len(a) > 1:
-                flag = a[1]
-                if flag == 'e':
-                    has_pattern = True
-                    if len(a) == 2 and i + 1 < len(args):
-                        i += 1
-                elif flag == 'f':
-                    has_pattern = True
-                    if len(a) > 2:
-                        pattern_files.append(a[2:].lstrip('='))
-                    elif i + 1 < len(args):
-                        pattern_files.append(args[i + 1])
-                        i += 1
-                elif flag in ('m', 'A', 'B', 'C', 'D', 'd'):
-                    if len(a) == 2 and i + 1 < len(args):
-                        i += 1
-                i += 1
-                continue
-            else:
-                positionals.append(a)
-                i += 1
+        has_pattern, pattern_files, is_recursive, positionals = parse_grep_args(args)
 
         # Check pattern files (from -f / --file / --exclude-from)
         for pf in pattern_files:
@@ -2457,6 +2511,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         search_paths = positionals if has_pattern else positionals[1:]
 
         for p in search_paths:
+            if p == '-':
+                continue
             if is_sensitive_credential_path(p, cwd) or matches_sensitive_pattern(p):
                 return 'deny', f"Searching sensitive credential path is forbidden: {p}"
             p_norm = expand_path(p, cwd)
@@ -2470,6 +2526,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
             return 'ask', f"Recursive grep may expose sensitive workspace files or traverse symlinks: {' '.join(cmd_tokens)}"
 
         for p in search_paths:
+            if p == '-':
+                continue
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"Searching outside workspace requires confirmation: {p}"
 

@@ -3222,6 +3222,127 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_git_ver['decision'], 'allow')
 
+    def test_round_37_hardening(self):
+        """Regression tests for Round 37 findings:
+        1. Hook interpreter isolation in antigravity/hooks.json
+        2. Scoping Shell Startup Profiles: workspace dotfiles allowed, home dotfiles denied
+        3. Git config URL credential disclosure
+        4. Git fetch destructive options require confirmation
+        5. Git worktree targeting administrative or sensitive paths
+        6. Git commit trailer command detection
+        7. Bundled grep options inspect pattern files and search paths
+        """
+        git_dir = Path(self.test_ws) / 'r37_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. Hook interpreter isolation in antigravity/hooks.json
+        hooks_json_path = Path(__file__).resolve().parents[2] / 'antigravity' / 'hooks.json'
+        if hooks_json_path.is_file():
+            hooks_data = json.loads(hooks_json_path.read_text())
+            cmd_found = False
+            for hook in hooks_data.get('hooks', {}).get('PreToolUse', []):
+                for h in hook.get('hooks', []):
+                    if 'agy-permission-classifier.py' in h.get('command', ''):
+                        cmd_found = True
+                        self.assertTrue(h['command'].startswith('/usr/bin/python3 -I'), f"Expected /usr/bin/python3 -I isolation, got: {h['command']}")
+            self.assertTrue(cmd_found, "agy-permission-classifier hook command not found in antigravity/hooks.json")
+
+        # 2. Scoping Shell Startup Profiles: workspace dotfiles allowed, home dotfiles denied
+        ws_bashrc = git_dir / '.bashrc'
+        ws_bashrc.write_text('# workspace bashrc\n')
+        res_ws_dot = self.run_classifier({
+            'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': str(ws_bashrc)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_ws_dot['decision'], 'allow')
+
+        res_ws_cat = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cat .bashrc', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_ws_cat['decision'], 'allow')
+
+        home_bashrc = Path.home() / '.bashrc'
+        res_home_dot = self.run_classifier({
+            'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': str(home_bashrc)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_home_dot['decision'], 'deny')
+
+        # 3. Git config URL credential disclosure
+        subprocess.run(['git', 'config', 'remote.origin.url', 'https://user:secret123@github.com/repo.git'], cwd=str(git_dir), check=True)
+        res_cfg_cred = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config remote.origin.url', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cfg_cred['decision'], 'deny')
+        subprocess.run(['git', 'config', '--unset', 'remote.origin.url'], cwd=str(git_dir), check=False)
+
+        # 4. Git fetch destructive options require confirmation
+        for fetch_cmd in (
+            'git fetch --force',
+            'git fetch -f',
+            'git fetch --update-head-ok',
+            'git fetch --update-shallow',
+            'git fetch --refmap=+refs/heads/*:refs/remotes/origin/*',
+        ):
+            res_fetch = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': fetch_cmd, 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            })
+            self.assertEqual(res_fetch['decision'], 'force_ask', f"Expected {fetch_cmd} to require force_ask, got: {res_fetch}")
+
+        # 5. Git worktree targeting administrative or sensitive paths
+        res_wt_admin = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git worktree add .git/hooks/pre-commit HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wt_admin['decision'], 'force_ask')
+
+        res_wt_sec = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git worktree add ~/.ssh/id_rsa HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wt_sec['decision'], 'deny')
+
+        # 6. Git commit trailer command detection
+        subprocess.run(['git', 'config', 'trailer.review.cmd', '/usr/bin/id'], cwd=str(git_dir), check=True)
+        (git_dir / 'trailer_test.txt').write_text('trailer change\n')
+        subprocess.run(['git', 'add', 'trailer_test.txt'], cwd=str(git_dir), check=True)
+        res_commit_trailer = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m "trailer commit" --trailer "review: test"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_trailer['decision'], 'force_ask')
+        subprocess.run(['git', 'config', '--unset', 'trailer.review.cmd'], cwd=str(git_dir), check=False)
+
+        res_commit_trailer_safe = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m "trailer commit" --trailer "review: test"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit_trailer_safe['decision'], 'allow')
+
+        # 7. Bundled grep options inspect pattern files and search paths
+        pat_file = git_dir / 'pats.txt'
+        pat_file.write_text('pattern\n')
+        res_grep_bundled_out = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep -nfpats.txt /tmp/outside_file.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertIn(res_grep_bundled_out['decision'], ('ask', 'force_ask'))
+
+        res_grep_bundled_sec = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep -nf/run/secrets/key pats.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_grep_bundled_sec['decision'], 'deny')
+
 
 if __name__ == '__main__':
     unittest.main()
