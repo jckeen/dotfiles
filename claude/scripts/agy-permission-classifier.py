@@ -280,19 +280,121 @@ def subcmd_has_unquoted_wildcards(subcmd_str):
     return False
 
 
-def expand_path(p_str, cwd=None):
+def expand_unquoted_tildes(cmd_str, cwd=None):
+    """Expand unquoted tilde prefixes (~, ~+, ~-, ~user) at word boundaries prior to tokenization.
+
+    Quoted tilde forms ('~+', "~+", \\~+, '~', "~", etc.) are left untouched.
+    """
+    if not cmd_str or not isinstance(cmd_str, str) or '~' not in cmd_str:
+        return cmd_str
+
+    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+    oldpwd = os.environ.get('OLDPWD', effective_cwd)
+    home_dir = os.path.expanduser('~')
+
+    res = []
+    i = 0
+    n = len(cmd_str)
+    in_sq = False
+    in_dq = False
+    escape = False
+
+    while i < n:
+        c = cmd_str[i]
+
+        if escape:
+            res.append(c)
+            escape = False
+            i += 1
+            continue
+
+        if c == '\\' and not in_sq:
+            escape = True
+            res.append(c)
+            i += 1
+            continue
+
+        if c == "'" and not in_dq:
+            in_sq = not in_sq
+            res.append(c)
+            i += 1
+            continue
+
+        if c == '"' and not in_sq:
+            in_dq = not in_dq
+            res.append(c)
+            i += 1
+            continue
+
+        if not in_sq and not in_dq:
+            # Check if this character is an unquoted '~' at a word boundary
+            if c == '~':
+                is_boundary = False
+                if i == 0:
+                    is_boundary = True
+                else:
+                    prev_c = cmd_str[i - 1]
+                    if prev_c in (' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '<', '>', '=', ':', '{', ','):
+                        is_boundary = True
+
+                if is_boundary:
+                    # Look ahead to find the end of the tilde prefix (up to unquoted '/' or word boundary)
+                    # If any quotes or escapes occur within the tilde prefix, it is NOT tilde-expanded.
+                    j = i + 1
+                    has_quote_in_prefix = False
+                    while j < n:
+                        cj = cmd_str[j]
+                        if cj in ("'", '"', '\\'):
+                            has_quote_in_prefix = True
+                            break
+                        if cj == '/':
+                            # End of tilde prefix before slash
+                            break
+                        if cj in (' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '<', '>', '=', ':', '}', ','):
+                            # End of word
+                            break
+                        j += 1
+
+                    if not has_quote_in_prefix:
+                        prefix = cmd_str[i:j]
+                        expanded_prefix = None
+                        if prefix == '~':
+                            expanded_prefix = home_dir
+                        elif prefix == '~+':
+                            expanded_prefix = effective_cwd
+                        elif prefix == '~-':
+                            expanded_prefix = oldpwd
+                        elif re.match(r'^~[A-Za-z0-9_.-]+$', prefix):
+                            cand_home = os.path.expanduser(prefix)
+                            if cand_home != prefix:
+                                expanded_prefix = cand_home
+
+                        if expanded_prefix is not None:
+                            res.append(expanded_prefix)
+                            i = j
+                            continue
+
+        res.append(c)
+        i += 1
+
+    return ''.join(res)
+
+
+def expand_path(p_str, cwd=None, expand_tilde=False):
     """Safely expand user, variables, and relative paths against cwd."""
     if not p_str or not isinstance(p_str, str):
         return ''
     effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
     expanded = p_str
-    # Expand bash tilde forms ~+ ($PWD) and ~- ($OLDPWD)
-    if expanded == '~+' or expanded.startswith(('~+/', '~+\\')):
-        expanded = effective_cwd + expanded[2:]
-    elif expanded == '~-' or expanded.startswith(('~-/', '~-\\')):
-        oldpwd = os.environ.get('OLDPWD', effective_cwd)
-        expanded = oldpwd + expanded[2:]
-    expanded = os.path.expanduser(os.path.expandvars(expanded))
+    if expand_tilde:
+        # Expand bash tilde forms ~+ ($PWD) and ~- ($OLDPWD)
+        if expanded == '~+' or expanded.startswith(('~+/', '~+\\')):
+            expanded = effective_cwd + expanded[2:]
+        elif expanded == '~-' or expanded.startswith(('~-/', '~-\\')):
+            oldpwd = os.environ.get('OLDPWD', effective_cwd)
+            expanded = oldpwd + expanded[2:]
+        expanded = os.path.expanduser(expanded)
+    expanded = os.path.expandvars(expanded)
     if not os.path.isabs(expanded):
         expanded = os.path.join(effective_cwd, expanded)
     try:
@@ -386,7 +488,7 @@ def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
     if matches_sensitive_pattern(path_str) or matches_sensitive_pattern(os.path.basename(path_str)):
         return True
 
-    norm = expand_path(path_str, cwd)
+    norm = expand_path(path_str, cwd, expand_tilde=True)
     if matches_sensitive_pattern(norm) or matches_sensitive_pattern(os.path.basename(norm)):
         return True
 
@@ -397,13 +499,26 @@ def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
     except Exception:
         resolved = norm
 
+    candidates = [norm, resolved]
+    norm_no_tilde = expand_path(path_str, cwd, expand_tilde=False)
+    if norm_no_tilde != norm:
+        if matches_sensitive_pattern(norm_no_tilde) or matches_sensitive_pattern(os.path.basename(norm_no_tilde)):
+            return True
+        try:
+            resolved_no_tilde = str(Path(norm_no_tilde).resolve())
+            if matches_sensitive_pattern(resolved_no_tilde) or matches_sensitive_pattern(os.path.basename(resolved_no_tilde)):
+                return True
+            candidates.extend([norm_no_tilde, resolved_no_tilde])
+        except Exception:
+            candidates.append(norm_no_tilde)
+
     # 2. Also check de-obfuscated clean path (e.g. /etc/sha""dow or .en[v])
     clean = re.sub(r'[\"\'\\]', '', path_str)
     clean = re.sub(r'\[(.)\]', r'\1', clean)
     if clean != path_str:
         if matches_sensitive_pattern(clean) or matches_sensitive_pattern(os.path.basename(clean)):
             return True
-        clean_norm = expand_path(clean, cwd)
+        clean_norm = expand_path(clean, cwd, expand_tilde=True)
         if matches_sensitive_pattern(clean_norm) or matches_sensitive_pattern(os.path.basename(clean_norm)):
             return True
         try:
@@ -412,12 +527,24 @@ def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
                 return True
         except Exception:
             clean_resolved = clean_norm
+        candidates.extend([clean_norm, clean_resolved])
+        clean_norm_no_tilde = expand_path(clean, cwd, expand_tilde=False)
+        if clean_norm_no_tilde != clean_norm:
+            if matches_sensitive_pattern(clean_norm_no_tilde) or matches_sensitive_pattern(os.path.basename(clean_norm_no_tilde)):
+                return True
+            try:
+                clean_resolved_no_tilde = str(Path(clean_norm_no_tilde).resolve())
+                if matches_sensitive_pattern(clean_resolved_no_tilde) or matches_sensitive_pattern(os.path.basename(clean_resolved_no_tilde)):
+                    return True
+                candidates.extend([clean_norm_no_tilde, clean_resolved_no_tilde])
+            except Exception:
+                candidates.append(clean_norm_no_tilde)
     else:
         clean_norm = norm
         clean_resolved = resolved
 
     # Check for process environment reads (/proc/*/environ, /proc/self/environ, etc.)
-    for p_cand in (norm, resolved, clean_norm, clean_resolved):
+    for p_cand in candidates:
         p_cand_slash = p_cand.replace('\\', '/')
         if p_cand_slash.startswith('/proc/') and ('/environ' in p_cand_slash or os.path.basename(p_cand_slash) == 'environ'):
             return True
@@ -435,7 +562,7 @@ def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
             except Exception:
                 pass
         for norm_prefix in prefixes_to_check:
-            for p_cand in (norm, resolved, clean_norm, clean_resolved):
+            for p_cand in candidates:
                 if p_cand == norm_prefix or p_cand.startswith(norm_prefix + os.sep):
                     return True
                 if any(c in p_cand for c in ('*', '?', '[')):
@@ -477,11 +604,11 @@ def is_path_in_workspaces(target_path, workspace_paths, cwd=None):
     if any(c in target_path for c in ('$', '{', '}', '`', '*', '?', '[', ']')):
         return False
     try:
-        norm_target = expand_path(target_path, cwd)
+        norm_target = expand_path(target_path, cwd, expand_tilde=False)
         for ws in workspace_paths:
             if not ws or not isinstance(ws, str):
                 continue
-            norm_ws = expand_path(ws, cwd)
+            norm_ws = expand_path(ws, cwd, expand_tilde=True)
             if norm_target == norm_ws or norm_target.startswith(norm_ws + os.sep):
                 return True
     except Exception:
@@ -1364,7 +1491,7 @@ def is_security_guard_path(path_str, cwd=None, visited=None, depth=0):
     # Also check if norm is an existing directory containing security guard files on disk
     try:
         norm_path = Path(norm)
-        if norm_path.is_dir() and norm not in ('/', expand_path('~', cwd)) and not norm.startswith(('/usr', '/lib', '/bin', '/etc', '/var', '/proc', '/sys', '/dev')):
+        if norm_path.is_dir() and norm not in ('/', expand_path('~', cwd, expand_tilde=True)) and not norm.startswith(('/usr', '/lib', '/bin', '/etc', '/var', '/proc', '/sys', '/dev')):
             if (norm_path / 'hooks.json').is_file():
                 return True
             if (norm_path / 'agy-permission-classifier.py').is_file():
@@ -1411,10 +1538,10 @@ def directory_contains_sensitive_files(dir_path, cwd=None, workspace_paths=None)
         norm_p = Path(norm)
         if not norm_p.is_dir():
             return False
-        if norm in ('/', expand_path('~', cwd)) or norm.startswith(('/usr', '/lib', '/bin', '/etc', '/var', '/proc', '/sys', '/dev')):
+        if norm in ('/', expand_path('~', cwd, expand_tilde=True)) or norm.startswith(('/usr', '/lib', '/bin', '/etc', '/var', '/proc', '/sys', '/dev')):
             return False
         if workspace_paths:
-            if any(norm == expand_path(ws, cwd) for ws in workspace_paths):
+            if any(norm == expand_path(ws, cwd, expand_tilde=True) for ws in workspace_paths):
                 return False
         for root, dirs, files in os.walk(norm):
             if '.git' in dirs:
@@ -1487,7 +1614,7 @@ def workspace_has_local_python_module(module_name, workspace_paths, cwd=None):
     if workspace_paths:
         for ws in workspace_paths:
             if ws and isinstance(ws, str):
-                check_dirs.add(expand_path(ws, cwd))
+                check_dirs.add(expand_path(ws, cwd, expand_tilde=True))
 
     for d in check_dirs:
         # Check <module>.py or <module>.pyc
@@ -1621,7 +1748,7 @@ def find_package_json(cwd, workspace_paths):
         curr = Path(effective_cwd).resolve()
     except Exception:
         curr = Path(effective_cwd)
-    ws_roots = [Path(ws).resolve() for ws in (workspace_paths or [effective_cwd])]
+    ws_roots = [Path(expand_path(ws, effective_cwd, expand_tilde=True)).resolve() for ws in (workspace_paths or [effective_cwd])]
 
     while True:
         pkg_file = curr / 'package.json'
@@ -1655,7 +1782,7 @@ def find_npx_workspace_executable(tool, cwd, workspace_paths):
         curr = Path(effective_cwd).resolve()
     except Exception:
         curr = Path(effective_cwd)
-    ws_roots = [Path(ws).resolve() for ws in (workspace_paths or [effective_cwd])]
+    ws_roots = [Path(expand_path(ws, effective_cwd, expand_tilde=True)).resolve() for ws in (workspace_paths or [effective_cwd])]
 
     while True:
         candidate = curr / 'node_modules' / '.bin' / tool
@@ -2535,6 +2662,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     if not tokens:
         return 'allow', 'Empty subcommand'
 
+    if raw_subcmd:
+        raw_subcmd = expand_unquoted_tildes(raw_subcmd, cwd)
+
     # Unwrap shell builtins like 'command' or 'builtin'
     while tokens and tokens[0] in ('command', 'builtin'):
         tokens = tokens[1:]
@@ -2802,10 +2932,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if is_recursive or is_dir:
             for t in targets:
                 t_norm = expand_path(t, cwd)
-                if t in ('/', '/*', '~', '~/*', '$HOME') or t_norm in ('/', expand_path('~', cwd)):
+                if t in ('/', '/*', '~', '~/*', '$HOME') or t_norm in ('/', expand_path('~', cwd, expand_tilde=True)):
                     return 'deny', f"Recursive deletion targeting root or home directory is forbidden: rm {t}"
                 for ws in (workspace_paths or [cwd]):
-                    ws_norm = expand_path(ws, cwd)
+                    ws_norm = expand_path(ws, cwd, expand_tilde=True)
                     if t_norm == ws_norm:
                         return 'deny', f"Recursive deletion of entire workspace root is forbidden: rm {t}"
             return 'force_ask', f"Recursive or directory deletion requires confirmation: {' '.join(cmd_tokens)}"
@@ -5581,11 +5711,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             pkg_dirs.add(p_cand)
                     if not pkg_dirs:
                         pkg_dirs.add(effective_cwd)
-                    for pd in pkg_dirs:
+                    scan_roots = set(pkg_dirs)
+                    curr_mod = Path(effective_cwd).resolve()
+                    while True:
+                        if (curr_mod / 'go.mod').is_file() or (curr_mod / 'go.work').is_file():
+                            scan_roots.add(str(curr_mod))
+                            break
+                        if curr_mod.parent == curr_mod:
+                            break
+                        curr_mod = curr_mod.parent
+
+                    for root_dir in scan_roots:
                         try:
-                            for entry in os.scandir(pd):
-                                if entry.is_file() and entry.name.endswith('.go'):
-                                    go_source_files.add(entry.path)
+                            for root, dirs, files in os.walk(root_dir):
+                                dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', 'target', 'vendor', '.hg', '.svn')]
+                                for fname in files:
+                                    if fname.endswith('.go'):
+                                        go_source_files.add(os.path.join(root, fname))
+                                        if len(go_source_files) >= 5000:
+                                            break
+                                if len(go_source_files) >= 5000:
+                                    break
                         except Exception:
                             pass
                 if written_files:
@@ -5750,6 +5896,41 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                                 norm_wf = os.path.normpath(wf)
                                 if norm_dest == norm_wf or norm_dest.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_dest + os.sep):
                                     return 'force_ask', f"go build implicit output file was modified or redirected to earlier in command line: {dest}"
+
+            if args[0] in {'build', 'install', 'test'}:
+                buildvcs_disabled = False
+                for i_ga, ga in enumerate(all_go_check_args):
+                    if ga in ('-buildvcs=false', '--buildvcs=false'):
+                        buildvcs_disabled = True
+                        break
+                    if ga.startswith(('-buildvcs=', '--buildvcs=')) and ga.split('=', 1)[1] == 'false':
+                        buildvcs_disabled = True
+                        break
+                    if ga in ('-buildvcs', '--buildvcs') and i_ga + 1 < len(all_go_check_args) and all_go_check_args[i_ga + 1] == 'false':
+                        buildvcs_disabled = True
+                        break
+
+                if not buildvcs_disabled:
+                    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                    probe_repo = git_run_probe(['rev-parse', '--is-inside-work-tree'], cwd=effective_cwd)
+                    if probe_repo and probe_repo.returncode == 0 and probe_repo.stdout.strip() == 'true':
+                        cand_local = os.path.join(effective_cwd, 'git')
+                        if os.path.isfile(cand_local) and not is_trusted_executable_path(cand_local, workspace_paths, effective_cwd, 'git'):
+                            return 'force_ask', f"go {args[0]} with workspace-controlled git executable requires confirmation: {cand_local}"
+                        resolved_git = shutil.which('git')
+                        if not resolved_git or not is_trusted_executable_path(resolved_git, workspace_paths, effective_cwd, 'git'):
+                            return 'force_ask', f"go {args[0]} invokes git for VCS stamping, but git resolves to untrusted or workspace path: {resolved_git}"
+                        if written_files:
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if (resolved_git and (norm_wf == os.path.normpath(resolved_git) or norm_wf.startswith(os.path.normpath(resolved_git) + os.sep))) or \
+                                   (os.path.isfile(cand_local) and (norm_wf == os.path.normpath(cand_local) or norm_wf.startswith(norm_wf + os.sep))):
+                                    return 'force_ask', f"go {args[0]} with git executable modified earlier in command line requires confirmation: {wf}"
+                                if is_git_admin_path(wf, effective_cwd) or '.git/hooks' in wf.replace('\\', '/'):
+                                    return 'force_ask', f"go {args[0]} with git repository configuration or hooks modified earlier in command line requires confirmation: {wf}"
+
+                        if git_has_fsmonitor_configured(effective_cwd):
+                            return 'force_ask', f"go {args[0]} invokes git with configured core.fsmonitor hook: {' '.join(cmd_tokens)}"
 
             return 'allow', f"Safe Go static tool: go {args[0]}"
 
@@ -6365,12 +6546,13 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
     subcommands_all = []
     subcmd_raw_all = []
     for sub_str in subcmd_strings:
-        tokens = tokenize_subcommand(sub_str)
+        sub_str_expanded = expand_unquoted_tildes(sub_str, cwd)
+        tokens = tokenize_subcommand(sub_str_expanded)
         if tokens is None:
             return 'ask', f"Unable to safely parse command tokens: {sub_str}"
         if tokens:
             subcommands_all.append(tokens)
-            subcmd_raw_all.append(sub_str)
+            subcmd_raw_all.append(sub_str_expanded)
 
     if not subcommands_all:
         return 'allow', 'No subcommands found'

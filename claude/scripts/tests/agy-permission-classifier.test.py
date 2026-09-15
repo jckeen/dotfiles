@@ -5851,6 +5851,118 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             shutil.rmtree(str(rust_ws), ignore_errors=True)
 
+        # 54. Quoted tildes vs unquoted tildes, Go VCS stamping with fsmonitor/git, and Go module embed scanning
+        outside_dir = Path(tempfile.mkdtemp())
+        tilde_symlink = ws_dir / '~+'
+        try:
+            os.symlink(str(outside_dir), str(tilde_symlink))
+
+            # Quoted tilde path writes through symlink to outside directory -> ask / force_ask
+            res_quoted_tilde = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo changed > '~+/victim'", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertIn(res_quoted_tilde['decision'], ('ask', 'force_ask'), f"Expected ask/force_ask for quoted tilde redirection escaping workspace, got: {res_quoted_tilde}")
+
+            # Unquoted tilde path expands to workspace cwd -> allow
+            res_unquoted_tilde = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo changed > ~+/victim", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_unquoted_tilde['decision'], 'allow', f"Expected allow for unquoted tilde redirection, got: {res_unquoted_tilde}")
+
+            # Quoted tilde argument to touch -> force_ask
+            res_quoted_arg = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "touch '~+/victim'", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_quoted_arg['decision'], 'force_ask', f"Expected force_ask for touch with quoted tilde argument, got: {res_quoted_arg}")
+
+            # Unquoted tilde argument to touch -> allow
+            res_unquoted_arg = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "touch ~+/victim", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_unquoted_arg['decision'], 'allow', f"Expected allow for touch with unquoted tilde argument, got: {res_unquoted_arg}")
+
+            # Quoted tilde argument to cat -> ask
+            res_quoted_cat = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cat '~+/victim'", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_quoted_cat['decision'], 'ask', f"Expected ask for cat with quoted tilde argument, got: {res_quoted_cat}")
+
+            # Unquoted tilde argument to cat -> allow
+            res_unquoted_cat = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': "cat ~+/victim", 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_unquoted_cat['decision'], 'allow', f"Expected allow for cat with unquoted tilde argument, got: {res_unquoted_cat}")
+        finally:
+            if tilde_symlink.is_symlink() or tilde_symlink.exists():
+                tilde_symlink.unlink(missing_ok=True)
+            shutil.rmtree(str(outside_dir), ignore_errors=True)
+
+        # Go VCS stamping with core.fsmonitor and untrusted git executable
+        go_vcs_dir = ws_dir / 'go_vcs_repo'
+        go_vcs_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(go_vcs_dir), check=True)
+            subprocess.run(['git', 'config', 'user.name', 'Test'], cwd=str(go_vcs_dir), check=True)
+            subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(go_vcs_dir), check=True)
+            (go_vcs_dir / 'main.go').write_text("package main\nfunc main() {}\n")
+            (go_vcs_dir / 'go.mod').write_text("module example.com/vcs\ngo 1.21\n")
+            subprocess.run(['git', 'add', '.'], cwd=str(go_vcs_dir), check=True)
+            subprocess.run(['git', 'commit', '-m', 'init', '-q'], cwd=str(go_vcs_dir), check=True)
+
+            subprocess.run(['git', 'config', 'core.fsmonitor', './fsmonitor-watchman'], cwd=str(go_vcs_dir), check=True)
+            res_go_fsmon = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_vcs_dir)}},
+                'workspacePaths': [str(go_vcs_dir)],
+            })
+            self.assertEqual(res_go_fsmon['decision'], 'force_ask', f"Expected force_ask for go build with core.fsmonitor, got: {res_go_fsmon}")
+            self.assertIn('fsmonitor', res_go_fsmon['reason'].lower())
+
+            res_go_no_vcs = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build -buildvcs=false .', 'Cwd': str(go_vcs_dir)}},
+                'workspacePaths': [str(go_vcs_dir)],
+            })
+            self.assertEqual(res_go_no_vcs['decision'], 'allow', f"Expected allow for go build -buildvcs=false, got: {res_go_no_vcs}")
+
+            subprocess.run(['git', 'config', '--unset', 'core.fsmonitor'], cwd=str(go_vcs_dir), check=True)
+
+            local_git = go_vcs_dir / 'git'
+            local_git.write_text("#!/bin/sh\nexit 0\n")
+            os.chmod(str(local_git), 0o755)
+            res_go_local_git = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_vcs_dir)}},
+                'workspacePaths': [str(go_vcs_dir)],
+            })
+            self.assertEqual(res_go_local_git['decision'], 'force_ask', f"Expected force_ask for go build with local git executable, got: {res_go_local_git}")
+            self.assertIn('git', res_go_local_git['reason'].lower())
+            local_git.unlink(missing_ok=True)
+        finally:
+            shutil.rmtree(str(go_vcs_dir), ignore_errors=True)
+
+        # Go embed in imported module subpackage
+        go_subpkg_dir = ws_dir / 'go_subpkg_embed'
+        go_subpkg_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (go_subpkg_dir / 'go.mod').write_text("module example.com/subembed\ngo 1.21\n")
+            (go_subpkg_dir / 'main.go').write_text("package main\nimport _ \"example.com/subembed/internal/auth\"\nfunc main() {}\n")
+            auth_dir = go_subpkg_dir / 'internal' / 'auth'
+            auth_dir.mkdir(parents=True, exist_ok=True)
+            (auth_dir / 'auth.go').write_text("package auth\nimport _ \"embed\"\n//go:embed .env\nvar envData string\n")
+
+            res_go_subpkg_embed = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_subpkg_dir)}},
+                'workspacePaths': [str(go_subpkg_dir)],
+            })
+            self.assertEqual(res_go_subpkg_embed['decision'], 'deny', f"Expected deny for go build with //go:embed .env in imported subpackage, got: {res_go_subpkg_embed}")
+            self.assertIn('sensitive', res_go_subpkg_embed['reason'].lower())
+        finally:
+            shutil.rmtree(str(go_subpkg_dir), ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
