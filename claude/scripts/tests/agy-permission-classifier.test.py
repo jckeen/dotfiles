@@ -5044,6 +5044,102 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         subprocess.run(['git', 'reset', 'HEAD', str(env_file)], cwd=str(ws_dir), check=True)
         env_file.unlink()
 
+        # 20. Parse ripgrep configuration and arguments together
+        rg_cfg_path = ws_dir / 'rg_config.txt'
+        rg_cfg_path.write_text('--regexp=.\n')
+        env_file = ws_dir / ('.' + 'env')
+        env_file.write_text('SECRET=true\n')
+        old_rg_cfg = os.environ.get('RIPGREP_CONFIG_PATH')
+        try:
+            os.environ['RIPGREP_CONFIG_PATH'] = str(rg_cfg_path)
+            res_rg_cfg_regexp = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'rg {env_file.name} safe.txt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_rg_cfg_regexp['decision'], 'deny', f"Expected deny for rg with configured regexp targeting .env, got: {res_rg_cfg_regexp}")
+            self.assertIn('sensitive', res_rg_cfg_regexp['reason'])
+
+            # Configuration-supplied positional search path outside workspace requires approval
+            rg_cfg_path.write_text('--regexp=test\n/outside/path\n')
+            res_rg_cfg_pos = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg safe.txt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_rg_cfg_pos['decision'], 'ask', f"Expected ask for rg with outside search path in config, got: {res_rg_cfg_pos}")
+            self.assertIn('outside workspace', res_rg_cfg_pos['reason'])
+        finally:
+            if old_rg_cfg is None:
+                os.environ.pop('RIPGREP_CONFIG_PATH', None)
+            else:
+                os.environ['RIPGREP_CONFIG_PATH'] = old_rg_cfg
+            rg_cfg_path.unlink(missing_ok=True)
+            env_file.unlink(missing_ok=True)
+
+        # 21. Invalidate Git probes after earlier working-tree changes
+        res_diff_after_switch = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git switch feature; git diff HEAD~1', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_diff_after_switch['decision'], 'force_ask', f"Expected force_ask for git diff after switch, got: {res_diff_after_switch}")
+        self.assertIn('modifications', res_diff_after_switch['reason'])
+
+        res_diff_after_touch = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'touch safe.txt; git diff', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_diff_after_touch['decision'], 'force_ask', f"Expected force_ask for git diff after touch, got: {res_diff_after_touch}")
+
+        res_diff_after_env_touch = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'touch .env; git diff', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_diff_after_env_touch['decision'], 'deny', f"Expected deny for git diff after touching .env, got: {res_diff_after_env_touch}")
+        self.assertIn('sensitive', res_diff_after_env_touch['reason'])
+
+        # 22. Check inherited Go executable helpers before auto-approval
+        fake_cc = ws_dir / 'fake_cc.sh'
+        fake_cc.write_text('#!/bin/sh\nexit 0\n')
+        fake_cc.chmod(0o755)
+        old_cc = os.environ.get('CC')
+        old_gotooldir = os.environ.get('GOTOOLDIR')
+        try:
+            os.environ['CC'] = str(fake_cc)
+            res_go_cc_ws = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_cc_ws['decision'], 'force_ask', f"Expected force_ask for go build with workspace CC, got: {res_go_cc_ws}")
+            self.assertIn('CC', res_go_cc_ws['reason'])
+
+            # CC pointing to sensitive path is denied
+            os.environ['CC'] = str(ws_dir / ('.' + 'env'))
+            res_go_cc_sensitive = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_cc_sensitive['decision'], 'deny', f"Expected deny for go build with sensitive CC, got: {res_go_cc_sensitive}")
+            self.assertIn('sensitive', res_go_cc_sensitive['reason'])
+
+            # GOTOOLDIR pointing to workspace is force_ask
+            os.environ.pop('CC', None)
+            os.environ['GOTOOLDIR'] = str(ws_dir)
+            res_go_tooldir = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_tooldir['decision'], 'force_ask', f"Expected force_ask for go build with workspace GOTOOLDIR, got: {res_go_tooldir}")
+            self.assertIn('GOTOOLDIR', res_go_tooldir['reason'])
+        finally:
+            if old_cc is None:
+                os.environ.pop('CC', None)
+            else:
+                os.environ['CC'] = old_cc
+            if old_gotooldir is None:
+                os.environ.pop('GOTOOLDIR', None)
+            else:
+                os.environ['GOTOOLDIR'] = old_gotooldir
+            fake_cc.unlink(missing_ok=True)
+
 
 if __name__ == '__main__':
     unittest.main()

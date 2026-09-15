@@ -1219,11 +1219,11 @@ def is_security_guard_path(path_str, cwd=None):
     return False
 
 
-def get_inherited_goflags():
-    """Retrieve GOFLAGS from environment variable or persistent go env configuration file."""
-    env_flags = os.environ.get('GOFLAGS')
-    if env_flags is not None and env_flags.strip():
-        return env_flags.strip()
+def get_inherited_go_setting(var_name):
+    """Retrieve Go environment setting from environment variable or persistent go env configuration file."""
+    env_val = os.environ.get(var_name)
+    if env_val is not None and env_val.strip():
+        return env_val.strip()
     goenv = os.environ.get('GOENV')
     candidate_paths = []
     if goenv:
@@ -1239,7 +1239,7 @@ def get_inherited_goflags():
                 content = p.read_text(errors='replace')
                 for line in content.splitlines():
                     line = line.strip()
-                    if line.startswith('GOFLAGS='):
+                    if line.startswith(f'{var_name}='):
                         val = line.split('=', 1)[1].strip()
                         if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
                             val = val[1:-1]
@@ -1247,6 +1247,11 @@ def get_inherited_goflags():
         except Exception:
             pass
     return None
+
+
+def get_inherited_goflags():
+    """Retrieve GOFLAGS from environment variable or persistent go env configuration file."""
+    return get_inherited_go_setting('GOFLAGS')
 
 
 def workspace_has_local_python_module(module_name, workspace_paths, cwd=None):
@@ -1987,7 +1992,56 @@ def parse_rg_args(args):
     return has_pattern, pattern_files, positionals
 
 
-def extract_file_operands(base_cmd, args):
+def load_ripgrep_config_tokens(args, cwd=None, written_files=None):
+    """Load and validate tokens from RIPGREP_CONFIG_PATH if applicable."""
+    has_no_config = any(
+        a == '--no-config' or (a.startswith('--') and '--no-config'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 6)
+        for a in args
+    )
+    if has_no_config:
+        return 'allow', None, []
+    rg_cfg = os.environ.get('RIPGREP_CONFIG_PATH')
+    if not rg_cfg or not rg_cfg.strip():
+        return 'allow', None, []
+    if is_sensitive_credential_path(rg_cfg, cwd) or matches_sensitive_pattern(rg_cfg):
+        return 'deny', f"rg with RIPGREP_CONFIG_PATH targeting sensitive path is forbidden: {rg_cfg}", []
+    if written_files:
+        norm_cfg = os.path.normpath(expand_path(rg_cfg, cwd))
+        real_cfg = os.path.realpath(norm_cfg)
+        for wf in written_files:
+            norm_wf = os.path.normpath(wf)
+            real_wf = os.path.realpath(norm_wf)
+            if (norm_cfg == norm_wf or norm_wf.startswith(norm_cfg + os.sep) or norm_cfg.startswith(norm_wf + os.sep) or
+                real_cfg == real_wf or real_wf.startswith(real_cfg + os.sep) or real_wf.startswith(norm_wf + os.sep)):
+                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH modified earlier in command line requires confirmation: {rg_cfg}", []
+    cfg_path = Path(expand_path(rg_cfg, cwd))
+    rg_cfg_tokens = []
+    if cfg_path.is_file():
+        try:
+            cfg_content = cfg_path.read_text(errors='replace')
+            for line in cfg_content.splitlines():
+                line_s = line.strip()
+                if line_s and not line_s.startswith('#'):
+                    try:
+                        rg_cfg_tokens.extend(shlex.split(line_s, comments=True))
+                    except Exception:
+                        rg_cfg_tokens.extend(line_s.split())
+            if any(tok.startswith(('--pre', '--hostname-bin')) or tok in ('--pre', '--hostname-bin') for tok in rg_cfg_tokens):
+                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH configuring preprocessor or helper program requires confirmation: {rg_cfg}", []
+            if any(tok.startswith(('--hidden', '--no-ignore', '--follow')) or (tok.startswith('-') and not tok.startswith('--') and any(c in tok for c in ('L', 'u'))) for tok in rg_cfg_tokens):
+                return 'ask', f"rg with RIPGREP_CONFIG_PATH configuring hidden files or symlink following requires confirmation: {rg_cfg}", []
+            if any(is_credential_env_var(tok) for tok in rg_cfg_tokens):
+                return 'deny', f"rg with RIPGREP_CONFIG_PATH referencing credential variable is forbidden: {rg_cfg}", []
+            if any(not tok.startswith('-') and ('$' in tok or '`' in tok) for tok in rg_cfg_tokens):
+                return 'ask', f"rg with RIPGREP_CONFIG_PATH containing unexpanded variable requires confirmation: {rg_cfg}", []
+        except Exception:
+            return 'force_ask', f"rg unable to safely read RIPGREP_CONFIG_PATH file: {rg_cfg}", []
+    elif cfg_path.is_dir():
+        return 'force_ask', f"rg with RIPGREP_CONFIG_PATH pointing to directory requires confirmation: {rg_cfg}", []
+    return 'allow', None, rg_cfg_tokens
+
+
+def extract_file_operands(base_cmd, args, rg_cfg_tokens=None):
     """
     Given base_cmd and its argument list, identify the arguments that represent
     file paths (for sensitive credential path checks), skipping text expressions,
@@ -2006,7 +2060,8 @@ def extract_file_operands(base_cmd, args):
         return files
 
     if base_cmd == 'rg':
-        has_pat_flag, pattern_files, positionals = parse_rg_args(args)
+        effective_args = list(rg_cfg_tokens or []) + list(args)
+        has_pat_flag, pattern_files, positionals = parse_rg_args(effective_args)
         files = list(pattern_files)
         if has_pat_flag:
             files.extend(positionals)
@@ -2267,13 +2322,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"Auto-approved command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
+    rg_cfg_tokens = []
+    if base_cmd == 'rg':
+        rg_verdict, rg_reason, rg_cfg_tokens = load_ripgrep_config_tokens(args, cwd, written_files)
+        if rg_verdict != 'allow':
+            return rg_verdict, rg_reason
+
     # Check for credential environment variables across all arguments (including patterns, filters, and messages)
     for arg in args:
         if is_credential_env_var(arg):
             return 'deny', f"Access to credential environment variable is forbidden: {arg}"
 
     # Check for sensitive files or credentials being targeted in file path arguments
-    file_operands = extract_file_operands(base_cmd, args)
+    file_operands = extract_file_operands(base_cmd, args, rg_cfg_tokens=rg_cfg_tokens)
     for f in file_operands:
         if f != '/dev/null' and (is_sensitive_credential_path(f, cwd) or matches_sensitive_pattern(f)):
             return 'deny', f"Access to sensitive credential or key is forbidden: {f}"
@@ -2830,6 +2891,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if not is_path_in_workspaces(dop, workspace_paths, cwd):
                     return 'force_ask', f"git diff operand outside workspace requires approval: {dop}"
 
+            if written_files:
+                for wf in written_files:
+                    if matches_sensitive_pattern(wf) or is_sensitive_credential_path(wf, cwd):
+                        return 'deny', f"git diff following modification of sensitive file is forbidden: {wf}"
+                return 'force_ask', f"git diff following earlier file or working-tree modifications in command line requires confirmation: {' '.join(cmd_tokens)}"
+
             probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
             if probe_res == 'sensitive':
                 return 'deny', f"git diff touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
@@ -2857,6 +2924,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
                     has_diff = stash_sub == 'show' or git_log_has_diff_options(args)
                     if has_diff:
+                        if written_files:
+                            for wf in written_files:
+                                if matches_sensitive_pattern(wf) or is_sensitive_credential_path(wf, cwd):
+                                    return 'deny', f"git stash {stash_sub} following modification of sensitive file is forbidden: {wf}"
+                            return 'force_ask', f"git stash {stash_sub} following earlier file or working-tree modifications requires confirmation: {' '.join(cmd_tokens)}"
                         probe_res = git_command_touches_sensitive_files('stash', args, cwd)
                         if probe_res == 'sensitive':
                             return 'deny', f"git stash {stash_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
@@ -3018,6 +3090,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     is_pure_blob_show = True
 
             if git_sub != 'blame' and not is_pure_blob_show:
+                if written_files:
+                    for wf in written_files:
+                        if matches_sensitive_pattern(wf) or is_sensitive_credential_path(wf, cwd):
+                            return 'deny', f"git {git_sub} following modification of sensitive file is forbidden: {wf}"
+                    return 'force_ask', f"git {git_sub} following earlier file or working-tree modifications requires confirmation: {' '.join(cmd_tokens)}"
                 probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
                 if probe_res == 'sensitive':
                     return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
@@ -3261,6 +3338,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     if matches_sensitive_pattern(a) or is_sensitive_credential_path(a, cwd):
                         return 'deny', f"git add targeting sensitive file is forbidden: {a}"
 
+            if written_files:
+                for wf in written_files:
+                    if matches_sensitive_pattern(wf) or is_sensitive_credential_path(wf, cwd):
+                        return 'deny', f"git add following write of sensitive file is forbidden: {wf}"
+
             # Check broad staging (e.g. git add ., git add -A, git add --all, git add -u, git add *, or pathspec file, or magic pathspec)
             is_broad = has_add_pathspec_file or any(is_broad_git_pathspec(a, cwd) for a in args[1:] if not a.startswith('-') or a in ('-A', '--all', '-u', '--update'))
             if is_broad:
@@ -3476,6 +3558,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             break
                     return 'a' in flag_chars
                 return False
+
+            if written_files:
+                for wf in written_files:
+                    if matches_sensitive_pattern(wf) or is_sensitive_credential_path(wf, cwd):
+                        return 'deny', f"git commit following modification of sensitive file is forbidden: {wf}"
 
             # Inspect staged files to prevent committing credentials
             has_all_flag = has_pathspec or any(is_commit_all_flag(a) for a in args[1:])
@@ -3905,45 +3992,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             # ag -f or --follow traverses symlinks
             if any(a in ('-f', '--follow') or (a.startswith('-') and not a.startswith('--') and 'f' in a) for a in args):
                 return 'ask', f"ag following symlinks (-f/--follow) requires confirmation: {' '.join(cmd_tokens)}"
-        rg_cfg_tokens = []
         if base_cmd == 'rg':
             if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in args):
                 return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
-            has_no_config = any(
-                a == '--no-config' or (a.startswith('--') and '--no-config'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 6)
-                for a in args
-            )
-            if not has_no_config:
-                rg_cfg = os.environ.get('RIPGREP_CONFIG_PATH')
-                if rg_cfg and rg_cfg.strip():
-                    if is_sensitive_credential_path(rg_cfg, cwd) or matches_sensitive_pattern(rg_cfg):
-                        return 'deny', f"rg with RIPGREP_CONFIG_PATH targeting sensitive path is forbidden: {rg_cfg}"
-                    if written_files:
-                        norm_cfg = os.path.normpath(expand_path(rg_cfg, cwd))
-                        real_cfg = os.path.realpath(norm_cfg)
-                        for wf in written_files:
-                            norm_wf = os.path.normpath(wf)
-                            real_wf = os.path.realpath(norm_wf)
-                            if (norm_cfg == norm_wf or norm_wf.startswith(norm_cfg + os.sep) or norm_cfg.startswith(norm_wf + os.sep) or
-                                real_cfg == real_wf or real_wf.startswith(real_cfg + os.sep) or real_wf.startswith(norm_wf + os.sep)):
-                                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH modified earlier in command line requires confirmation: {rg_cfg}"
-                    cfg_path = Path(expand_path(rg_cfg, cwd))
-                    if cfg_path.is_file():
-                        try:
-                            cfg_content = cfg_path.read_text(errors='replace')
-                            for line in cfg_content.splitlines():
-                                line_s = line.strip()
-                                if line_s and not line_s.startswith('#'):
-                                    try:
-                                        rg_cfg_tokens.extend(shlex.split(line_s, comments=True))
-                                    except Exception:
-                                        rg_cfg_tokens.extend(line_s.split())
-                            if any(tok.startswith(('--pre', '--hostname-bin')) or tok in ('--pre', '--hostname-bin') for tok in rg_cfg_tokens):
-                                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH configuring preprocessor or helper program requires confirmation: {rg_cfg}"
-                            if any(tok.startswith(('--hidden', '--no-ignore', '--follow')) or (tok.startswith('-') and not tok.startswith('--') and any(c in tok for c in ('L', 'u'))) for tok in rg_cfg_tokens):
-                                return 'ask', f"rg with RIPGREP_CONFIG_PATH configuring hidden files or symlink following requires confirmation: {rg_cfg}"
-                        except Exception:
-                            return 'force_ask', f"rg unable to safely read RIPGREP_CONFIG_PATH file: {rg_cfg}"
         # Check for unexpanded variables
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
@@ -3952,10 +4003,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in args):
             return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'rg':
-            has_pattern_flag, pattern_files, positionals = parse_rg_args(args)
-            if rg_cfg_tokens:
-                _, cfg_pattern_files, _ = parse_rg_args(rg_cfg_tokens)
-                pattern_files.extend(cfg_pattern_files)
+            all_rg_tokens = list(rg_cfg_tokens) + list(args)
+            has_pattern_flag, pattern_files, positionals = parse_rg_args(all_rg_tokens)
         else:
             positionals = [a for a in args if not a.startswith('-')]
             has_pattern_flag = any(
@@ -4451,6 +4500,71 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     if base_cmd == 'go':
         if args and args[0] in {'test', 'vet', 'fmt', 'build'}:
+            GO_EXECUTABLE_HELPERS = ('CC', 'CXX', 'FC', 'GCCGO', 'AR', 'NM', 'PKG_CONFIG')
+            for helper_var in GO_EXECUTABLE_HELPERS:
+                hval = get_inherited_go_setting(helper_var)
+                if hval and hval.strip():
+                    try:
+                        hparts = shlex.split(hval)
+                    except Exception:
+                        hparts = hval.split()
+                    if not hparts:
+                        continue
+                    for hp in hparts:
+                        if is_sensitive_credential_path(hp, cwd) or matches_sensitive_pattern(hp):
+                            return 'deny', f"go {args[0]} with {helper_var} referencing sensitive path is forbidden: {hp}"
+                    hexe = hparts[0]
+                    resolved_hexe = shutil.which(hexe)
+                    if not resolved_hexe:
+                        resolved_hexe = expand_path(hexe, cwd)
+                    if not is_trusted_executable_path(resolved_hexe, workspace_paths, cwd, os.path.basename(resolved_hexe)):
+                        return 'force_ask', f"go {args[0]} with untrusted or workspace-controlled {helper_var} ({hexe}) requires confirmation: {hval}"
+                    if written_files:
+                        norm_hexe = os.path.normpath(resolved_hexe)
+                        for wf in written_files:
+                            norm_wf = os.path.normpath(wf)
+                            if norm_hexe == norm_wf or norm_hexe.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_hexe + os.sep):
+                                return 'force_ask', f"go {args[0]} with {helper_var} executable modified earlier in command line requires confirmation: {hval}"
+                    for opt in hparts[1:]:
+                        opt_clean = opt.split('=', 1)[1] if '=' in opt else opt
+                        norm_opt = os.path.normpath(expand_path(opt_clean, cwd))
+                        if is_path_in_workspaces(norm_opt, workspace_paths, cwd) or any(norm_opt.startswith(p) for p in ('/tmp', '/var/tmp', '/dev/shm')):
+                            return 'force_ask', f"go {args[0]} with {helper_var} referencing untrusted or workspace path requires confirmation: {opt}"
+
+            for root_var in ('GOTOOLDIR', 'GOROOT'):
+                rval = get_inherited_go_setting(root_var)
+                if rval and rval.strip():
+                    norm_rv = os.path.normpath(expand_path(rval.strip(), cwd))
+                    if is_sensitive_credential_path(norm_rv, cwd) or matches_sensitive_pattern(norm_rv):
+                        return 'deny', f"go {args[0]} with {root_var} targeting sensitive path is forbidden: {rval}"
+                    if is_path_in_workspaces(norm_rv, workspace_paths, cwd) or any(norm_rv.startswith(p) for p in ('/tmp', '/var/tmp', '/dev/shm')):
+                        return 'force_ask', f"go {args[0]} with untrusted or workspace-controlled {root_var} requires confirmation: {rval}"
+                    if written_files:
+                        for wf in written_files:
+                            norm_wf = os.path.normpath(wf)
+                            if norm_rv == norm_wf or norm_rv.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_rv + os.sep):
+                                return 'force_ask', f"go {args[0]} with {root_var} modified earlier in command line requires confirmation: {rval}"
+
+            cgo_flag_vars = ('CGO_CFLAGS', 'CGO_CPPFLAGS', 'CGO_CXXFLAGS', 'CGO_FFLAGS', 'CGO_LDFLAGS')
+            for flag_var in cgo_flag_vars:
+                fval = get_inherited_go_setting(flag_var)
+                if fval and fval.strip():
+                    try:
+                        fparts = shlex.split(fval)
+                    except Exception:
+                        fparts = fval.split()
+                    for fp in fparts:
+                        if is_sensitive_credential_path(fp, cwd) or matches_sensitive_pattern(fp):
+                            return 'deny', f"go {args[0]} with {flag_var} referencing sensitive path is forbidden: {fp}"
+                        if any(unsafe_opt in fp for unsafe_opt in ('--plugin', '-plugin', '-B')):
+                            return 'force_ask', f"go {args[0]} with {flag_var} specifying custom plugin or binary search directory requires confirmation: {fp}"
+                        if written_files:
+                            norm_fp = os.path.normpath(expand_path(fp, cwd))
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if norm_fp == norm_wf or norm_fp.startswith(norm_wf + os.sep) or norm_fp.startswith(norm_fp + os.sep):
+                                    return 'force_ask', f"go {args[0]} with {flag_var} file modified earlier in command line requires confirmation: {fp}"
+
             UNSAFE_GO_FLAGS = {
                 '-exec', '--exec',
                 '-toolexec', '--toolexec',
@@ -5080,12 +5194,19 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                     git_sub = a
                     git_sub_idx = idx
                     break
-            if git_sub in ('switch', 'checkout', 'reset', 'restore'):
+            if git_sub in ('switch', 'checkout', 'reset', 'restore', 'pull', 'merge', 'rebase', 'clean', 'apply', 'cherry-pick', 'revert', 'commit'):
                 res_top = git_run_probe(['rev-parse', '--show-toplevel'], cwd=effective_git_cwd)
                 if res_top and res_top.returncode == 0 and res_top.stdout.strip():
                     written_files.add(os.path.normpath(res_top.stdout.strip()))
                 else:
                     written_files.add(os.path.normpath(effective_git_cwd))
+            elif git_sub == 'stash':
+                if any(tok in ('pop', 'apply', 'drop', 'clear', 'push', 'save') for tok in sub_args):
+                    res_top = git_run_probe(['rev-parse', '--show-toplevel'], cwd=effective_git_cwd)
+                    if res_top and res_top.returncode == 0 and res_top.stdout.strip():
+                        written_files.add(os.path.normpath(res_top.stdout.strip()))
+                    else:
+                        written_files.add(os.path.normpath(effective_git_cwd))
             elif git_sub == 'worktree':
                 if git_sub_idx != -1 and 'add' in sub_args[git_sub_idx:]:
                     add_idx = sub_args.index('add', git_sub_idx)
