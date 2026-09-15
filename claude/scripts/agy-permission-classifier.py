@@ -4223,45 +4223,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             continue
                         i += 1
                         continue
-                    if a.startswith('-') and len(a) > 1:
-                        if a == '-f' and i + 1 < len(args):
-                            file_operands.append(args[i + 1])
-                            i += 2
-                            continue
-                        if a.startswith('-f'):
-                            val = a[2:].lstrip('=')
-                            if val:
-                                file_operands.append(val)
-                            elif i + 1 < len(args):
-                                file_operands.append(args[i + 1])
-                                i += 1
-                            i += 1
-                            continue
-                        if a == '-r' and i + 1 < len(args):
-                            file_operands.append(args[i + 1])
-                            i += 2
-                            continue
-                        if a.startswith('-r'):
-                            val = a[2:].lstrip('=')
-                            if val:
-                                file_operands.append(val)
-                            elif i + 1 < len(args):
-                                file_operands.append(args[i + 1])
-                                i += 1
-                            i += 1
-                            continue
-                        if a == '-d' and i + 1 < len(args):
-                            i += 2
-                            continue
-                        if a.startswith('-d'):
-                            i += 1
-                            continue
-                        if a == '-s' and i + 1 < len(args):
-                            i += 2
-                            continue
-                        if a.startswith('-s'):
-                            i += 1
-                            continue
+                    if a.startswith('-') and len(a) > 1 and not a.startswith('--'):
+                        j = 1
+                        while j < len(a):
+                            ch = a[j]
+                            if ch in ('f', 'r'):
+                                val = a[j + 1:].lstrip('=')
+                                if val:
+                                    file_operands.append(val)
+                                elif i + 1 < len(args):
+                                    file_operands.append(args[i + 1])
+                                    i += 1
+                                break
+                            elif ch in ('d', 's'):
+                                val = a[j + 1:].lstrip('=')
+                                if not val and i + 1 < len(args):
+                                    i += 1
+                                break
+                            elif ch == 'I':
+                                break
+                            else:
+                                j += 1
                         i += 1
                         continue
                     if not a.startswith('-') and not a.startswith('+'):
@@ -4374,12 +4356,21 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         return 'ask', f"echo with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'date':
             def is_date_set_opt(a):
-                if a in ('-s', '--set') or (a.startswith('-s') and not a.startswith('--')):
+                if a == '--set' or a.startswith('--set='):
                     return True
                 if a.startswith('--'):
                     opt = a.split('=', 1)[0]
                     if '--set'.startswith(opt) and len(opt) >= 3:
                         return True
+                if a.startswith('-') and not a.startswith('--') and len(a) > 1:
+                    j = 1
+                    while j < len(a):
+                        ch = a[j]
+                        if ch == 's':
+                            return True
+                        if ch in ('d', 'f', 'r', 'I'):
+                            break
+                        j += 1
                 return False
             if any(is_date_set_opt(a) for a in args) or any(re.match(r'^\d{8,12}(\.\d{2})?$', a) for a in args if not a.startswith('-') and not a.startswith('+')):
                 return 'force_ask', f"date with system clock setting requires confirmation: {' '.join(cmd_tokens)}"
@@ -4966,8 +4957,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if written_files:
                     for wf in written_files:
                         bname = os.path.basename(wf)
-                        if bname in ('rustfmt', 'rustfmt.toml', '.rustfmt.toml'):
-                            return 'force_ask', f"cargo fmt with formatter configuration or executable modified earlier in command line requires confirmation: {wf}"
+                        if bname in ('Cargo.toml', 'rustfmt', 'rustfmt.toml', '.rustfmt.toml'):
+                            return 'force_ask', f"cargo fmt with {bname} modified earlier in command line requires confirmation: {wf}"
                 search_dirs = [Path(cwd).resolve() if cwd else Path.cwd().resolve()]
                 for idx_arg, a in enumerate(args[1:]):
                     if a == '--manifest-path' and idx_arg + 1 < len(args[1:]):
@@ -4979,6 +4970,52 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 for s_dir in search_dirs:
                     curr = s_dir
                     while True:
+                        cargo_file = curr / 'Cargo.toml'
+                        if written_files:
+                            norm_cf = os.path.normpath(str(cargo_file))
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if norm_cf == norm_wf or norm_wf.startswith(norm_cf + os.sep):
+                                    return 'force_ask', f"cargo fmt with Cargo.toml modified earlier in command line requires confirmation: {cargo_file}"
+                        if cargo_file.is_file():
+                            try:
+                                cargo_text = cargo_file.read_text(errors='replace')
+                                target_paths = []
+                                if tomllib:
+                                    try:
+                                        c_data = tomllib.loads(cargo_text)
+                                        if isinstance(c_data, dict):
+                                            lib_sec = c_data.get('lib')
+                                            if isinstance(lib_sec, dict) and 'path' in lib_sec:
+                                                target_paths.append(str(lib_sec['path']))
+                                            for sec_name in ('bin', 'example', 'test', 'bench'):
+                                                sec_val = c_data.get(sec_name)
+                                                if isinstance(sec_val, list):
+                                                    for item in sec_val:
+                                                        if isinstance(item, dict) and 'path' in item:
+                                                            target_paths.append(str(item['path']))
+                                                elif isinstance(sec_val, dict) and 'path' in sec_val:
+                                                    target_paths.append(str(sec_val['path']))
+                                    except Exception:
+                                        pass
+                                for m_path in re.finditer(r'(?m)^\s*path\s*=\s*["\']([^"\']+)["\']', cargo_text):
+                                    target_paths.append(m_path.group(1))
+                                for tp in target_paths:
+                                    tp_clean = tp.strip('\'"')
+                                    tp_full = os.path.normpath(expand_path(tp_clean, str(curr)))
+                                    if not is_path_in_workspaces(tp_full, workspace_paths, cwd):
+                                        return 'force_ask', f"cargo fmt target path in Cargo.toml points outside workspace: {tp_clean}"
+                                    if is_sensitive_credential_path(tp_full, cwd) or matches_sensitive_pattern(tp_full):
+                                        return 'deny', f"cargo fmt target path in Cargo.toml points to sensitive credential: {tp_clean}"
+                                    if is_system_write_path(tp_full, cwd):
+                                        return 'deny', f"cargo fmt target path in Cargo.toml points to system path: {tp_clean}"
+                                    if is_security_guard_path(tp_full, cwd):
+                                        return 'force_ask', f"cargo fmt target path in Cargo.toml points to security guard: {tp_clean}"
+                                    if is_git_admin_path(tp_full, cwd):
+                                        return 'force_ask', f"cargo fmt target path in Cargo.toml points to git repository metadata: {tp_clean}"
+                            except Exception:
+                                pass
+
                         for tc_name in ('rust-toolchain.toml', 'rust-toolchain'):
                             tc_file = curr / tc_name
                             norm_tc = os.path.normpath(str(tc_file))
@@ -5006,6 +5043,58 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         if curr.parent == curr:
                             break
                         curr = curr.parent
+
+                    # Inspect .rs files for #[path = "..."] module path attributes pointing outside workspace
+                    try:
+                        for root_d, dirs, files in os.walk(str(s_dir)):
+                            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('target', 'node_modules', 'vendor')]
+                            for fname in files:
+                                if fname.endswith('.rs'):
+                                    rs_path = os.path.join(root_d, fname)
+                                    try:
+                                        with open(rs_path, 'r', encoding='utf-8', errors='replace') as rf:
+                                            rs_text = rf.read()
+                                        if 'path' not in rs_text:
+                                            continue
+                                        for mp in re.finditer(r'#!?\[\s*path\s*=\s*["\']([^"\']+)["\']\s*\]', rs_text):
+                                            m_target = mp.group(1).strip()
+                                            mod_full = os.path.normpath(expand_path(m_target, root_d))
+                                            if not is_path_in_workspaces(mod_full, workspace_paths, cwd):
+                                                return 'force_ask', f"cargo fmt module path attribute in {fname} points outside workspace: {m_target}"
+                                            if is_sensitive_credential_path(mod_full, cwd) or matches_sensitive_pattern(mod_full):
+                                                return 'deny', f"cargo fmt module path attribute in {fname} points to sensitive credential: {m_target}"
+                                            if is_system_write_path(mod_full, cwd):
+                                                return 'deny', f"cargo fmt module path attribute in {fname} points to system path: {m_target}"
+                                            if is_security_guard_path(mod_full, cwd):
+                                                return 'force_ask', f"cargo fmt module path attribute in {fname} points to security guard: {m_target}"
+                                            if is_git_admin_path(mod_full, cwd):
+                                                return 'force_ask', f"cargo fmt module path attribute in {fname} points to git repository metadata: {m_target}"
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+                if written_files:
+                    for wf in written_files:
+                        if wf.endswith('.rs') and os.path.isfile(wf):
+                            try:
+                                with open(wf, 'r', encoding='utf-8', errors='replace') as rf:
+                                    rs_text = rf.read()
+                                if 'path' in rs_text:
+                                    for mp in re.finditer(r'#!?\[\s*path\s*=\s*["\']([^"\']+)["\']\s*\]', rs_text):
+                                        m_target = mp.group(1).strip()
+                                        mod_full = os.path.normpath(expand_path(m_target, os.path.dirname(wf)))
+                                        if not is_path_in_workspaces(mod_full, workspace_paths, cwd):
+                                            return 'force_ask', f"cargo fmt module path attribute in {os.path.basename(wf)} points outside workspace: {m_target}"
+                                        if is_sensitive_credential_path(mod_full, cwd) or matches_sensitive_pattern(mod_full):
+                                            return 'deny', f"cargo fmt module path attribute in {os.path.basename(wf)} points to sensitive credential: {m_target}"
+                                        if is_system_write_path(mod_full, cwd):
+                                            return 'deny', f"cargo fmt module path attribute in {os.path.basename(wf)} points to system path: {m_target}"
+                                        if is_security_guard_path(mod_full, cwd):
+                                            return 'force_ask', f"cargo fmt module path attribute in {os.path.basename(wf)} points to security guard: {m_target}"
+                                        if is_git_admin_path(mod_full, cwd):
+                                            return 'force_ask', f"cargo fmt module path attribute in {os.path.basename(wf)} points to git repository metadata: {m_target}"
+                            except Exception:
+                                pass
                 return 'allow', f"Safe cargo command: cargo {sub}"
             if sub in {'check', 'clippy', 'test', 'bench', 'run', 'build'}:
                 return 'force_ask', f"Cargo command may execute build scripts or procedural macros: cargo {sub}"
@@ -5203,6 +5292,89 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             out_check = check_dev_tool_output(all_go_check_args, workspace_paths, cwd, f"go {args[0]}")
             if out_check:
                 return out_check
+
+            if args[0] in {'build', 'test', 'vet'}:
+                # Inspect Go source files for //go:embed directives targeting sensitive or external paths
+                effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                go_source_files = set()
+                explicit_go_args = [ga for ga in args[1:] if ga.endswith('.go') and not ga.startswith('-')]
+                for ga in explicit_go_args:
+                    go_source_files.add(expand_path(ga, effective_cwd))
+                if not explicit_go_args:
+                    pkg_dirs = set()
+                    skip_next_go_arg = False
+                    for ga in args[1:]:
+                        if skip_next_go_arg:
+                            skip_next_go_arg = False
+                            continue
+                        if ga.startswith('-'):
+                            opt_c = ga.split('=', 1)[0]
+                            if opt_c in ('-p', '-asmflags', '-buildmode', '-compiler', '-gccgoflags', '-gcflags', '-installsuffix', '-ldflags', '-mod', '-modfile', '-overlay', '-pkgdir', '-tags', '-toolexec', '-work') and '=' not in ga:
+                                skip_next_go_arg = True
+                            continue
+                        p_cand = expand_path(ga, effective_cwd)
+                        if os.path.isdir(p_cand):
+                            pkg_dirs.add(p_cand)
+                    if not pkg_dirs:
+                        pkg_dirs.add(effective_cwd)
+                    for pd in pkg_dirs:
+                        try:
+                            for entry in os.scandir(pd):
+                                if entry.is_file() and entry.name.endswith('.go'):
+                                    go_source_files.add(entry.path)
+                        except Exception:
+                            pass
+                if written_files:
+                    for wf in written_files:
+                        if wf.endswith('.go') and os.path.isfile(wf):
+                            go_source_files.add(wf)
+
+                for gf_path in go_source_files:
+                    if not os.path.isfile(gf_path):
+                        continue
+                    try:
+                        with open(gf_path, 'r', encoding='utf-8', errors='replace') as gf:
+                            gf_content = gf.read()
+                    except Exception:
+                        continue
+                    if '//go:embed' not in gf_content:
+                        continue
+                    gf_dir = os.path.dirname(gf_path)
+                    for m in re.finditer(r'(?m)^[ \t]*//go:embed[ \t]+([^\r\n]+)', gf_content):
+                        embed_raw = m.group(1).strip()
+                        try:
+                            patterns = shlex.split(embed_raw)
+                        except Exception:
+                            patterns = embed_raw.split()
+                        for pat in patterns:
+                            pat_clean = pat.strip('\'"`')
+                            if not pat_clean:
+                                continue
+                            if is_sensitive_credential_path(pat_clean, gf_dir) or matches_sensitive_pattern(pat_clean):
+                                return 'deny', f"go {args[0]} embeds sensitive credential or key via //go:embed: {pat_clean}"
+                            pat_full = os.path.normpath(expand_path(pat_clean, gf_dir))
+                            if not is_path_in_workspaces(pat_full, workspace_paths, effective_cwd):
+                                return 'force_ask', f"go {args[0]} embeds path outside workspace via //go:embed: {pat_clean}"
+                            if is_sensitive_credential_path(pat_full, effective_cwd) or matches_sensitive_pattern(pat_full):
+                                return 'deny', f"go {args[0]} embeds sensitive credential or key via //go:embed: {pat_full}"
+                            if is_security_guard_path(pat_full, effective_cwd):
+                                return 'force_ask', f"go {args[0]} embeds security configuration via //go:embed: {pat_full}"
+                            if any(c in pat_clean for c in ('*', '?', '[')):
+                                for matched_f in glob.glob(os.path.join(gf_dir, pat_clean), recursive=True):
+                                    if is_sensitive_credential_path(matched_f, effective_cwd) or matches_sensitive_pattern(matched_f):
+                                        return 'deny', f"go {args[0]} embeds sensitive credential or key via //go:embed: {matched_f}"
+                                    if is_security_guard_path(matched_f, effective_cwd):
+                                        return 'force_ask', f"go {args[0]} embeds security configuration via //go:embed: {matched_f}"
+                                    if not is_path_in_workspaces(matched_f, workspace_paths, effective_cwd):
+                                        return 'force_ask', f"go {args[0]} embeds path outside workspace via //go:embed: {matched_f}"
+                            if written_files:
+                                for wf in written_files:
+                                    norm_wf = os.path.normpath(wf)
+                                    if norm_wf == pat_full or fnmatch.fnmatch(norm_wf, pat_full) or fnmatch.fnmatch(os.path.basename(norm_wf), pat_clean):
+                                        if is_sensitive_credential_path(norm_wf, effective_cwd) or matches_sensitive_pattern(norm_wf):
+                                            return 'deny', f"go {args[0]} embeds sensitive credential or key via //go:embed: {norm_wf}"
+                                        if is_security_guard_path(norm_wf, effective_cwd):
+                                            return 'force_ask', f"go {args[0]} embeds security configuration via //go:embed: {norm_wf}"
 
             if args[0] == 'build':
                 has_explicit_o = False

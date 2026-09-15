@@ -5593,6 +5593,66 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_prompt_expand_raw['decision'], 'force_ask', f"Expected force_ask for prompt expansion @P, got: {res_prompt_expand_raw}")
         self.assertIn('prompt expansion (@p)', res_prompt_expand_raw['reason'].lower())
 
+        # 48. Go embed sources, Cargo external targets and Rust path attributes, and bundled date options
+        go_embed_file = ws_dir / 'embed_test.go'
+        try:
+            go_embed_file.write_text('package main\nimport _ "embed"\n//go:embed .env\nvar s string\n')
+            res_go_embed = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build -o public embed_test.go', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_go_embed['decision'], 'deny', f"Expected deny for go build with //go:embed .env, got: {res_go_embed}")
+            self.assertIn('sensitive', res_go_embed['reason'].lower())
+        finally:
+            go_embed_file.unlink(missing_ok=True)
+
+        cargo_toml = ws_dir / 'Cargo.toml'
+        try:
+            cargo_toml.write_text('[package]\nname = "test_pkg"\nversion = "0.1.0"\n[lib]\npath = "../outside/lib.rs"\n')
+            res_cargo_target = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cargo_target['decision'], 'force_ask', f"Expected force_ask for cargo fmt with outside target path in Cargo.toml, got: {res_cargo_target}")
+            self.assertIn('outside workspace', res_cargo_target['reason'].lower())
+        finally:
+            cargo_toml.unlink(missing_ok=True)
+
+        rust_src = ws_dir / 'src'
+        rust_src.mkdir(exist_ok=True)
+        rs_main = rust_src / 'main.rs'
+        try:
+            cargo_toml.write_text('[package]\nname = "test_pkg"\nversion = "0.1.0"\n')
+            rs_main.write_text('#[path = "../../outside/lib.rs"]\nmod lib;\nfn main() {}\n')
+            res_rs_mod = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_rs_mod['decision'], 'force_ask', f"Expected force_ask for cargo fmt with outside module path attribute, got: {res_rs_mod}")
+            self.assertIn('outside workspace', res_rs_mod['reason'].lower())
+        finally:
+            cargo_toml.unlink(missing_ok=True)
+            shutil.rmtree(str(rust_src), ignore_errors=True)
+
+        res_date_bundle_file = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -uf/etc/passwd', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertIn(res_date_bundle_file['decision'], ('ask', 'deny'), f"Expected ask or deny for date -uf/etc/passwd, got: {res_date_bundle_file}")
+
+        res_date_bundle_set = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -us 2030-01-01', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_date_bundle_set['decision'], 'force_ask', f"Expected force_ask for date -us, got: {res_date_bundle_set}")
+        self.assertIn('system clock', res_date_bundle_set['reason'].lower())
+
+        res_date_bundle_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -u', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_date_bundle_clean['decision'], 'allow', f"Expected allow for date -u, got: {res_date_bundle_clean}")
+
 
 if __name__ == '__main__':
     unittest.main()
