@@ -4034,6 +4034,93 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_stash_clean['decision'], 'allow')
 
+    def test_round_44_hardening(self):
+        """Verify Round 44 security hardening:
+        1. file option handling with attached -f/--files-from preventing credential disclosures.
+        2. git config checking credentials within the targeted configuration file/source.
+        3. date option prefix abbreviations (--f=, --ref=) and attached -f<file> respecting workspace boundaries and clock settings.
+        """
+        git_dir = Path(self.test_ws) / 'r44_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+
+        # 1. file -f options
+        (git_dir / 'files.txt').write_text('README.md\n')
+        res_file_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file -f files.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_file_clean['decision'], 'allow')
+
+        res_file_environ = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file -f/proc/self/environ', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_file_environ['decision'], 'deny')
+        self.assertIn('sensitive', res_file_environ['reason'])
+
+        res_file_outside = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file -f/outside/list.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_file_outside['decision'], 'ask')
+        self.assertIn('outside workspace', res_file_outside['reason'])
+
+        res_file_long_outside = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'file --f=/outside/list.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_file_long_outside['decision'], 'ask')
+        self.assertIn('outside workspace', res_file_long_outside['reason'])
+
+        # 2. git config targeted config credential inspection
+        (git_dir / 'cred.conf').write_text('[remote "origin"]\n\turl = https://token:secret@github.com/org/repo.git\n')
+        (git_dir / 'clean.conf').write_text('[remote "origin"]\n\turl = https://github.com/org/repo.git\n')
+
+        res_git_cfg_cred = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get --file=cred.conf remote.origin.url', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_git_cfg_cred['decision'], 'deny')
+        self.assertIn('credentials', res_git_cfg_cred['reason'])
+
+        res_git_cfg_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git config --get --file=clean.conf remote.origin.url', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_git_cfg_clean['decision'], 'allow')
+
+        # 3. date option prefix abbreviations and attached flags
+        (git_dir / 'dates.txt').write_text('2026-09-15\n')
+        res_date_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -f dates.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_date_clean['decision'], 'allow')
+
+        res_date_outside_long = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date --f=/outside/private-notes', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_date_outside_long['decision'], 'ask')
+        self.assertIn('outside workspace', res_date_outside_long['reason'])
+
+        res_date_outside_short = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date -f/outside/private-notes', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_date_outside_short['decision'], 'ask')
+        self.assertIn('outside workspace', res_date_outside_short['reason'])
+
+        res_date_clock_set = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'date --s "12:00"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_date_clock_set['decision'], 'force_ask')
+        self.assertIn('clock', res_date_clock_set['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()

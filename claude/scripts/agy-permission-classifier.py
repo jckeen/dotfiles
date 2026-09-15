@@ -660,15 +660,18 @@ def is_url_containing_credentials(url):
     return False
 
 
-def git_remotes_have_credentials(cwd=None):
+def git_remotes_have_credentials(cwd=None, config_source_args=None):
     """Check if any git remote URL contains embedded user/password/token credentials."""
-    res = git_run_probe(['config', '--get-regexp', r'^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$'], cwd=cwd)
+    probe_cmd = ['config']
+    if config_source_args:
+        probe_cmd.extend(config_source_args)
+    probe_cmd.extend(['--get-regexp', r'^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$'])
+    res = git_run_probe(probe_cmd, cwd=cwd)
     if res and res.returncode == 0 and res.stdout:
         for line in res.stdout.splitlines():
             parts = line.split(None, 1)
             if len(parts) == 2:
-                url = parts[1].strip()
-                if is_url_containing_credentials(url):
+                if is_url_containing_credentials(parts[1].strip()) or is_url_containing_credentials(parts[0].strip()):
                     return True
     return False
 
@@ -2508,7 +2511,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     continue
                 if a.startswith('--'):
                     opt = a.split('=', 1)[0]
-                    if '--file'.startswith(opt) and len(opt) >= 4:
+                    if '--file'.startswith(opt) and len(opt) >= 3:
                         if '=' in a:
                             config_files.append(a.split('=', 1)[1])
                         elif i + 1 < len(args):
@@ -2522,6 +2525,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     config_files.append(val)
                     continue
 
+            scope_args = []
+            for a in args[1:]:
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if '--global'.startswith(opt) and len(opt) >= 3:
+                        scope_args.append('--global')
+                    elif '--system'.startswith(opt) and len(opt) >= 3:
+                        scope_args.append('--system')
+                    elif '--local'.startswith(opt) and len(opt) >= 3:
+                        scope_args.append('--local')
+                    elif '--worktree'.startswith(opt) and len(opt) >= 3:
+                        scope_args.append('--worktree')
+
             for cf in config_files:
                 if is_sensitive_credential_path(cf, cwd) or matches_sensitive_pattern(cf):
                     return 'deny', f"git config targeting sensitive file is forbidden: {cf}"
@@ -2534,14 +2550,40 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         if norm_cf == norm_wf or norm_cf.startswith(norm_wf + os.sep):
                             return 'force_ask', f"git config file was modified or updated earlier in the command line: {cf}"
 
+            # Collect keys queried or set
+            config_keys = []
+            skip_arg = False
+            for i, a in enumerate(args[1:], start=1):
+                if skip_arg:
+                    skip_arg = False
+                    continue
+                if a in ('-f', '--file', '--blob', '--default', '-t', '--type', '--get-color', '--get-colorbool') and i + 1 < len(args):
+                    skip_arg = True
+                    continue
+                if a.startswith(('-f', '--file=', '--blob=', '--default=', '--type=', '-t=')):
+                    continue
+                if a.startswith('-'):
+                    continue
+                config_keys.append(a)
+
             # Check for sensitive config keys
-            for a in args[1:]:
-                clean_key = a.lower()
-                if any(k in clean_key for k in ('header', 'token', 'secret', 'key', 'pass', 'auth', 'cred', 'cookie', 'proxy', 'extraheader')):
-                    return 'deny', f"git config targeting sensitive credential key is forbidden: {a}"
-                if any(k in clean_key for k in ('url', 'remote', 'insteadof')):
-                    if git_remotes_have_credentials(cwd):
-                        return 'deny', f"git config query exposing embedded credentials in remote URL is forbidden: {a}"
+            for k in config_keys:
+                clean_key = k.lower()
+                if any(sec in clean_key for sec in ('header', 'token', 'secret', 'key', 'pass', 'auth', 'cred', 'cookie', 'proxy', 'extraheader')):
+                    return 'deny', f"git config targeting sensitive credential key is forbidden: {k}"
+                if any(sec in clean_key for sec in ('url', 'remote', 'insteadof')):
+                    sources_to_check = []
+                    if config_files:
+                        for cf in config_files:
+                            sources_to_check.append(['--file', expand_path(cf, cwd)])
+                    if scope_args:
+                        sources_to_check.append(scope_args)
+                    if not sources_to_check:
+                        sources_to_check.append(None)
+
+                    for src in sources_to_check:
+                        if git_remotes_have_credentials(cwd, config_source_args=src):
+                            return 'deny', f"git config query exposing embedded credentials in remote URL is forbidden: {k}"
             if any(a in ('--get', '--get-all') for a in args) or (len(args) == 2 and not args[1].startswith('-')):
                 return 'allow', 'Safe git config query'
             return 'force_ask', 'Git config modification requires confirmation'
@@ -2910,25 +2952,159 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 pos = [a for a in args if not a.startswith('-')]
                 if len(pos) > 1:
                     file_operands.extend(pos[1:])
+            elif base_cmd == 'file':
+                in_positional_only = False
+                i = 0
+                while i < len(args):
+                    a = args[i]
+                    if in_positional_only:
+                        file_operands.append(a)
+                        i += 1
+                        continue
+                    if a == '--':
+                        in_positional_only = True
+                        i += 1
+                        continue
+                    if a.startswith('--'):
+                        opt = a.split('=', 1)[0]
+                        val = a.split('=', 1)[1] if '=' in a else None
+                        if '--files-from'.startswith(opt) and len(opt) >= 3:
+                            if val is not None:
+                                file_operands.append(val)
+                            elif i + 1 < len(args):
+                                file_operands.append(args[i + 1])
+                                i += 1
+                            i += 1
+                            continue
+                        if '--magic-file'.startswith(opt) and len(opt) >= 3:
+                            mf_val = val if val is not None else (args[i + 1] if i + 1 < len(args) else None)
+                            if val is None and i + 1 < len(args):
+                                i += 1
+                            if mf_val:
+                                for mf in mf_val.split(':'):
+                                    if mf:
+                                        file_operands.append(mf)
+                            i += 1
+                            continue
+                        if any(opt_name.startswith(opt) and len(opt) >= 3 for opt_name in ('--separator', '--exclude', '--exclude-quiet', '--parameter')):
+                            if val is None and i + 1 < len(args):
+                                i += 1
+                            i += 1
+                            continue
+                        i += 1
+                        continue
+                    if a.startswith('-') and len(a) > 1:
+                        # Handle attached or clustered options
+                        for idx_char, ch in enumerate(a[1:], start=1):
+                            if ch == 'f':
+                                rest = a[idx_char + 1:].lstrip('=')
+                                if rest:
+                                    file_operands.append(rest)
+                                elif i + 1 < len(args):
+                                    file_operands.append(args[i + 1])
+                                    i += 1
+                                break
+                            elif ch == 'm':
+                                rest = a[idx_char + 1:].lstrip('=')
+                                mf_val = rest if rest else (args[i + 1] if i + 1 < len(args) else None)
+                                if not rest and i + 1 < len(args):
+                                    i += 1
+                                if mf_val:
+                                    for mf in mf_val.split(':'):
+                                        if mf:
+                                            file_operands.append(mf)
+                                break
+                            elif ch in ('F', 'e', 'P'):
+                                rest = a[idx_char + 1:].lstrip('=')
+                                if not rest and i + 1 < len(args):
+                                    i += 1
+                                break
+                        i += 1
+                        continue
+                    file_operands.append(a)
+                    i += 1
             elif base_cmd == 'date':
                 i = 0
                 while i < len(args):
                     a = args[i]
-                    if a in ('-f', '--file', '-r', '--reference') and i + 1 < len(args):
-                        file_operands.append(args[i + 1])
-                        i += 2
-                        continue
-                    elif a.startswith(('-f=', '--file=', '-r=', '--reference=')):
-                        file_operands.append(a.split('=', 1)[1])
-                    elif a.startswith(('-f', '-r')) and len(a) > 2 and not a.startswith('--'):
-                        file_operands.append(a[2:])
-                    elif a in ('-d', '--date') and i + 1 < len(args):
-                        i += 2
-                        continue
-                    elif a.startswith(('-d=', '--date=')):
+                    if a == '--':
+                        for rem in args[i + 1:]:
+                            if not rem.startswith('+'):
+                                file_operands.append(rem)
+                        break
+                    if a.startswith('--'):
+                        opt = a.split('=', 1)[0]
+                        val = a.split('=', 1)[1] if '=' in a else None
+                        if '--file'.startswith(opt) and len(opt) >= 3:
+                            if val is not None:
+                                file_operands.append(val)
+                            elif i + 1 < len(args):
+                                file_operands.append(args[i + 1])
+                                i += 1
+                            i += 1
+                            continue
+                        if '--reference'.startswith(opt) and len(opt) >= 3:
+                            if val is not None:
+                                file_operands.append(val)
+                            elif i + 1 < len(args):
+                                file_operands.append(args[i + 1])
+                                i += 1
+                            i += 1
+                            continue
+                        if '--date'.startswith(opt) and len(opt) >= 3:
+                            if val is None and i + 1 < len(args):
+                                i += 1
+                            i += 1
+                            continue
+                        if '--set'.startswith(opt) and len(opt) >= 3:
+                            if val is None and i + 1 < len(args):
+                                i += 1
+                            i += 1
+                            continue
                         i += 1
                         continue
-                    elif not a.startswith('-') and not a.startswith('+'):
+                    if a.startswith('-') and len(a) > 1:
+                        if a == '-f' and i + 1 < len(args):
+                            file_operands.append(args[i + 1])
+                            i += 2
+                            continue
+                        if a.startswith('-f'):
+                            val = a[2:].lstrip('=')
+                            if val:
+                                file_operands.append(val)
+                            elif i + 1 < len(args):
+                                file_operands.append(args[i + 1])
+                                i += 1
+                            i += 1
+                            continue
+                        if a == '-r' and i + 1 < len(args):
+                            file_operands.append(args[i + 1])
+                            i += 2
+                            continue
+                        if a.startswith('-r'):
+                            val = a[2:].lstrip('=')
+                            if val:
+                                file_operands.append(val)
+                            elif i + 1 < len(args):
+                                file_operands.append(args[i + 1])
+                                i += 1
+                            i += 1
+                            continue
+                        if a == '-d' and i + 1 < len(args):
+                            i += 2
+                            continue
+                        if a.startswith('-d'):
+                            i += 1
+                            continue
+                        if a == '-s' and i + 1 < len(args):
+                            i += 2
+                            continue
+                        if a.startswith('-s'):
+                            i += 1
+                            continue
+                        i += 1
+                        continue
+                    if not a.startswith('-') and not a.startswith('+'):
                         file_operands.append(a)
                     i += 1
             elif base_cmd == 'wc':
@@ -2987,6 +3163,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             for f_op in file_operands:
                 if f_op in ('/dev/null', '/dev/zero', '/dev/stdin', '-'):
                     continue
+                if any(c in f_op for c in ('$', '`', '*', '?', '[', ']', ';', '&', '|', '<', '>', '(', ')')):
+                    return 'ask', f"Inspection command operand with wildcard, variable, substitution, or metacharacter requires confirmation: {f_op}"
                 if written_files:
                     norm_fop = os.path.normpath(expand_path(f_op, cwd))
                     for wf in written_files:
@@ -3007,14 +3185,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'date':
             def is_date_set_opt(a):
-                if a in ('-s', '--set') or a.startswith('-s'):
+                if a in ('-s', '--set') or (a.startswith('-s') and not a.startswith('--')):
                     return True
                 if a.startswith('--'):
                     opt = a.split('=', 1)[0]
-                    if '--set'.startswith(opt) and len(opt) >= 4:
+                    if '--set'.startswith(opt) and len(opt) >= 3:
                         return True
                 return False
-            if any(is_date_set_opt(a) for a in args):
+            if any(is_date_set_opt(a) for a in args) or any(re.match(r'^\d{8,12}(\.\d{2})?$', a) for a in args if not a.startswith('-') and not a.startswith('+')):
                 return 'force_ask', f"date with system clock setting requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'printf':
             if any(a == '-v' or a.startswith('-v') for a in args):
