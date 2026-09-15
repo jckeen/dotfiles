@@ -16,6 +16,7 @@ Contract:
 - Always exits 0 with a valid JSON decision to prevent wedging the agent loop.
 """
 
+import codecs
 import fnmatch
 import json
 import os
@@ -174,6 +175,31 @@ def unquote_token(tok):
     if not tok or not isinstance(tok, str):
         return ''
     return tok
+
+
+def decode_shell_arg(arg):
+    """Safely decode shell-escaped and ANSI-C quoted ($'...') sequences in argument strings."""
+    if not arg or not isinstance(arg, str):
+        return arg
+    decoded = arg
+    if "$'" in decoded:
+        try:
+            decoded = re.sub(r"\$'([^']*)'", lambda m: codecs.decode(m.group(1), 'unicode_escape'), decoded)
+        except Exception:
+            pass
+    if decoded.startswith('-$'):
+        s_clean = '-' + decoded[2:].replace('$\\', '\\')
+        try:
+            decoded = codecs.decode(s_clean, 'unicode_escape')
+        except Exception:
+            pass
+    elif '\\' in decoded and (decoded.startswith('-') or '$' in decoded):
+        try:
+            s_clean = decoded.replace('-$', '-').replace('$\\', '\\')
+            decoded = codecs.decode(s_clean, 'unicode_escape')
+        except Exception:
+            pass
+    return decoded
 
 
 def subcmd_has_unquoted_expansions(subcmd_str):
@@ -1527,6 +1553,55 @@ def parse_refspec_dest(refspec, cwd=None):
     return dest
 
 
+def is_git_ext_diff_opt(a):
+    if not isinstance(a, str):
+        return False
+    opt = a.split('=', 1)[0]
+    if not opt.startswith('--') or opt.startswith('--no-'):
+        return False
+    return ('--ext-diff'.startswith(opt) and len(opt) >= 5) or opt == '--ext-diff'
+
+
+def is_git_no_ext_diff_opt(a):
+    if not isinstance(a, str):
+        return False
+    opt = a.split('=', 1)[0]
+    if not opt.startswith('--no-'):
+        return False
+    return ('--no-ext-diff'.startswith(opt) and len(opt) >= 8) or opt == '--no-ext-diff'
+
+
+def is_git_textconv_opt(a):
+    if not isinstance(a, str):
+        return False
+    opt = a.split('=', 1)[0]
+    if not opt.startswith('--') or opt.startswith('--no-') or opt == '--text':
+        return False
+    return ('--textconv'.startswith(opt) and len(opt) >= 7) or opt == '--textconv'
+
+
+def is_git_no_textconv_opt(a):
+    if not isinstance(a, str):
+        return False
+    opt = a.split('=', 1)[0]
+    if not opt.startswith('--no-'):
+        return False
+    return ('--no-textconv'.startswith(opt) and len(opt) >= 8) or opt == '--no-textconv'
+
+
+def is_git_unsafe_exec_opt(a):
+    if not isinstance(a, str):
+        return False
+    opt = a.split('=', 1)[0]
+    if opt.startswith('--'):
+        if ('--upload-pack'.startswith(opt) and len(opt) >= 9) or \
+           ('--receive-pack'.startswith(opt) and len(opt) >= 10) or \
+           ('--exec-path'.startswith(opt) and len(opt) >= 7) or \
+           opt == '--exec':
+            return True
+    return False
+
+
 def parse_grep_args(args):
     """Parse grep/egrep/fgrep argument list to identify pattern flags, pattern files, recursive mode, and positional arguments."""
     GREP_OPTS_WITH_ARG = {
@@ -1971,24 +2046,47 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
     # 4. Destructive Deletions (rm)
     if base_cmd == 'rm':
-        is_recursive = any(
-            a in ('-r', '-R', '-rf', '-fr') or
-            (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('r', 'R'))) or
-            (a.startswith('--') and '--recursive'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 3)
-            for a in args
-        )
-        is_dir = any(
-            a in ('-d',) or
-            (a.startswith('-') and not a.startswith('--') and 'd' in a) or
-            (a.startswith('--') and '--dir'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 3)
-            for a in args
-        )
-        targets = [a for a in args if not a.startswith('-')]
+        # Decode ANSI-C quotes and escape sequences across all arguments
+        decoded_args = [decode_shell_arg(a) for a in args]
+
+        is_recursive = False
+        is_dir = False
+        targets = []
+        skip_options = False
+
+        for a in decoded_args:
+            if skip_options:
+                targets.append(a)
+                continue
+            if a == '--':
+                skip_options = True
+                continue
+            if a.startswith('-') and a != '-':
+                if any(c in a for c in ('r', 'R')):
+                    is_recursive = True
+                if 'd' in a:
+                    is_dir = True
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if '--recursive'.startswith(opt) and len(opt) >= 3:
+                        is_recursive = True
+                    elif '--dir'.startswith(opt) and len(opt) >= 3:
+                        is_dir = True
+                    elif opt not in ('--force', '--interactive', '--verbose') and not any(opt.startswith(f) for f in ('--interactive=', '--preserve-root')):
+                        return 'force_ask', f"rm with unverified option ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+                else:
+                    SAFE_SHORT = {'f', 'i', 'I', 'v', 'r', 'R', 'd'}
+                    if any(c not in SAFE_SHORT for c in a[1:]):
+                        return 'force_ask', f"rm with unverified option ({a}) requires confirmation: {' '.join(cmd_tokens)}"
+            else:
+                targets.append(a)
+
         for t in targets:
             if is_system_write_path(t, cwd):
                 return 'deny', f"Deletion targeting system path is forbidden: rm {t}"
             if is_sensitive_credential_path(t, cwd) or matches_sensitive_pattern(t):
                 return 'deny', f"Deletion targeting sensitive credentials or keys is forbidden: rm {t}"
+
         if is_recursive or is_dir:
             for t in targets:
                 t_norm = expand_path(t, cwd)
@@ -1999,6 +2097,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     if t_norm == ws_norm:
                         return 'deny', f"Recursive deletion of entire workspace root is forbidden: rm {t}"
             return 'force_ask', f"Recursive or directory deletion requires confirmation: {' '.join(cmd_tokens)}"
+
+        # If any argument contains unescaped/unresolved shell parameter expansions ($ or `), require confirmation
+        for a in args:
+            if any(c in a for c in ('$', '`')) or a.startswith(('<(', '>(')):
+                return 'force_ask', f"rm with unresolved shell expansion requires confirmation: {' '.join(cmd_tokens)}"
+
         # Non-recursive rm on individual files inside workspace
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) and not is_security_guard_path(t, cwd) for t in targets):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
@@ -2124,14 +2228,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
         # External diff/textconv drivers can execute arbitrary commands configured in gitconfig/attributes
         for a in args:
-            if a in ('--ext-diff', '--textconv') or a.startswith(('--ext-diff=', '--textconv=')):
+            if is_git_ext_diff_opt(a) or is_git_textconv_opt(a):
                 return 'force_ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
         # Git upload-pack, receive-pack, exec-path, or exec options can run arbitrary executables
-        if any(a == '--exec-path' or a.startswith('--exec-path=') for a in pre_sub_args):
+        if any(is_git_unsafe_exec_opt(a) for a in pre_sub_args):
             return 'force_ask', f"Git command with custom exec-path requires confirmation: {' '.join(cmd_tokens)}"
         for a in sub_args:
-            if a in ('--upload-pack', '--receive-pack', '--exec') or a.startswith(('--upload-pack=', '--receive-pack=', '--exec=')):
+            if is_git_unsafe_exec_opt(a):
                 return 'force_ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
             if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
                 return 'force_ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
@@ -2404,8 +2508,25 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if git_sub == 'diff':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git diff in directory outside workspace requires confirmation: {cwd}"
-            has_no_ext = any(a == '--no-ext-diff' for a in args)
-            has_no_textconv = any(a == '--no-textconv' for a in args)
+            ext_diff_enabled = None
+            textconv_enabled = None
+            for a in args:
+                if is_git_ext_diff_opt(a):
+                    ext_diff_enabled = True
+                elif is_git_no_ext_diff_opt(a):
+                    ext_diff_enabled = False
+                if is_git_textconv_opt(a):
+                    textconv_enabled = True
+                elif is_git_no_textconv_opt(a):
+                    textconv_enabled = False
+
+            if ext_diff_enabled is True:
+                return 'force_ask', f"git diff with external diff driver requires confirmation: {' '.join(cmd_tokens)}"
+            if textconv_enabled is True:
+                return 'force_ask', f"git diff with textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+
+            has_no_ext = (ext_diff_enabled is False)
+            has_no_textconv = (textconv_enabled is False)
             if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
                 return 'force_ask', f"git diff with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
 

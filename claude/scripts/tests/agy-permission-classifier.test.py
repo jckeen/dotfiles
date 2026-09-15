@@ -4550,6 +4550,75 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             else:
                 os.environ['GOFLAGS'] = old_goflags
 
+    def test_round_50_hardening(self):
+        tmp_dir = tempfile.mkdtemp(prefix='agy_test_r50_')
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        ws_dir = Path(tmp_dir) / 'workspace'
+        ws_dir.mkdir()
+        repo_dir = ws_dir / 'repo'
+        repo_dir.mkdir()
+        subprocess.run(['git', 'init', '-b', 'main', '-q'], cwd=str(repo_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Test User'], cwd=str(repo_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(repo_dir), check=True)
+        (repo_dir / 'safe.txt').write_text('safe\n')
+        subprocess.run(['git', 'add', 'safe.txt'], cwd=str(repo_dir), check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'initial'], cwd=str(repo_dir), check=True)
+
+        # 1. rm with ANSI-C quoting and escape sequences
+        # ANSI-C encoded recursive deletion requires confirmation
+        res_rm_ansic = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"rm -$'\162\146' safe.txt", 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rm_ansic['decision'], 'force_ask')
+        self.assertIn('Recursive', res_rm_ansic['reason'])
+
+        # ANSI-C encoded recursive deletion targeting root is denied
+        res_rm_ansic_root = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': r"rm -$'\162\146' /", 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rm_ansic_root['decision'], 'deny')
+        self.assertIn('root', res_rm_ansic_root['reason'])
+
+        # rm with unresolved variable expansion requires confirmation
+        res_rm_var = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rm -${FLAGS} safe.txt', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rm_var['decision'], 'force_ask')
+
+        # Safe non-recursive file deletion is allowed
+        res_rm_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rm -f safe.txt', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_rm_clean['decision'], 'allow')
+
+        # 2. Git external diff options and abbreviations
+        # Abbreviated --ext-di re-enables external diff even after negative flags
+        res_git_ext_di = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --no-ext-diff --no-textconv --ext-di', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_ext_di['decision'], 'force_ask')
+        self.assertIn('external diff', res_git_ext_di['reason'])
+
+        # Abbreviated --textc re-enables textconv driver
+        res_git_textc = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --no-ext-diff --no-textconv --textc', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_textc['decision'], 'force_ask')
+        self.assertIn('external diff', res_git_textc['reason'])
+
+        # Clean negative flags allow git diff
+        res_git_clean_diff = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git diff --no-ext-diff --no-textconv', 'Cwd': str(repo_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_clean_diff['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()
