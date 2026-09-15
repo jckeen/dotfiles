@@ -171,6 +171,31 @@ def unquote_token(tok):
     return tok
 
 
+def subcmd_has_unquoted_expansions(subcmd_str):
+    """Check if subcmd_str contains unquoted/double-quoted variable expansions ($ or ` outside single quotes)."""
+    if not subcmd_str or not isinstance(subcmd_str, str):
+        return False
+    in_sq = False
+    in_dq = False
+    escape = False
+    for c in subcmd_str:
+        if escape:
+            escape = False
+            continue
+        if c == '\\' and not in_sq:
+            escape = True
+            continue
+        if c == "'" and not in_dq:
+            in_sq = not in_sq
+            continue
+        if c == '"' and not in_sq:
+            in_dq = not in_dq
+            continue
+        if not in_sq and c in ('$', '`'):
+            return True
+    return False
+
+
 def expand_path(p_str, cwd=None):
     """Safely expand user, variables, and relative paths against cwd."""
     if not p_str or not isinstance(p_str, str):
@@ -224,21 +249,32 @@ def matches_sensitive_pattern(filename):
     return False
 
 
-def expand_braces(text):
-    """Expand simple shell brace expressions like ~/{.aws,.ssh}/credentials."""
-    m = re.search(r'\{([^{}]+)\}', text)
-    if not m:
-        return [text]
-    prefix = text[:m.start()]
-    suffix = text[m.end():]
-    options = m.group(1).split(',')
-    results = []
-    for opt in options:
-        results.extend(expand_braces(prefix + opt + suffix))
-    return results
+def expand_braces(text, max_depth=5, max_results=64):
+    """Expand simple shell brace expressions like ~/{.aws,.ssh}/credentials with depth and result limits."""
+    def _helper(t, depth):
+        if depth > max_depth:
+            return [t]
+        m = re.search(r'\{([^{}]+)\}', t)
+        if not m:
+            return [t]
+        prefix = t[:m.start()]
+        suffix = t[m.end():]
+        options = m.group(1).split(',')
+        if len(options) > 16:
+            return [t]
+        res = []
+        for opt in options:
+            for sub in _helper(prefix + opt + suffix, depth + 1):
+                res.append(sub)
+                if len(res) >= max_results:
+                    return res
+        return res
+
+    results = _helper(text, 0)
+    return results[:max_results]
 
 
-def is_sensitive_credential_path(path_str, cwd=None):
+def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
     """Check if a path targets credentials, private keys, or tokens (including globs and braces)."""
     if not path_str or not isinstance(path_str, str):
         return False
@@ -246,9 +282,9 @@ def is_sensitive_credential_path(path_str, cwd=None):
         return False
 
     # Check for brace expansion like ~/{.aws,.ssh}/credentials
-    if '{' in path_str and '}' in path_str:
+    if not _in_brace and '{' in path_str and '}' in path_str:
         for exp in expand_braces(path_str):
-            if is_sensitive_credential_path(exp, cwd):
+            if is_sensitive_credential_path(exp, cwd, _in_brace=True):
                 return True
 
     # Strip shell quotes and backslash escapes (e.g. /etc/sha""dow or /etc/sha\dow)
@@ -557,6 +593,25 @@ def git_has_gpgsign_configured(cwd=None):
     return False
 
 
+def is_url_containing_credentials(url):
+    """Check if a single URL contains embedded user/password/token credentials."""
+    if not url or not isinstance(url, str):
+        return False
+    if re.match(r'^https?://[^/]*@', url, re.IGNORECASE):
+        return True
+    if '://' in url:
+        after_scheme = url.split('://', 1)[1]
+        host_part = after_scheme.split('/', 1)[0]
+        if '@' in host_part:
+            user_info = host_part.split('@', 1)[0]
+            if ':' in user_info:
+                return True
+            if user_info.lower() in ('git', 'hg', 'svn'):
+                return False
+            return True
+    return False
+
+
 def git_remotes_have_credentials(cwd=None):
     """Check if any git remote URL contains embedded user/password/token credentials."""
     res = git_run_probe(['config', '--get-regexp', r'^(remote\..*\.(url|pushurl)|url\..*\.(insteadof|pushinsteadof))$'], cwd=cwd)
@@ -565,7 +620,7 @@ def git_remotes_have_credentials(cwd=None):
             parts = line.split(None, 1)
             if len(parts) == 2:
                 url = parts[1].strip()
-                if '://' in url and '@' in url.split('://', 1)[1]:
+                if is_url_containing_credentials(url):
                     return True
     return False
 
@@ -1230,14 +1285,16 @@ def tokenize_subcommand(subcmd_str):
         return None
 
 
-def parse_refspec_dest(refspec):
-    """Extract the destination branch name from a git refspec."""
+def parse_refspec_dest(refspec, cwd=None):
+    """Extract the destination branch name from a git refspec, resolving HEAD/@ to current branch."""
     spec = refspec.lstrip('+')
     if ':' in spec:
         dest = spec.split(':', 1)[1]
     else:
         dest = spec
     dest = re.sub(r'^refs/(heads|remotes/[^/]+)/', '', dest)
+    if dest in ('HEAD', '@'):
+        dest = git_get_current_branch(cwd)
     return dest
 
 
@@ -1338,7 +1395,144 @@ def parse_grep_args(args):
     return has_pattern, pattern_files, is_recursive, positionals
 
 
-def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
+def extract_file_operands(base_cmd, args):
+    """
+    Given base_cmd and its argument list, identify the arguments that represent
+    file paths (for sensitive credential path checks), skipping text expressions,
+    search patterns, and format strings.
+    """
+    if base_cmd in {'echo', 'printf'}:
+        return []
+
+    if base_cmd in {'grep', 'egrep', 'fgrep'}:
+        has_pat_flag, pattern_files, is_rec, positionals = parse_grep_args(args)
+        files = list(pattern_files)
+        if has_pat_flag:
+            files.extend(positionals)
+        elif len(positionals) > 1:
+            files.extend(positionals[1:])
+        return files
+
+    if base_cmd in {'rg', 'ag'}:
+        has_pat_flag = False
+        files = []
+        skip_next = False
+        positionals = []
+        for i, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ('-e', '--regexp'):
+                has_pat_flag = True
+                if i + 1 < len(args):
+                    skip_next = True
+                continue
+            if a.startswith(('-e', '--regexp=')):
+                has_pat_flag = True
+                continue
+            if a in ('-f', '--file'):
+                if i + 1 < len(args):
+                    files.append(args[i + 1])
+                    skip_next = True
+                continue
+            if a.startswith(('-f=', '--file=')):
+                files.append(a.split('=', 1)[1])
+                continue
+            if not a.startswith('-'):
+                positionals.append(a)
+        if has_pat_flag:
+            files.extend(positionals)
+        elif len(positionals) > 1:
+            files.extend(positionals[1:])
+        return files
+
+    if base_cmd == 'jq':
+        has_file_filter = any(a in ('-f', '--from-file') or a.startswith(('-f=', '--from-file=')) for a in args)
+        files = []
+        positionals = []
+        skip_count = 0
+        for i, a in enumerate(args):
+            if skip_count > 0:
+                skip_count -= 1
+                continue
+            if a in ('-f', '--from-file') and i + 1 < len(args):
+                files.append(args[i + 1])
+                skip_count = 1
+                continue
+            if a.startswith(('-f=', '--from-file=')):
+                files.append(a.split('=', 1)[1])
+                continue
+            if a in ('--rawfile', '--slurpfile') and i + 2 < len(args):
+                files.append(args[i + 2])
+                skip_count = 2
+                continue
+            if a.startswith(('--rawfile=', '--slurpfile=')):
+                files.append(a.split('=', 1)[1])
+                continue
+            if a in ('--arg', '--argjson') and i + 2 < len(args):
+                skip_count = 2
+                continue
+            if not a.startswith('-'):
+                positionals.append(a)
+        if has_file_filter:
+            files.extend(positionals)
+        elif len(positionals) > 1:
+            files.extend(positionals[1:])
+        return files
+
+    if base_cmd in {'sed', 'awk'}:
+        has_script_flag = any(a in ('-e', '--expression', '-f', '--file') or a.startswith(('-e', '--expression=', '-f=', '--file=')) for a in args)
+        files = []
+        positionals = []
+        skip_next = False
+        for i, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if a in ('-f', '--file') and i + 1 < len(args):
+                files.append(args[i + 1])
+                skip_next = True
+                continue
+            if a.startswith(('-f=', '--file=')):
+                files.append(a.split('=', 1)[1])
+                continue
+            if a in ('-e', '--expression') and i + 1 < len(args):
+                skip_next = True
+                continue
+            if a.startswith(('-e', '--expression=')):
+                continue
+            if not a.startswith('-'):
+                positionals.append(a)
+        if has_script_flag:
+            files.extend(positionals)
+        elif len(positionals) > 1:
+            files.extend(positionals[1:])
+        return files
+
+    if base_cmd == 'git':
+        files = []
+        skip_next = False
+        for i, a in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if any(sub in args for sub in ('commit', 'tag')) and a in ('-m', '--message'):
+                skip_next = True
+                continue
+            if any(sub in args for sub in ('commit', 'tag')) and (a.startswith('-m') or a.startswith('--message=')):
+                continue
+            val = a.split('=', 1)[1] if a.startswith('--') and '=' in a else a
+            files.append(val)
+        return files
+
+    files = []
+    for a in args:
+        val = a.split('=', 1)[1] if a.startswith('--') and '=' in a else a
+        files.append(val)
+    return files
+
+
+def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None):
     """Classify a single atomic subcommand (list of tokens).
 
     Returns (verdict, reason) where verdict is 'allow', 'deny', or 'ask'.
@@ -1426,43 +1620,23 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"Auto-approved command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
-    # Check for sensitive files or credentials being targeted in arguments
-    # Skip known text payloads (e.g. git commit messages, grep search patterns)
-    skip_next = False
-    for i, arg in enumerate(args):
-        if skip_next:
-            skip_next = False
-            continue
-        # For git commit/tag, skip the commit message string operand
-        if base_cmd == 'git' and any(sub in args for sub in ('commit', 'tag')):
-            if arg in ('-m', '--message'):
-                skip_next = True
-                continue
-            if arg.startswith(('-m', '--message=')):
-                continue
-        # For grep / rg / ag, skip the search pattern operand
-        if base_cmd in {'grep', 'egrep', 'fgrep', 'rg', 'ag'}:
-            if base_cmd in {'grep', 'egrep', 'fgrep'}:
-                has_pat_flag, _, _, positionals = parse_grep_args(args)
-            else:
-                has_pat_flag = any(a in ('-e', '-f', '--regexp', '--file') or a.startswith(('-e', '-f', '--regexp=', '--file=')) for a in args)
-                consumed_tokens = set()
-                for idx_a, val_a in enumerate(args):
-                    if val_a in ('-e', '-f', '--regexp', '--file') and idx_a + 1 < len(args):
-                        consumed_tokens.add(args[idx_a + 1])
-                positionals = [a for a in args if not a.startswith('-') and a not in consumed_tokens]
-            if not has_pat_flag and positionals and arg == positionals[0]:
-                continue
+    # Check for credential environment variables across all arguments (including patterns, filters, and messages)
+    for arg in args:
         if is_credential_env_var(arg):
             return 'deny', f"Access to credential environment variable is forbidden: {arg}"
-        val = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
-        if val != '/dev/null' and is_sensitive_credential_path(val, cwd):
-            return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
+
+    # Check for sensitive files or credentials being targeted in file path arguments
+    file_operands = extract_file_operands(base_cmd, args)
+    for f in file_operands:
+        if f != '/dev/null' and (is_sensitive_credential_path(f, cwd) or matches_sensitive_pattern(f)):
+            return 'deny', f"Access to sensitive credential or key is forbidden: {f}"
+
+    for arg in args:
         if arg.startswith('-') and not arg.startswith('--') and any(c in arg for c in ('o', 't')):
             for flag in ('o', 't'):
                 if flag in arg:
                     sub_val = arg[arg.index(flag) + 1:].lstrip('=')
-                    if sub_val and sub_val != '/dev/null' and is_sensitive_credential_path(sub_val, cwd):
+                    if sub_val and sub_val != '/dev/null' and (is_sensitive_credential_path(sub_val, cwd) or matches_sensitive_pattern(sub_val)):
                         return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
 
     # 1. Privilege Escalation (Hard Deny)
@@ -1696,7 +1870,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 refspecs = []
 
             for spec in refspecs:
-                dest = parse_refspec_dest(spec)
+                dest = parse_refspec_dest(spec, cwd=cwd)
                 if dest in PROTECTED_BRANCHES:
                     return 'deny', f"Push targeting protected branch '{dest}' is forbidden: {' '.join(cmd_tokens)}"
             if not refspecs:
@@ -1719,6 +1893,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         if git_sub == 'fetch':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
                 return 'force_ask', f"git fetch in directory outside workspace requires confirmation: {cwd}"
+            if git_has_active_hooks(cwd, ('reference-transaction',)):
+                return 'force_ask', f"Git fetch with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_transport_executable_configured(cwd):
                 return 'force_ask', f"Git fetch with configured transport program or credential helper requires confirmation: {' '.join(cmd_tokens)}"
             if git_remotes_have_executable_helpers(cwd):
@@ -2230,7 +2406,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'force_ask', f"git commit with GPG signing invokes external gpg program: {' '.join(cmd_tokens)}"
             if any(a in ('--amend', '--fixup', '--squash', '--reset-author') or a.startswith(('--amend', '--fixup=', '--squash=')) for a in args):
                 return 'force_ask', f"git commit with history rewriting requires confirmation: {' '.join(cmd_tokens)}"
-            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit')):
+            if git_has_active_hooks(cwd, ('pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'reference-transaction')):
                 return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
@@ -2348,7 +2524,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     # 6. Inspection Commands
     if base_cmd in SAFE_INSPECTION_COMMANDS:
         if base_cmd == 'jq':
-            if any(re.search(r'(\benv\b|(?<![A-Za-z0-9_])\$ENV\b)', a) for a in args):
+            if any(re.search(r'((?<![A-Za-z0-9_.$])env\b|(?<![A-Za-z0-9_])\$ENV\b)', a) for a in args):
                 return 'deny', f"jq accessing process environment is forbidden: {' '.join(cmd_tokens)}"
             if any(a in ('-f', '--from-file') or a.startswith(('-f', '--from-file=')) for a in args):
                 return 'force_ask', f"jq reading filter from file requires confirmation: {' '.join(cmd_tokens)}"
@@ -2457,9 +2633,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 if not is_path_in_workspaces(f_op, workspace_paths, cwd):
                     return 'ask', f"Inspection command reading file outside workspace requires approval: {f_op}"
         if base_cmd in {'echo', 'printf'}:
-            for a in args:
-                if any(c in a for c in ('$', '`')):
+            if raw_subcmd is not None:
+                if subcmd_has_unquoted_expansions(raw_subcmd):
                     return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
+            else:
+                for a in args:
+                    if any(c in a for c in ('$', '`')):
+                        return 'ask', f"{base_cmd} with variable expansion requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'date':
             def is_date_set_opt(a):
                 if a in ('-s', '--set') or a.startswith('-s'):
@@ -3057,6 +3237,141 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     return 'force_ask', f"Command requires confirmation: {' '.join(cmd_tokens)}"
 
 
+def extract_command_substitutions(cmd_str):
+    """
+    Extract all command substitutions ($(...), `...`, <(...), >(...)) from a shell command string,
+    respecting quote contexts and properly balancing nested parentheses.
+    Returns a list of inner command strings.
+    """
+    if not cmd_str or not isinstance(cmd_str, str):
+        return []
+
+    substitutions = []
+    i = 0
+    n = len(cmd_str)
+    in_single_quote = False
+    in_double_quote = False
+    escape = False
+
+    while i < n:
+        c = cmd_str[i]
+
+        if escape:
+            escape = False
+            i += 1
+            continue
+
+        if c == '\\' and not in_single_quote:
+            escape = True
+            i += 1
+            continue
+
+        if c == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            i += 1
+            continue
+
+        if c == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            i += 1
+            continue
+
+        if not in_single_quote:
+            if c == '`':
+                j = i + 1
+                inner_chars = []
+                inner_escape = False
+                found_closing = False
+                while j < n:
+                    cj = cmd_str[j]
+                    if inner_escape:
+                        inner_chars.append(cj)
+                        inner_escape = False
+                        j += 1
+                        continue
+                    if cj == '\\':
+                        inner_escape = True
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '`':
+                        found_closing = True
+                        break
+                    inner_chars.append(cj)
+                    j += 1
+                sub_content = ''.join(inner_chars)
+                substitutions.append(sub_content)
+                i = j + 1 if found_closing else n
+                continue
+
+            is_dollar_sub = (c == '$' and i + 1 < n and cmd_str[i + 1] == '(')
+            is_proc_sub = (c in ('<', '>') and i + 1 < n and cmd_str[i + 1] == '(' and not in_double_quote)
+
+            if is_dollar_sub or is_proc_sub:
+                j = i + 2
+                depth = 1
+                inner_chars = []
+                sub_single_quote = False
+                sub_double_quote = False
+                sub_escape = False
+                found_closing = False
+
+                while j < n:
+                    cj = cmd_str[j]
+                    if sub_escape:
+                        sub_escape = False
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '\\' and not sub_single_quote:
+                        sub_escape = True
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == "'" and not sub_double_quote:
+                        sub_single_quote = not sub_single_quote
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if cj == '"' and not sub_single_quote:
+                        sub_double_quote = not sub_double_quote
+                        inner_chars.append(cj)
+                        j += 1
+                        continue
+                    if not sub_single_quote and not sub_double_quote:
+                        if cj == '(':
+                            depth += 1
+                        elif cj == ')':
+                            depth -= 1
+                            if depth == 0:
+                                found_closing = True
+                                break
+                    elif sub_double_quote:
+                        if cj == '$' and j + 1 < n and cmd_str[j + 1] == '(':
+                            depth += 1
+                            inner_chars.append(cj)
+                            inner_chars.append('(')
+                            j += 2
+                            continue
+                        elif cj == ')':
+                            depth -= 1
+                            if depth == 0:
+                                found_closing = True
+                                break
+
+                    inner_chars.append(cj)
+                    j += 1
+
+                sub_content = ''.join(inner_chars)
+                substitutions.append(sub_content)
+                i = j + 1 if found_closing else n
+                continue
+
+        i += 1
+
+    return substitutions
+
+
 def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
     """Classify an entire shell command line string across lines, chains, and pipelines."""
     if depth > 5:
@@ -3066,10 +3381,9 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
         return 'ask', 'Empty command line or invalid type'
 
     # Check for command substitutions $(...) or `...` or process substitutions <(...) >(...)
-    subst_matches = re.findall(r'\$\((.*?)\)|`([^`]+)`|<(?:\((.*?)\))|>(?:\((.*?)\))', cmd_str)
-    if subst_matches or re.search(r'(\$\(|\`|<(?=\()|>(?=\())', cmd_str):
-        for match_tuple in subst_matches:
-            inner = next((m for m in match_tuple if m), '')
+    substitutions = extract_command_substitutions(cmd_str)
+    if substitutions:
+        for inner in substitutions:
             if inner and inner.strip():
                 inner_verdict, inner_reason = classify_command_line(inner.strip(), workspace_paths, cwd, depth + 1)
                 if inner_verdict == 'deny':
@@ -3084,12 +3398,14 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
         return 'allow', 'Empty command'
 
     subcommands_all = []
+    subcmd_raw_all = []
     for sub_str in subcmd_strings:
         tokens = tokenize_subcommand(sub_str)
         if tokens is None:
             return 'ask', f"Unable to safely parse command tokens: {sub_str}"
         if tokens:
             subcommands_all.append(tokens)
+            subcmd_raw_all.append(sub_str)
 
     if not subcommands_all:
         return 'allow', 'No subcommands found'
@@ -3115,8 +3431,9 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
 
     # Evaluate all subcommands; deny strictly takes precedence over ask
     verdicts = []
-    for sub in subcommands_all:
-        verdict, reason = classify_subcommand(sub, workspace_paths, cwd, depth=depth)
+    for idx_sub, sub in enumerate(subcommands_all):
+        raw_s = subcmd_raw_all[idx_sub] if idx_sub < len(subcmd_raw_all) else None
+        verdict, reason = classify_subcommand(sub, workspace_paths, cwd, depth=depth, raw_subcmd=raw_s)
         verdicts.append((verdict, reason))
 
     for v, r in verdicts:

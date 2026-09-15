@@ -3381,6 +3381,139 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_wt_out['decision'], 'force_ask')
         subprocess.run(['git', 'config', '--unset', 'core.worktree'], cwd=str(git_dir), check=False)
 
+    def test_round_38_hardening(self):
+        """Regression tests for Round 38 findings:
+        1. Reference-transaction hook in git fetch and git commit
+        2. Nested command substitutions and quote-awareness
+        3. Symbolic push refspecs (HEAD, @) targeting protected branch
+        4. Text expressions vs sensitive file paths (jq, grep)
+        5. Bounded brace expansion preventing exhaustion
+        6. SSH remote URLs with standard git usernames
+        """
+        git_dir = Path(self.test_ws) / 'repo_r38'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-b', 'main'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('init\n')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'init'], cwd=str(git_dir), check=True)
+
+        # 1. reference-transaction hook causes force_ask on git fetch and git commit
+        hooks_dir = git_dir / '.git' / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        ref_tx_hook = hooks_dir / 'reference-transaction'
+        ref_tx_hook.write_text('#!/bin/sh\nexit 0\n')
+        ref_tx_hook.chmod(0o755)
+
+        res_fetch = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch origin', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_fetch['decision'], 'force_ask')
+        self.assertIn('active repository hook', res_fetch['reason'])
+
+        (git_dir / 'new.txt').write_text('change\n')
+        subprocess.run(['git', 'add', 'new.txt'], cwd=str(git_dir), check=True)
+        res_commit = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit -m "update"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_commit['decision'], 'force_ask')
+        self.assertIn('active repository hook', res_commit['reason'])
+
+        ref_tx_hook.unlink()
+
+        # 2. Nested command substitutions and quote awareness
+        res_nest_deny = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "$(echo "$(cat ~/.ssh/id_rsa)")"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_nest_deny['decision'], 'deny')
+
+        res_single_quote = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo '$(sudo id)'", 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_single_quote['decision'], 'allow')
+
+        res_double_quote = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'echo "$(sudo id)"', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_double_quote['decision'], 'deny')
+
+        # 3. Symbolic push refspecs (HEAD, @) targeting protected branch
+        res_push_head = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git push origin HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_push_head['decision'], 'deny')
+
+        res_push_force_head = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git push -f origin HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_push_force_head['decision'], 'deny')
+
+        res_push_at = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git push origin @', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_push_at['decision'], 'deny')
+
+        # 4. Text expressions vs sensitive paths (jq, grep)
+        res_jq_filter = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "jq '.env' README.md", 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_jq_filter['decision'], 'allow')
+
+        res_grep_pat = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "grep -e '.env' README.md", 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_grep_pat['decision'], 'allow')
+
+        res_grep_cred_var = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep "$AWS_SECRET_ACCESS_KEY" README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_grep_cred_var['decision'], 'deny')
+
+        res_jq_cred_var = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'jq "$AWS_SECRET_ACCESS_KEY" README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_jq_cred_var['decision'], 'deny')
+
+        res_grep_file_env = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "grep 'foo' .env", 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_grep_file_env['decision'], 'deny')
+
+        # 5. Bounded brace expansion
+        huge_brace = "cat " + "{a,b}" * 25
+        res_brace = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': huge_brace, 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertIn(res_brace['decision'], ('ask', 'force_ask'))
+
+        # 6. SSH remote URLs with standard git usernames
+        subprocess.run(['git', 'remote', 'add', 'origin', 'ssh://git@github.com/org/repo.git'], cwd=str(git_dir), check=True)
+        res_remote_ssh = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git remote -v', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_remote_ssh['decision'], 'allow')
+
+        subprocess.run(['git', 'remote', 'set-url', 'origin', 'https://token@github.com/org/repo.git'], cwd=str(git_dir), check=True)
+        res_remote_token = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git remote -v', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_remote_token['decision'], 'deny')
+
 
 if __name__ == '__main__':
     unittest.main()
