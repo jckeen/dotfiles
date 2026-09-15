@@ -4121,6 +4121,86 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_date_clock_set['decision'], 'force_ask')
         self.assertIn('clock', res_date_clock_set['reason'])
 
+    def test_round_45_hardening(self):
+        """Verify Round 45 security hardening:
+        1. Bash test arguments with array subscripts and substitutions requiring confirmation.
+        2. cp / mv destinations validated against written_files and ancestor symlinks.
+        3. git status with post-index-change hooks requiring confirmation.
+        4. Mixed git show objects triggering commit patch credential inspection.
+        """
+        git_dir = Path(self.test_ws) / 'r45_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+
+        # 1. Bash test / [ subscript execution and file operand safety
+        res_test_subscript = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "test -v 'BASH_VERSINFO[$(printf REVIEW_MARKER >&2)0]'", 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_test_subscript['decision'], 'force_ask')
+
+        (git_dir / 'safe_test.txt').write_text('content')
+        res_test_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'test -f safe_test.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_test_clean['decision'], 'allow')
+
+        res_test_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'test -f /etc/shadow', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_test_sensitive['decision'], 'deny')
+
+        # 2. cp / mv destination validated against written_files
+        res_mv_cp_compound = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mv parent renamed; cp data renamed/link/victim', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_mv_cp_compound['decision'], 'force_ask')
+        self.assertIn('earlier', res_mv_cp_compound['reason'])
+
+        # 3. git status with post-index-change hook
+        hook_path = git_dir / '.git' / 'hooks' / 'post-index-change'
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text('#!/bin/sh\necho hook\n')
+        hook_path.chmod(0o755)
+
+        res_status_hook = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_status_hook['decision'], 'force_ask')
+        self.assertIn('post-index-change', res_status_hook['reason'])
+
+        hook_path.unlink()
+        res_status_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_status_clean['decision'], 'allow')
+
+        # 4. Mixed git show objects touching sensitive files
+        (git_dir / 'README.md').write_text('readme')
+        (git_dir / '.env').write_text('SECRET=123')
+        subprocess.run(['git', 'add', '.'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add env secret', '-q'], cwd=str(git_dir), check=True)
+
+        res_show_mixed = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git --no-pager show HEAD:README.md HEAD', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_show_mixed['decision'], 'deny')
+        self.assertIn('sensitive', res_show_mixed['reason'])
+
+        res_show_blob_only = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git --no-pager show HEAD:README.md', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_show_blob_only['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

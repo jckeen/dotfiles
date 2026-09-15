@@ -963,7 +963,8 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
                     res_t = git_run_probe(['cat-file', '-t', a], cwd=effective_cwd)
                     if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
                         return 'unknown'
-            cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
+            commit_args = [a for a in safe_args if ':' not in a and not a.startswith('--format=') and a != '--name-only']
+            cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature'] + commit_args
         elif git_sub in ('log', 'whatchanged') and git_log_has_diff_options(args):
             cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
@@ -2267,6 +2268,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if git_has_fsmonitor_configured(cwd):
                 return 'force_ask', f"git {git_sub} with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
 
+        if git_sub == 'status':
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'force_ask', f"git status in directory outside workspace requires confirmation: {cwd}"
+            if git_has_active_hooks(cwd, ('post-index-change',), written_files=written_files):
+                return 'force_ask', f"git status with active repository hook (post-index-change) requires confirmation: {' '.join(cmd_tokens)}"
+
         # Git diff
         if git_sub == 'diff':
             if not is_path_in_workspaces(cwd, workspace_paths, cwd):
@@ -2435,10 +2442,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         if res_t and res_t.returncode == 0 and res_t.stdout.strip() == 'blob':
                             return 'force_ask', f"git show reading raw git blob by hash can disclose sensitive repository history: {obj}"
 
-            is_blob_show = git_sub == 'show' and any(':' in a and not a.startswith(('-', 'http:', 'https:', 'ssh:', 'git:')) for a in args[1:])
-            if is_blob_show:
+            if git_sub == 'show':
                 for a in args[1:]:
-                    if ':' in a and not a.startswith('-'):
+                    if ':' in a and not a.startswith(('-', 'http:', 'https:', 'ssh:', 'git:')):
                         obj_path = a.rsplit(':', 1)[1]
                         if obj_path.startswith(('0:', '1:', '2:', '3:')):
                             obj_path = obj_path[2:]
@@ -2447,13 +2453,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         if obj_path.startswith(('/', '~')) or '..' in obj_path.split('/'):
                             if not is_path_in_workspaces(obj_path, workspace_paths, cwd):
                                 return 'force_ask', f"git show object path outside workspace requires approval: {a}"
-            else:
-                if git_sub != 'blame':
-                    probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
-                    if probe_res == 'sensitive':
-                        return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
-                    if probe_res == 'unknown':
-                        return 'force_ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
+
+            is_pure_blob_show = False
+            if git_sub == 'show':
+                pos_objects = [a for a in show_pre_dash if not a.startswith('-')]
+                if pos_objects and all(':' in obj and not obj.startswith(('http:', 'https:', 'ssh:', 'git:')) for obj in pos_objects):
+                    is_pure_blob_show = True
+
+            if git_sub != 'blame' and not is_pure_blob_show:
+                probe_res = git_command_touches_sensitive_files(git_sub, args, cwd)
+                if probe_res == 'sensitive':
+                    return 'deny', f"git {git_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+                if probe_res == 'unknown':
+                    return 'force_ask', f"git {git_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
 
         # Git cat-file with batch modes, filters, textconv, or sensitive objects
         if git_sub == 'cat-file':
@@ -2932,6 +2944,58 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         if base_cmd == 'file':
             if any(a in ('-C', '--compile') or (a.startswith('-') and not a.startswith('--') and 'C' in a) for a in args):
                 return 'force_ask', f"file with compile option (-C/--compile) writes output and requires confirmation: {' '.join(cmd_tokens)}"
+        if base_cmd in {'test', '['}:
+            for a in args:
+                if any(c in a for c in ('$', '`')):
+                    return 'force_ask', f"test/[ with variable or command substitution in argument requires confirmation: {' '.join(cmd_tokens)}"
+            test_args = list(args)
+            if base_cmd == '[' and test_args and test_args[-1] == ']':
+                test_args = test_args[:-1]
+
+            UNARY_FILE_TESTS = {'-b', '-c', '-d', '-e', '-f', '-g', '-h', '-k', '-p', '-r', '-s', '-u', '-w', '-x', '-O', '-G', '-L', '-S', '-N'}
+            BINARY_FILE_TESTS = {'-nt', '-ot', '-ef'}
+            file_operands = []
+            i = 0
+            while i < len(test_args):
+                a = test_args[i]
+                if a in ('-v', '-R'):
+                    if i + 1 < len(test_args):
+                        var_name = test_args[i + 1]
+                        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', var_name):
+                            return 'force_ask', f"test/[ variable test with array subscript or expression evaluation requires confirmation: {var_name}"
+                        i += 2
+                        continue
+                    else:
+                        return 'force_ask', f"test/[ missing variable name for {a}"
+                elif a in UNARY_FILE_TESTS:
+                    if i + 1 < len(test_args):
+                        file_operands.append(test_args[i + 1])
+                        i += 2
+                        continue
+                elif a in BINARY_FILE_TESTS:
+                    if i > 0:
+                        file_operands.append(test_args[i - 1])
+                    if i + 1 < len(test_args):
+                        file_operands.append(test_args[i + 1])
+                        i += 2
+                        continue
+                i += 1
+
+            for f_op in file_operands:
+                if f_op in ('/dev/null', '/dev/zero', '/dev/stdin', '-'):
+                    continue
+                if written_files:
+                    norm_fop = os.path.normpath(expand_path(f_op, cwd))
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_fop == norm_wf or norm_fop.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_fop + os.sep):
+                            return 'force_ask', f"test/[ reading file modified or updated earlier in the command line requires confirmation: {f_op}"
+                if is_sensitive_credential_path(f_op, cwd):
+                    return 'deny', f"test/[ targeting sensitive credential or key is forbidden: {f_op}"
+                if not is_path_in_workspaces(f_op, workspace_paths, cwd):
+                    return 'ask', f"test/[ testing file outside workspace requires approval: {f_op}"
+
+            return 'allow', 'Safe test/[ evaluation'
         # File inspection commands must prompt if args contain variable, command substitutions, or wildcards
         if base_cmd in {'cat', 'head', 'tail', 'wc', 'file', 'stat', 'cmp', 'uniq', 'cut', 'column', 'jq', 'date'}:
             for a in args:
@@ -3802,6 +3866,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
 
+        if written_files:
+            for p in all_paths:
+                p_norm = os.path.normpath(expand_path(p, cwd))
+                for wf in written_files:
+                    wf_norm = os.path.normpath(wf)
+                    if p_norm == wf_norm or p_norm.startswith(wf_norm + os.sep) or wf_norm.startswith(p_norm + os.sep):
+                        return 'force_ask', f"{base_cmd} path was created or modified earlier in the command line: {p}"
+
         if base_cmd == 'cp':
             has_link_flag = any(
                 a in ('-l', '--link', '-s', '--symbolic-link') or
@@ -3819,13 +3891,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if is_git_admin_path(src, cwd):
                 return 'ask', f"{base_cmd} accessing git administrative file requires confirmation: {src}"
 
-        for ed in effective_dests:
+        for ed in [dest_dir] + effective_dests:
             ed_norm = expand_path(ed, cwd)
-            if os.path.islink(ed_norm):
-                link_target = str(Path(ed_norm).resolve())
-                if not is_path_in_workspaces(link_target, workspace_paths, cwd) or is_sensitive_credential_path(link_target, cwd) or is_system_write_path(link_target, cwd):
-                    return 'deny', f"{base_cmd} destination is a symlink pointing to sensitive or external target: {ed}"
-                return 'ask', f"{base_cmd} destination is an existing symlink: {ed}"
+            curr = Path(ed_norm)
+            while str(curr) != str(curr.parent):
+                if curr.is_symlink():
+                    try:
+                        link_target = str(curr.resolve())
+                        if not is_path_in_workspaces(link_target, workspace_paths, cwd) or is_sensitive_credential_path(link_target, cwd) or is_system_write_path(link_target, cwd):
+                            return 'deny', f"{base_cmd} destination contains symlink pointing to sensitive or external target: {ed}"
+                        return 'ask', f"{base_cmd} destination contains an existing symlink: {ed}"
+                    except Exception:
+                        return 'ask', f"{base_cmd} destination contains an unresolvable symlink: {ed}"
+                curr = curr.parent
 
         return 'allow', f"Safe file {base_cmd} within workspace"
 
@@ -3833,6 +3911,13 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         targets = [a for a in args if not a.startswith('-')]
         if any(is_git_admin_path(t, cwd) for t in targets):
             return 'ask', f"{base_cmd} targeting git administrative path requires confirmation: {' '.join(cmd_tokens)}"
+        if written_files:
+            for t in targets:
+                t_norm = os.path.normpath(expand_path(t, cwd))
+                for wf in written_files:
+                    wf_norm = os.path.normpath(wf)
+                    if t_norm == wf_norm or t_norm.startswith(wf_norm + os.sep) or wf_norm.startswith(t_norm + os.sep):
+                        return 'force_ask', f"{base_cmd} target path was created or modified earlier in the command line: {t}"
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_system_write_path(t, cwd) for t in targets):
             return 'allow', f"Safe directory/file creation within workspace: {base_cmd}"
 
