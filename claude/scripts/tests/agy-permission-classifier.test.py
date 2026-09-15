@@ -5529,6 +5529,55 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         finally:
             shutil.rmtree(str(bundle_sec), ignore_errors=True)
 
+        # 46. Executable lookup invalidated after earlier command writes
+        setup_sh = ws_dir / 'setup.sh'
+        setup_sh.write_text('#!/bin/sh\necho payload\n')
+        setup_sh.chmod(0o755)
+        path_with_ws = f"{str(ws_dir)}:{os.environ.get('PATH', '')}"
+        res_cp_ls_shadow = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp setup.sh ls; ls', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        }, env={'PATH': path_with_ws})
+        self.assertEqual(res_cp_ls_shadow['decision'], 'force_ask', f"Expected force_ask for cp setup.sh ls; ls with workspace prepended to PATH, got: {res_cp_ls_shadow}")
+        self.assertIn('created or modified earlier', res_cp_ls_shadow['reason'].lower())
+
+        res_cp_direct_exec = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp setup.sh ls; ./ls', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cp_direct_exec['decision'], 'force_ask', f"Expected force_ask for cp setup.sh ls; ./ls, got: {res_cp_direct_exec}")
+        self.assertIn('created or modified earlier', res_cp_direct_exec['reason'].lower())
+
+        bin_dir = ws_dir / 'bin'
+        bin_dir.mkdir(exist_ok=True)
+        path_with_bin = f"{str(bin_dir)}:{os.environ.get('PATH', '')}"
+        res_cp_bin_ls = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp setup.sh bin/ls; ls', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        }, env={'PATH': path_with_bin})
+        self.assertEqual(res_cp_bin_ls['decision'], 'force_ask', f"Expected force_ask for cp setup.sh bin/ls; ls with bin prepended to PATH, got: {res_cp_bin_ls}")
+        self.assertIn('created or modified earlier', res_cp_bin_ls['reason'].lower())
+
+        res_mkdir_bin_ls = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'mkdir -p bin && cp setup.sh bin/ls; ls', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        }, env={'PATH': path_with_bin})
+        self.assertEqual(res_mkdir_bin_ls['decision'], 'force_ask', f"Expected force_ask for mkdir -p bin && cp setup.sh bin/ls; ls, got: {res_mkdir_bin_ls}")
+        self.assertIn('created or modified earlier', res_mkdir_bin_ls['reason'].lower())
+
+        res_cp_gcc_go = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp setup.sh gcc; go build .', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cp_gcc_go['decision'], 'force_ask', f"Expected force_ask for cp setup.sh gcc; go build ., got: {res_cp_gcc_go}")
+        self.assertIn('created or modified earlier', res_cp_gcc_go['reason'].lower())
+
+        res_touch_ls_normal = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'touch file.txt; ls', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_touch_ls_normal['decision'], 'allow', f"Expected allow for touch file.txt; ls, got: {res_touch_ls_normal}")
+
 
 if __name__ == '__main__':
     unittest.main()

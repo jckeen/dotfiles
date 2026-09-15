@@ -2508,6 +2508,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
     # Resolve executable: prevent ./malicious/ls or workspace/untrusted PATH overrides
     if '/' in raw_cmd:
         resolved_exe = expand_path(raw_cmd, cwd)
+        if written_files:
+            for wf in written_files:
+                if resolved_exe == wf or resolved_exe.startswith(wf + os.sep):
+                    return 'force_ask', f"Executable was created or modified earlier in the command line: {raw_cmd} ({resolved_exe})"
         cand_base = os.path.basename(resolved_exe)
         if not is_trusted_executable_path(resolved_exe, workspace_paths, cwd, cand_base):
             return 'force_ask', f"Running non-system executable requires confirmation: {raw_cmd}"
@@ -2516,7 +2520,32 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             return 'force_ask', f"Auto-approved command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_exe})"
         base_cmd = cand_base
     else:
-        resolved_path = shutil.which(raw_cmd)
+        path_env = os.environ.get('PATH', '')
+        path_dirs = path_env.split(os.pathsep) if path_env else []
+        if not path_dirs:
+            path_dirs = os.defpath.split(os.pathsep)
+
+        resolved_path = None
+        for d in path_dirs:
+            dir_path = expand_path(d, cwd) if d else cwd
+            cand = expand_path(os.path.join(dir_path, raw_cmd), cwd)
+            if written_files:
+                for wf in written_files:
+                    if cand == wf or cand.startswith(wf + os.sep):
+                        return 'force_ask', f"Executable was created or modified earlier in the command line: {raw_cmd} ({cand})"
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                resolved_path = cand
+                break
+
+        if not resolved_path:
+            resolved_path = shutil.which(raw_cmd)
+            if resolved_path:
+                norm_resolved = expand_path(resolved_path, cwd)
+                if written_files:
+                    for wf in written_files:
+                        if norm_resolved == wf or norm_resolved.startswith(wf + os.sep):
+                            return 'force_ask', f"Executable was created or modified earlier in the command line: {raw_cmd} ({resolved_path})"
+
         if resolved_path:
             if not is_trusted_executable_path(resolved_path, workspace_paths, cwd, raw_cmd):
                 return 'force_ask', f"Running untrusted or shadowed executable requires confirmation: {raw_cmd} ({resolved_path})"
@@ -5050,6 +5079,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     # When helper is not explicitly set, validate default helper binaries resolved through PATH or workspace
                     for cand in default_candidates:
                         cand_local = expand_path(cand, cwd)
+                        if written_files:
+                            norm_local = os.path.normpath(cand_local)
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if norm_local == norm_wf or norm_local.startswith(norm_wf + os.sep):
+                                    return 'force_ask', f"go {args[0]} default {helper_var} executable ({cand}) created or modified earlier in command line requires confirmation: {cand_local}"
                         if os.path.isfile(cand_local) and not is_trusted_executable_path(cand_local, workspace_paths, cwd, cand):
                             return 'force_ask', f"go {args[0]} workspace-controlled default {helper_var} executable ({cand}) requires confirmation: {cand_local}"
                         resolved_cand = shutil.which(cand)
