@@ -5329,6 +5329,51 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_cfg_includes['decision'], 'deny', f"Expected deny for git config --includes exposing credential URL, got: {res_cfg_includes}")
         self.assertIn('credential', res_cfg_includes['reason'].lower())
 
+        # 35. git worktree add with core.hooksPath pointing into worktree triggers force_ask
+        subprocess.run(['git', 'checkout', '-b', 'wt_hook_branch'], cwd=str(ws_dir), check=True, capture_output=True)
+        wt_hooks_dir = ws_dir / 'hooks'
+        wt_hooks_dir.mkdir(exist_ok=True)
+        wt_hook_file = wt_hooks_dir / 'post-checkout'
+        wt_hook_file.write_text('#!/bin/sh\nexit 0\n')
+        wt_hook_file.chmod(0o755)
+        subprocess.run(['git', 'add', '.'], cwd=str(ws_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add hook for worktree'], cwd=str(ws_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'checkout', 'master'], cwd=str(ws_dir), check=True, capture_output=True)
+        shutil.rmtree(str(wt_hooks_dir), ignore_errors=True)
+        subprocess.run(['git', 'config', 'core.hooksPath', str(ws_dir / 'child' / 'hooks')], cwd=str(ws_dir), check=True)
+        try:
+            res_wt_hook = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git worktree add child wt_hook_branch', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_wt_hook['decision'], 'force_ask', f"Expected force_ask for git worktree add checking out hook into core.hooksPath, got: {res_wt_hook}")
+            self.assertIn('hook', res_wt_hook['reason'].lower())
+        finally:
+            subprocess.run(['git', 'config', '--unset', 'core.hooksPath'], cwd=str(ws_dir), check=True)
+            subprocess.run(['git', 'branch', '-D', 'wt_hook_branch'], cwd=str(ws_dir), check=True, capture_output=True)
+
+        # 36. git fetch with configured refspec updating local branches triggers force_ask
+        subprocess.run(['git', 'config', 'remote.origin.fetch', '+refs/heads/main:refs/heads/main'], cwd=str(ws_dir), check=True)
+        try:
+            res_fetch_local = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git fetch origin', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_fetch_local['decision'], 'force_ask', f"Expected force_ask for git fetch with configured refspec targeting local branch, got: {res_fetch_local}")
+            self.assertIn('refspec', res_fetch_local['reason'].lower())
+        finally:
+            subprocess.run(['git', 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'], cwd=str(ws_dir), check=True)
+
+        # 37. Short wc option abbreviation --files= validates file list
+        wc_paths_file = ws_dir / 'wc_short_paths.txt'
+        wc_paths_file.write_bytes(b'.env\0')
+        res_wc_short = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'wc --files={wc_paths_file.name}', 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_wc_short['decision'], 'deny', f"Expected deny for wc --files= targeting sensitive path, got: {res_wc_short}")
+        self.assertIn('sensitive', res_wc_short['reason'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()

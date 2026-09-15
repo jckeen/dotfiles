@@ -2838,6 +2838,30 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             refspecs = [a for a in pos_args if a != 'origin']
             if refspecs or any(a.startswith('+') for a in args):
                 return 'force_ask', f"Git fetch with refspecs requires confirmation: {' '.join(cmd_tokens)}"
+
+            # Inspect configured remote fetch refspecs
+            res_fetch_cfg = git_run_probe(['config', '--get-regexp', r'^remote\..*\.fetch$'], cwd=cwd)
+            if res_fetch_cfg and res_fetch_cfg.returncode == 0 and res_fetch_cfg.stdout:
+                for line in res_fetch_cfg.stdout.splitlines():
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        cfg_refspec = parts[1].strip()
+                        # Normal safe fetch refspec is [+]<src>:refs/remotes/<remote>/<dst>
+                        if ':' in cfg_refspec:
+                            _, dst_ref = cfg_refspec.split(':', 1)
+                            clean_dst = dst_ref.strip()
+                            if not clean_dst.startswith('refs/remotes/'):
+                                return 'force_ask', f"git fetch with configured refspec updating non-remote ref requires confirmation: {cfg_refspec}"
+                        else:
+                            return 'force_ask', f"git fetch with configured refspec requires confirmation: {cfg_refspec}"
+
+            res_prune = git_run_probe(['config', '--bool', 'fetch.prune'], cwd=cwd)
+            if res_prune and res_prune.returncode == 0 and res_prune.stdout.strip() == 'true':
+                return 'force_ask', f"git fetch with configured fetch.prune requires confirmation: {' '.join(cmd_tokens)}"
+            res_prune_tags = git_run_probe(['config', '--bool', 'fetch.pruneTags'], cwd=cwd)
+            if res_prune_tags and res_prune_tags.returncode == 0 and res_prune_tags.stdout.strip() == 'true':
+                return 'force_ask', f"git fetch with configured fetch.pruneTags requires confirmation: {' '.join(cmd_tokens)}"
+
             return 'allow', 'Safe git fetch'
 
         # Destructive or state-discarding git commands
@@ -3103,10 +3127,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if 'add' in args:
                     if any(a in ('-B', '-f', '--force') or a.startswith(('-B', '-f', '--force')) for a in args):
                         return 'force_ask', f"git worktree add with branch reset or force requires confirmation: {' '.join(cmd_tokens)}"
-                    if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction'), written_files=written_files):
-                        return 'force_ask', f"git worktree add with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
-                    if git_has_filter_configured(cwd):
-                        return 'force_ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
                     sub_args = args[args.index('add') + 1:]
                     dir_operands = []
                     skip_next = False
@@ -3121,14 +3141,56 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             continue
                         if not a.startswith('-'):
                             dir_operands.append(a)
-                    if dir_operands:
-                        target_dir = dir_operands[0]
+                    target_dir = dir_operands[0] if dir_operands else None
+                    target_ref = dir_operands[1] if len(dir_operands) >= 2 else 'HEAD'
+                    if git_has_active_hooks(cwd, ('post-checkout', 'post-index-change', 'reference-transaction'), written_files=written_files, target_ref=target_ref):
+                        return 'force_ask', f"git worktree add with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
+                    if git_has_fsmonitor_configured(cwd):
+                        return 'force_ask', f"git worktree add with configured core.fsmonitor hook requires confirmation: {' '.join(cmd_tokens)}"
+                    if git_has_filter_configured(cwd):
+                        return 'force_ask', f"git worktree add with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
+                    if target_dir:
+                        target_dir_abs = os.path.normpath(expand_path(target_dir, cwd))
                         if is_sensitive_credential_path(target_dir, cwd) or matches_sensitive_pattern(target_dir):
                             return 'deny', f"git worktree add targeting sensitive path is forbidden: {target_dir}"
                         if is_git_admin_path(target_dir, cwd):
                             return 'force_ask', f"git worktree add targeting git administrative path requires confirmation: {target_dir}"
                         if not is_path_in_workspaces(target_dir, workspace_paths, cwd) or is_system_write_path(target_dir, cwd):
                             return 'force_ask', f"git worktree add outside workspace requires approval: {target_dir}"
+
+                        res_hp = git_run_probe(['config', '--get', 'core.hooksPath'], cwd=cwd)
+                        raw_hp = res_hp.stdout.strip() if res_hp and res_hp.returncode == 0 and res_hp.stdout.strip() else None
+                        res_git_hooks = git_run_probe(['rev-parse', '--git-path', 'hooks'], cwd=cwd)
+                        norm_hooks = None
+                        if res_git_hooks and res_git_hooks.returncode == 0 and res_git_hooks.stdout.strip():
+                            h_cand = res_git_hooks.stdout.strip()
+                            norm_hooks = os.path.normpath(h_cand if os.path.isabs(h_cand) else os.path.join(cwd or os.getcwd(), h_cand))
+                        hooks_to_probe = []
+                        if raw_hp and not os.path.isabs(raw_hp):
+                            hooks_to_probe.append(os.path.normpath(raw_hp))
+                        if norm_hooks and (norm_hooks == target_dir_abs or norm_hooks.startswith(target_dir_abs + os.sep)):
+                            hooks_to_probe.append(os.path.normpath(os.path.relpath(norm_hooks, target_dir_abs)))
+                        for h_dir in hooks_to_probe:
+                            for h in ('post-checkout', 'post-index-change', 'reference-transaction'):
+                                rel_hook = os.path.normpath(os.path.join(h_dir, h))
+                                res_tree = git_run_probe(['ls-tree', target_ref, '--', rel_hook], cwd=cwd)
+                                if res_tree and res_tree.returncode == 0 and res_tree.stdout.strip():
+                                    return 'force_ask', f"git worktree add checks out repository hook into configured hooks path ({rel_hook}): {' '.join(cmd_tokens)}"
+
+                    res_repo = git_run_probe(['rev-parse', '--is-inside-work-tree'], cwd=cwd)
+                    if res_repo and res_repo.returncode == 0:
+                        res_ref = git_run_probe(['rev-parse', '--verify', f'{target_ref}^{{commit}}'], cwd=cwd)
+                        if res_ref and res_ref.returncode == 0:
+                            res_tree_all = git_run_probe(['ls-tree', '-r', '--name-only', target_ref], cwd=cwd)
+                            if res_tree_all and res_tree_all.returncode == 0 and res_tree_all.stdout:
+                                for f in res_tree_all.stdout.splitlines():
+                                    f = f.strip()
+                                    if not f:
+                                        continue
+                                    if is_sensitive_credential_path(f, cwd) or matches_sensitive_pattern(f):
+                                        return 'deny', f"git worktree add checks out sensitive credential file: {f}"
+                                    if is_security_guard_path(f, cwd):
+                                        return 'force_ask', f"git worktree add checks out protected security guard: {f}"
                     return 'allow', 'Safe git worktree add within workspace'
                 return 'force_ask', f"Git worktree modification requires confirmation: {' '.join(cmd_tokens)}"
             return 'allow', 'Safe git worktree query'
@@ -4071,7 +4133,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                         continue
                     if a.startswith('--'):
                         opt = a.split('=', 1)[0]
-                        if '--files0-from'.startswith(opt) and len(opt) >= 8:
+                        if '--files0-from'.startswith(opt) and len(opt) >= 3:
                             if '=' in a:
                                 files0_from = a.split('=', 1)[1]
                                 i += 1
