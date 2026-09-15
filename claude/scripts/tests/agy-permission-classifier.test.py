@@ -4201,6 +4201,64 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_show_blob_only['decision'], 'allow')
 
+    def test_round_46_hardening(self):
+        """Verify Round 46 security hardening:
+        1. grep --dereference-recursive recognized as recursive search.
+        2. git log -- -P does not bypass pager detection.
+        3. sort -o output tracked in written_files.
+        4. git -C properly updates working tree for written_files tracking.
+        5. wc --files0-f= abbreviated flag inspected properly.
+        """
+        git_dir = Path(self.test_ws) / 'r46_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+
+        # 1. grep --dereference-recursive
+        res_grep = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'grep --dereference-recursive SECRET .', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_grep['decision'], 'ask')
+        self.assertIn('recursive', res_grep['reason'].lower())
+
+        # 2. git log -- -P with configured pager
+        subprocess.run(['git', 'config', 'core.pager', 'cat'], cwd=str(git_dir), check=True)
+        res_pager_pathspec = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -- -P', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_pager_pathspec['decision'], 'force_ask')
+        self.assertIn('pager', res_pager_pathspec['reason'])
+
+        # 3. sort -o output tracked in written_files
+        (git_dir / 'input.txt').write_text('.env\0')
+        (git_dir / 'paths.txt').write_text('README.md\0')
+        res_sort_chain = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'sort input.txt -o paths.txt; sort --files0-from=paths.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_sort_chain['decision'], 'force_ask')
+        self.assertIn('modified', res_sort_chain['reason'])
+
+        # 4. git -C repo switch write tracking
+        res_git_c_switch = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'git -C {git_dir.name} switch --no-guess feature; cat {git_dir.name}/public.txt', 'Cwd': str(git_dir.parent)}},
+            'workspacePaths': [str(git_dir.parent)],
+        })
+        self.assertEqual(res_git_c_switch['decision'], 'force_ask')
+        self.assertIn('earlier', res_git_c_switch['reason'])
+
+        # 5. wc --files0-f= abbreviation
+        (git_dir / 'wc_paths.txt').write_bytes(b'/etc/shadow\x00')
+        res_wc_abbr = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'wc --files0-f=wc_paths.txt', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wc_abbr['decision'], 'deny')
+        self.assertIn('sensitive', res_wc_abbr['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()

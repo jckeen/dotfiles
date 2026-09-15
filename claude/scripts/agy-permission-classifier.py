@@ -1446,7 +1446,7 @@ def parse_grep_args(args):
         if a.startswith('--'):
             opt_name = a.split('=', 1)[0]
             val = a.split('=', 1)[1] if '=' in a else None
-            if opt_name == '--recursive' or (len(opt_name) >= 5 and '--recursive'.startswith(opt_name)):
+            if opt_name in ('--recursive', '--dereference-recursive') or (len(opt_name) >= 3 and ('--recursive'.startswith(opt_name) or '--dereference-recursive'.startswith(opt_name))):
                 is_recursive = True
             elif opt_name == '--directories' or (len(opt_name) >= 5 and '--directories'.startswith(opt_name)):
                 dir_val = val
@@ -2020,7 +2020,10 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
         )
         if has_paginate:
             return 'force_ask', f"git with pagination flag forces configured pager execution: {' '.join(cmd_tokens)}"
-        has_no_pager = any(a in ('--no-pager', '-P') for a in tokens)
+        has_no_pager = any(
+            a in ('--no-pager', '-P') or (a.startswith('--') and '--no-pager'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)
+            for a in args[:git_sub_idx]
+        )
         if not has_no_pager and git_has_pager_configured(cwd, git_sub):
             return 'force_ask', f"git {git_sub} with configured pager requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -3176,12 +3179,18 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 i = 0
                 while i < len(args):
                     a = args[i]
-                    if a == '--files0-from' and i + 1 < len(args):
-                        files0_from = args[i + 1]
-                        i += 2
-                        continue
-                    elif a.startswith('--files0-from='):
-                        files0_from = a.split('=', 1)[1]
+                    if a.startswith('--'):
+                        opt = a.split('=', 1)[0]
+                        if '--files0-from'.startswith(opt) and len(opt) >= 8:
+                            if '=' in a:
+                                files0_from = a.split('=', 1)[1]
+                                i += 1
+                            elif i + 1 < len(args):
+                                files0_from = args[i + 1]
+                                i += 2
+                            else:
+                                i += 1
+                            continue
                         i += 1
                         continue
                     elif not a.startswith('-'):
@@ -4179,23 +4188,82 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                 written_files.add(expand_path(target_dir, cwd))
             elif pos:
                 written_files.add(expand_path(pos[-1], cwd))
+        elif sub_base == 'sort':
+            i = 0
+            while i < len(sub[1:]):
+                a = unquote_token(sub[1:][i])
+                if a == '--':
+                    break
+                if a in ('-o', '--output') and i + 1 < len(sub[1:]):
+                    written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                    i += 2
+                    continue
+                if a.startswith('--'):
+                    opt = a.split('=', 1)[0]
+                    if '--output'.startswith(opt) and len(opt) >= 4:
+                        if '=' in a:
+                            written_files.add(expand_path(a.split('=', 1)[1], cwd))
+                        elif i + 1 < len(sub[1:]):
+                            written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                            i += 1
+                        i += 1
+                        continue
+                elif a.startswith('-o') and len(a) > 2 and not a.startswith('--'):
+                    val = a[2:].lstrip('=')
+                    if val:
+                        written_files.add(expand_path(val, cwd))
+                    elif i + 1 < len(sub[1:]):
+                        written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                        i += 1
+                    i += 1
+                    continue
+                elif a.startswith('-') and 'o' in a and not a.startswith('--'):
+                    o_idx = a.index('o')
+                    val = a[o_idx + 1:].lstrip('=')
+                    if val:
+                        written_files.add(expand_path(val, cwd))
+                    elif i + 1 < len(sub[1:]):
+                        written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                        i += 1
+                    i += 1
+                    continue
+                i += 1
         elif sub_base == 'git':
             sub_args = [unquote_token(a) for a in sub[1:]]
             git_sub = None
-            for a in sub_args:
+            git_sub_idx = -1
+            skip_next = False
+            effective_git_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+            for idx, a in enumerate(sub_args):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a == '-C':
+                    if idx + 1 < len(sub_args):
+                        effective_git_cwd = expand_path(sub_args[idx + 1], effective_git_cwd)
+                        skip_next = True
+                    continue
+                if a.startswith('-C') and len(a) > 2 and not a.startswith('--'):
+                    effective_git_cwd = expand_path(a[2:], effective_git_cwd)
+                    continue
+                if a in ('--git-dir', '--work-tree', '--namespace', '-c', '--config-env'):
+                    skip_next = True
+                    continue
+                if a.startswith(('--git-dir=', '--work-tree=', '--namespace=', '-c', '--config-env=')):
+                    continue
                 if not a.startswith('-'):
                     git_sub = a
+                    git_sub_idx = idx
                     break
             if git_sub in ('switch', 'checkout', 'reset', 'restore'):
-                effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
-                res_top = git_run_probe(['rev-parse', '--show-toplevel'], cwd=effective_cwd)
+                res_top = git_run_probe(['rev-parse', '--show-toplevel'], cwd=effective_git_cwd)
                 if res_top and res_top.returncode == 0 and res_top.stdout.strip():
                     written_files.add(os.path.normpath(res_top.stdout.strip()))
                 else:
-                    written_files.add(os.path.normpath(effective_cwd))
+                    written_files.add(os.path.normpath(effective_git_cwd))
             elif git_sub == 'worktree':
-                if 'add' in sub_args:
-                    add_idx = sub_args.index('add')
+                if git_sub_idx != -1 and 'add' in sub_args[git_sub_idx:]:
+                    add_idx = sub_args.index('add', git_sub_idx)
                     wt_args = sub_args[add_idx + 1:]
                     skip_next = False
                     for wa in wt_args:
@@ -4208,7 +4276,7 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                         if wa.startswith(('-b', '-B', '--reason=')):
                             continue
                         if not wa.startswith('-'):
-                            written_files.add(expand_path(wa, cwd))
+                            written_files.add(expand_path(wa, effective_git_cwd))
                             break
 
     for v, r in verdicts:
