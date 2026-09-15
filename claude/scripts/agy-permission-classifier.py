@@ -1648,6 +1648,66 @@ def find_npx_workspace_executable(tool, cwd, workspace_paths):
     return None
 
 
+def normalize_shell_continuations(cmd_str: str) -> str:
+    """Normalize shell line continuations (<backslash><newline>) outside single quotes.
+
+    In POSIX shells and bash, an unquoted or double-quoted backslash followed immediately
+    by a newline is completely removed along with the newline before expansions,
+    substitutions, and tokenization occur.
+    """
+    if not cmd_str or ('\n' not in cmd_str and '\r' not in cmd_str):
+        return cmd_str
+
+    out = []
+    i = 0
+    n = len(cmd_str)
+    in_single_quote = False
+    in_double_quote = False
+
+    while i < n:
+        c = cmd_str[i]
+        if in_single_quote:
+            out.append(c)
+            if c == "'":
+                in_single_quote = False
+            i += 1
+            continue
+
+        if c == "'":
+            in_single_quote = True
+            out.append(c)
+            i += 1
+            continue
+
+        if c == '"':
+            in_double_quote = not in_double_quote
+            out.append(c)
+            i += 1
+            continue
+
+        if c == '\\':
+            # Check for line continuation: \ followed by \n (or \r\n)
+            if i + 1 < n and cmd_str[i + 1] == '\n':
+                i += 2
+                continue
+            if i + 2 < n and cmd_str[i + 1] == '\r' and cmd_str[i + 2] == '\n':
+                i += 3
+                continue
+            # Escaped character: preserve \ and the following character
+            out.append(c)
+            if i + 1 < n:
+                out.append(cmd_str[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+
+        out.append(c)
+        i += 1
+
+    return ''.join(out)
+
+
 def split_unquoted_shell_commands(cmd_str):
     """Split a shell command line string into individual subcommand strings on unquoted operators.
 
@@ -1659,6 +1719,9 @@ def split_unquoted_shell_commands(cmd_str):
       - pipeline_links is a list of tuples: (subcommand_index, operator)
     Returns (None, None) on syntax errors, unclosed quotes, or dangling operators.
     """
+    if not isinstance(cmd_str, str):
+        return None, None
+    cmd_str = normalize_shell_continuations(cmd_str)
     in_single_quote = False
     in_double_quote = False
     escaped = False
@@ -2095,25 +2158,38 @@ def parse_grep_args(args):
     return has_pattern, pattern_files, is_recursive, positionals
 
 
+RG_OPTS_WITH_ARG = {
+    '-e', '--regexp',
+    '-f', '--file',
+    '-m', '--max-count',
+    '-d', '--max-depth',
+    '-A', '--after-context',
+    '-B', '--before-context',
+    '-C', '--context',
+    '-t', '--type',
+    '-T', '--type-not',
+    '-g', '--glob',
+    '--iglob',
+    '-r', '--replace',
+    '-E', '--encoding',
+    '-M', '--max-columns',
+    '--color',
+    '--pre', '--hostname-bin',
+    '--pre-glob',
+    '--ignore-file', '--max-filesize',
+    '--max-columns-preview',
+    '--sort', '--sort-by',
+    '--sortr', '--sortr-by',
+    '--colors', '--type-add', '--type-clear',
+    '--context-separator', '--path-separator',
+    '--field-context-separator', '--field-match-separator',
+    '--regex-size-limit', '--dfa-size-limit',
+    '--hyperlink-format', '--generate',
+}
+
+
 def parse_rg_args(args):
     """Parse rg arguments to identify pattern flags, pattern files, and positional operands."""
-    RG_OPTS_WITH_ARG = {
-        '-e', '--regexp',
-        '-f', '--file',
-        '-m', '--max-count',
-        '-A', '--after-context',
-        '-B', '--before-context',
-        '-C', '--context',
-        '-t', '--type',
-        '-T', '--type-not',
-        '-g', '--glob',
-        '-r', '--replace',
-        '--pre', '--hostname-bin',
-        '--ignore-file', '--max-filesize',
-        '--max-depth', '--encoding',
-        '--sort', '--sort-by',
-        '--colors', '--type-add',
-    }
     has_pattern = False
     pattern_files = []
     positionals = []
@@ -2159,7 +2235,7 @@ def parse_rg_args(args):
             j = 1
             while j < len(a):
                 c = a[j]
-                if c in ('e', 'f', 'm', 'A', 'B', 'C', 't', 'T', 'g', 'r'):
+                if c in ('e', 'f', 'm', 'd', 'A', 'B', 'C', 't', 'T', 'g', 'r', 'E', 'M'):
                     if j + 1 < len(a):
                         arg_val = a[j + 1:]
                         if arg_val.startswith('='):
@@ -2186,13 +2262,45 @@ def parse_rg_args(args):
     return has_pattern, pattern_files, positionals
 
 
+def is_ripgrep_no_config(args):
+    """Check if --no-config is passed as a valid option to rg (before '--' and not as an option argument)."""
+    i = 0
+    n = len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            break
+        if a == '--no-config' or (a.startswith('--') and '--no-config'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 6):
+            return True
+        if a.startswith('--'):
+            opt_name = a.split('=', 1)[0]
+            val = a.split('=', 1)[1] if '=' in a else None
+            if val is None and (opt_name in RG_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in RG_OPTS_WITH_ARG if long_opt.startswith('--'))):
+                if i + 1 < n:
+                    i += 1
+            i += 1
+            continue
+        elif a.startswith('-') and len(a) > 1 and not a[1:].isdigit():
+            j = 1
+            while j < len(a):
+                c = a[j]
+                if c in ('e', 'f', 'm', 'd', 'A', 'B', 'C', 't', 'T', 'g', 'r', 'E', 'M'):
+                    if j + 1 < len(a):
+                        pass
+                    elif i + 1 < n:
+                        i += 1
+                    break
+                j += 1
+            i += 1
+            continue
+        else:
+            i += 1
+    return False
+
+
 def load_ripgrep_config_tokens(args, cwd=None, written_files=None):
     """Load and validate tokens from RIPGREP_CONFIG_PATH if applicable."""
-    has_no_config = any(
-        a == '--no-config' or (a.startswith('--') and '--no-config'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 6)
-        for a in args
-    )
-    if has_no_config:
+    if is_ripgrep_no_config(args):
         return 'allow', None, []
     rg_cfg = os.environ.get('RIPGREP_CONFIG_PATH')
     if not rg_cfg or not rg_cfg.strip():
@@ -3142,6 +3250,8 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             ext_diff_enabled = None
             textconv_enabled = None
             for a in args:
+                if a == '--':
+                    break
                 if is_git_ext_diff_opt(a):
                     ext_diff_enabled = True
                 elif is_git_no_ext_diff_opt(a):
@@ -3171,7 +3281,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git diff with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
             # Inspect file operands and pathspecs for sensitive files and workspace containment
-            is_no_index = any(a == '--no-index' for a in args)
             diff_operands = []
             if '--' in args:
                 idx = args.index('--')
@@ -3179,6 +3288,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 pre_dash = args[1:idx]
             else:
                 pre_dash = args[1:]
+            is_no_index = any(a == '--no-index' for a in pre_dash)
 
             if is_no_index:
                 diff_operands.extend([a for a in pre_dash if not a.startswith('-')])
@@ -3214,16 +3324,17 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if len(args) > 1:
                 stash_sub = args[1]
                 if stash_sub in ('list', 'show'):
-                    has_no_sig = any(a == '--no-show-signature' for a in args)
+                    args_options = args[:args.index('--')] if '--' in args else args
+                    has_no_sig = any(a == '--no-show-signature' for a in args_options)
                     has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
-                                  (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
+                                  (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args_options)
                     if has_sig or (not has_no_sig and git_has_show_signature_configured(cwd)):
                         return 'force_ask', f"git stash {stash_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
-                    if git_has_gpg_program_configured(cwd) and any(a.startswith(('--format=', '--pretty=')) for a in args):
+                    if git_has_gpg_program_configured(cwd) and any(a.startswith(('--format=', '--pretty=')) for a in args_options):
                         return 'force_ask', f"git stash {stash_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
 
-                    has_no_ext = any(a == '--no-ext-diff' for a in args)
-                    has_no_textconv = any(a == '--no-textconv' for a in args)
+                    has_no_ext = any(a == '--no-ext-diff' for a in args_options)
+                    has_no_textconv = any(a == '--no-textconv' for a in args_options)
                     ext_diff_env = os.environ.get('GIT_EXTERNAL_DIFF')
                     if not has_no_ext and ext_diff_env and ext_diff_env.strip():
                         if is_sensitive_credential_path(ext_diff_env, cwd) or matches_sensitive_pattern(ext_diff_env):
@@ -3361,14 +3472,15 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                             return True
                 return False
 
-            has_no_sig = any(a == '--no-show-signature' for a in args)
-            has_sig = git_has_sig_opt(args)
+            args_options = args[:args.index('--')] if '--' in args else args
+            has_no_sig = any(a == '--no-show-signature' for a in args_options)
+            has_sig = git_has_sig_opt(args_options)
             if has_sig or (not has_no_sig and git_sub in {'show', 'log', 'whatchanged'} and git_has_show_signature_configured(cwd)):
                 return 'force_ask', f"git {git_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
-            if git_has_gpg_program_configured(cwd) and git_has_fmt_opt(args):
+            if git_has_gpg_program_configured(cwd) and git_has_fmt_opt(args_options):
                 return 'force_ask', f"git {git_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
-            has_no_ext = any(is_git_no_ext_diff_opt(a) for a in args)
-            has_no_textconv = any(a == '--no-textconv' for a in args)
+            has_no_ext = any(is_git_no_ext_diff_opt(a) for a in args_options)
+            has_no_textconv = any(a == '--no-textconv' for a in args_options)
             ext_diff_env = os.environ.get('GIT_EXTERNAL_DIFF')
             if not has_no_ext and ext_diff_env and ext_diff_env.strip():
                 if is_sensitive_credential_path(ext_diff_env, cwd) or matches_sensitive_pattern(ext_diff_env):
@@ -4500,14 +4612,24 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     has_zip = True
             if has_zip:
                 return 'force_ask', f"rg with compressed file search (-z/--search-zip) invokes external decompressor programs: {' '.join(cmd_tokens)}"
-            if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in all_rg_tokens):
+            rg_options = []
+            for tok in all_rg_tokens:
+                if tok == '--':
+                    break
+                rg_options.append(tok)
+            if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in rg_options):
                 return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
         # Check for unexpanded variables
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
                 return 'ask', f"{base_cmd} with unexpanded variable requires confirmation: {' '.join(cmd_tokens)}"
         # Check for hidden files, un-ignoring, or symlink following (including bundled short flags like -iL, -Lu)
-        if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in args):
+        cli_options = []
+        for a in args:
+            if a == '--':
+                break
+            cli_options.append(a)
+        if any(a.startswith(('--hidden', '--no-ignore', '--follow')) or (a.startswith('-') and not a.startswith('--') and any(c in a for c in ('L', 'u'))) for a in cli_options):
             return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'rg':
             all_rg_tokens = list(rg_cfg_tokens) + list(args)
@@ -5734,6 +5856,7 @@ def extract_parameter_expansions(cmd_str):
     if not cmd_str or not isinstance(cmd_str, str):
         return []
 
+    cmd_str = normalize_shell_continuations(cmd_str)
     expansions = []
     i = 0
     n = len(cmd_str)
@@ -5829,6 +5952,7 @@ def extract_command_substitutions(cmd_str):
     if not cmd_str or not isinstance(cmd_str, str):
         return []
 
+    cmd_str = normalize_shell_continuations(cmd_str)
     substitutions = []
     i = 0
     n = len(cmd_str)
@@ -6011,6 +6135,8 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
 
     if not isinstance(cmd_str, str) or not cmd_str.strip():
         return 'ask', 'Empty command line or invalid type'
+
+    cmd_str = normalize_shell_continuations(cmd_str)
 
     # Check for parameter expansions ${...} that modify shell state or reference sensitive/dangerous targets
     param_expansions = extract_parameter_expansions(cmd_str)

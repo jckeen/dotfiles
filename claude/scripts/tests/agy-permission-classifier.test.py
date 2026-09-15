@@ -5653,6 +5653,44 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_date_bundle_clean['decision'], 'allow', f"Expected allow for date -u, got: {res_date_bundle_clean}")
 
+        # 49. Shell continuations normalize before substitutions and ripgrep positional --no-config
+        cmd_cont = 'true "$' + '\\\n' + '(printf CLASSIFIER_REVIEW_MARKER >&2)"'
+        res_cont = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': cmd_cont, 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_cont['decision'], 'force_ask', f"Expected force_ask for continuation bypass, got: {res_cont}")
+        self.assertIn('substitution', res_cont['reason'].lower())
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+            f.write('--pre /bin/echo\n')
+            rg_cfg_test = f.name
+        try:
+            # Positional --no-config after -- does NOT disable config file loading
+            res_rg_pos = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg needle README.md -- --no-config', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            }, env={'RIPGREP_CONFIG_PATH': rg_cfg_test})
+            self.assertEqual(res_rg_pos['decision'], 'force_ask', f"Expected force_ask for rg with positional --no-config, got: {res_rg_pos}")
+            self.assertIn('preprocessor', res_rg_pos['reason'].lower())
+
+            # Real --no-config option before -- DOES disable config file loading
+            res_rg_opt = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg --no-config needle README.md', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            }, env={'RIPGREP_CONFIG_PATH': rg_cfg_test})
+            self.assertEqual(res_rg_opt['decision'], 'allow', f"Expected allow for rg --no-config, got: {res_rg_opt}")
+
+            # Argument to -e that happens to be --no-config does NOT disable config file loading
+            res_rg_e = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg -e --no-config README.md', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            }, env={'RIPGREP_CONFIG_PATH': rg_cfg_test})
+            self.assertEqual(res_rg_e['decision'], 'force_ask', f"Expected force_ask for rg -e --no-config, got: {res_rg_e}")
+            self.assertIn('preprocessor', res_rg_e['reason'].lower())
+        finally:
+            Path(rg_cfg_test).unlink(missing_ok=True)
+
 
 if __name__ == '__main__':
     unittest.main()
