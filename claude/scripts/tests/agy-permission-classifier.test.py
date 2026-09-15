@@ -2351,9 +2351,8 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         hook_timeout = pre_tool_hooks[0]['hooks'][0]['timeout']
         self.assertGreaterEqual(hook_timeout, 15)
         matcher = pre_tool_hooks[0]['matcher']
-        self.assertIn('send_input', matcher)
-        self.assertIn('manage_task', matcher)
-        self.assertIn('list_dir', matcher)
+        for tool in ('send_input', 'manage_task', 'list_dir'):
+            self.assertTrue(matcher == '.*' or tool in matcher or re.search(matcher, tool))
 
     def test_round_29_hardening(self):
         """Regression tests for Round 29 findings:
@@ -3249,6 +3248,7 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         for group in hooks_data.values():
             if isinstance(group, dict):
                 for hook_entry in group.get('PreToolUse', []):
+                    self.assertEqual(hook_entry.get('matcher'), '.*')
                     for h in hook_entry.get('hooks', []):
                         if 'agy-permission-classifier.py' in h.get('command', ''):
                             cmd_found = True
@@ -3348,6 +3348,38 @@ class TestAgyPermissionClassifier(unittest.TestCase):
             'workspacePaths': [str(git_dir)],
         })
         self.assertEqual(res_grep_bundled_sec['decision'], 'deny')
+
+        # 8. Schedule tool triggers confirmation
+        res_sched = self.run_classifier({
+            'toolCall': {'name': 'schedule', 'args': {'DurationSeconds': 60, 'Prompt': 'check'}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_sched['decision'], 'ask')
+
+        # 9. User-writable executable directories cannot run auto-approved commands without confirmation
+        for cmd in ('git', 'rm', 'find', 'sort', 'grep', 'cargo', 'go'):
+            res_user_bin = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': f'~/.local/bin/{cmd} status' if cmd == 'git' else f'~/.local/bin/{cmd} foo', 'Cwd': str(git_dir)}},
+                'workspacePaths': [str(git_dir)],
+            })
+            self.assertEqual(res_user_bin['decision'], 'force_ask', f"Expected ~/.local/bin/{cmd} to require force_ask, got: {res_user_bin}")
+
+        # 10. Git repository worktree and gitdir validation
+        sub_dir = git_dir / 'sub_dir'
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        res_sub = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(sub_dir)}},
+            'workspacePaths': [str(sub_dir)],
+        })
+        self.assertEqual(res_sub['decision'], 'force_ask')
+
+        subprocess.run(['git', 'config', 'core.worktree', '/tmp/outside_worktree'], cwd=str(git_dir), check=True)
+        res_wt_out = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git status', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_wt_out['decision'], 'force_ask')
+        subprocess.run(['git', 'config', '--unset', 'core.worktree'], cwd=str(git_dir), check=False)
 
 
 if __name__ == '__main__':

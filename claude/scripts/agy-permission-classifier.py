@@ -39,7 +39,7 @@ SAFE_INSPECTION_COMMANDS = {
 }
 
 # Standard directories containing system binaries
-SYSTEM_BIN_DIRS = {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin'}
+SYSTEM_BIN_DIRS = {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin', '/snap/bin', '/usr/games'}
 
 # Safe git subcommands that only inspect state without options
 SAFE_GIT_READ_SUBCOMMANDS = {
@@ -47,6 +47,12 @@ SAFE_GIT_READ_SUBCOMMANDS = {
     'rev-list', 'check-ref-format', 'ls-files',
     'describe', 'cat-file', 'shortlog', 'blame',
     'version',
+}
+
+# Commands that are eligible for auto-approval and must never be shadowed by user-writable binaries
+AUTO_APPROVABLE_COMMANDS = SAFE_INSPECTION_COMMANDS | {
+    'git', 'rm', 'find', 'sort', 'grep', 'egrep', 'fgrep', 'rg', 'ag',
+    'touch', 'mkdir', 'cp', 'mv', 'cargo', 'go',
 }
 
 # Subcommands / script prefixes for package managers that are safe to run (excluding test and build runners)
@@ -97,7 +103,7 @@ SENSITIVE_FILENAMES = {
 SENSITIVE_PATTERNS = (
     '.env*', 'id_rsa*', 'id_ed25519*', 'id_ecdsa*', 'id_dsa*',
     '*.pem', '*.key', 'antigravity-oauth-token',
-    '*shadow*', '*sudoers*', 'hosts.yml',
+    'shadow*', 'gshadow*', 'sudoers*', 'hosts.yml',
 )
 
 # System directories that should never be modified/written to
@@ -741,7 +747,21 @@ def git_probe_staged_sensitive_files(cwd=None, include_unstaged_tracked=False):
     return 'safe'
 
 
-def is_trusted_executable_path(exe_path, workspace_paths, cwd):
+def is_valid_tool_binary_dir(cmd_name, exe_dir):
+    """Check if the binary directory is trusted for auto-approved commands."""
+    if exe_dir in SYSTEM_BIN_DIRS:
+        return True
+    home = os.path.expanduser('~')
+    if cmd_name == 'cargo':
+        return exe_dir == os.path.join(home, '.cargo', 'bin')
+    if cmd_name == 'go':
+        return exe_dir in {os.path.join(home, 'go', 'bin'), '/usr/local/go/bin', '/usr/lib/go/bin'}
+    if cmd_name in ('rg', 'ag'):
+        return exe_dir == os.path.join(home, '.cargo', 'bin')
+    return False
+
+
+def is_trusted_executable_path(exe_path, workspace_paths, cwd, cmd_name=None):
     """Verify that resolved executable is in a system or user toolchain directory and not in workspace or tmp."""
     if not exe_path or not isinstance(exe_path, str):
         return False
@@ -753,8 +773,11 @@ def is_trusted_executable_path(exe_path, workspace_paths, cwd):
         if norm_exe == p or norm_exe.startswith(p + os.sep):
             return False
     exe_dir = os.path.dirname(norm_exe)
-    if exe_dir in SYSTEM_BIN_DIRS or exe_dir in {'/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin', '/snap/bin', '/usr/games'}:
+    if exe_dir in SYSTEM_BIN_DIRS:
         return True
+    # Commands eligible for auto-approval must only originate from system directories or legitimate toolchain dirs
+    if cmd_name in AUTO_APPROVABLE_COMMANDS:
+        return is_valid_tool_binary_dir(cmd_name, exe_dir)
     home = os.path.expanduser('~')
     trusted_exact_bin_dirs = {
         os.path.join(home, '.local', 'bin'),
@@ -1386,21 +1409,21 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
     # Resolve executable: prevent ./malicious/ls or workspace/untrusted PATH overrides
     if '/' in raw_cmd:
         resolved_exe = expand_path(raw_cmd, cwd)
-        if not is_trusted_executable_path(resolved_exe, workspace_paths, cwd):
+        cand_base = os.path.basename(resolved_exe)
+        if not is_trusted_executable_path(resolved_exe, workspace_paths, cwd, cand_base):
             return 'force_ask', f"Running non-system executable requires confirmation: {raw_cmd}"
         exe_dir = os.path.dirname(resolved_exe)
-        cand_base = os.path.basename(resolved_exe)
-        if cand_base in SAFE_INSPECTION_COMMANDS and exe_dir not in SYSTEM_BIN_DIRS and exe_dir not in {'/bin', '/usr/bin', '/usr/local/bin'}:
-            return 'force_ask', f"Running non-system inspection binary requires confirmation: {raw_cmd}"
+        if cand_base in AUTO_APPROVABLE_COMMANDS and not is_valid_tool_binary_dir(cand_base, exe_dir):
+            return 'force_ask', f"Auto-approved command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_exe})"
         base_cmd = cand_base
     else:
         resolved_path = shutil.which(raw_cmd)
         if resolved_path:
-            if not is_trusted_executable_path(resolved_path, workspace_paths, cwd):
+            if not is_trusted_executable_path(resolved_path, workspace_paths, cwd, raw_cmd):
                 return 'force_ask', f"Running untrusted or shadowed executable requires confirmation: {raw_cmd} ({resolved_path})"
             exe_dir = os.path.dirname(resolved_path)
-            if raw_cmd in SAFE_INSPECTION_COMMANDS and exe_dir not in SYSTEM_BIN_DIRS and exe_dir not in {'/bin', '/usr/bin', '/usr/local/bin'}:
-                return 'force_ask', f"Inspection command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_path})"
+            if raw_cmd in AUTO_APPROVABLE_COMMANDS and not is_valid_tool_binary_dir(raw_cmd, exe_dir):
+                return 'force_ask', f"Auto-approved command shadowed by non-system binary requires confirmation: {raw_cmd} ({resolved_path})"
         base_cmd = raw_cmd
 
     # Check for sensitive files or credentials being targeted in arguments
@@ -1553,8 +1576,19 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
         sub_args = args[git_sub_idx:]
 
         # Git repository queries outside declared workspaces require confirmation
-        if git_sub not in {'version', 'check-ref-format'} and not is_path_in_workspaces(cwd, workspace_paths, cwd):
-            return 'force_ask', f"git {git_sub} in directory outside workspace requires confirmation: {cwd}"
+        if git_sub not in {'version', 'check-ref-format'}:
+            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
+                return 'force_ask', f"git {git_sub} in directory outside workspace requires confirmation: {cwd}"
+            res_toplevel = git_run_probe(['rev-parse', '--show-toplevel'], cwd=cwd)
+            if res_toplevel and res_toplevel.returncode == 0 and res_toplevel.stdout.strip():
+                worktree_root = res_toplevel.stdout.strip()
+                if not is_path_in_workspaces(worktree_root, workspace_paths, cwd):
+                    return 'force_ask', f"git {git_sub} repository worktree ({worktree_root}) outside workspace requires confirmation: {cwd}"
+            res_git_dir = git_run_probe(['rev-parse', '--git-dir'], cwd=cwd)
+            if res_git_dir and res_git_dir.returncode == 0 and res_git_dir.stdout.strip():
+                git_dir_path = expand_path(res_git_dir.stdout.strip(), cwd)
+                if not is_path_in_workspaces(git_dir_path, workspace_paths, cwd):
+                    return 'force_ask', f"git {git_sub} repository directory ({git_dir_path}) outside workspace requires confirmation: {cwd}"
 
         # Check for git output options across all git commands (including GNU option abbreviations)
         git_out = None
@@ -1619,7 +1653,16 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
                 return 'ask', f"Git command with shell parameter expansion or substitution requires confirmation: {' '.join(cmd_tokens)}"
 
         # Check git arguments for sensitive file paths or <rev>:<path> expressions targeting sensitive files
+        skip_next = False
         for a in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if git_sub in ('commit', 'tag') and a in ('-m', '--message'):
+                skip_next = True
+                continue
+            if git_sub in ('commit', 'tag') and (a.startswith('-m') or a.startswith('--message=')):
+                continue
             clean_a = a.split(':', 1)[1] if (':' in a and not a.startswith(('http:', 'https:', 'ssh:', 'git:'))) else a
             if not clean_a.startswith('-') and (matches_sensitive_pattern(clean_a) or is_sensitive_credential_path(clean_a, cwd)):
                 return "deny", "Forbidden sensitive path"
@@ -1934,8 +1977,6 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0):
 
         # Git show, log, blame, etc. run configured textconv drivers or signature verification by default
         if git_sub in {'show', 'log', 'blame', 'whatchanged', 'format-patch'}:
-            if not is_path_in_workspaces(cwd, workspace_paths, cwd):
-                return 'force_ask', f"git {git_sub} in directory outside workspace requires confirmation: {cwd}"
             has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
                           (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
             if has_sig:
@@ -3253,6 +3294,8 @@ def main():
                 decision, reason = 'allow', 'Terminating background task is safe'
             else:
                 decision, reason = 'ask', f"manage_task with action '{action}' requires confirmation"
+        elif tool_name == 'schedule':
+            decision, reason = 'ask', 'Creating a scheduled timer or recurring job requires confirmation'
         else:
             decision, reason = 'ask', f"Tool {tool_name} requires confirmation"
 
