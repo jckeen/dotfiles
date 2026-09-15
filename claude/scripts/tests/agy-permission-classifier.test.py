@@ -5171,6 +5171,51 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_cat_dashdash['decision'], 'ask', f"Expected ask for cat targeting file outside workspace after --, got: {res_cat_dashdash}")
         self.assertIn('outside workspace', res_cat_dashdash['reason'])
 
+        # 26. Inline assignments do not bypass compound-command write tracking
+        outside_dir = ws_dir.parent / 'outside_victim_dir'
+        outside_dir.mkdir(exist_ok=True)
+        try:
+            parent_dir = ws_dir / 'parent_sym'
+            parent_dir.mkdir(exist_ok=True)
+            link_path = parent_dir / 'link'
+            if not link_path.exists():
+                os.symlink(str(outside_dir), str(link_path))
+            res_inline_mv = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'CI=1 mv parent_sym renamed_sym; echo x > renamed_sym/link/victim', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_inline_mv['decision'], 'force_ask', f"Expected force_ask for inline assignment write tracking bypass, got: {res_inline_mv}")
+            self.assertIn('earlier in the command line', res_inline_mv['reason'])
+        finally:
+            shutil.rmtree(str(outside_dir), ignore_errors=True)
+
+        # 27. Cargo fmt validates cargo-fmt helper resolution
+        bin_dir = ws_dir / 'bin'
+        bin_dir.mkdir(exist_ok=True)
+        fake_cargo_fmt = bin_dir / 'cargo-fmt'
+        fake_cargo_fmt.write_text('#!/bin/sh\nexit 0\n')
+        fake_cargo_fmt.chmod(0o755)
+        old_path_cf = os.environ.get('PATH', '')
+        try:
+            os.environ['PATH'] = str(bin_dir) + os.pathsep + old_path_cf
+            res_cargo_fmt_ws = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cargo fmt', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_cargo_fmt_ws['decision'], 'force_ask', f"Expected force_ask for cargo fmt with workspace cargo-fmt, got: {res_cargo_fmt_ws}")
+            self.assertIn('cargo-fmt', res_cargo_fmt_ws['reason'])
+        finally:
+            os.environ['PATH'] = old_path_cf
+            fake_cargo_fmt.unlink(missing_ok=True)
+
+        # 28. Bracket pathspecs in git add cannot stage sensitive files
+        res_git_bracket_env = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git add '[.]en[vx]'", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_git_bracket_env['decision'], 'deny', f"Expected deny for bracket pathspec matching sensitive file, got: {res_git_bracket_env}")
+        self.assertIn('sensitive', res_git_bracket_env['reason'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()

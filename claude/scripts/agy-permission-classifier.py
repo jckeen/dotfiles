@@ -302,6 +302,17 @@ def matches_sensitive_pattern(filename):
         return True
     if any(fnmatch.fnmatch(basename, pat) for pat in SENSITIVE_PATTERNS):
         return True
+    # If basename is a bracket expression pattern, check if it targets sensitive names without being a broad wildcard
+    if '[' in basename and ']' in basename:
+        candidate_sensitive = (
+            '.env', '.env.local', '.env.production', '.env.development',
+            'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
+            '.git-credentials', 'hosts.yml', '.npmrc', '.pypirc',
+            'secret.pem', 'server.key', 'id_rsa.pub'
+        )
+        if any(fnmatch.fnmatch(s, basename) for s in candidate_sensitive):
+            if not any(fnmatch.fnmatch(safe, basename) for safe in ('.gitignore', '.clang-format', 'safe.txt', 'main.py', 'test.js', 'README.md', 'app.go')):
+                return True
     return False
 
 
@@ -937,7 +948,7 @@ def is_valid_tool_binary_dir(cmd_name, exe_dir):
     if exe_dir in SYSTEM_BIN_DIRS:
         return True
     home = os.path.expanduser('~')
-    if cmd_name == 'cargo':
+    if cmd_name in ('cargo', 'cargo-fmt', 'rustfmt'):
         return exe_dir == os.path.join(home, '.cargo', 'bin')
     if cmd_name == 'go':
         return exe_dir in {os.path.join(home, 'go', 'bin'), '/usr/local/go/bin', '/usr/lib/go/bin'}
@@ -3354,7 +3365,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     return True
                 if p.startswith(':/') or p.startswith(':('):
                     return True
-                if '*' in p or '?' in p:
+                if '*' in p or '?' in p or ('[' in p and ']' in p):
                     return True
                 try:
                     resolved = expand_path(p, cwd)
@@ -4486,6 +4497,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 rustfmt_env = os.environ.get('RUSTFMT')
                 if rustfmt_env and rustfmt_env.strip():
                     return 'force_ask', f"cargo fmt with custom RUSTFMT executable requires confirmation: {rustfmt_env}"
+                # Validate cargo-fmt and rustfmt executable resolution to prevent workspace PATH hijacking
+                for helper_name in ('cargo-fmt', 'rustfmt'):
+                    h_path = shutil.which(helper_name)
+                    if h_path:
+                        if is_sensitive_credential_path(h_path, cwd) or matches_sensitive_pattern(h_path):
+                            return 'deny', f"cargo fmt executes {helper_name} referencing sensitive path: {h_path}"
+                        if not is_trusted_executable_path(h_path, workspace_paths, cwd, helper_name):
+                            return 'force_ask', f"cargo fmt executes untrusted or workspace-controlled {helper_name} helper: {h_path}"
+                        h_dir = os.path.dirname(os.path.normpath(h_path))
+                        if not is_valid_tool_binary_dir(helper_name, h_dir):
+                            return 'force_ask', f"cargo fmt executes {helper_name} shadowed by non-system binary: {h_path}"
+                        if written_files:
+                            norm_h = os.path.normpath(h_path)
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if norm_h == norm_wf or norm_h.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_h + os.sep):
+                                    return 'force_ask', f"cargo fmt with {helper_name} executable modified earlier in command line requires confirmation: {h_path}"
+                for local_cand in ('cargo-fmt', 'rustfmt', os.path.join('bin', 'cargo-fmt'), os.path.join('bin', 'rustfmt')):
+                    local_path = os.path.join(cwd, local_cand) if cwd else local_cand
+                    if os.path.isfile(local_path) and os.access(local_path, os.X_OK):
+                        return 'force_ask', f"cargo fmt with workspace-local {local_cand} requires confirmation: {local_path}"
                 if written_files:
                     for wf in written_files:
                         bname = os.path.basename(wf)
@@ -5312,9 +5344,42 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                 t_raw = decode_shell_target(unquote_token(sub[i_tok + 1]))
                 if t_raw and t_raw != '/dev/null':
                     written_files.add(expand_path(t_raw, cwd))
-        sub_base = os.path.basename(unquote_token(sub[0])) if sub else ''
+        # Unwrap inline assignments and wrapper commands (env, command, builtin)
+        idx_cmd = 0
+        while idx_cmd < len(sub) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', sub[idx_cmd]):
+            idx_cmd += 1
+        effective_cmd_tokens = sub[idx_cmd:]
+        while effective_cmd_tokens:
+            base_cand = os.path.basename(unquote_token(effective_cmd_tokens[0]))
+            if base_cand in ('command', 'builtin'):
+                effective_cmd_tokens = effective_cmd_tokens[1:]
+                continue
+            if base_cand == 'env':
+                idx_env = 1
+                while idx_env < len(effective_cmd_tokens):
+                    tok_env = effective_cmd_tokens[idx_env]
+                    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', tok_env):
+                        idx_env += 1
+                        continue
+                    if tok_env in ('-i', '--ignore-environment', '-0', '--null'):
+                        idx_env += 1
+                        continue
+                    if tok_env in ('-u', '--unset', '-C', '--chdir') and idx_env + 1 < len(effective_cmd_tokens):
+                        idx_env += 2
+                        continue
+                    if tok_env.startswith(('-u', '--unset=', '-C', '--chdir=')):
+                        idx_env += 1
+                        continue
+                    break
+                effective_cmd_tokens = effective_cmd_tokens[idx_env:]
+                continue
+            break
+
+        sub_base = os.path.basename(unquote_token(effective_cmd_tokens[0])) if effective_cmd_tokens else ''
+        sub_args = effective_cmd_tokens[1:] if effective_cmd_tokens else []
+
         if sub_base == 'tee':
-            for a in sub[1:]:
+            for a in sub_args:
                 a_unq = unquote_token(a)
                 if not a_unq.startswith('-') and a_unq != '/dev/null':
                     written_files.add(expand_path(a_unq, cwd))
@@ -5322,36 +5387,56 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
             pos = []
             target_dir = None
             skip_next = False
-            for i, a in enumerate(sub[1:]):
+            in_pos_only = False
+            for i, a in enumerate(sub_args):
                 if skip_next:
                     skip_next = False
                     continue
                 a_unq = unquote_token(a)
+                if in_pos_only:
+                    if a_unq != '/dev/null':
+                        pos.append(a_unq)
+                    continue
+                if a_unq == '--':
+                    in_pos_only = True
+                    continue
                 if a_unq in ('-t', '--target-directory'):
-                    if i + 1 < len(sub[1:]):
-                        target_dir = unquote_token(sub[1:][i + 1])
+                    if i + 1 < len(sub_args):
+                        target_dir = unquote_token(sub_args[i + 1])
                         skip_next = True
                     continue
                 if a_unq.startswith('--target-directory='):
                     target_dir = a_unq.split('=', 1)[1]
                     continue
+                if sub_base == 'touch' and a_unq in ('-d', '--date', '-r', '--reference', '-t') and i + 1 < len(sub_args):
+                    skip_next = True
+                    continue
+                if sub_base == 'touch' and a_unq.startswith(('-d', '--date=', '-r', '--reference=', '-t')):
+                    continue
+                if sub_base == 'mkdir' and a_unq in ('-m', '--mode') and i + 1 < len(sub_args):
+                    skip_next = True
+                    continue
+                if sub_base == 'mkdir' and (a_unq.startswith('-m') or a_unq.startswith('--mode=')):
+                    continue
                 if not a_unq.startswith('-') and a_unq != '/dev/null':
                     pos.append(a_unq)
-            if sub_base in ('touch', 'mkdir'):
+            if sub_base in ('touch', 'mkdir', 'mv'):
                 for p in pos:
                     written_files.add(expand_path(p, cwd))
+                if target_dir:
+                    written_files.add(expand_path(target_dir, cwd))
             elif target_dir:
                 written_files.add(expand_path(target_dir, cwd))
             elif pos:
                 written_files.add(expand_path(pos[-1], cwd))
         elif sub_base == 'sort':
             i = 0
-            while i < len(sub[1:]):
-                a = unquote_token(sub[1:][i])
+            while i < len(sub_args):
+                a = unquote_token(sub_args[i])
                 if a == '--':
                     break
-                if a in ('-o', '--output') and i + 1 < len(sub[1:]):
-                    written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                if a in ('-o', '--output') and i + 1 < len(sub_args):
+                    written_files.add(expand_path(unquote_token(sub_args[i + 1]), cwd))
                     i += 2
                     continue
                 if a.startswith('--'):
@@ -5359,8 +5444,8 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                     if '--output'.startswith(opt) and len(opt) >= 3:
                         if '=' in a:
                             written_files.add(expand_path(a.split('=', 1)[1], cwd))
-                        elif i + 1 < len(sub[1:]):
-                            written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                        elif i + 1 < len(sub_args):
+                            written_files.add(expand_path(unquote_token(sub_args[i + 1]), cwd))
                             i += 1
                         i += 1
                         continue
@@ -5368,8 +5453,8 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                     val = a[2:].lstrip('=')
                     if val:
                         written_files.add(expand_path(val, cwd))
-                    elif i + 1 < len(sub[1:]):
-                        written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                    elif i + 1 < len(sub_args):
+                        written_files.add(expand_path(unquote_token(sub_args[i + 1]), cwd))
                         i += 1
                     i += 1
                     continue
@@ -5378,14 +5463,14 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                     val = a[o_idx + 1:].lstrip('=')
                     if val:
                         written_files.add(expand_path(val, cwd))
-                    elif i + 1 < len(sub[1:]):
-                        written_files.add(expand_path(unquote_token(sub[1:][i + 1]), cwd))
+                    elif i + 1 < len(sub_args):
+                        written_files.add(expand_path(unquote_token(sub_args[i + 1]), cwd))
                         i += 1
                     i += 1
                     continue
                 i += 1
         elif sub_base == 'git':
-            sub_args = [unquote_token(a) for a in sub[1:]]
+            sub_args = [unquote_token(a) for a in sub_args]
             git_sub = None
             git_sub_idx = -1
             skip_next = False
