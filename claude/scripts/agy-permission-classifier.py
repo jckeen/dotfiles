@@ -22,6 +22,7 @@ import glob
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import shlex
 import shutil
@@ -1107,7 +1108,11 @@ def git_log_has_diff_options(args):
         if a.startswith(('--patch', '--stat', '--numstat', '--shortstat', '--dirstat',
                          '--summary', '--raw', '--diff-merges', '--word-diff')):
             return True
-        if a.startswith('-') and not a.startswith('--') and a != '-' and any(c in a for c in ('p', 'u', 'c')):
+        if a == '-L' or (a.startswith('-L') and not a.startswith('--')):
+            return True
+        if a.startswith('--') and '--line-range'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5:
+            return True
+        if a.startswith('-') and not a.startswith('--') and a != '-' and any(c in a for c in ('p', 'u', 'c', 'L')):
             return True
     return False
 
@@ -1136,7 +1141,13 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
             commit_args = [a for a in safe_args if ':' not in a and not a.startswith('--format=') and a != '--name-only']
             cmd = ['git', 'show', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + commit_args + ['--line-prefix=']
         elif git_sub in ('log', 'whatchanged') and git_log_has_diff_options(args):
-            cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
+            has_line_range = any(a == '-L' or (a.startswith('-L') and not a.startswith('--')) or
+                                 (a.startswith('--') and '--line-range'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 5)
+                                 for a in safe_args)
+            if has_line_range:
+                cmd = ['git', 'log', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
+            else:
+                cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature', '--line-prefix='] + [a for a in safe_args if not a.startswith('--format=') and a != '--name-only'] + ['--line-prefix=']
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
             cmd = ['git', 'stash', 'show', '--name-only', '--line-prefix='] + [a for a in safe_stash if a != '--name-only'] + ['--line-prefix=']
@@ -1158,8 +1169,31 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
                 for chunk in res.stdout.split('\0'):
                     for line in chunk.splitlines():
                         f = line.strip().rstrip('\0')
-                        if f:
-                            parts.append(f)
+                        if not f:
+                            continue
+                        parts.append(f)
+                        if f.startswith('diff --git '):
+                            rest = f[11:].strip()
+                            m = re.match(r'^(?:\"a/([^\"]+)\"|a/(\S+))\s+(?:\"b/([^\"]+)\"|b/(\S+))$', rest)
+                            if m:
+                                parts.extend([g for g in m.groups() if g])
+                            else:
+                                toks = rest.split()
+                                for tok in toks:
+                                    t = tok.strip('\"')
+                                    if t.startswith(('a/', 'b/')):
+                                        t = t[2:]
+                                    parts.append(t)
+                        elif f.startswith('--- '):
+                            p = f[4:].strip().strip('\"')
+                            if p.startswith('a/'):
+                                p = p[2:]
+                            parts.append(p)
+                        elif f.startswith('+++ '):
+                            p = f[4:].strip().strip('\"')
+                            if p.startswith('b/'):
+                                p = p[2:]
+                            parts.append(p)
                 for f in parts:
                     if matches_sensitive_pattern(f) or is_sensitive_credential_path(f, effective_cwd):
                         return 'sensitive'
@@ -3320,6 +3354,27 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if pos_objects and all(':' in obj and not obj.startswith(('http:', 'https:', 'ssh:', 'git:')) for obj in pos_objects):
                     is_pure_blob_show = True
 
+            if git_sub in ('log', 'whatchanged'):
+                for i_arg, a in enumerate(args[1:], start=1):
+                    l_val = None
+                    if a == '-L' and i_arg + 1 < len(args):
+                        l_val = args[i_arg + 1]
+                    elif a.startswith('-L') and not a.startswith('--'):
+                        l_val = a[2:]
+                    elif a.startswith('--line-range=') or a == '--line-range':
+                        if '=' in a:
+                            l_val = a.split('=', 1)[1]
+                        elif i_arg + 1 < len(args):
+                            l_val = args[i_arg + 1]
+                    if l_val is not None and ':' in l_val:
+                        target_f = l_val.rsplit(':', 1)[1].strip().strip('"\'')
+                        if target_f:
+                            if matches_sensitive_pattern(target_f) or is_sensitive_credential_path(target_f, cwd):
+                                return 'deny', f"git {git_sub} -L targeting sensitive file is forbidden: {target_f}"
+                            if target_f.startswith(('/', '~')) or target_f.startswith('..' + os.sep) or target_f == '..':
+                                if not is_path_in_workspaces(target_f, workspace_paths, cwd):
+                                    return 'force_ask', f"git {git_sub} -L target outside workspace requires approval: {target_f}"
+
             if git_sub != 'blame' and not is_pure_blob_show:
                 if written_files:
                     for wf in written_files:
@@ -3720,7 +3775,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"git commit with active repository hook requires confirmation: {' '.join(cmd_tokens)}"
             if git_has_filter_configured(cwd):
                 return 'force_ask', f"git commit with configured filter driver requires confirmation: {' '.join(cmd_tokens)}"
-            has_trailer = any(a == '--trailer' or a.startswith('--trailer=') for a in args)
+            has_trailer = any(a == '--trailer' or a.startswith('--trailer=') or
+                              (a.startswith('--') and '--trailer'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 4)
+                              for a in args)
             if has_trailer and git_has_trailer_command_configured(cwd):
                 return 'force_ask', f"git commit with --trailer and configured trailer command requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -3796,7 +3853,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     opt_name = a.split('=', 1)[0]
                     if '=' in a:
                         continue
-                    if opt_name in GIT_COMMIT_OPTS_WITH_ARG:
+                    if opt_name in GIT_COMMIT_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) and len(opt_name) >= 4 for long_opt in GIT_COMMIT_OPTS_WITH_ARG if long_opt.startswith('--')):
                         skip_arg = True
                         continue
                     continue
@@ -5012,6 +5069,118 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             out_check = check_dev_tool_output(all_go_check_args, workspace_paths, cwd, f"go {args[0]}")
             if out_check:
                 return out_check
+
+            if args[0] == 'build':
+                has_explicit_o = False
+                for ga in all_go_check_args:
+                    if ga in ('-o', '--output') or ga.startswith(('-o=', '--output=')):
+                        has_explicit_o = True
+                        break
+                    if ga.startswith('-o') and len(ga) > 2 and not ga.startswith('--'):
+                        has_explicit_o = True
+                        break
+
+                if not has_explicit_o:
+                    candidate_implicit_names = set()
+                    # 1. Inspect module name from go.mod in cwd or ancestors
+                    curr_mod_dir = os.path.abspath(cwd) if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                    while curr_mod_dir:
+                        mod_file = os.path.join(curr_mod_dir, 'go.mod')
+                        if os.path.isfile(mod_file):
+                            try:
+                                with open(mod_file, 'r', encoding='utf-8', errors='replace') as mf:
+                                    for mline in mf:
+                                        mline = mline.strip()
+                                        if mline.startswith(('module ', 'module\t')):
+                                            mod_path = mline.split(None, 1)[1].strip().strip('"\'')
+                                            mod_base = posixpath.basename(mod_path.rstrip('/'))
+                                            if mod_base:
+                                                candidate_implicit_names.add(mod_base)
+                                            break
+                            except Exception:
+                                pass
+                            break
+                        parent_mod = os.path.dirname(curr_mod_dir)
+                        if not parent_mod or parent_mod == curr_mod_dir:
+                            break
+                        curr_mod_dir = parent_mod
+
+                    # 2. Inspect cwd directory name
+                    cwd_abs = os.path.abspath(cwd) if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                    cwd_base = os.path.basename(cwd_abs)
+                    if cwd_base:
+                        candidate_implicit_names.add(cwd_base)
+
+                    # 3. Inspect positional package arguments and source files
+                    skip_next_go = False
+                    for ga in args[1:]:
+                        if skip_next_go:
+                            skip_next_go = False
+                            continue
+                        if ga.startswith('-'):
+                            opt_clean = ga.split('=', 1)[0]
+                            if opt_clean in {
+                                '-p', '--p',
+                                '-asmflags', '--asmflags',
+                                '-buildmode', '--buildmode',
+                                '-buildvcs', '--buildvcs',
+                                '-compiler', '--compiler',
+                                '-gccgoflags', '--gccgoflags',
+                                '-gcflags', '--gcflags',
+                                '-installsuffix', '--installsuffix',
+                                '-ldflags', '--ldflags',
+                                '-mod', '--mod',
+                                '-modcacheunzip', '--modcacheunzip',
+                                '-modfile', '--modfile',
+                                '-overlay', '--overlay',
+                                '-pkgdir', '--pkgdir',
+                                '-tags', '--tags',
+                                '-toolexec', '--toolexec',
+                                '-work', '--work',
+                            } and '=' not in ga:
+                                skip_next_go = True
+                            continue
+                        # Positional argument (package path or source file)
+                        if ga.endswith('.go'):
+                            stem = os.path.splitext(os.path.basename(ga))[0]
+                            if stem:
+                                candidate_implicit_names.add(stem)
+                        else:
+                            pkg_base = posixpath.basename(ga.rstrip('/'))
+                            if pkg_base and pkg_base not in ('.', '..'):
+                                candidate_implicit_names.add(pkg_base)
+                            try:
+                                norm_pkg = os.path.basename(os.path.normpath(expand_path(ga, cwd)))
+                                if norm_pkg and norm_pkg not in ('.', '..'):
+                                    candidate_implicit_names.add(norm_pkg)
+                            except Exception:
+                                pass
+
+                    # Expand candidates with Windows .exe
+                    for cname in list(candidate_implicit_names):
+                        if not cname.endswith('.exe'):
+                            candidate_implicit_names.add(cname + '.exe')
+
+                    effective_cwd = cwd if isinstance(cwd, str) and cwd.strip() else os.getcwd()
+                    for cname in candidate_implicit_names:
+                        dest = os.path.join(effective_cwd, cname)
+                        if is_sensitive_credential_path(dest, cwd) or matches_sensitive_pattern(cname):
+                            return 'deny', f"go build implicit output targets sensitive file: {dest}"
+                        if is_system_write_path(dest, cwd):
+                            return 'deny', f"go build implicit output targets system path: {dest}"
+                        if is_security_guard_path(dest, cwd):
+                            return 'force_ask', f"go build implicit output overwrites protected security guard: {dest}"
+                        if is_git_admin_path(dest, cwd):
+                            return 'force_ask', f"go build implicit output modifies git repository metadata: {dest}"
+                        if not is_path_in_workspaces(dest, workspace_paths, cwd):
+                            return 'force_ask', f"go build implicit output targeting destination outside workspace requires confirmation: {dest}"
+                        if written_files:
+                            norm_dest = os.path.normpath(expand_path(dest, cwd))
+                            for wf in written_files:
+                                norm_wf = os.path.normpath(wf)
+                                if norm_dest == norm_wf or norm_dest.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_dest + os.sep):
+                                    return 'force_ask', f"go build implicit output file was modified or redirected to earlier in command line: {dest}"
+
             return 'allow', f"Safe Go static tool: go {args[0]}"
 
     if base_cmd == 'make':

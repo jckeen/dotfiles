@@ -5409,6 +5409,64 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_go_gcflags_guard['decision'], 'force_ask', f"Expected force_ask for go build with -asmhdr targeting security guard, got: {res_go_gcflags_guard}")
         self.assertIn('security configuration', res_go_gcflags_guard['reason'].lower())
 
+        # 40. Git commit trailer option abbreviation execution checks
+        subprocess.run(['git', 'config', 'trailer.review.cmd', '/usr/bin/id'], cwd=str(ws_dir), check=True)
+        try:
+            res_commit_trail = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --allow-empty -m safe --trail review:x', 'Cwd': str(ws_dir)}},
+                'workspacePaths': [str(ws_dir)],
+            })
+            self.assertEqual(res_commit_trail['decision'], 'force_ask', f"Expected force_ask for git commit with abbreviated --trail and configured trailer command, got: {res_commit_trail}")
+            self.assertIn('trailer command', res_commit_trail['reason'].lower())
+        finally:
+            subprocess.run(['git', 'config', '--unset', 'trailer.review.cmd'], cwd=str(ws_dir), check=False)
+
+        # 41. Implicit Go build outputs bypass protected-file checks
+        go_mod_dir = ws_dir / 'go_mod_test'
+        go_mod_dir.mkdir(exist_ok=True)
+        (go_mod_dir / 'go.mod').write_text('module example.org/agy-permission-classifier.py\n\ngo 1.20\n')
+        (go_mod_dir / 'main.go').write_text('package main\nfunc main() {}\n')
+        res_go_implicit_guard = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_mod_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_go_implicit_guard['decision'], 'force_ask', f"Expected force_ask for go build . with implicit output overwriting classifier guard, got: {res_go_implicit_guard}")
+        self.assertIn('security guard', res_go_implicit_guard['reason'].lower())
+
+        (go_mod_dir / 'go.mod').write_text('module example.org/secret.pem\n\ngo 1.20\n')
+        res_go_implicit_sensitive = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'go build .', 'Cwd': str(go_mod_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_go_implicit_sensitive['decision'], 'deny', f"Expected deny for go build . with implicit output targeting sensitive name, got: {res_go_implicit_sensitive}")
+        self.assertIn('sensitive', res_go_implicit_sensitive['reason'].lower())
+
+        # 42. Line-history patches inspect sensitive history
+        line_hist_dir = ws_dir / 'line_hist_repo'
+        line_hist_dir.mkdir(exist_ok=True)
+        subprocess.run(['git', 'init'], cwd=str(line_hist_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.name', 'test'], cwd=str(line_hist_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(line_hist_dir), check=True)
+        (line_hist_dir / '.env').write_text('SECRET_TOKEN=xyz123\n')
+        subprocess.run(['git', 'add', '.env'], cwd=str(line_hist_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'add secret env'], cwd=str(line_hist_dir), check=True, capture_output=True)
+        subprocess.run(['git', 'mv', '.env', 'README.md'], cwd=str(line_hist_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'rename to readme'], cwd=str(line_hist_dir), check=True, capture_output=True)
+
+        res_log_l_hist = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -L1,1:README.md', 'Cwd': str(line_hist_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_log_l_hist['decision'], 'deny', f"Expected deny for git log -L exposing sensitive history from renamed file, got: {res_log_l_hist}")
+        self.assertIn('sensitive', res_log_l_hist['reason'].lower())
+
+        res_log_l_direct = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git log -L 1,1:.env', 'Cwd': str(line_hist_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_log_l_direct['decision'], 'deny', f"Expected deny for git log -L targeting sensitive file, got: {res_log_l_direct}")
+        self.assertIn('sensitive', res_log_l_direct['reason'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()
