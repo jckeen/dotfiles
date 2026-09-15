@@ -203,18 +203,18 @@ def decode_shell_arg(arg):
 
 
 def decode_shell_target(target_str):
-    """Safely decode shell-escaped and quoted sequences in redirection targets and file paths without collapsing whitespace."""
+    """Safely decode shell-escaped and quoted sequences in redirection targets and file paths without altering valid filenames."""
     if not target_str or not isinstance(target_str, str):
         return target_str
     s = target_str
-    if "$'" in s:
+    if s.startswith("$'") and s.endswith("'"):
         try:
-            s = re.sub(r"\$'([^']*)'", lambda m: codecs.decode(m.group(1), 'unicode_escape'), s)
+            return codecs.decode(s[2:-1], 'unicode_escape')
         except Exception:
             pass
     if len(s) >= 2 and ((s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'"))):
         s = s[1:-1]
-    return re.sub(r'\\(.)', r'\1', s)
+    return s
 
 
 def subcmd_has_unquoted_expansions(subcmd_str):
@@ -2298,6 +2298,14 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if any(c in a for c in ('$', '`')) or a.startswith(('<(', '>(')):
                 return 'force_ask', f"rm with unresolved shell expansion requires confirmation: {' '.join(cmd_tokens)}"
 
+        if written_files:
+            for t in targets:
+                t_norm = os.path.normpath(expand_path(t, cwd))
+                for wf in written_files:
+                    wf_norm = os.path.normpath(wf)
+                    if t_norm == wf_norm or t_norm.startswith(wf_norm + os.sep) or wf_norm.startswith(t_norm + os.sep):
+                        return 'force_ask', f"rm target was created or modified earlier in the command line: {t}"
+
         # Non-recursive rm on individual files inside workspace
         if targets and all(is_path_in_workspaces(t, workspace_paths, cwd) and not is_sensitive_credential_path(t, cwd) and not is_git_admin_path(t, cwd) and not is_security_guard_path(t, cwd) for t in targets):
             return 'allow', f"Safe workspace file deletion: {' '.join(cmd_tokens)}"
@@ -3929,22 +3937,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 opt_name = a.split('=', 1)[0]
                 if '=' in a:
                     val = a.split('=', 1)[1]
-                    if '--output'.startswith(opt_name) and len(opt_name) >= 4:
+                    if '--output'.startswith(opt_name) and len(opt_name) >= 3:
                         out_targets.append(decode_shell_target(val))
-                    elif '--temporary-directory'.startswith(opt_name) and len(opt_name) >= 4:
+                    elif '--temporary-directory'.startswith(opt_name) and len(opt_name) >= 3:
                         temp_dirs.append(decode_shell_target(val))
-                    elif '--files0-from'.startswith(opt_name) and len(opt_name) >= 4:
+                    elif '--files0-from'.startswith(opt_name) and len(opt_name) >= 3:
                         files0_from = val
                     i += 1
                     continue
                 elif opt_name in SORT_OPTS_WITH_ARG or any(long_opt.startswith(opt_name) for long_opt in SORT_OPTS_WITH_ARG if long_opt.startswith('--')):
                     if i + 1 < len(args):
                         val = args[i + 1]
-                        if '--output'.startswith(opt_name) and len(opt_name) >= 4:
+                        if '--output'.startswith(opt_name) and len(opt_name) >= 3:
                             out_targets.append(decode_shell_target(val))
-                        elif '--temporary-directory'.startswith(opt_name) and len(opt_name) >= 4:
+                        elif '--temporary-directory'.startswith(opt_name) and len(opt_name) >= 3:
                             temp_dirs.append(decode_shell_target(val))
-                        elif '--files0-from'.startswith(opt_name) and len(opt_name) >= 4:
+                        elif '--files0-from'.startswith(opt_name) and len(opt_name) >= 3:
                             files0_from = val
                         i += 2
                         continue
@@ -4791,7 +4799,7 @@ def classify_command_line(cmd_str, workspace_paths, cwd, depth=0):
                     continue
                 if a.startswith('--'):
                     opt = a.split('=', 1)[0]
-                    if '--output'.startswith(opt) and len(opt) >= 4:
+                    if '--output'.startswith(opt) and len(opt) >= 3:
                         if '=' in a:
                             written_files.add(expand_path(a.split('=', 1)[1], cwd))
                         elif i + 1 < len(sub[1:]):

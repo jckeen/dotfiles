@@ -4786,6 +4786,47 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_git_commit_clean['decision'], 'allow')
 
+        # 5. Sort accepts --o abbreviation for --output and checks destination
+        res_sort_abbr_outside = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "sort --o=/tmp/outside /dev/null", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertIn(res_sort_abbr_outside['decision'], ('ask', 'force_ask', 'deny'))
+
+        res_sort_abbr_sep = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "sort --o /tmp/outside /dev/null", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertIn(res_sort_abbr_sep['decision'], ('ask', 'force_ask', 'deny'))
+
+        res_sort_abbr_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "sort --o=safe_sorted.txt safe.txt", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_sort_abbr_clean['decision'], 'allow')
+
+        # 6. Single-quoted backslash in redirection filename is preserved literally
+        outside_victim_bs = Path(tmp_dir) / 'outside_victim_bs.txt'
+        outside_victim_bs.write_text('external_bs\n')
+        symlink_bs = ws_dir / 'a\\b'
+        os.symlink(str(outside_victim_bs), str(symlink_bs))
+
+        res_echo_symlink_bs = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "echo x > 'a\\b'", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_echo_symlink_bs['decision'], 'ask')
+        self.assertIn('outside workspace', res_echo_symlink_bs['reason'])
+
+        # 7. Non-recursive rm checks written_files from earlier commands in compound line
+        subprocess.run(['git', 'checkout', '-b', 'feature'], cwd=str(ws_dir), check=True)
+        res_compound_rm = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': "git switch feature; rm safe.txt", 'Cwd': str(ws_dir)}},
+            'workspacePaths': [str(ws_dir)],
+        })
+        self.assertEqual(res_compound_rm['decision'], 'force_ask')
+        self.assertIn('created or modified earlier', res_compound_rm['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()
