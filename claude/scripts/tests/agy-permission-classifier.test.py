@@ -4259,6 +4259,90 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         self.assertEqual(res_wc_abbr['decision'], 'deny')
         self.assertIn('sensitive', res_wc_abbr['reason'])
 
+    def test_round_47_hardening(self):
+        tmp_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+        main_repo = Path(tmp_dir) / 'main_repo'
+        main_repo.mkdir()
+        sub_dir = main_repo / 'sub'
+        sub_dir.mkdir()
+        subprocess.run(['git', 'init', '-q'], cwd=str(main_repo), check=True)
+        (main_repo / 'README.md').write_text('# Main\n')
+        subprocess.run(['git', 'add', '.'], cwd=str(main_repo), check=True)
+        subprocess.run(['git', 'commit', '-q', '-m', 'initial'], cwd=str(main_repo), check=True)
+
+        # 1. git commit -m -Csub should not redirect working directory to sub
+        hook_path = main_repo / '.git' / 'hooks' / 'pre-commit'
+        hook_path.write_text('#!/bin/sh\nexit 0\n')
+        hook_path.chmod(0o755)
+
+        # If -Csub were parsed as directory override, it would check 'sub' which has no hooks.
+        # But since -C is part of commit args, main_repo hook MUST be detected!
+        res_git_m = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git commit --allow-empty -m -Csub', 'Cwd': str(main_repo)}},
+            'workspacePaths': [str(main_repo)],
+        })
+        self.assertEqual(res_git_m['decision'], 'force_ask')
+        self.assertIn('hook', res_git_m['reason'])
+
+        # 2. Earlier writes bypass cargo fmt toolchain validation
+        (main_repo / 'toolchain.txt').write_text('[toolchain]\npath = "/tmp/evil"\n')
+        res_cargo_chain = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp toolchain.txt rust-toolchain.toml; cargo fmt', 'Cwd': str(main_repo)}},
+            'workspacePaths': [str(main_repo)],
+        })
+        self.assertEqual(res_cargo_chain['decision'], 'force_ask')
+        self.assertIn('toolchain', res_cargo_chain['reason'])
+
+        # 3. Inherited ripgrep configuration
+        rg_cfg = main_repo / 'ripgrep.conf'
+        rg_cfg.write_text('--pre=/tmp/evil_pre\n')
+        old_rg_env = os.environ.get('RIPGREP_CONFIG_PATH')
+        try:
+            os.environ['RIPGREP_CONFIG_PATH'] = str(rg_cfg)
+            res_rg_pre = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg needle README.md', 'Cwd': str(main_repo)}},
+                'workspacePaths': [str(main_repo)],
+            })
+            self.assertEqual(res_rg_pre['decision'], 'force_ask')
+            self.assertIn('preprocessor', res_rg_pre['reason'])
+
+            # With --no-config, ripgrep bypasses RIPGREP_CONFIG_PATH and is allowed
+            res_rg_no_cfg = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg --no-config needle README.md', 'Cwd': str(main_repo)}},
+                'workspacePaths': [str(main_repo)],
+            })
+            self.assertEqual(res_rg_no_cfg['decision'], 'allow')
+
+            # Config with pattern file targeting sensitive path
+            rg_cfg.write_text('--file=/etc/shadow\n')
+            res_rg_sens = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg needle README.md', 'Cwd': str(main_repo)}},
+                'workspacePaths': [str(main_repo)],
+            })
+            self.assertEqual(res_rg_sens['decision'], 'deny')
+
+            # Config with hidden flag
+            rg_cfg.write_text('--hidden\n')
+            res_rg_hidden = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg needle README.md', 'Cwd': str(main_repo)}},
+                'workspacePaths': [str(main_repo)],
+            })
+            self.assertEqual(res_rg_hidden['decision'], 'ask')
+
+            # Clean config
+            rg_cfg.write_text('--smart-case\n')
+            res_rg_clean = self.run_classifier({
+                'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'rg needle README.md', 'Cwd': str(main_repo)}},
+                'workspacePaths': [str(main_repo)],
+            })
+            self.assertEqual(res_rg_clean['decision'], 'allow')
+        finally:
+            if old_rg_env is None:
+                os.environ.pop('RIPGREP_CONFIG_PATH', None)
+            else:
+                os.environ['RIPGREP_CONFIG_PATH'] = old_rg_env
+
 
 if __name__ == '__main__':
     unittest.main()

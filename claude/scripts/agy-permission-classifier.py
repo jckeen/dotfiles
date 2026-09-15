@@ -1920,20 +1920,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             return 'allow', 'git command query'
 
         # Check and validate git directory overrides (-C, --git-dir, --work-tree)
+        # Top-level directory options must precede the subcommand
         git_dir_opts = []
         effective_cwd = cwd
         skip_dir_opt = False
-        for idx, a in enumerate(args):
+        pre_sub_args = args[:git_sub_idx]
+        for idx, a in enumerate(pre_sub_args):
             if skip_dir_opt:
                 skip_dir_opt = False
                 continue
-            if a == '-C' and idx + 1 < len(args):
-                git_dir_opts.append(('-C', args[idx + 1]))
+            if a == '-C' and idx + 1 < len(pre_sub_args):
+                git_dir_opts.append(('-C', pre_sub_args[idx + 1]))
                 skip_dir_opt = True
             elif a.startswith('-C') and len(a) > 2 and not a.startswith('--'):
                 git_dir_opts.append(('-C', a[2:]))
-            elif a in ('--git-dir', '--work-tree') and idx + 1 < len(args):
-                git_dir_opts.append((a, args[idx + 1]))
+            elif a in ('--git-dir', '--work-tree') and idx + 1 < len(pre_sub_args):
+                git_dir_opts.append((a, pre_sub_args[idx + 1]))
                 skip_dir_opt = True
             elif a.startswith(('--git-dir=', '--work-tree=')):
                 opt_k, opt_v = a.split('=', 1)
@@ -1969,7 +1971,16 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
 
         # Check for git output options across all git commands (including GNU option abbreviations)
         git_out = None
+        skip_msg = False
         for i, a in enumerate(args):
+            if skip_msg:
+                skip_msg = False
+                continue
+            if git_sub in ('commit', 'tag') and a in ('-m', '--message'):
+                skip_msg = True
+                continue
+            if git_sub in ('commit', 'tag') and (a.startswith('-m') or a.startswith('--message=')):
+                continue
             if a.startswith('--o') and '=' in a:
                 opt, val = a.split('=', 1)
                 if '--output'.startswith(opt) or '--output-directory'.startswith(opt):
@@ -1989,11 +2000,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if not is_path_in_workspaces(git_out, workspace_paths, cwd):
                 return 'force_ask', f"git {git_sub} --output outside workspace requires approval: {git_out}"
 
-        # Check for config overrides via -c or --config-env
-        for i, a in enumerate(args):
+        # Check for config overrides via -c or --config-env (top-level options)
+        for i, a in enumerate(pre_sub_args):
             cfg_opt = None
-            if a in ('-c', '--config-env') and i + 1 < len(args):
-                cfg_opt = args[i + 1]
+            if a in ('-c', '--config-env') and i + 1 < len(pre_sub_args):
+                cfg_opt = pre_sub_args[i + 1]
             elif a.startswith('--config-env='):
                 cfg_opt = a.split('=', 1)[1]
             elif a.startswith('-c') and len(a) > 2 and not a.startswith('--'):
@@ -2007,9 +2018,11 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 return 'force_ask', f"Git command with external diff/filter driver requires confirmation: {' '.join(cmd_tokens)}"
 
         # Git upload-pack, receive-pack, exec-path, or exec options can run arbitrary executables
-        for a in args:
-            if a in ('--exec-path', '--upload-pack', '--receive-pack', '--exec') or a.startswith(('--exec-path=', '--upload-pack=', '--receive-pack=', '--exec=')):
-                return 'force_ask', f"Git command with custom exec-path or remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
+        if any(a == '--exec-path' or a.startswith('--exec-path=') for a in pre_sub_args):
+            return 'force_ask', f"Git command with custom exec-path requires confirmation: {' '.join(cmd_tokens)}"
+        for a in sub_args:
+            if a in ('--upload-pack', '--receive-pack', '--exec') or a.startswith(('--upload-pack=', '--receive-pack=', '--exec=')):
+                return 'force_ask', f"Git command with custom remote pack/exec program requires confirmation: {' '.join(cmd_tokens)}"
             if a in ('-u',) and git_sub in {'clone', 'fetch', 'ls-remote'}:
                 return 'force_ask', f"Git command with custom upload-pack option (-u) requires confirmation: {' '.join(cmd_tokens)}"
 
@@ -3295,9 +3308,45 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             # ag -f or --follow traverses symlinks
             if any(a in ('-f', '--follow') or (a.startswith('-') and not a.startswith('--') and 'f' in a) for a in args):
                 return 'ask', f"ag following symlinks (-f/--follow) requires confirmation: {' '.join(cmd_tokens)}"
+        rg_cfg_tokens = []
         if base_cmd == 'rg':
             if any(a.startswith(('--pre', '--hostname-bin')) or a in ('--pre', '--hostname-bin') for a in args):
                 return 'force_ask', f"rg with custom preprocessor or helper program requires confirmation: {' '.join(cmd_tokens)}"
+            has_no_config = any(
+                a == '--no-config' or (a.startswith('--') and '--no-config'.startswith(a.split('=', 1)[0]) and len(a.split('=', 1)[0]) >= 6)
+                for a in args
+            )
+            if not has_no_config:
+                rg_cfg = os.environ.get('RIPGREP_CONFIG_PATH')
+                if rg_cfg and rg_cfg.strip():
+                    if is_sensitive_credential_path(rg_cfg, cwd) or matches_sensitive_pattern(rg_cfg):
+                        return 'deny', f"rg with RIPGREP_CONFIG_PATH targeting sensitive path is forbidden: {rg_cfg}"
+                    if written_files:
+                        norm_cfg = os.path.normpath(expand_path(rg_cfg, cwd))
+                        real_cfg = os.path.realpath(norm_cfg)
+                        for wf in written_files:
+                            norm_wf = os.path.normpath(wf)
+                            real_wf = os.path.realpath(norm_wf)
+                            if (norm_cfg == norm_wf or norm_wf.startswith(norm_cfg + os.sep) or norm_cfg.startswith(norm_wf + os.sep) or
+                                real_cfg == real_wf or real_wf.startswith(real_cfg + os.sep) or real_wf.startswith(norm_wf + os.sep)):
+                                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH modified earlier in command line requires confirmation: {rg_cfg}"
+                    cfg_path = Path(expand_path(rg_cfg, cwd))
+                    if cfg_path.is_file():
+                        try:
+                            cfg_content = cfg_path.read_text(errors='replace')
+                            for line in cfg_content.splitlines():
+                                line_s = line.strip()
+                                if line_s and not line_s.startswith('#'):
+                                    try:
+                                        rg_cfg_tokens.extend(shlex.split(line_s, comments=True))
+                                    except Exception:
+                                        rg_cfg_tokens.extend(line_s.split())
+                            if any(tok.startswith(('--pre', '--hostname-bin')) or tok in ('--pre', '--hostname-bin') for tok in rg_cfg_tokens):
+                                return 'force_ask', f"rg with RIPGREP_CONFIG_PATH configuring preprocessor or helper program requires confirmation: {rg_cfg}"
+                            if any(tok.startswith(('--hidden', '--no-ignore', '--follow')) or (tok.startswith('-') and not tok.startswith('--') and any(c in tok for c in ('L', 'u'))) for tok in rg_cfg_tokens):
+                                return 'ask', f"rg with RIPGREP_CONFIG_PATH configuring hidden files or symlink following requires confirmation: {rg_cfg}"
+                        except Exception:
+                            return 'force_ask', f"rg unable to safely read RIPGREP_CONFIG_PATH file: {rg_cfg}"
         # Check for unexpanded variables
         for a in args:
             if not a.startswith('-') and ('$' in a or '`' in a):
@@ -3307,6 +3356,9 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             return 'ask', f"{base_cmd} with hidden files or symlink following requires confirmation: {' '.join(cmd_tokens)}"
         if base_cmd == 'rg':
             has_pattern_flag, pattern_files, positionals = parse_rg_args(args)
+            if rg_cfg_tokens:
+                _, cfg_pattern_files, _ = parse_rg_args(rg_cfg_tokens)
+                pattern_files.extend(cfg_pattern_files)
         else:
             positionals = [a for a in args if not a.startswith('-')]
             has_pattern_flag = any(
@@ -3713,29 +3765,50 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             return out_check
         if any(a.startswith('+') for a in args):
             return 'force_ask', f"cargo with toolchain override requires confirmation: {' '.join(cmd_tokens)}"
+        rustup_tc = os.environ.get('RUSTUP_TOOLCHAIN')
+        if rustup_tc and (rustup_tc.startswith(('/', '.')) or os.path.exists(rustup_tc)):
+            return 'force_ask', f"cargo with custom RUSTUP_TOOLCHAIN requires confirmation: {rustup_tc}"
         if args:
             sub = args[0]
             if sub == 'fmt':
-                curr = Path(cwd).resolve() if cwd else Path.cwd().resolve()
-                while True:
-                    for tc_name in ('rust-toolchain.toml', 'rust-toolchain'):
-                        tc_file = curr / tc_name
-                        if tc_file.is_file():
-                            try:
-                                tc_text = tc_file.read_text(errors='replace')
-                                if re.search(r'(?m)^\s*path\s*=', tc_text) or 'toolchain.path' in tc_text:
-                                    return 'force_ask', f"cargo fmt with custom toolchain path in {tc_name} requires confirmation: {' '.join(cmd_tokens)}"
-                                if tomllib:
-                                    tc_data = tomllib.loads(tc_text)
-                                    if isinstance(tc_data, dict):
-                                        tc_section = tc_data.get('toolchain')
-                                        if isinstance(tc_section, dict) and 'path' in tc_section:
-                                            return 'force_ask', f"cargo fmt with custom toolchain path in {tc_name} requires confirmation: {' '.join(cmd_tokens)}"
-                            except Exception:
-                                pass
-                    if curr.parent == curr:
-                        break
-                    curr = curr.parent
+                search_dirs = [Path(cwd).resolve() if cwd else Path.cwd().resolve()]
+                for idx_arg, a in enumerate(args[1:]):
+                    if a == '--manifest-path' and idx_arg + 1 < len(args[1:]):
+                        mp = Path(expand_path(args[1:][idx_arg + 1], cwd)).resolve()
+                        search_dirs.append(mp.parent if mp.is_file() else mp)
+                    elif a.startswith('--manifest-path='):
+                        mp = Path(expand_path(a.split('=', 1)[1], cwd)).resolve()
+                        search_dirs.append(mp.parent if mp.is_file() else mp)
+                for s_dir in search_dirs:
+                    curr = s_dir
+                    while True:
+                        for tc_name in ('rust-toolchain.toml', 'rust-toolchain'):
+                            tc_file = curr / tc_name
+                            norm_tc = os.path.normpath(str(tc_file))
+                            real_tc = os.path.realpath(norm_tc)
+                            if written_files:
+                                for wf in written_files:
+                                    norm_wf = os.path.normpath(wf)
+                                    real_wf = os.path.realpath(norm_wf)
+                                    if (norm_tc == norm_wf or norm_wf.startswith(norm_tc + os.sep) or norm_tc.startswith(norm_wf + os.sep) or
+                                        real_tc == real_wf or real_wf.startswith(real_tc + os.sep) or real_tc.startswith(norm_wf + os.sep)):
+                                        return 'force_ask', f"cargo fmt with toolchain file modified earlier in command line requires confirmation: {tc_file}"
+                            if tc_file.is_file():
+                                try:
+                                    tc_text = tc_file.read_text(errors='replace')
+                                    if re.search(r'(?m)^\s*path\s*=', tc_text) or 'toolchain.path' in tc_text:
+                                        return 'force_ask', f"cargo fmt with custom toolchain path in {tc_name} requires confirmation: {' '.join(cmd_tokens)}"
+                                    if tomllib:
+                                        tc_data = tomllib.loads(tc_text)
+                                        if isinstance(tc_data, dict):
+                                            tc_section = tc_data.get('toolchain')
+                                            if isinstance(tc_section, dict) and 'path' in tc_section:
+                                                return 'force_ask', f"cargo fmt with custom toolchain path in {tc_name} requires confirmation: {' '.join(cmd_tokens)}"
+                                except Exception:
+                                    pass
+                        if curr.parent == curr:
+                            break
+                        curr = curr.parent
                 return 'allow', f"Safe cargo command: cargo {sub}"
             if sub in {'check', 'clippy', 'test', 'bench', 'run', 'build'}:
                 return 'force_ask', f"Cargo command may execute build scripts or procedural macros: cargo {sub}"
