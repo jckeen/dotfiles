@@ -3956,6 +3956,84 @@ class TestAgyPermissionClassifier(unittest.TestCase):
         })
         self.assertEqual(res_cfg_local['decision'], 'allow')
 
+    def test_round_43_hardening(self):
+        """Verify Round 43 security hardening:
+        1. Redirection checks consulting written_files to catch newly created symlink/file targets.
+        2. cp -l and cp -s link creation flags and accessing git administrative source paths.
+        3. Literal filename normalization preserving real symlink resolution for paths with quotes.
+        4. git stash list with -p and --show-signature safeguards.
+        """
+        git_dir = Path(self.test_ws) / 'r43_repo'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=str(git_dir), check=True)
+        (git_dir / 'README.md').write_text('# Hello\n')
+        subprocess.run(['git', 'add', 'README.md'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'commit', '-m', 'initial'], cwd=str(git_dir), check=True)
+
+        # 1. Redirection to file created earlier in compound command
+        res_cp_redir = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp -s .git/hooks/pre-commit hook-alias; printf payload > hook-alias', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cp_redir['decision'], 'force_ask')
+
+        # 2. cp -l / cp -s link creation and git admin source checks
+        res_cp_l = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp -l .git/hooks/pre-commit hook-copy', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cp_l['decision'], 'force_ask')
+        self.assertIn('link creation', res_cp_l['reason'])
+
+        res_cp_admin_src = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'cp .git/hooks/pre-commit normal-copy', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_cp_admin_src['decision'], 'ask')
+        self.assertIn('git administrative', res_cp_admin_src['reason'])
+
+        # 3. Literal filename with single quote pointing to .env
+        env_file = git_dir / '.env'
+        env_file.write_text('SECRET=xyz\n')
+        quoted_symlink = git_dir / "pub'lic"
+        try:
+            quoted_symlink.symlink_to(env_file)
+        except OSError:
+            pass
+
+        res_view_quoted = self.run_classifier({
+            'toolCall': {'name': 'view_file', 'args': {'AbsolutePath': str(quoted_symlink)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_view_quoted['decision'], 'deny')
+        self.assertIn('sensitive', res_view_quoted['reason'])
+
+        # 4. git stash list with -p and --show-signature
+        subprocess.run(['git', 'add', '.env'], cwd=str(git_dir), check=True)
+        subprocess.run(['git', 'stash', 'push', '-m', 'stashed env'], cwd=str(git_dir), check=True)
+
+        res_stash_p = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash list -p', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_stash_p['decision'], 'deny')
+        self.assertIn('sensitive', res_stash_p['reason'])
+
+        res_stash_sig = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash list --show-signature', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_stash_sig['decision'], 'force_ask')
+        self.assertIn('signature', res_stash_sig['reason'])
+
+        res_stash_clean = self.run_classifier({
+            'toolCall': {'name': 'run_command', 'args': {'CommandLine': 'git stash list', 'Cwd': str(git_dir)}},
+            'workspacePaths': [str(git_dir)],
+        })
+        self.assertEqual(res_stash_clean['decision'], 'allow')
+
 
 if __name__ == '__main__':
     unittest.main()

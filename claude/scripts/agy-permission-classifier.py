@@ -291,42 +291,50 @@ def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
             if is_sensitive_credential_path(exp, cwd, _in_brace=True):
                 return True
 
-    # Strip shell quotes and backslash escapes (e.g. /etc/sha""dow or /etc/sha\dow)
-    clean = re.sub(r'[\"\'\\]', '', path_str)
-
-    # Check for glob/bracket tricks like .en[v] or ~/.s[s]h/id_*
-    clean = re.sub(r'\[(.)\]', r'\1', clean)
-    if matches_sensitive_pattern(clean) or matches_sensitive_pattern(path_str):
+    # 1. First, check literal path_str directly against patterns and resolve real filesystem target
+    if matches_sensitive_pattern(path_str) or matches_sensitive_pattern(os.path.basename(path_str)):
         return True
 
-    norm = expand_path(clean, cwd)
-    if matches_sensitive_pattern(os.path.basename(norm)) or matches_sensitive_pattern(norm):
+    norm = expand_path(path_str, cwd)
+    if matches_sensitive_pattern(norm) or matches_sensitive_pattern(os.path.basename(norm)):
         return True
 
-    # Check for process environment reads (/proc/*/environ, /proc/self/environ, etc.)
-    norm_proc = norm.replace('\\', '/')
-    clean_proc = clean.replace('\\', '/')
-    if (norm_proc.startswith('/proc/') and ('/environ' in norm_proc or os.path.basename(norm_proc) == 'environ')) or \
-       (clean_proc.startswith('/proc/') and ('/environ' in clean_proc or os.path.basename(clean_proc) == 'environ')):
-        return True
     try:
-        resolved = str(Path(norm).resolve()).replace('\\', '/')
-        if resolved.startswith('/proc/') and ('/environ' in resolved or os.path.basename(resolved) == 'environ'):
+        resolved = str(Path(norm).resolve())
+        if matches_sensitive_pattern(resolved) or matches_sensitive_pattern(os.path.basename(resolved)):
             return True
     except Exception:
-        pass
+        resolved = norm
 
-    # Check for Git config or common credential stores
-    norm_slash = norm.replace('\\', '/')
-    clean_slash = clean.replace('\\', '/')
-    if (norm_slash.endswith('/.git/config') or clean_slash.endswith('/.git/config') or
-        norm_slash == '.git/config' or clean_slash == '.git/config' or
-        '/.git/config/' in norm_slash or
-        norm_slash.endswith('/.git-credentials') or clean_slash.endswith('/.git-credentials') or
-        norm_slash.endswith('/.docker/config.json') or clean_slash.endswith('/.docker/config.json') or
-        any(norm_slash == p or norm_slash.startswith(p + '/') or clean_slash == p or clean_slash.startswith(p + '/')
-            for p in ('/etc/shadow', '/etc/gshadow', '/etc/sudoers', '/etc/sudoers.d'))):
-        return True
+    # 2. Also check de-obfuscated clean path (e.g. /etc/sha""dow or .en[v])
+    clean = re.sub(r'[\"\'\\]', '', path_str)
+    clean = re.sub(r'\[(.)\]', r'\1', clean)
+    if clean != path_str:
+        if matches_sensitive_pattern(clean) or matches_sensitive_pattern(os.path.basename(clean)):
+            return True
+        clean_norm = expand_path(clean, cwd)
+        if matches_sensitive_pattern(clean_norm) or matches_sensitive_pattern(os.path.basename(clean_norm)):
+            return True
+        try:
+            clean_resolved = str(Path(clean_norm).resolve())
+            if matches_sensitive_pattern(clean_resolved) or matches_sensitive_pattern(os.path.basename(clean_resolved)):
+                return True
+        except Exception:
+            clean_resolved = clean_norm
+    else:
+        clean_norm = norm
+        clean_resolved = resolved
+
+    # Check for process environment reads (/proc/*/environ, /proc/self/environ, etc.)
+    for p_cand in (norm, resolved, clean_norm, clean_resolved):
+        p_cand_slash = p_cand.replace('\\', '/')
+        if p_cand_slash.startswith('/proc/') and ('/environ' in p_cand_slash or os.path.basename(p_cand_slash) == 'environ'):
+            return True
+        if (p_cand_slash.endswith('/.git/config') or p_cand_slash == '.git/config' or '/.git/config/' in p_cand_slash or
+            p_cand_slash.endswith('/.git-credentials') or p_cand_slash == '.git-credentials' or
+            p_cand_slash.endswith('/.docker/config.json') or
+            any(p_cand_slash == p or p_cand_slash.startswith(p + '/') for p in ('/etc/shadow', '/etc/gshadow', '/etc/sudoers', '/etc/sudoers.d'))):
+            return True
 
     for prefix in get_sensitive_credential_prefixes():
         prefixes_to_check = {os.path.abspath(prefix)}
@@ -336,19 +344,18 @@ def is_sensitive_credential_path(path_str, cwd=None, _in_brace=False):
             except Exception:
                 pass
         for norm_prefix in prefixes_to_check:
-            # Direct exact or prefix match
-            if norm == norm_prefix or norm.startswith(norm_prefix + os.sep):
-                return True
-            # Wildcard pattern match (e.g. ~/.a?s/credentials or ~/.s*h/id_rsa or /home/*/.ssh)
-            if any(c in norm for c in ('*', '?', '[')):
-                if fnmatch.fnmatch(norm_prefix, norm) or fnmatch.fnmatch(norm, norm_prefix):
+            for p_cand in (norm, resolved, clean_norm, clean_resolved):
+                if p_cand == norm_prefix or p_cand.startswith(norm_prefix + os.sep):
                     return True
-                norm_parts = norm.strip(os.sep).split(os.sep)
-                prefix_parts = norm_prefix.strip(os.sep).split(os.sep)
-                if len(norm_parts) >= len(prefix_parts):
-                    if all(fnmatch.fnmatch(p_part, n_part) or fnmatch.fnmatch(n_part, p_part)
-                           for p_part, n_part in zip(prefix_parts, norm_parts[:len(prefix_parts)])):
+                if any(c in p_cand for c in ('*', '?', '[')):
+                    if fnmatch.fnmatch(norm_prefix, p_cand) or fnmatch.fnmatch(p_cand, norm_prefix):
                         return True
+                    p_parts = p_cand.strip(os.sep).split(os.sep)
+                    prefix_parts = norm_prefix.strip(os.sep).split(os.sep)
+                    if len(p_parts) >= len(prefix_parts):
+                        if all(fnmatch.fnmatch(pref, part) or fnmatch.fnmatch(part, pref)
+                               for pref, part in zip(prefix_parts, p_parts[:len(prefix_parts)])):
+                            return True
     return False
 
 
@@ -959,6 +966,9 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
         elif git_sub == 'stash' and len(args) > 1 and args[1] == 'show':
             safe_stash = strip_git_output_options(args[2:])
             cmd = ['git', 'stash', 'show', '--name-only'] + [a for a in safe_stash if a != '--name-only']
+        elif git_sub == 'stash' and len(args) > 1 and args[1] == 'list' and git_log_has_diff_options(args):
+            safe_stash = strip_git_output_options(args[2:])
+            cmd = ['git', 'stash', 'list', '--name-only', '--format=', '--no-show-signature'] + [a for a in safe_stash if not a.startswith('--format=') and a != '--name-only']
         elif git_sub == 'format-patch':
             log_args = [a for a in safe_args if not a.startswith(('--stdout', '--numbered', '-n', '-N', '--keep-subject', '-k'))]
             cmd = ['git', 'log', '--name-only', '--format=', '--no-show-signature'] + log_args
@@ -1769,6 +1779,12 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                     return 'ask', f"Redirection with unexpanded variable or glob requires approval: {target}"
                 if is_sensitive_credential_path(target, cwd):
                     return 'deny', f"Redirect targeting sensitive path is forbidden: {target}"
+                if written_files:
+                    norm_target = os.path.normpath(expand_path(target, cwd))
+                    for wf in written_files:
+                        norm_wf = os.path.normpath(wf)
+                        if norm_target == norm_wf or norm_target.startswith(norm_wf + os.sep) or norm_wf.startswith(norm_target + os.sep):
+                            return 'force_ask', f"Redirection targeting path modified or created earlier in the command line requires confirmation: {target}"
                 if tok == '<':
                     if not is_path_in_workspaces(target, workspace_paths, cwd):
                         return 'ask', f"Input redirection reading outside workspace requires approval: {target}"
@@ -2294,19 +2310,28 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             # Only strictly read-only queries are auto-approved
             if len(args) > 1:
                 stash_sub = args[1]
-                if stash_sub == 'list':
-                    return 'allow', 'Safe git stash list'
-                if stash_sub == 'show':
+                if stash_sub in ('list', 'show'):
+                    has_no_sig = any(a == '--no-show-signature' for a in args)
+                    has_sig = any(a == '--show-signature' or a.startswith(('--show-sig', '--show-signature=')) or
+                                  (a.startswith(('--format=', '--pretty=')) and any(g in a for g in ('%G', '%g'))) for a in args)
+                    if has_sig or (not has_no_sig and git_has_show_signature_configured(cwd)):
+                        return 'force_ask', f"git stash {stash_sub} with signature display invokes external gpg program: {' '.join(cmd_tokens)}"
+                    if git_has_gpg_program_configured(cwd) and any(a.startswith(('--format=', '--pretty=')) for a in args):
+                        return 'force_ask', f"git stash {stash_sub} with formatted output and custom gpg.program requires confirmation: {' '.join(cmd_tokens)}"
+
                     has_no_ext = any(a == '--no-ext-diff' for a in args)
                     has_no_textconv = any(a == '--no-textconv' for a in args)
                     if (not has_no_ext or not has_no_textconv) and git_has_external_diff_configured(cwd):
-                        return 'force_ask', f"git stash show with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
-                    probe_res = git_command_touches_sensitive_files('stash', args, cwd)
-                    if probe_res == 'sensitive':
-                        return 'deny', f"git stash show touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
-                    if probe_res == 'unknown':
-                        return 'force_ask', f"git stash show patch cannot be verified safely: {' '.join(cmd_tokens)}"
-                    return 'allow', 'Safe git stash show'
+                        return 'force_ask', f"git stash {stash_sub} with configured external diff/textconv driver requires confirmation: {' '.join(cmd_tokens)}"
+
+                    has_diff = stash_sub == 'show' or git_log_has_diff_options(args)
+                    if has_diff:
+                        probe_res = git_command_touches_sensitive_files('stash', args, cwd)
+                        if probe_res == 'sensitive':
+                            return 'deny', f"git stash {stash_sub} touching sensitive credential files in patch output is forbidden: {' '.join(cmd_tokens)}"
+                        if probe_res == 'unknown':
+                            return 'force_ask', f"git stash {stash_sub} patch cannot be verified safely: {' '.join(cmd_tokens)}"
+                    return 'allow', f"Safe git stash {stash_sub}"
             return 'force_ask', f"Git stash modification requires confirmation: {' '.join(cmd_tokens)}"
 
         if git_sub == 'worktree':
@@ -3599,13 +3624,22 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
             if not is_path_in_workspaces(p, workspace_paths, cwd):
                 return 'ask', f"{base_cmd} path outside workspace requires approval: {p}"
 
+        if base_cmd == 'cp':
+            has_link_flag = any(
+                a in ('-l', '--link', '-s', '--symbolic-link') or
+                (a.startswith('-') and not a.startswith('--') and a != '-' and any(c in a for c in ('l', 's'))) or
+                (a.startswith('--') and any(opt.startswith(a.split('=', 1)[0]) for opt in ('--link', '--symbolic-link')) and len(a.split('=', 1)[0]) >= 4)
+                for a in args
+            )
+            if has_link_flag:
+                return 'force_ask', f"cp with link creation option (-l/--link, -s/--symbolic-link) requires confirmation: {' '.join(cmd_tokens)}"
+
         for ed in [dest_dir] + effective_dests:
             if is_git_admin_path(ed, cwd):
                 return 'ask', f"{base_cmd} destination targeting git administrative file requires confirmation: {ed}"
-        if base_cmd == 'mv':
-            for src in sources:
-                if is_git_admin_path(src, cwd):
-                    return 'ask', f"mv removing git administrative file requires confirmation: {src}"
+        for src in sources:
+            if is_git_admin_path(src, cwd):
+                return 'ask', f"{base_cmd} accessing git administrative file requires confirmation: {src}"
 
         for ed in effective_dests:
             ed_norm = expand_path(ed, cwd)
