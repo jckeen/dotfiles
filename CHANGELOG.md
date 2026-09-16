@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
+
+- Antigravity asked for approval on nearly every command because its native
+  `permissions.allow` list held only prompt-saved exact commands and the
+  execution policy was the default `request-review`. `antigravity/permissions.json`
+  now ships a curated allow/ask/deny baseline (read-only inspection, git reads
+  and safe writes, bun/tsc/test runners, gh reads with matching `unsandboxed`
+  rules) plus `toolPermission: proceed-in-sandbox` and `enableTerminalSandbox`.
+- `setup.sh` merges the baseline into the machine-local settings file through
+  `claude/scripts/agy-apply-permissions.py` (apply keeps local grants; prune
+  resets them after a backup); `check-antigravity.sh` warns on drift. This
+  replaces what the reverted classifier (#411) tried to do with a parser.
+
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
 - Reverted 70dfa97. The classifier merged while its required `checks` job was

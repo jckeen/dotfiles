@@ -1855,6 +1855,20 @@ if [ -f "$DOTFILES_DIR/antigravity/hooks.json" ]; then
   echo "  -> Antigravity hooks.json linked"
 fi
 
+# Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
+# mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
+# (never symlinked — it also holds trustedWorkspaces and prompt-saved grants).
+# Merge keeps user-added rules; `agy-apply-permissions.py prune` resets them.
+if [ -f "$DOTFILES_DIR/antigravity/permissions.json" ]; then
+  if run python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
+      --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json" \
+      --rules "$DOTFILES_DIR/antigravity/permissions.json"; then
+    echo "  -> Antigravity permission baseline applied (proceed-in-sandbox)"
+  else
+    echo "  -> WARNING: Antigravity permission baseline not applied (see above)"
+  fi
+fi
+
 # MCP servers: the live mcp_config.json stays LOCAL (machines add private
 # servers), so seed it from the template only when absent or empty — never
 # overwrite an existing non-empty config.

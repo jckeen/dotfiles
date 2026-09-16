@@ -1,0 +1,49 @@
+{
+  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes unless regex:. Precedence: deny > ask > allow. With toolPermission=proceed-in-sandbox every sandboxed command auto-runs; the allow list matters when the sandbox is off, and unsandboxed() covers read-only network commands the sandbox would otherwise block.",
+  "settings": {
+    "toolPermission": "proceed-in-sandbox",
+    "enableTerminalSandbox": true
+  },
+  "permissions": {
+    "allow": [
+      "command(cat)", "command(head)", "command(tail)", "command(wc)", "command(ls)", "command(eza)",
+      "command(tree)", "command(pwd)", "command(echo)", "command(printf)", "command(file)", "command(stat)",
+      "command(du)", "command(df)", "command(which)", "command(type)", "command(date)", "command(uname)",
+      "command(realpath)", "command(readlink)", "command(dirname)", "command(basename)", "command(diff)",
+      "command(sort)", "command(uniq)", "command(cut)", "command(tr)", "command(awk)", "command(sed -n)",
+      "command(jq)", "command(yq)", "command(sha256sum)", "command(rg)", "command(grep)", "command(fd)",
+      "command(git status)", "command(git log)", "command(git diff)", "command(git show)", "command(git branch)",
+      "command(git rev-parse)", "command(git remote)", "command(git stash list)", "command(git worktree list)",
+      "command(git tag)", "command(git blame)", "command(git describe)", "command(git ls-files)",
+      "command(git config --get)", "command(git merge-base)", "command(git rev-list)", "command(git shortlog)",
+      "command(git add)", "command(git commit)", "command(git switch)", "command(git checkout -b)",
+      "command(git stash push)", "command(git stash pop)", "command(git worktree add)",
+      "command(git fetch)", "command(git pull --ff-only)",
+      "command(bun test)", "command(bun run)", "command(bun build)", "command(bunx tsc)", "command(tsc)",
+      "command(bun --version)", "command(node --version)", "command(python3 --version)", "command(python3 -m pytest)",
+      "command(regex:^bash +[A-Za-z0-9_./-]+\\.test\\.sh$)",
+      "command(regex:^python3 +[A-Za-z0-9_./-]+\\.test\\.py$)",
+      "command(shellcheck)", "command(./check-claude.sh)", "command(./check-antigravity.sh)", "command(./check-codex.sh)",
+      "command(gh pr view)", "command(gh pr list)", "command(gh pr checks)", "command(gh pr diff)",
+      "command(gh issue view)", "command(gh issue list)", "command(gh run view)", "command(gh run list)",
+      "command(gh repo view)", "command(gh auth status)",
+      "unsandboxed(git fetch)", "unsandboxed(git pull --ff-only)",
+      "unsandboxed(gh pr view)", "unsandboxed(gh pr list)", "unsandboxed(gh pr checks)", "unsandboxed(gh pr diff)",
+      "unsandboxed(gh issue view)", "unsandboxed(gh issue list)", "unsandboxed(gh run view)", "unsandboxed(gh run list)",
+      "unsandboxed(gh repo view)", "unsandboxed(gh auth status)"
+    ],
+    "ask": [
+      "command(rm -rf)", "command(git reset --hard)", "command(git branch -D)", "command(git push --force-with-lease)",
+      "command(git worktree remove)", "command(git clean)", "command(git rebase)", "command(bun install)",
+      "command(bunx)", "command(npx)", "command(curl)", "command(wget)", "command(gh api)", "command(gh pr merge)",
+      "command(gh pr create)", "command(gh issue create)"
+    ],
+    "deny": [
+      "command(sudo)", "command(su)", "command(shutdown)", "command(reboot)", "command(mkfs)", "command(dd)",
+      "command(regex:^git push\\b.*\\s(--force|-f)(\\s|$))",
+      "command(regex:^rm -rf\\s+(/|~|\\$HOME)(\\s|$))",
+      "command(gh repo delete)",
+      "read_file(~/.ssh)", "read_file(~/.aws)", "read_file(~/.gnupg)"
+    ]
+  }
+}
