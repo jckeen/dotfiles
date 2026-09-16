@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
+
+- Reverted 70dfa97. The classifier merged while its required `checks` job was
+  still running and that job has failed on `main` ever since (five cases fall
+  to `force_ask` on the CI runner while passing locally, #415). In use it also
+  did not reduce prompting: anything state-changing, network, or unfamiliar
+  still asks. It returns only if it can prove a lower prompt rate and passes
+  CI without environment-specific probes; the three reproduced bypasses from
+  the 2026-09-15 pre-push review would need fixing first.
+
 ## 2026-09-15 — fix: keep large Antigravity reviews linear and reject partial output
 
 - The Antigravity gate checks for an empty diff in linear time; the quadratic
