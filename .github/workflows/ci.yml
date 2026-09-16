@@ -190,6 +190,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/setup-dry-run.test.sh
 
+      # setup.sh must refuse to publish $HOME links from a linked git
+      # worktree: the links would dangle when the worktree is removed.
+      - name: setup-worktree-guard (no links to temporary checkouts)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/setup-worktree-guard.test.sh
+
       - name: codex-skill-bundle (recursive link audit)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/codex-skill-bundle.test.sh

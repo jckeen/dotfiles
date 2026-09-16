@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-15 — fix: setup.sh refuses linked worktrees; sync-memory names refused paths
+
+- `setup.sh` was run from a throwaway `/tmp` review worktree, which linked two
+  `~/.claude/scripts` entries at that worktree; they dangled once it was
+  removed and `check-claude` blocked every launch. Setup now refuses to
+  publish links from a linked git worktree (`--check` stays usable;
+  `DOTFILES_ALLOW_LINKED_WORKTREE=1` overrides), with a CI test.
+- `sync-memory` aborted on a memory file named `*google_oauth_published*` with
+  no hint which file; the path filter treats `oauth` as auth-like by design.
+  The abort now names the refused file and the fix (rename it).
+
 ## 2026-09-15 — fix: keep large Antigravity reviews linear and reject partial output
 
 - The Antigravity gate checks for an empty diff in linear time; the quadratic
