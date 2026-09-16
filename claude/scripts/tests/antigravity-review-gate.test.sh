@@ -215,6 +215,44 @@ printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 ANTIGRAVITY_GATE_TIMEOUT=090 check "leading-zero ANTIGRAVITY_GATE_TIMEOUT is decimal" 0 "LGTB verdict" --uncommitted
 rm -rf "$R"
 
+# A failed run keeps agy's log for diagnosis (#409); a clean run removes it.
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf 'fake agy log line\n' > "$AGY_FAKE_DIR/log"
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+kept="$(grep -o 'agy log retained for diagnosis: [^ ]*' "$AGY_FAKE_DIR/gate-out" | sed 's/.*: //')"
+kept_err="$(grep -o '(stderr: [^)]*)' "$AGY_FAKE_DIR/gate-out" | sed 's/(stderr: //; s/)//')"
+assert "failed run announces the retained agy log" "[ -n '$kept' ]"
+assert "retained agy log exists with the CLI's content" "grep -q 'fake agy log line' '$kept'"
+for f in "$kept" "$kept_err"; do [ -n "$f" ] && rm -f "$f"; done; :
+# A degraded run exits 0 without --require but is still a diagnostic case.
+: > "$AGY_FAKE_DIR/output"
+printf 'fake agy log line\n' > "$AGY_FAKE_DIR/log"
+printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr"
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1)
+kept="$(grep -o 'agy log retained for diagnosis: [^ ]*' "$AGY_FAKE_DIR/gate-out" | sed 's/.*: //')"
+kept_err="$(grep -o '(stderr: [^)]*)' "$AGY_FAKE_DIR/gate-out" | sed 's/(stderr: //; s/)//')"
+assert "degraded exit-0 run still retains the agy log" "[ -n '$kept' ] && [ -f '$kept' ]"
+for f in "$kept" "$kept_err"; do [ -n "$f" ] && rm -f "$f"; done; :; rm -f "$AGY_FAKE_DIR/stderr"
+# A crash that wrote stderr but no log still keeps the stderr capture.
+: > "$AGY_FAKE_DIR/output"; rm -f "$AGY_FAKE_DIR/log"
+printf 'agy crashed before logging\n' > "$AGY_FAKE_DIR/stderr"
+(cd "$R" && "$GATE" --uncommitted --require > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+kept="$(grep -o 'agy log retained for diagnosis: [^ ]*' "$AGY_FAKE_DIR/gate-out" | sed 's/.*: //')"
+kept_err="$(grep -o '(stderr: [^)]*)' "$AGY_FAKE_DIR/gate-out" | sed 's/(stderr: //; s/)//')"
+assert "stderr-only failure retains the stderr capture" "[ -n '$kept_err' ] && grep -q 'crashed before logging' '$kept_err'"
+for f in "$kept" "$kept_err"; do [ -n "$f" ] && rm -f "$f"; done; :; rm -f "$AGY_FAKE_DIR/stderr"
+# A pre-dispatch failure (unresolvable base) never ran agy: nothing to retain.
+(cd "$R" && "$GATE" --base does-not-exist > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+assert "pre-dispatch failure retains no empty agy log" "! grep -q 'agy log retained' '$AGY_FAKE_DIR/gate-out'"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1)
+assert "clean run does not retain the agy log" "! grep -q 'agy log retained' '$AGY_FAKE_DIR/gate-out'"
+clean_log="$(grep -A1 -x -- '--log-file' "$AGY_FAKE_DIR/argv" | tail -n1)"
+assert "clean run removes the agy log from disk" "[ -n '$clean_log' ] && [ ! -e '$clean_log' ]"
+rm -rf "$R"
+
 # The ceiling is shell arithmetic and a Go duration; suffixed values fail closed.
 new_repo
 echo "change" >> "$R/code.txt"
