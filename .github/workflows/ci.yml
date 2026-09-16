@@ -245,6 +245,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/antigravity-config.test.sh
 
+      - name: Antigravity permission baseline (merge/check/prune)
+        if: ${{ !cancelled() }}
+        run: bash claude/scripts/tests/agy-permissions.test.sh
+
       - name: Claude memory sync boundary
         if: ${{ !cancelled() }}
         run: bash claude/scripts/tests/memory-sync.test.sh

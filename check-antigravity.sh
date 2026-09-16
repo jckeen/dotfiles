@@ -65,6 +65,25 @@ else
   check_link "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" "GEMINI.md"
   check_link "$AGY_SRC/hooks.json" "$AGY_DST/hooks.json" "hooks.json"
 
+  # Permission baseline (antigravity/permissions.json) is merged into the
+  # machine-local ~/.gemini/antigravity-cli/settings.json by setup.sh, never
+  # linked: that file also holds trustedWorkspaces and prompt-saved grants.
+  AGY_SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
+  if [ -f "$AGY_SRC/permissions.json" ] && command -v python3 >/dev/null 2>&1; then
+    # --heal applies the additive merge first (same idempotent step setup.sh runs).
+    if [ "$HEAL" -eq 1 ]; then
+      python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
+        --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" >/dev/null 2>&1 || true
+    fi
+    if baseline_out="$(python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" check \
+        --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" 2>&1)"; then
+      echo "OK      permission baseline: $baseline_out"
+    else
+      yellow "DRIFT   permission baseline: $baseline_out (re-run setup.sh)"
+      WARNINGS=$((WARNINGS + 1))
+    fi
+  fi
+
   AGY_SKILLS_UNSAFE=0
   if [ -L "$AGY_DST/skills" ]; then
     red "UNSAFE  skills is a managed directory symlink -> $(readlink "$AGY_DST/skills")"
