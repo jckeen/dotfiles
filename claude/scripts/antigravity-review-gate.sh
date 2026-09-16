@@ -121,7 +121,10 @@ if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
 fi
 
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
+GATE_KEEP_AGY_LOG=0
 degrade() {
+  # A degraded run is a diagnostic case even when it exits 0 (#409).
+  GATE_KEEP_AGY_LOG=1
   yellow "⚠ antigravity-review-gate: $1"
   if [[ "$REQUIRED" == "1" ]]; then
     red "  ANTIGRAVITY_GATE_REQUIRED is set — treating as a hard failure."
@@ -259,7 +262,26 @@ ${FENCE}"
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
 AGY_ERR_FILE="$(mktemp -t agy-review-err.XXXXXX.txt)"
 AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
-trap 'rm -f "$SUMMARY_FILE" "$AGY_ERR_FILE" "$AGY_LOG_FILE"; gate_cleanup' EXIT
+# Keep agy's own log (and stderr) whenever the gate does not pass: a failed
+# or degraded run is exactly when the CLI-side log is needed (#409). The
+# review output itself is always removed — it can contain the diff.
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+gate_finish() {
+  local rc=$?
+  rm -f "$SUMMARY_FILE"
+  # Retain only when agy actually produced something (log or stderr has
+  # content) and the run did not pass cleanly: any non-zero exit, or a
+  # degrade that exited 0. A crash before the log exists still leaves stderr.
+  if [[ ( -s "$AGY_LOG_FILE" || -s "$AGY_ERR_FILE" ) && ( $rc -ne 0 || "$GATE_KEEP_AGY_LOG" == 1 ) ]]; then
+    yellow "  agy log retained for diagnosis: $AGY_LOG_FILE (stderr: $AGY_ERR_FILE)"
+  else
+    rm -f "$AGY_ERR_FILE" "$AGY_LOG_FILE"
+  fi
+  # Never let cleanup failure rewrite the gate's exit status under set -e.
+  gate_cleanup || true
+  return "$rc"
+}
+trap gate_finish EXIT
 
 # Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
 # (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
