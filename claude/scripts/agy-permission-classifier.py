@@ -840,7 +840,7 @@ def git_run_probe(args, cwd=None, timeout=1):
         if args and args[0] in ('status', 'diff', 'show', 'log', 'for-each-ref', 'rev-parse', 'stash', 'cat-file', 'ls-tree'):
             probe_cmd.extend(['-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'submodule.recurse=false'])
         cmd_args = list(args)
-        if args and args[0] in ('status', 'diff', 'stash'):
+        if args and args[0] in ('status', 'diff'):
             if not any(a.startswith('--ignore-submodules') for a in cmd_args):
                 if '--' in cmd_args:
                     idx = cmd_args.index('--')
@@ -849,6 +849,14 @@ def git_run_probe(args, cwd=None, timeout=1):
                     cmd_args.insert(1, '--ignore-submodules=all')
                 else:
                     cmd_args.append('--ignore-submodules=all')
+        elif args and args[0] == 'stash':
+            if len(cmd_args) > 1 and cmd_args[1] in ('show', 'list'):
+                if not any(a.startswith('--ignore-submodules') for a in cmd_args):
+                    if '--' in cmd_args:
+                        idx = cmd_args.index('--')
+                        cmd_args.insert(idx, '--ignore-submodules=all')
+                    else:
+                        cmd_args.insert(2, '--ignore-submodules=all')
         probe_cmd.extend(cmd_args)
         res = subprocess.run(
             probe_cmd,
@@ -1475,8 +1483,8 @@ def git_command_touches_sensitive_files(git_sub, args, cwd):
             return 'safe'
         if not res.stdout and res.returncode != 0:
             err = (res.stderr or '').lower()
-            # Non-git directory or missing revision in empty repository: no patch is produced so no credentials leak
-            if any(k in err for k in ('not a git repository', 'ambiguous argument', 'unknown revision', 'bad revision', 'does not have any commits yet')):
+            # Non-git directory, no stashes, or missing revision in empty repository: no patch is produced so no credentials leak
+            if any(k in err for k in ('not a git repository', 'ambiguous argument', 'unknown revision', 'bad revision', 'does not have any commits yet', 'no stash entries found', 'no stash entries exist', 'no stash')):
                 return 'safe'
         return 'unknown'
     except Exception:
@@ -3012,7 +3020,7 @@ def classify_subcommand(tokens, workspace_paths, cwd, depth=0, raw_subcmd=None, 
                 if flag in arg:
                     sub_val = arg[arg.index(flag) + 1:].lstrip('=')
                     if sub_val and sub_val != '/dev/null' and (is_sensitive_credential_path(sub_val, cwd) or matches_sensitive_pattern(sub_val)):
-                        return 'deny', f"Access to sensitive credential or key is forbidden: {arg}"
+                        return 'deny', f"Access to sensitive credential path is forbidden: {sub_val}"
 
     # 1. Privilege Escalation (Hard Deny)
     if base_cmd in {'sudo', 'su', 'doas', 'pkexec', 'chroot'}:
