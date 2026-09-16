@@ -29,6 +29,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`. Tests: `tests/doc-truth.test.sh` | Read-only | No |
 | `gen-instruction-files.sh` | Builds the three global instruction files (`claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md`) from the canonical sources in `agents/canon/` (ADR 0007) — shared rule blocks in `CANON.md`, per-tool voice in `fragments/`. `--check` verifies the committed artifacts are byte-current (run in CI via `check-agent-parity.sh`). Tests: `tests/agent-parity.test.sh` | Build (writes the three generated files) | Yes — regenerates committed artifacts |
 | `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
+| `agy-permission-classifier.py` | Antigravity PreToolUse hook; auto-approves safe read-only inspection, testing, and standard dev commands while prompting on state-altering or dangerous actions | Security / Hook | No |
 
 ## Large review requests
 

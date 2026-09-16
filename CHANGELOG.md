@@ -19,6 +19,15 @@
   against self-review. Diff preparation checks whitespace without quadratic
   shell substitution.
 
+## 2026-09-10 — feat: add Antigravity permission classifier
+
+### What changed
+- Added PreToolUse permission classifier for Antigravity (`agy-permission-classifier.py`)
+  to safely auto-approve benign read-only and dev commands while prompting on state
+  changes or blocking hazardous operations, mirroring Claude Code auto mode.
+- Wired the classifier in `antigravity/hooks.json` and added unit test coverage in
+  `claude/scripts/tests/agy-permission-classifier.test.py` and CI.
+
 ## 2026-09-10 — fix: preserve late writes and verify shipped artifacts
 
 ### What changed
