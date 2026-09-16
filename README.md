@@ -148,6 +148,15 @@ codex login            # Optional
 ./setup.sh --check     # read-only audit of all symlinks; exits non-zero if broken
 ./setup.sh --repair    # audit + recreate any broken/missing symlinks
 ./setup.sh --dry-run   # show what would change without writing anything
+```
+
+`setup.sh` refuses to run from a linked `git worktree` (agents create these for
+review branches): every managed link resolves against the checkout that runs
+it, so links would dangle once the worktree is removed. Run it from the main
+checkout, or set `DOTFILES_ALLOW_LINKED_WORKTREE=1` to link a worktree on
+purpose. `--check` stays read-only and works anywhere.
+
+```bash
 ./setup.sh --help      # usage and flag reference
 ```
 
@@ -341,7 +350,7 @@ This public dotfiles repo pairs with up to three **separate private repos** — 
 `claude-memory` holds:
 
 1. Your **Claude Code settings** (`settings.json`) — private permissions, MCP servers, and enabled plugins.
-2. Your **persistent Claude memory** (`dev/memory/`) — auto-memory files (`MEMORY.md` + `feedback_*.md`) Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild.
+2. Your **persistent Claude memory** (`dev/memory/`) — auto-memory files (`MEMORY.md` + `feedback_*.md`) Claude Code writes to `~/.claude/projects/`. Without this repo they only exist locally and vanish on machine rebuild. `sync-memory` publishes only `*/memory/**` paths and refuses any file whose *name* looks credential-like (`auth`, `oauth`, `session`, `cache`, `log`, `credential`, `token`, `secret`, `.env`, `.key`, `.pem`); name memory files after the topic, not the mechanism, or the sync aborts and names the file.
 3. **Archived personal context** (`identity/`) — identity and steering notes kept for reference. These are no longer live-linked into Claude; they're retained as an archive.
 4. **Project notes** (`stringer/`, `trnn/`) — durable per-project context.
 5. Your **personal identity & preferences** (`CLAUDE.md`) — imported by the public `claude/CLAUDE.md` via `@~/dev/claude-memory/CLAUDE.md`, so identity loads globally while staying out of the public repo.

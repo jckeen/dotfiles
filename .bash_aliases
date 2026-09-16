@@ -469,7 +469,8 @@ sync-memory() {
   while IFS= read -r -d '' staged_path; do
     if ! _memory_path_is_publishable "$staged_path"; then
       rm -f "$staged_paths"
-      echo "  SECRET-LIKE MEMORY PATH STAGED — aborting memory sync." >&2
+      echo "  SECRET-LIKE MEMORY PATH STAGED — aborting memory sync: $staged_path" >&2
+      echo "  Memory file names cannot contain auth/session/cache/log/credential/token/secret words (oauth counts); rename the file." >&2
       git -C "$mem_repo" restore --staged -- "$memory_pathspec"
       return 1
     fi

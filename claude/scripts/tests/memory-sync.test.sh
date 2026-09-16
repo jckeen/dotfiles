@@ -456,6 +456,18 @@ else
   fail "author sensitive-suffix rejection changed the remote"
 fi
 
+new_fixture denied_path_named
+printf 'no secret here\n' > "$TEST_DEV/claude-memory/project/memory/project_google_oauth_launch.md"
+err="$(sync-memory 2>&1 >/dev/null)"
+if grep -Fq 'SECRET-LIKE MEMORY PATH STAGED' <<< "$err" \
+  && grep -Fq 'project/memory/project_google_oauth_launch.md' <<< "$err" \
+  && grep -Fq 'rename the file' <<< "$err"; then
+  ok "path refusal names the offending memory file and the fix"
+else
+  fail "path refusal did not name the refused path:"
+  sed 's/^/      | /' <<< "$err"
+fi
+
 echo ""
 echo "memory-sync: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

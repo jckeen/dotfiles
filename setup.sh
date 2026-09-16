@@ -390,6 +390,30 @@ for arg in "$@"; do
     --yes|-y)  ASSUME_YES=1 ;;
   esac
 done
+
+# Refuse to publish $HOME links from a linked git worktree. Agents routinely
+# run setup.sh from a temporary `git worktree`; every managed link resolves
+# against DOTFILES_DIR, so that wires ~/.claude to a checkout that vanishes
+# when the branch lands (two ~/.claude/scripts links dangled at /tmp/trnn-gate-*
+# this way). --help and --check are read-only and stay usable anywhere.
+_setup_readonly=0
+for arg in "$@"; do
+  case "$arg" in --help|-h|--check) _setup_readonly=1 ;; esac
+done
+if [ "$_setup_readonly" = "0" ] && [ "${DOTFILES_ALLOW_LINKED_WORKTREE:-0}" != "1" ]; then
+  _setup_git_dir="$(git -C "$DOTFILES_DIR" rev-parse --git-dir 2>/dev/null || true)"
+  _setup_git_common="$(git -C "$DOTFILES_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
+  case "$_setup_git_dir" in ""|/*) ;; *) _setup_git_dir="$DOTFILES_DIR/$_setup_git_dir" ;; esac
+  case "$_setup_git_common" in ""|/*) ;; *) _setup_git_common="$DOTFILES_DIR/$_setup_git_common" ;; esac
+  if [ -n "$_setup_git_dir" ] \
+    && [ "$(realpath "$_setup_git_dir")" != "$(realpath "$_setup_git_common")" ]; then
+    echo "ERROR: refusing to run setup.sh from a linked git worktree: $DOTFILES_DIR" >&2
+    echo "       Links under \$HOME would point at this temporary checkout and dangle when it is removed." >&2
+    echo "       Run $(dirname "$(realpath "$_setup_git_common")")/setup.sh instead," >&2
+    echo "       or set DOTFILES_ALLOW_LINKED_WORKTREE=1 to link this worktree on purpose." >&2
+    exit 1
+  fi
+fi
 for arg in "$@"; do
   case "$arg" in
     --help|-h)
