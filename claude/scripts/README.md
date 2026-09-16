@@ -31,6 +31,17 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
 | `agy-permission-classifier.py` | Antigravity PreToolUse hook; auto-approves safe read-only inspection, testing, and standard dev commands while prompting on state-altering or dangerous actions | Security / Hook | No |
 
+## Large review requests
+
+The Codex gate sends oversized requests as contiguous direct-input parts in one
+native read-only session. Intermediate acknowledgments cannot authorize a push.
+The helper `review-multipart.py` verifies native persisted inputs, rejects
+compaction, and checks the observed model window against the native bundled
+catalog. Larger context is scoped to the same model's supported capacity. Missing
+or changed history, unsupported CLI metadata, and incomplete reviews fail closed.
+The normal setup links the helper alongside the gate; install them together.
+Gate or helper changes require independent review outside the configured gates.
+
 ## The Morning Workflow
 
 After an overnight run, you don't read every diff. You run:

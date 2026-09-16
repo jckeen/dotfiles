@@ -50,6 +50,8 @@ set -euo pipefail
 GATE_RUN_DIR=""
 OUT_FILE=""
 ERR_FILE=""
+REQUEST_FILE=""
+REQUEST_SHA=""
 KEEP_DIAGNOSTIC=false
 # Establish the helper without subprocesses so the first cancellation trap can
 # invalidate an earlier receipt even during script-directory discovery.
@@ -148,6 +150,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git
 # The shared capture helper installs gate_cleanup as its EXIT trap, including
 # exemption paths. Keep owned review files in that same cleanup contract.
 gate_cleanup() {
+  [[ -z "${REQUEST_FILE:-}" ]] || rm -f -- "$REQUEST_FILE"
   [[ -z "${OUT_FILE:-}" ]] || rm -f "$OUT_FILE"
   if [[ -n "${ERR_FILE:-}" && "${KEEP_DIAGNOSTIC:-false}" != true ]]; then
     rm -f "$ERR_FILE"
@@ -202,7 +205,17 @@ gate_select_diff_target
 # untracked files. Both gates consume the same capture implementation.
 gate_extract_diff
 
-if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
+# Linear-time check; Bash pattern substitution becomes quadratic on large diffs.
+# A failed read/check must not mint a no-diff receipt.
+if ! NONSPACE="$(python3 - "$GATE_RUN_DIR/diff.patch" <<'PYSPACE'
+from pathlib import Path
+import sys
+print(int(bool(Path(sys.argv[1]).read_bytes().strip(b' \t\n\r\v\f'))))
+PYSPACE
+)"; then
+  exit 3
+fi
+if [[ "$NONSPACE" == 0 ]]; then
   gate_record_pass no-diff
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
   exit 0
@@ -227,7 +240,7 @@ fi
 # `claude/scripts` redirects gate files, including ~/.claude/scripts per-file
 # links installed by setup.sh. Guard the installed .claude ancestors too.
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
   if [[ "${CODEX_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
     red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/ / agents/skills/ / .agents/skills/)"
     red "  or gate machinery (helpers / output schema / *-review-gate.sh) and its ancestors."
@@ -350,17 +363,77 @@ PYERR
 }
 trap gate_cleanup EXIT
 
+# Keep the complete request unchanged when a single user turn would exceed
+# the native input limit. Parts go directly into one pinned review session;
+# none can authorize a receipt before the complete request and final verdict.
+REQUEST_BYTES="$(printf '%s\n' "$PROMPT" | wc -c)"
+request_digest() {
+  python3 - "$REQUEST_FILE" <<'PYREQUEST'
+import hashlib, os, stat, sys
+path = sys.argv[1]
+info = os.lstat(path)
+if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid() or info.st_nlink != 1:
+    raise ValueError("review request is not a private regular file")
+with open(path, 'rb') as stream:
+    print(hashlib.sha256(stream.read()).hexdigest())
+PYREQUEST
+}
+if [[ "$REQUEST_BYTES" -gt 1000000 ]]; then
+  REQUEST_FILE="$(mktemp /tmp/codex-review-request.XXXXXX)" || exit 3
+  chmod 600 "$REQUEST_FILE" || exit 3
+  printf '%s\n' "$PROMPT" > "$REQUEST_FILE" || exit 3
+  REQUEST_SHA="$(request_digest)" || exit 3
+  TRANSPORT_DIR="$GATE_RUN_DIR/multipart"
+  mkdir -m 700 "$TRANSPORT_DIR" || exit 3
+  "$GATE_CLI" debug models --bundled > "$TRANSPORT_DIR/catalog.json" 2> "$ERR_FILE" || { report_diagnostic; exit 3; }
+  PART_COUNT="$(python3 "$SCRIPT_DIR/review-multipart.py" prepare "$REQUEST_FILE" "$TRANSPORT_DIR")" || exit 3
+  MANIFEST_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TRANSPORT_DIR/manifest.json")" || exit 3
+
+fi
+
 # `-s read-only`: the diff is untrusted input; a steered review must not be
 # able to write or execute beyond reads. A nonzero exit is a failed run, even
 # if it left a partial structured result.
 set +e
 # Leave terminal handling and tool-process cleanup with the native CLI. A
 # signal sent only to Bash is handled after this foreground command returns.
-"$GATE_CLI" exec - \
-  -s read-only \
-  --output-schema "$SCHEMA" \
-  -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
-CODEX_RC=$?
+if [[ -n "$REQUEST_FILE" ]]; then
+  REVIEW_SESSION=""
+  CODEX_RC=0
+  for ((PART_INDEX=1; PART_INDEX<=PART_COUNT; PART_INDEX++)); do
+    PART_ARGS=(exec -s read-only)
+    if [[ -n "$REVIEW_SESSION" ]]; then
+      SUPPORTED_CONTEXT="$(cat "$TRANSPORT_DIR/context-window")"
+      PART_ARGS+=(-c "model_context_window=$SUPPORTED_CONTEXT" resume "$REVIEW_SESSION")
+    fi
+    PART_SCHEMA="$TRANSPORT_DIR/ack-schema.json"
+    PART_OUTPUT="$TRANSPORT_DIR/ack.json"
+    if [[ "$PART_INDEX" -eq "$PART_COUNT" ]]; then
+      PART_SCHEMA="$SCHEMA"
+      PART_OUTPUT="$OUT_FILE"
+    fi
+    : > "$PART_OUTPUT"
+    chmod 600 "$PART_OUTPUT"
+    "$GATE_CLI" "${PART_ARGS[@]}" - --json \
+      --output-schema "$PART_SCHEMA" -o "$PART_OUTPUT" \
+      < "$TRANSPORT_DIR/part-$PART_INDEX.txt" > "$TRANSPORT_DIR/events.jsonl" 2> "$ERR_FILE"
+    CODEX_RC=$?
+    [[ "$CODEX_RC" -eq 0 ]] || break
+    REVIEW_SESSION="$(python3 "$SCRIPT_DIR/review-multipart.py" check "$TRANSPORT_DIR" "$PART_INDEX" "$REVIEW_SESSION" "$MANIFEST_SHA")"
+    CODEX_RC=$?
+    if [[ "$CODEX_RC" -ne 0 ]]; then
+      red "✖ Native session coverage, context or transport validation failed; no approval."
+      break
+    fi
+    gate_assert_unchanged
+  done
+else
+  "$GATE_CLI" exec - \
+    -s read-only \
+    --output-schema "$SCHEMA" \
+    -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
+  CODEX_RC=$?
+fi
 set -e
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
@@ -369,9 +442,19 @@ if [[ "$CODEX_RC" -ne 0 ]]; then
   exit 3
 fi
 gate_assert_unchanged
+if [[ -n "$REQUEST_FILE" ]]; then
+  if ! CURRENT_REQUEST_SHA="$(request_digest 2>/dev/null)" || [[ "$CURRENT_REQUEST_SHA" != "$REQUEST_SHA" ]]; then
+    red "✖ Complete review request became unreadable or changed; refusing the result."
+    exit 3
+  fi
+fi
 
 if [[ ! -s "$OUT_FILE" ]]; then
   report_diagnostic
+  if [[ -n "$REQUEST_FILE" ]]; then
+    red "✖ Complete multipart review produced no result; refusing approval."
+    exit 3
+  fi
   degrade "Codex produced no review output (rc=$CODEX_RC)."
 fi
 

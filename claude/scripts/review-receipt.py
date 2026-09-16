@@ -86,7 +86,7 @@ def instruction(path):
             or any(p in ('githooks', '.githooks') for p in parts)
             or ('claude', 'hooks') in zip(parts, parts[1:])
             or named_instruction(path)
-            or name in ('gate-lib.sh', 'review-receipt.py', 'codex-review-gate.sh',
+            or name in ('gate-lib.sh', 'review-receipt.py', 'review-multipart.py', 'codex-review-gate.sh',
                         'antigravity-review-gate.sh', 'codex-review-schema.json'))
 
 

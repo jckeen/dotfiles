@@ -83,8 +83,14 @@ SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 
 # ─── Config / thresholds ───────────────────────────────────────
 MAX_DIFF_LINES="${ANTIGRAVITY_GATE_MAX_LINES:-500}"
-PRINT_TIMEOUT_SECS="${ANTIGRAVITY_GATE_TIMEOUT:-360}"   # hard ceiling around agy
+PRINT_TIMEOUT_SECS="${ANTIGRAVITY_GATE_TIMEOUT:-360}"   # agy --print-timeout; _tmo ceiling is this + 30s
 REQUIRED="${ANTIGRAVITY_GATE_REQUIRED:-0}"
+# The ceiling feeds both shell arithmetic and agy's Go duration flag, so it
+# must be a plain integer number of seconds ("5m" would become "5ms").
+if [[ ! "$PRINT_TIMEOUT_SECS" =~ ^[0-9]+$ ]]; then
+  printf '\033[31m%s\033[0m\n' "ANTIGRAVITY_GATE_TIMEOUT must be an integer number of seconds (got '$PRINT_TIMEOUT_SECS')."
+  exit 2
+fi
 
 # ─── Args ──────────────────────────────────────────────────────
 BASE=""
@@ -153,7 +159,7 @@ gate_extract_diff
 # ~/.claude/scripts links; protect those installed ancestors too. Check before
 # any size/docs exemption, using the captured (unfiltered) paths.
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)GEMINI(\.local)?\.md$|(^|/)(\.gemini|\.?antigravity)(/|$)|(^|/)agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)GEMINI(\.local)?\.md$|(^|/)(\.gemini|\.?antigravity)(/|$)|(^|/)agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$' <<<"$CHANGED_PATHS"; then
   if [[ "${ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
     red "✖ Diff touches the Antigravity reviewer's own instruction surface (GEMINI*.md / .gemini/ / antigravity/ / agents/skills/)"
     red "  or gate machinery (helpers / output schema / *-review-gate.sh) and its ancestors."
@@ -166,7 +172,14 @@ if grep -qE '(^|/)GEMINI(\.local)?\.md$|(^|/)(\.gemini|\.?antigravity)(/|$)|(^|/
   yellow "⚠ Instruction-surface diff allowed by ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF=1 — independent review must already be complete."
 fi
 
-if [[ -z "${DIFF_CONTENT//[[:space:]]/}" ]]; then
+# Linear-time check over the same filtered content the review will see;
+# Bash pattern substitution becomes quadratic on large diffs (the Codex gate
+# hit this in #405; the same code was left here). A failed check must not
+# mint a no-diff receipt.
+if ! NONSPACE="$(python3 -c 'import sys; print(int(bool(sys.stdin.buffer.read().strip(b" \t\n\r\v\f"))))' <<<"$DIFF_CONTENT")"; then
+  exit 3
+fi
+if [[ "$NONSPACE" == 0 ]]; then
   gate_record_pass no-diff
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
   exit 0
@@ -244,8 +257,9 @@ ${DIFF_CONTENT}
 ${FENCE}"
 
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
+AGY_ERR_FILE="$(mktemp -t agy-review-err.XXXXXX.txt)"
 AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
-trap 'rm -f "$SUMMARY_FILE" "$AGY_LOG_FILE"; gate_cleanup' EXIT
+trap 'rm -f "$SUMMARY_FILE" "$AGY_ERR_FILE" "$AGY_LOG_FILE"; gate_cleanup' EXIT
 
 # Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
 # (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
@@ -274,18 +288,36 @@ set +e
 # (a bare prefix assignment also works in bash, verified, but reads ambiguously).
 # The pinned model LABEL (#205) rides along, plus a log capture so the pin can
 # be verified afterwards — agy accepts unknown model values without error.
-AGY_ARGS=(--mode plan --sandbox)
+# agy's own --print-timeout defaults to 5m regardless of our ceiling, and on
+# expiry it exits 0 with whatever partial output it has plus a stderr note.
+# Pin it to the gate ceiling so a large diff gets the whole budget, and keep
+# the outer _tmo slightly above it so agy's graceful path wins the race.
+AGY_ARGS=(--mode plan --sandbox --print-timeout "${PRINT_TIMEOUT_SECS}s")
 [[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")
-_tmo "$PRINT_TIMEOUT_SECS" \
-  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>&1
+# stdout (the model's verdict) and stderr (agy's own diagnostics) are kept
+# apart: the expiry guard below must only ever see agy's stderr, never model
+# output that a reviewed diff could steer into imitating it.
+_tmo "$((10#$PRINT_TIMEOUT_SECS + 30))" \
+  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>"$AGY_ERR_FILE"
 RC=$?
 set -e
+
+# A partial review is not a review. agy reports an expired print timeout as
+# "[agy] print timeout after <d> with turn in progress; returning partial
+# output" (1.2.3) on stderr; without this guard a truncated finding list could
+# pass as "P3 only". Checked on the separate stderr capture only.
+if grep -qE '^\[agy\] print timeout' "$AGY_ERR_FILE"; then
+  degrade "agy print timeout expired after ${PRINT_TIMEOUT_SECS}s — output is partial, not a verdict."
+fi
+# stderr is never folded into the verdict file: a trailing diagnostic after a
+# clean LGTB would otherwise defeat the final-line rule. It is shown on failure.
 
 if [[ $RC -eq 124 ]]; then
   degrade "agy review timed out after ${PRINT_TIMEOUT_SECS}s."
 fi
 if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
   [[ -s "$SUMMARY_FILE" ]] && { yellow "  agy output:"; sed 's/^/    /' "$SUMMARY_FILE" | head -20; }
+  [[ -s "$AGY_ERR_FILE" ]] && { yellow "  agy stderr:"; sed 's/^/    /' "$AGY_ERR_FILE" | head -20; }
   if [[ ! -s "$SUMMARY_FILE" ]]; then
     # Canary (#175): agy print mode has a history of silently dropping stdout
     # in non-TTY runs (agy issue #76 / gemini-cli #27466), and the stdin prompt
