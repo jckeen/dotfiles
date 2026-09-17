@@ -20,6 +20,12 @@
   `unsandboxed(...)`; code runners stay sandbox-only. `write_file(~/dev)` lets
   edits inside the dev tree proceed in the default mode (edits prompt unless a
   `write_file` rule covers the path).
+- Antigravity review of the follow-up found two P0s: unsandboxed `cat` could
+  read `~/.ssh` where the file-tool deny rules do not apply, and unsandboxed
+  `echo`/`sed` could write anywhere by redirection. Text writers lost their
+  unsandboxed mirrors, and command-level deny regexes now bind every run
+  (sandboxed or not): secret paths and files, redirection into home dotfiles
+  or system paths, and in-place `sed`/`perl` through a read-only prefix.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 

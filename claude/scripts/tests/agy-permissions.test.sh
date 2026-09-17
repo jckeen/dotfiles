@@ -32,7 +32,7 @@ rule = re.compile(r'^(command|unsandboxed|read_file|write_file|read_url|execute_
 for bucket in ('allow', 'ask', 'deny'):
     for entry in d['permissions'][bucket]:
         assert rule.match(entry), entry
-        assert '/home/' not in entry and '/Users/' not in entry, entry
+        assert not re.search(r'/(home|Users)/[A-Za-z0-9_.-]+/', entry), entry
 assert 'command(sudo)' in d['permissions']['deny']
 assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
@@ -40,6 +40,13 @@ allow = d['permissions']['allow']
 assert 'read_file(~/.claude)' in allow and 'unsandboxed(rg)' in allow
 assert 'write_file(~/dev)' in allow, 'file edits inside the dev tree must not prompt in default mode'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
+assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
+deny_regexes = [re.compile(r[len('command(regex:'):-1]) for r in d['permissions']['deny'] if r.startswith('command(regex:')]
+def denied(cmd): return any(x.search(cmd) for x in deny_regexes)
+for cmd in ('cat ~/.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee /etc/hosts', 'sed -n -i s/a/b/ f', 'git push --force'):
+    assert denied(cmd), cmd
+for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'git push --force-with-lease'):
+    assert not denied(cmd), cmd
 assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
