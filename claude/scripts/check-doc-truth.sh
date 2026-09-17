@@ -121,11 +121,13 @@ tier_of() {
 
 # Read from a process substitution rather than a pipe so the loop body runs in
 # this shell and `fail` updates the shared counter. (`mapfile` would be the
-# obvious reader, but bash 3.2 has no such builtin.)
+# obvious reader, but bash 3.2 has no such builtin.) -z/-d '' because without
+# it git quotes and octal-escapes any path holding a space, quote or non-ASCII
+# byte, and the checker would then look for a file named after the escape.
 md_count=0
 FILES=()
 TIERS=()
-while IFS= read -r f; do
+while IFS= read -r -d '' f; do
   [[ -n "$f" ]] || continue
   md_count=$((md_count + 1))
   if tier="$(tier_of "$f")"; then
@@ -134,7 +136,7 @@ while IFS= read -r f; do
   else
     fail "$f — coverage — not declared in $CONTRACT (add a LIVING/GENERATED/SOURCE/HISTORICAL entry)"
   fi
-done < <(git ls-files -- '*.md' '*.MD' '*.markdown')
+done < <(git ls-files -z -- '*.md' '*.MD' '*.markdown')
 
 # ── Rule 2: stale non-glob contract entries ────────────────────────
 for i in "${!TIER_GLOBS[@]}"; do

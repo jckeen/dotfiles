@@ -335,6 +335,16 @@ new_repo
 w .doc-contract 'BANNED old-name'
 check "repo with no tracked markdown runs clean" 0 "0 markdown files"
 
+new_repo
+w .doc-contract "LIVING *.md"
+w 'quo"te.md' '# Hi'
+check "path with a quote is not mangled by git quoting" 0 "doc-truth: OK"
+
+new_repo
+w .doc-contract "LIVING *.md"
+w "ünïcode.md" '# Hi'
+check "non-ascii path is not mangled by git quoting" 0 "doc-truth: OK"
+
 # ── Cycle 7 (#424): the bash 3.2 floor ─────────────────────────────
 # The checker is vendored verbatim into other repos and has to run under the
 # macOS system bash (3.2.57). These are static guards over its own source;
@@ -353,7 +363,9 @@ guard() {
   local name="$1" re="$2" hits
   hits="$(checker_code | grep -nE -- "$re")"
   if [[ -n "$hits" ]]; then
-    echo "✖ $name"
+    # Numbers index checker_code's filtered output (comments dropped,
+    # continuations joined), not lines of the file itself.
+    echo "✖ $name — in the checker source (filtered line numbers):"
     echo "$hits" | sed 's/^/    /'
     failed=$((failed + 1))
   else

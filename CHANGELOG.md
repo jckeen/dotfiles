@@ -30,6 +30,10 @@
   genuine bash 3.x is a test failure, never a silent skip. The job is
   deliberately separate from the required `doc-truth` context so an unreachable
   ftp.gnu.org cannot block every PR; promote it once it has a track record.
+- The file list is read with `git ls-files -z` and `read -d ''`. Without it
+  git quotes and octal-escapes any path holding a quote, a backslash or a
+  non-ASCII byte, and the checker went looking for a file named after the
+  escape — a latent bug the mapfile version shared. Two fixtures cover it.
 ## 2026-09-17 — fix(setup): match plugins by user scope, not by name
 
 - Sweeping the #437 neighborhood turned up the same scope blindness in a third
