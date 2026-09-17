@@ -37,9 +37,13 @@
 - A denylist is never finished — three gate passes found ten more constructs —
   so CI now runs the suite against a real interpreter too. A new
   `doc-truth (bash 3.2)` job builds bash 3.2.57 from the GNU sources with a
-  pinned SHA-256 and caches it. It is deliberately a separate job and not part
-  of the required `doc-truth` context, so an unreachable ftp.gnu.org cannot
-  block every PR; promote it to required once it has a track record.
+  pinned SHA-256 and caches it. `DOC_TRUTH_BASH3` now steers the whole suite
+  rather than four extra cases at the end, so every fixture — malformed
+  contracts, banned hits, dead refs — gets 3.2 coverage: against the pre-fix
+  checker that is 34 of 49 fixtures failing, where bash 5 catches 2. It is
+  deliberately a separate job and not part of the required `doc-truth` context,
+  so an unreachable ftp.gnu.org cannot block every PR; promote it to required
+  once it has a track record.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 

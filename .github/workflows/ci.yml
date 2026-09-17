@@ -122,8 +122,9 @@ jobs:
           ~/.local/bash32/bash --version | head -n 1
           ~/.local/bash32/bash -c '[[ "$BASH_VERSION" == 3.2.* ]]'
 
-      # DOC_TRUTH_BASH3 makes the suite run its bash 3.2 cases; the suite fails
-      # rather than skips if that path is not a genuine bash 3.x.
+      # DOC_TRUTH_BASH3 makes EVERY fixture run the checker under that
+      # interpreter — failure paths included, not just the happy path — and the
+      # suite fails rather than skips if the path is not a genuine bash 3.x.
       - name: Checker self-tests under bash 3.2.57
         run: |
           DOC_TRUTH_BASH3="$HOME/.local/bash32/bash" \
