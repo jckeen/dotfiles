@@ -38,16 +38,18 @@ assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
 assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
-assert not any(r.startswith('unsandboxed(') and not r.startswith(('unsandboxed(git fetch)', 'unsandboxed(git pull --ff-only)', 'unsandboxed(gh ')) for r in allow), 'only read-only network commands may leave the sandbox'
+assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox'
+assert 'read_file(~/.config/gh/)' in d['permissions']['deny'] and 'read_file(~/.claude/.credentials.json)' in d['permissions']['deny']
+assert 'command(git config)' in d['permissions']['ask'] and 'command(git config)' not in allow
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
 assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
 for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 deny_regexes = [re.compile(r[len('command(regex:'):-1]) for r in d['permissions']['deny'] if r.startswith('command(regex:')]
 def denied(cmd): return any(x.search(cmd) for x in deny_regexes)
-for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'rm -rf /tmp /', 'rm / -rf', 'git fetch --upload-pack=/x', 'git clone -c a=b u', 'tee --append ~/.bashrc', 'cat .env.test.local', 'git push --force', 'git push origin +main', 'cat ~/.SSH/id_rsa', 'echo x > ../.bashrc', 'git --no-pager -c x log'):
+for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'rm -rf /tmp /', 'rm / -rf', 'git -C . fetch --upload-pack=/x', 'git -C . -c a=b log', 'rm --recursive /', 'echo x > /./etc/hosts', 'echo x > ${HOME}/.bashrc', 'git push -uf o x', 'cat ~/.git-credentials', 'cat ~/.config/gh/hosts.yml', 'tee --append ~/.bashrc', 'cat .env.test.local', 'git push --force', 'git push origin +main', 'cat ~/.SSH/id_rsa', 'echo x > ../.bashrc', 'git --no-pager -c x log'):
     assert denied(cmd), cmd
-for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease', 'git log -c', 'git push origin main', 'git fetch --prune', 'git pull --ff-only'):
+for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease', 'git log -c', 'git push origin main', 'git fetch --prune', 'git push -u origin x', 'git config --get user.name'):
     assert not denied(cmd), cmd
 assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
 PY

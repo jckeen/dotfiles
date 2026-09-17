@@ -1,5 +1,5 @@
 {
-  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes unless regex:. Precedence: deny > ask > allow. Security model: the terminal sandbox is the boundary (toolPermission=proceed-in-sandbox, enableTerminalSandbox=true). No local tool carries an unsandboxed(...) rule; the only unsandboxed rules are read-only network commands the sandbox cannot serve (git fetch, git pull --ff-only, gh reads). Reads outside the workspace are served inside the sandbox through allowNonWorkspaceAccess and the read_file(~/...) rules, which the merge script expands to the machine's home. The command deny regexes are defense in depth for sandboxed runs, not a boundary: shell syntax cannot be classified airtight (see the reverted #411).",
+  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes unless regex:. Precedence: deny > ask > allow. Security model: the terminal sandbox is the boundary (toolPermission=proceed-in-sandbox, enableTerminalSandbox=true). No local tool carries an unsandboxed(...) rule; the only unsandboxed rules are gh read subcommands (git fetch/pull prompt: repo config can name programs for git to run). Reads outside the workspace are served inside the sandbox through allowNonWorkspaceAccess and the read_file(~/...) rules, which the merge script expands to the machine's home. The command deny regexes are defense in depth for sandboxed runs, not a boundary: shell syntax cannot be classified airtight (see the reverted #411).",
   "settings": {
     "toolPermission": "proceed-in-sandbox",
     "enableTerminalSandbox": true,
@@ -92,8 +92,6 @@
       "command(gh run list)",
       "command(gh repo view)",
       "command(gh auth status)",
-      "unsandboxed(git fetch)",
-      "unsandboxed(git pull --ff-only)",
       "unsandboxed(gh pr view)",
       "unsandboxed(gh pr list)",
       "unsandboxed(gh pr checks)",
@@ -105,7 +103,6 @@
       "unsandboxed(gh repo view)",
       "unsandboxed(gh auth status)",
       "command(python3)",
-      "command(git config)",
       "command(git stash)",
       "command(git worktree)",
       "command(git ls-tree)",
@@ -117,7 +114,6 @@
       "read_file(~/.claude/)",
       "read_file(~/.gemini/)",
       "read_file(~/.codex/)",
-      "read_file(~/.config/)",
       "read_file(~/.local/state/)",
       "read_file(~/.bash_aliases)",
       "read_file(~/.bashrc)",
@@ -145,7 +141,8 @@
       "command(gh pr merge)",
       "command(gh pr create)",
       "command(gh issue create)",
-      "command(regex:(?s)(^|\\s)(GIT_[A-Z_]+|PAGER|EDITOR|VISUAL|LD_PRELOAD|LD_LIBRARY_PATH|PATH)=)"
+      "command(regex:(?s)(^|\\s)(GIT_[A-Z_]+|PAGER|EDITOR|VISUAL|LD_PRELOAD|LD_LIBRARY_PATH|PATH)=)",
+      "command(git config)"
     ],
     "deny": [
       "command(sudo)",
@@ -158,21 +155,31 @@
       "read_file(~/.ssh/)",
       "read_file(~/.aws/)",
       "read_file(~/.gnupg/)",
-      "command(regex:(?s)\\bgit\\s+push\\b.*(\\s(--force|-f)(\\s|$)|\\s\\+\\S))",
-      "command(regex:(?s)\\brm\\b(.*\\s-[a-zA-Z]*[rR][a-zA-Z]*.*\\s['\"]?(/+|~/*|\\$HOME/*|/+home/+[^\\s/]+/*|/+Users/+[^\\s/]+/*)(\\*)?['\"]?(\\s|$)|.*\\s['\"]?(/+|~/*|\\$HOME/*|/+home/+[^\\s/]+/*|/+Users/+[^\\s/]+/*)(\\*)?['\"]?\\s.*-[a-zA-Z]*[rR]))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.(ssh|aws|gnupg|azure|kube|docker|netrc|npmrc|pypirc)(/+|[\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.config/+(gh|gcloud)(/+|[\\s'\"]|$))",
+      "read_file(~/.config/gh/)",
+      "read_file(~/.config/gcloud/)",
+      "read_file(~/.claude/.credentials.json)",
+      "read_file(~/.gemini/oauth_creds.json)",
+      "read_file(~/.gemini/google_accounts.json)",
+      "read_file(~/.gemini/antigravity-cli/)",
+      "read_file(~/.codex/auth.json)",
+      "read_file(~/.git-credentials)",
+      "read_file(~/.netrc)",
+      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+push\\b.*(\\s(--force|-[a-zA-Z]*f[a-zA-Z]*)(\\s|$)|\\s\\+\\S))",
+      "command(regex:(?s)\\brm\\b(.*\\s(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive).*\\s['\"]?(/+(\\./+)*|~/*|\\$\\{?HOME\\}?/*|/+(\\./+)*home/+(\\./+)*[^\\s/]+/*|/+(\\./+)*Users/+(\\./+)*[^\\s/]+/*)(\\*)?['\"]?(\\s|$)|.*\\s['\"]?(/+(\\./+)*|~/*|\\$\\{?HOME\\}?/*|/+(\\./+)*home/+(\\./+)*[^\\s/]+/*|/+(\\./+)*Users/+(\\./+)*[^\\s/]+/*)(\\*)?['\"]?\\s.*(-[a-zA-Z]*[rR]|--recursive)))",
+      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.(ssh|aws|gnupg|azure|kube|docker|netrc|npmrc|pypirc|git-credentials)(/+|[\\s'\"]|$))",
+      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.config/+(\\./+)*(gh|gcloud)(/+|[\\s'\"]|$))",
       "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.env(\\.[A-Za-z0-9_.-]+)?([\\s'\"]|$))",
       "command(regex:(?si)(^|[\\s'\"=:]|/+)id_(rsa|ed25519|ecdsa|dsa)(_sk)?(\\.pub)?([\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)[A-Za-z0-9_.-]*(credentials|token|secret)s?\\.(json|ya?ml|toml|txt|env)([\\s'\"]|$))",
-      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?(~|\\$HOME|/+home/+[^\\s/]+|/+Users/+[^\\s/]+)/+\\.)",
-      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?/+(etc|usr|bin|sbin|boot|root|var|opt|lib|lib64)/)",
+      "command(regex:(?si)(^|[\\s'\"=:]|/+)([A-Za-z0-9_.-]*(credentials|token|secret)s?\\.(json|ya?ml|toml|txt|env)|hosts\\.ya?ml|oauth_creds\\.json|google_accounts\\.json|auth\\.json)([\\s'\"]|$))",
+      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?(~|\\$\\{?HOME\\}?|/+(\\./+)*home/+(\\./+)*[^\\s/]+|/+(\\./+)*Users/+(\\./+)*[^\\s/]+)/+(\\./+)*\\.)",
+      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?/+(\\./+)*(etc|usr|bin|sbin|boot|root|var|opt|lib|lib64)/)",
       "command(regex:(?s)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?\\S*\\.\\./)",
       "command(regex:(?s)\\bsed\\b.*\\s(-[a-zA-Z]*i|--in-place))",
       "command(regex:(?s)\\bperl\\b.*\\s-[a-zA-Z]*i)",
       "command(regex:(?s)\\brg\\b.*\\s--pre\\b)",
-      "command(regex:(?s)\\bgit(\\s+--?[A-Za-z][A-Za-z-]*(=\\S+)?)*\\s+(-c|--exec-path|--config-env)\\b)",
-      "command(regex:(?s)\\bgit\\s+(clone|fetch|pull|push|ls-remote|submodule|remote)\\b.*\\s(-c|--config|--upload-pack|--receive-pack|--exec|-u|--recurse-submodules|--rebase)\\b)"
+      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+(-c|--exec-path|--config-env)\\b)",
+      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+(clone|fetch|pull|ls-remote|submodule|remote)\\b.*\\s(-c|--config|--upload-pack|--exec|-u|--recurse-submodules|--rebase)\\b)",
+      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+push\\b.*\\s(-c|--config|--receive-pack|--exec)\\b)"
     ]
   }
 }

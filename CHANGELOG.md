@@ -47,6 +47,14 @@
   denied and env-prefixed git commands (`GIT_SSH_COMMAND=…`) ask. `rm` with the
   path before its flags, `tee` with any flag, multi-level `.env.*`, and
   hardware-backed key names are covered.
+- Sixth round: sandboxed `git config` could plant `core.sshCommand` for an
+  unsandboxed fetch to run (P0), so git no longer leaves the sandbox at all
+  (`git fetch`/`pull` prompt; only `gh` reads are unsandboxed) and config
+  writes ask. Reads of `~/.config` are no longer allowed wholesale and the
+  credential files under `~/.config/gh`, `~/.claude`, `~/.gemini`, `~/.codex`
+  and `~/.git-credentials` are denied by path and by name (P0). `/./`,
+  `${HOME}`, `--recursive`, combined `-uf`, and git global options before
+  the subcommand are covered.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
