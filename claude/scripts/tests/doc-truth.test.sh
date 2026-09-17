@@ -295,7 +295,7 @@ guard "no bash-4 builtins (mapfile/readarray/coproc)" \
 # an "invalid option" that still leaves the assignment standing, so the script
 # would run on with the wrong semantics rather than stop.
 guard "no bash-4 declare flags (-A, -g, -n)" \
-  '(declare|local|typeset)[[:space:]]+-[A-Za-z]*[Ang]'
+  '(declare|local|typeset)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*[Ang]'
 # Single-character ${v^} and ${v,} are bash-4-only too and are `bad
 # substitution` on 3.2.57, so the operators are matched one-or-twice.
 guard 'no bash-4 case conversion (${v,} ${v,,} ${v^} ${v^^})' \
@@ -304,8 +304,8 @@ guard "no bash-4 redirections (|& and &>>)" \
   '\|&|&>>'
 guard "no negative array subscripts" \
   '\$\{[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-'
-guard "no ;;& case fallthrough" \
-  ';;&'
+guard "no ;& or ;;& case fallthrough" \
+  ';;?&'
 # {fd}< and {fd}> allocate a descriptor (bash 4.1). The leading [^$] keeps a
 # plain "${var}>out" redirection from matching.
 guard "no {fd} descriptor redirections" \

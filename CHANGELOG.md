@@ -30,6 +30,10 @@
   so the guard set now covers those too — each one verified to fire on an
   injected construct, and `declare -A`/`-n` confirmed to be "invalid option" on
   3.2.57 while leaving the assignment standing with the wrong semantics.
+  A third pass closed the last two: `;&` (the one-semicolon fallthrough) and
+  a flag split across groups, as in `declare -r -A`. Benign forms such as
+  `local -r`, `declare -a` and a backgrounded job were checked not to trip
+  the widened patterns.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 
