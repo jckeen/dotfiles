@@ -18,7 +18,10 @@
   single user message reaches the model and the remainder is dropped with no
   truncation notice, so a larger prompt would certify a slice of a diff as a
   review of all of it. Above the cap the gate degrades and mints no receipt;
-  the multipart-transport plan for this lane is dropped (#409).
+  the multipart-transport plan for this lane is dropped (#409). The cap is
+  checked before the tier-1 valve, which records a receipt without
+  dispatching: a docs-only diff of one 200,000-byte line clears the tier's
+  line count and must not collect a reduced-ceremony receipt either.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 

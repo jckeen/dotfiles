@@ -228,22 +228,13 @@ if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
   degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."
 fi
 
-# ─── Proportionality valve (#212) ──────────────────────────────
-# Docs-only small diffs take a reduced pass; anything touching a risk surface
-# or above the size cap gets the full review, never downgradable. The valve
-# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
-gate_classify_tier
-if [[ "$GATE_TIER" -eq 1 ]]; then
-  gate_record_pass tier-1
-  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
-  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
-  exit 0
-fi
-
 # ─── Prompt assembly + the measured input-window cap (#409) ────
 # The prompt is built here, before dispatch and before the local checks, so
 # the byte cap measures the exact message agy would publish — preamble, fence
-# and diff — rather than the diff alone. Fence the untrusted diff with a
+# and diff — rather than the diff alone. It sits beside the line cap and ahead
+# of the tier-1 valve on purpose: the valve mints a receipt without
+# dispatching, and a docs-only diff of one 200,000-byte line clears its line
+# count while sitting far above the window. Fence the untrusted diff with a
 # boundary the diff cannot forge: gate_fence derives it from a hash of the
 # diff itself, so injected text can't emit a matching closing marker.
 FENCE="$(gate_fence UNTRUSTED_DIFF "$DIFF_CONTENT")"
@@ -269,10 +260,24 @@ ${FENCE}"
 # no truncation notice, no error — so a verdict here would be evidence about
 # only the first slice of the diff. Degrade rather than mint that receipt.
 if [[ "$MAX_PROMPT_BYTES" -gt 0 ]]; then
-  N_PROMPT_BYTES="$(printf '%s' "$PROMPT_INSTRUCTION" | wc -c | tr -d ' ')"
+  # The here-string that feeds agy appends a newline, so that byte is part of
+  # the delivered message and belongs in the measurement.
+  N_PROMPT_BYTES="$(printf '%s\n' "$PROMPT_INSTRUCTION" | wc -c | tr -d ' ')"
   if [[ "$N_PROMPT_BYTES" -gt "$MAX_PROMPT_BYTES" ]]; then
     degrade "review prompt is $N_PROMPT_BYTES bytes (> $MAX_PROMPT_BYTES) — agy print mode delivers only the first ~185 KB of a single message, so the model would see only its first slice (#409). Split the change, or raise ANTIGRAVITY_GATE_MAX_BYTES (0 disables) once agy gains a documented large-input path."
   fi
+fi
+
+# ─── Proportionality valve (#212) ──────────────────────────────
+# Docs-only small diffs take a reduced pass; anything touching a risk surface
+# or above the size cap gets the full review, never downgradable. The valve
+# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
+gate_classify_tier
+if [[ "$GATE_TIER" -eq 1 ]]; then
+  gate_record_pass tier-1
+  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
+  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
+  exit 0
 fi
 
 # ─── Step 3: local validation before dispatch ────────────────────────────

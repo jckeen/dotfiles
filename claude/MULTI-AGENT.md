@@ -85,7 +85,9 @@ Separately from the tiers, the Antigravity lane refuses diffs it could only
 review in part: `agy` print mode delivers about 185 KB of a single user message
 to the model and silently drops the rest (#409), so above
 `ANTIGRAVITY_GATE_MAX_BYTES` (default 185000) the gate degrades instead of
-dispatching. A large change gets no Gemini-lineage verdict until it is split.
+dispatching. The cap is checked before the tier valve, so an oversized
+docs-only diff cannot collect a tier-1 receipt either. A large change gets no
+Gemini-lineage verdict until it is split.
 
 Named failure mode: **the valve fails toward the full pass.** A classification
 error, an unmeasurable diff, or an unknown file class escalates to tier 2 —

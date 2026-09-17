@@ -393,6 +393,24 @@ ANTIGRAVITY_GATE_MAX_LINES=40000 ANTIGRAVITY_GATE_MAX_BYTES=0 \
 assert "disabled byte cap dispatches" "[ -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# The tier-1 valve mints a receipt without dispatching, so the cap has to be
+# checked before it — as the line cap already is. A docs-only diff of one
+# 200,000-byte line clears the tier-1 line count while sitting far above the
+# input window, and must not collect a reduced-ceremony receipt for a change
+# no reviewer ever saw.
+new_repo
+python3 - "$R/README.md" <<'PYLONGLINE'
+import sys
+with open(sys.argv[1], 'w') as f:
+    f.write('x' * 200000 + '\n')
+PYLONGLINE
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "one huge docs line cannot take the tier-1 skip" 0 "the model would see only its first" --uncommitted
+assert "oversized docs diff mints no tier-1 receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "oversized docs diff never dispatches" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+check "oversized docs diff fails closed with --require" 3 "hard failure" --uncommitted --require
+rm -rf "$R"
+
 # A small diff is unaffected by the default cap, and a non-integer cap is a
 # configuration error, not a silent fallback.
 new_repo
