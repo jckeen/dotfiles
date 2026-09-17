@@ -12,6 +12,12 @@
   `claude/scripts/agy-apply-permissions.py` (apply keeps local grants; prune
   resets them after a backup); `check-antigravity.sh` warns on drift. This
   replaces what the reverted classifier (#411) tried to do with a parser.
+- Follow-up the same day: reads under `~/.claude`, `~/.gemini`, `~/.codex`
+  and `~/dev` still prompted as non-workspace access, and commands the sandbox
+  could not serve prompted for an unsandboxed run. The baseline now sets
+  `allowNonWorkspaceAccess`, ships `read_file(~/…)` rules that the merge script
+  expands to the machine's home, and mirrors every read-only command as
+  `unsandboxed(...)`; code runners stay sandbox-only.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 

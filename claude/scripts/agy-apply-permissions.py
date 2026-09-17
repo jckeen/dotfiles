@@ -40,6 +40,16 @@ def load_json(path, required):
     return data
 
 
+def expand_home(rule):
+    """read_file/write_file rules may use ~/ in the portable baseline; the
+    live file is machine-local, so bind them to this machine's home."""
+    match = re.match(r'^(read_file|write_file)\(~(/.*)?\)$', rule)
+    if not match:
+        return rule
+    home = os.path.expanduser('~')
+    return f"{match.group(1)}({home}{match.group(2) or ''})"
+
+
 def load_baseline(path):
     data = load_json(path, required=True)
     rules = data.get('permissions')
@@ -52,7 +62,7 @@ def load_baseline(path):
             sys.exit(f'error: {path}: every "{bucket}" entry must be a rule like command(prefix)')
         if any('/home/' in e or '/Users/' in e for e in entries):
             sys.exit(f'error: {path}: rules must not embed a user home path')
-    return {b: list(rules.get(b, [])) for b in BUCKETS}, settings
+    return {b: [expand_home(r) for r in rules.get(b, [])] for b in BUCKETS}, settings
 
 
 def write_atomic(path, data):

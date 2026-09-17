@@ -20,6 +20,8 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 S="$ROOT/settings.json"
+export HOME="$ROOT/home"
+mkdir -p "$HOME"
 
 if python3 - "$RULES" <<'PY'
 import json, re, sys
@@ -33,6 +35,10 @@ for bucket in ('allow', 'ask', 'deny'):
         assert '/home/' not in entry and '/Users/' not in entry, entry
 assert 'command(sudo)' in d['permissions']['deny']
 assert 'command(rg)' in d['permissions']['allow']
+assert d['settings']['allowNonWorkspaceAccess'] is True
+allow = d['permissions']['allow']
+assert 'read_file(~/.claude)' in allow and 'unsandboxed(rg)' in allow
+assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
 assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
@@ -47,6 +53,9 @@ assert d['trustedWorkspaces'] == ['/x/dev']
 assert d['toolPermission'] == 'proceed-in-sandbox' and d['enableTerminalSandbox'] is True
 assert d['permissions']['allow'][0] == 'command(local-junk)'
 assert d['permissions']['allow'].count('command(rg)') == 1
+import os
+assert f"read_file({os.environ['HOME']}/.claude)" in d['permissions']['allow'], 'tilde rules expand to this home'
+assert not any(r.startswith(('read_file(~', 'write_file(~')) for r in d['permissions']['allow'] + d['permissions']['deny'])
 assert 'command(sudo)' in d['permissions']['deny']
 PY
 then ok "apply merges the baseline, seeds mode keys, keeps local rules and trustedWorkspaces"
