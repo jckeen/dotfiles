@@ -26,6 +26,11 @@
   unsandboxed mirrors, and command-level deny regexes now bind every run
   (sandboxed or not): secret paths and files, redirection into home dotfiles
   or system paths, and in-place `sed`/`perl` through a read-only prefix.
+- Second review round: `awk`, `sed`, `fd`, `yq` and `jq` also lost their
+  unsandboxed mirrors (they can execute or write), the recursive-rm deny now
+  covers `/*`, `~/*` and any flag order, `sed --in-place` and `rg --pre` and
+  `git -c` are denied. Only tools that can neither run code nor write leave the
+  sandbox without a prompt.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 

@@ -146,13 +146,8 @@
       "unsandboxed(readlink)",
       "unsandboxed(dirname)",
       "unsandboxed(basename)",
-      "unsandboxed(awk)",
-      "unsandboxed(sed -n)",
-      "unsandboxed(jq)",
-      "unsandboxed(yq)",
       "unsandboxed(rg)",
       "unsandboxed(grep)",
-      "unsandboxed(fd)",
       "unsandboxed(git status)",
       "unsandboxed(git log)",
       "unsandboxed(git diff)",
@@ -210,7 +205,6 @@
       "command(mkfs)",
       "command(dd)",
       "command(regex:^git push\\b.*\\s(--force|-f)(\\s|$))",
-      "command(regex:^rm -rf\\s+(/|~|\\$HOME)(\\s|$))",
       "command(gh repo delete)",
       "read_file(~/.ssh)",
       "read_file(~/.aws)",
@@ -221,8 +215,11 @@
       "command(regex:(^|[\\s/'\"])[A-Za-z0-9_.-]*(credentials|token|secret)s?\\.(json|ya?ml|toml|txt|env)([\\s'\"]|$))",
       "command(regex:(>>?|\\btee\\b(\\s+-a)?)\\s*['\"]?(~|\\$HOME|/home/[^\\s/]+|/Users/[^\\s/]+)/\\.)",
       "command(regex:(>>?|\\btee\\b(\\s+-a)?)\\s*['\"]?/(etc|usr|bin|sbin|boot|root|var|opt|lib|lib64)/)",
-      "command(regex:^sed\\b.*\\s-[a-zA-Z]*i)",
-      "command(regex:^perl\\b.*\\s-[a-zA-Z]*i)"
+      "command(regex:^perl\\b.*\\s-[a-zA-Z]*i)",
+      "command(regex:^rm\\b.*\\s-[a-zA-Z]*[rR][a-zA-Z]*(\\s+-\\S+)*\\s+['\"]?(/|~|\\$HOME)(/?\\*)?['\"]?(\\s|$))",
+      "command(regex:^sed\\b.*\\s(-[a-zA-Z]*i|--in-place))",
+      "command(regex:^rg\\b.*\\s--pre\\b)",
+      "command(regex:^git\\s+(-c|--exec-path)\\b)"
     ]
   }
 }
