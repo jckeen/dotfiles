@@ -43,7 +43,7 @@
       "command(regex:^git push\\b.*\\s(--force|-f)(\\s|$))",
       "command(regex:^rm -rf\\s+(/|~|\\$HOME)(\\s|$))",
       "command(gh repo delete)",
-      "read_file(~/.ssh)", "read_file(~/.aws)", "read_file(~/.gnupg)"
+      "read_file(~/.ssh/)", "read_file(~/.aws/)", "read_file(~/.gnupg/)"
     ]
   }
 }
