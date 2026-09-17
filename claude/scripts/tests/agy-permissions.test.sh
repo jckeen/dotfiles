@@ -45,9 +45,9 @@ for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 deny_regexes = [re.compile(r[len('command(regex:'):-1]) for r in d['permissions']['deny'] if r.startswith('command(regex:')]
 def denied(cmd): return any(x.search(cmd) for x in deny_regexes)
-for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'rm -rf /tmp /', 'git push --force', 'git push origin +main', 'cat ~/.SSH/id_rsa', 'echo x > ../.bashrc', 'git --no-pager -c x log'):
+for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'rm -rf /tmp /', 'rm / -rf', 'git fetch --upload-pack=/x', 'git clone -c a=b u', 'tee --append ~/.bashrc', 'cat .env.test.local', 'git push --force', 'git push origin +main', 'cat ~/.SSH/id_rsa', 'echo x > ../.bashrc', 'git --no-pager -c x log'):
     assert denied(cmd), cmd
-for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease', 'git log -c', 'git push origin main'):
+for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease', 'git log -c', 'git push origin main', 'git fetch --prune', 'git pull --ff-only'):
     assert not denied(cmd), cmd
 assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
 PY

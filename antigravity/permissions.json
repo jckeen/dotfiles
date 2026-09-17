@@ -144,7 +144,8 @@
       "command(gh api)",
       "command(gh pr merge)",
       "command(gh pr create)",
-      "command(gh issue create)"
+      "command(gh issue create)",
+      "command(regex:(?s)(^|\\s)(GIT_[A-Z_]+|PAGER|EDITOR|VISUAL|LD_PRELOAD|LD_LIBRARY_PATH|PATH)=)"
     ],
     "deny": [
       "command(sudo)",
@@ -158,19 +159,20 @@
       "read_file(~/.aws/)",
       "read_file(~/.gnupg/)",
       "command(regex:(?s)\\bgit\\s+push\\b.*(\\s(--force|-f)(\\s|$)|\\s\\+\\S))",
-      "command(regex:(?s)\\brm\\b.*\\s-[a-zA-Z]*[rR][a-zA-Z]*.*\\s['\"]?(/+|~/*|\\$HOME/*|/+home/+[^\\s/]+/*|/+Users/+[^\\s/]+/*)(\\*)?['\"]?(\\s|$))",
+      "command(regex:(?s)\\brm\\b(.*\\s-[a-zA-Z]*[rR][a-zA-Z]*.*\\s['\"]?(/+|~/*|\\$HOME/*|/+home/+[^\\s/]+/*|/+Users/+[^\\s/]+/*)(\\*)?['\"]?(\\s|$)|.*\\s['\"]?(/+|~/*|\\$HOME/*|/+home/+[^\\s/]+/*|/+Users/+[^\\s/]+/*)(\\*)?['\"]?\\s.*-[a-zA-Z]*[rR]))",
       "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.(ssh|aws|gnupg|azure|kube|docker|netrc|npmrc|pypirc)(/+|[\\s'\"]|$))",
       "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.config/+(gh|gcloud)(/+|[\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.env(\\.[A-Za-z0-9_-]+)?([\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)id_(rsa|ed25519|ecdsa|dsa)(\\.pub)?([\\s'\"]|$))",
+      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.env(\\.[A-Za-z0-9_.-]+)?([\\s'\"]|$))",
+      "command(regex:(?si)(^|[\\s'\"=:]|/+)id_(rsa|ed25519|ecdsa|dsa)(_sk)?(\\.pub)?([\\s'\"]|$))",
       "command(regex:(?si)(^|[\\s'\"=:]|/+)[A-Za-z0-9_.-]*(credentials|token|secret)s?\\.(json|ya?ml|toml|txt|env)([\\s'\"]|$))",
-      "command(regex:(?si)(>>?|\\btee\\b(\\s+-a)?)\\s*['\"]?(~|\\$HOME|/+home/+[^\\s/]+|/+Users/+[^\\s/]+)/+\\.)",
-      "command(regex:(?si)(>>?|\\btee\\b(\\s+-a)?)\\s*['\"]?/+(etc|usr|bin|sbin|boot|root|var|opt|lib|lib64)/)",
-      "command(regex:(?s)(>>?|\\btee\\b(\\s+-a)?)\\s*['\"]?\\S*\\.\\./)",
+      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?(~|\\$HOME|/+home/+[^\\s/]+|/+Users/+[^\\s/]+)/+\\.)",
+      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?/+(etc|usr|bin|sbin|boot|root|var|opt|lib|lib64)/)",
+      "command(regex:(?s)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?\\S*\\.\\./)",
       "command(regex:(?s)\\bsed\\b.*\\s(-[a-zA-Z]*i|--in-place))",
       "command(regex:(?s)\\bperl\\b.*\\s-[a-zA-Z]*i)",
       "command(regex:(?s)\\brg\\b.*\\s--pre\\b)",
-      "command(regex:(?s)\\bgit(\\s+--?[A-Za-z][A-Za-z-]*(=\\S+)?)*\\s+(-c|--exec-path)\\b)"
+      "command(regex:(?s)\\bgit(\\s+--?[A-Za-z][A-Za-z-]*(=\\S+)?)*\\s+(-c|--exec-path|--config-env)\\b)",
+      "command(regex:(?s)\\bgit\\s+(clone|fetch|pull|push|ls-remote|submodule|remote)\\b.*\\s(-c|--config|--upload-pack|--receive-pack|--exec|-u|--recurse-submodules|--rebase)\\b)"
     ]
   }
 }

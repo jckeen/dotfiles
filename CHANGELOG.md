@@ -42,6 +42,11 @@
   matching cannot leak into siblings; `+refspec` force pushes, `rm` with a safe
   path before the protected one, single-level `../` redirects, `git` global
   options before `-c`, and mixed-case secret paths are covered.
+- Fifth round: the `unsandboxed(git fetch)` prefix admitted `--upload-pack=<cmd>`
+  outside the sandbox (P0). Exec-capable flags on network git subcommands are
+  denied and env-prefixed git commands (`GIT_SSH_COMMAND=…`) ask. `rm` with the
+  path before its flags, `tee` with any flag, multi-level `.env.*`, and
+  hardware-backed key names are covered.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
