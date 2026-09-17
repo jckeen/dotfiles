@@ -30,6 +30,26 @@
   genuine bash 3.x is a test failure, never a silent skip. The job is
   deliberately separate from the required `doc-truth` context so an unreachable
   ftp.gnu.org cannot block every PR; promote it once it has a track record.
+## 2026-09-17 — fix(plugins): scope-aware drift check and sync fast path (#437)
+
+- Every session warned that `render@claude-plugins-official` was "missing from
+  the manifest". It is installed `--scope project` by the one repo with a
+  `render.yaml`, and #393 deliberately removed it from `claude/plugins.txt`
+  because `setup.sh` and `sync-plugins.sh` install at user scope. The hook read
+  every key of `installed_plugins.json` regardless of scope, so the only remedy
+  it suggested would have reinstated the behavior #393 fixed.
+- `PluginDriftCheck.hook.ts` now measures both drift directions against
+  user-scope installs. `user` is matched as an allowlist, so `--scope local`
+  and any future scope do not silently satisfy the manifest; unrecognised
+  record shapes still count as installed.
+- `sync-plugins.sh`'s fast path had the same scope blindness in the other
+  direction: a manifest plugin held only at project scope satisfied its key
+  match, so it exited without installing and the hook warned again next
+  session. It now matches on user-scope installs too, so the remedy the
+  warning points at actually clears the warning.
+- New `tests/plugin-drift.test.sh` pins both sides, wired into the `checks`
+  CI job, which now sets up bun to execute the TypeScript hook.
+
 ## 2026-09-17 — test(setup-dry-run): run the no-writes suite from a worktree (#435)
 
 - `setup-dry-run.test.sh` reported 16 false failures from any linked git
