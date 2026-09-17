@@ -14,7 +14,11 @@
 #
 # Usage: check-doc-truth.sh [contract-path]     (default: .doc-contract)
 # Exit: 0 clean, 1 on any violation or malformed contract.
-# Requires bash 4+ (mapfile).
+# Requires bash 3.2+ — the macOS system bash (#424). Two constraints follow,
+# both asserted by tests/doc-truth.test.sh: no bash-4-only builtins (mapfile,
+# readarray, declare -A, ${v,,}), and no bare ${arr[@]} value expansion —
+# under `set -u` bash 3.2 calls that unbound when the array is empty. Iterate
+# by index instead: ${!arr[@]} and ${#arr[@]} are safe on an empty array.
 #
 # Canonical copy: dotfiles claude/scripts/check-doc-truth.sh. Other repos get
 # a vendored copy via /drift-sweep bootstrap. DOC_TRUTH_VERSION=2
@@ -115,17 +119,24 @@ tier_of() {
   return 1
 }
 
-mapfile -t MD_FILES < <(git ls-files -- '*.md' '*.MD' '*.markdown')
+# Read from a process substitution rather than a pipe so the loop body runs in
+# this shell and `fail` updates the shared counter. (`mapfile` would be the
+# obvious reader, but bash 3.2 has no such builtin.) -z/-d '' because without
+# it git quotes and octal-escapes any path holding a space, quote or non-ASCII
+# byte, and the checker would then look for a file named after the escape.
+md_count=0
 FILES=()
 TIERS=()
-for f in "${MD_FILES[@]}"; do
+while IFS= read -r -d '' f; do
+  [[ -n "$f" ]] || continue
+  md_count=$((md_count + 1))
   if tier="$(tier_of "$f")"; then
     FILES+=("$f")
     TIERS+=("$tier")
   else
     fail "$f — coverage — not declared in $CONTRACT (add a LIVING/GENERATED/SOURCE/HISTORICAL entry)"
   fi
-done
+done < <(git ls-files -z -- '*.md' '*.MD' '*.markdown')
 
 # ── Rule 2: stale non-glob contract entries ────────────────────────
 for i in "${!TIER_GLOBS[@]}"; do
@@ -228,4 +239,4 @@ if [[ "$violations" -gt 0 ]]; then
   echo "doc-truth: FAILED — $violations violation(s). Fix the doc or update $CONTRACT."
   exit 1
 fi
-echo "doc-truth: OK — ${#MD_FILES[@]} markdown files conform to $CONTRACT"
+echo "doc-truth: OK — $md_count markdown files conform to $CONTRACT"

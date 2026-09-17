@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-09-17 — fix(doc-truth): run the checker on the macOS system bash (#424)
+
+- `check-doc-truth.sh` is vendored verbatim into other repos but read
+  `git ls-files` with `mapfile`, a bash-4 builtin. On Apple's bash 3.2.57 the
+  read failed and the next line dereferenced the never-populated array, so the
+  checker aborted before running a single rule. It now reads the file list with
+  a `while IFS= read -r` loop over a process substitution — a process
+  substitution, not a pipe, so the loop body stays in this shell and keeps
+  updating the violation counter.
+- Sweeping the same category found the second half: under `set -u` bash 3.2.57
+  calls `${arr[@]}` unbound when the array is empty, so any repo with no
+  tracked markdown would have hit the same abort. Index expansion
+  (`${!arr[@]}`, `${#arr[@]}`) is safe there and is what the script already used
+  everywhere else — verified on a bash 3.2.57 build, not assumed.
+- The header now states the real floor (bash 3.2+) instead of "bash 4+", and
+  `tests/doc-truth.test.sh` grows a Cycle 7 of static guards over the checker's
+  own source: bash-4 builtins, `declare` flags, case conversion, `;&`/`;;&`
+  fallthrough, `{fd}` redirections, `${v@Q}`, `read -N`, bash-4 `shopt` names,
+  negative subscripts, and bare `${arr[@]}`. Comment lines are stripped and
+  backslash continuations joined, so neither the header's prose nor a line
+  break can hide a banned construct.
+- A denylist is never finished — five review passes each found more of it — so
+  CI now runs a real interpreter too. A new `doc-truth (bash 3.2)` job builds
+  bash 3.2.57 from the GNU sources with a pinned SHA-256 and caches it.
+  `DOC_TRUTH_BASH3` steers **every** fixture rather than a handful of extra
+  cases, so the failure paths get 3.2 coverage: against the pre-fix checker that
+  is 34 of 49 fixtures failing, where bash 5 catches 2. A path that is not a
+  genuine bash 3.x is a test failure, never a silent skip. The job is
+  deliberately separate from the required `doc-truth` context so an unreachable
+  ftp.gnu.org cannot block every PR; promote it once it has a track record.
+- The file list is read with `git ls-files -z` and `read -d ''`. Without it
+  git quotes and octal-escapes any path holding a quote, a backslash or a
+  non-ASCII byte, and the checker went looking for a file named after the
+  escape — a latent bug the mapfile version shared. Two fixtures cover it.
 ## 2026-09-17 — fix(review-and-push): routing guard and executable-bit drift
 
 - `review-and-push.sh` inherited Git routing (`GIT_DIR`, `GIT_WORK_TREE`,

@@ -72,6 +72,67 @@ jobs:
       - name: Check the dotfiles doc contract
         run: claude/scripts/check-doc-truth.sh
 
+  # check-doc-truth.sh is vendored into other repos and holds to a bash 3.2
+  # floor — the macOS system bash (#424). The static guards in its self-test are
+  # a denylist, and a denylist is never finished, so this job runs the same
+  # suite against a real bash 3.2.57 built from the GNU sources. Deliberately a
+  # separate job and NOT part of the required `doc-truth` context: a slow or
+  # unreachable ftp.gnu.org must not block every PR in the repo. Promote it to
+  # required once it has a track record.
+  doc-truth-bash32:
+    name: doc-truth (bash 3.2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the bash 3.2.57 build
+        id: cache-bash32
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bash32
+          key: bash-3.2.57-${{ runner.os }}-v1
+
+      # The tarball's y.tab.c predates its parse.y, so it must be regenerated
+      # (hence bison) rather than compiled as shipped. The checksum is pinned;
+      # it matches ftp.gnu.org, mirrors.kernel.org and nexcess, and the GNU
+      # keyring verifies the matching .sig as Chet Ramey's.
+      - name: Build bash 3.2.57
+        if: steps.cache-bash32.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bison
+          work="$(mktemp -d)"
+          curl -sSLo "$work/bash.tar.gz" https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz
+          echo "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4  $work/bash.tar.gz" \
+            | sha256sum --check --strict -
+          tar xzf "$work/bash.tar.gz" -C "$work"
+          cd "$work/bash-3.2.57"
+          ./configure --without-bash-malloc --disable-nls -q
+          rm -f y.tab.c y.tab.h
+          make YACC="bison -y" \
+            CFLAGS="-O1 -w -std=gnu89 -Wno-implicit-function-declaration" \
+            -j"$(nproc)"
+          mkdir -p ~/.local/bash32
+          install -m 0755 bash ~/.local/bash32/bash
+
+      - name: Confirm the interpreter is bash 3.2
+        run: |
+          set -euo pipefail
+          ~/.local/bash32/bash --version | head -n 1
+          ~/.local/bash32/bash -c '[[ "$BASH_VERSION" == 3.2.* ]]'
+
+      # DOC_TRUTH_BASH3 makes EVERY fixture run the checker under that
+      # interpreter — failure paths included, not just the happy path — and the
+      # suite fails rather than skips if the path is not a genuine bash 3.x.
+      - name: Checker self-tests under bash 3.2.57
+        run: |
+          DOC_TRUTH_BASH3="$HOME/.local/bash32/bash" \
+            claude/scripts/tests/doc-truth.test.sh
+
+      - name: Check the dotfiles doc contract under bash 3.2.57
+        run: ~/.local/bash32/bash claude/scripts/check-doc-truth.sh
+
   # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
   # fragment (issue #207). This is intended as a required status check (#237),
   # so like doc-truth it stays its own job under this exact name — a step
