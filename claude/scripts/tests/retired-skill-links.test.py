@@ -176,6 +176,21 @@ class DocumentRetirementTests(unittest.TestCase):
                 self.assertEqual(snapshot(home), before_home)
                 self.assertEqual(snapshot(external), before_external)
 
+    def test_document_heals_when_only_the_skills_root_is_symlinked(self):
+        """A symlinked ~/.claude/skills must not gate a top-level link (issue #400)."""
+        with document_fixture() as (_, home, run):
+            skills = home / ".claude/skills"
+            external = home.parent / "external-skills"
+            skills.rename(external)
+            skills.symlink_to(external)
+            before_home, before_external = snapshot(home), snapshot(external)
+            result = run("--heal", "--strict")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("RETIRED  .claude/FABLE.md", result.stdout)
+            del before_home[".claude/FABLE.md"]
+            self.assertEqual(snapshot(home), before_home)
+            self.assertEqual(snapshot(external), before_external)
+
     def test_document_restored_during_capture_keeps_the_link(self):
         with document_fixture() as (repo, home, _):
             helper = load_retirement_helper(repo)
