@@ -78,13 +78,24 @@ def source_instruction(path):
             or parts[-2:] in (('claude', 'AgentPack.md'), ('claude', 'AGENTPACK.yaml'), ('claude', 'agentpack-meta.json')))
 
 
+def modes_differ(mode1, mode2, file_mode=True):
+    if mode1 == mode2:
+        return False
+    if not file_mode and {mode1, mode2} <= {'100644', '100755'}:
+        return False
+    return True
+
+
 def instruction(path):
     parts = Path(path).parts
     name = parts[-1]
+    hook = any(p in ('githooks', '.githooks') for p in parts) or ('claude', 'hooks') in zip(parts, parts[1:])
+    if hook and (any(p in ('node_modules', '.bun', 'dist', '__pycache__') for p in parts)
+                 or name in ('bun.lock', 'bun.lockb', 'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml')):
+        hook = False
     return (any(p in AGENT_NAMESPACES for p in parts)
             or source_instruction(path)
-            or any(p in ('githooks', '.githooks') for p in parts)
-            or ('claude', 'hooks') in zip(parts, parts[1:])
+            or hook
             or named_instruction(path)
             or name in ('gate-lib.sh', 'review-receipt.py', 'review-multipart.py', 'codex-review-gate.sh',
                         'antigravity-review-gate.sh', 'codex-review-schema.json'))
@@ -219,7 +230,7 @@ def same_content(path, mode, original, content, crlf_paths):
             and content.replace(b'\r\n', b'\n') == original)
 
 
-def instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf_paths):
+def instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf_paths, file_mode=True):
     bindings = {}
     links = {path for state in (entries, staged, workspace) for path, (mode, _) in state.items()
              if mode == '120000' and instruction(path)}
@@ -261,7 +272,7 @@ def instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf
         # Inspect the uncollapsed path so missing/../ or a symlink ancestor
         # cannot acquire the identity of a different, normalized Git path.
         actual_mode, actual_bytes = file_bytes(repo, str(Path(path).parent / link_text))
-        if ((actual_mode, actual_bytes) != workspace.get(target) or actual_mode != target_mode
+        if ((actual_mode, actual_bytes) != workspace.get(target) or modes_differ(actual_mode, target_mode, file_mode)
                 or not same_content(target, target_mode, blob(target_obj), actual_bytes, crlf_paths)):
             unsupported('target must match HEAD, index, and worktree')
         # Path normalizes trailing / and /. even when those make a live link
@@ -301,6 +312,7 @@ def capture(repo, base, scope):
         if tag == 'S':
             skipped.add(path)
     sparse = git(repo, 'config', '--type=bool', '--default', 'false', '--get', 'core.sparseCheckout').strip() == b'true'
+    file_mode = git(repo, 'config', '--type=bool', '--default', 'true', '--get', 'core.fileMode').strip() == b'true'
     entries = tree_files(repo, head)
     base_entries = tree_files(repo, merge) if scope == 'committed' else entries
     tracked = set(staged)
@@ -333,11 +345,11 @@ def capture(repo, base, scope):
             omitted.add(path)
     # Keep semantic cleanliness separate from the raw bytes bound above.
     crlf_paths = crlf_normalized_paths(repo) if any(b'\r\n' in data for mode, data in workspace.values()) else set()
-    links = instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf_paths)
+    links = instruction_links(repo, entries, staged, workspace, base_entries, blob, crlf_paths, file_mode)
     for path, (mode, content) in workspace.items():
         if instruction(path):
             original_mode, obj = entries.get(path, ('missing', None))
-            if path not in omitted and (mode != original_mode or not same_content(path, mode, blob(obj), content, crlf_paths)):
+            if path not in omitted and (modes_differ(mode, original_mode, file_mode) or not same_content(path, mode, blob(obj), content, crlf_paths)):
                 dirty_instructions.append(path)
             if path in staged and entries.get(path) != staged[path]:
                 dirty_instructions.append(path)
@@ -361,16 +373,18 @@ def capture(repo, base, scope):
             original, staged_content = blob(obj), blob(staged_obj)
             mode, content = (staged_mode, staged_content) if path in omitted else workspace[path]
             staged_changed = (original_mode, obj) != (staged_mode, staged_obj)
-            worktree_changed = mode != staged_mode or not same_content(path, mode, staged_content, content, crlf_paths)
+            worktree_mode_changed = modes_differ(mode, staged_mode, file_mode)
+            worktree_changed = worktree_mode_changed or not same_content(path, mode, staged_content, content, crlf_paths)
             if not staged_changed and not worktree_changed:
                 continue
+            effective_mode = staged_mode if not worktree_mode_changed else mode
             paths.append(path)
-            changed_modes[path] = [original_mode, staged_mode, mode]
+            changed_modes[path] = [original_mode, staged_mode, effective_mode]
             if excluded(path, changed_modes[path]):
                 continue
             for label, changed, before_mode, before_bytes, after_mode, after_bytes in (
                     ('staged', staged_changed, original_mode, original, staged_mode, staged_content),
-                    ('worktree', worktree_changed, staged_mode, staged_content, mode, content)):
+                    ('worktree', worktree_changed, staged_mode, staged_content, effective_mode, content)):
                 if not changed:
                     continue
                 before, after = before_bytes.decode('utf-8'), after_bytes.decode('utf-8')

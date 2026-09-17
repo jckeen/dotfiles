@@ -958,6 +958,56 @@ class ReceiptTests(unittest.TestCase):
         self.complete(self.begin())
         self.check()
 
+    def test_ignored_hook_dependencies_and_manifests_are_excluded_from_review(self):
+        (self.repo / '.git/info/exclude').write_text('claude/hooks/node_modules/\nclaude/hooks/bun.lock\nclaude/hooks/package.json\n')
+        for name in ('claude/hooks/node_modules/x/index.d.ts', 'claude/hooks/bun.lock', 'claude/hooks/package.json'):
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('dummy content\n')
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        snapshot = self.begin('uncommitted')
+        artifact = json.loads(snapshot.read_text())['artifact']
+        self.assertEqual(artifact['changed_paths'], [])
+        self.assertEqual((snapshot.parent / 'diff.patch').read_text(), '')
+        self.complete(snapshot, 'no-diff')
+        committed_snapshot = self.begin('committed')
+        committed_artifact = json.loads(committed_snapshot.read_text())['artifact']
+        self.assertEqual(committed_artifact['changed_paths'], ['code.txt'])
+        self.complete(committed_snapshot)
+
+    def test_exec_bit_drift_ignored_when_core_filemode_false(self):
+        self.git('config', 'core.filemode', 'false')
+        path = self.repo / 'code.txt'
+        path.chmod(0o755)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        snapshot = self.begin('uncommitted')
+        artifact = json.loads(snapshot.read_text())['artifact']
+        self.assertEqual(artifact['changed_paths'], [])
+        self.assertEqual((snapshot.parent / 'diff.patch').read_text(), '')
+        self.complete(snapshot, 'no-diff')
+        agents = self.repo / 'AGENTS.md'
+        agents.write_text('instruction\n')
+        self.git('add', 'AGENTS.md')
+        self.git('commit', '-qm', 'agents')
+        agents.chmod(0o755)
+        committed_snapshot = self.begin('committed')
+        self.complete(committed_snapshot)
+        # Verify instruction symlink target mode drift does not fail instruction_links
+        self.git('reset', '--hard', 'main')
+        target = self.repo / 'CLAUDE.md'
+        target.write_text('claude instructions\n')
+        symlink = self.repo / 'AGENTS.md'
+        symlink.symlink_to('CLAUDE.md')
+        self.git('add', 'CLAUDE.md', 'AGENTS.md')
+        self.git('commit', '-qm', 'base with link')
+        self.git('checkout', '-qb', 'feature-link')
+        (self.repo / 'code.txt').write_text('changed\n')
+        self.git('commit', '-qam', 'work on feature')
+        self.git('config', 'core.filemode', 'false')
+        target.chmod(0o755)
+        symlink_snapshot = self.begin('committed', base='HEAD~1')
+        self.complete(symlink_snapshot)
+
     def test_dirty_ignored_instruction_blocks_committed_capture(self):
         for name in ('AGENTS.md', '.codex/config.toml', '.claude/settings.json', '.gemini/settings.json',
                      'claude/hooks/pre-push.sh', 'githooks/pre-push', '.githooks/pre-push',
