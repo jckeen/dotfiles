@@ -33,7 +33,10 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 ## Large review requests
 
 The Codex gate sends oversized requests as contiguous direct-input parts in one
-native read-only session. Intermediate acknowledgments cannot authorize a push.
+native read-only session. Parts are bounded by UTF-8 bytes rather than
+characters and never split a character, so a non-ASCII request cannot produce a
+fragment several times the intended size. Intermediate acknowledgments cannot
+authorize a push.
 The helper `review-multipart.py` verifies native persisted inputs, rejects
 compaction, and checks the observed model window against the native bundled
 catalog. Larger context is scoped to the same model's supported capacity. Missing

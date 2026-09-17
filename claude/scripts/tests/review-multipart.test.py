@@ -35,6 +35,53 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(''.join(fragments), text)
             self.assertEqual(manifest['sha256'], transport.digest(packet.read_bytes()))
 
+    def test_fragments_are_bounded_by_utf8_bytes_not_characters(self):
+        # A character-sliced fragment of 4-byte characters reaches four times
+        # the intended size; the receiving model is sized in tokens, so the
+        # bound has to be UTF-8 bytes (#420).
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            packet = directory / 'request'
+            text = '\U0001f600' * transport.FRAGMENT_BYTES
+            packet.write_text(text)
+            (directory / 'catalog.json').write_text('{}')
+            transport.prepare(packet, directory)
+            manifest = json.loads((directory / 'manifest.json').read_text())
+            self.assertGreater(len(manifest['parts']), 1)
+            fragments = []
+            for index, part in enumerate(manifest['parts'], 1):
+                value = (directory / f'part-{index}.txt').read_bytes().decode('utf-8')
+                fence = value.split('Fragment fence: ', 1)[1].split('\n', 1)[0]
+                fragment = value.split('\n' + fence + '\n')[1]
+                self.assertLessEqual(len(fragment.encode()), transport.FRAGMENT_BYTES)
+                self.assertEqual(transport.digest(fragment.encode()), part['sha256'])
+                fragments.append(fragment)
+            self.assertEqual(''.join(fragments), text)
+
+    def test_fragment_boundary_never_splits_a_multibyte_character(self):
+        # The cap lands two bytes into a 4-byte character: the split backs off
+        # to the character boundary instead of emitting invalid UTF-8.
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            packet = directory / 'request'
+            text = 'a' * (transport.FRAGMENT_BYTES - 2) + '\U0001f600' * 100
+            packet.write_text(text)
+            (directory / 'catalog.json').write_text('{}')
+            transport.prepare(packet, directory)
+            manifest = json.loads((directory / 'manifest.json').read_text())
+            fragments = []
+            for index in range(1, len(manifest['parts']) + 1):
+                value = (directory / f'part-{index}.txt').read_bytes().decode('utf-8')
+                fence = value.split('Fragment fence: ', 1)[1].split('\n', 1)[0]
+                fragment = value.split('\n' + fence + '\n')[1]
+                self.assertLessEqual(len(fragment.encode()), transport.FRAGMENT_BYTES)
+                # Each fragment stands alone as valid UTF-8, so a split that
+                # landed mid-character would round-trip differently.
+                self.assertEqual(fragment.encode().decode('utf-8'), fragment)
+                fragments.append(fragment)
+            self.assertTrue(fragments[0].endswith('a'))
+            self.assertEqual(''.join(fragments), text)
+
     def test_native_input_check_preserves_crlf_and_bare_carriage_returns(self):
         for ending in ('\r\n', '\r'):
             with self.subTest(ending=repr(ending)), tempfile.TemporaryDirectory() as name:
