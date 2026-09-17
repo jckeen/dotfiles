@@ -17,7 +17,9 @@
   could not serve prompted for an unsandboxed run. The baseline now sets
   `allowNonWorkspaceAccess`, ships `read_file(~/…)` rules that the merge script
   expands to the machine's home, and mirrors every read-only command as
-  `unsandboxed(...)`; code runners stay sandbox-only.
+  `unsandboxed(...)`; code runners stay sandbox-only. `write_file(~/dev)` lets
+  edits inside the dev tree proceed in the default mode (edits prompt unless a
+  `write_file` rule covers the path).
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 

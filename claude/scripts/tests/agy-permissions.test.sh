@@ -38,6 +38,7 @@ assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
 assert 'read_file(~/.claude)' in allow and 'unsandboxed(rg)' in allow
+assert 'write_file(~/dev)' in allow, 'file edits inside the dev tree must not prompt in default mode'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
 assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
 PY

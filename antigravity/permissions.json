@@ -190,7 +190,8 @@
       "unsandboxed(git cat-file)",
       "unsandboxed(git check-ignore)",
       "unsandboxed(./gh-bootstrap.sh --check)",
-      "unsandboxed(git config --list)"
+      "unsandboxed(git config --list)",
+      "write_file(~/dev)"
     ],
     "ask": [
       "command(rm -rf)",
