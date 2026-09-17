@@ -75,7 +75,15 @@ and review again. The wrapper requires the pinned commit to remain current
 through tests, review, and confirmation. Staged, unstaged, and untracked changes
 stop the wrapper before testing and at each later checkpoint, so verification
 cannot rely on uncommitted fixes. Index flags that hide tracked changes also
-require separate inspection before shipping. Ordinary ignored dependencies and
+require separate inspection before shipping. Where `core.fileMode` is `false`,
+executable-bit changes never reach `git status`, so tracked file modes are
+compared against the index directly and a mismatch stops the wrapper the same
+way; record the intended mode with `git update-index --chmod=+x` (or `-x`)
+before shipping. Inherited repository, index, object, and configuration routing
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG*`, and the rest of
+that family) is refused outright before any repository is inspected, because a
+routed checkout can answer every checkpoint while the tests run somewhere else.
+Ordinary ignored dependencies and
 test artifacts remain supported. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
 secret scanner runs. For a PR explicitly targeting a nondefault base, run the
