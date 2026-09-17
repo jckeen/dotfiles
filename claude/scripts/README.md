@@ -25,8 +25,8 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `fix-issues.sh` | Picks up GitHub issues, creates fix branches | Commit (edit + commit) | Yes — review branches |
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
 | `review-and-push.sh` | Reviews committed changes with the required Codex gate, validates the receipt, and pushes the current branch | Artifact review + push | Only pushes after validation |
-| `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift | Install (calls `claude plugin install`) | No file edits — updates plugin state |
-| `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`. Tests: `tests/doc-truth.test.sh` | Read-only | No |
+| `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Installs are user-scope, so both this script's fast path and that hook count user-scope installs only and ignore `--scope project` plugins. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift. Tests: `tests/plugin-drift.test.sh` (fast path + drift hook) | Install (calls `claude plugin install`) | No file edits — updates plugin state |
+| `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`, so unlike the rest of this directory it holds to a bash 3.2 floor — the macOS system bash (#424); the `doc-truth (bash 3.2)` CI job runs its tests against a real 3.2.57. Tests: `tests/doc-truth.test.sh` | Read-only | No |
 | `gen-instruction-files.sh` | Builds the three global instruction files (`claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md`) from the canonical sources in `agents/canon/` (ADR 0007) — shared rule blocks in `CANON.md`, per-tool voice in `fragments/`. `--check` verifies the committed artifacts are byte-current (run in CI via `check-agent-parity.sh`). Tests: `tests/agent-parity.test.sh` | Build (writes the three generated files) | Yes — regenerates committed artifacts |
 | `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
 
@@ -75,7 +75,15 @@ and review again. The wrapper requires the pinned commit to remain current
 through tests, review, and confirmation. Staged, unstaged, and untracked changes
 stop the wrapper before testing and at each later checkpoint, so verification
 cannot rely on uncommitted fixes. Index flags that hide tracked changes also
-require separate inspection before shipping. Ordinary ignored dependencies and
+require separate inspection before shipping. Where `core.fileMode` is `false`,
+executable-bit changes never reach `git status`, so tracked file modes are
+compared against the index directly and a mismatch stops the wrapper the same
+way; record the intended mode with `git update-index --chmod=+x` (or `-x`)
+before shipping. Inherited repository, index, object, and configuration routing
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG*`, and the rest of
+that family) is refused outright before any repository is inspected, because a
+routed checkout can answer every checkpoint while the tests run somewhere else.
+Ordinary ignored dependencies and
 test artifacts remain supported. `--auto-push` removes the prompt, not the checks. The pre-push
 hook validates each pushed ref's commit receipt independently of whether the
 secret scanner runs. For a PR explicitly targeting a nondefault base, run the
@@ -235,7 +243,7 @@ crontab -e
 
 - [Claude Code](https://code.claude.com) installed and authenticated (`claude` on PATH)
 - `gh` CLI (for `fix-issues.sh` — GitHub issue lookup and PR creation)
-- Bash 4+ (macOS: `brew install bash`; Linux/WSL: included)
+- Bash 4+ (macOS: `brew install bash`; Linux/WSL: included). `check-doc-truth.sh` is the one exception and runs on bash 3.2.
 
 ## Options
 

@@ -7,6 +7,9 @@
  * not symlink it into ~/.claude/) and diffs against
  * ~/.claude/plugins/installed_plugins.json. If anything is missing, emits a
  * <system-reminder> warning at SessionStart pointing at sync-plugins.sh.
+ * Both drift directions are measured against USER-scope installs only:
+ * `--scope project` and `--scope local` plugins belong to a checkout, not to
+ * the manifest, and are intentionally absent from it (see readInstalled).
  *
  * The manifest is split into `# [global]` and `# [per-project]` sections
  * (issue #214). Both sections must be INSTALLED; only [global] plugins should
@@ -62,11 +65,41 @@ function readManifest(): Manifest {
   return manifest;
 }
 
+// User-scope installs only. The manifest is a user-scope install list —
+// setup.sh and sync-plugins.sh install without `--scope`, so a fresh clone
+// reproduces user-scope plugins and nothing else. `claude plugin install`
+// takes `--scope user|project|local`; a project- or local-scoped install is
+// owned by that checkout, not by the manifest (render@claude-plugins-official
+// is the live case: the manifest deliberately excludes it), so counting it
+// here reported reverse drift whose only suggested remedy — adding it to the
+// manifest — would install it at user scope everywhere.
+//
+// `user` is an ALLOWLIST, not `project` a denylist: a scope value we have
+// never heard of should read as "not the user-scope install the manifest
+// promises", which at worst asks for a redundant idempotent install, rather
+// than silently satisfying the manifest. Records whose shape we don't
+// recognise (non-array value, or no string `scope`) are still kept, so an
+// older installed_plugins.json parses as before.
 function readInstalled(): Set<string> {
   if (!existsSync(INSTALLED)) return new Set();
   try {
     const data = JSON.parse(readFileSync(INSTALLED, 'utf-8'));
-    return new Set(Object.keys(data.plugins ?? {}));
+    const plugins: Record<string, unknown> = data.plugins ?? {};
+    const userScoped = new Set<string>();
+    for (const [name, records] of Object.entries(plugins)) {
+      if (!Array.isArray(records)) {
+        userScoped.add(name);
+        continue;
+      }
+      // `some` on an empty array is false, so a plugin with no install
+      // records is treated as not installed — which it isn't.
+      const hasUserInstall = records.some((r) => {
+        const scope = (r as { scope?: unknown } | null)?.scope;
+        return scope === 'user' || typeof scope !== 'string';
+      });
+      if (hasUserInstall) userScoped.add(name);
+    }
+    return userScoped;
   } catch {
     return new Set();
   }
