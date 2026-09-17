@@ -34,6 +34,24 @@
   git quotes and octal-escapes any path holding a quote, a backslash or a
   non-ASCII byte, and the checker went looking for a file named after the
   escape — a latent bug the mapfile version shared. Two fixtures cover it.
+## 2026-09-17 — fix(review-and-push): routing guard and executable-bit drift
+
+- `review-and-push.sh` inherited Git routing (`GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, `GIT_CONFIG*`, and the rest of that family) from its caller,
+  so a clean alternate checkout could answer every cleanliness, branch, and
+  commit checkpoint while the tests ran in `REPO_DIR` and the push shipped an
+  unreviewed `HEAD` (#401). The same guard `git-hygiene.sh` already carries now
+  refuses those variables before the first Git call.
+- Where `core.fileMode` is `false` — this repo included — flipping a tracked
+  script's executable bit produced no `git status` output and no `ls-files`
+  flag, so tests could pass on the locally executable file while the pushed
+  commit kept the old mode (#402). Index modes are now compared against the
+  working tree directly, on filesystems that record an exec bit at all.
+- New `claude/scripts/tests/review-and-push.test.sh` covers both. The rewrite
+  fixtures in `workflow-shipping-rewrites.test.py` moved their global-config
+  isolation from `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` to `HOME` and
+  `XDG_CONFIG_HOME`, which the new guard leaves alone.
+
 ## 2026-09-17 — fix(setup): match plugins by user scope, not by name
 
 - Sweeping the #437 neighborhood turned up the same scope blindness in a third

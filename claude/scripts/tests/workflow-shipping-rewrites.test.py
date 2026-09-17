@@ -22,8 +22,16 @@ class RewriteTests(unittest.TestCase):
         self.fixture = shipping.ShippingTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        self.fixture.env.update(GIT_CONFIG_NOSYSTEM="1",
-                                GIT_CONFIG_GLOBAL=str(self.fixture.root / "global-config"))
+        # The wrapper now refuses inherited GIT_CONFIG* along with the rest of
+        # the repository-routing family (#401), so global config isolation has
+        # to arrive through HOME and XDG_CONFIG_HOME instead. Git both reads
+        # and, for `config --global`, writes the fixture's own file there, so
+        # the rewrite cases below keep their original semantics. System config
+        # is no longer suppressed; these fixtures use throwaway absolute paths
+        # that no plausible /etc/gitconfig rewrites.
+        home = self.fixture.root / "home"
+        home.mkdir()
+        self.fixture.env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / "xdg"))
 
     def git(self, *args):
         result = self.fixture.command("git", list(args))
