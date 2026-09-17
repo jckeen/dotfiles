@@ -18,6 +18,14 @@
   against the pre-fix script. The suite also re-runs the empty-array cases
   under a real bash 3.2 when `DOC_TRUTH_BASH3` points at one; CI's ubuntu
   runner has none, so the static guards carry the regression there.
+- Two findings from the Codex gate hardened that suite before it landed. The
+  case-conversion guard matched only `${v,,}`/`${v^^}`, so the equally
+  bash-4-only `${v,}`/`${v^}` (a `bad substitution` on 3.2.57) would have
+  slipped past; the operators are now matched one-or-twice. And the runtime
+  branch accepted any executable, so `DOC_TRUTH_BASH3=/bin/bash` reported four
+  green "bash3" cases from bash 5.2. It now version-checks the interpreter and
+  treats an explicit `DOC_TRUTH_BASH3` that is missing or not 3.x as a test
+  failure rather than a silent skip.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 

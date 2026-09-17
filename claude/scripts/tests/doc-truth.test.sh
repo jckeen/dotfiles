@@ -293,8 +293,10 @@ guard "no bash-4 builtins (mapfile/readarray/coproc)" \
   '(^|[^[:alnum:]_.-])(mapfile|readarray|coproc)([^[:alnum:]_.-]|$)'
 guard "no associative arrays (declare/local/typeset -A)" \
   '(declare|local|typeset)[[:space:]]+-[A-Za-z]*A'
-guard 'no bash-4 case conversion (${v,,} and ${v^^})' \
-  '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,,|\^\^)'
+# Single-character ${v^} and ${v,} are bash-4-only too and are `bad
+# substitution` on 3.2.57, so the operators are matched one-or-twice.
+guard 'no bash-4 case conversion (${v,} ${v,,} ${v^} ${v^^})' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,|\^)'
 guard "no bash-4 redirections (|& and &>>)" \
   '\|&|&>>'
 guard "no negative array subscripts" \
@@ -309,12 +311,43 @@ guard 'no bare ${array[@]} value expansion (iterate by index)' \
 # the empty-array paths under it. Set DOC_TRUTH_BASH3 to a bash 3.2 binary, or
 # put `bash-3.2`/`bash3` on PATH. Skipped where none exists (CI's ubuntu
 # runner), which is why the static guards above carry the regression.
+#
+# The interpreter is version-checked, not merely executable: pointing
+# DOC_TRUTH_BASH3 at bash 5 would run these cases under a shell that cannot
+# reproduce the 3.2 traps and report a pass that proves nothing. An explicit
+# DOC_TRUTH_BASH3 that is missing or is not bash 3.x is a test FAILURE — a
+# deliberate request to run these cases must not degrade into a silent skip.
+# An auto-discovered binary that turns out not to be bash 3.x just skips.
+bash3_version() { # prints the version word, empty if the binary won't report one
+  [[ -x "$1" ]] || return 1
+  "$1" --version 2>/dev/null | sed -n '1s/.*version \([0-9][0-9.]*\).*/\1/p'
+}
+
 BASH3="${DOC_TRUTH_BASH3:-}"
+BASH3_EXPLICIT=0
+[[ -n "$BASH3" ]] && BASH3_EXPLICIT=1
 if [[ -z "$BASH3" ]]; then
   BASH3="$(command -v bash-3.2 2>/dev/null || command -v bash3 2>/dev/null || true)"
 fi
 
-if [[ -n "$BASH3" && -x "$BASH3" ]]; then
+BASH3_VER=""
+[[ -n "$BASH3" ]] && BASH3_VER="$(bash3_version "$BASH3" || true)"
+
+if [[ -n "$BASH3_VER" && "$BASH3_VER" != 3.* ]]; then
+  if [[ "$BASH3_EXPLICIT" -eq 1 ]]; then
+    echo "✖ DOC_TRUTH_BASH3=$BASH3 is bash $BASH3_VER, not 3.x — it cannot reproduce the 3.2 traps"
+    failed=$((failed + 1))
+  else
+    echo "… bash 3.2 cases skipped ($BASH3 is bash $BASH3_VER, not 3.x)"
+  fi
+  BASH3=""
+elif [[ "$BASH3_EXPLICIT" -eq 1 && -z "$BASH3_VER" ]]; then
+  echo "✖ DOC_TRUTH_BASH3=$BASH3 is not an executable that reports a bash version"
+  failed=$((failed + 1))
+  BASH3=""
+fi
+
+if [[ -n "$BASH3" && -n "$BASH3_VER" ]]; then
   echo "  (bash 3.2 cases under $("$BASH3" --version | head -n 1))"
   CHECKER_BASH="$BASH3"
 
@@ -339,7 +372,7 @@ if [[ -n "$BASH3" && -x "$BASH3" ]]; then
   check "bash3: violations still reported" 1 "dead-ref"
 
   CHECKER_BASH=""
-else
+elif [[ "$BASH3_EXPLICIT" -eq 0 ]]; then
   echo "… bash 3.2 cases skipped (set DOC_TRUTH_BASH3 to a bash 3.2 binary)"
 fi
 
