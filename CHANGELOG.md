@@ -25,7 +25,11 @@
   branch accepted any executable, so `DOC_TRUTH_BASH3=/bin/bash` reported four
   green "bash3" cases from bash 5.2. It now version-checks the interpreter and
   treats an explicit `DOC_TRUTH_BASH3` that is missing or not 3.x as a test
-  failure rather than a silent skip.
+  failure rather than a silent skip. A second gate pass then found `;;&`,
+  `{fd}` descriptor redirections, `declare -g` and `local -n` slipping through,
+  so the guard set now covers those too — each one verified to fire on an
+  injected construct, and `declare -A`/`-n` confirmed to be "invalid option" on
+  3.2.57 while leaving the assignment standing with the wrong semantics.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 

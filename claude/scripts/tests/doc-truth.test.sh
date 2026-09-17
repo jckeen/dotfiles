@@ -291,8 +291,11 @@ guard() {
 
 guard "no bash-4 builtins (mapfile/readarray/coproc)" \
   '(^|[^[:alnum:]_.-])(mapfile|readarray|coproc)([^[:alnum:]_.-]|$)'
-guard "no associative arrays (declare/local/typeset -A)" \
-  '(declare|local|typeset)[[:space:]]+-[A-Za-z]*A'
+# -A associative (4.0), -g global (4.2), -n nameref (4.3). On 3.2.57 each is
+# an "invalid option" that still leaves the assignment standing, so the script
+# would run on with the wrong semantics rather than stop.
+guard "no bash-4 declare flags (-A, -g, -n)" \
+  '(declare|local|typeset)[[:space:]]+-[A-Za-z]*[Ang]'
 # Single-character ${v^} and ${v,} are bash-4-only too and are `bad
 # substitution` on 3.2.57, so the operators are matched one-or-twice.
 guard 'no bash-4 case conversion (${v,} ${v,,} ${v^} ${v^^})' \
@@ -301,6 +304,14 @@ guard "no bash-4 redirections (|& and &>>)" \
   '\|&|&>>'
 guard "no negative array subscripts" \
   '\$\{[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-'
+guard "no ;;& case fallthrough" \
+  ';;&'
+# {fd}< and {fd}> allocate a descriptor (bash 4.1). The leading [^$] keeps a
+# plain "${var}>out" redirection from matching.
+guard "no {fd} descriptor redirections" \
+  '(^|[^$])\{[A-Za-z_][A-Za-z0-9_]*\}[<>]'
+guard 'no ${v@Q} parameter transformations' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@[A-Za-z]\}'
 # Under `set -u`, bash 3.2 calls ${arr[@]} unbound when arr is empty, so the
 # checker iterates by index. Verified on a bash 3.2.57 build: ${!arr[@]}
 # and ${#arr[@]} on an empty array are fine there; ${arr[@]} aborts the run.
