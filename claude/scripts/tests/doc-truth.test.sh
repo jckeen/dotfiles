@@ -68,12 +68,14 @@ BASH3_EXPLICIT=0
 if [[ -z "$BASH3" ]]; then
   BASH3="$(command -v bash-3.2 2>/dev/null || command -v bash3 2>/dev/null || true)"
 fi
+# A bare name goes through PATH first; command -v can itself hand back a
+# relative path when PATH holds a relative entry, so normalize unconditionally
+# afterwards rather than only on the non-PATH branch.
+if [[ -n "$BASH3" && "$BASH3" != */* ]]; then
+  BASH3="$(command -v "$BASH3" 2>/dev/null || true)"
+fi
 if [[ -n "$BASH3" && "$BASH3" != /* ]]; then
-  if [[ "$BASH3" == */* ]]; then
-    BASH3="$(abs_path "$BASH3" || true)"
-  else
-    BASH3="$(command -v "$BASH3" 2>/dev/null || true)"
-  fi
+  BASH3="$(abs_path "$BASH3" || true)"
 fi
 
 BASH3_VER=""
