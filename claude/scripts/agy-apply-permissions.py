@@ -7,9 +7,11 @@ allow/ask/deny rules and the two execution-mode keys. The live file
 trustedWorkspaces and grants the user saves from approval prompts.
 
   apply  ensure every baseline rule is present and seed the mode keys when
-         absent; user-added rules are kept (exit 0; 2 on unreadable input)
-  check  exit 1 when a baseline rule or mode key is missing or the mode
-         differs; print the count of non-baseline rules as drift information
+         absent; user-added rules are kept, but rules the baseline has
+         retired are deleted (exit 0; 2 on unreadable input)
+  check  exit 1 when a baseline rule or mode key is missing, the mode
+         differs, or a retired rule is still live; print the count of
+         non-baseline rules as drift information
   prune  back up the settings file, then replace the permissions with the
          baseline exactly and force the mode keys (the one-time cleanup)
 """
@@ -52,7 +54,17 @@ def load_baseline(path):
             sys.exit(f'error: {path}: every "{bucket}" entry must be a rule like command(prefix)')
         if any('/home/' in e or '/Users/' in e for e in entries):
             sys.exit(f'error: {path}: rules must not embed a user home path')
-    return {b: list(rules.get(b, [])) for b in BUCKETS}, settings
+    # Rules the baseline has withdrawn. apply is additive, so a grant deleted
+    # from "permissions" would otherwise survive on every machine that already
+    # installed it; listing it here makes apply delete it and check fail.
+    retired = data.get('retired', [])
+    if not isinstance(retired, list) or not all(isinstance(e, str) and RULE_RE.match(e) for e in retired):
+        sys.exit(f'error: {path}: every "retired" entry must be a rule like command(prefix)')
+    baseline = {b: list(rules.get(b, [])) for b in BUCKETS}
+    both = sorted(set(retired) & {r for entries in baseline.values() for r in entries})
+    if both:
+        sys.exit(f'error: {path}: rule(s) both current and retired: {", ".join(both)}')
+    return baseline, settings, retired
 
 
 def write_atomic(path, data):
@@ -93,8 +105,9 @@ def main():
     if not os.path.isabs(args.home):
         sys.exit(f'error: --home must be an absolute path: {args.home}')
     home = args.home.rstrip('/') or '/'
-    baseline, mode_keys = load_baseline(args.rules)
+    baseline, mode_keys, retired = load_baseline(args.rules)
     expanded_baseline = {b: [expand_rule(r, home) for r in baseline[b]] for b in BUCKETS}
+    retired_set = {expand_rule(r, home) for r in retired}
     settings = load_json(args.settings, required=False)
     live = settings.get('permissions')
     if live is None:
@@ -122,8 +135,11 @@ def main():
                 deduped.append(e)
         live_lists[bucket] = deduped
 
+    retired_live = {b: [r for r in live_lists[b] if r in retired_set] for b in BUCKETS}
+    n_retired = sum(len(v) for v in retired_live.values())
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
-    extras = {b: [r for r in live_lists[b] if r not in expanded_baseline[b]] for b in BUCKETS}
+    extras = {b: [r for r in live_lists[b] if r not in expanded_baseline[b] and r not in retired_set]
+              for b in BUCKETS}
     mode_missing = [k for k in mode_keys if k not in settings]
     mode_drift = {k: settings[k] for k, v in mode_keys.items() if k in settings and settings[k] != v}
     n_missing = sum(len(v) for v in missing.values())
@@ -135,6 +151,9 @@ def main():
             problems.append(f'{n_missing} baseline rule(s) missing')
         if legacy_repaired:
             problems.append('unexpanded "~" rule(s) in settings (re-run apply)')
+        if n_retired:
+            named = ', '.join(r for b in BUCKETS for r in retired_live[b])
+            problems.append(f'{n_retired} retired rule(s) still granted: {named} (re-run apply)')
         if mode_missing:
             problems.append('unset: ' + ', '.join(mode_missing))
         if problems:
@@ -159,8 +178,12 @@ def main():
         return 0
 
     # apply
-    changed = n_missing > 0 or legacy_repaired
-    merged = {b: live_lists[b] + missing[b] for b in BUCKETS}
+    changed = n_missing > 0 or legacy_repaired or n_retired > 0
+    for bucket in BUCKETS:
+        for rule in retired_live[bucket]:
+            print(f'retired: removed {rule} from {bucket} (withdrawn from the baseline)')
+    kept = {b: [r for r in live_lists[b] if r not in retired_set] for b in BUCKETS}
+    merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:
             changed = True

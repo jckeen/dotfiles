@@ -219,6 +219,50 @@ assert not any('~' in r and r.startswith(('read_file(', 'write_file(')) for buck
 PY
 then ok "apply repairs legacy unexpanded ~ rules across allow, ask, and deny"; else fail "legacy repair failed"; fi
 
+# ── Retired rules (#427) ───────────────────────────────────────────────────
+# A grant withdrawn from the baseline must also leave settings that already
+# carry it. apply is additive, so without this a machine that installed an
+# earlier baseline keeps the withdrawn rule forever.
+S_RETIRED="$ROOT/retired.json"
+python3 - "$S_RETIRED" "$RULES" <<'PY'
+import json, sys
+retired = json.load(open(sys.argv[2]))['retired']
+assert retired, 'baseline must declare retired rules'
+json.dump({'trustedWorkspaces': ['/x/dev'],
+           'permissions': {'allow': ['command(local-junk)'] + retired[:1],
+                           'ask': [], 'deny': retired[1:2]}},
+          open(sys.argv[1], 'w'))
+PY
+
+if out="$(python3 "$TOOL" check --settings "$S_RETIRED" --rules "$RULES" 2>&1)"; then
+  fail "check passed while a retired rule was still live: $out"
+else
+  if grep -q 'retired' <<< "$out"; then ok "check fails naming retired rules still in settings"
+  else fail "check failed without naming the retired rule: $out"; fi
+fi
+
+out="$(python3 "$TOOL" apply --settings "$S_RETIRED" --rules "$RULES" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && python3 - "$S_RETIRED" "$RULES" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+retired = set(json.load(open(sys.argv[2]))['retired'])
+perms = d['permissions']
+live = {r for bucket in perms.values() for r in bucket}
+assert not (live & retired), f'retired rules survived apply: {live & retired}'
+assert 'command(local-junk)' in perms['allow'], 'unrelated local grants must be kept'
+assert d['trustedWorkspaces'] == ['/x/dev']
+assert 'command(sudo)' in perms['deny'], 'baseline rules still applied'
+PY
+then ok "apply removes retired rules and keeps unrelated local grants"
+else fail "apply did not retire the rules (rc=$rc): $out"; fi
+
+if grep -q 'retired' <<< "$out"; then ok "apply reports each retired rule it removed"
+else fail "apply removed retired rules silently: $out"; fi
+
+if python3 "$TOOL" check --settings "$S_RETIRED" --rules "$RULES" >/dev/null 2>&1; then
+  ok "check passes once the retired rules are gone"
+else fail "check still failing after apply removed the retired rules"; fi
+
 echo ""
 echo "agy-permissions: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

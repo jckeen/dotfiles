@@ -67,6 +67,21 @@
   prefixes are dropped (over-match risk); the `/*`, `~/*` and `$HOME` forms stay.
 - `gh auth status` moved to ask (`--show-token` prints the token); the home
   expansion tolerates `HOME=/`.
+- Codex review of the merged branch found the upgrade path left the bypass
+  open (high): withdrawing a grant from the baseline does not withdraw it from
+  a machine that already installed it, because `setup.sh` runs the additive
+  `apply` and `check` counted the leftover as ordinary local drift. An existing
+  install therefore kept `unsandboxed(git fetch)` and its
+  `--upload-pack=<command>` execution path after an ordinary upgrade.
+  `antigravity/permissions.json` now carries a `retired` array naming the
+  withdrawn grants; `apply` deletes each exact match from the live file and
+  prints one line per removal, `check` fails while any remain, and `prune`
+  keeps its meaning. Loading the baseline rejects a rule listed as both current
+  and retired. Retired are the three `unsandboxed` grants (`git fetch`,
+  `git pull --ff-only`, `gh auth status`), `command(gh auth status)`, and the
+  two `command(regex:…)` test-runner allows. Withdrawn *denies* are
+  deliberately not listed: removing one would take away protection the operator
+  currently has, so the two stale deny regexes stay as harmless residue.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
