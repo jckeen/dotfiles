@@ -65,6 +65,9 @@ for a in "$@"; do
 done
 [ -f "$AGY_FAKE_DIR/stderr" ] && cat "$AGY_FAKE_DIR/stderr" >&2
 cat "$AGY_FAKE_DIR/output"
+# A fixture can force a non-zero agy exit alongside real output — the gate's
+# failure path prints that output, so it must be exercised with a live stdout.
+[ ! -f "$AGY_FAKE_DIR/exit" ] || exit "$(cat "$AGY_FAKE_DIR/exit")"
 EOF
 chmod +x "$SHIM_DIR/agy"
 export PATH="$SHIM_DIR:$PATH"
@@ -208,11 +211,72 @@ check "empty stdout with stderr content still degrades, never passes" 0 "canary 
 assert "empty stdout with stderr content mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 rm -rf "$R"
 
+# ── #422: a long failure report must not abort the failure path ───────
+# The failure branch echoes agy's output and stderr. `sed … | head -20` over
+# more than a pipe buffer's worth of text kills sed with SIGPIPE, and under
+# `set -euo pipefail` that ends the gate (141 on WSL2) before `degrade` runs —
+# turning a degrade-open into a crash, and a --require failure into the wrong
+# exit code.
+new_repo
+echo "change" >> "$R/code.txt"
+: > "$AGY_FAKE_DIR/output"
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "E0915 agy diagnostic %0200d\n", i }' > "$AGY_FAKE_DIR/stderr"
+check "long agy stderr still reaches the degrade path" 0 "canary failed" --uncommitted
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+shown="$(grep -c '^    E0915 agy diagnostic' "$AGY_FAKE_DIR/gate-out" || true)"
+assert "long agy stderr is shown truncated, not in full" "[ '$shown' = 20 ]"
+check "long agy stderr fails closed with --require" 3 "hard failure" --uncommitted --require
+rm -f "$AGY_FAKE_DIR/stderr"
+rm -rf "$R"
+
+# Same branch, reached with a non-zero exit and long stdout.
+new_repo
+echo "change" >> "$R/code.txt"
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "unparseable agy output %0200d\n", i }' > "$AGY_FAKE_DIR/output"
+printf '9\n' > "$AGY_FAKE_DIR/exit"
+check "long agy stdout on a failed run still degrades" 0 "agy review session failed (exit 9)" --uncommitted
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+shown="$(grep -c '^    unparseable agy output' "$AGY_FAKE_DIR/gate-out" || true)"
+assert "long agy stdout is shown truncated, not in full" "[ '$shown' = 20 ]"
+rm -f "$AGY_FAKE_DIR/exit"
+rm -rf "$R"
+
 # Leading zeros are decimal seconds, not octal.
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 ANTIGRAVITY_GATE_TIMEOUT=090 check "leading-zero ANTIGRAVITY_GATE_TIMEOUT is decimal" 0 "LGTB verdict" --uncommitted
+rm -rf "$R"
+
+# ── #421: a zero timeout is "disabled", not 30 seconds ────────────────
+# GNU timeout documents a duration of 0 as no timeout at all, so a documented
+# "disabled" setting must reach both agy's --print-timeout and the outer _tmo
+# ceiling unchanged. A `timeout` shim ahead of the real one records the
+# ceiling the gate computed and then runs the command unbounded, which is all
+# these fixtures need.
+TMO_SHIM_DIR="$(mktemp -d)"
+cat > "$TMO_SHIM_DIR/timeout" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$AGY_FAKE_DIR/ceilings"
+shift
+exec "$@"
+EOF
+chmod +x "$TMO_SHIM_DIR/timeout"
+
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+PATH_SAVED="$PATH"
+export PATH="$TMO_SHIM_DIR:$PATH"
+ANTIGRAVITY_GATE_TIMEOUT=0 check "zero ANTIGRAVITY_GATE_TIMEOUT still runs the review" 0 "LGTB verdict" --uncommitted
+ceiling="$(head -n 1 "$AGY_FAKE_DIR/ceilings" 2>/dev/null || true)"
+assert "zero ANTIGRAVITY_GATE_TIMEOUT leaves the outer ceiling disabled" "[ '$ceiling' = 0 ]"
+assert "zero ANTIGRAVITY_GATE_TIMEOUT reaches agy's print timeout too" "grep -qx -- '0s' '$AGY_FAKE_DIR/argv'"
+rm -f "$AGY_FAKE_DIR/ceilings"
+ANTIGRAVITY_GATE_TIMEOUT=120 check "non-zero ANTIGRAVITY_GATE_TIMEOUT still reviews" 0 "LGTB verdict" --uncommitted
+ceiling="$(head -n 1 "$AGY_FAKE_DIR/ceilings" 2>/dev/null || true)"
+assert "non-zero ceiling stays 30s above agy's own print timeout" "[ '$ceiling' = 150 ]"
+export PATH="$PATH_SAVED"
 rm -rf "$R"
 
 # A failed run keeps agy's log for diagnosis (#409); a clean run removes it.
@@ -272,18 +336,94 @@ with open(sys.argv[1], 'w') as f:
         f.write(f'line {i} ' + 'x' * 60 + '\n')
 PYBIG
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-printf '#!/usr/bin/env bash\nexec timeout 120 "%s" "$@"\n' "$GATE" > "$SHIM_DIR/gate-bounded"
+# #423: resolve the bounding command the way _tmo does — GNU `timeout`,
+# `gtimeout` from macOS coreutils, else no ceiling at all. A bare `timeout`
+# baked into the shim exits 127 on stock macOS, where BSD userland ships
+# neither. The resolved absolute path also keeps the bound independent of any
+# PATH shim a later fixture installs.
+BOUND_TMO="$(command -v timeout || command -v gtimeout || true)"
+if [[ -n "$BOUND_TMO" ]]; then
+  printf '#!/usr/bin/env bash\nexec %q 120 %q "$@"\n' "$BOUND_TMO" "$GATE" > "$SHIM_DIR/gate-bounded"
+else
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$GATE" > "$SHIM_DIR/gate-bounded"
+fi
 chmod +x "$SHIM_DIR/gate-bounded"
+assert "bounded gate shim never resolves its bound from PATH" "grep -qE '^exec +/' '$SHIM_DIR/gate-bounded'"
 GATE_REAL="$GATE"; GATE="$SHIM_DIR/gate-bounded"
-ANTIGRAVITY_GATE_MAX_LINES=40000 check "30k-line diff completes within the bound" 0 "LGTB verdict" --uncommitted
+# The byte cap (#409) is raised out of the way: this fixture is about the
+# empty-diff check staying linear, not about the input window.
+ANTIGRAVITY_GATE_MAX_LINES=40000 ANTIGRAVITY_GATE_MAX_BYTES=10000000 \
+  check "30k-line diff completes within the bound" 0 "LGTB verdict" --uncommitted
 GATE="$GATE_REAL"
 rm -rf "$R"
 
-# ── #205: post-dispatch model-pin verification ────────────────────────
-# The propagation line format matches agy 1.1.1's model_config_manager log.
-# The fake conversation records are plain text files — `strings` reads them.
+# The propagation line format matches agy 1.1.1's model_config_manager log
+# (#205, exercised in full below); fixtures from here on hand it to the shim
+# so a dispatching run also verifies its model pin.
 PROP_OK='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.1 Pro (High)"'
 PROP_BAD='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.5 Flash (Low)"'
+
+# ── #409: the measured agy input window is a hard size cap ────────────
+# agy print mode delivers only ~185 KB of a single user message to the model
+# (measured: a 590 KB message of numbered lines came back covering the first
+# 3,250 of 10,000 lines, with no truncation reported). Above the cap a verdict
+# would certify a fraction of the diff, so the gate degrades instead of
+# dispatching — and never mints a receipt for what it did not review.
+new_repo
+python3 - "$R/wide.txt" <<'PYWIDE'
+import sys
+with open(sys.argv[1], 'w') as f:
+    for i in range(2000):
+        f.write(f'line {i} ' + 'y' * 100 + '\n')
+PYWIDE
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+ANTIGRAVITY_GATE_MAX_LINES=40000 \
+  check "diff above the measured input window degrades" 0 "the model would see only its first" --uncommitted
+assert "oversized prompt never dispatches" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+assert "oversized prompt mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+ANTIGRAVITY_GATE_MAX_LINES=40000 \
+  check "diff above the measured input window fails closed with --require" 3 "hard failure" --uncommitted --require
+ANTIGRAVITY_GATE_MAX_LINES=40000 ANTIGRAVITY_GATE_MAX_BYTES=10000000 \
+  check "raised ANTIGRAVITY_GATE_MAX_BYTES dispatches the same diff" 0 "LGTB verdict" --uncommitted
+assert "raised byte cap dispatches" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+rm -f "$AGY_FAKE_DIR/invoked"
+ANTIGRAVITY_GATE_MAX_LINES=40000 ANTIGRAVITY_GATE_MAX_BYTES=0 \
+  check "zero ANTIGRAVITY_GATE_MAX_BYTES disables the cap" 0 "LGTB verdict" --uncommitted
+assert "disabled byte cap dispatches" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+rm -rf "$R"
+
+# The tier-1 valve mints a receipt without dispatching, so the cap has to be
+# checked before it — as the line cap already is. A docs-only diff of one
+# 200,000-byte line clears the tier-1 line count while sitting far above the
+# input window, and must not collect a reduced-ceremony receipt for a change
+# no reviewer ever saw.
+new_repo
+python3 - "$R/README.md" <<'PYLONGLINE'
+import sys
+with open(sys.argv[1], 'w') as f:
+    f.write('x' * 200000 + '\n')
+PYLONGLINE
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "one huge docs line cannot take the tier-1 skip" 0 "the model would see only its first" --uncommitted
+assert "oversized docs diff mints no tier-1 receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "oversized docs diff never dispatches" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+check "oversized docs diff fails closed with --require" 3 "hard failure" --uncommitted --require
+rm -rf "$R"
+
+# A small diff is unaffected by the default cap, and a non-integer cap is a
+# configuration error, not a silent fallback.
+new_repo
+echo "change" >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "small diff passes under the default byte cap" 0 "LGTB verdict" --uncommitted
+ANTIGRAVITY_GATE_MAX_BYTES=185K check "non-integer ANTIGRAVITY_GATE_MAX_BYTES fails closed" 2 "integer number of bytes" --uncommitted
+rm -rf "$R"
+
+# ── #205: post-dispatch model-pin verification ────────────────────────
+# PROP_OK / PROP_BAD are defined above, with the first fixture that needs them.
+# The fake conversation records are plain text files — `strings` reads them.
 
 new_repo
 echo "change" >> "$R/code.txt"

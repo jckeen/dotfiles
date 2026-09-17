@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-17 — fix(agy-gate): zero timeout, long failure reports, measured input cap
+
+- `ANTIGRAVITY_GATE_TIMEOUT=0` is documented as "disabled" but the outer
+  ceiling added 30 seconds to it, capping a run the setting was meant to leave
+  unbounded. Zero now passes through to both agy's `--print-timeout` and the
+  portable `timeout` wrapper (#421).
+- A failed `agy` run that wrote more than a pipe buffer of output or stderr
+  killed the gate with SIGPIPE (141 on WSL2) before it could degrade, because
+  `sed … | head -20` ran under `set -euo pipefail`. `head` now reads first, so
+  the report is truncated without ending the run (#422).
+- The large-diff fixture baked a bare `timeout` into its shim, which exits 127
+  on stock macOS; the test resolves `timeout`/`gtimeout` the way `_tmo` does
+  and falls back to running unbounded (#423).
+- New `ANTIGRAVITY_GATE_MAX_BYTES` (default 185000, `0` disables) caps the
+  review prompt at the measured agy print-mode input window. Only ~185 KB of a
+  single user message reaches the model and the remainder is dropped with no
+  truncation notice, so a larger prompt would certify a slice of a diff as a
+  review of all of it. Above the cap the gate degrades and mints no receipt;
+  the multipart-transport plan for this lane is dropped (#409). The cap is
+  checked before the tier-1 valve, which records a receipt without
+  dispatching: a docs-only diff of one 200,000-byte line clears the tier's
+  line count and must not collect a reduced-ceremony receipt either.
+
 ## 2026-09-17 — fix(doc-truth): run the checker on the macOS system bash (#424)
 
 - `check-doc-truth.sh` is vendored verbatim into other repos but read

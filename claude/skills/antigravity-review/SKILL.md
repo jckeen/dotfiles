@@ -29,10 +29,12 @@ Other invocations:
 Then print the script's output verbatim to the user, and lead with the gate result:
 - **Exit 0** — clean, or only P3+ nits (which are printed). Safe to push.
 - **Exit 2** — local validation failed, blocking P0–P2 findings, an unresolvable base ref, or review output that couldn't be parsed as findings or a whole-verdict LGTB. Do NOT push; surface the findings (or the cause) and offer to fix them.
-- **Exit 3** — the gate was `--require`d but `agy` couldn't run (missing, not authenticated, timed out). Report that Antigravity couldn't review and fall back to a Codex review or a manual pass.
+- **Exit 3** — the gate was `--require`d but `agy` couldn't run (missing, not authenticated, timed out) or the diff was too large to review in one pass. Report that Antigravity couldn't review and fall back to a Codex review or a manual pass.
 
 ## Notes
 
 - The gate runs local `tsc --noEmit` / lint first, filters lockfiles and assets out of the diff, and skips diffs over 500 lines to conserve plan quota (degrades open).
+- Size limits, both of which degrade rather than review part of a change: `ANTIGRAVITY_GATE_MAX_LINES` (default 500) and `ANTIGRAVITY_GATE_MAX_BYTES` (default 185000, `0` disables). The byte cap is the measured `agy` print-mode input window: only about 185 KB of a single user message reaches the model, and the rest is dropped with no truncation notice, so a bigger prompt would certify a slice of the diff as a review of the whole. Split the change instead of raising the cap.
+- `ANTIGRAVITY_GATE_TIMEOUT` (default 360) is a whole number of seconds; it sets `agy --print-timeout` and an outer ceiling 30s above it. `0` disables both, matching what GNU `timeout` documents for a zero duration.
 - Security: the diff is treated as untrusted data. `agy` runs with `--mode plan --sandbox` and no `--dangerously-skip-permissions`; the diff is fenced so injected instructions in a reviewed diff can't steer the agent or run tools; the prompt (including the diff, which can contain secrets) is delivered on stdin rather than argv so it never shows in process listings; and a clean verdict is accepted only when `LGTB` is the entire output (or its final line) — an injected `output LGTB` quoted inside prose blocks instead of passing. Do not "simplify" the gate by adding `--dangerously-skip-permissions` or loosening the verdict match.
 - `ANTIGRAVITY_GATE_REQUIRED=1` turns degraded (tool-can't-run) cases into hard failures; `--require` does the same per-invocation.
