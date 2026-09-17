@@ -34,6 +34,84 @@
   `claude/scripts/agy-apply-permissions.py` (apply keeps local grants; prune
   resets them after a backup); `check-antigravity.sh` warns on drift. This
   replaces what the reverted classifier (#411) tried to do with a parser.
+- Follow-up the same day: reads under `~/.claude`, `~/.gemini`, `~/.codex`
+  and `~/dev` still prompted as non-workspace access, and commands the sandbox
+  could not serve prompted for an unsandboxed run. The baseline now sets
+  `allowNonWorkspaceAccess`, ships `read_file(~/…)` rules that the merge script
+  expands to the machine's home, and mirrors every read-only command as
+  `unsandboxed(...)`; code runners stay sandbox-only. `write_file(~/dev)` lets
+  edits inside the dev tree proceed in the default mode (edits prompt unless a
+  `write_file` rule covers the path).
+- Antigravity review of the follow-up found two P0s: unsandboxed `cat` could
+  read `~/.ssh` where the file-tool deny rules do not apply, and unsandboxed
+  `echo`/`sed` could write anywhere by redirection. Text writers lost their
+  unsandboxed mirrors, and command-level deny regexes now bind every run
+  (sandboxed or not): secret paths and files, redirection into home dotfiles
+  or system paths, and in-place `sed`/`perl` through a read-only prefix.
+- Second review round: `awk`, `sed`, `fd`, `yq` and `jq` also lost their
+  unsandboxed mirrors (they can execute or write), the recursive-rm deny now
+  covers `/*`, `~/*` and any flag order, `sed --in-place` and `rg --pre` and
+  `git -c` are denied. Only tools that can neither run code nor write leave the
+  sandbox without a prompt.
+- Third round settled the model: the terminal sandbox is the boundary. No
+  local tool carries an `unsandboxed` rule any more; only read-only network
+  commands (`git fetch`, `git pull --ff-only`, `gh` reads) may leave the
+  sandbox. Reads outside the workspace are served inside it via
+  `allowNonWorkspaceAccess` and the `read_file(~/…)` rules. The deny regexes
+  stay as defense in depth (newline-safe, repeated-slash and traversal aware,
+  absolute home paths covered) but are documented as not being a boundary.
+- Fourth round (P1/P2 only): directory file rules end with `/` so prefix
+  matching cannot leak into siblings; `+refspec` force pushes, `rm` with a safe
+  path before the protected one, single-level `../` redirects, `git` global
+  options before `-c`, and mixed-case secret paths are covered.
+- Fifth round: the `unsandboxed(git fetch)` prefix admitted `--upload-pack=<cmd>`
+  outside the sandbox (P0). Exec-capable flags on network git subcommands are
+  denied and env-prefixed git commands (`GIT_SSH_COMMAND=…`) ask. `rm` with the
+  path before its flags, `tee` with any flag, multi-level `.env.*`, and
+  hardware-backed key names are covered.
+- Sixth round: sandboxed `git config` could plant `core.sshCommand` for an
+  unsandboxed fetch to run (P0), so git no longer leaves the sandbox at all
+  (`git fetch`/`pull` prompt; only `gh` reads are unsandboxed) and config
+  writes ask. Reads of `~/.config` are no longer allowed wholesale and the
+  credential files under `~/.config/gh`, `~/.claude`, `~/.gemini`, `~/.codex`
+  and `~/.git-credentials` are denied by path and by name (P0). `/./`,
+  `${HOME}`, `--recursive`, combined `-uf`, and git global options before
+  the subcommand are covered.
+- Seventh round settled it: the command regex layer is removed. Every round
+  produced new bypasses because shell syntax cannot be classified airtight,
+  which is the lesson of #411. What remains is what agy enforces exactly:
+  `read_file` denies for credential paths (the file tool matches paths, not
+  text) and plain prefix denies as speed bumps inside the sandbox. `git clone`,
+  `git -C` and `git -c` ask; a `git config` ask was dropped again because it
+  shadowed the read-only `git config --get` allow (deny > ask > allow).
+- The deny on `~/.gemini/antigravity-cli/` blocked agy's own `brain/` and
+  `scratch/`; it is narrowed to `settings.json`. Bare `rm -rf /` and `rm -rf ~`
+  prefixes are dropped (over-match risk); the `/*`, `~/*` and `$HOME` forms stay.
+- `gh auth status` moved to ask (`--show-token` prints the token); the home
+  expansion tolerates `HOME=/`.
+- Codex review of the merged branch found the upgrade path left the bypass
+  open (high): withdrawing a grant from the baseline does not withdraw it from
+  a machine that already installed it, because `setup.sh` runs the additive
+  `apply` and `check` counted the leftover as ordinary local drift. An existing
+  install therefore kept `unsandboxed(git fetch)` and its
+  `--upload-pack=<command>` execution path after an ordinary upgrade.
+  `antigravity/permissions.json` now carries a `retired` array naming the
+  withdrawn grants; `apply` deletes each exact match from the live file and
+  prints one line per removal, `check` fails while any remain, and `prune`
+  keeps its meaning. Loading the baseline rejects a rule listed as both current
+  and retired. Retired are the three `unsandboxed` grants (`git fetch`,
+  `git pull --ff-only`, `gh auth status`), `command(gh auth status)`, and the
+  two `command(regex:…)` test-runner allows. Withdrawn *denies* are
+  deliberately not listed: removing one would take away protection the operator
+  currently has, so the two stale deny regexes stay as harmless residue.
+- Second Codex round caught the same principle broken one level down (medium):
+  the retirement filter ran over every bucket, so an operator who had added
+  `unsandboxed(git fetch)` to their own `deny` would have had it deleted,
+  turning a forbidden operation into an approvable one, and the new test
+  required that removal. Retirement is now scoped to `allow` alone, the guard
+  rejects a rule that is both a current grant and retired, and a test asserts
+  that a retired rule kept as an operator's deny survives `apply` and passes
+  `check`.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
