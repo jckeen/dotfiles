@@ -30,6 +30,21 @@
   genuine bash 3.x is a test failure, never a silent skip. The job is
   deliberately separate from the required `doc-truth` context so an unreachable
   ftp.gnu.org cannot block every PR; promote it once it has a track record.
+## 2026-09-17 — fix(setup): match plugins by user scope, not by name
+
+- Sweeping the #437 neighborhood turned up the same scope blindness in a third
+  consumer. `setup.sh` §3b matched manifest entries against raw
+  `claude plugin list` output, which reports project- and local-scoped installs
+  from any directory. A manifest plugin someone had installed with
+  `--scope project` therefore read as already installed, and setup skipped the
+  user-scope install the manifest promises. Reproduced against the live CLI:
+  the project-scoped `render` matched, though no manifest entry is affected on
+  this machine today.
+- The rule now lives in one place. `user_scoped_plugins()` in `lib-checks.sh`
+  reduces a listing to user-scope ids, `setup.sh` matches whole lines against
+  it, and `tests/plugin-drift.test.sh` pins the extraction alongside the hook
+  and sync cases.
+
 ## 2026-09-17 — fix(plugins): scope-aware drift check and sync fast path (#437)
 
 - Every session warned that `render@claude-plugins-official` was "missing from

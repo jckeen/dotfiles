@@ -13,8 +13,10 @@
 #
 # sync-plugins.sh's fast path is covered here too, against the same fixtures:
 # the hook's warning tells the operator to run that script, so the two must
-# agree on what "installed" means or the warning never clears. Run directly;
-# exit 1 on any failure.
+# agree on what "installed" means or the warning never clears. The third
+# consumer, setup.sh, reads `claude plugin list` instead of the JSON and shares
+# the rule through user_scoped_plugins() in lib-checks.sh; its extraction is
+# pinned at the end. Run directly; exit 1 on any failure.
 set -uo pipefail
 
 resolve_script_path() {
@@ -29,6 +31,7 @@ resolve_script_path() {
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 HOOK="$SCRIPT_DIR/../../hooks/PluginDriftCheck.hook.ts"
 SYNC="$SCRIPT_DIR/../sync-plugins.sh"
+LIB_CHECKS="$SCRIPT_DIR/../../../lib-checks.sh"
 
 if ! command -v bun >/dev/null 2>&1; then
   echo "FAIL - bun is required to run the TypeScript SessionStart hook" >&2
@@ -276,6 +279,50 @@ run_sync "$MANIFEST_GLOBAL" '{"version":1,"plugins":{
 }}'
 assert "sync fast-path still trusts a non-array install record" \
   '[ -z "$sync_installs" ]'
+
+# ── setup.sh's listing-based match (lib-checks.sh) ──────────────────────
+# setup.sh cannot read installed_plugins.json — it runs before the CLI state
+# is guaranteed and uses `claude plugin list`. That listing reports project-
+# and local-scoped installs from any directory, so the same scope rule has to
+# apply to its text form or setup.sh skips the user-scope install.
+# shellcheck source=lib-checks.sh
+if ! . "$LIB_CHECKS"; then
+  echo "FAIL - fixture setup: cannot source $LIB_CHECKS" >&2
+  exit 1
+fi
+
+listing() { # listing <name> <scope> [<name> <scope> ...]
+  while [ "$#" -ge 2 ]; do
+    printf '  \xe2\x9d\xaf %s\n    Version: 1.0.0\n    Scope: %s\n    Status: enabled\n\n' "$1" "$2"
+    shift 2
+  done
+}
+
+out="$(listing \
+  typescript-lsp@claude-plugins-official user \
+  render@claude-plugins-official project \
+  something@marketplace local | user_scoped_plugins)"
+assert "user-scope entry is extracted" \
+  'grep -qxF "typescript-lsp@claude-plugins-official" <<<"$out"'
+assert "project-scope entry is not extracted" \
+  '! grep -qF "render@" <<<"$out"'
+assert "local-scope entry is not extracted" \
+  '! grep -qF "something@" <<<"$out"'
+
+# An entry with no Scope line, or one this parser does not know, is left out
+# so the caller reinstalls it. `claude plugin install` is idempotent.
+out="$(printf '  \xe2\x9d\xaf noscope@marketplace\n    Version: 1.0.0\n\n' | user_scoped_plugins)"
+assert "entry without a Scope line is not extracted" '[ -z "$out" ]'
+out="$(listing future@marketplace enterprise | user_scoped_plugins)"
+assert "entry with an unknown scope is not extracted" '[ -z "$out" ]'
+
+# Whole-line matching: a prefix must not satisfy a longer manifest entry.
+out="$(listing code-review@claude-plugins-official user | user_scoped_plugins)"
+assert "extracted ids match whole lines only" \
+  '! grep -qxF "code-review-2@claude-plugins-official" <<<"$out"'
+
+out="$(printf '' | user_scoped_plugins)"
+assert "empty listing extracts nothing" '[ -z "$out" ]'
 
 echo
 echo "passed: $pass  failed: $failed"

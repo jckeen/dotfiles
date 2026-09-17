@@ -1317,8 +1317,15 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
     fi
   done
 
-  # Cache installed plugin list once to avoid spawning claude per-plugin
-  INSTALLED_PLUGINS="$(claude plugin list 2>/dev/null || true)"
+  # Cache installed plugin list once to avoid spawning claude per-plugin.
+  # user_scoped_plugins (lib-checks.sh) reduces the listing to one
+  # `<plugin>@<marketplace>` id per USER-scope install. `plugin list` also
+  # reports project- and local-scoped installs from any directory, and this
+  # manifest is a user-scope install list: matching the raw listing treated
+  # someone else's `--scope project` install as satisfying it and skipped the
+  # user-scope install the manifest promises (#437 fixed the same blindness in
+  # PluginDriftCheck.hook.ts and sync-plugins.sh).
+  INSTALLED_PLUGINS="$(claude plugin list 2>/dev/null | user_scoped_plugins || true)"
 
   # Install each plugin if not already installed
   while IFS= read -r line; do
@@ -1327,9 +1334,9 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
     plugin="$(echo "$plugin" | tr -d '[:space:]')"
     [ -z "$plugin" ] && continue
 
-    # Match "❯ <plugin>@<marketplace>" exactly at a word boundary so e.g.
-    # "code-review@x" cannot false-match "code-review-2@x".
-    if echo "$INSTALLED_PLUGINS" | grep -qE "❯[[:space:]]+${plugin}([[:space:]]|$)"; then
+    # Whole-line match against the extracted ids, so e.g. "code-review@x"
+    # cannot false-match "code-review-2@x".
+    if printf '%s\n' "$INSTALLED_PLUGINS" | grep -qxF "$plugin"; then
       echo "  -> $plugin already installed"
     else
       echo "  -> Installing $plugin"
