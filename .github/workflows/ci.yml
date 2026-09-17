@@ -107,6 +107,13 @@ jobs:
       - name: Install zsh for launcher compatibility tests
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends zsh
 
+      # The plugin-drift suite executes a `#!/usr/bin/env bun` SessionStart
+      # hook. The `tsc` job only type-checks it; this job runs it.
+      - name: Set up bun for the TypeScript hook suites
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: doc-refs (self-test + checker)
         if: ${{ !cancelled() }}
         run: |
@@ -269,6 +276,12 @@ jobs:
       - name: operator-queue reminder (self-test)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh
+
+      # Drift is measured against user-scope installs only: a `--scope project`
+      # plugin is the target project's, not the manifest's.
+      - name: plugin drift check (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/plugin-drift.test.sh
 
   secret-scan:
     name: secret-scan
