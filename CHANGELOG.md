@@ -34,6 +34,12 @@
   a flag split across groups, as in `declare -r -A`. Benign forms such as
   `local -r`, `declare -a` and a backgrounded job were checked not to trip
   the widened patterns.
+- A denylist is never finished — three gate passes found ten more constructs —
+  so CI now runs the suite against a real interpreter too. A new
+  `doc-truth (bash 3.2)` job builds bash 3.2.57 from the GNU sources with a
+  pinned SHA-256 and caches it. It is deliberately a separate job and not part
+  of the required `doc-truth` context, so an unreachable ftp.gnu.org cannot
+  block every PR; promote it to required once it has a track record.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 

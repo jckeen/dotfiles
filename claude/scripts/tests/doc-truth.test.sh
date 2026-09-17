@@ -273,7 +273,12 @@ check "repo with no tracked markdown runs clean" 0 "0 markdown files"
 # full-line comments are stripped first so the file header may name the
 # constructs it bans.
 
-checker_code() { grep -v '^[[:space:]]*#' "$CHECKER"; }
+# Comment-only lines go first so the checker's header can name what it bans;
+# backslash continuations are then joined, or `declare -r \` + `-A table`
+# would hide a banned flag from a line-oriented grep.
+checker_code() {
+  grep -v '^[[:space:]]*#' "$CHECKER" | sed -e :a -e '/\\$/N; s/\\\n//; ta'
+}
 
 # guard <name> <grep -E pattern>  — fails if the pattern appears in the code
 guard() {
@@ -302,8 +307,10 @@ guard 'no bash-4 case conversion (${v,} ${v,,} ${v^} ${v^^})' \
   '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,|\^)'
 guard "no bash-4 redirections (|& and &>>)" \
   '\|&|&>>'
+# Both ${a[-1]} and the bare a[-1]= assignment form; on 3.2.57 the latter is
+# `bad array subscript`.
 guard "no negative array subscripts" \
-  '\$\{[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-'
+  '[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-'
 guard "no ;& or ;;& case fallthrough" \
   ';;?&'
 # {fd}< and {fd}> allocate a descriptor (bash 4.1). The leading [^$] keeps a
@@ -312,6 +319,12 @@ guard "no {fd} descriptor redirections" \
   '(^|[^$])\{[A-Za-z_][A-Za-z0-9_]*\}[<>]'
 guard 'no ${v@Q} parameter transformations' \
   '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@[A-Za-z]\}'
+# `read -N` is an invalid option on 3.2.57; -r/-d/-a/-t/-u/-p/-s/-n are fine.
+guard "no read -N" \
+  '(^|[^[:alnum:]_.-])read([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*N'
+# shopt names 3.2.57 rejects as "invalid shell option name".
+guard "no bash-4 shopt options" \
+  'shopt[[:space:]]+(-[a-z][[:space:]]+)*(globstar|lastpipe|dirspell|autocd|checkjobs|compat4[0-9]|globasciiranges|inherit_errexit|localvar_inherit|assoc_expand_once)'
 # Under `set -u`, bash 3.2 calls ${arr[@]} unbound when arr is empty, so the
 # checker iterates by index. Verified on a bash 3.2.57 build: ${!arr[@]}
 # and ${#arr[@]} on an empty array are fine there; ${arr[@]} aborts the run.
@@ -334,11 +347,30 @@ bash3_version() { # prints the version word, empty if the binary won't report on
   "$1" --version 2>/dev/null | sed -n '1s/.*version \([0-9][0-9.]*\).*/\1/p'
 }
 
+# check() runs the checker from inside the throwaway repo, so a relative
+# interpreter path would resolve against that directory and every case would
+# die with 127. Resolve to an absolute path up front.
+abs_path() {
+  local d b
+  d="$(dirname "$1")"
+  b="$(basename "$1")"
+  d="$(cd "$d" 2>/dev/null && pwd)" || return 1
+  printf '%s/%s' "$d" "$b"
+}
+
 BASH3="${DOC_TRUTH_BASH3:-}"
 BASH3_EXPLICIT=0
 [[ -n "$BASH3" ]] && BASH3_EXPLICIT=1
 if [[ -z "$BASH3" ]]; then
   BASH3="$(command -v bash-3.2 2>/dev/null || command -v bash3 2>/dev/null || true)"
+fi
+
+if [[ -n "$BASH3" && "$BASH3" != /* ]]; then
+  if [[ "$BASH3" == */* ]]; then
+    BASH3="$(abs_path "$BASH3" || true)"
+  else
+    BASH3="$(command -v "$BASH3" 2>/dev/null || true)"
+  fi
 fi
 
 BASH3_VER=""
