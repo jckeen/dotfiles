@@ -70,14 +70,31 @@ def write_atomic(path, data):
             os.unlink(temporary)
 
 
+def expand_rule(rule, home):
+    m = re.match(r'^(read_file|write_file)\(~(/.*)?\)$', rule)
+    if m:
+        action, subpath = m.group(1), m.group(2)
+        if subpath:
+            target_path = subpath if home == '/' else f'{home}{subpath}'
+        else:
+            target_path = home
+        return f'{action}({target_path})'
+    return rule
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('mode', choices=('apply', 'check', 'prune'))
     parser.add_argument('--settings', required=True, help='live ~/.gemini/antigravity-cli/settings.json')
     parser.add_argument('--rules', required=True, help='antigravity/permissions.json baseline')
+    parser.add_argument('--home', default=os.path.expanduser('~'), help='user home directory to expand in file rules (default: ~)')
     args = parser.parse_args()
 
+    if not os.path.isabs(args.home):
+        sys.exit(f'error: --home must be an absolute path: {args.home}')
+    home = args.home.rstrip('/') or '/'
     baseline, mode_keys = load_baseline(args.rules)
+    expanded_baseline = {b: [expand_rule(r, home) for r in baseline[b]] for b in BUCKETS}
     settings = load_json(args.settings, required=False)
     live = settings.get('permissions')
     if live is None:
@@ -85,14 +102,28 @@ def main():
     if not isinstance(live, dict):
         sys.exit(f'error: {args.settings}: "permissions" must be an object')
     live_lists = {}
+    legacy_repaired = False
     for bucket in BUCKETS:
         entries = live.get(bucket, [])
         if not isinstance(entries, list):
             sys.exit(f'error: {args.settings}: permissions.{bucket} must be a list')
-        live_lists[bucket] = [e for e in entries if isinstance(e, str)]
+        cleaned = []
+        for e in entries:
+            if isinstance(e, str):
+                expanded = expand_rule(e, home)
+                if expanded != e:
+                    legacy_repaired = True
+                cleaned.append(expanded)
+        seen = set()
+        deduped = []
+        for e in cleaned:
+            if e not in seen:
+                seen.add(e)
+                deduped.append(e)
+        live_lists[bucket] = deduped
 
-    missing = {b: [r for r in baseline[b] if r not in live_lists[b]] for b in BUCKETS}
-    extras = {b: [r for r in live_lists[b] if r not in baseline[b]] for b in BUCKETS}
+    missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
+    extras = {b: [r for r in live_lists[b] if r not in expanded_baseline[b]] for b in BUCKETS}
     mode_missing = [k for k in mode_keys if k not in settings]
     mode_drift = {k: settings[k] for k, v in mode_keys.items() if k in settings and settings[k] != v}
     n_missing = sum(len(v) for v in missing.values())
@@ -102,6 +133,8 @@ def main():
         problems = []
         if n_missing:
             problems.append(f'{n_missing} baseline rule(s) missing')
+        if legacy_repaired:
+            problems.append('unexpanded "~" rule(s) in settings (re-run apply)')
         if mode_missing:
             problems.append('unset: ' + ', '.join(mode_missing))
         if problems:
@@ -119,14 +152,14 @@ def main():
                 dst.write(src.read())
             os.chmod(backup, 0o600)
             print(f'backed up previous settings to {backup}')
-        settings['permissions'] = {b: list(baseline[b]) for b in BUCKETS}
+        settings['permissions'] = {b: list(expanded_baseline[b]) for b in BUCKETS}
         settings.update(mode_keys)
         write_atomic(args.settings, settings)
         print(f'pruned: permissions replaced with the baseline; {n_extra} machine-local rule(s) removed')
         return 0
 
     # apply
-    changed = n_missing > 0
+    changed = n_missing > 0 or legacy_repaired
     merged = {b: live_lists[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:
