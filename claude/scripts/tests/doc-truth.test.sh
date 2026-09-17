@@ -33,12 +33,20 @@ w() {
   printf '%s\n' "$@" > "$p"
 }
 
+# CHECKER_BASH, when non-empty, runs the checker under that interpreter rather
+# than its shebang — the bash 3.2 cases in Cycle 7 use it.
+CHECKER_BASH=""
+
 # check <name> <expected-exit> [<required output fragment>]
 check() {
   local name="$1" want="$2" frag="${3:-}"
   git -C "$R" add -A >/dev/null 2>&1
   local out rc
-  out="$(cd "$R" && "$CHECKER" 2>&1)"
+  if [[ -n "$CHECKER_BASH" ]]; then
+    out="$(cd "$R" && "$CHECKER_BASH" "$CHECKER" 2>&1)"
+  else
+    out="$(cd "$R" && "$CHECKER" 2>&1)"
+  fi
   rc=$?
   if [[ "$rc" -ne "$want" ]]; then
     echo "✖ $name — expected exit $want, got $rc"
@@ -254,6 +262,86 @@ new_repo
 w .doc-contract 'LIVING README.md' 'BANNED workgraph install'
 w README.md 'run `workgraph install` to start'
 check "banned still sees inline code spans" 1 "banned"
+
+new_repo
+w .doc-contract 'BANNED old-name'
+check "repo with no tracked markdown runs clean" 0 "0 markdown files"
+
+# ── Cycle 7 (#424): the bash 3.2 floor ─────────────────────────────
+# The checker is vendored verbatim into other repos and has to run under the
+# macOS system bash (3.2.57). These are static guards over its own source;
+# full-line comments are stripped first so the file header may name the
+# constructs it bans.
+
+checker_code() { grep -v '^[[:space:]]*#' "$CHECKER"; }
+
+# guard <name> <grep -E pattern>  — fails if the pattern appears in the code
+guard() {
+  local name="$1" re="$2" hits
+  hits="$(checker_code | grep -nE -- "$re")"
+  if [[ -n "$hits" ]]; then
+    echo "✖ $name"
+    echo "$hits" | sed 's/^/    /'
+    failed=$((failed + 1))
+  else
+    echo "✓ $name"
+    pass=$((pass + 1))
+  fi
+}
+
+guard "no bash-4 builtins (mapfile/readarray/coproc)" \
+  '(^|[^[:alnum:]_.-])(mapfile|readarray|coproc)([^[:alnum:]_.-]|$)'
+guard "no associative arrays (declare/local/typeset -A)" \
+  '(declare|local|typeset)[[:space:]]+-[A-Za-z]*A'
+guard 'no bash-4 case conversion (${v,,} and ${v^^})' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,,|\^\^)'
+guard "no bash-4 redirections (|& and &>>)" \
+  '\|&|&>>'
+guard "no negative array subscripts" \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-'
+# Under `set -u`, bash 3.2 calls ${arr[@]} unbound when arr is empty, so the
+# checker iterates by index. Verified on a bash 3.2.57 build: ${!arr[@]}
+# and ${#arr[@]} on an empty array are fine there; ${arr[@]} aborts the run.
+guard 'no bare ${array[@]} value expansion (iterate by index)' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}'
+
+# Runtime half: with a real bash 3.2 on hand, re-run the cases that exercise
+# the empty-array paths under it. Set DOC_TRUTH_BASH3 to a bash 3.2 binary, or
+# put `bash-3.2`/`bash3` on PATH. Skipped where none exists (CI's ubuntu
+# runner), which is why the static guards above carry the regression.
+BASH3="${DOC_TRUTH_BASH3:-}"
+if [[ -z "$BASH3" ]]; then
+  BASH3="$(command -v bash-3.2 2>/dev/null || command -v bash3 2>/dev/null || true)"
+fi
+
+if [[ -n "$BASH3" && -x "$BASH3" ]]; then
+  echo "  (bash 3.2 cases under $("$BASH3" --version | head -n 1))"
+  CHECKER_BASH="$BASH3"
+
+  new_repo
+  w .doc-contract 'LIVING README.md'
+  w README.md '# Hi'
+  check "bash3: contract with no BANNED line runs clean" 0 "doc-truth: OK"
+
+  new_repo
+  w .doc-contract 'BANNED old-name'
+  check "bash3: no tier line and no markdown runs clean" 0 "doc-truth: OK"
+
+  new_repo
+  w .doc-contract 'LIVING README.md' 'SOURCE docs/guide.md' 'BANNED old-name'
+  w docs/guide.md '# G'
+  w README.md 'See [guide](docs/guide.md) and nothing stale.'
+  check "bash3: every rule runs clean" 0 "doc-truth: OK"
+
+  new_repo
+  w .doc-contract 'LIVING README.md'
+  w README.md 'See [gone](missing.md).'
+  check "bash3: violations still reported" 1 "dead-ref"
+
+  CHECKER_BASH=""
+else
+  echo "… bash 3.2 cases skipped (set DOC_TRUTH_BASH3 to a bash 3.2 binary)"
+fi
 
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"

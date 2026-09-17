@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-17 — fix(doc-truth): run on the macOS system bash (#424)
+
+- `check-doc-truth.sh` is vendored into other repos but read `git ls-files`
+  with `mapfile`, a bash-4 builtin. On Apple's bash 3.2.57 the read failed and
+  the next line dereferenced the never-populated array, so the checker aborted
+  before running a single rule. It now reads the file list with a
+  `while IFS= read -r` loop over a process substitution, counting as it goes.
+- Sweeping the same category found the second half: under `set -u` bash 3.2
+  calls `${arr[@]}` unbound when the array is empty, so any repo with no
+  markdown at all would have hit the same abort. Index expansion
+  (`${!arr[@]}`, `${#arr[@]}`) is safe there and is what the script already
+  used everywhere else — verified on a bash 3.2.57 build, not assumed.
+- The header now states the real floor (bash 3.2+) instead of "bash 4+", and
+  `tests/doc-truth.test.sh` grows a Cycle 7 that greps the checker's own source
+  for bash-4-only constructs and bare `${arr[@]}` expansions. Both guards fail
+  against the pre-fix script. The suite also re-runs the empty-array cases
+  under a real bash 3.2 when `DOC_TRUTH_BASH3` points at one; CI's ubuntu
+  runner has none, so the static guards carry the regression there.
+
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 
 - Antigravity asked for approval on nearly every command because its native
