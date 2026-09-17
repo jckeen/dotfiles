@@ -22,6 +22,13 @@ resolve_script_path() {
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SETUP="$REPO_ROOT/setup.sh"
+# setup.sh refuses to run from a linked git worktree (#412), and agents work
+# in worktrees by default, so without this the whole suite fails on a refusal
+# rather than on the no-writes contract it exists to check (#435). Safe here:
+# every run below targets a throwaway HOME and the suite asserts a
+# byte-identical before/after snapshot, so nothing links to this checkout.
+# The refusal itself stays covered by setup-worktree-guard.test.sh.
+export DOTFILES_ALLOW_LINKED_WORKTREE=1
 
 pass=0
 failed=0

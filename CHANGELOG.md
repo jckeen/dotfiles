@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-17 — test(setup-dry-run): run the no-writes suite from a worktree (#435)
+
+- `setup-dry-run.test.sh` reported 16 false failures from any linked git
+  worktree: the guard from #412 refused every `setup.sh --yes --dry-run`, so
+  each assertion failed for want of output that was never produced. CI checks
+  out a primary clone and never saw it, while agents work in worktrees by
+  default. The suite now exports `DOTFILES_ALLOW_LINKED_WORKTREE=1` against
+  its throwaway `$HOME`; the refusal itself stays covered by
+  `setup-worktree-guard.test.sh`.
+
 ## 2026-09-17 — fix(check-claude): heal retired links per destination (#400)
 
 - `check-claude.sh` zeroed a single global `HEAL` whenever `~/.claude` **or**
