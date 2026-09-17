@@ -25,6 +25,8 @@ import time
 
 RULE_RE = re.compile(r'^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$')
 BUCKETS = ('allow', 'ask', 'deny')
+# Retirement is scoped to this bucket: it withdraws a grant, never a restriction.
+GRANT_BUCKET = 'allow'
 
 
 def load_json(path, required):
@@ -61,9 +63,9 @@ def load_baseline(path):
     if not isinstance(retired, list) or not all(isinstance(e, str) and RULE_RE.match(e) for e in retired):
         sys.exit(f'error: {path}: every "retired" entry must be a rule like command(prefix)')
     baseline = {b: list(rules.get(b, [])) for b in BUCKETS}
-    both = sorted(set(retired) & {r for entries in baseline.values() for r in entries})
+    both = sorted(set(retired) & set(baseline[GRANT_BUCKET]))
     if both:
-        sys.exit(f'error: {path}: rule(s) both current and retired: {", ".join(both)}')
+        sys.exit(f'error: {path}: rule(s) both granted and retired: {", ".join(both)}')
     return baseline, settings, retired
 
 
@@ -135,10 +137,14 @@ def main():
                 deduped.append(e)
         live_lists[bucket] = deduped
 
-    retired_live = {b: [r for r in live_lists[b] if r in retired_set] for b in BUCKETS}
-    n_retired = sum(len(v) for v in retired_live.values())
+    # Retirement withdraws a grant, so it only ever touches "allow". The same
+    # rule sitting in ask or deny is the operator's own hardening: deleting it
+    # would turn a forbidden operation into an approvable one.
+    retired_live = [r for r in live_lists[GRANT_BUCKET] if r in retired_set]
+    n_retired = len(retired_live)
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
-    extras = {b: [r for r in live_lists[b] if r not in expanded_baseline[b] and r not in retired_set]
+    extras = {b: [r for r in live_lists[b] if r not in expanded_baseline[b]
+                  and not (b == GRANT_BUCKET and r in retired_set)]
               for b in BUCKETS}
     mode_missing = [k for k in mode_keys if k not in settings]
     mode_drift = {k: settings[k] for k, v in mode_keys.items() if k in settings and settings[k] != v}
@@ -152,7 +158,7 @@ def main():
         if legacy_repaired:
             problems.append('unexpanded "~" rule(s) in settings (re-run apply)')
         if n_retired:
-            named = ', '.join(r for b in BUCKETS for r in retired_live[b])
+            named = ', '.join(retired_live)
             problems.append(f'{n_retired} retired rule(s) still granted: {named} (re-run apply)')
         if mode_missing:
             problems.append('unset: ' + ', '.join(mode_missing))
@@ -179,10 +185,10 @@ def main():
 
     # apply
     changed = n_missing > 0 or legacy_repaired or n_retired > 0
-    for bucket in BUCKETS:
-        for rule in retired_live[bucket]:
-            print(f'retired: removed {rule} from {bucket} (withdrawn from the baseline)')
-    kept = {b: [r for r in live_lists[b] if r not in retired_set] for b in BUCKETS}
+    for rule in retired_live:
+        print(f'retired: removed {rule} from {GRANT_BUCKET} (withdrawn from the baseline)')
+    kept = dict(live_lists)
+    kept[GRANT_BUCKET] = [r for r in live_lists[GRANT_BUCKET] if r not in retired_set]
     merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:

@@ -82,6 +82,14 @@
   two `command(regex:…)` test-runner allows. Withdrawn *denies* are
   deliberately not listed: removing one would take away protection the operator
   currently has, so the two stale deny regexes stay as harmless residue.
+- Second Codex round caught the same principle broken one level down (medium):
+  the retirement filter ran over every bucket, so an operator who had added
+  `unsandboxed(git fetch)` to their own `deny` would have had it deleted,
+  turning a forbidden operation into an approvable one, and the new test
+  required that removal. Retirement is now scoped to `allow` alone, the guard
+  rejects a rule that is both a current grant and retired, and a test asserts
+  that a retired rule kept as an operator's deny survives `apply` and passes
+  `check`.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 

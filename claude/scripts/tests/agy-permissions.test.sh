@@ -229,8 +229,8 @@ import json, sys
 retired = json.load(open(sys.argv[2]))['retired']
 assert retired, 'baseline must declare retired rules'
 json.dump({'trustedWorkspaces': ['/x/dev'],
-           'permissions': {'allow': ['command(local-junk)'] + retired[:1],
-                           'ask': [], 'deny': retired[1:2]}},
+           'permissions': {'allow': ['command(local-junk)'] + retired,
+                           'ask': [], 'deny': [retired[0]]}},
           open(sys.argv[1], 'w'))
 PY
 
@@ -245,10 +245,10 @@ out="$(python3 "$TOOL" apply --settings "$S_RETIRED" --rules "$RULES" 2>&1)"; rc
 if [ "$rc" -eq 0 ] && python3 - "$S_RETIRED" "$RULES" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-retired = set(json.load(open(sys.argv[2]))['retired'])
+retired = json.load(open(sys.argv[2]))['retired']
 perms = d['permissions']
-live = {r for bucket in perms.values() for r in bucket}
-assert not (live & retired), f'retired rules survived apply: {live & retired}'
+assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply'
+assert retired[0] in perms['deny'], "an operator's own deny must never be retired away"
 assert 'command(local-junk)' in perms['allow'], 'unrelated local grants must be kept'
 assert d['trustedWorkspaces'] == ['/x/dev']
 assert 'command(sudo)' in perms['deny'], 'baseline rules still applied'
@@ -262,6 +262,25 @@ else fail "apply removed retired rules silently: $out"; fi
 if python3 "$TOOL" check --settings "$S_RETIRED" --rules "$RULES" >/dev/null 2>&1; then
   ok "check passes once the retired rules are gone"
 else fail "check still failing after apply removed the retired rules"; fi
+
+# A retired rule the operator kept as their own deny is not "still granted".
+S_DENY_ONLY="$ROOT/retired-deny-only.json"
+python3 - "$S_DENY_ONLY" "$RULES" <<'PY'
+import json, sys
+retired = json.load(open(sys.argv[2]))['retired']
+base = json.load(open(sys.argv[2]))['permissions']
+perms = {b: list(base.get(b, [])) for b in ('allow', 'ask', 'deny')}
+perms['deny'].append(retired[0])
+json.dump({'permissions': perms,
+           'toolPermission': 'proceed-in-sandbox',
+           'enableTerminalSandbox': True,
+           'allowNonWorkspaceAccess': True}, open(sys.argv[1], 'w'))
+PY
+python3 "$TOOL" apply --settings "$S_DENY_ONLY" --rules "$RULES" >/dev/null 2>&1
+if out="$(python3 "$TOOL" check --settings "$S_DENY_ONLY" --rules "$RULES" 2>&1)" \
+  && python3 -c "import json,sys; d=json.load(open('$S_DENY_ONLY')); r=json.load(open('$RULES'))['retired'][0]; sys.exit(0 if r in d['permissions']['deny'] else 1)"; then
+  ok "a retired rule kept as an operator deny survives apply and passes check"
+else fail "an operator-owned deny was retired away or failed check: $out"; fi
 
 echo ""
 echo "agy-permissions: $pass passed, $failed failed"
