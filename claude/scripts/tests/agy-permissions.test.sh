@@ -37,7 +37,8 @@ assert 'command(sudo)' in d['permissions']['deny']
 assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
-assert 'read_file(~/.claude)' in allow and 'unsandboxed(rg)' in allow
+assert 'read_file(~/.claude)' in allow and 'unsandboxed(gh pr view)' in allow
+assert not any(r.startswith('unsandboxed(') and not r.startswith(('unsandboxed(git fetch)', 'unsandboxed(git pull --ff-only)', 'unsandboxed(gh ')) for r in allow), 'only read-only network commands may leave the sandbox'
 assert 'write_file(~/dev)' in allow, 'file edits inside the dev tree must not prompt in default mode'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
 assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
@@ -45,7 +46,7 @@ for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 deny_regexes = [re.compile(r[len('command(regex:'):-1]) for r in d['permissions']['deny'] if r.startswith('command(regex:')]
 def denied(cmd): return any(x.search(cmd) for x in deny_regexes)
-for cmd in ('cat ~/.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee /etc/hosts', 'sed -n -i s/a/b/ f', 'sed --in-place x f', 'rm -rf /*', 'rm -rf ~/*', 'rg --pre x y', 'git push --force'):
+for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'git push --force'):
     assert denied(cmd), cmd
 for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease'):
     assert not denied(cmd), cmd

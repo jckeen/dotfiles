@@ -31,6 +31,13 @@
   covers `/*`, `~/*` and any flag order, `sed --in-place` and `rg --pre` and
   `git -c` are denied. Only tools that can neither run code nor write leave the
   sandbox without a prompt.
+- Third round settled the model: the terminal sandbox is the boundary. No
+  local tool carries an `unsandboxed` rule any more; only read-only network
+  commands (`git fetch`, `git pull --ff-only`, `gh` reads) may leave the
+  sandbox. Reads outside the workspace are served inside it via
+  `allowNonWorkspaceAccess` and the `read_file(~/…)` rules. The deny regexes
+  stay as defense in depth (newline-safe, repeated-slash and traversal aware,
+  absolute home paths covered) but are documented as not being a boundary.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
