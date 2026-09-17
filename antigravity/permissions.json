@@ -137,7 +137,6 @@
       "command(gh pr merge)",
       "command(gh pr create)",
       "command(gh issue create)",
-      "command(git config)",
       "command(git clone)",
       "command(git -C)",
       "command(git -c)",
@@ -159,17 +158,15 @@
       "read_file(~/.claude/.credentials.json)",
       "read_file(~/.gemini/oauth_creds.json)",
       "read_file(~/.gemini/google_accounts.json)",
-      "read_file(~/.gemini/antigravity-cli/)",
       "read_file(~/.codex/auth.json)",
       "read_file(~/.git-credentials)",
       "read_file(~/.netrc)",
       "command(git push --force)",
       "command(git push -f)",
-      "command(rm -rf /)",
-      "command(rm -rf ~)",
       "command(rm -rf $HOME)",
       "command(rm -rf /*)",
-      "command(rm -rf ~/*)"
+      "command(rm -rf ~/*)",
+      "read_file(~/.gemini/antigravity-cli/settings.json)"
     ]
   }
 }

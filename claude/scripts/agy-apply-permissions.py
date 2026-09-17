@@ -22,7 +22,7 @@ import tempfile
 import time
 
 # A literal user segment (no regex metacharacters; spaces allowed) marks a machine-specific path.
-CONCRETE_HOME_RE = re.compile(r'/(home|Users)/[^/\[\]()*+?\\|^$]+(/|\)|$)')
+CONCRETE_HOME_RE = re.compile(r'/(home|Users)/[^/\[\]()*+?\\|^${}]+(/|\)|$)')
 RULE_RE = re.compile(r'^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$')
 BUCKETS = ('allow', 'ask', 'deny')
 
@@ -49,7 +49,7 @@ def expand_home(rule):
     if not match:
         return rule
     home = os.path.expanduser('~').rstrip('/')  # HOME=/ must not yield //dev/
-    return f"{match.group(1)}({home}{match.group(2) or ''})"
+    return f"{match.group(1)}({home}{match.group(2) or ''}" + (')' if home or match.group(2) else '/)')
 
 
 def load_baseline(path):
@@ -62,7 +62,7 @@ def load_baseline(path):
         entries = rules.get(bucket, [])
         if not isinstance(entries, list) or not all(isinstance(e, str) and RULE_RE.match(e) for e in entries):
             sys.exit(f'error: {path}: every "{bucket}" entry must be a rule like command(prefix)')
-        # A concrete home path (/home/alice/...) is machine-specific; a regex
+        # A concrete home path (/home/you/...) is machine-specific; a regex
         # class such as /home/[^\s/]+ inside a deny pattern is portable.
         if any(CONCRETE_HOME_RE.search(e) for e in entries):
             sys.exit(f'error: {path}: rules must not embed a user home path')

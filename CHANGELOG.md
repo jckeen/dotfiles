@@ -60,7 +60,11 @@
   which is the lesson of #411. What remains is what agy enforces exactly:
   `read_file` denies for credential paths (the file tool matches paths, not
   text) and plain prefix denies as speed bumps inside the sandbox. `git clone`,
-  `git -C` and `git -c` ask.
+  `git -C` and `git -c` ask; a `git config` ask was dropped again because it
+  shadowed the read-only `git config --get` allow (deny > ask > allow).
+- The deny on `~/.gemini/antigravity-cli/` blocked agy's own `brain/` and
+  `scratch/`; it is narrowed to `settings.json`. Bare `rm -rf /` and `rm -rf ~`
+  prefixes are dropped (over-match risk); the `/*`, `~/*` and `$HOME` forms stay.
 - `gh auth status` moved to ask (`--show-token` prints the token); the home
   expansion tolerates `HOME=/`.
 

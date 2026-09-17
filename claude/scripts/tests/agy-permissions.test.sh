@@ -40,13 +40,15 @@ allow = d['permissions']['allow']
 assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
 assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox'
 assert 'read_file(~/.config/gh/)' in d['permissions']['deny'] and 'read_file(~/.claude/.credentials.json)' in d['permissions']['deny']
-assert 'command(git config)' in d['permissions']['ask'] and 'command(git config)' not in allow
+assert 'command(git config)' not in d['permissions']['ask'], 'an ask prefix would shadow the read-only git config --get allow'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
 assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
 for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 assert not any('regex:' in r for b in d['permissions'].values() for r in b), 'no command regexes: the sandbox is the boundary'
 assert 'command(git push --force)' in d['permissions']['deny'] and 'command(git clone)' in d['permissions']['ask']
+assert 'read_file(~/.gemini/antigravity-cli/)' not in d['permissions']['deny'], 'agy keeps its own brain/ and scratch/ there'
+assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefix risks over-matching every absolute path'
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
