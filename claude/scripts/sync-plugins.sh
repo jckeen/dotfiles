@@ -9,8 +9,13 @@
 #
 # The manifest's `# [global]` / `# [per-project]` section markers (issue #214)
 # are comments, stripped like any other: this script installs BOTH sections —
-# scoping governs enablement (settings.json `enabledPlugins`), not
+# that scoping governs enablement (settings.json `enabledPlugins`), not
 # installation, and is checked by PluginDriftCheck.hook.ts, not here.
+#
+# INSTALL scope is a separate axis and does matter here: everything installs at
+# user scope. A plugin someone installed with `--scope project` for one repo is
+# that repo's, is deliberately absent from the manifest, and does not count as
+# installed by the fast path below.
 
 set -eo pipefail
 
@@ -29,19 +34,55 @@ if [[ ! -f "$MANIFEST" ]]; then
   exit 1
 fi
 
-# Fast path: if every manifest plugin is already present in the installed
-# manifest, there is nothing to do — exit silently without touching the network.
-# Keys in installed_plugins.json are the same `<plugin>@<marketplace>` strings
-# as the manifest lines (mirrors PluginDriftCheck.hook.ts). This keeps the
-# every-fresh-launch sync in cc() near-instant and quiet when there's no drift.
+# Fast path: if every manifest plugin already has a USER-scope install, there is
+# nothing to do — exit silently without touching the network. Keys in
+# installed_plugins.json are the same `<plugin>@<marketplace>` strings as the
+# manifest lines. This keeps the every-fresh-launch sync in cc() near-instant
+# and quiet when there's no drift.
+#
+# Scope matters, and the rule mirrors PluginDriftCheck.hook.ts exactly: only a
+# `--scope user` record satisfies the manifest, because this script installs at
+# user scope and a fresh clone reproduces user scope only. `project` and
+# `local` records belong to a checkout. Matching on the bare key would let the
+# fast path exit 0 on a plugin the hook reports as missing — a warning whose
+# suggested remedy (run this script) does nothing, every session.
+#
+# `user` is an allowlist, so an unrecognised scope asks for a redundant
+# idempotent install rather than silently satisfying the manifest. Records
+# whose shape we don't recognise (non-array value, or no string `scope`) count
+# as installed, so an older installed_plugins.json behaves as before.
+# Without python3 the fast path is skipped entirely rather than guessed at: the
+# install loop below is idempotent, so the cost is launch latency, not
+# correctness. python3 is already required by the pre-push receipt checker.
 INSTALLED_JSON="$HOME/.claude/plugins/installed_plugins.json"
-if [[ -f "$INSTALLED_JSON" ]]; then
+user_scoped=""
+if [[ -f "$INSTALLED_JSON" ]] && command -v python3 >/dev/null 2>&1; then
+  user_scoped="$(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+plugins = data.get("plugins")
+if not isinstance(plugins, dict):
+    sys.exit(1)
+for name, records in plugins.items():
+    if not isinstance(records, list) or any(
+        (not isinstance(r, dict)) or not isinstance(r.get("scope"), str)
+        or r.get("scope") == "user"
+        for r in records
+    ):
+        print(name)
+' "$INSTALLED_JSON" 2>/dev/null)" || user_scoped=""
+fi
+
+if [[ -n "$user_scoped" ]]; then
   missing=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     p="${line%%#*}"
     p="${p//[[:space:]]/}"
     [[ -z "$p" ]] && continue
-    if ! grep -qF "\"$p\"" "$INSTALLED_JSON"; then
+    if ! grep -qxF "$p" <<<"$user_scoped"; then
       missing=1
       break
     fi

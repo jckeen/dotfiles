@@ -49,6 +49,9 @@ posthog@claude-plugins-official
 # Render is opt-in for projects with render.yaml. From the target project:
 # claude plugin install render@claude-plugins-official --scope project
 # Keep it out of this install list: setup.sh and sync-plugins.sh use user scope.
+# PluginDriftCheck.hook.ts ignores project-scoped installs in both directions,
+# so an opt-in plugin like this one is not reverse drift and must not be added
+# back here to silence a warning.
 
 # Third-party (not the official marketplace). soundcheck adds automatic
 # background security triage on generated code — the one review capability the
