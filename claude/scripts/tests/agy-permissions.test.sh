@@ -101,6 +101,105 @@ if python3 "$TOOL" apply --settings "$ROOT/new/settings.json" --rules "$RULES" >
   ok "apply creates the settings file on a fresh machine"
 else fail "apply could not create a fresh settings file"; fi
 
+S_EXP="$ROOT/expanded_settings.json"
+python3 "$TOOL" apply --settings "$S_EXP" --rules "$RULES" --home "/custom/home/user" >/dev/null 2>&1
+if python3 - "$S_EXP" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+deny = d['permissions']['deny']
+assert 'read_file(/custom/home/user/.ssh/)' in deny
+assert 'read_file(/custom/home/user/.aws/)' in deny
+assert 'read_file(/custom/home/user/.gnupg/)' in deny
+assert not any('~' in r and r.startswith(('read_file(', 'write_file(')) for r in deny)
+PY
+then ok "apply expands tilde in file rules using target home"; else fail "tilde was not expanded in file rules"; fi
+
+python3 - "$S_EXP" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d['permissions']['deny'] = [
+    r[:-2] + ')' if r.endswith('/)') else r
+    for r in d['permissions']['deny']
+]
+json.dump(d, open(p, 'w'))
+PY
+if ! python3 "$TOOL" check --settings "$S_EXP" --rules "$RULES" --home "/custom/home/user" >/dev/null 2>&1; then
+  ok "check strictly detects missing trailing slash on directory rules"
+else fail "check failed to flag missing trailing slash as drift"; fi
+
+python3 "$TOOL" apply --settings "$S_EXP" --rules "$RULES" --home "/custom/home/user" >/dev/null 2>&1
+if python3 - "$S_EXP" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+deny = d['permissions']['deny']
+assert 'read_file(/custom/home/user/.ssh/)' in deny
+assert 'read_file(/custom/home/user/.ssh)' in deny
+PY
+then ok "apply adds canonical trailing-slash rule when non-trailing rule exists"; else fail "apply failed to add canonical trailing-slash rule"; fi
+
+# Root home expansion and validation
+S_ROOT="$ROOT/root_settings.json"
+python3 "$TOOL" apply --settings "$S_ROOT" --rules "$RULES" --home "/" >/dev/null 2>&1
+if python3 - "$S_ROOT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+deny = d['permissions']['deny']
+assert 'read_file(/.ssh/)' in deny
+assert 'read_file(/.aws/)' in deny
+assert not any(r == 'read_file()' or r == 'write_file()' for r in deny)
+PY
+then ok "apply handles root home (/) without empty path rules"; else fail "root home expansion failed"; fi
+
+if python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("agy_perm", "claude/scripts/agy-apply-permissions.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+assert mod.expand_rule("read_file(~root)", "/home/user") == "read_file(~root)"
+assert mod.expand_rule("read_file(~root/foo)", "/home/user") == "read_file(~root/foo)"
+assert mod.expand_rule("read_file(~)", "/home/user") == "read_file(/home/user)"
+assert mod.expand_rule("read_file(~/) ", "/home/user") == "read_file(~/) "
+assert mod.expand_rule("read_file(~/.ssh/)", "/home/user") == "read_file(/home/user/.ssh/)"
+assert mod.expand_rule("write_file(~/.claude/foo)", "/home/user") == "write_file(/home/user/.claude/foo)"
+assert mod.expand_rule("write_file(~)", "/home/user") == "write_file(/home/user)"
+assert mod.expand_rule("write_file(~root/bar)", "/home/user") == "write_file(~root/bar)"
+PY
+then ok "expand_rule handles read_file and write_file while leaving ~username unexpanded"; else fail "expand_rule mishandled ~username or write_file"; fi
+
+S_TRAILING="$ROOT/trailing_home_settings.json"
+python3 "$TOOL" apply --settings "$S_TRAILING" --rules "$RULES" --home "/custom/home/user/" >/dev/null 2>&1
+if python3 - "$S_TRAILING" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+deny = d['permissions']['deny']
+assert 'read_file(/custom/home/user/.ssh/)' in deny
+assert not any('//' in r for r in deny)
+PY
+then ok "apply handles --home with trailing slash without double slashes"; else fail "trailing slash home failed"; fi
+
+if python3 "$TOOL" apply --settings "$ROOT/tmp.json" --rules "$RULES" --home "relative/path" >/dev/null 2>&1; then
+  fail "relative --home was accepted"; else ok "relative --home is rejected"; fi
+
+# Legacy unexpanded ~ rules repair and check
+S_LEGACY="$ROOT/legacy_settings.json"
+printf '{"permissions":{"allow":["read_file(~/allowed.txt)"],"ask":["write_file(~/prompt.txt)"],"deny":["read_file(~/.ssh/)","command(sudo)"]}}\n' > "$S_LEGACY"
+if out="$(python3 "$TOOL" check --settings "$S_LEGACY" --rules "$RULES" --home "/custom/home/user" 2>&1)"; then
+  fail "check passed on unexpanded ~ rules"; else ok "check detects unexpanded ~ rules in settings"; fi
+
+python3 "$TOOL" apply --settings "$S_LEGACY" --rules "$RULES" --home "/custom/home/user" >/dev/null 2>&1
+if python3 - "$S_LEGACY" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+perms = d['permissions']
+assert 'read_file(/custom/home/user/allowed.txt)' in perms['allow']
+assert 'write_file(/custom/home/user/prompt.txt)' in perms['ask']
+assert 'read_file(/custom/home/user/.ssh/)' in perms['deny']
+assert 'read_file(~/.ssh/)' not in perms['deny']
+assert perms['deny'].count('read_file(/custom/home/user/.ssh/)') == 1
+assert not any('~' in r and r.startswith(('read_file(', 'write_file(')) for bucket in perms.values() for r in bucket)
+PY
+then ok "apply repairs legacy unexpanded ~ rules across allow, ask, and deny"; else fail "legacy repair failed"; fi
+
 echo ""
 echo "agy-permissions: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1
