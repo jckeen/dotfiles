@@ -1,49 +1,47 @@
 # Changelog
 
-## 2026-09-17 — fix(doc-truth): run on the macOS system bash (#424)
+## 2026-09-17 — fix(doc-truth): run the checker on the macOS system bash (#424)
 
-- `check-doc-truth.sh` is vendored into other repos but read `git ls-files`
-  with `mapfile`, a bash-4 builtin. On Apple's bash 3.2.57 the read failed and
-  the next line dereferenced the never-populated array, so the checker aborted
-  before running a single rule. It now reads the file list with a
-  `while IFS= read -r` loop over a process substitution, counting as it goes.
-- Sweeping the same category found the second half: under `set -u` bash 3.2
+- `check-doc-truth.sh` is vendored verbatim into other repos but read
+  `git ls-files` with `mapfile`, a bash-4 builtin. On Apple's bash 3.2.57 the
+  read failed and the next line dereferenced the never-populated array, so the
+  checker aborted before running a single rule. It now reads the file list with
+  a `while IFS= read -r` loop over a process substitution — a process
+  substitution, not a pipe, so the loop body stays in this shell and keeps
+  updating the violation counter.
+- Sweeping the same category found the second half: under `set -u` bash 3.2.57
   calls `${arr[@]}` unbound when the array is empty, so any repo with no
-  markdown at all would have hit the same abort. Index expansion
-  (`${!arr[@]}`, `${#arr[@]}`) is safe there and is what the script already
-  used everywhere else — verified on a bash 3.2.57 build, not assumed.
+  tracked markdown would have hit the same abort. Index expansion
+  (`${!arr[@]}`, `${#arr[@]}`) is safe there and is what the script already used
+  everywhere else — verified on a bash 3.2.57 build, not assumed.
 - The header now states the real floor (bash 3.2+) instead of "bash 4+", and
-  `tests/doc-truth.test.sh` grows a Cycle 7 that greps the checker's own source
-  for bash-4-only constructs and bare `${arr[@]}` expansions. Both guards fail
-  against the pre-fix script. The suite also re-runs the empty-array cases
-  under a real bash 3.2 when `DOC_TRUTH_BASH3` points at one; CI's ubuntu
-  runner has none, so the static guards carry the regression there.
-- Two findings from the Codex gate hardened that suite before it landed. The
-  case-conversion guard matched only `${v,,}`/`${v^^}`, so the equally
-  bash-4-only `${v,}`/`${v^}` (a `bad substitution` on 3.2.57) would have
-  slipped past; the operators are now matched one-or-twice. And the runtime
-  branch accepted any executable, so `DOC_TRUTH_BASH3=/bin/bash` reported four
-  green "bash3" cases from bash 5.2. It now version-checks the interpreter and
-  treats an explicit `DOC_TRUTH_BASH3` that is missing or not 3.x as a test
-  failure rather than a silent skip. A second gate pass then found `;;&`,
-  `{fd}` descriptor redirections, `declare -g` and `local -n` slipping through,
-  so the guard set now covers those too — each one verified to fire on an
-  injected construct, and `declare -A`/`-n` confirmed to be "invalid option" on
-  3.2.57 while leaving the assignment standing with the wrong semantics.
-  A third pass closed the last two: `;&` (the one-semicolon fallthrough) and
-  a flag split across groups, as in `declare -r -A`. Benign forms such as
-  `local -r`, `declare -a` and a backgrounded job were checked not to trip
-  the widened patterns.
-- A denylist is never finished — three gate passes found ten more constructs —
-  so CI now runs the suite against a real interpreter too. A new
-  `doc-truth (bash 3.2)` job builds bash 3.2.57 from the GNU sources with a
-  pinned SHA-256 and caches it. `DOC_TRUTH_BASH3` now steers the whole suite
-  rather than four extra cases at the end, so every fixture — malformed
-  contracts, banned hits, dead refs — gets 3.2 coverage: against the pre-fix
-  checker that is 34 of 49 fixtures failing, where bash 5 catches 2. It is
-  deliberately a separate job and not part of the required `doc-truth` context,
-  so an unreachable ftp.gnu.org cannot block every PR; promote it to required
-  once it has a track record.
+  `tests/doc-truth.test.sh` grows a Cycle 7 of static guards over the checker's
+  own source: bash-4 builtins, `declare` flags, case conversion, `;&`/`;;&`
+  fallthrough, `{fd}` redirections, `${v@Q}`, `read -N`, bash-4 `shopt` names,
+  negative subscripts, and bare `${arr[@]}`. Comment lines are stripped and
+  backslash continuations joined, so neither the header's prose nor a line
+  break can hide a banned construct.
+- A denylist is never finished — five review passes each found more of it — so
+  CI now runs a real interpreter too. A new `doc-truth (bash 3.2)` job builds
+  bash 3.2.57 from the GNU sources with a pinned SHA-256 and caches it.
+  `DOC_TRUTH_BASH3` steers **every** fixture rather than a handful of extra
+  cases, so the failure paths get 3.2 coverage: against the pre-fix checker that
+  is 34 of 49 fixtures failing, where bash 5 catches 2. A path that is not a
+  genuine bash 3.x is a test failure, never a silent skip. The job is
+  deliberately separate from the required `doc-truth` context so an unreachable
+  ftp.gnu.org cannot block every PR; promote it once it has a track record.
+
+## 2026-09-17 — fix(check-claude): heal retired links per destination (#400)
+
+- `check-claude.sh` zeroed a single global `HEAL` whenever `~/.claude` **or**
+  `~/.claude/skills` was a symlink, which also skipped the unrelated top-level
+  `~/.claude/FABLE.md` retirement. With a symlinked skills root and a real
+  `~/.claude`, the later orphan scan then reported `FABLE.md` as an error and
+  the launcher's `--heal` startup check failed on every run.
+- The two retirement calls now recompute the decision per destination, so a
+  symlinked root gates only the links beneath it. The audit-wide gate still
+  applies to every enumerated link. Covered by a new case in
+  `claude/scripts/tests/retired-skill-links.test.py`.
 
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 

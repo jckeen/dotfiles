@@ -70,16 +70,35 @@ if ! symlink_require_manifest "$CLAUDE_SRC"; then
 fi
 
 # Preserve existing audits of symlinked roots, but never heal through them.
+# The decision is per destination (issue #400): a symlinked root gates only
+# the links beneath it, so a symlinked ~/.claude/skills must not suppress
+# retiring the top-level ~/.claude/FABLE.md link, whose own ancestors are all
+# real directories. Runs before the audit-wide gate below.
+heal_retired_link() {
+  local dst="$1" root requested="$HEAL"
+  for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
+    # Prefix strip rather than a case glob, so a HOME containing glob
+    # characters still matches its own children literally.
+    if [ "${dst#"$root"/}" != "$dst" ] && [ -L "$root" ]; then
+      HEAL=0
+    fi
+  done
+  heal_retired_skill_link "$@"
+  HEAL="$requested"
+}
+heal_retired_link "$CLAUDE_DST/skills/fable-mode/SKILL.md" \
+  "$CLAUDE_SRC/skills/fable-mode/SKILL.md" "$CLAUDE_SRC/skills/fable-mode"
+# The standalone document has no bundle; restoring its source cancels retirement.
+heal_retired_link "$CLAUDE_DST/FABLE.md" "$CLAUDE_SRC/FABLE.md" "$CLAUDE_SRC/FABLE.md"
+
+# Every enumerated link below sits under one of these roots, so a symlinked
+# root still disables healing for the whole audit that follows.
 for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
   if [ -L "$root" ]; then
     # shellcheck disable=SC2034  # HEAL is consumed by the sourced link helpers.
     HEAL=0
   fi
 done
-heal_retired_skill_link "$CLAUDE_DST/skills/fable-mode/SKILL.md" \
-  "$CLAUDE_SRC/skills/fable-mode/SKILL.md" "$CLAUDE_SRC/skills/fable-mode"
-# The standalone document has no bundle; restoring its source cancels retirement.
-heal_retired_skill_link "$CLAUDE_DST/FABLE.md" "$CLAUDE_SRC/FABLE.md" "$CLAUDE_SRC/FABLE.md"
 
 # Memory repo check
 echo "Checking memory repo..."
