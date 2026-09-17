@@ -33,12 +33,88 @@ w() {
   printf '%s\n' "$@" > "$p"
 }
 
+# check-doc-truth.sh is vendored into other repos and holds to a bash 3.2
+# floor — the macOS system bash (#424). Point DOC_TRUTH_BASH3 at a bash 3.2
+# binary (or put `bash-3.2`/`bash3` on PATH) and EVERY fixture below runs the
+# checker under it, so the failure paths — malformed contracts, banned hits,
+# dead refs — get 3.2 coverage too, not just the happy path. CI's `doc-truth
+# (bash 3.2)` job builds one and does exactly that.
+#
+# The interpreter is version-checked, not merely executable: pointing
+# DOC_TRUTH_BASH3 at bash 5 would run everything under a shell that cannot
+# reproduce the 3.2 traps and report a pass that proves nothing. An explicit
+# DOC_TRUTH_BASH3 that is missing or is not bash 3.x is a FAILURE — asking for
+# a 3.2 run must not degrade into a silent skip. An auto-discovered binary that
+# turns out not to be bash 3.x just skips.
+bash3_version() { # prints the version word, empty if the binary won't report one
+  [[ -x "$1" ]] || return 1
+  "$1" --version 2>/dev/null | sed -n '1s/.*version \([0-9][0-9.]*\).*/\1/p'
+}
+
+# check() runs the checker from inside the throwaway repo, so a relative or
+# PATH-resolved interpreter would resolve against that directory and every
+# case would die with 127. Resolve to an absolute path up front.
+abs_path() {
+  local d b
+  d="$(dirname "$1")"
+  b="$(basename "$1")"
+  d="$(cd "$d" 2>/dev/null && pwd)" || return 1
+  printf '%s/%s' "$d" "$b"
+}
+
+BASH3="${DOC_TRUTH_BASH3:-}"
+BASH3_EXPLICIT=0
+[[ -n "$BASH3" ]] && BASH3_EXPLICIT=1
+if [[ -z "$BASH3" ]]; then
+  BASH3="$(command -v bash-3.2 2>/dev/null || command -v bash3 2>/dev/null || true)"
+fi
+# A bare name goes through PATH first; command -v can itself hand back a
+# relative path when PATH holds a relative entry, so normalize unconditionally
+# afterwards rather than only on the non-PATH branch.
+if [[ -n "$BASH3" && "$BASH3" != */* ]]; then
+  BASH3="$(command -v "$BASH3" 2>/dev/null || true)"
+fi
+if [[ -n "$BASH3" && "$BASH3" != /* ]]; then
+  BASH3="$(abs_path "$BASH3" || true)"
+fi
+
+BASH3_VER=""
+[[ -n "$BASH3" ]] && BASH3_VER="$(bash3_version "$BASH3" || true)"
+
+if [[ -n "$BASH3_VER" && "$BASH3_VER" != 3.* ]]; then
+  if [[ "$BASH3_EXPLICIT" -eq 1 ]]; then
+    echo "✖ DOC_TRUTH_BASH3=$BASH3 is bash $BASH3_VER, not 3.x — it cannot reproduce the 3.2 traps"
+    failed=$((failed + 1))
+  else
+    echo "… running under the default bash ($BASH3 is bash $BASH3_VER, not 3.x)"
+  fi
+  BASH3=""
+elif [[ "$BASH3_EXPLICIT" -eq 1 && -z "$BASH3_VER" ]]; then
+  echo "✖ DOC_TRUTH_BASH3=${DOC_TRUTH_BASH3} is not an executable that reports a bash version"
+  failed=$((failed + 1))
+  BASH3=""
+fi
+
+# CHECKER_BASH, when non-empty, runs the checker under that interpreter rather
+# than its shebang.
+CHECKER_BASH=""
+if [[ -n "$BASH3" && -n "$BASH3_VER" ]]; then
+  CHECKER_BASH="$BASH3"
+  echo "  (every fixture runs the checker under $("$BASH3" --version | head -n 1))"
+else
+  echo "  (fixtures run the checker under its shebang; set DOC_TRUTH_BASH3 for a bash 3.2 pass)"
+fi
+
 # check <name> <expected-exit> [<required output fragment>]
 check() {
   local name="$1" want="$2" frag="${3:-}"
   git -C "$R" add -A >/dev/null 2>&1
   local out rc
-  out="$(cd "$R" && "$CHECKER" 2>&1)"
+  if [[ -n "$CHECKER_BASH" ]]; then
+    out="$(cd "$R" && "$CHECKER_BASH" "$CHECKER" 2>&1)"
+  else
+    out="$(cd "$R" && "$CHECKER" 2>&1)"
+  fi
   rc=$?
   if [[ "$rc" -ne "$want" ]]; then
     echo "✖ $name — expected exit $want, got $rc"
@@ -254,6 +330,86 @@ new_repo
 w .doc-contract 'LIVING README.md' 'BANNED workgraph install'
 w README.md 'run `workgraph install` to start'
 check "banned still sees inline code spans" 1 "banned"
+
+new_repo
+w .doc-contract 'BANNED old-name'
+check "repo with no tracked markdown runs clean" 0 "0 markdown files"
+
+new_repo
+w .doc-contract "LIVING *.md"
+w 'quo"te.md' '# Hi'
+check "path with a quote is not mangled by git quoting" 0 "doc-truth: OK"
+
+new_repo
+w .doc-contract "LIVING *.md"
+w "ünïcode.md" '# Hi'
+check "non-ascii path is not mangled by git quoting" 0 "doc-truth: OK"
+
+# ── Cycle 7 (#424): the bash 3.2 floor ─────────────────────────────
+# The checker is vendored verbatim into other repos and has to run under the
+# macOS system bash (3.2.57). These are static guards over its own source;
+# full-line comments are stripped first so the file header may name the
+# constructs it bans.
+
+# Comment-only lines go first so the checker's header can name what it bans;
+# backslash continuations are then joined, or `declare -r \` + `-A table`
+# would hide a banned flag from a line-oriented grep.
+checker_code() {
+  grep -v '^[[:space:]]*#' "$CHECKER" | sed -e :a -e '/\\$/N; s/\\\n//; ta'
+}
+
+# guard <name> <grep -E pattern>  — fails if the pattern appears in the code
+guard() {
+  local name="$1" re="$2" hits
+  hits="$(checker_code | grep -nE -- "$re")"
+  if [[ -n "$hits" ]]; then
+    # Numbers index checker_code's filtered output (comments dropped,
+    # continuations joined), not lines of the file itself.
+    echo "✖ $name — in the checker source (filtered line numbers):"
+    echo "$hits" | sed 's/^/    /'
+    failed=$((failed + 1))
+  else
+    echo "✓ $name"
+    pass=$((pass + 1))
+  fi
+}
+
+guard "no bash-4 builtins (mapfile/readarray/coproc)" \
+  '(^|[^[:alnum:]_.-])(mapfile|readarray|coproc)([^[:alnum:]_.-]|$)'
+# -A associative (4.0), -g global (4.2), -n nameref (4.3). On 3.2.57 each is
+# an "invalid option" that still leaves the assignment standing, so the script
+# would run on with the wrong semantics rather than stop.
+guard "no bash-4 declare flags (-A, -g, -n)" \
+  '(declare|local|typeset)([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*[Ang]'
+# Single-character ${v^} and ${v,} are bash-4-only too and are `bad
+# substitution` on 3.2.57, so the operators are matched one-or-twice.
+guard 'no bash-4 case conversion (${v,} ${v,,} ${v^} ${v^^})' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(,|\^)'
+guard "no bash-4 redirections (|& and &>>)" \
+  '\|&|&>>'
+# Both ${a[-1]} and the bare a[-1]= assignment form; on 3.2.57 the latter is
+# `bad array subscript`.
+guard "no negative array subscripts" \
+  '[A-Za-z_][A-Za-z0-9_]*\[[[:space:]]*-'
+guard "no ;& or ;;& case fallthrough" \
+  ';;?&'
+# {fd}< and {fd}> allocate a descriptor (bash 4.1). The leading [^$] keeps a
+# plain "${var}>out" redirection from matching.
+guard "no {fd} descriptor redirections" \
+  '(^|[^$])\{[A-Za-z_][A-Za-z0-9_]*\}[<>]'
+guard 'no ${v@Q} parameter transformations' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?@[A-Za-z]\}'
+# `read -N` is an invalid option on 3.2.57; -r/-d/-a/-t/-u/-p/-s/-n are fine.
+guard "no read -N" \
+  '(^|[^[:alnum:]_.-])read([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*N'
+# shopt names 3.2.57 rejects as "invalid shell option name".
+guard "no bash-4 shopt options" \
+  'shopt[[:space:]]+(-[a-z][[:space:]]+)*(globstar|lastpipe|dirspell|autocd|checkjobs|compat4[0-9]|globasciiranges|inherit_errexit|localvar_inherit|assoc_expand_once)'
+# Under `set -u`, bash 3.2 calls ${arr[@]} unbound when arr is empty, so the
+# checker iterates by index. Verified on a bash 3.2.57 build: ${!arr[@]}
+# and ${#arr[@]} on an empty array are fine there; ${arr[@]} aborts the run.
+guard 'no bare ${array[@]} value expansion (iterate by index)' \
+  '\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}'
 
 echo ""
 echo "doc-truth tests: $pass passed, $failed failed"

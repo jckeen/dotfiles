@@ -35,6 +35,28 @@ for arg in "$@"; do
 done
 parse_args "${FILTERED_ARGS[@]}"
 
+# cd does not override inherited repository/index/object routing. A routed
+# checkout answers every checkpoint below while the tests run in REPO_DIR, so a
+# clean alternate worktree can approve pushing REPO_DIR's unreviewed HEAD
+# (#401). Reject the same evidence overrides as git-hygiene.sh — this is a copy
+# of the guard at the top of that script — before touching any repository; only
+# variable names belong in diagnostics. SSH/credential transport and defensive
+# flags remain available.
+git_environment_overrides=""
+for git_environment_name in "${!GIT_@}"; do
+  case "$git_environment_name" in
+    GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|GIT_DIR|GIT_WORK_TREE|\
+    GIT_IMPLICIT_WORK_TREE|GIT_COMMON_DIR|GIT_GRAFT_FILE|GIT_INDEX_FILE|\
+    GIT_REPLACE_REF_BASE|GIT_PREFIX|GIT_SHALLOW_FILE|GIT_NAMESPACE|GIT_ATTR_SOURCE|\
+    GIT_CONFIG|GIT_CONFIG_*)
+      git_environment_overrides+="${git_environment_overrides:+, }$git_environment_name" ;;
+  esac
+done
+if [[ -n "$git_environment_overrides" ]]; then
+  echo "error: Git environment overrides prevent verifying the repository under review; unset: $git_environment_overrides" >&2
+  exit 1
+fi
+
 cd "$REPO_DIR" || exit 1
 REPO_NAME=$(basename "$REPO_DIR")
 BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
@@ -43,7 +65,7 @@ BRANCH_REF=$(git symbolic-ref --quiet HEAD) || {
 }
 REVIEWED_HEAD=$(git rev-parse HEAD)
 check_review_target() {
-  local uncommitted
+  local uncommitted mode_drift
   if [[ "$(git symbolic-ref --quiet HEAD)" != "$BRANCH_REF" ]]; then
     echo "Branch changed during tests or review; run tests and review again on the intended branch." >&2
     return 1
@@ -77,6 +99,87 @@ PY_INDEX
   if [[ -n "$uncommitted" ]]; then
     echo "There are uncommitted changes; commit or stash them before running tests and review for this push." >&2
     printf '%s\n' "$uncommitted" >&2
+    return 1
+  fi
+  # With core.fileMode=false Git ignores the executable bit, so flipping it on a
+  # tracked script leaves status silent and ls-files reporting an ordinary entry
+  # while the tests run the locally executable file and the push ships the old
+  # mode (#402). Compare index modes against the working tree directly.
+  if ! mode_drift=$(python3 - <<'PY_MODES'
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+def git(args):
+    result = subprocess.run(["git"] + args, stdout=subprocess.PIPE)
+    if result.returncode != 0:
+        sys.exit(1)
+    return result.stdout
+
+
+# Git reports mode changes itself when it trusts the filesystem, so only the
+# untrusted case needs this comparison.
+if git(["config", "--type=bool", "--default=true", "--get", "core.fileMode"]).strip() == b"true":
+    sys.exit(0)
+
+# Paths are resolved against the work tree root so an invocation from a
+# subdirectory still inspects every tracked file. rev-parse emits the path
+# verbatim, so the bytes survive without quoting or decoding. Remove only
+# Git's own terminator: stripping every trailing newline would silently
+# retarget a directory whose name ends in one at its shorter sibling.
+toplevel = git(["rev-parse", "--show-toplevel"]).removesuffix(b"\n")
+if not toplevel or b"\n" in toplevel:
+    sys.exit(1)
+
+# Filesystems that record no executable bit report the same mode whatever is
+# requested; comparing against the index there would be noise, not drift.
+probe_handle, probe = tempfile.mkstemp(dir=toplevel, prefix=b".review-and-push-mode-probe")
+try:
+    os.close(probe_handle)
+    os.chmod(probe, 0o644)
+    without_bit = os.lstat(probe).st_mode
+    os.chmod(probe, 0o755)
+    with_bit = os.lstat(probe).st_mode
+finally:
+    os.unlink(probe)
+if without_bit & stat.S_IXUSR or not with_bit & stat.S_IXUSR:
+    sys.exit(0)
+
+# ":/" anchors the listing at the work tree root regardless of the caller's
+# directory; -z keeps filename bytes intact.
+for record in git(["ls-files", "-s", "-z", "--full-name", "--", ":/"]).split(b"\0"):
+    if not record:
+        continue
+    header, _, path = record.partition(b"\t")
+    fields = header.split(b" ")
+    if len(fields) != 3 or not path:
+        sys.exit(1)
+    mode, _, stage = fields
+    # Only regular blobs at stage 0 carry an executable bit worth comparing;
+    # symlinks, gitlinks, and conflicted entries are Git's business, not ours.
+    if stage != b"0" or mode not in (b"100644", b"100755"):
+        continue
+    try:
+        on_disk = os.lstat(os.path.join(toplevel, path)).st_mode
+    except OSError:
+        # A missing or unreadable path is already a working-tree finding.
+        continue
+    if not stat.S_ISREG(on_disk):
+        continue
+    actual = b"100755" if on_disk & stat.S_IXUSR else b"100644"
+    if actual != mode:
+        sys.stdout.buffer.write(b"  %s in index, %s on disk: %s\n" % (mode, actual, path))
+PY_MODES
+  ); then
+    echo "Cannot verify tracked file modes; not running tests, review, or push." >&2
+    return 1
+  fi
+  if [[ -n "$mode_drift" ]]; then
+    echo "Tracked executable bits differ from the index and core.fileMode hides them from status; record or restore them before running tests and review for this push." >&2
+    printf '%s\n' "$mode_drift" >&2
     return 1
   fi
 }
