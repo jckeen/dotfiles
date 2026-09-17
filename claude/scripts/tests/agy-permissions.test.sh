@@ -20,6 +20,8 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 S="$ROOT/settings.json"
+export HOME="$ROOT/home"
+mkdir -p "$HOME"
 
 if python3 - "$RULES" <<'PY'
 import json, re, sys
@@ -33,7 +35,21 @@ for bucket in ('allow', 'ask', 'deny'):
         assert '/home/' not in entry and '/Users/' not in entry, entry
 assert 'command(sudo)' in d['permissions']['deny']
 assert 'command(rg)' in d['permissions']['allow']
-assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
+assert d['settings']['allowNonWorkspaceAccess'] is True
+allow = d['permissions']['allow']
+assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
+assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox'
+assert 'read_file(~/.config/gh/)' in d['permissions']['deny'] and 'read_file(~/.claude/.credentials.json)' in d['permissions']['deny']
+assert 'command(git config)' not in d['permissions']['ask'], 'an ask prefix would shadow the read-only git config --get allow'
+assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
+assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
+for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
+    assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
+assert not any('regex:' in r for b in d['permissions'].values() for r in b), 'no command regexes: the sandbox is the boundary'
+assert 'command(git push --force)' in d['permissions']['deny'] and 'command(git clone)' in d['permissions']['ask']
+assert 'read_file(~/.gemini/antigravity-cli/)' not in d['permissions']['deny'], 'agy keeps its own brain/ and scratch/ there'
+assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefix risks over-matching every absolute path'
+assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
 else fail "baseline file failed validation"; fi
@@ -47,6 +63,9 @@ assert d['trustedWorkspaces'] == ['/x/dev']
 assert d['toolPermission'] == 'proceed-in-sandbox' and d['enableTerminalSandbox'] is True
 assert d['permissions']['allow'][0] == 'command(local-junk)'
 assert d['permissions']['allow'].count('command(rg)') == 1
+import os
+assert f"read_file({os.environ['HOME']}/.claude/)" in d['permissions']['allow'], 'tilde rules expand to this home'
+assert not any(r.startswith(('read_file(~', 'write_file(~')) for b in d['permissions'].values() for r in b)
 assert 'command(sudo)' in d['permissions']['deny']
 PY
 then ok "apply merges the baseline, seeds mode keys, keeps local rules and trustedWorkspaces"
@@ -199,6 +218,69 @@ assert perms['deny'].count('read_file(/custom/home/user/.ssh/)') == 1
 assert not any('~' in r and r.startswith(('read_file(', 'write_file(')) for bucket in perms.values() for r in bucket)
 PY
 then ok "apply repairs legacy unexpanded ~ rules across allow, ask, and deny"; else fail "legacy repair failed"; fi
+
+# ── Retired rules (#427) ───────────────────────────────────────────────────
+# A grant withdrawn from the baseline must also leave settings that already
+# carry it. apply is additive, so without this a machine that installed an
+# earlier baseline keeps the withdrawn rule forever.
+S_RETIRED="$ROOT/retired.json"
+python3 - "$S_RETIRED" "$RULES" <<'PY'
+import json, sys
+retired = json.load(open(sys.argv[2]))['retired']
+assert retired, 'baseline must declare retired rules'
+json.dump({'trustedWorkspaces': ['/x/dev'],
+           'permissions': {'allow': ['command(local-junk)'] + retired,
+                           'ask': [], 'deny': [retired[0]]}},
+          open(sys.argv[1], 'w'))
+PY
+
+if out="$(python3 "$TOOL" check --settings "$S_RETIRED" --rules "$RULES" 2>&1)"; then
+  fail "check passed while a retired rule was still live: $out"
+else
+  if grep -q 'retired' <<< "$out"; then ok "check fails naming retired rules still in settings"
+  else fail "check failed without naming the retired rule: $out"; fi
+fi
+
+out="$(python3 "$TOOL" apply --settings "$S_RETIRED" --rules "$RULES" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && python3 - "$S_RETIRED" "$RULES" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+retired = json.load(open(sys.argv[2]))['retired']
+perms = d['permissions']
+assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply'
+assert retired[0] in perms['deny'], "an operator's own deny must never be retired away"
+assert 'command(local-junk)' in perms['allow'], 'unrelated local grants must be kept'
+assert d['trustedWorkspaces'] == ['/x/dev']
+assert 'command(sudo)' in perms['deny'], 'baseline rules still applied'
+PY
+then ok "apply removes retired rules and keeps unrelated local grants"
+else fail "apply did not retire the rules (rc=$rc): $out"; fi
+
+if grep -q 'retired' <<< "$out"; then ok "apply reports each retired rule it removed"
+else fail "apply removed retired rules silently: $out"; fi
+
+if python3 "$TOOL" check --settings "$S_RETIRED" --rules "$RULES" >/dev/null 2>&1; then
+  ok "check passes once the retired rules are gone"
+else fail "check still failing after apply removed the retired rules"; fi
+
+# A retired rule the operator kept as their own deny is not "still granted".
+S_DENY_ONLY="$ROOT/retired-deny-only.json"
+python3 - "$S_DENY_ONLY" "$RULES" <<'PY'
+import json, sys
+retired = json.load(open(sys.argv[2]))['retired']
+base = json.load(open(sys.argv[2]))['permissions']
+perms = {b: list(base.get(b, [])) for b in ('allow', 'ask', 'deny')}
+perms['deny'].append(retired[0])
+json.dump({'permissions': perms,
+           'toolPermission': 'proceed-in-sandbox',
+           'enableTerminalSandbox': True,
+           'allowNonWorkspaceAccess': True}, open(sys.argv[1], 'w'))
+PY
+python3 "$TOOL" apply --settings "$S_DENY_ONLY" --rules "$RULES" >/dev/null 2>&1
+if out="$(python3 "$TOOL" check --settings "$S_DENY_ONLY" --rules "$RULES" 2>&1)" \
+  && python3 -c "import json,sys; d=json.load(open('$S_DENY_ONLY')); r=json.load(open('$RULES'))['retired'][0]; sys.exit(0 if r in d['permissions']['deny'] else 1)"; then
+  ok "a retired rule kept as an operator deny survives apply and passes check"
+else fail "an operator-owned deny was retired away or failed check: $out"; fi
 
 echo ""
 echo "agy-permissions: $pass passed, $failed failed"
