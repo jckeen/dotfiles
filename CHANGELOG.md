@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-17 — fix(check-claude): heal retired links per destination (#400)
+
+- `check-claude.sh` zeroed a single global `HEAL` whenever `~/.claude` **or**
+  `~/.claude/skills` was a symlink, which also skipped the unrelated top-level
+  `~/.claude/FABLE.md` retirement. With a symlinked skills root and a real
+  `~/.claude`, the later orphan scan then reported `FABLE.md` as an error and
+  the launcher's `--heal` startup check failed on every run.
+- The two retirement calls now recompute the decision per destination, so a
+  symlinked root gates only the links beneath it. The audit-wide gate still
+  applies to every enumerated link. Covered by a new case in
+  `claude/scripts/tests/retired-skill-links.test.py`.
+
 ## 2026-09-16 — feat(agy): permission baseline and proceed-in-sandbox mode
 
 - Antigravity asked for approval on nearly every command because its native
