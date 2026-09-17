@@ -14,7 +14,8 @@
   never created — dropping the pin now fails the suite instead of passing
   against the inherited value.
 - Neither `codex-review-multipart.test.sh` nor `review-multipart.test.py` was
-  wired into CI; both now run in the `checks` job.
+  wired into CI; both now run in the `checks` job. `review-and-push.test.sh`
+  shipped unwired too and joins them there.
 
 ## 2026-09-17 — fix(doc-truth): run the checker on the macOS system bash (#424)
 

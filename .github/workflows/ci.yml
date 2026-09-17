@@ -254,6 +254,13 @@ jobs:
         run: |
           bash claude/scripts/tests/codex-review-multipart.test.sh
           python3 claude/scripts/tests/review-multipart.test.py
+      # review-and-push.sh must refuse inherited Git routing and catch an
+      # executable-bit flip that core.fileMode=false hides from git status
+      # (#401, #402). The fixtures stop at the pre-push checkpoints, so
+      # nothing here pushes or spends review quota.
+      - name: review-and-push (routing and exec-bit guards)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/review-and-push.test.sh
       - name: review receipts and shipping boundaries
         if: ${{ !cancelled() }}
         run: |
