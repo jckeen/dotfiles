@@ -48,7 +48,7 @@ def expand_home(rule):
     match = re.match(r'^(read_file|write_file)\(~(/.*)?\)$', rule)
     if not match:
         return rule
-    home = os.path.expanduser('~')
+    home = os.path.expanduser('~').rstrip('/')  # HOME=/ must not yield //dev/
     return f"{match.group(1)}({home}{match.group(2) or ''})"
 
 

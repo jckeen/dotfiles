@@ -90,7 +90,6 @@
       "command(gh run view)",
       "command(gh run list)",
       "command(gh repo view)",
-      "command(gh auth status)",
       "unsandboxed(gh pr view)",
       "unsandboxed(gh pr list)",
       "unsandboxed(gh pr checks)",
@@ -100,7 +99,6 @@
       "unsandboxed(gh run view)",
       "unsandboxed(gh run list)",
       "unsandboxed(gh repo view)",
-      "unsandboxed(gh auth status)",
       "command(python3)",
       "command(git stash)",
       "command(git worktree)",
@@ -142,7 +140,8 @@
       "command(git config)",
       "command(git clone)",
       "command(git -C)",
-      "command(git -c)"
+      "command(git -c)",
+      "command(gh auth)"
     ],
     "deny": [
       "command(sudo)",

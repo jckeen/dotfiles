@@ -61,6 +61,8 @@
   `read_file` denies for credential paths (the file tool matches paths, not
   text) and plain prefix denies as speed bumps inside the sandbox. `git clone`,
   `git -C` and `git -c` ask.
+- `gh auth status` moved to ask (`--show-token` prints the token); the home
+  expansion tolerates `HOME=/`.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 

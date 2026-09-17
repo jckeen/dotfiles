@@ -47,6 +47,7 @@ for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 assert not any('regex:' in r for b in d['permissions'].values() for r in b), 'no command regexes: the sandbox is the boundary'
 assert 'command(git push --force)' in d['permissions']['deny'] and 'command(git clone)' in d['permissions']['ask']
+assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
 else fail "baseline file failed validation"; fi
