@@ -251,7 +251,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Notification hook** | `claude/hooks/ntfy-awaiting-input.sh` | Sends push notification when Claude needs input |
 | **Permission guard** | `claude/hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
 | **Other hooks** | `claude/hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
-| **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line); deliberately not symlinked (listed in `claude/nolink.txt`) |
+| **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line) at **user scope**; a `--scope project` or `--scope local` install belongs to that checkout and never satisfies a manifest entry; deliberately not symlinked (listed in `claude/nolink.txt`) |
 | **Skills** | `claude/skills/*/SKILL.md` | Claude slash commands (see below) |
 | **Subagents** | `claude/agents/*.md` | 18 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts; launchers re-source this file when it changed since the shell started |

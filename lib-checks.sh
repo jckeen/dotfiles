@@ -140,3 +140,28 @@ check_link() {
       ;;
   esac
 }
+
+# user_scoped_plugins — read `claude plugin list` output on stdin, print the
+# `<plugin>@<marketplace>` id of every USER-scope install, one per line.
+#
+# `claude plugin install` takes --scope user|project|local, and `plugin list`
+# reports all three from any directory. The dotfiles plugin manifest is a
+# user-scope install list, so matching a manifest entry against the raw listing
+# would treat someone's project- or local-scoped install as satisfying it and
+# skip the user-scope install the manifest promises. Same rule as
+# PluginDriftCheck.hook.ts and sync-plugins.sh (#437).
+#
+# `user` is an allowlist: an entry whose Scope line is missing or unrecognised
+# is NOT emitted, so the caller reinstalls it. `claude plugin install` is
+# idempotent, making that the safe direction to be wrong in.
+user_scoped_plugins() {
+  awk '
+    /^[[:space:]]*❯[[:space:]]+/ { name = $2; next }
+    /^[[:space:]]*Scope:[[:space:]]*user[[:space:]]*$/ {
+      if (name != "") { print name; name = "" }
+      next
+    }
+    # Any other Scope line ends this entry without emitting it.
+    /^[[:space:]]*Scope:[[:space:]]*/ { name = "" }
+  '
+}
