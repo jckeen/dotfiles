@@ -1,5 +1,5 @@
 {
-  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes unless regex:. Precedence: deny > ask > allow. Security model: the terminal sandbox is the boundary (toolPermission=proceed-in-sandbox, enableTerminalSandbox=true). No local tool carries an unsandboxed(...) rule; the only unsandboxed rules are gh read subcommands (git fetch/pull prompt: repo config can name programs for git to run). Reads outside the workspace are served inside the sandbox through allowNonWorkspaceAccess and the read_file(~/...) rules, which the merge script expands to the machine's home. The command deny regexes are defense in depth for sandboxed runs, not a boundary: shell syntax cannot be classified airtight (see the reverted #411).",
+  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes. Precedence: deny > ask > allow. Security model: the terminal sandbox is the boundary (toolPermission=proceed-in-sandbox, enableTerminalSandbox=true); it blocks ~/.ssh and .env files by default and isolates the filesystem and network. No local tool carries an unsandboxed(...) rule; only gh read subcommands run unsandboxed (git fetch/pull prompt, because repository config can name programs for git to run). Reads outside the workspace are served inside the sandbox through allowNonWorkspaceAccess and read_file(~/...) rules, which the merge script expands to the machine's home; read_file denies cover credential files exactly, because the file tool matches paths, not shell text. There are deliberately no command regexes: shell syntax cannot be classified airtight (see the reverted #411), so command denies are plain prefixes that act as speed bumps inside the sandbox, not as a boundary.",
   "settings": {
     "toolPermission": "proceed-in-sandbox",
     "enableTerminalSandbox": true,
@@ -77,7 +77,6 @@
       "command(node --version)",
       "command(python3 --version)",
       "command(python3 -m pytest)",
-      "command(regex:^bash +[A-Za-z0-9_./-]+\\.test\\.sh$)",
       "command(shellcheck)",
       "command(./check-claude.sh)",
       "command(./check-antigravity.sh)",
@@ -109,7 +108,6 @@
       "command(git cat-file)",
       "command(git check-ignore)",
       "command(bash -n)",
-      "command(bash claude/scripts/tests)",
       "command(./gh-bootstrap.sh --check)",
       "read_file(~/.claude/)",
       "read_file(~/.gemini/)",
@@ -141,8 +139,10 @@
       "command(gh pr merge)",
       "command(gh pr create)",
       "command(gh issue create)",
-      "command(regex:(?s)(^|\\s)(GIT_[A-Z_]+|PAGER|EDITOR|VISUAL|LD_PRELOAD|LD_LIBRARY_PATH|PATH)=)",
-      "command(git config)"
+      "command(git config)",
+      "command(git clone)",
+      "command(git -C)",
+      "command(git -c)"
     ],
     "deny": [
       "command(sudo)",
@@ -164,22 +164,13 @@
       "read_file(~/.codex/auth.json)",
       "read_file(~/.git-credentials)",
       "read_file(~/.netrc)",
-      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+push\\b.*(\\s(--force|-[a-zA-Z]*f[a-zA-Z]*)(\\s|$)|\\s\\+\\S))",
-      "command(regex:(?s)\\brm\\b(.*\\s(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive).*\\s['\"]?(/+(\\./+)*|~/*|\\$\\{?HOME\\}?/*|/+(\\./+)*home/+(\\./+)*[^\\s/]+/*|/+(\\./+)*Users/+(\\./+)*[^\\s/]+/*)(\\*)?['\"]?(\\s|$)|.*\\s['\"]?(/+(\\./+)*|~/*|\\$\\{?HOME\\}?/*|/+(\\./+)*home/+(\\./+)*[^\\s/]+/*|/+(\\./+)*Users/+(\\./+)*[^\\s/]+/*)(\\*)?['\"]?\\s.*(-[a-zA-Z]*[rR]|--recursive)))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.(ssh|aws|gnupg|azure|kube|docker|netrc|npmrc|pypirc|git-credentials)(/+|[\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.config/+(\\./+)*(gh|gcloud)(/+|[\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)\\.env(\\.[A-Za-z0-9_.-]+)?([\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)id_(rsa|ed25519|ecdsa|dsa)(_sk)?(\\.pub)?([\\s'\"]|$))",
-      "command(regex:(?si)(^|[\\s'\"=:]|/+)([A-Za-z0-9_.-]*(credentials|token|secret)s?\\.(json|ya?ml|toml|txt|env)|hosts\\.ya?ml|oauth_creds\\.json|google_accounts\\.json|auth\\.json)([\\s'\"]|$))",
-      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?(~|\\$\\{?HOME\\}?|/+(\\./+)*home/+(\\./+)*[^\\s/]+|/+(\\./+)*Users/+(\\./+)*[^\\s/]+)/+(\\./+)*\\.)",
-      "command(regex:(?si)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?/+(\\./+)*(etc|usr|bin|sbin|boot|root|var|opt|lib|lib64)/)",
-      "command(regex:(?s)(>>?|\\btee\\b(\\s+-\\S+)*)\\s*['\"]?\\S*\\.\\./)",
-      "command(regex:(?s)\\bsed\\b.*\\s(-[a-zA-Z]*i|--in-place))",
-      "command(regex:(?s)\\bperl\\b.*\\s-[a-zA-Z]*i)",
-      "command(regex:(?s)\\brg\\b.*\\s--pre\\b)",
-      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+(-c|--exec-path|--config-env)\\b)",
-      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+(clone|fetch|pull|ls-remote|submodule|remote)\\b.*\\s(-c|--config|--upload-pack|--exec|-u|--recurse-submodules|--rebase)\\b)",
-      "command(regex:(?s)\\bgit(\\s+(-[A-Za-z]|--[A-Za-z-]+)(=\\S+|\\s+[^-\\s]\\S*)?)*\\s+push\\b.*\\s(-c|--config|--receive-pack|--exec)\\b)"
+      "command(git push --force)",
+      "command(git push -f)",
+      "command(rm -rf /)",
+      "command(rm -rf ~)",
+      "command(rm -rf $HOME)",
+      "command(rm -rf /*)",
+      "command(rm -rf ~/*)"
     ]
   }
 }

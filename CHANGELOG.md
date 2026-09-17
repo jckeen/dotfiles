@@ -55,6 +55,12 @@
   and `~/.git-credentials` are denied by path and by name (P0). `/./`,
   `${HOME}`, `--recursive`, combined `-uf`, and git global options before
   the subcommand are covered.
+- Seventh round settled it: the command regex layer is removed. Every round
+  produced new bypasses because shell syntax cannot be classified airtight,
+  which is the lesson of #411. What remains is what agy enforces exactly:
+  `read_file` denies for credential paths (the file tool matches paths, not
+  text) and plain prefix denies as speed bumps inside the sandbox. `git clone`,
+  `git -C` and `git -c` ask.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
