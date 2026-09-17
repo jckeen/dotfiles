@@ -21,7 +21,8 @@ import sys
 import tempfile
 import time
 
-CONCRETE_HOME_RE = re.compile(r'/(home|Users)/[A-Za-z0-9_.-]+/')
+# A literal user segment (no regex metacharacters; spaces allowed) marks a machine-specific path.
+CONCRETE_HOME_RE = re.compile(r'/(home|Users)/[^/\[\]()*+?\\|^$]+/')
 RULE_RE = re.compile(r'^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$')
 BUCKETS = ('allow', 'ask', 'deny')
 

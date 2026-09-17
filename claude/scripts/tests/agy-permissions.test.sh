@@ -32,23 +32,22 @@ rule = re.compile(r'^(command|unsandboxed|read_file|write_file|read_url|execute_
 for bucket in ('allow', 'ask', 'deny'):
     for entry in d['permissions'][bucket]:
         assert rule.match(entry), entry
-        assert not re.search(r'/(home|Users)/[A-Za-z0-9_.-]+/', entry), entry
+        assert not re.search(r'/(home|Users)/[^/\[\]()*+?\\|^$]+/', entry), entry
 assert 'command(sudo)' in d['permissions']['deny']
 assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
-assert 'read_file(~/.claude)' in allow and 'unsandboxed(gh pr view)' in allow
+assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
 assert not any(r.startswith('unsandboxed(') and not r.startswith(('unsandboxed(git fetch)', 'unsandboxed(git pull --ff-only)', 'unsandboxed(gh ')) for r in allow), 'only read-only network commands may leave the sandbox'
-assert 'write_file(~/dev)' in allow, 'file edits inside the dev tree must not prompt in default mode'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
 assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
 for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 deny_regexes = [re.compile(r[len('command(regex:'):-1]) for r in d['permissions']['deny'] if r.startswith('command(regex:')]
 def denied(cmd): return any(x.search(cmd) for x in deny_regexes)
-for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'git push --force'):
+for cmd in ('cat ~/.ssh/id_rsa', 'cat ~//.ssh/id_rsa', 'cat ../.ssh/id_rsa', 'cat /home/u/.aws/credentials', 'rg X .env', 'echo x > ~/.bashrc', 'tee //etc/hosts', 'echo x > /tmp/../etc/hosts', 'cd . && sed -i s/a/b/ f', 'sed --in-place x f', 'rg "a\nb" --pre x', 'rm -rf /*', 'rm -rf ~/*', 'rm -rf /home/u/*', 'rm -rf /tmp /', 'git push --force', 'git push origin +main', 'cat ~/.SSH/id_rsa', 'echo x > ../.bashrc', 'git --no-pager -c x log'):
     assert denied(cmd), cmd
-for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease'):
+for cmd in ('cat README.md', 'echo hi > out.txt', 'ls ~/.claude/scripts', 'sed -n 1,5p setup.sh', 'rm -rf build/', 'git push --force-with-lease', 'git log -c', 'git push origin main'):
     assert not denied(cmd), cmd
 assert not any(e.startswith('command(gh api') for e in d['permissions']['allow'])
 PY
@@ -65,7 +64,7 @@ assert d['toolPermission'] == 'proceed-in-sandbox' and d['enableTerminalSandbox'
 assert d['permissions']['allow'][0] == 'command(local-junk)'
 assert d['permissions']['allow'].count('command(rg)') == 1
 import os
-assert f"read_file({os.environ['HOME']}/.claude)" in d['permissions']['allow'], 'tilde rules expand to this home'
+assert f"read_file({os.environ['HOME']}/.claude/)" in d['permissions']['allow'], 'tilde rules expand to this home'
 assert not any(r.startswith(('read_file(~', 'write_file(~')) for r in d['permissions']['allow'] + d['permissions']['deny'])
 assert 'command(sudo)' in d['permissions']['deny']
 PY

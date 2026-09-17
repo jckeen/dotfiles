@@ -38,6 +38,10 @@
   `allowNonWorkspaceAccess` and the `read_file(~/…)` rules. The deny regexes
   stay as defense in depth (newline-safe, repeated-slash and traversal aware,
   absolute home paths covered) but are documented as not being a boundary.
+- Fourth round (P1/P2 only): directory file rules end with `/` so prefix
+  matching cannot leak into siblings; `+refspec` force pushes, `rm` with a safe
+  path before the protected one, single-level `../` redirects, `git` global
+  options before `-c`, and mixed-case secret paths are covered.
 
 ## 2026-09-16 — revert: remove the Antigravity permission classifier (#411)
 
