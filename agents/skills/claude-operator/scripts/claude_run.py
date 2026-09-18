@@ -98,19 +98,41 @@ def emit(event: dict) -> None:
 def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = Parser(description="Run one native Claude Code print-mode turn from a prompt file.")
     parser.add_argument("--cwd", required=True, type=Path, help="project directory Claude works in")
-    parser.add_argument("--prompt-file", required=True, type=Path, help="UTF-8 prompt, sent literally on stdin")
-    parser.add_argument("--output-dir", required=True, type=Path, help="new directory for this turn's evidence")
-    parser.add_argument("--resume", type=uuid.UUID, metavar="SESSION_ID", help="resume exactly this session")
-    parser.add_argument("--claude-bin", type=Path, help="Claude executable (default: ~/.local/bin/claude; PATH is never searched)")
+    parser.add_argument(
+        "--prompt-file", required=True, type=Path, help="UTF-8 prompt, sent literally on stdin"
+    )
+    parser.add_argument(
+        "--output-dir", required=True, type=Path, help="new directory for this turn's evidence"
+    )
+    parser.add_argument(
+        "--resume", type=uuid.UUID, metavar="SESSION_ID", help="resume exactly this session"
+    )
+    parser.add_argument(
+        "--claude-bin",
+        type=Path,
+        help="Claude executable (default: ~/.local/bin/claude; PATH is never searched)",
+    )
     parser.add_argument("--permission-mode", choices=PERMISSION_MODES, default="acceptEdits")
-    parser.add_argument("--allow-tool", action="append", default=[], metavar="RULE",
-                        help="permission rule to allow for this turn, e.g. 'Bash(bun test)' (repeatable)")
+    parser.add_argument(
+        "--allow-tool",
+        action="append",
+        default=[],
+        metavar="RULE",
+        help="permission rule to allow for this turn, e.g. 'Bash(bun test)' (repeatable)",
+    )
     parser.add_argument("--tools", help="restrict the built-in tool set, e.g. 'Read,Edit,Bash'")
     parser.add_argument("--model", help="model override; omit to keep the configured model")
-    parser.add_argument("--timeout", type=float, metavar="SECONDS", help="stop the owned run after this long")
-    parser.add_argument("--safe-mode", action="store_true",
-                        help="launch with customizations disabled (troubleshooting only)")
-    parser.add_argument("--dry-run", action="store_true", help="print the plan; create and launch nothing")
+    parser.add_argument(
+        "--timeout", type=float, metavar="SECONDS", help="stop the owned run after this long"
+    )
+    parser.add_argument(
+        "--safe-mode",
+        action="store_true",
+        help="launch with customizations disabled (troubleshooting only)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the plan; create and launch nothing"
+    )
     args = parser.parse_args(argv)
     if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout > 0):
         parser.error("--timeout must be a finite, positive number of seconds")
@@ -119,10 +141,16 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     # would be parsed by Claude as that option, smuggling a bypass past the
     # recorded permission mode. Flags inside a rule ("Bash(bun test --watch)")
     # are fine; only a leading dash is rejected.
-    for option, values in (("--allow-tool", args.allow_tool), ("--tools", [args.tools]), ("--model", [args.model])):
+    for option, values in (
+        ("--allow-tool", args.allow_tool),
+        ("--tools", [args.tools]),
+        ("--model", [args.model]),
+    ):
         for value in values:
             if value is not None and value.startswith("-"):
-                parser.error(f"{option} value {value!r} looks like a command-line option and is not forwarded")
+                parser.error(
+                    f"{option} value {value!r} looks like a command-line option and is not forwarded"
+                )
     return args
 
 
@@ -133,10 +161,15 @@ def find_claude(explicit: Path | None) -> tuple[Path, str]:
     if explicit is not None:
         candidate, source = explicit.expanduser(), "--claude-bin"
     else:
-        candidate, source = Path.home() / ".local" / "bin" / "claude", "native install (~/.local/bin/claude)"
+        candidate, source = (
+            Path.home() / ".local" / "bin" / "claude",
+            "native install (~/.local/bin/claude)",
+        )
         if not candidate.exists():
-            raise ValueError(f"native Claude executable not found at {candidate}; the runner does not search PATH, "
-                             "pass --claude-bin to use another installation")
+            raise ValueError(
+                f"native Claude executable not found at {candidate}; the runner does not search PATH, "
+                "pass --claude-bin to use another installation"
+            )
     resolved = candidate.resolve(strict=True)
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise ValueError(f"Claude executable is not an executable file: {resolved}")
@@ -149,7 +182,7 @@ def load_prompt(path: Path) -> bytes:
     with path.open("rb") as handle:
         raw = handle.read(MAX_PROMPT_BYTES + len(UTF8_BOM) + 1)
     if raw.startswith(UTF8_BOM):
-        raw = raw[len(UTF8_BOM):]
+        raw = raw[len(UTF8_BOM) :]
     if len(raw) > MAX_PROMPT_BYTES:
         raise ValueError(f"prompt exceeds the runner's {MAX_PROMPT_BYTES} byte stdin limit")
     try:
@@ -183,8 +216,10 @@ def shell_launch(events_fd: int, prompt_fd: int, cwd: Path, command: list[str]) 
     so no shell command, function, or DEBUG trap ever runs with them on stdin
     or stdout. The prompt is not part of this string or of "$@": Claude reads
     it from the descriptor."""
-    body = ('builtin cd -- "$1" || builtin exit $?; builtin shift; '
-            f'builtin exec "$@" >&{events_fd} {events_fd}>&- <&{prompt_fd} {prompt_fd}<&-')
+    body = (
+        'builtin cd -- "$1" || builtin exit $?; builtin shift; '
+        f'builtin exec "$@" >&{events_fd} {events_fd}>&- <&{prompt_fd} {prompt_fd}<&-'
+    )
     return ["/bin/bash", "-ic", body, "claude-operator", str(cwd), *command]
 
 
@@ -342,7 +377,9 @@ def stop_owned(process: subprocess.Popen | None, state: dict) -> None:
         survivors = sorted(session_members(sid))
     finally:
         try:
-            process.wait(timeout=STOP_GRACE_SECONDS)  # only now are the session and group ids released
+            process.wait(
+                timeout=STOP_GRACE_SECONDS
+            )  # only now are the session and group ids released
         except subprocess.TimeoutExpired:
             errors.append("leader still running after SIGKILL; left unreaped")
     if errors:
@@ -354,11 +391,15 @@ def stop_owned(process: subprocess.Popen | None, state: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = arguments(argv)
     if os.name != "posix" or not os.path.exists("/proc/self/stat") or not hasattr(os, "pidfd_open"):
-        raise ValueError("run this helper with Python 3.9+ inside WSL or Linux (kernel 5.3+): it tracks the "
-                         "owned session through Linux procfs (/proc) and pidfds")
+        raise ValueError(
+            "run this helper with Python 3.9+ inside WSL or Linux (kernel 5.3+): it tracks the "
+            "owned session through Linux procfs (/proc) and pidfds"
+        )
     if os.environ.get("CLAUDECODE"):
-        raise ValueError("refusing to launch Claude from inside a Claude Code session (CLAUDECODE is set); "
-                         "an operator that is already Claude should use its native subagents and worktrees")
+        raise ValueError(
+            "refusing to launch Claude from inside a Claude Code session (CLAUDECODE is set); "
+            "an operator that is already Claude should use its native subagents and worktrees"
+        )
     cwd = args.cwd.resolve(strict=True)
     if not cwd.is_dir():
         raise ValueError(f"--cwd is not a directory: {cwd}")
@@ -368,15 +409,29 @@ def main(argv: list[str] | None = None) -> int:
     # would resolve to its absent target and be created through the link.
     requested = args.output_dir.expanduser()
     if requested.is_symlink() or requested.exists():
-        raise ValueError(f"output directory already exists: {requested} (choose a new directory per turn; runs are never overwritten)")
+        raise ValueError(
+            f"output directory already exists: {requested} (choose a new directory per turn; runs are never overwritten)"
+        )
     output = requested.resolve()
     if output.exists() or output.is_symlink():
-        raise ValueError(f"output directory already exists: {output} (choose a new directory per turn; runs are never overwritten)")
+        raise ValueError(
+            f"output directory already exists: {output} (choose a new directory per turn; runs are never overwritten)"
+        )
 
     session_id = str(args.resume or uuid.uuid4())
-    command = [str(executable), "--print", "--output-format", "stream-json", "--verbose",
-               "--permission-mode", args.permission_mode, "--permission-prompts", "none",
-               "--resume" if args.resume else "--session-id", session_id]
+    command = [
+        str(executable),
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        args.permission_mode,
+        "--permission-prompts",
+        "none",
+        "--resume" if args.resume else "--session-id",
+        session_id,
+    ]
     if args.tools is not None:
         command.extend(["--tools", args.tools])
     if args.model:
@@ -399,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         "runner_pid": os.getpid(),
         "status": "prepared",
         "shell": "interactive bash loads startup files (stdout to stderr.log, stdin /dev/null), then cd to cwd, "
-                 "then exec claude with the prompt on stdin",
+        "then exec claude with the prompt on stdin",
         "command": command,
     }
     if args.dry_run:
@@ -491,8 +546,10 @@ def main(argv: list[str] | None = None) -> int:
                     emit({"event": "tool", "name": block.get("name")})
 
     try:
-        with (output / "stderr.log").open("w", encoding="utf-8") as errors, \
-             (output / "events.jsonl").open("w", encoding="utf-8") as events:
+        with (
+            (output / "stderr.log").open("w", encoding="utf-8") as errors,
+            (output / "events.jsonl").open("w", encoding="utf-8") as events,
+        ):
             events_read, events_write = os.pipe()
             prompt_fd = os.open(prompt_path, os.O_RDONLY)
             # Deferred from just before the child can exist until its group is
@@ -500,11 +557,19 @@ def main(argv: list[str] | None = None) -> int:
             # nor leave the final state without the group's identity.
             deferring = True
             try:
-                process = subprocess.Popen(shell_launch(events_write, prompt_fd, cwd, command), cwd=cwd,
-                                           stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
-                                           pass_fds=(events_write, prompt_fd), start_new_session=True)
+                process = subprocess.Popen(
+                    shell_launch(events_write, prompt_fd, cwd, command),
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=errors,
+                    stderr=errors,
+                    pass_fds=(events_write, prompt_fd),
+                    start_new_session=True,
+                )
             except BaseException:
-                os.close(events_read)  # nobody will read it; the normal path closes it after streaming
+                os.close(
+                    events_read
+                )  # nobody will read it; the normal path closes it after streaming
                 raise
             finally:
                 os.close(events_write)
@@ -545,13 +610,20 @@ def main(argv: list[str] | None = None) -> int:
         # A nonzero Claude exit is a failure even when the result carries
         # permission denials: a process error must not be read as a mere
         # approval need. needs_permission is reserved for a completed turn.
-        elif not result or result.get("is_error") or result.get("subtype") != "success" or return_code:
+        elif (
+            not result
+            or result.get("is_error")
+            or result.get("subtype") != "success"
+            or return_code
+        ):
             state["status"] = "failed"
             flag = unsupported_flag(output / "stderr.log")
             if flag:
-                state.update(unsupported_flag=flag,
-                             error=f"the installed Claude CLI rejected {flag}; upgrade Claude Code rather than "
-                                   "dropping it, the runner never retries with weaker permission handling")
+                state.update(
+                    unsupported_flag=flag,
+                    error=f"the installed Claude CLI rejected {flag}; upgrade Claude Code rather than "
+                    "dropping it, the runner never retries with weaker permission handling",
+                )
             elif not result:
                 state["error"] = "Claude exited without a result event (see stderr.log)"
             # Claude's raw exit code is kept as claude_exit_code; the runner's
@@ -566,17 +638,23 @@ def main(argv: list[str] | None = None) -> int:
         # A turn whose owned processes could not all be stopped is neither a
         # clean success nor a safe place to resume from, whatever Claude's
         # result said; the result (denials included) stays in result.json.
-        if state["status"] in ("turn_complete", "needs_permission") \
-                and (state.get("stop_errors") or state.get("stop_survivors")):
-            state.update(status="failed", error="Claude's turn ended but owned processes were not stopped "
-                                                "cleanly (see stop_errors / stop_survivors); do not resume "
-                                                "until they are gone")
+        if state["status"] in ("turn_complete", "needs_permission") and (
+            state.get("stop_errors") or state.get("stop_survivors")
+        ):
+            state.update(
+                status="failed",
+                error="Claude's turn ended but owned processes were not stopped "
+                "cleanly (see stop_errors / stop_survivors); do not resume "
+                "until they are gone",
+            )
             return_code = EXIT_FAILED
     except Interrupted as interrupt:
         state.update(status="interrupted", interrupted_by=str(interrupt))
         return_code = SIGNAL_EXIT_BASE + interrupt.signum
     except TimedOut:
-        state.update(status="timed_out", error=f"no result within {args.timeout} seconds; owned run stopped")
+        state.update(
+            status="timed_out", error=f"no result within {args.timeout} seconds; owned run stopped"
+        )
         return_code = EXIT_TIMED_OUT
     except Exception as error:  # noqa: BLE001 - recorded, never silently dropped
         state.update(status="failed", error=f"{type(error).__name__}: {error}")
@@ -595,9 +673,17 @@ def main(argv: list[str] | None = None) -> int:
             state["claude_exit_code"] = process.returncode
         state.update(finished_at=now(), exit_code=return_code)
         write_json(output / "run.json", state)
-    emit({"event": "finished", "status": state["status"], "exit_code": return_code,
-          "session_id": session_id, "output_dir": str(output),
-          "error": state.get("error"), "result": result.get("result") if result else None})
+    emit(
+        {
+            "event": "finished",
+            "status": state["status"],
+            "exit_code": return_code,
+            "session_id": session_id,
+            "output_dir": str(output),
+            "error": state.get("error"),
+            "result": result.get("result") if result else None,
+        }
+    )
     return return_code
 
 

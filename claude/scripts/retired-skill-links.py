@@ -56,7 +56,9 @@ def retire(link, source, bundle):
             captured = False
             held = None
             try:
-                held = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                held = os.open(
+                    quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+                )
                 try:
                     os.rename(name, "entry", src_dir_fd=parent, dst_dir_fd=held)
                     captured = True
@@ -71,12 +73,16 @@ def retire(link, source, bundle):
                 # this cannot overwrite a second concurrent replacement. A
                 # directory cannot be hard linked, so retain it for recovery.
                 try:
-                    os.link("entry", name, src_dir_fd=held, dst_dir_fd=parent, follow_symlinks=False)
+                    os.link(
+                        "entry", name, src_dir_fd=held, dst_dir_fd=parent, follow_symlinks=False
+                    )
                     os.unlink("entry", dir_fd=held)
                     return 1
                 except OSError:
                     recovery = os.path.join(os.path.dirname(link), quarantine, "entry")
-                    print(f"PRESERVED  concurrent replacement retained at {recovery!r}; restore it manually")
+                    print(
+                        f"PRESERVED  concurrent replacement retained at {recovery!r}; restore it manually"
+                    )
                     return 2
             finally:
                 if held is not None:
