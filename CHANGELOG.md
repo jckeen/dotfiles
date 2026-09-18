@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-09-18 — feat: Jules as the daily-routine lane (ADR-0009)
+
+- The standing, evidence-checkable cleanups nobody schedules — dead code, tests
+  that cannot fail, drifted duplicate helpers, lint debt, doc drift — now have a
+  lane. `agents/routines/*.md` holds one standing prompt per routine, six to
+  start, and `claude/scripts/jules-dispatch.sh` turns the catalog into one Jules
+  session per routine per repository per day. The rationale, the verified API
+  surface, and the items still unverified are in
+  `docs/adr/0009-jules-routine-lane.md`.
+- Routine frontmatter is a contract, not documentation: the dispatcher parses it
+  strictly and refuses to dispatch a routine whose header does not validate —
+  unknown key, missing key, a label that disagrees with the name, a non-integer
+  limit. The prompt a session receives is the body with the frontmatter's
+  concrete values prepended, so a routine file never repeats its own limits in
+  prose.
+- Dispatch goes through the REST API, not the `jules` CLI: the CLI's credential
+  location is documented nowhere, so a unit under `ProtectHome=read-only` cannot
+  be shown to work. The API key must be a regular file, not a symlink, mode
+  0600, non-empty, and at least 20 characters, and it reaches `curl` through a
+  config file on stdin so it never enters argv or a log. The host is a constant
+  in the script, `curl` runs with `--proto =https` and without `-L`, and a
+  repository's `source` is always read back from `GET /sources` rather than
+  constructed.
+- A daily ledger under `~/.local/state/jules/` makes a run idempotent per
+  calendar day, which matters because the timer is `Persistent=true` and a
+  missed run catches up alongside the scheduled one. `JULES_DAILY_CAP` bounds
+  the spend; `--dry-run` resolves and prints while leaving the state directory
+  byte-identical.
+- New `jules-dispatch.{service,timer}` at 09:00, hardened like
+  `git-hygiene.service`, with the state directory as its only writable path —
+  the key directory is deliberately absent, so the unit reads the credential and
+  can never rewrite it. `claude/systemd/install.sh` is now a loop over a table
+  of unit pairs; adding a timer is one row.
+- A root `AGENTS.md` joins the generated instruction files (ADR-0007): the short
+  brief an agent reads from the checkout itself when it has no session history.
+  It is enforced by the generator's byte-currency check rather than the
+  concept-parity phrase list, because holding a deliberately short cloud brief
+  to every local file's phrases would defeat the reason it is short.
+- `setup.sh` installs the Jules CLI npm-global beside Codex, prints `jules
+  login` as a manual step under `--yes` (a browser flow must never run
+  unattended), and reports `jules_installed` in the completion summary.
+  `agents/capabilities.json` gains `jules` as a fourth runtime — `unsupported`
+  for every locally-provisioned capability, because it installs nothing on this
+  machine — and a `routine-lane` capability where the dispatcher is the provider.
+- Measurement ships with the lane: `--report [--days N]` tallies opened, merged,
+  and closed per routine per week from the `jules-routine:*` labels. The
+  retirement rule is in the ADR and `agents/README.md` — under 30% merge rate
+  for two weeks running means the prompt gets rewritten or `paused: true`.
+- `tests/jules-dispatch.test.sh` drives the whole thing against a fake `curl`,
+  so none of this waited on a live key: the credential refusals, the key's
+  absence from argv and every state file (with a negative control so the check
+  cannot pass vacuously), same-day idempotency, the cap, the unconnected-repo
+  skip, `paused: true`, the `--dry-run` snapshot, and the generalised systemd
+  installer. It also asserts the shipped catalog parses, so the first timer
+  firing is not what discovers a typo.
+- ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
+  key only the operator holds. The ADR carries the exact commands for it and the
+  list of what that run will resolve.
+
 ## 2026-09-18 — style(python): adopt ruff and gate it in CI
 
 - Every `*.py` in the repo is now formatted by `ruff format` and linted with
