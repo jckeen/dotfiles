@@ -139,6 +139,11 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   A ninth round: the report queried only a routine's *current* repositories, so
+   removing one deleted its pull request history from the window and moved the
+   merge rate with nothing to indicate a repository had been dropped. The scope is
+   now the current list union the repositories the ledger records for that routine.
+
    An eighth round closed the day-boundary gap properly. Checking the UTC date
    before each candidate is not enough: a request can take as long as its timeout,
    so one begun just before midnight can create its session on the next day while

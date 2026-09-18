@@ -96,7 +96,11 @@ finding, a checker's output, a failing snapshot.
 
 **Tuning rule.** A routine whose merge rate stays under 30% for two weeks
 running gets its prompt rewritten or `paused: true`. Read the rates with
-`jules-dispatch.sh --report`. A pattern of wrong pull requests is fixed by an
+`jules-dispatch.sh --report`, which covers every repository the routine was ever
+dispatched to as well as the ones it currently lists — removing a repository
+must not quietly rewrite the history the decision rests on — and states in the
+report body whenever a query failed, a fetch hit its bound, or a routine's
+frontmatter was rejected. A pattern of wrong pull requests is fixed by an
 exclusion in the routine's prompt, never by loosening the review gate that
 caught them.
 

@@ -63,7 +63,7 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found eighteen more. `GET /sources` is paginated (`pageSize`
+- Later rounds found nineteen more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
@@ -119,6 +119,11 @@
   before midnight could create a session on the next day while both ledger records
   carried this one. A dispatch is now refused unless more of the day remains than a
   request can consume, with the timeout and the margin derived from one constant.
+- A ninth round: `--report` queried only a routine's current repositories, so
+  removing one deleted its pull request history from the window and moved the merge
+  rate the retirement rule is decided on, with nothing to say a repository had been
+  dropped. The scope is now the current list union what the ledger records for that
+  routine.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

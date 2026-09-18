@@ -458,9 +458,10 @@ schedule_interval() {
   esac
 }
 
-ledger_repos() { # distinct repos ever dispatched to
+ledger_repos() { # distinct repos a routine was ever dispatched to ("" = any)
   [[ -s "$LEDGER" ]] || return 0
-  jq -sr '[.[] | .repo // empty] | unique | .[]' "$LEDGER" 2>/dev/null \
+  jq -sr --arg r "${1:-}" \
+    '[.[] | select($r == "" or .routine == $r) | .repo // empty] | unique | .[]' "$LEDGER" 2>/dev/null \
     || die "dispatch ledger is not valid JSON lines: $LEDGER"
 }
 
@@ -865,10 +866,16 @@ do_report() {
       continue
     fi
     label="$FM_LABEL"
+    # The report's scope is the routine's current repositories UNION the ones the
+    # ledger says it was dispatched to. Querying only the current list would
+    # delete a removed repository's history from the window and move the merge
+    # rate — the number the retirement rule is decided on — with no sign that
+    # anything was dropped.
     if [[ "${FM_REPOS[0]}" == "all" ]]; then
-      scope="$(ledger_repos)"
+      scope="$(ledger_repos "$FM_NAME")"
     else
-      scope="$(printf '%s\n' "${FM_REPOS[@]}")"
+      scope="$(printf '%s\n%s\n' "$(printf '%s\n' "${FM_REPOS[@]}")" "$(ledger_repos "$FM_NAME")" \
+        | sed '/^$/d' | sort -u)"
     fi
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue

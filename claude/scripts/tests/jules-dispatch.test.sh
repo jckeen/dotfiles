@@ -1344,6 +1344,62 @@ else
 fi
 unset GH_ARGV GH_COMMENT_BODY
 
+echo "── ninth review round ──"
+
+# [medium] the report queried only a routine's CURRENT repositories, so removing
+# one deleted its pull request history from the window and moved the merge rate —
+# the number the retirement rule is decided on — with nothing to say a repository
+# had been dropped. The scope is now the current list union the ledger's.
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas'
+ledger_line alpha jckeen/dotfiles 4 > "$STATE/dispatch.jsonl"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && grep -Fq -- '--repo jckeen/atlas' "$GH_ARGV" \
+   && grep -Fq -- '--repo jckeen/dotfiles' "$GH_ARGV"; then
+  ok "the report covers a repository the routine no longer lists but was dispatched to"
+else
+  fail "the report dropped a removed repository's history"
+  sed 's/^/      | /' "$GH_ARGV"
+fi
+
+# A repository named in both places must be queried once, not twice.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+ledger_line alpha jckeen/dotfiles 4 > "$STATE/dispatch.jsonl"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && [[ "$(grep -c -- '--repo jckeen/dotfiles' "$GH_ARGV")" -eq 1 ]]; then
+  ok "a repository in both the list and the ledger is queried once"
+else
+  fail "the report double-counted a repository"
+  sed 's/^/      | /' "$GH_ARGV"
+fi
+
+# And a repos: all routine's report is scoped to ITS dispatches, not every
+# routine's.
+new_case
+routine alpha false 'repos: all'
+{ ledger_line alpha jckeen/atlas 2; ledger_line other jckeen/dotfiles 2; } > "$STATE/dispatch.jsonl"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && grep -Fq -- '--repo jckeen/atlas' "$GH_ARGV" \
+   && ! grep -Fq -- '--repo jckeen/dotfiles' "$GH_ARGV"; then
+  ok "a repos: all report covers that routine's own dispatches only"
+else
+  fail "the report pulled in another routine's repositories"
+  sed 's/^/      | /' "$GH_ARGV"
+fi
+unset GH_ARGV GH_COMMENT_BODY
+
 echo "── systemd installer (generalised unit loop) ──"
 
 # install.sh grew from one hardcoded pair to a table, and the script it validates
