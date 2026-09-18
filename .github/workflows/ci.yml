@@ -360,6 +360,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/plugin-drift.test.sh
 
+      # The pinned image bundles shellcheck and pyflakes, so every `run:`
+      # block in .github/workflows is shellchecked here; the standalone
+      # `shellcheck` job only sees files on disk, not inline workflow scripts.
+      - name: actionlint
+        if: ${{ !cancelled() }}
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
+      - name: json-valid
+        if: ${{ !cancelled() }}
+        run: |
+          # shellcheck disable=SC2016 # $0 is the per-file argument of the inner sh, not the outer shell
+          git ls-files -z '*.json' | xargs -0 -n1 sh -c 'jq empty "$0" || { echo "::error::invalid JSON: $0"; exit 1; }'
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-latest
