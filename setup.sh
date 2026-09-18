@@ -844,7 +844,7 @@ if [ -f "$DOTFILES_DIR/githooks/pre-push" ]; then
 fi
 
 # ─── 2. Node.js (if not present) ─────────────────────────────────────
-# Needed for npm-installed CLIs (Codex, §3c) — Claude Code itself now uses
+# Needed for npm-installed CLIs (Codex §3c, Jules §3d) — Claude Code itself now uses
 # the native installer (§3) and no longer requires Node. On Linux/WSL the
 # default is a PINNED nodejs.org binary release verified against that
 # release's own SHASUMS256.txt — the same immutable-release pattern as bun
@@ -932,7 +932,7 @@ install_node_pinned() {
     ln -sf "$HOME_DIR/.local/share/${asset}/bin/$tool" "$HOME_DIR/.local/bin/$tool"
   done
   # npm's global prefix defaults to the tarball dir, so `npm install -g`
-  # binaries (e.g. codex, §3c) would land in ~/.local/share/${asset}/bin —
+  # binaries (e.g. codex §3c, jules §3d) would land in ~/.local/share/${asset}/bin —
   # which is NOT on PATH (issue #267). Point the global prefix at ~/.local
   # so global executables land in the already-on-PATH ~/.local/bin.
   # PATH must carry the freshly-linked bin dir for THIS invocation: npm's
@@ -971,7 +971,7 @@ if ! command -v node &>/dev/null; then
     # Make the fresh install resolvable for the remainder of this script.
     export PATH="$HOME_DIR/.local/bin:$PATH"
     if [ "${DRY_RUN:-0}" != "1" ] && ! command -v node &>/dev/null && [ "$NODE_INSTALL_METHOD" != "skip" ]; then
-      echo "  !! WARNING: node still not found after install attempt; Codex (§3c) will not install"
+      echo "  !! WARNING: node still not found after install attempt; Codex (§3c) and Jules (§3d) will not install"
     fi
   fi
 else
@@ -1391,7 +1391,54 @@ if command -v codex &>/dev/null; then
   fi
 fi
 
-# ─── 3d. Antigravity CLI ────────────────────────────────────────────
+# ─── 3d. Jules CLI ───────────────────────────────────────────────────
+# Jules is the cloud routine lane (ADR-0009): a daily timer dispatches the
+# agents/routines/ catalog over the REST API, and this CLI is the interactive
+# way in (`jules remote list`, `jules remote pull`). npm-global like Codex, so
+# §3b's ~/.local npm prefix already puts the binary on PATH.
+JULES_INSTALLED=0
+if ! command -v jules &>/dev/null; then
+  echo ""
+  echo "--- Installing Jules CLI ---"
+  run npm install -g @google/jules || echo "  -> Jules install failed (continuing; install manually and re-run setup.sh)"
+else
+  # Same state-writing-probe class as `gh auth status` (issue #189): even a
+  # version print can initialize a Node CLI's config dir, which would make the
+  # dry-run no-writes contract fail on a machine that has Jules installed.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "Jules CLI already installed (version probe skipped in dry-run)"
+  else
+    echo "Jules CLI already installed: $(jules version 2>/dev/null || echo 'installed')"
+  fi
+fi
+if command -v jules &>/dev/null; then
+  JULES_INSTALLED=1
+fi
+
+if [ "$JULES_INSTALLED" -eq 1 ]; then
+  echo ""
+  echo "--- Jules authentication ---"
+  # `jules login` opens a browser OAuth flow, so it is never run unattended.
+  # The routine dispatcher does not use the CLI's credentials at all: it reads
+  # an API key file, which is why the manual step below names both.
+  if [ "$ASSUME_YES" = "1" ]; then
+    echo "  -> [--yes] manual step: run 'jules login' for interactive CLI use"
+  else
+    ask_yn "N" "Run 'jules login' now? [y/N] "
+    if [[ "${yn:-}" =~ ^[Yy] ]]; then
+      run jules login || true
+    else
+      echo "  Later, run: jules login"
+    fi
+  fi
+  echo "  Routine dispatch uses an API key, not the CLI login. Create one in the"
+  echo "  Jules web app under Settings, then store it mode 0600:"
+  echo "    install -d -m 700 ~/.config/jules"
+  echo "    install -m 600 /dev/null ~/.config/jules/api-key   # then paste the key in"
+  echo "  Enable the daily timer with: bash $DOTFILES_DIR/claude/systemd/install.sh"
+fi
+
+# ─── 3e. Antigravity CLI ────────────────────────────────────────────
 # Official installer for macOS/Linux/WSL, verified against the vendor's
 # antigravity-cli repository and Google codelab. The bootstrapper verifies the
 # downloaded release payload against its published release manifest; we also pin
@@ -2215,6 +2262,11 @@ echo "  Completed in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
 echo "  Symlinks: created=${LINKS_CREATED:-0}  verified=${LINKS_VERIFIED:-0}  broken=${LINKS_BROKEN:-0}"
 if [ "${BOOTSTRAP_RC:-0}" -ne 0 ]; then
   echo "  claude-memory bootstrap: FAILED — re-run manually: $BOOTSTRAP_SCRIPT"
+fi
+if [ "${JULES_INSTALLED:-0}" -eq 1 ]; then
+  echo "  jules_installed=1  (routine lane: 'jules login' for the CLI, ~/.config/jules/api-key for dispatch)"
+else
+  echo "  jules_installed=0  (routine lane off; install with: npm install -g @google/jules)"
 fi
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "  Mode: DRY-RUN (no destructive ops were executed)"

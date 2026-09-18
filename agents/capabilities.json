@@ -70,6 +70,17 @@
             "contains": "name: review"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "simplify": {
@@ -141,6 +152,17 @@
             "contains": "name: simplify"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "commit-pr": {
@@ -212,6 +234,17 @@
             "contains": "name: commit-push-pr"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "github": {
@@ -280,6 +313,17 @@
             "name": "gh"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "browser-runtime": {
@@ -370,6 +414,17 @@
             "contains": "Claim to disprove"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "handoff-injection": {
@@ -469,6 +524,17 @@
             ]
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "formatting": {
@@ -552,6 +618,17 @@
             "contains": "formatter"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "secret-scanning": {
@@ -620,6 +697,17 @@
             "name": "gitleaks"
           }
         ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "notifications": {
@@ -679,6 +767,17 @@
         "reason": "No public notification adapter is provisioned for this runtime. Private or injected providers remain operator owned.",
         "probe": [],
         "live_probe": []
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
       }
     },
     "docs-lookup": {
@@ -727,6 +826,17 @@
         "provider": null,
         "compatibility_floor": "No public provider contract exists for this runtime.",
         "reason": "The public runtime template provisions no documentation lookup provider. Built-in search, local plugins, and injected tools must be checked in the active session.",
+        "probe": [],
+        "live_probe": []
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
         "probe": [],
         "live_probe": []
       }
@@ -792,6 +902,135 @@
           {
             "kind": "file",
             "path": ".gemini/config/MEMORY.md"
+          }
+        ]
+      },
+      "jules": {
+        "kind": "unsupported",
+        "scope": "optional",
+        "owner": "public",
+        "status": "unsupported",
+        "provider": null,
+        "compatibility_floor": "No public provider contract exists for this runtime.",
+        "reason": "Jules runs in Google's cloud and installs nothing on this machine, so no local provider can be modeled for it. What reaches a Jules session is the repository checkout: the root AGENTS.md brief and the routine prompt. Declared unsupported rather than advisory so no probe can imply a provider that does not exist.",
+        "probe": [],
+        "live_probe": []
+      }
+    },
+    "routine-lane": {
+      "claude": {
+        "kind": "cli",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/scripts/jules-dispatch.sh",
+        "compatibility_floor": "A shell with curl and jq, plus an API key file at mode 0600; the dispatcher validates the key itself and refuses to run without one.",
+        "reason": "setup.sh links the dispatcher into ~/.claude/scripts with the rest of the claude/ tree. The link proves the adapter is installed, not that a routine was dispatched or that an API key exists.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/scripts/jules-dispatch.sh",
+            "contains": "AUTO_CREATE_PR"
+          },
+          {
+            "kind": "text",
+            "path": "agents/routines/dead-code-remover.md",
+            "contains": "label: jules-routine:dead-code-remover"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "file",
+            "path": ".claude/scripts/jules-dispatch.sh"
+          }
+        ]
+      },
+      "codex": {
+        "kind": "cli",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/scripts/jules-dispatch.sh",
+        "compatibility_floor": "A shell with curl and jq, plus an API key file at mode 0600; the dispatcher validates the key itself and refuses to run without one.",
+        "reason": "Any runtime with a shell can drive the shared dispatcher, as with the gh adapter. PATH lookup proves only the adapter's prerequisites \u2014 it does not prove an API key exists, that a repository is connected in Jules, or that a session was ever created.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/scripts/jules-dispatch.sh",
+            "contains": "AUTO_CREATE_PR"
+          },
+          {
+            "kind": "text",
+            "path": "agents/routines/dead-code-remover.md",
+            "contains": "label: jules-routine:dead-code-remover"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "curl"
+          },
+          {
+            "kind": "executable",
+            "name": "jq"
+          }
+        ]
+      },
+      "antigravity": {
+        "kind": "cli",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/scripts/jules-dispatch.sh",
+        "compatibility_floor": "A shell with curl and jq, plus an API key file at mode 0600; the dispatcher validates the key itself and refuses to run without one.",
+        "reason": "Any runtime with a shell can drive the shared dispatcher, as with the gh adapter. PATH lookup proves only the adapter's prerequisites \u2014 it does not prove an API key exists, that a repository is connected in Jules, or that a session was ever created.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/scripts/jules-dispatch.sh",
+            "contains": "AUTO_CREATE_PR"
+          },
+          {
+            "kind": "text",
+            "path": "agents/routines/dead-code-remover.md",
+            "contains": "label: jules-routine:dead-code-remover"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "curl"
+          },
+          {
+            "kind": "executable",
+            "name": "jq"
+          }
+        ]
+      },
+      "jules": {
+        "kind": "cli",
+        "scope": "optional",
+        "owner": "public",
+        "status": "advisory",
+        "provider": "claude/scripts/jules-dispatch.sh",
+        "compatibility_floor": "A shell with curl and jq, plus an API key file at mode 0600; the dispatcher validates the key itself and refuses to run without one.",
+        "reason": "The Jules CLI is the interactive way into the lane; the timer dispatches over REST instead, because the CLI's credential location is undocumented and cannot be shown to work under ProtectHome=read-only. Presence of the binary proves neither a browser login nor an API key.",
+        "probe": [
+          {
+            "kind": "text",
+            "path": "claude/scripts/jules-dispatch.sh",
+            "contains": "AUTO_CREATE_PR"
+          },
+          {
+            "kind": "text",
+            "path": "agents/routines/dead-code-remover.md",
+            "contains": "label: jules-routine:dead-code-remover"
+          }
+        ],
+        "live_probe": [
+          {
+            "kind": "executable",
+            "name": "jules"
           }
         ]
       }

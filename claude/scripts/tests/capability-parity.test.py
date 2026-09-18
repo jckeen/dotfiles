@@ -24,8 +24,12 @@ CAPABILITIES = (
     "notifications",
     "docs-lookup",
     "private-memory",
+    "routine-lane",
 )
-RUNTIMES = ("claude", "codex", "antigravity")
+# Mirrors the checker's own tuples: the fixture manifest must be complete for
+# every capability and runtime the checker requires, or every case fails for the
+# wrong reason.
+RUNTIMES = ("claude", "codex", "antigravity", "jules")
 
 
 class CapabilityParityTests(unittest.TestCase):
@@ -192,6 +196,14 @@ class CapabilityParityTests(unittest.TestCase):
         declared = json.loads((ROOT / "agents/capabilities.json").read_text())
         for runtime, row in declared["capabilities"]["private-memory"].items():
             with self.subTest(runtime=runtime):
+                # A cloud runtime has no local private-memory provider. Assert the
+                # row is fully unsupported rather than skipping it, so this branch
+                # cannot hide a half-declared disposition.
+                if row["status"] == "unsupported":
+                    self.assertIsNone(row["provider"])
+                    self.assertEqual(row["probe"], [])
+                    self.assertEqual(row["live_probe"], [])
+                    continue
                 fragment = (ROOT / "agents/canon/fragments" / (runtime + ".md")).read_text()
                 self.assertIn("~/" + row["provider"], fragment)
                 self.assertEqual(row["probe"], [dict(kind="file", path=row["provider"])])
