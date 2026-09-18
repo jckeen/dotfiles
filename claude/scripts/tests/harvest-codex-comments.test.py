@@ -8,12 +8,11 @@ import subprocess
 import tempfile
 import unittest
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "harvest-codex-comments.sh"
 LABEL_ERROR = {"resource": "Issue", "field": "labels", "code": "invalid"}
 TITLE_ERROR = {"resource": "Issue", "field": "title", "code": "missing_field"}
 
-GH = r'''#!/usr/bin/env python3
+GH = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
 endpoint = args[1]
@@ -40,7 +39,7 @@ elif endpoint.endswith("/issues"):
     sys.exit(config.get("exit", 0 if status == 201 else 1) if labeled else 0)
 else:
     raise SystemExit("Unexpected gh call: " + repr(args))
-'''
+"""
 
 
 class HarvestTests(unittest.TestCase):
@@ -53,14 +52,25 @@ class HarvestTests(unittest.TestCase):
             fixture = root / "response.json"
             fixture.write_text(json.dumps({"status": status, "body": body, **config}))
             posts = root / "posts.jsonl"
-            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
-                   "HARVEST_FIXTURE": str(fixture), "HARVEST_POSTS": str(posts)}
+            env = {
+                **os.environ,
+                "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                "HARVEST_FIXTURE": str(fixture),
+                "HARVEST_POSTS": str(posts),
+            }
             result = subprocess.run(
                 ["bash", str(SCRIPT), "--repo", "example/repo", "--pr", "1", *extra],
-                env=env, capture_output=True, text=True, timeout=15,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            calls = [json.loads(line) for line in posts.read_text().splitlines()] if posts.exists() else []
+            calls = (
+                [json.loads(line) for line in posts.read_text().splitlines()]
+                if posts.exists()
+                else []
+            )
             return calls, result
 
     def test_success_creates_once(self):
@@ -71,7 +81,9 @@ class HarvestTests(unittest.TestCase):
     def test_label_validation_retries_unlabeled(self):
         for error in [LABEL_ERROR, {"resource": "Label", "field": "name", "code": "invalid"}]:
             with self.subTest(error=error):
-                calls, result = self.run_case(422, {"message": "Validation Failed", "errors": [error]})
+                calls, result = self.run_case(
+                    422, {"message": "Validation Failed", "errors": [error]}
+                )
                 self.assertEqual([c["labeled"] for c in calls], [True, False])
                 self.assertIn("filed: https://example.test/issues/1", result.stdout)
 
@@ -94,7 +106,10 @@ class HarvestTests(unittest.TestCase):
                 self.assertIn("could not file issue", result.stderr)
 
     def test_dry_run_and_existing_marker_never_post(self):
-        for config in [{"extra": ["--dry-run"]}, {"existing": "codex-comment-id:example/repo#1:123"}]:
+        for config in [
+            {"extra": ["--dry-run"]},
+            {"existing": "codex-comment-id:example/repo#1:123"},
+        ]:
             with self.subTest(config=config):
                 calls, _ = self.run_case(201, {}, **config)
                 self.assertEqual(calls, [])

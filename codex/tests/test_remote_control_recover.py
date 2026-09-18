@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import importlib.util
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,7 +11,6 @@ import time
 import unittest
 from unittest import mock
 from unittest.mock import patch
-
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "remote_control_recover.py"
 SPEC = importlib.util.spec_from_file_location("remote_control_recover", MODULE_PATH)
@@ -89,13 +88,10 @@ class RemoteControlRecoverTest(unittest.TestCase):
         self.boot_id = "11111111-2222-3333-4444-555555555555"
         (boot_id_dir / "boot_id").write_text(self.boot_id + "\n")
         stat_tail = ["S", *(["0"] * 18), str(self.start_ticks)]
-        (process / "stat").write_text(
-            f"{self.pid} (codex) " + " ".join(stat_tail) + "\n"
-        )
+        (process / "stat").write_text(f"{self.pid} (codex) " + " ".join(stat_tail) + "\n")
         (process / "exe").symlink_to(self.exe)
         (process / "cmdline").write_bytes(
-            os.fsencode(str(self.argv_zero))
-            + b"\0app-server\0daemon\0pid-update-loop\0"
+            os.fsencode(str(self.argv_zero)) + b"\0app-server\0daemon\0pid-update-loop\0"
         )
         self.recorded_start = time.strftime(
             "%a %b %e %H:%M:%S %Y",
@@ -320,19 +316,30 @@ class RemoteControlRecoverTest(unittest.TestCase):
             self.assertNotEqual(record["processStartTime"], self.recorded_start)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.signals, [(99, 0), (98, 0)])
-        self.assertTrue(RECOVER.snapshot_updater(
-            pid_file=self.pid_file, identity_file=self.identity_file,
-            proc_root=self.proc, home=self.home, expected_uid=os.getuid(),
-            clock_ticks=self.clock_ticks, pidfd_open=lambda pid: 99,
-            pidfd_send_signal=lambda fd, sig: None, close_pidfd=lambda fd: None,
-        ))
+        self.assertTrue(
+            RECOVER.snapshot_updater(
+                pid_file=self.pid_file,
+                identity_file=self.identity_file,
+                proc_root=self.proc,
+                home=self.home,
+                expected_uid=os.getuid(),
+                clock_ticks=self.clock_ticks,
+                pidfd_open=lambda pid: 99,
+                pidfd_send_signal=lambda fd, sig: None,
+                close_pidfd=lambda fd: None,
+            )
+        )
         self.assertTrue(self.recover())
 
     def snapshot(self):
         return RECOVER.snapshot_updater(
-            pid_file=self.pid_file, identity_file=self.identity_file,
-            proc_root=self.proc, home=self.home, expected_uid=os.getuid(),
-            clock_ticks=self.clock_ticks, pidfd_open=lambda pid: 99,
+            pid_file=self.pid_file,
+            identity_file=self.identity_file,
+            proc_root=self.proc,
+            home=self.home,
+            expected_uid=os.getuid(),
+            clock_ticks=self.clock_ticks,
+            pidfd_open=lambda pid: 99,
             pidfd_send_signal=lambda fd, sig: self.signals.append((fd, sig)),
             close_pidfd=lambda fd: None,
         )
@@ -455,10 +462,13 @@ class RemoteControlRecoverTest(unittest.TestCase):
     def test_managed_install_foreign_ownership_is_refused_for_all_actions(self):
         # /proc and state retain the expected UID; only installation metadata differs.
         targets = [
-            self.home / ".codex", *self.exe.parents[:5], self.exe,
+            self.home / ".codex",
+            *self.exe.parents[:5],
+            self.exe,
             self.proc / str(self.pid) / "exe",
         ]
         real_stat = Path.stat
+
         def foreign_stat(path, *args, **kwargs):
             metadata = real_stat(path, *args, **kwargs)
             if path == target:
@@ -485,6 +495,7 @@ class RemoteControlRecoverTest(unittest.TestCase):
     def test_running_executable_inode_must_match_the_owned_release_file(self):
         real_stat = Path.stat
         proc_exe = self.proc / str(self.pid) / "exe"
+
         def replaced_inode(path, *args, **kwargs):
             metadata = real_stat(path, *args, **kwargs)
             if path == proc_exe:
@@ -513,7 +524,9 @@ class RemoteControlRecoverTest(unittest.TestCase):
 
     def test_repair_refuses_foreign_socket_peer_or_role(self):
         self.prepare_repair()
-        self.assertFalse(self.repair(socket_peer=lambda path: (self.server_pid, os.getuid() + 1, 98)))
+        self.assertFalse(
+            self.repair(socket_peer=lambda path: (self.server_pid, os.getuid() + 1, 98))
+        )
         (self.proc / str(self.server_pid) / "cmdline").write_bytes(
             os.fsencode(self.argv_zero) + b"\0app-server\0"
         )
@@ -541,8 +554,10 @@ class RemoteControlRecoverTest(unittest.TestCase):
 
     def test_repair_refuses_when_captured_process_exits(self):
         self.prepare_repair()
+
         def process_gone(fd, sig):
             raise ProcessLookupError
+
         self.assertFalse(self.repair(pidfd_send_signal=process_gone))
         self.assertFalse(self.pid_file.exists())
         self.assertFalse(self.server_pid_file.exists())
@@ -557,8 +572,10 @@ class RemoteControlRecoverTest(unittest.TestCase):
 
     def test_repair_refuses_unsupported_peer_pidfd(self):
         self.prepare_repair()
+
         def unsupported(path):
             raise OSError("SO_PEERPIDFD unsupported")
+
         self.assertFalse(self.repair(socket_peer=unsupported))
         self.assertFalse(self.pid_file.exists())
         self.assertFalse(self.server_pid_file.exists())
@@ -575,9 +592,11 @@ class RemoteControlRecoverTest(unittest.TestCase):
 
     def test_repair_does_not_overwrite_a_record_created_during_validation(self):
         self.prepare_repair()
+
         def competing_writer(fd, sig):
             if fd == 98:
                 self.pid_file.write_text("concurrent record")
+
         self.assertFalse(self.repair(pidfd_send_signal=competing_writer))
         self.assertEqual(self.pid_file.read_text(), "concurrent record")
         self.assertFalse(self.server_pid_file.exists())
