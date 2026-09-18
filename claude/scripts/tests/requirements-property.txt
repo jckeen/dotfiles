@@ -1,0 +1,9 @@
+# Property-test dependency for the pure-logic Python tools.
+# Installed by the `property tests` step in .github/workflows/ci.yml; the two
+# *.property.test.py suites import Hypothesis unconditionally and fail loudly
+# rather than skipping when it is absent.
+#
+# 6.168.0 requires Python >= 3.10. The `checks` job runs on ubuntu-latest, so
+# that floor is met there; the suites' own source stays 3.9-compatible like the
+# rest of claude/scripts (no match, no runtime X | Y unions).
+hypothesis==6.168.0
