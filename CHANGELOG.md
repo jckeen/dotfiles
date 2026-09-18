@@ -142,6 +142,43 @@
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
+## 2026-09-18 — test: Hypothesis property suites and a seeded setup.sh layout fuzzer
+
+- The two pure-logic Python tools had example-based suites only. Hypothesis
+  properties now cover `review-multipart.py`'s splitter — fragments rejoin to
+  the original, none exceeds the UTF-8 byte bound, none is empty, each is a
+  contiguous byte slice, and a bound too small for one character raises rather
+  than truncating (#420, #444) — and `review-receipt.py`'s `classify_tier`
+  against an oracle written from the risk list rather than from the module's own
+  `risk()`/`docsafe()` helpers, since an oracle built from the implementation
+  agrees with whatever bug the implementation has.
+- `review-receipt.py check` is now fuzzed against single-leaf receipt tampering:
+  every integrity-bearing leaf of a real receipt is refused. The five
+  audit-metadata leaves the receipt deliberately does not bind
+  (`policy.tier1_max_lines` and the four `reviewer.*` model/executable fields)
+  are enumerated and excluded, so the threat-model boundary is written down
+  instead of discovered.
+- `setup-fuzz-layouts.test.sh` draws seeded pseudo-random `$HOME` layouts and
+  asserts the `--dry-run` no-writes contract (#133) against each, rather than
+  against the single hand-built layout `setup-dry-run.test.sh` uses. `SEED`
+  makes a red run reproducible and is printed on every failure.
+- Each layout runs under `env -i` with an explicit allowlist. setup.sh reads
+  `DEV_DIR`, `DOTFILES_DIR`, the installer pins, `GIT_NAME`/`GIT_EMAIL` and the
+  private-memory repo paths from the environment, and defaults
+  `CODEX_MEMORY_REPO` to a sibling checkout, so an inherited value would make a
+  layout irreproducible from `SEED` and could redirect a write outside the
+  throwaway `$HOME` where the snapshot cannot see it. For the same reason the
+  `bun=absent` draw prunes every `PATH` entry providing `bun` instead of leaving
+  `PATH` alone, and the absent private-memory draw points at a path inside the
+  throwaway `$HOME` that is never created. An "absent" axis that is not really
+  absent tests nothing.
+- The snapshot helper moved to `tests/lib-snapshot.sh` so both setup suites
+  assert "zero mutations" with the identical comparison; `setup-dry-run.test.sh`
+  sources it and is otherwise unchanged.
+- `codex-review-gate.test.sh` covers three more malformed-classifier shapes
+  (empty helper output, a JSON `null`, a one-element array); each must keep
+  `GATE_TIER=2` and the full review pass.
+
 ## 2026-09-18 — fix(codex-gate): location-keyed issue dedup, `.codex-review-ignore`
 
 - The gate filed every low-severity finding as a GitHub issue and deduped only

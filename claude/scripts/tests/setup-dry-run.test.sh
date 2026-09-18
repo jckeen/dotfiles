@@ -36,19 +36,11 @@ failed=0
 ok()   { pass=$((pass + 1));   echo "ok   - $1"; }
 fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 
-# Full-fidelity snapshot of a directory tree: every path, every regular-file
-# hash, every symlink target. Two identical snapshots ⇒ zero mutations.
-snapshot() {
-  local root="$1"
-  (
-    cd "$root" || exit 1
-    find . -mindepth 1 | sort
-    find . -type f -print0 | sort -z | xargs -0 -r sha256sum
-    find . -type l -print0 | sort -z | while IFS= read -r -d '' l; do
-      printf 'link %s -> %s\n' "$l" "$(readlink "$l")"
-    done
-  )
-}
+# The snapshot helper is shared with setup-fuzz-layouts.test.sh so both suites
+# assert "zero mutations" with the identical comparison; a weaker snapshot in
+# either would silently stop catching writes.
+# shellcheck source=claude/scripts/tests/lib-snapshot.sh
+. "$SCRIPT_DIR/lib-snapshot.sh"
 
 TESTHOME="$(mktemp -d)"
 OUT="$(mktemp)"
