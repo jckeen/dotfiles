@@ -63,7 +63,7 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found sixteen more. `GET /sources` is paginated (`pageSize`
+- Later rounds found eighteen more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
@@ -114,6 +114,11 @@
   `/proc/PID/environ`. Verified both ways locally; the variable is now unset before
   assignment, and the test asserts on what a child process actually received.
   Closes #465.
+- An eighth round closed the day-boundary gap properly: checking the UTC date
+  before each candidate misses the request's own duration, so a POST begun just
+  before midnight could create a session on the next day while both ledger records
+  carried this one. A dispatch is now refused unless more of the day remains than a
+  request can consume, with the timeout and the margin derived from one constant.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

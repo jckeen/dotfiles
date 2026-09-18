@@ -978,6 +978,51 @@ else
   fail "a zero report limit was accepted"
 fi
 
+echo "── eighth review round ──"
+
+# [medium] the day check ran before the POST, but a request can take up to the
+# request timeout — so one started just before midnight could create its session
+# on the next day while both ledger records carried this one, and the next run
+# would dispatch the pair again without that session counting against the new
+# day's cap. A margin of a whole day makes every moment "too close", which is the
+# guard under test.
+new_case
+routine alpha false 'repos: all'
+if JULES_DAY_EDGE_MARGIN=86400 JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
+     JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
+   && outgrep "of the UTC day remain and a request may take up to" \
+   && [[ "$(created_count)" -eq 0 ]] \
+   && [[ "$(grep -c '/sessions' "$FAKE_CURL_ARGV")" -eq 0 ]] \
+   && [[ "$(jq -r '.deferred_to_a_later_day' "$STATE/status.json")" -ge 1 ]]; then
+  ok "a dispatch too close to the UTC day boundary is deferred, not started"
+else
+  fail "a dispatch was started with no room to finish inside the day"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The margin must not stop an ordinary run, or the guard would simply disable the
+# lane. Zero is the explicit "no margin" setting.
+new_case
+routine alpha false 'repos: all'
+if JULES_DAY_EDGE_MARGIN=0 JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
+     JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
+   && [[ "$(created_count)" -eq 2 ]]; then
+  ok "a margin of zero dispatches normally"
+else
+  fail "the day-edge guard blocked an ordinary run"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos: all'
+if ! JULES_DAY_EDGE_MARGIN=060 JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
+       JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
+   && outgrep "JULES_DAY_EDGE_MARGIN must be a non-negative integer"; then
+  ok "a leading-zero margin is refused like every other arithmetic input"
+else
+  fail "a leading-zero margin was accepted"
+fi
+
 echo "── --report ──"
 
 # gh is stubbed, so the assertion is on the bucketing and the arithmetic, not on

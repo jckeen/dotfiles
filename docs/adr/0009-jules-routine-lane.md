@@ -139,6 +139,15 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   An eighth round closed the day-boundary gap properly. Checking the UTC date
+   before each candidate is not enough: a request can take as long as its timeout,
+   so one begun just before midnight can create its session on the next day while
+   both ledger records carry this one — and the next run would dispatch that pair
+   again without the session counting against the new day's cap. A dispatch is now
+   refused unless more of the day remains than a request can consume, and the
+   request timeout and the margin are derived from one constant so they cannot
+   drift apart.
+
    One low finding was worth promoting rather than filing: if the caller's
    environment already exported a variable of the name the script uses for the
    key, a plain assignment KEEPS the export attribute, and the key is then in the

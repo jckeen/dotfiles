@@ -35,6 +35,8 @@
 #                       branch taken when flock is unavailable
 #   JULES_REPORT_LIMIT  --report pull-request fetch bound (default 1000); the
 #                       report says so when a repository hits it
+#   JULES_DAY_EDGE_MARGIN  seconds of the UTC day that must remain before a
+#                       dispatch may start (default: the request timeout + 60)
 #
 # State (all under JULES_STATE_DIR):
 #   dispatch.jsonl   one line per created session — the idempotency ledger
@@ -56,6 +58,9 @@ readonly JULES_AUTOMATION_MODE="AUTO_CREATE_PR"
 # A bound on paging, so a server that keeps handing back a token cannot spin
 # here forever. 100 sources per page, so this is 5000 repositories.
 readonly SOURCES_PAGE_LIMIT=50
+# One timeout for every request, so the day-edge margin below cannot drift from
+# the longest a request can actually take.
+readonly REQUEST_TIMEOUT=60
 
 # shellcheck source=claude/scripts/checker-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
@@ -71,6 +76,12 @@ ROUTINE_DIR="${JULES_ROUTINE_DIR:-$REPO_ROOT/agents/routines}"
 STARTING_BRANCH="${JULES_STARTING_BRANCH:-}"
 TRACKER="${JULES_TRACKER:-jckeen/dotfiles#446}"
 REPORT_LIMIT="${JULES_REPORT_LIMIT:-1000}"
+# How much of the UTC day must remain before a dispatch may start. A request can
+# take REQUEST_TIMEOUT seconds, so one begun closer to midnight than that could
+# create its session on the next day while both ledger records carry this day —
+# and the next run would then dispatch the pair again without the session
+# counting against the new day's cap. Overridable so the guard is testable.
+DAY_EDGE_MARGIN="${JULES_DAY_EDGE_MARGIN:-$((REQUEST_TIMEOUT + 60))}"
 
 DRY_RUN=0
 ONLY_ROUTINE=""
@@ -147,6 +158,8 @@ done
 # errors out, and an errored test is a false one — so the cap silently stopped
 # applying and every candidate dispatched. Verified: `[[ 100 -ge 08 ]]` exits 1
 # with "value too great for base".
+[[ "$DAY_EDGE_MARGIN" =~ ^(0|[1-9][0-9]*)$ ]] \
+  || die "JULES_DAY_EDGE_MARGIN must be a non-negative integer with no leading zeros, got: $DAY_EDGE_MARGIN"
 [[ "$REPORT_LIMIT" =~ ^[1-9][0-9]*$ ]] \
   || die "JULES_REPORT_LIMIT must be a positive integer with no leading zeros, got: $REPORT_LIMIT"
 [[ "$DAILY_CAP" =~ ^(0|[1-9][0-9]*)$ ]] \
@@ -307,7 +320,7 @@ read_api_key() {
 # config. Everything this request needs is passed explicitly here.
 curl_api() { # method path [body-file]
   local method="$1" path="$2" body="${3:-}"
-  local args=(--proto '=https' --fail -sS --max-time 60 -X "$method"
+  local args=(--proto '=https' --fail -sS --max-time "$REQUEST_TIMEOUT" -X "$method"
               -H 'Content-Type: application/json' "${JULES_API_BASE}${path}")
   [[ -n "$body" ]] && args+=(--data-binary "@$body")
   printf 'header = "X-Goog-Api-Key: %s"\n' "$API_KEY" | curl -q -K - "${args[@]}"
@@ -558,6 +571,11 @@ routine_files() {
   done
 }
 
+# Seconds until the next UTC midnight. The POSIX epoch is UTC-aligned, so the
+# remainder is the seconds elapsed in the current UTC day — no date parsing and
+# nothing platform-specific.
+seconds_left_in_utc_day() { printf '%s' $((86400 - ($(date -u +%s) % 86400))); }
+
 # Everything phase one decided that a mid-run edit to the catalog can invalidate.
 # One function, so a new eligibility rule cannot be added to phase one and
 # forgotten here.
@@ -746,7 +764,7 @@ do_dispatch() {
   # ── Phase 2: dispatch in fairness order, under the cap ────────────
   # Oldest last-dispatch first, then routine and repository for a deterministic
   # order among pairs that have never run (all of which carry 0).
-  local sorted line last_epoch
+  local sorted line last_epoch day_left
   sorted="$(mktemp)"
   # Deduplicate on (routine, repository) before sorting. The parser already
   # rejects a repeated entry in one routine, and repository identities are
@@ -760,15 +778,24 @@ do_dispatch() {
   while IFS="$(printf '\t')" read -r last_epoch FM_NAME repo source file; do
     [[ -n "$FM_NAME" ]] || continue
 
-    # TODAY and the spend were read once, before the network calls. A run that
-    # crosses UTC midnight would keep recording against yesterday and spending
-    # yesterday's budget, and another run that day could then redispatch those
-    # pairs. Stop instead: the remaining work leads tomorrow's queue anyway,
-    # because ordering is least-recently-dispatched first.
+    # TODAY and the day's spend were read once, before the network calls. Two ways
+    # this run can end up recording against the wrong day, and both stop it:
+    # the day has already rolled over, or too little of it remains for a request
+    # to finish inside it. Nothing is lost — ordering is least-recently-dispatched
+    # first, so the remaining pairs lead the next run's queue.
+    day_left="$(seconds_left_in_utc_day)"
     if [[ "$(date -u +%Y-%m-%d)" != "$TODAY" ]]; then
       log "  -- the UTC day rolled over mid-run; stopping so nothing is recorded"
       log "     against $TODAY. The next run picks up where this one left off."
       record deferred "$FM_NAME" "$repo" "UTC day rolled over mid-run"
+      DEFERRED=$((DEFERRED + 1))
+      break
+    fi
+    if [[ "$day_left" -le "$DAY_EDGE_MARGIN" ]]; then
+      log "  -- only ${day_left}s of the UTC day remain and a request may take up to"
+      log "     ${REQUEST_TIMEOUT}s; stopping rather than risk a session created on one day"
+      log "     and recorded against another. The next run continues."
+      record deferred "$FM_NAME" "$repo" "too close to the UTC day boundary"
       DEFERRED=$((DEFERRED + 1))
       break
     fi
