@@ -139,6 +139,19 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   A tenth round found the same subshell mistake a third time, and this one got a
+   structural answer rather than another local fix. The ledger read that builds the
+   report scope sat inside a `printf` argument, so a malformed ledger produced a
+   report over current repositories only, with no caveat and a zero exit status.
+   Rather than patch that call, the ledger is now validated once at startup from
+   the main shell — the one place a refusal can actually stop the run — so no
+   query of it can fail quietly no matter where it is nested.
+
+   The three instances are worth naming together, because they look different and
+   are the same bug: a `die` inside a process substitution, an assignment inside a
+   command substitution, and a read nested in a `printf` argument. In each case the
+   failing code ran in a subshell whose exit status the caller never saw.
+
    A ninth round: the report queried only a routine's *current* repositories, so
    removing one deleted its pull request history from the window and moved the
    merge rate with nothing to indicate a repository had been dropped. The scope is

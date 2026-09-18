@@ -1400,6 +1400,71 @@ else
 fi
 unset GH_ARGV GH_COMMENT_BODY
 
+echo "── tenth review round ──"
+
+# [medium] the ledger read that builds the report scope sat inside a printf
+# argument, so its failure was swallowed by the surrounding pipeline: a malformed
+# ledger produced a report over current repositories only, with no caveat and a
+# zero exit. The ledger is now validated once from the main shell, where die()
+# can actually stop the run.
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas'
+printf 'this is not json\n' > "$STATE/dispatch.jsonl"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if ! PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+       "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && outgrep "not valid JSON lines" \
+   && [[ ! -s "$GH_ARGV" ]]; then
+  ok "a malformed ledger stops the report before it queries anything"
+else
+  fail "a malformed ledger produced a report anyway"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# --post must not publish a table built on a ledger that could not be read.
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas'
+printf '{"routine":"alpha"}\nnot json at all\n' > "$STATE/dispatch.jsonl"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if ! PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+       JULES_TRACKER="jckeen/dotfiles#446" \
+       "$DISPATCH" --report --days 14 --post > "$CASE_DIR/out" 2>&1 \
+   && [[ ! -e "$CASE_DIR/gh-comment" ]]; then
+  ok "a malformed ledger posts nothing to the tracker issue"
+else
+  fail "a report built on an unreadable ledger was posted"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The dispatch path fails the same way, before any session is created.
+new_case
+routine alpha false 'repos: all'
+printf '[1,2,3]\n' > "$STATE/dispatch.jsonl"
+if ! dispatch && outgrep "not valid JSON lines" \
+  && [[ "$(grep -c '/sessions' "$FAKE_CURL_ARGV")" -eq 0 ]]; then
+  ok "a malformed ledger stops a dispatch before any session is created"
+else
+  fail "a malformed ledger still dispatched"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A ledger of well-formed objects, including the legacy shape with no status
+# field, must still be accepted.
+new_case
+routine alpha false 'repos: all'
+ledger_line alpha jckeen/atlas 5 > "$STATE/dispatch.jsonl"
+if dispatch && [[ "$(created_count)" -eq 3 ]]; then
+  ok "a well-formed ledger, legacy records included, is accepted"
+else
+  fail "validation rejected a valid ledger"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+unset GH_ARGV GH_COMMENT_BODY
+
 echo "── systemd installer (generalised unit loop) ──"
 
 # install.sh grew from one hardcoded pair to a table, and the script it validates

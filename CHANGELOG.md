@@ -63,7 +63,7 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found nineteen more. `GET /sources` is paginated (`pageSize`
+- Later rounds found twenty more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
@@ -124,6 +124,14 @@
   rate the retirement rule is decided on, with nothing to say a repository had been
   dropped. The scope is now the current list union what the ledger records for that
   routine.
+- A tenth round found the same subshell mistake a third time, and it got a
+  structural answer: the ledger read building the report scope sat inside a
+  `printf` argument, so a malformed ledger produced a report over current
+  repositories only, with no caveat and a zero exit. The ledger is now validated
+  once at startup from the main shell — the only place a refusal can stop the run —
+  so no query of it can fail quietly wherever it is nested. The three instances
+  were a `die` in a process substitution, an assignment in a command substitution,
+  and a read nested in a `printf` argument.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

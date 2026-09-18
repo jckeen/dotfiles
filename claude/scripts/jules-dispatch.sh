@@ -407,6 +407,18 @@ ledger_append() { # status attempt repo source session url
       session: $session, url: $url}' >> "$LEDGER"
 }
 
+# Validated ONCE, here, from the main shell. Every later query runs inside a
+# command substitution, and a die() in a subshell only kills the subshell: the
+# caller gets an empty field and a zero status. That exact mistake has now shown
+# up three times in this file in different dress — a die in a process
+# substitution, an assignment in a command substitution, and a ledger read nested
+# in a printf argument — so the check lives where die() can actually stop the run.
+validate_ledger() {
+  [[ -s "$LEDGER" ]] || return 0
+  jq -se 'all(type == "object")' "$LEDGER" >/dev/null 2>&1 \
+    || die "dispatch ledger is not valid JSON lines (one object per line): $LEDGER"
+}
+
 ledger_query() { # jq-filter -> value
   [[ -s "$LEDGER" ]] || { printf '0\n'; return 0; }
   jq -s "$@" "$LEDGER" 2>/dev/null \
@@ -683,6 +695,7 @@ dispatch_one() { # routine-file repo source
 }
 
 do_dispatch() {
+  validate_ledger
   read_api_key
   fetch_sources
 
@@ -710,7 +723,7 @@ do_dispatch() {
   log "catalog: $ROUTINE_DIR; sources: $(jq -r '.sources | length' <<<"$SOURCES_JSON") over $SOURCES_PAGES page(s); dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
 
   # ── Phase 1: which (routine, repository) pairs are eligible today ──
-  local candidates file repo source scope interval rc
+  local candidates file repo source scope interval rc last_run
   candidates="$(mktemp)"
   while IFS= read -r file; do
     if ! parse_routine "$file"; then
@@ -756,9 +769,11 @@ do_dispatch() {
         continue
       fi
 
+      if ! last_run="$(last_dispatch_epoch "$FM_NAME" "$repo")"; then
+        die "cannot read the dispatch ledger: $LEDGER"
+      fi
       printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$(last_dispatch_epoch "$FM_NAME" "$repo")" "$FM_NAME" "$repo" "$source" "$file" \
-        >> "$candidates"
+        "$last_run" "$FM_NAME" "$repo" "$source" "$file" >> "$candidates"
     done <<<"$scope"
   done < <(routine_files)
 
@@ -853,8 +868,9 @@ do_dispatch() {
 # dependence on strftime %G/%V, which not every jq build supports.
 do_report() {
   command -v gh >/dev/null 2>&1 || die "--report needs the GitHub CLI (gh) on PATH"
+  validate_ledger
   local file repo scope label rows="" prs cutoff
-  local truncated="" failed_queries="" rejected_routines=""
+  local truncated="" failed_queries="" rejected_routines="" ledger_scope=""
   cutoff=$((NOW_EPOCH - REPORT_DAYS * 86400))
 
   while IFS= read -r file; do
@@ -871,10 +887,13 @@ do_report() {
     # delete a removed repository's history from the window and move the merge
     # rate — the number the retirement rule is decided on — with no sign that
     # anything was dropped.
+    if ! ledger_scope="$(ledger_repos "$FM_NAME")"; then
+      die "cannot read the dispatch ledger while building the report scope: $LEDGER"
+    fi
     if [[ "${FM_REPOS[0]}" == "all" ]]; then
-      scope="$(ledger_repos "$FM_NAME")"
+      scope="$ledger_scope"
     else
-      scope="$(printf '%s\n%s\n' "$(printf '%s\n' "${FM_REPOS[@]}")" "$(ledger_repos "$FM_NAME")" \
+      scope="$(printf '%s\n%s\n' "$(printf '%s\n' "${FM_REPOS[@]}")" "$ledger_scope" \
         | sed '/^$/d' | sort -u)"
     fi
     while IFS= read -r repo; do
