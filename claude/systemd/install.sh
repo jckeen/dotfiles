@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Install the git-hygiene timer as a systemd --user service (Linux/WSL2).
+# Install this directory's systemd --user timers (Linux/WSL2).
 #
 # Idempotent: safe to re-run on upgrades or after pulling new unit files.
+#
+# Adding a timer means adding one row to UNITS below — nothing else in this
+# script is per-unit. A row is "<unit base>|<script, repo-relative>|<state dir,
+# $HOME-relative>"; the state dir is created before the timer is enabled so the
+# first firing has somewhere to write.
 #
 # Usage:
 #   bash ~/dev/dotfiles/claude/systemd/install.sh
@@ -10,13 +15,19 @@
 #   - systemd (WSL2: set `systemd=true` in /etc/wsl.conf under [boot])
 #
 # After install this script also attempts to enable user lingering via sudo,
-# so the timer fires at boot without an interactive login. If sudo is
+# so the timers fire at boot without an interactive login. If sudo is
 # unavailable, it prints the command for you to run manually.
 
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="$HOME/.config/systemd/user"
+REPO_DIR="$(cd "$SRC_DIR/../.." && pwd)"
+
+UNITS=(
+  "git-hygiene|claude/scripts/hygiene-cron.sh|.local/state/hygiene"
+  "jules-dispatch|claude/scripts/jules-dispatch.sh|.local/state/jules"
+)
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
@@ -27,31 +38,45 @@ info "==> Checking prerequisites"
 command -v systemctl >/dev/null || { red "X systemctl not found — systemd required"; exit 1; }
 mkdir -p "$DEST_DIR"
 
-info "==> Installing git-hygiene timer"
-HYG_SERVICE="git-hygiene.service"
-HYG_TIMER="git-hygiene.timer"
-HYG_SCRIPT="$HOME/dev/dotfiles/claude/scripts/hygiene-cron.sh"
+failed=0
+installed=()
 
-if [ -f "$SRC_DIR/$HYG_SERVICE" ] && [ -f "$SRC_DIR/$HYG_TIMER" ] && [ -x "$HYG_SCRIPT" ]; then
-    cp "$SRC_DIR/$HYG_SERVICE" "$DEST_DIR/$HYG_SERVICE"
-    cp "$SRC_DIR/$HYG_TIMER" "$DEST_DIR/$HYG_TIMER"
-    mkdir -p "$HOME/.local/state/hygiene"
-    systemctl --user daemon-reload
-    systemctl --user enable --now "$HYG_TIMER" >/dev/null 2>&1 || \
-        systemctl --user enable "$HYG_TIMER" >/dev/null
-    systemctl --user start "$HYG_TIMER" 2>/dev/null || true
-    if systemctl --user is-enabled --quiet "$HYG_TIMER"; then
-        green "OK $HYG_TIMER enabled"
-        systemctl --user list-timers "$HYG_TIMER" --no-pager 2>/dev/null | tail -3 || true
-    else
-        yell "! $HYG_TIMER did not enable — check: systemctl --user status $HYG_TIMER"
+for row in "${UNITS[@]}"; do
+    IFS='|' read -r base script state <<< "$row"
+    service="$base.service"
+    timer="$base.timer"
+    script_path="$REPO_DIR/$script"
+
+    info "==> Installing $timer"
+    if [ ! -f "$SRC_DIR/$service" ] || [ ! -f "$SRC_DIR/$timer" ] || [ ! -x "$script_path" ]; then
+        yell "! Skipping $timer install — unit files or $script missing/not executable"
+        failed=$((failed + 1))
+        continue
     fi
-else
-    yell "! Skipping $HYG_TIMER install — unit files or hygiene-cron.sh missing"
+
+    cp "$SRC_DIR/$service" "$DEST_DIR/$service"
+    cp "$SRC_DIR/$timer" "$DEST_DIR/$timer"
+    mkdir -p "$HOME/$state"
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$timer" >/dev/null 2>&1 || \
+        systemctl --user enable "$timer" >/dev/null
+    systemctl --user start "$timer" 2>/dev/null || true
+    if systemctl --user is-enabled --quiet "$timer"; then
+        green "OK $timer enabled"
+        installed+=("$base")
+        systemctl --user list-timers "$timer" --no-pager 2>/dev/null | tail -3 || true
+    else
+        yell "! $timer did not enable — check: systemctl --user status $timer"
+        failed=$((failed + 1))
+    fi
+done
+
+if [ "$failed" -gt 0 ]; then
+    red "X $failed timer(s) did not install"
     exit 1
 fi
 
-info "==> Enabling user lingering (timer fires without login)"
+info "==> Enabling user lingering (timers fire without login)"
 if loginctl show-user "$USER" 2>/dev/null | grep -q 'Linger=yes'; then
     green "OK Lingering already enabled"
 elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
@@ -65,6 +90,9 @@ echo
 green "==> Done."
 echo
 echo "Useful commands:"
-echo "  systemctl --user list-timers $HYG_TIMER"
-echo "  systemctl --user start $HYG_SERVICE   # run hygiene check now"
+for base in "${installed[@]}"; do
+    echo "  systemctl --user list-timers $base.timer"
+    echo "  systemctl --user start $base.service   # run it now"
+done
 echo "  tail -f ~/.local/state/hygiene/cron.log"
+echo "  tail -f ~/.local/state/jules/dispatch.log"
