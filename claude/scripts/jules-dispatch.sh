@@ -51,6 +51,9 @@ set -euo pipefail
 readonly JULES_API_HOST="jules.googleapis.com"
 readonly JULES_API_BASE="https://${JULES_API_HOST}/v1alpha"
 readonly JULES_AUTOMATION_MODE="AUTO_CREATE_PR"
+# A bound on paging, so a server that keeps handing back a token cannot spin
+# here forever. 100 sources per page, so this is 5000 repositories.
+readonly SOURCES_PAGE_LIMIT=50
 
 # shellcheck source=claude/scripts/checker-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
@@ -75,6 +78,7 @@ POST=0
 
 API_KEY=""
 SOURCES_JSON=""
+SOURCES_PAGES=0
 TODAY="$(date -u +%Y-%m-%d)"
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 NOW_EPOCH="$(date -u +%s)"
@@ -267,6 +271,39 @@ curl_api() { # method path [body-file]
 }
 
 # ── Sources ──────────────────────────────────────────────────────────
+# GET /sources is paginated: pageSize is 1..100 and defaults to 30, and
+# nextPageToken is omitted on the last page (verified against the sources.list
+# reference, 2026-09-18). A single unpaginated request would silently drop every
+# connected repository past the 30th — reporting them as "not in GET /sources"
+# and skipping them, which reads exactly like a configuration problem.
+fetch_sources() {
+  local token="" page=0 body path collected="[]"
+  while :; do
+    page=$((page + 1))
+    [[ "$page" -le "$SOURCES_PAGE_LIMIT" ]] \
+      || die "GET /sources returned more than $SOURCES_PAGE_LIMIT pages; refusing to keep paging"
+    path="/sources?pageSize=100"
+    if [[ -n "$token" ]]; then
+      # The token goes into a URL, so it is never interpolated unvalidated.
+      [[ "$token" =~ ^[A-Za-z0-9._~=-]+$ ]] \
+        || die "GET /sources returned a nextPageToken outside [A-Za-z0-9._~=-]"
+      path="$path&pageToken=$token"
+    fi
+    body="$(curl_api GET "$path")" \
+      || die "GET /sources failed on page $page — cannot resolve any repository"
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$body" \
+      || die "GET /sources page $page did not return a JSON object"
+    collected="$(jq -c --argjson acc "$collected" '$acc + (.sources // [])' <<<"$body")" \
+      || die "GET /sources page $page carried an unreadable sources array"
+    token="$(jq -r '.nextPageToken // ""' <<<"$body")"
+    [[ -n "$token" ]] || break
+  done
+  SOURCES_JSON="$(jq -cn --argjson s "$collected" '{sources: $s}')"
+  # Page count is returned through a global, not stdout: a command substitution
+  # would run this in a subshell and lose SOURCES_JSON with it.
+  SOURCES_PAGES="$page"
+}
+
 # The `source` resource name is always read back from GET /sources, never
 # constructed from owner/name: the documented format is `sources/{source}` and
 # the guide's `sources/github/{owner}/{repo}` spelling is not guaranteed.
@@ -339,34 +376,75 @@ ledger_repos() { # distinct repos ever dispatched to
 EVENTS_FILE="$(mktemp)"
 BODY_FILE=""
 LOCK_DIR=""
+RECLAIM_DIR=""
 LOCK_HELD=0
+# Identifies this process as the owner of any lock it creates, so cleanup can
+# never remove a lock that belongs to another run.
+LOCK_TOKEN="$$.$(date -u +%s).${RANDOM}"
 # An abandoned lock must not disable the timer forever, so one older than this is
 # reclaimed. Well above any plausible run: the dispatch is a handful of HTTPS
 # calls, each capped at 60s.
 LOCK_STALE_SECONDS="${JULES_LOCK_STALE_SECONDS:-7200}"
 # `exit` stays last so the trap preserves the original exit status. The lock is
 # removed only when this process owns it — never another run's.
-trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; [[ "$LOCK_HELD" -eq 1 ]] && rm -rf "$LOCK_DIR"; exit' EXIT
+trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; [[ "$LOCK_HELD" -eq 1 ]] && release_dir "$LOCK_DIR"; release_dir "$RECLAIM_DIR"; exit' EXIT
 
 dir_mtime() { stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null; }
+
+lock_age() { # dir -> seconds, or return 1 if it does not exist
+  local m
+  m="$(dir_mtime "$1")" || return 1
+  [[ -n "$m" ]] || return 1
+  printf '%s' $((NOW_EPOCH - m))
+}
+
+# Create <dir> as a lock owned by this process. mkdir is atomic on POSIX, so the
+# winner is decided by the kernel; the owner token lets the holder prove the lock
+# it later removes is still its own.
+claim_dir() {
+  mkdir "$1" 2>/dev/null && printf '%s\n' "$LOCK_TOKEN" > "$1/owner"
+}
+
+release_dir() { # remove <dir> only if this process still owns it
+  [[ -n "$1" && -d "$1" ]] || return 0
+  [[ "$(cat "$1/owner" 2>/dev/null)" == "$LOCK_TOKEN" ]] || return 0
+  rm -rf "$1"
+}
 
 # Reading the ledger, deciding eligibility, creating a session and recording it
 # is one critical section: a manual run overlapping the 09:00 timer would
 # otherwise read the same spend and dispatch the same routine twice, defeating
-# both the idempotency check and the daily cap. mkdir is atomic on POSIX, so it
-# needs no flock (absent on some systems this script still has to run on).
+# both the idempotency check and the daily cap.
+#
+# Reclaiming an abandoned lock is a read-check-replace sequence and is NOT
+# atomic on its own: two processes can both see the stale directory, and after
+# the first removes and recreates it the second removes that fresh lock and
+# takes its own. So the reclaim runs under a second atomic lock, and re-reads the
+# age inside it — if another run got there first, the lock is fresh and this run
+# stands down. The reclaim lock is age-reclaimed the same way and removed by the
+# EXIT trap, so a killed run cannot wedge it permanently.
 acquire_lock() {
   LOCK_DIR="$STATE_DIR/dispatch.lock"
-  mkdir "$LOCK_DIR" 2>/dev/null && { LOCK_HELD=1; return 0; }
-  local mtime age
-  mtime="$(dir_mtime "$LOCK_DIR")" || return 1
-  age=$((NOW_EPOCH - mtime))
-  if [[ "$age" -ge "$LOCK_STALE_SECONDS" ]]; then
+  local reclaim="$STATE_DIR/dispatch.lock.reclaim" rc=1 age rage
+  if claim_dir "$LOCK_DIR"; then LOCK_HELD=1; return 0; fi
+
+  if ! mkdir "$reclaim" 2>/dev/null; then
+    rage="$(lock_age "$reclaim")" || return 1
+    [[ "$rage" -ge "$LOCK_STALE_SECONDS" ]] || return 1
+    rm -rf "$reclaim"
+    mkdir "$reclaim" 2>/dev/null || return 1
+  fi
+  printf '%s\n' "$LOCK_TOKEN" > "$reclaim/owner"
+  RECLAIM_DIR="$reclaim"
+
+  if age="$(lock_age "$LOCK_DIR")" && [[ "$age" -ge "$LOCK_STALE_SECONDS" ]]; then
     log "  !! reclaiming a stale dispatch lock (${age}s old): $LOCK_DIR"
     rm -rf "$LOCK_DIR"
-    mkdir "$LOCK_DIR" 2>/dev/null && { LOCK_HELD=1; return 0; }
+    if claim_dir "$LOCK_DIR"; then LOCK_HELD=1; rc=0; fi
   fi
-  return 1
+  release_dir "$RECLAIM_DIR"
+  RECLAIM_DIR=""
+  return "$rc"
 }
 
 record() { # kind routine repo detail
@@ -444,10 +522,13 @@ dispatch_one() { # routine-file repo source
       '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
         source: $source, session: $session, url: $url}' >> "$LEDGER"; then
     log "  !! $FM_NAME / $repo — created $session but COULD NOT record it in $LEDGER"
-    log "     The next run will dispatch this routine again. Fix the ledger first."
+    log "     The ledger is the only thing preserving idempotency and the daily"
+    log "     cap, so this run stops here rather than creating more unrecorded"
+    log "     sessions. Fix the ledger, then re-run."
     record error "$FM_NAME" "$repo" "session $session created but not recorded"
     FAILURES=$((FAILURES + 1))
-    return 1
+    # 3 is the caller's signal to abort the whole run, not just this pair.
+    return 3
   fi
 
   CREATED=$((CREATED + 1))
@@ -457,11 +538,7 @@ dispatch_one() { # routine-file repo source
 
 do_dispatch() {
   read_api_key
-  if ! SOURCES_JSON="$(curl_api GET /sources)"; then
-    die "GET /sources failed — cannot resolve any repository"
-  fi
-  jq -e 'type == "object"' >/dev/null <<<"$SOURCES_JSON" \
-    || die "GET /sources did not return a JSON object"
+  fetch_sources
 
   if [[ "$DRY_RUN" -eq 0 ]]; then
     mkdir -p "$STATE_DIR"
@@ -481,9 +558,9 @@ do_dispatch() {
   used="$(dispatched_today)"
   SPENT="$used"
   log "═══ jules-dispatch $NOW_ISO ═══"
-  log "catalog: $ROUTINE_DIR; dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
+  log "catalog: $ROUTINE_DIR; sources: $(jq -r '.sources | length' <<<"$SOURCES_JSON") over $SOURCES_PAGES page(s); dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
 
-  local file repo source scope interval
+  local file repo source scope interval rc
   while IFS= read -r file; do
     if ! parse_routine "$file"; then
       log "  !! $(basename "$file") — frontmatter rejected; not dispatched"
@@ -542,7 +619,13 @@ do_dispatch() {
       fi
 
       SPENT=$((SPENT + 1))
-      dispatch_one "$file" "$repo" "$source" || true
+      rc=0
+      dispatch_one "$file" "$repo" "$source" || rc=$?
+      if [[ "$rc" -eq 3 ]]; then
+        write_status
+        log "═══ jules-dispatch ABORTED: ledger unwritable (created=$CREATED failures=$FAILURES) ═══"
+        exit 1
+      fi
     done <<<"$scope"
   done < <(routine_files)
 

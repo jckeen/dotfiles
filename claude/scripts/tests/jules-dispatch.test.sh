@@ -57,8 +57,14 @@ done
 cat >/dev/null
 if [[ -n "${FAKE_CURL_FAIL:-}" ]]; then exit 22; fi
 case "$method:$url" in
-  GET:*/sources)
-    cat "$FAKE_SOURCES" ;;
+  GET:*/sources*)
+    # A second fixture file, when present, is served as page 2 — the first is
+    # then expected to carry a nextPageToken.
+    if [[ -n "${FAKE_SOURCES_P2:-}" && "$url" == *"pageToken="* ]]; then
+      cat "$FAKE_SOURCES_P2"
+    else
+      cat "$FAKE_SOURCES"
+    fi ;;
   POST:*/sessions)
     n=$(( $(cat "$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "$n" > "$FAKE_SEQ"
@@ -615,6 +621,103 @@ else
 fi
 chmod 600 "$STATE/dispatch.jsonl" 2>/dev/null || true
 
+echo "── second review round ──"
+
+# [medium] GET /sources is paginated (pageSize defaults to 30). A single request
+# dropped every repository past the first page and reported them as unconnected,
+# which reads exactly like a configuration problem.
+new_case
+routine alpha false 'repos: all'
+cat > "$CASE_DIR/sources-p1.json" <<'P1'
+{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles"}}],
+ "nextPageToken":"tok-page-2"}
+P1
+cat > "$CASE_DIR/sources-p2.json" <<'P2'
+{"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}]}
+P2
+if FAKE_SOURCES="$CASE_DIR/sources-p1.json" FAKE_SOURCES_P2="$CASE_DIR/sources-p2.json" dispatch \
+  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]] \
+  && grep -Fq '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl" \
+  && outgrep "sources: 2 over 2 page(s)"; then
+  ok "a second page of GET /sources is followed and its repositories dispatched"
+else
+  fail "pagination was not followed"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+if grep -Fq -- 'pageSize=100' "$FAKE_CURL_ARGV" \
+   && grep -Fq -- 'pageToken=tok-page-2' "$FAKE_CURL_ARGV"; then
+  ok "the source listing asks for the maximum page size and passes the token back"
+else
+  fail "pageSize/pageToken were not sent"
+  sed 's/^/      | /' "$FAKE_CURL_ARGV"
+fi
+
+# A token is interpolated into a URL, so it is validated first.
+new_case
+routine alpha false 'repos: all'
+printf '{"sources":[],"nextPageToken":"bad token; rm -rf /"}\n' > "$CASE_DIR/p1.json"
+if ! FAKE_SOURCES="$CASE_DIR/p1.json" FAKE_SOURCES_P2="$CASE_DIR/p1.json" dispatch \
+  && outgrep "nextPageToken outside"; then
+  ok "a nextPageToken outside the safe charset is refused"
+else
+  fail "a hostile nextPageToken was interpolated into a URL"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# [medium] the stale-lock reclaim is a read-check-replace sequence and is not
+# atomic on its own: two runs could both see the stale lock, and the loser would
+# delete the winner's fresh one. The reclaim now runs under its own lock, so a
+# held reclaim lock must stop a second run from reclaiming at all.
+# The main lock is aged past the window while the reclaim lock is fresh — the
+# state a losing process sees when the winner is mid-reclaim. It must stand down
+# rather than delete the lock the winner just created.
+new_case
+routine alpha false 'repos: all'
+mkdir -p "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim"
+touch -d '1970-01-02' "$STATE/dispatch.lock" 2>/dev/null \
+  || touch -t 197001020000 "$STATE/dispatch.lock"
+if dispatch \
+   && outgrep "another dispatch already holds" \
+   && [[ ! -f "$STATE/dispatch.jsonl" ]] \
+   && [[ -d "$STATE/dispatch.lock" ]]; then
+  ok "a held reclaim lock stops a stale lock being reclaimed twice"
+else
+  fail "the reclaim critical section is not exclusive"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# An abandoned reclaim lock must not wedge reclamation forever either.
+new_case
+routine alpha false 'repos: all'
+mkdir -p "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim"
+touch -d '1970-01-02' "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim" 2>/dev/null \
+  || touch -t 197001020000 "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim"
+if dispatch && outgrep "reclaiming a stale dispatch lock" \
+  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]] \
+  && [[ ! -e "$STATE/dispatch.lock.reclaim" ]]; then
+  ok "an abandoned reclaim lock is itself reclaimed and then released"
+else
+  fail "an abandoned reclaim lock wedged the run"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# [medium] returning from a failed ledger append left the loop dispatching: with
+# an unwritable ledger every eligible pair created an unrecorded session, and the
+# next run repeated all of them. The run must stop at the first failure.
+new_case
+routine alpha false 'repos: all'
+: > "$STATE/dispatch.jsonl"
+chmod 400 "$STATE/dispatch.jsonl"
+if ! dispatch && outgrep "ABORTED: ledger unwritable" \
+  && [[ "$(grep -c '/sessions' "$FAKE_CURL_ARGV")" -eq 1 ]]; then
+  ok "an unwritable ledger aborts the run after one session, not after every pair"
+else
+  fail "an unwritable ledger kept creating unrecorded sessions"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+chmod 600 "$STATE/dispatch.jsonl" 2>/dev/null || true
+
 echo "── --report ──"
 
 # gh is stubbed, so the assertion is on the bucketing and the arithmetic, not on
@@ -733,11 +836,12 @@ unset GH_ARGV GH_COMMENT_BODY
 
 echo "── systemd installer (generalised unit loop) ──"
 
-# install.sh grew from one hardcoded pair to a table. Prove both pairs install
-# and that git-hygiene — the pair that already worked — is untouched.
-SYSHOME="$WORK/syshome"
+# install.sh grew from one hardcoded pair to a table, and the script it validates
+# is now read out of the unit's own ExecStart — the path systemd will actually
+# run. The units point at $HOME/dev/dotfiles, so each fixture home links that at
+# a checkout of its own choosing.
 SYSBIN="$WORK/sysbin"
-mkdir -p "$SYSHOME" "$SYSBIN"
+mkdir -p "$SYSBIN"
 cat > "$SYSBIN/systemctl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
@@ -757,10 +861,23 @@ exit 1
 STUB
 chmod +x "$SYSBIN/systemctl" "$SYSBIN/loginctl" "$SYSBIN/sudo"
 
-SYSTEMCTL_LOG="$WORK/systemctl.log"
-: > "$SYSTEMCTL_LOG"
-if PATH="$SYSBIN:$PATH" HOME="$SYSHOME" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
-   bash "$REPO_ROOT/claude/systemd/install.sh" > "$WORK/install.out" 2>&1; then
+# sys_home <name> <checkout to link at dev/dotfiles>
+sys_home() {
+  local h="$WORK/$1"
+  rm -rf "$h"
+  mkdir -p "$h/dev"
+  ln -s "$2" "$h/dev/dotfiles"
+  printf '%s' "$h"
+}
+
+run_installer() { # <home> <installer's repo> <log>
+  PATH="$SYSBIN:$PATH" HOME="$1" SYSTEMCTL_LOG="$3" \
+    bash "$2/claude/systemd/install.sh" > "$WORK/install.out" 2>&1
+}
+
+SYSHOME="$(sys_home syshome "$REPO_ROOT")"
+: > "$WORK/systemctl.log"
+if run_installer "$SYSHOME" "$REPO_ROOT" "$WORK/systemctl.log"; then
   missing=""
   for u in git-hygiene.service git-hygiene.timer jules-dispatch.service jules-dispatch.timer; do
     [[ -f "$SYSHOME/.config/systemd/user/$u" ]] || missing="$missing $u"
@@ -773,35 +890,63 @@ if PATH="$SYSBIN:$PATH" HOME="$SYSHOME" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
   else
     fail "install.sh left these missing:$missing"
   fi
-  if grep -Fq 'enable --now git-hygiene.timer' "$SYSTEMCTL_LOG" \
-     && grep -Fq 'enable --now jules-dispatch.timer' "$SYSTEMCTL_LOG"; then
+  if grep -Fq 'enable --now git-hygiene.timer' "$WORK/systemctl.log" \
+     && grep -Fq 'enable --now jules-dispatch.timer' "$WORK/systemctl.log"; then
     ok "install.sh enables both timers"
   else
     fail "install.sh did not enable both timers"
-    sed 's/^/      | /' "$SYSTEMCTL_LOG"
+    sed 's/^/      | /' "$WORK/systemctl.log"
   fi
 else
-  fail "install.sh exited non-zero under the systemctl stub"
+  fail "install.sh exited non-zero with both scripts reachable"
   sed 's/^/      | /' "$WORK/install.out"
 fi
 
-# A unit whose script is missing must fail loudly rather than install a timer
-# that fires into nothing.
-rm -rf "$SYSHOME"; mkdir -p "$SYSHOME"
-FAKEREPO="$WORK/fakerepo"
-mkdir -p "$FAKEREPO/claude/systemd" "$FAKEREPO/claude/scripts"
-cp "$REPO_ROOT/claude/systemd/install.sh" "$FAKEREPO/claude/systemd/"
-cp "$REPO_ROOT/claude/systemd"/*.service "$REPO_ROOT/claude/systemd"/*.timer \
-   "$FAKEREPO/claude/systemd/"
-printf '#!/usr/bin/env bash\n' > "$FAKEREPO/claude/scripts/hygiene-cron.sh"
-chmod +x "$FAKEREPO/claude/scripts/hygiene-cron.sh"
-if ! PATH="$SYSBIN:$PATH" HOME="$SYSHOME" SYSTEMCTL_LOG="$WORK/systemctl2.log" \
-     bash "$FAKEREPO/claude/systemd/install.sh" > "$WORK/install2.out" 2>&1 \
-   && grep -Fq 'jules-dispatch.timer install' "$WORK/install2.out"; then
-  ok "a unit whose script is missing is reported and fails the install"
+# The script a unit runs must be checked at the path the unit names, not at a
+# path derived from wherever the installer happens to live: otherwise the
+# installer reports success while enabling a service whose script is missing.
+PARTIAL="$WORK/partial-checkout"
+mkdir -p "$PARTIAL/claude/scripts" "$PARTIAL/claude/systemd"
+cp "$REPO_ROOT/claude/scripts/hygiene-cron.sh" "$PARTIAL/claude/scripts/"
+chmod +x "$PARTIAL/claude/scripts/hygiene-cron.sh"
+SYSHOME2="$(sys_home syshome2 "$PARTIAL")"
+if ! run_installer "$SYSHOME2" "$REPO_ROOT" "$WORK/systemctl2.log" \
+   && grep -Fq 'jules-dispatch.service runs' "$WORK/install.out" \
+   && grep -Fq "$SYSHOME2/dev/dotfiles/claude/scripts/jules-dispatch.sh" "$WORK/install.out" \
+   && [[ ! -f "$SYSHOME2/.config/systemd/user/jules-dispatch.timer" ]]; then
+  ok "a unit whose ExecStart target is missing is named and fails the install"
 else
-  fail "a missing unit script did not fail the install"
-  sed 's/^/      | /' "$WORK/install2.out"
+  fail "a missing ExecStart target did not fail the install"
+  sed 's/^/      | /' "$WORK/install.out"
+fi
+
+# A present-but-not-executable script is the core.fileMode regression: the old
+# `[ -x ]` guard skipped silently, which is how a timer gets enabled with nothing
+# to run.
+NOEXEC="$WORK/noexec-checkout"
+mkdir -p "$NOEXEC/claude/scripts"
+cp "$REPO_ROOT/claude/scripts/hygiene-cron.sh" "$NOEXEC/claude/scripts/"
+cp "$REPO_ROOT/claude/scripts/jules-dispatch.sh" "$NOEXEC/claude/scripts/"
+chmod +x "$NOEXEC/claude/scripts/hygiene-cron.sh"
+chmod 644 "$NOEXEC/claude/scripts/jules-dispatch.sh"
+SYSHOME3="$(sys_home syshome3 "$NOEXEC")"
+if ! run_installer "$SYSHOME3" "$REPO_ROOT" "$WORK/systemctl3.log" \
+   && grep -Fq 'missing or not executable' "$WORK/install.out"; then
+  ok "a non-executable ExecStart target fails the install rather than skipping quietly"
+else
+  fail "a non-executable script did not fail the install"
+  sed 's/^/      | /' "$WORK/install.out"
+fi
+
+# Installing from a checkout other than the one the units point at is legal but
+# must be said out loud.
+SYSHOME4="$(sys_home syshome4 "$REPO_ROOT")"
+if run_installer "$SYSHOME4" "$REPO_ROOT" "$WORK/systemctl4.log" \
+   && grep -Fq 'OUTSIDE this checkout' "$WORK/install.out"; then
+  ok "a unit pointing outside the installer's checkout is warned about"
+else
+  fail "installing units that run another checkout was silent"
+  sed 's/^/      | /' "$WORK/install.out"
 fi
 
 echo

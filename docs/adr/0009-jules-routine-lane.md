@@ -108,7 +108,7 @@ Adopt Jules as the routine lane.
    `~/.local/state/jules/dispatch.jsonl` makes the run idempotent per calendar
    day, and `JULES_DAILY_CAP` (default 40 of Ultra's 300) bounds the spend.
 
-   Five properties came from the review passes rather than the first draft, and
+   Nine properties came from the review passes rather than the first draft, and
    each is now pinned by a test: `schedule` is *enforced* (a `weekly` routine is
    held back while its last dispatch for that repository is inside a seven-day
    window — parsed-but-ignored would have made the field decoration and run the
@@ -119,6 +119,27 @@ Adopt Jules as the routine lane.
    is reported as an *unrecorded* dispatch rather than a successful one, since the
    session already exists by then; and `--dry-run` suppresses the `--report
    --post` comment, because "writes nothing" has to hold in every mode.
+
+   A second round added four more. `GET /sources` is paginated — `pageSize`
+   defaults to 30 and `nextPageToken` is omitted on the last page — so an
+   unpaginated request would have reported every repository past the 30th as not
+   connected, which reads like a configuration problem rather than a bug; the
+   listing now asks for 100 per page and follows the token, validating it before
+   it reaches a URL. The stale-lock reclaim is a read-check-replace sequence and
+   is not atomic on its own, so it runs under a second lock and re-reads the age
+   inside it; a lock is only ever removed by the process whose token it carries.
+   A failed ledger append now aborts the whole run rather than returning to a
+   loop that would create an unrecorded session for every remaining pair. And
+   `claude/systemd/install.sh` reads the script it validates out of the unit's own
+   `ExecStart` line, because the unit names a fixed path under `$HOME` and a
+   second copy of that path in the installer could agree with the checkout the
+   installer was run from while disagreeing with what systemd will execute.
+
+   Two rounds turned up the same bash mistake twice in different dress: a `die`
+   inside a process substitution and an assignment inside a command substitution
+   both happen in a subshell, so neither reached the caller. The first made an
+   empty routine selection look like a successful run; the second silently
+   emptied the resolved source list.
 
 5. **A timer, not GitHub Actions.** The key stays on this machine.
    `claude/systemd/jules-dispatch.{service,timer}` fires at 09:00 with

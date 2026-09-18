@@ -55,7 +55,7 @@
   skip, `paused: true`, the `--dry-run` snapshot, and the generalised systemd
   installer. It also asserts the shipped catalog parses, so the first timer
   firing is not what discovers a typo.
-- Five things the review passes changed, each now with a test: `schedule` is
+- Nine things the review passes changed, each now with a test: `schedule` is
   enforced rather than parsed and ignored, so the weekly fuzzer no longer runs
   seven times a week; `curl` gets `-q` first, so a `location` or `trace` line in
   a `~/.curlrc` cannot make the key follow a redirect or reach a trace file; a
@@ -63,6 +63,16 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
+- A second round found four more. `GET /sources` is paginated (`pageSize`
+  defaults to 30), so the listing now asks for 100 per page and follows
+  `nextPageToken`, validating it before it reaches a URL — otherwise every
+  repository past the 30th was reported as not connected. The stale-lock reclaim
+  runs under a second lock and re-reads the age inside it, because the
+  read-check-replace was not atomic and the loser could delete the winner's fresh
+  lock. A failed ledger append aborts the run instead of returning to a loop that
+  creates an unrecorded session per remaining pair. And the systemd installer
+  reads the script it validates out of the unit's own `ExecStart`, so it can no
+  longer pass while enabling a service whose script is missing.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
