@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-09-18 — fix(codex-gate): location-keyed issue dedup, `.codex-review-ignore`
+
+- The gate filed every low-severity finding as a GitHub issue and deduped only
+  on an exact open-issue *title* match. Codex paraphrases titles between runs,
+  so one fixture finding accumulated sixteen issues in the TRNN repo; #433 is
+  the same class here. Dedup is now keyed on the finding's **location**: filed
+  issues carry a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker
+  (the file only — line numbers drift), the gate prefetches existing
+  `codex-review` issues in all states once, and an already-open issue for that
+  file collects one "seen again" comment instead of a duplicate.
+- Closing such an issue as *not planned* now suppresses it: the gate reports
+  `accepted (#N), skipping` and files nothing. Closed as *completed* means the
+  code was fixed, so the same location reappearing is refiled as a regression.
+  A failed prefetch files nothing rather than filing blind.
+- An empty `state_reason` in the prefetched index shifted the issue body out of
+  the field the marker is read from, because tab is an IFS whitespace character
+  and `read` collapses a run of tabs — open-issue dedup would have silently
+  never matched. Absent reasons now carry a placeholder.
+- The prefetch was lifted into `gate-lib.sh`, so the gate's low-finding feed
+  and `harvest-codex-comments.sh` share one REST mechanism; the repo slug is
+  read from the git remote rather than GraphQL-backed `gh repo view`.
+- New optional per-repo `.codex-review-ignore` declares path globs whose
+  contents are hostile by design. Matching paths stay in the review scope; the
+  reviewer is only told not to report instruction-like strings inside them. The
+  file is parsed as bounded untrusted data and fenced like the diff. This
+  repo's copy covers `claude/scripts/tests/*`, whose fixtures embed injected
+  verdicts and synthetic credential markers on purpose.
+- `.codex-review-ignore` is itself a reviewer-instruction surface: the gate's
+  self-review guard and the receipt helper's instruction classifier both
+  cover it, and a committed review reads the copy in the reviewed commit,
+  never the working tree.
+
 ## 2026-09-17 — fix(review-multipart): byte-bounded fragments and CODEX_HOME isolation
 
 - The multipart transport sliced a large review request into 200,000-character

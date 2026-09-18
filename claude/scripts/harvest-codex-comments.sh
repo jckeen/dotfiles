@@ -28,6 +28,22 @@
 
 set -uo pipefail
 
+# gate-lib.sh ships beside this script in BOTH install locations (the repo's
+# claude/scripts/ and the ~/.claude/scripts symlink farm), so a plain dirname
+# is sufficient and portable — no readlink -f (absent on stock macOS). It
+# provides the shared issue prefetch used for dedup below.
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}" && printf .)" || exit 0
+SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
+SCRIPT_DIR="$(cd -- "$SCRIPT_DIR" && pwd && printf .)" || exit 0
+SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
+# This script never blocks a caller, so a missing library degrades to a skip
+# rather than a hard failure — but it says so instead of running dedup-blind.
+# shellcheck source=gate-lib.sh
+if ! . "$SCRIPT_DIR/gate-lib.sh"; then
+  echo "harvest-codex-comments: gate-lib.sh not found beside this script — skipping." >&2
+  exit 0
+fi
+
 BOT="chatgpt-codex-connector[bot]"
 PR=""
 REPO=""
@@ -93,13 +109,21 @@ fi
 note "harvest-codex-comments: $REPO#$PR — ${#COMMENTS[@]} Codex-bot comment(s)."
 filed=0 skipped=0 obsolete=0
 
-# Pre-fetch existing issue bodies ONCE via REST for dedup. We deliberately avoid
-# `gh issue list --search` and `gh issue create`: both go through GitHub's GraphQL
-# API, which egress-restricted proxies (e.g. Claude Cloud routine sandboxes) block
-# — only plain REST under repos/{owner}/{repo}/... is served. REST works in those
-# environments AND locally, so the whole script stays portable. Dedup then greps
-# the stable per-comment marker (the GitHub comment id) in-memory.
-existing_bodies="$(gh api "repos/$REPO/issues?state=all&per_page=100" --paginate --jq '.[].body // ""' 2>/dev/null || true)"
+# Pre-fetch existing issues ONCE for dedup, through the shared gate-lib
+# mechanism (gate_issue_prefetch) that the review gate's low-finding feed also
+# uses: one REST call, one in-memory index, one place to fix. The REST-only
+# rationale lives with it — `gh issue list --search` and `gh issue create` go
+# through GitHub's GraphQL API, which egress-restricted proxies (e.g. Claude
+# Cloud routine sandboxes) block. Dedup then greps the stable per-comment
+# marker (the GitHub comment id) in the prefetched bodies.
+#
+# A failed prefetch leaves the index empty, which is the pre-existing posture
+# here: this script never blocks a caller, and its marker is the immutable
+# comment id, so the worst case is a duplicate rather than a wrong issue.
+if ! gate_issue_prefetch "$REPO"; then
+  warn "harvest-codex-comments: could not pre-fetch existing issues — dedup is blind for this run."
+fi
+existing_bodies="$GATE_ISSUE_INDEX"
 
 # Best-effort resolved-thread check (#159). Thread resolution (isResolved) is
 # NOT exposed by REST — only by GraphQL, which egress-restricted proxies (the
