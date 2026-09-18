@@ -32,8 +32,18 @@ failed=0
 ok()   { pass=$((pass + 1));     echo "ok   - $1"; }
 fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# Checked, because errexit is off in this suite: an empty WORK would make BIN
+# "/bin" two lines below, and the suite would then try to overwrite the installed
+# /bin/curl with its stub. Observed during review.
+WORK="$(mktemp -d)" || { echo "FAIL - mktemp -d failed; cannot run"; exit 1; }
+[[ -n "$WORK" && -d "$WORK" ]] || { echo "FAIL - mktemp -d produced no directory"; exit 1; }
+trap '[[ -n "${WORK:-}" ]] && rm -rf "$WORK"' EXIT
+
+# Ordinary dispatch cases must not depend on the wall clock. The dispatcher
+# refuses to start a dispatch inside the last two minutes of the UTC day, so
+# without this the whole suite — and the CI job running it — would fail for that
+# window once a day. The cases that exercise the guard set their own value.
+export JULES_DAY_EDGE_MARGIN=0
 
 # Long enough and inside the allowed charset, so every refusal below is
 # attributable to the property under test rather than to the key itself. It is
@@ -1052,7 +1062,8 @@ else
 fi
 
 # The margin must not stop an ordinary run, or the guard would simply disable the
-# lane. Zero is the explicit "no margin" setting.
+# lane. Zero is the explicit "no margin" setting, and it is also what the suite
+# exports, so every other dispatch case is independent of the wall clock.
 new_case
 routine alpha false 'repos: all'
 if JULES_DAY_EDGE_MARGIN=0 JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
@@ -1063,6 +1074,12 @@ else
   fail "the day-edge guard blocked an ordinary run"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
+
+# No case here asserts the DEFAULT margin: at an ordinary time of day a default of
+# 120 and a default of 0 both dispatch, so any such test would pass whatever the
+# default is. The two cases above bracket the behaviour instead — a whole-day
+# margin defers, a zero margin dispatches — and the guard's own message pins the
+# request timeout the default is derived from.
 
 new_case
 routine alpha false 'repos: all'

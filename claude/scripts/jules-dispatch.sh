@@ -482,7 +482,7 @@ ledger_repos() { # distinct repos a routine was ever dispatched to ("" = any)
 }
 
 # ── Run events (for status.json) ─────────────────────────────────────
-EVENTS_FILE="$(mktemp)"
+EVENTS_FILE="$(mktemp)" || { printf 'jules-dispatch: mktemp failed\n' >&2; exit 1; }
 BODY_FILE=""
 LOCK_HELD=0
 LOCK_FALLBACK_DIR=""
@@ -651,7 +651,16 @@ dispatch_one() { # routine-file repo source
   fi
 
   prompt="$(build_prompt "$repo")"
-  BODY_FILE="$(mktemp)"
+  # Checked explicitly: this function is called with `|| rc=$?`, which disables
+  # errexit inside it, so a failed mktemp would otherwise leave BODY_FILE empty
+  # and the request body would be written to — and read from — the empty path.
+  if ! BODY_FILE="$(mktemp)" || [[ -z "$BODY_FILE" ]]; then
+    log "  !! $FM_NAME / $repo — mktemp failed; no session created"
+    record error "$FM_NAME" "$repo" "mktemp failed"
+    FAILURES=$((FAILURES + 1))
+    BODY_FILE=""
+    return 1
+  fi
   jq -n --arg prompt "$prompt" --arg title "jules-routine: $FM_NAME ($repo)" \
     --arg source "$source" --arg mode "$JULES_AUTOMATION_MODE" \
     --arg branch "$STARTING_BRANCH" '
@@ -728,7 +737,8 @@ do_dispatch() {
 
   # ── Phase 1: which (routine, repository) pairs are eligible today ──
   local candidates file repo source scope interval rc last_run
-  candidates="$(mktemp)"
+  candidates="$(mktemp)" || die "mktemp failed while collecting candidates"
+  [[ -n "$candidates" ]] || die "mktemp produced no candidates file"
   while IFS= read -r file; do
     if ! parse_routine "$file"; then
       log "  !! $(basename "$file") — frontmatter rejected; not dispatched"
@@ -785,7 +795,8 @@ do_dispatch() {
   # Oldest last-dispatch first, then routine and repository for a deterministic
   # order among pairs that have never run (all of which carry 0).
   local sorted line last_epoch day_left
-  sorted="$(mktemp)"
+  sorted="$(mktemp)" || die "mktemp failed while ordering candidates"
+  [[ -n "$sorted" ]] || die "mktemp produced no ordering file"
   # Deduplicate on (routine, repository) before sorting. The parser already
   # rejects a repeated entry in one routine, and repository identities are
   # lowercased everywhere, so this is a backstop rather than the primary guard —

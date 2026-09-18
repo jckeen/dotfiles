@@ -159,6 +159,14 @@
   standard — an entry means someone looked, never that the scanner was
   inconvenient. It can be deleted once this branch is squash-merged, since the
   squashed commit carries only the current tree.
+- Two findings against the suite itself, the second the more serious: the tests
+  used the real UTC clock, so the dispatcher's own day-edge guard would have failed
+  every dispatch case — and the new CI job — for two minutes once a day. The suite
+  now pins the margin to zero and the guard's own cases set their own value. And a
+  failed `mktemp -d` left the work directory empty, which made the stub path `/bin`
+  and had the suite attempt to overwrite the installed `/bin/curl`; every `mktemp`
+  in both files is now checked, including the one inside `dispatch_one`, where the
+  caller's `|| rc=$?` disables errexit.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
