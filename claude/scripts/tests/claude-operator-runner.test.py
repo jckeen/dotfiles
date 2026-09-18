@@ -35,6 +35,7 @@ def load_runner_module():
     spec.loader.exec_module(module)
     return module
 
+
 FAKE_CLAUDE = f'''#!{sys.executable}
 import json, os, subprocess, sys, time
 args = sys.argv[1:]
@@ -252,8 +253,9 @@ class RunnerTests(unittest.TestCase):
         # banners and /etc/bash.bashrc hints do, tries to read stdin the way an
         # interactive prompt would, and tries to move Claude away.
         (self.home / ".bashrc").write_text(
-            f'export OPERATOR_TEST_RC=loaded\necho STARTUP_BANNER\n'
-            f'IFS= read -r STARTUP_INPUT\necho "STARTUP_READ=[$STARTUP_INPUT]"\ncd "{self.base}/elsewhere"\n')
+            f"export OPERATOR_TEST_RC=loaded\necho STARTUP_BANNER\n"
+            f'IFS= read -r STARTUP_INPUT\necho "STARTUP_READ=[$STARTUP_INPUT]"\ncd "{self.base}/elsewhere"\n'
+        )
         self.fake = self.base / "fake-claude"
         self.fake.write_text(FAKE_CLAUDE, encoding="utf-8")
         self.fake.chmod(0o700)
@@ -267,7 +269,9 @@ class RunnerTests(unittest.TestCase):
 
     def env(self, mode="success", **extra):
         env = {
-            "PATH": os.pathsep.join([str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]),
+            "PATH": os.pathsep.join(
+                [str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]
+            ),
             "HOME": str(self.home),
             "LC_ALL": "C.UTF-8",
             "FAKE_CLAUDE_MODE": mode,
@@ -277,15 +281,28 @@ class RunnerTests(unittest.TestCase):
         return env
 
     def command(self, *extra, claude_bin=True):
-        cmd = [sys.executable, str(RUNNER), "--cwd", str(self.project),
-               "--prompt-file", str(self.prompt), "--output-dir", str(self.out)]
+        cmd = [
+            sys.executable,
+            str(RUNNER),
+            "--cwd",
+            str(self.project),
+            "--prompt-file",
+            str(self.prompt),
+            "--output-dir",
+            str(self.out),
+        ]
         if claude_bin:
             cmd += ["--claude-bin", str(self.fake)]
         return cmd + list(extra)
 
     def run_turn(self, *extra, mode="success", claude_bin=True, **env_extra):
-        return subprocess.run(self.command(*extra, claude_bin=claude_bin), capture_output=True,
-                              text=True, env=self.env(mode, **env_extra), timeout=60)
+        return subprocess.run(
+            self.command(*extra, claude_bin=claude_bin),
+            capture_output=True,
+            text=True,
+            env=self.env(mode, **env_extra),
+            timeout=60,
+        )
 
     def run_in_process(self, *extra, mode="success", **env_extra):
         """Run main() inside this interpreter so a test can observe or fail the
@@ -297,8 +314,10 @@ class RunnerTests(unittest.TestCase):
         stdout = io.StringIO()
         argv = self.command(*extra)[2:]
         try:
-            with mock.patch.dict(os.environ, self.env(mode, **env_extra), clear=True), \
-                 contextlib.redirect_stdout(stdout):
+            with (
+                mock.patch.dict(os.environ, self.env(mode, **env_extra), clear=True),
+                contextlib.redirect_stdout(stdout),
+            ):
                 rc = module.main(argv)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
@@ -321,8 +340,11 @@ class RunnerTests(unittest.TestCase):
             return local_tracer
 
         def global_tracer(frame, event, _arg):
-            if event == "call" and frame.f_code.co_name == "teardown" \
-                    and Path(frame.f_code.co_filename).resolve() == RUNNER.resolve():
+            if (
+                event == "call"
+                and frame.f_code.co_name == "teardown"
+                and Path(frame.f_code.co_filename).resolve() == RUNNER.resolve()
+            ):
                 return local_tracer
             return None
 
@@ -366,8 +388,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(args[args.index("--permission-mode") + 1], "acceptEdits")
         self.assertEqual(args[args.index("--permission-prompts") + 1], "none")
         self.assertEqual((self.out / "prompt.txt").read_bytes(), LITERAL_PROMPT.encode("utf-8"))
-        self.assertEqual(json.loads((self.out / "result.json").read_text())["session_id"], state["session_id"])
-        event_types = [json.loads(l)["type"] for l in (self.out / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(
+            json.loads((self.out / "result.json").read_text())["session_id"], state["session_id"]
+        )
+        event_types = [
+            json.loads(line)["type"]
+            for line in (self.out / "events.jsonl").read_text().splitlines()
+        ]
         self.assertEqual(event_types, ["system", "assistant", "result"])
         kinds = [e["event"] for e in self.events(outcome)]
         self.assertEqual(kinds, ["started", "progress", "tool", "finished"])
@@ -377,7 +404,9 @@ class RunnerTests(unittest.TestCase):
     def test_prompt_is_transported_literally_on_stdin(self):
         with_bom = b"\xef\xbb\xbf" + LITERAL_PROMPT.encode("utf-8")
         self.prompt.write_bytes(with_bom)
-        outcome = self.run_turn("--allow-tool", "Read", "--allow-tool", "Bash(bun test)", "--tools", "Read,Edit")
+        outcome = self.run_turn(
+            "--allow-tool", "Read", "--allow-tool", "Bash(bun test)", "--tools", "Read,Edit"
+        )
         self.assertEqual(outcome.returncode, 0, outcome.stderr)
         received = self.received()[0]
         self.assertEqual(received["prompt"], LITERAL_PROMPT)
@@ -386,7 +415,9 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn(LITERAL_PROMPT.strip(), " ".join(received["args"]))
         args = received["args"]
         self.assertEqual(args.count("--allowedTools"), 1)
-        self.assertEqual(args[args.index("--allowedTools"):], ["--allowedTools", "Read", "Bash(bun test)"])
+        self.assertEqual(
+            args[args.index("--allowedTools") :], ["--allowedTools", "Read", "Bash(bun test)"]
+        )
         self.assertEqual(args[args.index("--tools") + 1], "Read,Edit")
 
     def test_cwd_is_restored_after_shell_startup_files(self):
@@ -459,7 +490,9 @@ class RunnerTests(unittest.TestCase):
         for code in (2, 64, 124, 130, 143):
             self.out = self.base / "runs" / f"exit-{code}"
             outcome = self.run_turn(mode="exit_code", FAKE_CLAUDE_EXIT=str(code))
-            self.assertEqual(outcome.returncode, 1, f"child exit {code} leaked as the runner exit code")
+            self.assertEqual(
+                outcome.returncode, 1, f"child exit {code} leaked as the runner exit code"
+            )
             state = self.state()
             self.assertEqual(state["status"], "failed")
             self.assertEqual(state["claude_exit_code"], code)
@@ -483,7 +516,11 @@ class RunnerTests(unittest.TestCase):
 
     # ── no bypass, no recursion ─────────────────────────────────────────
     def test_bypass_flags_are_not_exposed(self):
-        for flag in (["--permission-mode", "bypassPermissions"], ["--dangerously-skip-permissions"], ["--bare"]):
+        for flag in (
+            ["--permission-mode", "bypassPermissions"],
+            ["--dangerously-skip-permissions"],
+            ["--bare"],
+        ):
             outcome = self.run_turn(*flag)
             self.assertEqual(outcome.returncode, 64, flag)
             self.assertEqual(self.received(), [])
@@ -532,8 +569,13 @@ class RunnerTests(unittest.TestCase):
         path_bin.mkdir()
         (path_bin / "claude").write_text(FAKE_CLAUDE, encoding="utf-8")
         (path_bin / "claude").chmod(0o700)
-        outcome = subprocess.run(self.command(claude_bin=False), capture_output=True, text=True,
-                                 env=self.env(PATH=f"{path_bin}{os.pathsep}{self.env()['PATH']}"), timeout=60)
+        outcome = subprocess.run(
+            self.command(claude_bin=False),
+            capture_output=True,
+            text=True,
+            env=self.env(PATH=f"{path_bin}{os.pathsep}{self.env()['PATH']}"),
+            timeout=60,
+        )
         self.assertEqual(outcome.returncode, 1, outcome.stdout)
         self.assertIn("--claude-bin", outcome.stderr)
         self.assertEqual(self.received(), [])
@@ -586,11 +628,17 @@ class RunnerTests(unittest.TestCase):
     def test_oversized_prompt_is_rejected_without_being_loaded(self):
         limit = load_runner_module().MAX_PROMPT_BYTES
         with self.prompt.open("wb") as huge:  # sparse: 2 GiB apparent, almost nothing on disk
-            huge.seek(2 * 1024 ** 3 - 1)
+            huge.seek(2 * 1024**3 - 1)
             huge.write(b"\0")
-        cap = 512 * 1024 ** 2  # far below the file, comfortably above the interpreter
-        outcome = subprocess.run(self.command(), capture_output=True, text=True, env=self.env(), timeout=60,
-                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)))
+        cap = 512 * 1024**2  # far below the file, comfortably above the interpreter
+        outcome = subprocess.run(
+            self.command(),
+            capture_output=True,
+            text=True,
+            env=self.env(),
+            timeout=60,
+            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)),
+        )
         self.assertEqual(outcome.returncode, 1, outcome.stderr)
         self.assertIn(f"exceeds the runner's {limit} byte", outcome.stderr)
         self.assertNotIn("MemoryError", outcome.stderr)
@@ -615,21 +663,29 @@ class RunnerTests(unittest.TestCase):
         log = self.base / "stderr.log"
         with log.open("wb") as huge:
             huge.write(b"error: unknown option '--permission-prompts'\nmore output\n")
-            huge.truncate(4 * 1024 ** 3)  # sparse tail, far beyond any sane allocation
-        cap = 512 * 1024 ** 2
-        probe = ("import importlib.util, sys\nfrom pathlib import Path\n"
-                 "spec = importlib.util.spec_from_file_location('r', sys.argv[1])\n"
-                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
-                 "print(m.unsupported_flag(Path(sys.argv[2])))")
-        outcome = subprocess.run([sys.executable, "-c", probe, str(RUNNER), str(log)], capture_output=True,
-                                 text=True, timeout=60,
-                                 preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)))
+            huge.truncate(4 * 1024**3)  # sparse tail, far beyond any sane allocation
+        cap = 512 * 1024**2
+        probe = (
+            "import importlib.util, sys\nfrom pathlib import Path\n"
+            "spec = importlib.util.spec_from_file_location('r', sys.argv[1])\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "print(m.unsupported_flag(Path(sys.argv[2])))"
+        )
+        outcome = subprocess.run(
+            [sys.executable, "-c", probe, str(RUNNER), str(log)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)),
+        )
         self.assertEqual(outcome.returncode, 0, outcome.stderr)
         self.assertEqual(outcome.stdout.strip(), "--permission-prompts")
 
     def test_invalid_timeout_values_are_rejected_before_anything_happens(self):
         for value in ("nan", "inf", "-inf", "0", "-1"):
-            outcome = self.run_turn(f"--timeout={value}")  # '=' form: a leading '-' would read as an option
+            outcome = self.run_turn(
+                f"--timeout={value}"
+            )  # '=' form: a leading '-' would read as an option
             self.assertEqual(outcome.returncode, 64, value)
             self.assertIn("finite, positive", outcome.stderr, value)
             self.assertFalse(self.out.exists())
@@ -644,8 +700,13 @@ class RunnerTests(unittest.TestCase):
 
     # ── owned-process cleanup ───────────────────────────────────────────
     def start_hanging_run(self, *extra, mode="hang", **env_extra):
-        proc = subprocess.Popen(self.command(*extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=self.env(mode, **env_extra))
+        proc = subprocess.Popen(
+            self.command(*extra),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.env(mode, **env_extra),
+        )
         pids = None
         for line in proc.stdout:
             event = json.loads(line)
@@ -693,9 +754,13 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1, stderr)
             self.assertLess(time.monotonic() - started, 25)
             # A zombie would already count as dead; require the live child to be gone too.
-            self.assertTrue(wait_dead([child], seconds=5), "TERM-ignoring child survived the runner stop")
+            self.assertTrue(
+                wait_dead([child], seconds=5), "TERM-ignoring child survived the runner stop"
+            )
             self.assertFalse(is_alive(leader))
-            self.assertTrue(is_alive(bystander.pid), "cleanup reached a process outside the owned group")
+            self.assertTrue(
+                is_alive(bystander.pid), "cleanup reached a process outside the owned group"
+            )
             state = self.state()
             self.assertEqual(state["status"], "failed")
             self.assertEqual(state["exit_code"], 1)
@@ -715,13 +780,17 @@ class RunnerTests(unittest.TestCase):
         outcome = self.run_turn("--timeout", "3")
         elapsed = time.monotonic() - started
         self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
-        self.assertLess(elapsed, 3, "completion waited for the inherited pipe instead of Claude's exit")
+        self.assertLess(
+            elapsed, 3, "completion waited for the inherited pipe instead of Claude's exit"
+        )
         state = self.state()
         self.assertEqual(state["status"], "turn_complete")
         self.assertEqual(json.loads((self.out / "result.json").read_text())["result"], "done")
         self.assertIn('"type": "result"', (self.out / "events.jsonl").read_text())
-        self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5),
-                        "the startup background job outlived the turn")
+        self.assertTrue(
+            wait_group_empty(state["claude_process_group"], seconds=5),
+            "the startup background job outlived the turn",
+        )
 
     def test_closing_stdout_is_not_treated_as_exit(self):
         marker = self.base / "cleanup-finished"
@@ -747,7 +816,9 @@ class RunnerTests(unittest.TestCase):
             rc, stdout = self.run_in_process(mode="denied_with_surviving_child")
         leader, child = self.pids_from(stdout)
         try:
-            self.assertEqual(rc, 1, "a live owned child must not be reported as a mere approval need")
+            self.assertEqual(
+                rc, 1, "a live owned child must not be reported as a mere approval need"
+            )
             state = self.state()
             self.assertEqual(state["status"], "failed")
             self.assertEqual(state["exit_code"], 1)
@@ -775,7 +846,9 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("stop_survivors", state["error"])
             self.assertEqual(state["stop_survivors"], [child])
             self.assertEqual(len(state["stop_errors"]), 2)
-            self.assertEqual(json.loads((self.out / "result.json").read_text())["subtype"], "success")
+            self.assertEqual(
+                json.loads((self.out / "result.json").read_text())["subtype"], "success"
+            )
             self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "failed")
         finally:
             os.kill(child, signal.SIGKILL)
@@ -793,8 +866,10 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(state["status"], "turn_complete")
             self.assertEqual(json.loads((self.out / "result.json").read_text())["result"], "done")
             self.assertIn('"type": "result"', (self.out / "events.jsonl").read_text())
-            self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5),
-                            "the chatty writer outlived the turn")
+            self.assertTrue(
+                wait_group_empty(state["claude_process_group"], seconds=5),
+                "the chatty writer outlived the turn",
+            )
         finally:
             if child is not None:
                 with contextlib.suppress(ProcessLookupError):
@@ -826,7 +901,10 @@ class RunnerTests(unittest.TestCase):
             saved = {s: signal.getsignal(s) for s in handled}
             stdout = io.StringIO()
             try:
-                with mock.patch.dict(os.environ, self.env("hang"), clear=True), contextlib.redirect_stdout(stdout):
+                with (
+                    mock.patch.dict(os.environ, self.env("hang"), clear=True),
+                    contextlib.redirect_stdout(stdout),
+                ):
                     rc = module.main(argv)
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
@@ -853,8 +931,13 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("finished_at", state)
             self.assertNotIn("stop_survivors", state)
             self.assertNotIn("teardown_error", state)
-            self.assertTrue(wait_group_empty(leader, seconds=5), "a signal at teardown entry skipped the cleanup")
-            self.assertEqual(json.loads((self.out / "result.json").read_text())["subtype"], "success")
+            self.assertTrue(
+                wait_group_empty(leader, seconds=5),
+                "a signal at teardown entry skipped the cleanup",
+            )
+            self.assertEqual(
+                json.loads((self.out / "result.json").read_text())["subtype"], "success"
+            )
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(child, signal.SIGKILL)
@@ -869,19 +952,26 @@ class RunnerTests(unittest.TestCase):
             state = self.state()
             self.assertEqual(state["status"], "turn_complete")
             self.assertNotIn("stop_survivors", state)
-            self.assertTrue(wait_group_empty(leader, seconds=5), "a signal inside teardown abandoned the cleanup")
+            self.assertTrue(
+                wait_group_empty(leader, seconds=5),
+                "a signal inside teardown abandoned the cleanup",
+            )
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(child, signal.SIGKILL)
 
     def test_redefined_cd_and_debug_trap_cannot_reach_prompt_or_events(self):
         with (self.home / ".bashrc").open("a") as rc:
-            rc.write('cd() { IFS= read -r CD_LINE; echo "CD_SAW=[$CD_LINE]"; builtin cd "$@"; }\n'
-                     'trap \'IFS= read -r TRAP_LINE; echo "TRAP_SAW=[$TRAP_LINE]"\' DEBUG\n')
+            rc.write(
+                'cd() { IFS= read -r CD_LINE; echo "CD_SAW=[$CD_LINE]"; builtin cd "$@"; }\n'
+                "trap 'IFS= read -r TRAP_LINE; echo \"TRAP_SAW=[$TRAP_LINE]\"' DEBUG\n"
+            )
         outcome = self.run_turn()
         self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
         received = self.received()[0]
-        self.assertEqual(received["prompt"], LITERAL_PROMPT, "a startup function consumed prompt bytes")
+        self.assertEqual(
+            received["prompt"], LITERAL_PROMPT, "a startup function consumed prompt bytes"
+        )
         self.assertEqual(Path(received["cwd"]).resolve(), self.project.resolve())
         log = (self.out / "stderr.log").read_text()
         self.assertIn("TRAP_SAW=[]", log, "the DEBUG trap was not exercised")
@@ -894,23 +984,31 @@ class RunnerTests(unittest.TestCase):
 
     def test_job_controlled_startup_job_is_stopped_within_the_owned_session(self):
         with (self.home / ".bashrc").open("a") as rc:
-            rc.write('set -m; sleep 300 & echo "JOB_PID=$! JOB_PGID=$(cut -d" " -f5 /proc/$!/stat)" >&2; set +m\n')
+            rc.write(
+                'set -m; sleep 300 & echo "JOB_PID=$! JOB_PGID=$(cut -d" " -f5 /proc/$!/stat)" >&2; set +m\n'
+            )
         bystander = subprocess.Popen(["sleep", "300"], start_new_session=True)
         try:
             outcome = self.run_turn()
             self.assertEqual(outcome.returncode, 0, outcome.stderr + outcome.stdout)
             state = self.state()
-            match = re.search(r"JOB_PID=(\d+) JOB_PGID=(\d+)", (self.out / "stderr.log").read_text())
+            match = re.search(
+                r"JOB_PID=(\d+) JOB_PGID=(\d+)", (self.out / "stderr.log").read_text()
+            )
             self.assertIsNotNone(match, "the job-controlled startup job was not started")
             job_pid, job_pgid = int(match.group(1)), int(match.group(2))
             sid = state["claude_process_group"]
-            self.assertNotEqual(job_pgid, sid, "fixture did not place the job in a second process group")
+            self.assertNotEqual(
+                job_pgid, sid, "fixture did not place the job in a second process group"
+            )
             self.assertEqual(state["status"], "turn_complete")
             self.assertNotIn("stop_survivors", state)
             self.assertNotIn("stop_errors", state)
             self.assertFalse(is_alive(job_pid), "the job-controlled startup job outlived the turn")
             self.assertEqual(session_members(sid), {})
-            self.assertTrue(is_alive(bystander.pid), "cleanup reached a process outside the owned session")
+            self.assertTrue(
+                is_alive(bystander.pid), "cleanup reached a process outside the owned session"
+            )
         finally:
             bystander.kill()
             bystander.wait()
@@ -943,8 +1041,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(state["interrupted_by"], "SIGTERM")
         self.assertIn("claude_process_group", state)
         self.assertIn("finished_at", state)
-        self.assertTrue(wait_group_empty(state["claude_process_group"], seconds=5),
-                        "a launch-time cancel left the owned group running")
+        self.assertTrue(
+            wait_group_empty(state["claude_process_group"], seconds=5),
+            "a launch-time cancel left the owned group running",
+        )
         self.assertEqual(json.loads(stdout.splitlines()[-1])["status"], "interrupted")
 
     @contextlib.contextmanager
@@ -971,7 +1071,9 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(state["claude_process_group"], leader)
         self.assertEqual([c[1] for c in calls], [signal.SIGTERM, signal.SIGKILL])
         self.assertTrue(all(pgid == leader for pgid, _, _ in calls), calls)
-        self.assertTrue(all(pinned for _, _, pinned in calls), "a signal was sent after ownership was released")
+        self.assertTrue(
+            all(pinned for _, _, pinned in calls), "a signal was sent after ownership was released"
+        )
         self.assertFalse(Path(f"/proc/{leader}/stat").exists(), "leader was not reaped at the end")
         self.assertFalse(is_alive(child))
         self.assertNotIn("stop_errors", state)
@@ -1013,7 +1115,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_second_signal_during_teardown_does_not_abandon_the_group(self):
         marker = self.base / "term-seen"
-        proc, pids = self.start_hanging_run(mode="hang_ignore_term", FAKE_CLAUDE_TERM_MARKER=str(marker))
+        proc, pids = self.start_hanging_run(
+            mode="hang_ignore_term", FAKE_CLAUDE_TERM_MARKER=str(marker)
+        )
         leader, child = pids
         proc.send_signal(signal.SIGINT)
         deadline = time.monotonic() + 10
@@ -1025,7 +1129,10 @@ class RunnerTests(unittest.TestCase):
         proc.send_signal(signal.SIGTERM)
         stdout, stderr = proc.communicate(timeout=60)
         self.assertEqual(proc.returncode, 130, stderr)
-        self.assertTrue(wait_dead([leader, child], seconds=5), "group survived a repeated signal during teardown")
+        self.assertTrue(
+            wait_dead([leader, child], seconds=5),
+            "group survived a repeated signal during teardown",
+        )
         state = self.state()
         self.assertEqual(state["status"], "interrupted")
         self.assertEqual(state["interrupted_by"], "SIGINT")
@@ -1036,7 +1143,10 @@ class RunnerTests(unittest.TestCase):
     def test_zombie_is_not_mistaken_for_a_running_child(self):
         zombie = subprocess.Popen(["true"])
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and Path(f"/proc/{zombie.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z":
+        while (
+            time.monotonic() < deadline
+            and Path(f"/proc/{zombie.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+        ):
             time.sleep(0.05)
         try:
             self.assertFalse(is_alive(zombie.pid))

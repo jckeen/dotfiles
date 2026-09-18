@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise shipping boundaries with local Git and stubbed review services."""
+
 import json
 import os
 from pathlib import Path
@@ -7,7 +8,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-
 
 ROOT = Path(__file__).resolve().parents[3]
 REAL_GIT = shutil.which("git")
@@ -32,11 +32,20 @@ class ShippingTests(unittest.TestCase):
         self.hook = self.source / "githooks/pre-push"
         shutil.copy2(ROOT / "githooks/pre-push", self.hook)
         self.calls = self.root / "calls"
-        self.env = dict(os.environ, PATH=f"{self.bin}:/usr/bin:/bin", CALLS=str(self.calls),
-                        CODEX_GATE_BIN=str(self.bin / "codex"),
-                        REAL_GIT=REAL_GIT, LOG_DIR=str(self.root / "logs"))
+        self.env = dict(
+            os.environ,
+            PATH=f"{self.bin}:/usr/bin:/bin",
+            CALLS=str(self.calls),
+            CODEX_GATE_BIN=str(self.bin / "codex"),
+            REAL_GIT=REAL_GIT,
+            LOG_DIR=str(self.root / "logs"),
+        )
         for key in list(self.env):
-            if key.startswith("BASH_FUNC_") or key.startswith("GIT_") or key in ("GITLEAKS_SKIP", "REVIEW_RECEIPT_BASE", "CODEX_GATE_TIMEOUT"):
+            if (
+                key.startswith("BASH_FUNC_")
+                or key.startswith("GIT_")
+                or key in ("GITLEAKS_SKIP", "REVIEW_RECEIPT_BASE", "CODEX_GATE_TIMEOUT")
+            ):
                 del self.env[key]
         self.command("git", ["init", "-qb", "main"])
         self.command("git", ["config", "user.email", "test@example.test"])
@@ -50,25 +59,35 @@ class ShippingTests(unittest.TestCase):
         self.command("git", ["push", str(self.remote), "main"])
         self.command("git", ["update-ref", "refs/remotes/origin/main", self.base])
         self.command("git", ["config", "remote.origin.url", str(self.root / "remote")])
-        self.command("git", ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        self.command(
+            "git", ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]
+        )
         self.command("git", ["switch", "-qc", "feature"])
         self.command("git", ["branch", "--set-upstream-to", "origin/main"])
         (self.repo / "code.txt").write_text("changed\n")
         self.command("git", ["commit", "-qam", "change"])
         self.head = self.command("git", ["rev-parse", "HEAD"]).stdout.strip()
         self.env["VALID_HEAD"] = self.head
-        self.write(self.scripts / "review-receipt.py", '''import json, os, sys
+        self.write(
+            self.scripts / "review-receipt.py",
+            """import json, os, sys
 with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(["receipt", *sys.argv[1:]]) + "\\n")
 head = sys.argv[sys.argv.index("--head") + 1]
 sys.exit(0 if head == os.environ["VALID_HEAD"] and os.environ.get("RECEIPT_FAIL") != "1" else 2)
-''')
-        self.write(self.scripts / "codex-review-gate.sh", '''#!/bin/bash
+""",
+        )
+        self.write(
+            self.scripts / "codex-review-gate.sh",
+            """#!/bin/bash
 printf 'gate\\n' >> "$CALLS"
 if [ "${SWITCH_BRANCH:-0}" = 1 ]; then git switch -qc another-feature; fi
 if [ "${DIRTY_DURING_REVIEW:-0}" = 1 ]; then echo changed-during-review >> code.txt; fi
 exit "${GATE_RC:-0}"
-''')
-        self.write(self.bin / "git", '''#!/bin/bash
+""",
+        )
+        self.write(
+            self.bin / "git",
+            """#!/bin/bash
 for arg in "$@"; do
   if [ "$arg" = status ] && [ "${STATUS_FAIL:-0}" = 1 ]; then exit 128; fi
 done
@@ -78,22 +97,36 @@ if [ "${1:-}" = push ]; then
   exit "${PUSH_RC:-0}"
 fi
 exec "$REAL_GIT" "$@"
-''')
-        self.write(self.bin / "claude", '''#!/bin/bash
+""",
+        )
+        self.write(
+            self.bin / "claude",
+            """#!/bin/bash
 echo 'VERDICT: SAFE TO PUSH'
-''')
-        self.write(self.bin / "gitleaks", '''#!/bin/bash
+""",
+        )
+        self.write(
+            self.bin / "gitleaks",
+            """#!/bin/bash
 printf 'scan\\n' >> "$CALLS"
 exit "${SCAN_RC:-0}"
-''')
+""",
+        )
 
     def write(self, path, content):
         path.write_text(content)
         path.chmod(0o755)
 
     def command(self, exe, args, stdin=None):
-        return subprocess.run([exe, *args], cwd=self.repo, env=self.env, input=stdin,
-                              text=True, capture_output=True, timeout=15)
+        return subprocess.run(
+            [exe, *args],
+            cwd=self.repo,
+            env=self.env,
+            input=stdin,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
 
     def events(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
@@ -107,14 +140,37 @@ exit "${SCAN_RC:-0}"
     def record_real_review(self, base="main"):
         shutil.copy2(ROOT / "claude/scripts/review-receipt.py", self.scripts / "review-receipt.py")
         helper = str(self.scripts / "review-receipt.py")
-        begun = self.command("python3", [helper, "begin", "--repo", str(self.repo),
-                             "--base", base, "--scope", "committed", "--reviewer", "codex"])
+        begun = self.command(
+            "python3",
+            [
+                helper,
+                "begin",
+                "--repo",
+                str(self.repo),
+                "--base",
+                base,
+                "--scope",
+                "committed",
+                "--reviewer",
+                "codex",
+            ],
+        )
         self.assertEqual(begun.returncode, 0, begun.stderr)
         output = self.root / "review.json"
         output.write_text('{"verdict":"approve","findings":[]}')
-        completed = self.command("python3", [helper, "complete", "--snapshot",
-                                 str(Path(begun.stdout.strip()) / "snapshot.json"),
-                                 "--outcome", "passed", "--output", str(output)])
+        completed = self.command(
+            "python3",
+            [
+                helper,
+                "complete",
+                "--snapshot",
+                str(Path(begun.stdout.strip()) / "snapshot.json"),
+                "--outcome",
+                "passed",
+                "--output",
+                str(output),
+            ],
+        )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_annotated_tag_requires_a_reviewed_current_commit(self):
@@ -125,15 +181,21 @@ exit "${SCAN_RC:-0}"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.command("git", ["tag", "-a", "unreviewed", "-m", "older release", self.base])
         tag = self.command("git", ["rev-parse", "refs/tags/unreviewed"]).stdout.strip()
-        self.assertNotEqual(self.run_hook(f"refs/tags/unreviewed {tag} refs/tags/unreviewed {ZERO}\n").returncode, 0)
+        self.assertNotEqual(
+            self.run_hook(f"refs/tags/unreviewed {tag} refs/tags/unreviewed {ZERO}\n").returncode, 0
+        )
         reviewed_tag = self.command("git", ["rev-parse", "refs/tags/reviewed"]).stdout.strip()
         replaced = self.command("git", ["replace", tag, reviewed_tag])
         self.assertEqual(replaced.returncode, 0, replaced.stderr)
-        self.assertNotEqual(self.run_hook(f"refs/tags/unreviewed {tag} refs/tags/unreviewed {ZERO}\n").returncode, 0)
+        self.assertNotEqual(
+            self.run_hook(f"refs/tags/unreviewed {tag} refs/tags/unreviewed {ZERO}\n").returncode, 0
+        )
         blob = self.command("git", ["rev-parse", "HEAD:code.txt"]).stdout.strip()
         self.command("git", ["tag", "-a", "blob", "-m", "non-commit", blob])
         tag = self.command("git", ["rev-parse", "refs/tags/blob"]).stdout.strip()
-        self.assertNotEqual(self.run_hook(f"refs/tags/blob {tag} refs/tags/blob {ZERO}\n").returncode, 0)
+        self.assertNotEqual(
+            self.run_hook(f"refs/tags/blob {tag} refs/tags/blob {ZERO}\n").returncode, 0
+        )
 
     def test_hook_checks_receipt_before_scan(self):
         result = self.run_hook()
@@ -151,7 +213,9 @@ exit "${SCAN_RC:-0}"
 
     def test_hook_accepts_only_the_explicitly_selected_review_base(self):
         tree = self.command("git", ["rev-parse", "main^{tree}"]).stdout.strip()
-        release = self.command("git", ["commit-tree", tree, "-p", self.base], "release\n").stdout.strip()
+        release = self.command(
+            "git", ["commit-tree", tree, "-p", self.base], "release\n"
+        ).stdout.strip()
         self.command("git", ["update-ref", "refs/heads/release", release])
         self.record_real_review("release")
         self.assertNotEqual(self.run_hook().returncode, 0)
@@ -197,8 +261,15 @@ exit "${SCAN_RC:-0}"
         self.assertNotEqual(self.run_hook().returncode, 0)
 
     def run_wrapper(self, auto=True, stdin=None):
-        return self.command("bash", [str(self.scripts / "review-and-push.sh"),
-                            str(self.repo), *(["--auto-push"] if auto else [])], stdin)
+        return self.command(
+            "bash",
+            [
+                str(self.scripts / "review-and-push.sh"),
+                str(self.repo),
+                *(["--auto-push"] if auto else []),
+            ],
+            stdin,
+        )
 
     def test_common_parser_preserves_repository_path_and_other_options(self):
         for suffix in (" ", "\n"):
@@ -206,19 +277,41 @@ exit "${SCAN_RC:-0}"
                 repo = self.root / ("repo" + suffix)
                 repo.mkdir()
                 logs = self.root / ("logs" + suffix)
-                result = self.command("bash", ["-c", '''source "$1"
+                result = self.command(
+                    "bash",
+                    [
+                        "-c",
+                        """source "$1"
 shift
 parse_args "$@"
 printf '%s\\0' "$REPO_DIR" "$LOG_DIR" "$MAX_TURNS" "$FULL_AUTO"
-''', "parser-fixture", str(self.scripts / "common.sh"), "--log-dir", str(logs),
-                    "--max-turns", "7", str(repo), "--full-auto"])
+""",
+                        "parser-fixture",
+                        str(self.scripts / "common.sh"),
+                        "--log-dir",
+                        str(logs),
+                        "--max-turns",
+                        "7",
+                        str(repo),
+                        "--full-auto",
+                    ],
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.split("\0"), [str(repo), str(logs), "7", "true", ""])
 
     def test_common_parser_reports_resolution_failure_in_a_conditional(self):
-        result = self.command("bash", ["-c", '''source "$1"
+        result = self.command(
+            "bash",
+            [
+                "-c",
+                """source "$1"
 if parse_args "$2"; then exit 0; else exit 7; fi
-''', "parser-fixture", str(self.scripts / "common.sh"), str(self.root / "missing")])
+""",
+                "parser-fixture",
+                str(self.scripts / "common.sh"),
+                str(self.root / "missing"),
+            ],
+        )
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
 
     def test_wrapper_checks_receipt_immediately_before_push(self):
@@ -234,10 +327,13 @@ if parse_args "$2"; then exit 0; else exit 7; fi
         self.command("git", ["commit", "-qm", "test fixture"])
         self.head = self.command("git", ["rev-parse", "HEAD"]).stdout.strip()
         self.env["VALID_HEAD"] = self.head
-        self.write(self.bin / "npm", '''#!/bin/bash
+        self.write(
+            self.bin / "npm",
+            """#!/bin/bash
 printf 'tests\\n' >> "$CALLS"
 if [ "${DIRTY_DURING_TESTS:-0}" = 1 ]; then echo changed-during-tests >> code.txt; fi
-''')
+""",
+        )
 
     def test_wrapper_refuses_uncommitted_input_before_tests(self):
         self.enable_test_runner()
@@ -337,13 +433,19 @@ if [ "${DIRTY_DURING_TESTS:-0}" = 1 ]; then echo changed-during-tests >> code.tx
 
     def test_wrapper_refuses_unfetched_default_branch(self):
         self.command("git", ["switch", "-qc", "trunk"])
-        self.command("git", ["--git-dir", str(self.remote), "update-ref", "refs/heads/trunk", self.base])
-        self.command("git", ["--git-dir", str(self.remote), "symbolic-ref", "HEAD", "refs/heads/trunk"])
+        self.command(
+            "git", ["--git-dir", str(self.remote), "update-ref", "refs/heads/trunk", self.base]
+        )
+        self.command(
+            "git", ["--git-dir", str(self.remote), "symbolic-ref", "HEAD", "refs/heads/trunk"]
+        )
         self.assertNotEqual(self.run_wrapper().returncode, 0)
         self.assertNotIn("push", self.events())
 
     def test_wrapper_ignores_stale_remote_tracking_default(self):
-        self.command("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"])
+        self.command(
+            "git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]
+        )
         self.command("git", ["switch", "main"])
         self.env["VALID_HEAD"] = self.base
         self.assertNotEqual(self.run_wrapper().returncode, 0)
@@ -362,8 +464,12 @@ if [ "${DIRTY_DURING_TESTS:-0}" = 1 ]; then echo changed-during-tests >> code.tx
     def test_wrapper_validates_pushurl_default(self):
         push_remote = self.root / "push-remote"
         self.command("git", ["clone", "--bare", str(self.remote), str(push_remote)])
-        self.command("git", ["--git-dir", str(push_remote), "update-ref", "refs/heads/feature", self.base])
-        self.command("git", ["--git-dir", str(push_remote), "symbolic-ref", "HEAD", "refs/heads/feature"])
+        self.command(
+            "git", ["--git-dir", str(push_remote), "update-ref", "refs/heads/feature", self.base]
+        )
+        self.command(
+            "git", ["--git-dir", str(push_remote), "symbolic-ref", "HEAD", "refs/heads/feature"]
+        )
         self.command("git", ["config", "remote.origin.pushurl", str(push_remote)])
         self.assertNotEqual(self.run_wrapper().returncode, 0)
         self.assertNotIn("push", self.events())

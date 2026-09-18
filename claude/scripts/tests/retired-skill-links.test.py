@@ -12,13 +12,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-
 REPO = Path(__file__).resolve().parents[3]
 LINKS = {
     "claude": [(".claude/skills/fable-mode/SKILL.md", "claude/skills/fable-mode/SKILL.md")],
     "codex": [
         (".codex/skills/fable-mode/SKILL.md", "agents/skills/fable-mode/SKILL.md"),
-        (".codex/skills/fable-mode/agents/openai.yaml", "agents/skills/fable-mode/agents/openai.yaml"),
+        (
+            ".codex/skills/fable-mode/agents/openai.yaml",
+            "agents/skills/fable-mode/agents/openai.yaml",
+        ),
         (".agents/skills/fable-mode", "agents/skills/fable-mode"),
     ],
     "antigravity": [(".gemini/config/skills/fable-mode", "agents/skills/fable-mode")],
@@ -36,14 +38,18 @@ def snapshot(root):
         for name in dirs + files:
             path = Path(parent) / name
             relative = str(path.relative_to(root))
-            result[relative] = ("link", os.readlink(path)) if path.is_symlink() else (
-                ("dir",) if path.is_dir() else ("file", path.read_bytes())
+            result[relative] = (
+                ("link", os.readlink(path))
+                if path.is_symlink()
+                else (("dir",) if path.is_dir() else ("file", path.read_bytes()))
             )
     return result
 
 
 def load_retirement_helper(repo):
-    spec = importlib.util.spec_from_file_location("retirement", repo / "claude/scripts/retired-skill-links.py")
+    spec = importlib.util.spec_from_file_location(
+        "retirement", repo / "claude/scripts/retired-skill-links.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -60,7 +66,10 @@ def fixture(runtime):
         home.mkdir()
         for name in [f"check-{runtime}.sh", "lib-checks.sh", "lib-symlinks.sh"]:
             shutil.copy2(REPO / name, repo / name)
-        helpers = [Path("claude/scripts") / name for name in ("retired-skill-links.sh", "retired-skill-links.py")]
+        helpers = [
+            Path("claude/scripts") / name
+            for name in ("retired-skill-links.sh", "retired-skill-links.py")
+        ]
         for helper in helpers:
             if (REPO / helper).exists():
                 (repo / helper).parent.mkdir(parents=True, exist_ok=True)
@@ -88,9 +97,15 @@ def fixture(runtime):
         def run(*args):
             return subprocess.run(
                 ["bash", str(repo / f"check-{runtime}.sh"), *args],
-                env={**os.environ, "HOME": str(home), "CODEX_MEMORY_REPO": str(base / "no-memory"),
-                     "AGY_MEMORY_REPO": str(base / "no-memory")},
-                text=True, capture_output=True, timeout=15,
+                env={
+                    **os.environ,
+                    "HOME": str(home),
+                    "CODEX_MEMORY_REPO": str(base / "no-memory"),
+                    "AGY_MEMORY_REPO": str(base / "no-memory"),
+                },
+                text=True,
+                capture_output=True,
+                timeout=15,
             )
 
         yield repo, home, run
@@ -137,8 +152,11 @@ class DocumentRetirementTests(unittest.TestCase):
                     destination.mkdir()
                     (destination / "private.txt").write_text("operator-owned directory\n")
                 else:
-                    target = {"custom-link": "custom/FABLE.md", "near-match": "claude/FABLE.md.old",
-                              "newline-target": "claude/FABLE.md\n"}[kind]
+                    target = {
+                        "custom-link": "custom/FABLE.md",
+                        "near-match": "claude/FABLE.md.old",
+                        "newline-target": "claude/FABLE.md\n",
+                    }[kind]
                     destination.symlink_to(repo / target)
                 link_to(home / ".claude/other-retired.md", repo / "claude/other-retired.md")
                 before = snapshot(home)
@@ -217,16 +235,27 @@ class RetirementTests(unittest.TestCase):
             helper = repo / "claude/scripts/retired-skill-links.sh"
             subprocess.run(["git", "-C", str(repo), "add", str(helper)], check=True)
             enumeration = subprocess.run(
-                ["bash", "-c", 'source "$1/lib-symlinks.sh"; symlink_enumerate "$1/claude" "$1/destination"',
-                 "mode-test", str(repo)], capture_output=True, text=True, check=True,
+                [
+                    "bash",
+                    "-c",
+                    'source "$1/lib-symlinks.sh"; symlink_enumerate "$1/claude" "$1/destination"',
+                    "mode-test",
+                    str(repo),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
             )
             for line in enumeration.stdout.splitlines():
                 source, _, _, flags = line.split("\t")
                 if flags == "executable":
                     path = Path(source)
                     path.chmod(path.stat().st_mode | 0o111)
-            result = subprocess.run(["git", "-C", str(repo), "diff", "--exit-code", "--", str(helper)],
-                                    capture_output=True, text=True)
+            result = subprocess.run(
+                ["git", "-C", str(repo), "diff", "--exit-code", "--", str(helper)],
+                capture_output=True,
+                text=True,
+            )
             self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_relative_arguments_are_preserved_without_hanging(self):
@@ -246,11 +275,21 @@ class RetirementTests(unittest.TestCase):
                     bundle = "missing-bundle"
                 try:
                     result = subprocess.run(
-                        ["bash", "-c", 'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
-                         'green() { :; }; red() { :; }; heal_retired_skill_link "$2" "$3" "$4"',
-                         "relative-test", str(repo / "claude/scripts/retired-skill-links.sh"),
-                         candidate, source, bundle], cwd=home.parent,
-                        text=True, capture_output=True, timeout=3,
+                        [
+                            "bash",
+                            "-c",
+                            'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
+                            'green() { :; }; red() { :; }; heal_retired_skill_link "$2" "$3" "$4"',
+                            "relative-test",
+                            str(repo / "claude/scripts/retired-skill-links.sh"),
+                            candidate,
+                            source,
+                            bundle,
+                        ],
+                        cwd=home.parent,
+                        text=True,
+                        capture_output=True,
+                        timeout=3,
                     )
                 except subprocess.TimeoutExpired:
                     self.fail(f"helper hung with relative {relative}")
@@ -263,8 +302,11 @@ class RetirementTests(unittest.TestCase):
                 try:
                     subprocess.run(
                         ["bash", str(repo / f"check-{runtime}.sh"), "--heal", "--strict"],
-                        env={**os.environ, "HOME": home.name}, cwd=home.parent,
-                        capture_output=True, text=True, timeout=3,
+                        env={**os.environ, "HOME": home.name},
+                        cwd=home.parent,
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
                     )
                 except subprocess.TimeoutExpired:
                     self.fail(f"{runtime} checker hung with relative HOME")
@@ -340,8 +382,15 @@ class RetirementTests(unittest.TestCase):
 
     def test_unexpected_targets_are_preserved(self):
         for runtime in LINKS:
-            for target in ["other/skills/fable-mode", "agents/skills/fable-mode-extra", "antigravity/skills/fable-mode"]:
-                with self.subTest(runtime=runtime, target=target), fixture(runtime) as (repo, home, run):
+            for target in [
+                "other/skills/fable-mode",
+                "agents/skills/fable-mode-extra",
+                "antigravity/skills/fable-mode",
+            ]:
+                with (
+                    self.subTest(runtime=runtime, target=target),
+                    fixture(runtime) as (repo, home, run),
+                ):
                     destination = home / LINKS[runtime][0][0]
                     destination.unlink()
                     destination.symlink_to(repo / target)
@@ -352,7 +401,10 @@ class RetirementTests(unittest.TestCase):
     def test_target_trailing_newlines_are_not_stripped_before_comparison(self):
         for runtime in LINKS:
             for suffix in ["\n", "\n\n"]:
-                with self.subTest(runtime=runtime, suffix=suffix), fixture(runtime) as (repo, home, run):
+                with (
+                    self.subTest(runtime=runtime, suffix=suffix),
+                    fixture(runtime) as (repo, home, run),
+                ):
                     for dest, source in LINKS[runtime]:
                         link = home / dest
                         link.unlink()
@@ -367,14 +419,23 @@ class RetirementTests(unittest.TestCase):
             link = home / LINKS["claude"][0][0]
             source = repo / LINKS["claude"][0][1]
             result = subprocess.run(
-                ["bash", "-c", 'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
-                 'green() { :; }; red() { :; }; '
-                 'readlink() { printf "%s\\n" "$READLINK_TEST_TARGET"; return 1; }; '
-                 'heal_retired_skill_link "$2" "$3" "$4"',
-                 "readlink-failure-test", str(repo / "claude/scripts/retired-skill-links.sh"),
-                 str(link), str(source), str(source.parent)],
+                [
+                    "bash",
+                    "-c",
+                    'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
+                    "green() { :; }; red() { :; }; "
+                    'readlink() { printf "%s\\n" "$READLINK_TEST_TARGET"; return 1; }; '
+                    'heal_retired_skill_link "$2" "$3" "$4"',
+                    "readlink-failure-test",
+                    str(repo / "claude/scripts/retired-skill-links.sh"),
+                    str(link),
+                    str(source),
+                    str(source.parent),
+                ],
                 env={**os.environ, "READLINK_TEST_TARGET": str(source)},
-                text=True, capture_output=True, timeout=3,
+                text=True,
+                capture_output=True,
+                timeout=3,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(link.is_symlink())
@@ -382,7 +443,10 @@ class RetirementTests(unittest.TestCase):
     def test_newline_named_symlink_ancestors_are_not_traversed(self):
         for runtime in LINKS:
             for boundary in ["source", "home"]:
-                with self.subTest(runtime=runtime, boundary=boundary), fixture(runtime) as (repo, home, _):
+                with (
+                    self.subTest(runtime=runtime, boundary=boundary),
+                    fixture(runtime) as (repo, home, _),
+                ):
                     command_repo, command_home = repo, home
                     alias = repo.parent / (boundary + "\n")
                     if boundary == "home":
@@ -395,14 +459,19 @@ class RetirementTests(unittest.TestCase):
                             if entry[0] == "link":
                                 path = home / dest
                                 path.unlink()
-                                path.symlink_to(str(command_repo) + entry[1][len(str(repo)):])
+                                path.symlink_to(str(command_repo) + entry[1][len(str(repo)) :])
                     before = snapshot(home)
                     subprocess.run(
                         ["bash", str(command_repo / f"check-{runtime}.sh"), "--heal", "--strict"],
-                        env={**os.environ, "HOME": str(command_home),
-                             "CODEX_MEMORY_REPO": str(repo.parent / "no-memory"),
-                             "AGY_MEMORY_REPO": str(repo.parent / "no-memory")},
-                        text=True, capture_output=True, timeout=3,
+                        env={
+                            **os.environ,
+                            "HOME": str(command_home),
+                            "CODEX_MEMORY_REPO": str(repo.parent / "no-memory"),
+                            "AGY_MEMORY_REPO": str(repo.parent / "no-memory"),
+                        },
+                        text=True,
+                        capture_output=True,
+                        timeout=3,
                     )
                     self.assertEqual(snapshot(home), before)
 
@@ -436,18 +505,29 @@ class RetirementTests(unittest.TestCase):
             replacement = home / "operator-replacement"
             replacement.write_text("operator-owned replacement during readlink\n")
             result = subprocess.run(
-                ["bash", "-c", 'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
-                 'green() { printf "%s\\n" "$*"; }; red() { printf "%s\\n" "$*"; }; '
-                 'readlink() { command readlink "$1"; mv -- "$REPLACEMENT" "$1"; }; '
-                 'heal_retired_skill_link "$2" "$3" "$4"',
-                 "replacement-test", str(repo / "claude/scripts/retired-skill-links.sh"),
-                 str(destination), str(source), str(source.parent)],
+                [
+                    "bash",
+                    "-c",
+                    'source "$1"; HEAL=1; FIXED=0; ERRORS=0; '
+                    'green() { printf "%s\\n" "$*"; }; red() { printf "%s\\n" "$*"; }; '
+                    'readlink() { command readlink "$1"; mv -- "$REPLACEMENT" "$1"; }; '
+                    'heal_retired_skill_link "$2" "$3" "$4"',
+                    "replacement-test",
+                    str(repo / "claude/scripts/retired-skill-links.sh"),
+                    str(destination),
+                    str(source),
+                    str(source.parent),
+                ],
                 env={**os.environ, "REPLACEMENT": str(replacement)},
-                capture_output=True, text=True, timeout=3,
+                capture_output=True,
+                text=True,
+                timeout=3,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(destination.is_file(), result.stdout)
-            self.assertEqual(destination.read_text(), "operator-owned replacement during readlink\n")
+            self.assertEqual(
+                destination.read_text(), "operator-owned replacement during readlink\n"
+            )
             self.assertNotIn("RETIRED", result.stdout)
 
     def test_replacement_at_capture_is_restored(self):
@@ -463,7 +543,9 @@ class RetirementTests(unittest.TestCase):
                     replacement.symlink_to("operator-selected-target")
                 rename = os.rename
 
-                def replace_then_capture(*args, **kwargs):
+                def replace_then_capture(
+                    *args, replacement=replacement, destination=destination, rename=rename, **kwargs
+                ):
                     os.replace(replacement, destination)
                     rename(*args, **kwargs)
 
@@ -491,7 +573,10 @@ class RetirementTests(unittest.TestCase):
                 destination.write_text("second replacement\n")
 
             output = io.StringIO()
-            with patch.object(helper.os, "rename", side_effect=replace_capture_then_replace_again), redirect_stdout(output):
+            with (
+                patch.object(helper.os, "rename", side_effect=replace_capture_then_replace_again),
+                redirect_stdout(output),
+            ):
                 result = helper.retire(str(destination), str(source), str(source.parent))
             self.assertEqual(result, 2)
             self.assertEqual(destination.read_text(), "second replacement\n")
@@ -515,12 +600,17 @@ class RetirementTests(unittest.TestCase):
                 rename(*args, **kwargs)
 
             output = io.StringIO()
-            with patch.object(helper.os, "rename", side_effect=replace_with_directory_then_capture), redirect_stdout(output):
+            with (
+                patch.object(helper.os, "rename", side_effect=replace_with_directory_then_capture),
+                redirect_stdout(output),
+            ):
                 result = helper.retire(str(destination), str(source), str(source.parent))
             self.assertEqual(result, 2)
             retained = list(destination.parent.glob(".retired-skill-*/entry"))
             self.assertEqual(len(retained), 1)
-            self.assertEqual((retained[0] / "private.txt").read_text(), "operator directory content\n")
+            self.assertEqual(
+                (retained[0] / "private.txt").read_text(), "operator directory content\n"
+            )
             self.assertIn(str(retained[0]), output.getvalue())
 
     def test_parent_replacement_cannot_redirect_capture(self):
@@ -579,8 +669,13 @@ class RetirementTests(unittest.TestCase):
     def test_inaccessible_source_ancestors_are_not_treated_as_absent(self):
         for runtime in LINKS:
             for restored in [False, True]:
-                with self.subTest(runtime=runtime, restored=restored), fixture(runtime) as (repo, home, run):
-                    source_root = repo / ("claude/skills" if runtime == "claude" else "agents/skills")
+                with (
+                    self.subTest(runtime=runtime, restored=restored),
+                    fixture(runtime) as (repo, home, run),
+                ):
+                    source_root = repo / (
+                        "claude/skills" if runtime == "claude" else "agents/skills"
+                    )
                     source_root.mkdir(parents=True)
                     if restored:
                         bundle = source_root / "fable-mode"
@@ -597,12 +692,20 @@ class RetirementTests(unittest.TestCase):
                     finally:
                         source_root.chmod(0o700)
                     if restored:
-                        self.assertEqual((bundle / "SKILL.md").read_text(), "restored operator source\n")
+                        self.assertEqual(
+                            (bundle / "SKILL.md").read_text(), "restored operator source\n"
+                        )
 
     def test_symlinked_ancestors_are_never_traversed_for_healing(self):
         roots = {
             "claude": [".claude", ".claude/skills", ".claude/skills/fable-mode"],
-            "codex": [".codex", ".codex/skills", ".codex/skills/fable-mode", ".agents", ".agents/skills"],
+            "codex": [
+                ".codex",
+                ".codex/skills",
+                ".codex/skills/fable-mode",
+                ".agents",
+                ".agents/skills",
+            ],
             "antigravity": [".gemini", ".gemini/config", ".gemini/config/skills"],
         }
         for runtime, paths in roots.items():

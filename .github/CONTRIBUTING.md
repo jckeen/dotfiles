@@ -41,6 +41,20 @@ If your PR touches `claude/hooks/*.hook.ts`:
 
 - Run `bunx tsc --noEmit` in `claude/hooks/` — it must pass.
 
+If your PR touches `*.py`:
+
+- Run both, from the repo root, with the ruff version pinned in `ruff.toml`
+  (`required-version`) — they must be clean, matching the `python-lint` CI job:
+
+```bash
+uvx ruff@0.16.8 check .
+uvx ruff@0.16.8 format --check .
+```
+
+`ruff format .` and `ruff check --fix .` apply the mechanical fixes; anything
+left (e.g. B023 loop-variable closures) is fixed by hand, never with a
+blanket `noqa`.
+
 If your PR touches `.github/workflows/*.yml` or any tracked `.json`:
 
 - Run [`actionlint`](https://github.com/rhysd/actionlint) from the repo root
