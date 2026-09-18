@@ -215,7 +215,7 @@ someone chose to run.
 | Subcommand | What it does |
 |---|---|
 | `review-receipt.py lane --repo . --scope committed [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand |
-| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Run it with **no** `--reviewer`; naming a lane only narrows the check |
+| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
 | `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
 
 `required_lane` is one of `any` (tier-1 docs diff — either gate's exemption

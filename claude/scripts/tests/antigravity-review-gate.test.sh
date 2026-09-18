@@ -511,6 +511,36 @@ check "docs-only small diff takes the tier-1 skip" 0 "tier-1 skip" --uncommitted
 assert "agy not invoked on a tier-1 skip" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# ADR-0008 relies on the tier valve sitting BEFORE the agy-presence check: with
+# ordinary work routed here, a machine with no agy must still be able to mint a
+# tier-1 exemption rather than degrading every docs diff to the Codex lane.
+# Asserted by running with agy removed from PATH entirely.
+new_repo
+printf '# Title\n\nDocs only.\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+# A PATH built from every executable the current one offers EXCEPT agy, so the
+# case cannot pass by accident on a machine that simply lacks some other tool.
+NO_AGY_PATH="$(mktemp -d)"
+while IFS= read -r candidate; do
+  agy_free_name="${candidate##*/}"
+  [ "$agy_free_name" = agy ] && continue
+  [ -e "$NO_AGY_PATH/$agy_free_name" ] || ln -s "$candidate" "$NO_AGY_PATH/$agy_free_name" 2>/dev/null
+done <<<"$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r agy_free_dir; do
+  [ -d "$agy_free_dir" ] || continue
+  find "$agy_free_dir" -maxdepth 1 -type f -perm -u+x 2>/dev/null
+  find "$agy_free_dir" -maxdepth 1 -type l 2>/dev/null
+done)"
+SAVED_PATH="$PATH"
+PATH="$NO_AGY_PATH"
+assert "agy really is absent from the reduced PATH" "! command -v agy >/dev/null 2>&1"
+check "tier-1 skip needs no agy on PATH" 0 "tier-1 skip" --uncommitted --require
+PATH="$SAVED_PATH"
+assert "the agy-free tier-1 run minted its exemption receipt" \
+  "[ -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "the agy-free tier-1 receipt is a tier-1 exemption" \
+  "jq -e '.completion.outcome == \"tier-1\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+rm -rf "$NO_AGY_PATH" "$R"
+
 new_repo
 printf '# Title\n' > "$R/README.md"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"

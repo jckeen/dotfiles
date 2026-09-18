@@ -331,14 +331,11 @@ def repo_root(repo):
     ).resolve()
 
 
-def layout(repo):
-    # Remove only Git's output delimiter: trailing whitespace belongs to paths.
-    repo = Path(
-        os.fsdecode(git(repo, "rev-parse", "--show-toplevel").removesuffix(b"\n"))
-    ).resolve()
-    directory = Path(
-        os.fsdecode(git(repo, "rev-parse", "--absolute-git-dir").removesuffix(b"\n"))
-    ).resolve()
+def receipts_dir(repo):
+    # Resolve the receipt directory WITHOUT creating it, so the read-only
+    # subcommands (`lane`, `stats`) provision nothing. Takes an already-resolved
+    # work tree root. Remove only Git's output delimiter: trailing whitespace
+    # belongs to paths.
     receipts = Path(
         os.fsdecode(git(repo, "rev-parse", "--git-path", "review-receipts").removesuffix(b"\n"))
     )
@@ -347,6 +344,15 @@ def layout(repo):
     receipts = receipts.absolute()
     if receipts.is_symlink():
         raise ValueError("receipt directory must not be a symlink")
+    return receipts
+
+
+def layout(repo):
+    repo = repo_root(repo)
+    directory = Path(
+        os.fsdecode(git(repo, "rev-parse", "--absolute-git-dir").removesuffix(b"\n"))
+    ).resolve()
+    receipts = receipts_dir(repo)
     receipts.mkdir(mode=0o700, exist_ok=True)
     os.chmod(receipts, 0o700)
     return repo, directory, receipts
@@ -867,8 +873,8 @@ def stats(args):
     """Print lane x outcome counts over the recent ledger window."""
     if args.since_days < 0:
         raise ValueError("--since-days must not be negative")
-    _, _, receipts = layout(args.repo)
-    ledger = receipts / "ledger.jsonl"
+    # Read-only like `lane`: resolve the directory, never create it.
+    ledger = receipts_dir(repo_root(args.repo)) / "ledger.jsonl"
     if ledger.is_symlink():
         raise ValueError("lane ledger must not be a symlink")
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.since_days)

@@ -120,7 +120,12 @@ A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
 model pin, a diff above the byte cap) means the lane could not run, so
 `review-and-push.sh` falls back to Codex and records the degradation in the lane
 ledger; `REVIEW_LANE_FALLBACK=block` refuses the push instead. Exit 2 — blocking
-findings, or a verifiably wrong model — never falls back. Read the ledger with
+findings, or a verifiably wrong model — never falls back.
+
+`review-and-push.sh` checks the receipt naming the lane it dispatched, which also
+requires the review that run performed to still be approved. Checking by hand,
+use the generic no-`--reviewer` form above: it enforces the same lane requirement
+without needing to know which lane ran. Read the ledger with
 `review-receipt.py stats --since-days 7` before drawing conclusions about lane
 cost; the dotfiles risk list is deliberately unnarrowed, so most diffs *in this
 repository* stay on Codex.

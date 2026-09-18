@@ -45,7 +45,14 @@ routine rather than accidental, so both are decided here together.
    required lane into the gate to dispatch and honours
    `REVIEW_LANE=auto|codex|antigravity`.
 3. `review-and-push.sh` classifies, dispatches the selected gate with
-   `--require --committed`, and checks the receipt with **no** `--reviewer`.
+   `--require --committed`, and checks the receipt naming **the lane it actually
+   dispatched** rather than a hardcoded `codex`. `gate_select_lane` only ever
+   returns a lane at or above the requirement, so naming it enforces the
+   requirement *and* additionally requires the review this run performed to
+   still be approved — otherwise a stronger lane that ran and then lost its
+   approval could ship on a weaker lane's older receipt. A human checking by
+   hand uses the generic no-`--reviewer` form instead, which enforces the
+   requirement without needing to know which lane ran.
    `REVIEW_LANE_FALLBACK=codex|block` (default `codex`) decides what happens
    when the Antigravity gate exits 3.
 4. `check` fails closed. `begin` stores the classification in the receipt
@@ -106,8 +113,11 @@ read it with `stats` before proposing any change to the risk list.
   this lands needs a fresh gate run.
 - Ordinary diffs now depend on `agy` being installed and authenticated. The
   fallback keeps that from wedging a push, but a machine with no `agy` silently
-  routes everything back to Codex — visible only in the ledger, which is why
-  `stats` counts the degradations.
+  routes ordinary work back to Codex — visible only in the ledger, which is why
+  `stats` counts the degradations. Tier-1 diffs are unaffected: the tier valve
+  sits ahead of the `agy`-presence check, so a docs-only diff still mints its
+  exemption receipt with no `agy` on `PATH` at all (asserted in
+  `tests/antigravity-review-gate.test.sh` against a PATH built without it).
 - Two knobs exist where there were none (`REVIEW_LANE`,
   `REVIEW_LANE_FALLBACK`). Neither can weaken a codex-required diff, but both
   are surface a reader has to know about.
