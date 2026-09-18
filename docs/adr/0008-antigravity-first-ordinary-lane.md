@@ -77,7 +77,12 @@ unverifiable model pin, a diff above its measured 185 KB input window) means the
 lane could not run, so the diff falls back to Codex and the degradation is
 recorded in the ledger. Exit 2 — blocking findings, or a verifiably wrong model
 — **never** falls back: a refusal is not an outage, and re-asking a different
-reviewer would be verdict shopping.
+reviewer would be verdict shopping. For the same reason the Antigravity gate
+exits 2, never 3, whenever the output it did get carries blocking findings,
+whatever interrupted the run (print-timeout expiry, exit 124, a nonzero agy
+exit, an unverifiable model pin): a degraded exit must never hide a verdict
+from the fallback. A partial that is clean or P3-only still degrades, because
+partial output is never certified complete.
 
 **The Antigravity gate still runs on codex-required diffs** and still mints its
 receipt, announcing itself as a *supplementary* lane. A second opinion of

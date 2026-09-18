@@ -163,12 +163,37 @@ if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
   exit 2
 fi
 
+# Finding-line shapes, anchored so a priority label mentioned inside prose is
+# not miscounted as a finding. Defined up here because the degrade helper and
+# the model-pin check consult them before Step 5 does.
+BLOCK_RE='^[[:space:]]*-?[[:space:]]*\[P[012]\]'
+LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
+
+# A verdict must never be hidden behind a degraded exit (ADR-0008). Exit 3 tells
+# review-and-push.sh "this lane could not run", and it answers by handing the
+# diff to Codex — whose approval must not be able to ship over findings this
+# lane already raised. So every exit-3 path that runs AFTER agy produced output
+# (print-timeout expiry, exit 124, a nonzero exit, an unverifiable model pin)
+# first looks at that output: blocking finding lines are a verdict and exit 2,
+# which never falls back. Before dispatch SUMMARY_FILE is unset or empty and this
+# is a no-op. Partial output is still never certified clean: a P3-only or empty
+# partial still degrades as before.
+verdict_in_partial_output() {
+  [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 0
+  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" || return 0
+  red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
+  grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
+  red "  A verdict, not a degraded lane: address the findings before any fallback (ADR-0008)."
+  exit 2
+}
+
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 GATE_KEEP_AGY_LOG=0
 degrade() {
   # A degraded run is a diagnostic case even when it exits 0 (#409).
   GATE_KEEP_AGY_LOG=1
   yellow "⚠ antigravity-review-gate: $1"
+  verdict_in_partial_output
   if [[ "$REQUIRED" == "1" ]]; then
     red "  ANTIGRAVITY_GATE_REQUIRED is set — treating as a hard failure."
     exit 3
@@ -467,6 +492,9 @@ if [[ -n "$MODEL" ]]; then
     yellow "⚠ Set ANTIGRAVITY_GATE_REQUIRED=1 (or pass --require) to make this block."
     yellow "⚠ ═══════════════════════════════════════════════════════════════════"
     if [[ "$REQUIRED" == "1" ]]; then
+      # The review itself still ran: blocking findings in it are a verdict
+      # (exit 2), never a degraded exit 3 — see verdict_in_partial_output.
+      verdict_in_partial_output
       red "  ANTIGRAVITY_GATE_REQUIRED is set — treating the unverifiable model pin as a hard failure."
       exit 3
     fi
@@ -483,10 +511,7 @@ fi
 gate_assert_unchanged
 
 # ─── Step 5: parse findings + gate ─────────────────────────────
-# Anchor to the finding-LINE shape so a priority label mentioned inside prose (or
-# a clean verdict naming the labels) isn't miscounted as a blocking finding.
-BLOCK_RE='^[[:space:]]*-?[[:space:]]*\[P[012]\]'
-LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
+# BLOCK_RE / LOW_RE are defined above the model-pin check, which also needs them.
 N_BLOCK="$(grep -cE "$BLOCK_RE" "$SUMMARY_FILE" || true)"
 N_LOW="$(grep -cE "$LOW_RE" "$SUMMARY_FILE" || true)"
 N_TOTAL=$((N_BLOCK + N_LOW))

@@ -197,6 +197,29 @@ printf '%s\n' '- [P1] real finding — code.txt:1' '[agy] print timeout after 36
 check "expiry note imitated on stdout cannot degrade past a blocking finding" 2 "BLOCKING findings" --uncommitted
 rm -rf "$R"
 
+# A partial review that already carries a blocking finding is a verdict, not a
+# degraded lane: exit 2 with and without --require, on every post-dispatch
+# failure path, so review-and-push.sh's exit-3 fallback can never let Codex
+# approve over it (ADR-0008). A P3-only partial still degrades (tested above).
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr"
+check "expired print timeout with a blocking finding is a verdict" 2 "verdict, not a degraded lane" --uncommitted
+check "expired print timeout with a blocking finding is a verdict under --require" 2 "verdict, not a degraded lane" --uncommitted --require
+assert "that verdict mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -rf "$R"
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P2] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf '124\n' > "$AGY_FAKE_DIR/exit"
+check "agy timeout (124) after a blocking finding is a verdict under --require" 2 "verdict, not a degraded lane" --uncommitted --require
+printf '7\n' > "$AGY_FAKE_DIR/exit"
+check "agy nonzero exit after a blocking finding is a verdict under --require" 2 "verdict, not a degraded lane" --uncommitted --require
+check "agy nonzero exit after a blocking finding is a verdict without --require" 2 "verdict, not a degraded lane" --uncommitted
+rm -f "$AGY_FAKE_DIR/exit"
+rm -rf "$R"
+
 # A benign stderr diagnostic must not defeat a clean final-line verdict, and
 # empty stdout still reaches the canary path even when stderr has content.
 new_repo
@@ -462,6 +485,12 @@ printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
 check "missing propagation line degrades to a warning" 0 "MODEL PIN UNVERIFIED" --uncommitted
 check "missing propagation line fails hard with --require" 3 "MODEL PIN UNVERIFIED" --uncommitted --require
+# A review that produced blocking findings is a verdict even when the pin is
+# unverifiable: exit 2, never the degraded exit 3 that review-and-push.sh
+# answers with a Codex fallback (ADR-0008: no verdict shopping).
+printf -- '- [P1] real defect in code.txt\n' > "$AGY_FAKE_DIR/output"
+check "blocking findings under an unverifiable pin exit 2, not 3" 2 "verdict, not a degraded lane" --uncommitted --require
+assert "no receipt is minted for that verdict" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R"
 
