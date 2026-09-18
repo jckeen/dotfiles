@@ -99,12 +99,12 @@ new_case() {
   rm -f "$FAKE_SEQ"
 }
 
-routine() { # name paused repos-block max_files
-  local name="$1" paused="$2" repos="$3"
+routine() { # name paused repos-block [schedule]
+  local name="$1" paused="$2" repos="$3" sched="${4:-daily}"
   {
     printf -- '---\n'
     printf 'name: %s\n' "$name"
-    printf 'schedule: daily\n'
+    printf 'schedule: %s\n' "$sched"
     printf '%s\n' "$repos"
     printf 'max_prs_per_run: 1\n'
     printf 'max_files: 2\n'
@@ -474,6 +474,147 @@ else
   fail "agents/routines/ holds no routine files"
 fi
 
+echo "── review findings from the Codex gate ──"
+
+# [high] schedule was parsed, validated, and then never consulted: a weekly
+# routine ran every day under the daily timer. Six days ago is inside the
+# window, eight days ago is outside it.
+ledger_line() { # routine repo days-ago
+  local at
+  at="$(date -u -d "@$(( $(date -u +%s) - $3 * 86400 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -r "$(( $(date -u +%s) - $3 * 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","session":"old","url":""}\n' \
+    "$at" "${at%%T*}" "$1" "$2"
+}
+
+new_case
+routine weeklyone false 'repos:
+  - jckeen/dotfiles' weekly
+ledger_line weeklyone jckeen/dotfiles 6 > "$STATE/dispatch.jsonl"
+if dispatch \
+  && outgrep "schedule: weekly, dispatched inside the last 7 day(s); skipped" \
+  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 1 ]]; then
+  ok "a weekly routine dispatched six days ago is skipped, not run again"
+else
+  fail "a weekly routine ran inside its cadence window"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine weeklyone false 'repos:
+  - jckeen/dotfiles' weekly
+ledger_line weeklyone jckeen/dotfiles 8 > "$STATE/dispatch.jsonl"
+if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+  ok "a weekly routine dispatched eight days ago runs again"
+else
+  fail "a weekly routine past its window did not run"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A daily routine must be unaffected by the cadence check: six days ago is far
+# outside its window, so the only thing stopping it is the same-day check.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+ledger_line alpha jckeen/dotfiles 6 > "$STATE/dispatch.jsonl"
+if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+  ok "a daily routine is not held back by the weekly cadence check"
+else
+  fail "the cadence check leaked into daily routines"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# [medium] curl reads $CURLRC / ~/.curlrc unless -q is the FIRST argument; a
+# `location` or `trace` line there would leak the key past every other guard.
+new_case
+routine alpha false 'repos: all'
+dispatch
+if [[ "$(head -1 "$FAKE_CURL_ARGV" | cut -d' ' -f1)" == "-q" ]]; then
+  ok "curl is invoked with -q first, so it reads no default configuration"
+else
+  fail "curl did not receive -q as its first argument"
+  sed 's/^/      | /' "$FAKE_CURL_ARGV"
+fi
+
+# The end-to-end version of the same guarantee: a hostile ~/.curlrc must not
+# change what the dispatcher sends.
+new_case
+routine alpha false 'repos: all'
+printf 'location\ntrace = %s/curl-trace.txt\n' "$CASE_DIR" > "$CASE_DIR/curlrc"
+if CURL_HOME="$CASE_DIR" CURLRC="$CASE_DIR/curlrc" dispatch \
+  && [[ ! -e "$CASE_DIR/curl-trace.txt" ]] \
+  && ! grep -Fq -- "$GOOD_KEY" "$FAKE_CURL_ARGV"; then
+  ok "a CURLRC enabling redirects and tracing changes nothing"
+else
+  fail "a hostile CURLRC affected the request"
+fi
+
+# [medium] a manual run overlapping the timer read the same spend and dispatched
+# the same routine twice. The lock is a directory, so mkdir is the whole test.
+new_case
+routine alpha false 'repos: all'
+mkdir -p "$STATE/dispatch.lock"
+if dispatch && outgrep "another dispatch already holds" \
+  && [[ ! -f "$STATE/dispatch.jsonl" ]]; then
+  ok "a held lock makes the run a clean no-op rather than a double dispatch"
+else
+  fail "a held lock did not stop the run"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos: all'
+if dispatch && [[ ! -e "$STATE/dispatch.lock" ]]; then
+  ok "the lock is released when the run finishes"
+else
+  fail "the lock outlived the run"
+fi
+
+# An abandoned lock (a killed run, a reboot mid-dispatch) must not disable the
+# timer forever.
+new_case
+routine alpha false 'repos: all'
+mkdir -p "$STATE/dispatch.lock"
+if JULES_LOCK_STALE_SECONDS=0 JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
+     JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
+   && outgrep "reclaiming a stale dispatch lock" \
+   && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+  ok "a stale lock is reclaimed loudly and the run proceeds"
+else
+  fail "a stale lock was not reclaimed"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A dry run must not create the lock either — the state dir has to stay
+# byte-identical, and a lock directory in it is a mutation.
+new_case
+routine alpha false 'repos: all'
+before="$(snapshot "$STATE")"
+dispatch --dry-run
+if [[ "$before" == "$(snapshot "$STATE")" ]] && [[ ! -e "$STATE/dispatch.lock" ]]; then
+  ok "--dry-run takes no lock and still writes nothing"
+else
+  fail "--dry-run created a lock"
+fi
+
+# [medium] the session exists by the time the ledger is appended, so a failed
+# append is an UNRECORDED dispatch, not a failed one. errexit is off inside
+# dispatch_one (it is called with `|| true`), so the append must be checked.
+new_case
+routine alpha false 'repos: all'
+printf '' > "$STATE/dispatch.jsonl"
+chmod 400 "$STATE/dispatch.jsonl"
+if ! dispatch \
+  && outgrep "COULD NOT record it in" \
+  && [[ "$(jq -r '.failures' "$STATE/status.json")" -ge 1 ]] \
+  && [[ "$(jq -r '.created_this_run' "$STATE/status.json")" == "0" ]]; then
+  ok "an unwritable ledger fails the run instead of reporting a dispatch"
+else
+  fail "a failed ledger append passed as a successful dispatch"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+chmod 600 "$STATE/dispatch.jsonl" 2>/dev/null || true
+
 echo "── --report ──"
 
 # gh is stubbed, so the assertion is on the bucketing and the arithmetic, not on
@@ -569,6 +710,24 @@ if ! dispatch --post && outgrep "--post only applies to --report"; then
   ok "--post outside --report is an error"
 else
   fail "--post outside --report was accepted"
+fi
+
+# --dry-run has to mean "writes nothing" in every mode; a GitHub comment is a
+# remote write, and this combination used to make one.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" --report --post --dry-run > "$CASE_DIR/out" 2>&1 \
+   && outgrep "[DRY] would comment the table above on" \
+   && ! grep -Fq -- 'issue comment' "$GH_ARGV" \
+   && [[ ! -e "$CASE_DIR/gh-comment" ]]; then
+  ok "--dry-run --report --post prints the table and posts nothing"
+else
+  fail "--dry-run still commented on the tracker issue"
+  sed 's/^/      | /' "$CASE_DIR/out"
 fi
 unset GH_ARGV GH_COMMENT_BODY
 

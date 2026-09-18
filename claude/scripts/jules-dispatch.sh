@@ -31,11 +31,14 @@
 #   JULES_STARTING_BRANCH  optional starting branch for every session; omitted
 #                       from the request when unset, letting the API choose
 #   JULES_TRACKER       owner/name#issue for --post (default jckeen/dotfiles#446)
+#   JULES_LOCK_STALE_SECONDS  age at which an abandoned dispatch lock is
+#                       reclaimed (default 7200)
 #
 # State (all under JULES_STATE_DIR):
 #   dispatch.jsonl   one line per created session — the idempotency ledger
 #   status.json      last run's outcome, for hooks and the status line
 #   dispatch.log     appended run log
+#   dispatch.lock    held for the duration of a dispatch (not a dry run)
 #
 # Requires: bash, curl, jq. --report additionally requires gh.
 
@@ -250,12 +253,17 @@ read_api_key() {
 
 # curl reads the auth header from a config file on stdin, so the key never
 # appears in argv (visible in /proc and in any process listing) or in a log.
+#
+# -q MUST be the first argument. Without it curl first reads $CURLRC or
+# ~/.curlrc, and a `location` or `trace` line there would make the key follow a
+# redirect or land in a trace file — defeating the whole point of the stdin
+# config. Everything this request needs is passed explicitly here.
 curl_api() { # method path [body-file]
   local method="$1" path="$2" body="${3:-}"
   local args=(--proto '=https' --fail -sS --max-time 60 -X "$method"
               -H 'Content-Type: application/json' "${JULES_API_BASE}${path}")
   [[ -n "$body" ]] && args+=(--data-binary "@$body")
-  printf 'header = "X-Goog-Api-Key: %s"\n' "$API_KEY" | curl -K - "${args[@]}"
+  printf 'header = "X-Goog-Api-Key: %s"\n' "$API_KEY" | curl -q -K - "${args[@]}"
 }
 
 # ── Sources ──────────────────────────────────────────────────────────
@@ -299,6 +307,28 @@ already_dispatched() { # routine repo
   [[ "$n" -gt 0 ]]
 }
 
+# A weekly routine needs a cadence check, not just the same-day one: the timer
+# fires daily, so without this `schedule: weekly` would be decoration and a
+# weekly routine would run seven times a week. Compared on the recorded
+# timestamp rather than the date string, so the window is exact and needs no
+# non-portable date arithmetic.
+dispatched_within() { # routine repo seconds
+  [[ -s "$LEDGER" ]] || return 1
+  local n cutoff=$((NOW_EPOCH - $3))
+  n="$(ledger_query --arg r "$1" --arg p "$2" --argjson cutoff "$cutoff" \
+        '[.[] | select(.routine == $r and .repo == $p
+           and ((.dispatched_at // "") | (try fromdateiso8601 catch 0)) >= $cutoff)] | length')"
+  [[ "$n" -gt 0 ]]
+}
+
+# Seconds a routine must leave between dispatches for the same repository.
+schedule_interval() {
+  case "$FM_SCHEDULE" in
+    weekly) printf '%s' $((7 * 86400)) ;;
+    *) printf '0' ;;
+  esac
+}
+
 ledger_repos() { # distinct repos ever dispatched to
   [[ -s "$LEDGER" ]] || return 0
   jq -sr '[.[] | .repo // empty] | unique | .[]' "$LEDGER" 2>/dev/null \
@@ -308,7 +338,36 @@ ledger_repos() { # distinct repos ever dispatched to
 # ── Run events (for status.json) ─────────────────────────────────────
 EVENTS_FILE="$(mktemp)"
 BODY_FILE=""
-trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; exit' EXIT
+LOCK_DIR=""
+LOCK_HELD=0
+# An abandoned lock must not disable the timer forever, so one older than this is
+# reclaimed. Well above any plausible run: the dispatch is a handful of HTTPS
+# calls, each capped at 60s.
+LOCK_STALE_SECONDS="${JULES_LOCK_STALE_SECONDS:-7200}"
+# `exit` stays last so the trap preserves the original exit status. The lock is
+# removed only when this process owns it — never another run's.
+trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; [[ "$LOCK_HELD" -eq 1 ]] && rm -rf "$LOCK_DIR"; exit' EXIT
+
+dir_mtime() { stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null; }
+
+# Reading the ledger, deciding eligibility, creating a session and recording it
+# is one critical section: a manual run overlapping the 09:00 timer would
+# otherwise read the same spend and dispatch the same routine twice, defeating
+# both the idempotency check and the daily cap. mkdir is atomic on POSIX, so it
+# needs no flock (absent on some systems this script still has to run on).
+acquire_lock() {
+  LOCK_DIR="$STATE_DIR/dispatch.lock"
+  mkdir "$LOCK_DIR" 2>/dev/null && { LOCK_HELD=1; return 0; }
+  local mtime age
+  mtime="$(dir_mtime "$LOCK_DIR")" || return 1
+  age=$((NOW_EPOCH - mtime))
+  if [[ "$age" -ge "$LOCK_STALE_SECONDS" ]]; then
+    log "  !! reclaiming a stale dispatch lock (${age}s old): $LOCK_DIR"
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR" 2>/dev/null && { LOCK_HELD=1; return 0; }
+  fi
+  return 1
+}
 
 record() { # kind routine repo detail
   jq -nc --arg kind "$1" --arg routine "$2" --arg repo "$3" --arg detail "$4" \
@@ -376,10 +435,20 @@ dispatch_one() { # routine-file repo source
     return 1
   fi
 
-  jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
-    --arg repo "$repo" --arg source "$source" --arg session "$session" --arg url "$url" \
-    '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
-      source: $source, session: $session, url: $url}' >> "$LEDGER"
+  # The session already exists at this point, so a failed ledger append is not a
+  # failed dispatch — it is an unrecorded one, which the next run would repeat.
+  # `dispatch_one` is called with `|| true`, so errexit is off inside it: the
+  # append has to be checked explicitly or the failure passes as a success.
+  if ! jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
+      --arg repo "$repo" --arg source "$source" --arg session "$session" --arg url "$url" \
+      '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
+        source: $source, session: $session, url: $url}' >> "$LEDGER"; then
+    log "  !! $FM_NAME / $repo — created $session but COULD NOT record it in $LEDGER"
+    log "     The next run will dispatch this routine again. Fix the ledger first."
+    record error "$FM_NAME" "$repo" "session $session created but not recorded"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
 
   CREATED=$((CREATED + 1))
   log "  -> $FM_NAME / $repo — created $session"
@@ -397,6 +466,12 @@ do_dispatch() {
   if [[ "$DRY_RUN" -eq 0 ]]; then
     mkdir -p "$STATE_DIR"
     chmod 700 "$STATE_DIR" 2>/dev/null || true
+    # A dry run needs no lock: it creates nothing and must leave the state dir
+    # byte-identical, so a lock directory there would itself be a mutation.
+    if ! acquire_lock; then
+      log "another dispatch already holds $STATE_DIR/dispatch.lock — nothing to do"
+      exit 0
+    fi
   fi
 
   # One budget counter for the whole run: seeded from the ledger (what earlier
@@ -408,7 +483,7 @@ do_dispatch() {
   log "═══ jules-dispatch $NOW_ISO ═══"
   log "catalog: $ROUTINE_DIR; dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
 
-  local file repo source scope
+  local file repo source scope interval
   while IFS= read -r file; do
     if ! parse_routine "$file"; then
       log "  !! $(basename "$file") — frontmatter rejected; not dispatched"
@@ -443,6 +518,13 @@ do_dispatch() {
       if already_dispatched "$FM_NAME" "$repo"; then
         log "  -- $FM_NAME / $repo — already dispatched today; skipped"
         record skipped "$FM_NAME" "$repo" "already dispatched today"
+        continue
+      fi
+
+      interval="$(schedule_interval)"
+      if [[ "$interval" -gt 0 ]] && dispatched_within "$FM_NAME" "$repo" "$interval"; then
+        log "  -- $FM_NAME / $repo — schedule: $FM_SCHEDULE, dispatched inside the last $((interval / 86400)) day(s); skipped"
+        record skipped "$FM_NAME" "$repo" "inside the $FM_SCHEDULE cadence window"
         continue
       fi
 
@@ -531,6 +613,13 @@ do_report() {
   if [[ "$POST" -eq 1 ]]; then
     [[ "$TRACKER" =~ ^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)#([0-9]+)$ ]] \
       || die "JULES_TRACKER must be OWNER/NAME#ISSUE, got: $TRACKER"
+    # --dry-run means "write nothing", and a GitHub comment is a remote write.
+    # The flag has to hold across every mode or it is not a guarantee.
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      printf '\n[DRY] would comment the table above on %s\n' "$TRACKER"
+      [[ "$FAILURES" -eq 0 ]] || exit 1
+      return 0
+    fi
     printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n' \
       "$REPORT_DAYS" "$NOW_ISO" "$table" \
       | gh issue comment "${BASH_REMATCH[2]}" --repo "${BASH_REMATCH[1]}" --body-file -

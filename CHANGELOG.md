@@ -55,6 +55,14 @@
   skip, `paused: true`, the `--dry-run` snapshot, and the generalised systemd
   installer. It also asserts the shipped catalog parses, so the first timer
   firing is not what discovers a typo.
+- Five things the review passes changed, each now with a test: `schedule` is
+  enforced rather than parsed and ignored, so the weekly fuzzer no longer runs
+  seven times a week; `curl` gets `-q` first, so a `location` or `trace` line in
+  a `~/.curlrc` cannot make the key follow a redirect or reach a trace file; a
+  run holds a lock directory, because a manual invocation overlapping the timer
+  read the same spend and dispatched twice; a failed ledger append is reported as
+  an unrecorded dispatch rather than a success, since the session already exists
+  by then; and `--dry-run` suppresses the `--report --post` comment.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

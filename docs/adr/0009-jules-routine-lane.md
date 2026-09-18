@@ -108,6 +108,18 @@ Adopt Jules as the routine lane.
    `~/.local/state/jules/dispatch.jsonl` makes the run idempotent per calendar
    day, and `JULES_DAILY_CAP` (default 40 of Ultra's 300) bounds the spend.
 
+   Five properties came from the review passes rather than the first draft, and
+   each is now pinned by a test: `schedule` is *enforced* (a `weekly` routine is
+   held back while its last dispatch for that repository is inside a seven-day
+   window — parsed-but-ignored would have made the field decoration and run the
+   weekly fuzzer seven times a week); `curl` is invoked with `-q` first, so a
+   `location` or `trace` line in a `~/.curlrc` cannot defeat the stdin config; a
+   run holds a lock directory, because a manual invocation overlapping the timer
+   would otherwise read the same spend and dispatch twice; a failed ledger append
+   is reported as an *unrecorded* dispatch rather than a successful one, since the
+   session already exists by then; and `--dry-run` suppresses the `--report
+   --post` comment, because "writes nothing" has to hold in every mode.
+
 5. **A timer, not GitHub Actions.** The key stays on this machine.
    `claude/systemd/jules-dispatch.{service,timer}` fires at 09:00 with
    `Persistent=true`, mirroring `git-hygiene.service`'s hardening, with

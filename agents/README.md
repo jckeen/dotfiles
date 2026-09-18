@@ -61,7 +61,7 @@ strictly and refuses to dispatch a routine whose header does not validate:
 | Key | Meaning |
 |-----|---------|
 | `name` | Must match the filename stem and `[a-z0-9-]+` |
-| `schedule` | `daily` or `weekly`; informational — the timer fires daily and the catalog decides |
+| `schedule` | `daily` or `weekly`, and enforced: the timer fires daily, and a `weekly` routine is skipped while its last dispatch for that repository is inside a seven-day window |
 | `repos` | `all` (every repository `GET /sources` returns) or a list of `OWNER/NAME` |
 | `max_prs_per_run` | Pull requests the routine may open in one run |
 | `max_files` | Files one of its pull requests may change |
@@ -73,6 +73,11 @@ The body is the prompt. The dispatcher prepends the repository, the routine
 name, the hard limits, the required label, and the acceptance line, so the
 prompt a session receives carries the frontmatter's concrete values — the file
 never repeats them in prose.
+
+A dispatch run holds a lock directory under the state directory, so a manual
+invocation that overlaps the timer is a clean no-op rather than a second
+dispatch of the same routine. An abandoned lock older than
+`JULES_LOCK_STALE_SECONDS` is reclaimed, loudly.
 
 **Adding a routine** means answering one question: what evidence makes a pull
 request from this routine obviously correct? If the answer is "a reviewer's
