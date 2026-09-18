@@ -174,6 +174,11 @@
   clock as well as the margin: even at margin zero, a test invocation spanning UTC
   midnight would have stopped a run mid-catalog, because the dispatcher captures the
   date once and halts when it changes.
+- The weekly cadence window was inclusive, so a daily timer firing at the same time
+  each day found a seven-day-old record still inside the cooldown and skipped the
+  seventh day: "weekly" actually meant every eighth day, about forty-five runs a
+  year instead of fifty-two. The comparison is strict now, with cases at six, seven,
+  eight days and one second inside the boundary.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

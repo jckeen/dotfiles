@@ -617,6 +617,37 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
+# The boundary itself. With an inclusive comparison a daily timer firing at the
+# same time each day finds the seven-day-old record still inside the cooldown and
+# skips the seventh day — so "weekly" would mean every eighth day.
+new_case
+routine weeklyone false 'repos:
+  - jckeen/dotfiles' weekly
+ledger_line weeklyone jckeen/dotfiles 7 > "$STATE/dispatch.jsonl"
+if dispatch && [[ "$(created_count)" -eq 2 ]]; then
+  ok "a weekly routine runs on the seventh day, not the eighth"
+else
+  fail "the cadence window is inclusive, delaying every weekly run by a day"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# One second inside the window must still be held back, or the check is off by a
+# whole day in the other direction.
+new_case
+routine weeklyone false 'repos:
+  - jckeen/dotfiles' weekly
+e=$((JULES_NOW_EPOCH - 7 * 86400 + 1))
+at="$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"dispatched_at":"%s","date":"%s","routine":"weeklyone","repo":"jckeen/dotfiles","source":"s","session":"old","url":""}\n' \
+  "$at" "${at%%T*}" > "$STATE/dispatch.jsonl"
+if dispatch && outgrep "dispatched inside the last 7 day(s); skipped" \
+  && [[ "$(created_count)" -eq 1 ]]; then
+  ok "a dispatch one second inside the seven-day window is still held back"
+else
+  fail "the cadence window is exclusive by more than it should be"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
 # A daily routine must be unaffected by the cadence check: six days ago is far
 # outside its window, so the only thing stopping it is the same-day check.
 new_case

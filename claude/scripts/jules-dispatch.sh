@@ -487,12 +487,17 @@ already_dispatched() { # routine repo
 # weekly routine would run seven times a week. Compared on the recorded
 # timestamp rather than the date string, so the window is exact and needs no
 # non-portable date arithmetic.
+#
+# The comparison is strict (`>`), not `>=`: a dispatch exactly `seconds` old is
+# OUTSIDE the window. With `>=` a daily timer firing at the same time each day
+# would find the seven-day-old record still inside the cooldown and skip the
+# seventh day, so a "weekly" routine would actually run every eighth day.
 dispatched_within() { # routine repo seconds
   [[ -s "$LEDGER" ]] || return 1
   local n cutoff=$((NOW_EPOCH - $3))
   n="$(ledger_query --arg r "$1" --arg p "$2" --argjson cutoff "$cutoff" \
         '[.[] | select(.routine == $r and .repo == $p
-           and ((.dispatched_at // "") | (try fromdateiso8601 catch 0)) >= $cutoff)] | length')"
+           and ((.dispatched_at // "") | (try fromdateiso8601 catch 0)) > $cutoff)] | length')"
   [[ "$n" -gt 0 ]]
 }
 
