@@ -552,6 +552,41 @@ routine_files() {
   done
 }
 
+# Everything phase one decided that a mid-run edit to the catalog can invalidate.
+# One function, so a new eligibility rule cannot be added to phase one and
+# forgotten here.
+still_eligible() { # repo -> 0 if it should still dispatch
+  local repo="$1" interval r in_scope=0
+
+  if [[ "$FM_PAUSED" == "true" ]]; then
+    log "  -- $FM_NAME / $repo — paused between phases; skipped"
+    record skipped "$FM_NAME" "$repo" "paused between phases"
+    return 1
+  fi
+
+  # `all` is resolved from GET /sources, which this run read once and does not
+  # re-read; a named list is the operator's and can have changed on disk.
+  if [[ "${FM_REPOS[0]}" != "all" ]]; then
+    for r in "${FM_REPOS[@]}"; do
+      [[ "$r" == "$repo" ]] && { in_scope=1; break; }
+    done
+    if [[ "$in_scope" -eq 0 ]]; then
+      log "  -- $FM_NAME / $repo — removed from the routine's repos between phases; skipped"
+      record skipped "$FM_NAME" "$repo" "removed from repos between phases"
+      return 1
+    fi
+  fi
+
+  interval="$(schedule_interval)"
+  if [[ "$interval" -gt 0 ]] && dispatched_within "$FM_NAME" "$repo" "$interval"; then
+    log "  -- $FM_NAME / $repo — schedule became $FM_SCHEDULE between phases; skipped"
+    record skipped "$FM_NAME" "$repo" "inside the $FM_SCHEDULE cadence window"
+    return 1
+  fi
+
+  return 0
+}
+
 build_prompt() { # repo
   printf 'Repository: %s\nRoutine: %s\nHard limits: at most %s pull request(s) this run; at most %s file(s) changed per pull request.\nRequired PR label: %s\nAcceptance: %s\n\n%s' \
     "$1" "$FM_NAME" "$FM_MAX_PRS" "$FM_MAX_FILES" "$FM_LABEL" "$FM_ACCEPTANCE" "$FM_PROMPT"
@@ -748,14 +783,12 @@ do_dispatch() {
       continue
     fi
 
-    # Re-read means re-check: an operator pausing a routine while earlier requests
-    # are in flight expects the queued ones to stop too. Phase one's check was
-    # against the file as it was then.
-    if [[ "$FM_PAUSED" == "true" ]]; then
-      log "  -- $FM_NAME / $repo — paused between phases; skipped"
-      record skipped "$FM_NAME" "$repo" "paused between phases"
-      continue
-    fi
+    # Re-read means re-check, and re-check means the WHOLE eligibility decision,
+    # not one field of it. Phase one judged the file as it was then; an operator
+    # editing it while earlier requests are in flight expects the queued
+    # repositories to honour the edit — pausing the routine, dropping a repository
+    # from its list, or slowing it from daily to weekly.
+    if ! still_eligible "$repo"; then continue; fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       SPENT=$((SPENT + 1))
@@ -786,11 +819,15 @@ do_dispatch() {
 # dependence on strftime %G/%V, which not every jq build supports.
 do_report() {
   command -v gh >/dev/null 2>&1 || die "--report needs the GitHub CLI (gh) on PATH"
-  local file repo scope label rows="" prs cutoff truncated="" failed_queries=""
+  local file repo scope label rows="" prs cutoff
+  local truncated="" failed_queries="" rejected_routines=""
   cutoff=$((NOW_EPOCH - REPORT_DAYS * 86400))
 
   while IFS= read -r file; do
     if ! parse_routine "$file"; then
+      # Same reasoning as a failed query: a routine missing from the table has to
+      # be named in the table, not only in an exit code the reader never sees.
+      rejected_routines="$rejected_routines$(basename "$file" .md); "
       FAILURES=$((FAILURES + 1))
       continue
     fi
@@ -848,14 +885,19 @@ do_report() {
       }
     }' | { read -r h1; read -r h2; printf '%s\n%s\n' "$h1" "$h2"; sort -t'|' -k2,2 -k3,3n; })"
 
+  # Every reason the table can be partial belongs IN the table's body: the
+  # retirement rule is decided on these numbers, and a non-zero exit code is
+  # invisible to whoever reads the posted comment.
   local caveat=""
-  if [[ -n "$truncated" ]]; then
-    caveat="$(printf '\n**These counts are incomplete.** The pull request fetch hit its %s-item bound for: %s\nRaise JULES_REPORT_LIMIT or narrow --days before acting on the merge rates.\n' \
-      "$REPORT_LIMIT" "${truncated%; }")"
-  fi
-  if [[ -n "$failed_queries" ]]; then
-    caveat="$caveat$(printf '\n**These counts are incomplete.** The pull request query FAILED for: %s\nThose repositories contribute nothing to the table above. Do not retire a routine\non these numbers until the query succeeds.\n' \
-      "${failed_queries%; }")"
+  add_caveat() { # heading detail
+    [[ -n "$2" ]] || return 0
+    caveat="$caveat$(printf '\n- %s: %s' "$1" "${2%; }")"
+  }
+  add_caveat "pull request fetch hit its $REPORT_LIMIT-item bound (raise JULES_REPORT_LIMIT or narrow --days)" "$truncated"
+  add_caveat "pull request query FAILED, so these contribute nothing above" "$failed_queries"
+  add_caveat "routine frontmatter was rejected, so these are missing entirely" "$rejected_routines"
+  if [[ -n "$caveat" ]]; then
+    caveat="$(printf '\n**These counts are incomplete.**%s\n\nDo not retire a routine on these numbers until the gaps above are resolved.\n' "$caveat")"
   fi
   printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n%s\nTuning rule (ADR-0009): a routine whose merge rate stays under 30%% for two\nweeks running gets its prompt rewritten or `paused: true`.\n' \
     "$REPORT_DAYS" "$NOW_ISO" "$table" "$caveat"

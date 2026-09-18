@@ -1096,7 +1096,7 @@ export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
 if ! PATH="$GHBIN:$PATH" GH_FAIL_LIST=1 JULES_STATE_DIR="$STATE" \
        JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" --report --days 14 \
        > "$CASE_DIR/out" 2>&1 \
-   && outgrep "query FAILED for: jckeen/dotfiles (jules-routine:alpha)"; then
+   && outgrep "query FAILED, so these contribute nothing above: jckeen/dotfiles (jules-routine:alpha)"; then
   ok "a failed pull request query caveats the report instead of only the exit code"
 else
   fail "a failed query produced a table that looked complete"
@@ -1112,7 +1112,8 @@ export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
 PATH="$GHBIN:$PATH" GH_FAIL_LIST=1 JULES_STATE_DIR="$STATE" \
   JULES_ROUTINE_DIR="$ROUTINES" JULES_TRACKER="jckeen/dotfiles#446" \
   "$DISPATCH" --report --days 14 --post > "$CASE_DIR/out" 2>&1 || true
-if [[ -f "$CASE_DIR/gh-comment" ]] && grep -Fq 'query FAILED for' "$CASE_DIR/gh-comment"; then
+if [[ -f "$CASE_DIR/gh-comment" ]] && grep -Fq 'query FAILED' "$CASE_DIR/gh-comment" \
+   && grep -Fq 'These counts are incomplete.' "$CASE_DIR/gh-comment"; then
   ok "the posted comment carries the failure caveat"
 else
   fail "the posted comment omitted the failure caveat"
@@ -1154,6 +1155,104 @@ else
   fail "a routine paused mid-run kept dispatching"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
+
+echo "── seventh review round ──"
+
+# [medium] phase two rechecked paused but nothing else, so an operator removing a
+# repository from a routine mid-run still had it dispatched. The fake curl edits
+# the catalog the moment the first session is created.
+mutating_curl() { # sed-expression applied to the routine on the first POST
+  cat > "$BIN/curl" <<MUTFAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FAKE_CURL_ARGV"
+url=""; method="GET"; prev=""
+for a in "\$@"; do
+  case "\$a" in https://*) url="\$a" ;; esac
+  [[ "\$prev" == "-X" ]] && method="\$a"
+  prev="\$a"
+done
+cat >/dev/null
+case "\$method:\$url" in
+  GET:*/sources*) cat "\$FAKE_SOURCES" ;;
+  POST:*/sessions)
+    sed -i '$1' "$ROUTINES/alpha.md"
+    n=\$(( \$(cat "\$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "\$n" > "\$FAKE_SEQ"
+    printf '{"name":"sessions/s%s","id":"s%s","url":"u"}\n' "\$n" "\$n" ;;
+  *) exit 1 ;;
+esac
+MUTFAKE
+  chmod +x "$BIN/curl"
+}
+
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas
+  - jckeen/dotfiles'
+# Drop jckeen/dotfiles from the list as soon as the first session is created.
+mutating_curl '/- jckeen\/dotfiles/d'
+if dispatch && outgrep "removed from the routine's repos between phases; skipped" \
+  && [[ "$(created_count)" -eq 1 ]] \
+  && [[ "$(created_repo jckeen/dotfiles)" -eq 0 ]]; then
+  ok "a repository dropped from a routine mid-run is not dispatched"
+else
+  fail "a repository removed mid-run was still dispatched"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Slowing a routine from daily to weekly mid-run must take effect too. The
+# cadence window is per (routine, repository), so the pair this can change the
+# answer for is one that ran inside the last seven days but not today: eligible
+# under daily, not under weekly. atlas has never run and goes first, which is
+# what triggers the edit.
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas
+  - jckeen/dotfiles'
+ledger_line alpha jckeen/dotfiles 3 > "$STATE/dispatch.jsonl"
+mutating_curl 's/^schedule: daily/schedule: weekly/'
+if dispatch && outgrep "schedule became weekly between phases; skipped" \
+  && [[ "$(created_repo jckeen/atlas)" -eq 1 ]] \
+  && [[ "$(created_repo jckeen/dotfiles)" -eq 1 ]]; then
+  ok "a routine slowed to weekly mid-run stops a pair inside the new window"
+else
+  fail "a schedule change mid-run was ignored"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# [medium] a routine whose frontmatter is rejected contributes nothing to the
+# report, so it has to be named in the report body rather than only in the exit
+# code nobody sees.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+printf 'name: broken\n' > "$ROUTINES/broken.md"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if ! PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+       "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && outgrep "frontmatter was rejected, so these are missing entirely: broken" \
+   && outgrep "These counts are incomplete."; then
+  ok "a rejected routine is named in the report's incompleteness caveat"
+else
+  fail "a rejected routine was silently missing from the report"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && ! outgrep "These counts are incomplete."; then
+  ok "a complete report carries no incompleteness caveat at all"
+else
+  fail "a complete report claimed to be incomplete"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+unset GH_ARGV GH_COMMENT_BODY
 
 echo "── systemd installer (generalised unit loop) ──"
 

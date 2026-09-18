@@ -63,7 +63,7 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found fourteen more. `GET /sources` is paginated (`pageSize`
+- Later rounds found sixteen more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
@@ -100,6 +100,13 @@
   said nothing, so the failure now appears in the report body and in the comment;
   and phase two rechecks `paused` after rereading the catalog, so pausing a
   routine mid-run stops its queued repositories too.
+- A seventh round found both of those fixes one level too narrow, which is the
+  lesson worth keeping. Phase two rechecked `paused` but nothing else phase one had
+  decided, so a repository dropped from a routine mid-run still dispatched; the
+  whole eligibility decision now lives in one function. The report caveat named
+  failed queries but not routines whose frontmatter was rejected, equally absent
+  from the table and equally invisible in a posted comment; the reasons a report can
+  be partial now go through one builder.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

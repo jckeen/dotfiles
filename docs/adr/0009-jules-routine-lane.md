@@ -139,6 +139,16 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   A seventh round found both previous fixes one level too narrow, which is the
+   lesson worth keeping: a review finding is a category, not an instance. Phase two
+   rechecked `paused` but not the rest of what phase one had decided, so a
+   repository dropped from a routine mid-run still dispatched; the whole
+   eligibility decision is now re-validated in one function, so a new rule cannot
+   be added to phase one and forgotten. And the report caveat named failed queries
+   but not routines whose frontmatter was rejected — also absent from the table,
+   also invisible in a posted comment. The three reasons a report can be partial
+   now go through one caveat builder for the same reason.
+
    A sixth round found two, both about trusting a partial answer. A failed
    `gh pr list` skipped its repository and set the exit code, but the posted table
    said nothing — and an exit code no one sees is not a caveat, so a routine could

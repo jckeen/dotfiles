@@ -56,7 +56,11 @@ Jules session per routine per repository per day; a daily systemd timer fires
 it, and `--dry-run` shows what a day would dispatch without creating anything.
 
 The frontmatter is a contract, not documentation — the dispatcher parses it
-strictly and refuses to dispatch a routine whose header does not validate:
+strictly and refuses to dispatch a routine whose header does not validate. An
+edit made while a run is in flight is honoured: the dispatcher re-reads the file
+before each session and re-checks the whole eligibility decision, so pausing a
+routine, dropping a repository from its list, or slowing it to `weekly` stops the
+repositories still queued behind it.
 
 | Key | Meaning |
 |-----|---------|
