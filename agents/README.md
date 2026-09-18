@@ -62,7 +62,7 @@ strictly and refuses to dispatch a routine whose header does not validate:
 |-----|---------|
 | `name` | Must match the filename stem and `[a-z0-9-]+` |
 | `schedule` | `daily` or `weekly`, and enforced: the timer fires daily, and a `weekly` routine is skipped while its last dispatch for that repository is inside a seven-day window |
-| `repos` | `all` (every repository `GET /sources` returns) or a list of `OWNER/NAME` |
+| `repos` | `all` (every repository `GET /sources` returns) or a list of `OWNER/NAME`; compared without case, and a repository listed twice is rejected |
 | `max_prs_per_run` | Pull requests the routine may open in one run |
 | `max_files` | Files one of its pull requests may change |
 | `label` | Must be `jules-routine:<name>`; the measurement query keys off it |

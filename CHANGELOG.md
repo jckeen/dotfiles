@@ -63,7 +63,7 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found six more. `GET /sources` is paginated (`pageSize`
+- Later rounds found eight more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
@@ -78,6 +78,15 @@
   least-recently-dispatched first: a fixed alphabetical order meant that with more
   eligible pairs than the cap allows, the tail of the catalog would never run
   once, on any day.
+- The ledger is write-ahead: a record is written before the request and upgraded
+  after it. A POST that creates a session and then times out is
+  indistinguishable from one that never landed, and without the first record the
+  pair vanished from the ledger — so the next run dispatched it again and the
+  original session never counted against the cap. Unresolved attempts are
+  reported for reconciliation against `GET /sessions` and are not retried that
+  day. Repository identity is also lowercased everywhere and a repeated entry is
+  rejected, because GitHub names are case-insensitive and both copies passed every
+  eligibility check before the first session was created.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

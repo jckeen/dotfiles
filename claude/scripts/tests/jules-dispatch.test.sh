@@ -56,6 +56,7 @@ for a in "$@"; do
 done
 cat >/dev/null
 if [[ -n "${FAKE_CURL_FAIL:-}" ]]; then exit 22; fi
+if [[ -n "${FAKE_CURL_FAIL_POST:-}" && "$method" == "POST" ]]; then exit 28; fi
 case "$method:$url" in
   GET:*/sources*)
     # A second fixture file, when present, is served as page 2 — the first is
@@ -128,6 +129,19 @@ dispatch() { # extra flags...
 }
 
 outgrep() { grep -Fq -- "$1" "$CASE_DIR/out"; }
+
+# A dispatch writes two ledger lines (write-ahead "attempted", then "created"),
+# so counts are over records. Lines seeded by ledger_below carry no status and
+# stand for a completed past dispatch, which is why the default is "created".
+ledger_jq() { jq -s "$@" "$STATE/dispatch.jsonl" 2>/dev/null || printf '0'; }
+created_count() { ledger_jq '[.[] | select((.status // "created") == "created")] | length'; }
+created_routine() {
+  ledger_jq --arg r "$1" '[.[] | select(.routine == $r and ((.status // "created") == "created"))] | length'
+}
+created_repo() {
+  ledger_jq --arg p "$1" '[.[] | select(.repo == $p and ((.status // "created") == "created"))] | length'
+}
+attempted_count() { ledger_jq '[.[] | select((.status // "") == "attempted")] | length'; }
 
 # Full-fidelity snapshot: every path, every file hash, every symlink target.
 snapshot() {
@@ -221,7 +235,7 @@ echo "── dispatch behaviour ──"
 
 new_case
 routine alpha false 'repos: all'
-if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+if dispatch && [[ "$(created_count)" -eq 2 ]]; then
   ok "repos: all fans out to every repository GET /sources returned"
 else
   fail "repos: all did not dispatch once per source"
@@ -233,9 +247,9 @@ fi
 new_case
 routine alpha false 'repos: all'
 dispatch
-before_n="$(grep -c . "$STATE/dispatch.jsonl")"
+before_n="$(created_count)"
 dispatch
-after_n="$(grep -c . "$STATE/dispatch.jsonl")"
+after_n="$(created_count)"
 if [[ "$before_n" -eq 2 && "$after_n" -eq 2 ]] && outgrep "already dispatched today"; then
   ok "a second run the same day creates no new session and says why"
 else
@@ -248,7 +262,7 @@ fi
 new_case
 routine alpha false 'repos: all'
 CAP=1 dispatch
-if [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 1 ]] && outgrep "daily cap 1 reached"; then
+if [[ "$(created_count)" -eq 1 ]] && outgrep "daily cap 1 reached"; then
   ok "the daily cap stops dispatching and names the cap"
 else
   fail "the daily cap did not hold"
@@ -273,7 +287,7 @@ routine beta false 'repos:
   - jckeen/dotfiles'
 if dispatch \
   && outgrep "jckeen/not-connected — not in GET /sources" \
-  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 1 ]]; then
+  && [[ "$(created_count)" -eq 1 ]]; then
   ok "a repository absent from GET /sources is skipped with a message"
 else
   fail "an unconnected repository was not skipped cleanly"
@@ -284,8 +298,8 @@ new_case
 routine alpha true 'repos: all'
 routine beta false 'repos: all'
 if dispatch && outgrep "alpha — paused: true" \
-  && [[ "$(grep -c '"routine":"alpha"' "$STATE/dispatch.jsonl")" -eq 0 ]] \
-  && [[ "$(grep -c '"routine":"beta"' "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+  && [[ "$(created_routine alpha)" -eq 0 ]] \
+  && [[ "$(created_routine beta)" -eq 2 ]]; then
   ok "paused: true skips that routine and leaves the others running"
 else
   fail "a paused routine was not skipped"
@@ -295,8 +309,8 @@ fi
 new_case
 routine alpha false 'repos: all'
 if dispatch --repo jckeen/atlas \
-  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 1 ]] \
-  && grep -Fq '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl"; then
+  && [[ "$(created_count)" -eq 1 ]] \
+  && [[ "$(created_repo jckeen/atlas)" -ge 1 ]]; then
   ok "--repo narrows the run to one repository"
 else
   fail "--repo did not narrow the run"
@@ -450,7 +464,7 @@ printf 'name: broken\n' > "$ROUTINES/broken.md"
 routine beta false 'repos: all'
 if ! dispatch \
   && outgrep "broken.md — frontmatter rejected; not dispatched" \
-  && [[ "$(grep -c '"routine":"beta"' "$STATE/dispatch.jsonl")" -eq 2 ]] \
+  && [[ "$(created_routine beta)" -eq 2 ]] \
   && [[ "$(jq -r '.failures' "$STATE/status.json")" == "1" ]]; then
   ok "a rejected routine fails the run while the valid ones still dispatch"
 else
@@ -499,7 +513,7 @@ routine weeklyone false 'repos:
 ledger_line weeklyone jckeen/dotfiles 6 > "$STATE/dispatch.jsonl"
 if dispatch \
   && outgrep "schedule: weekly, dispatched inside the last 7 day(s); skipped" \
-  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 1 ]]; then
+  && [[ "$(created_count)" -eq 1 ]]; then
   ok "a weekly routine dispatched six days ago is skipped, not run again"
 else
   fail "a weekly routine ran inside its cadence window"
@@ -510,7 +524,7 @@ new_case
 routine weeklyone false 'repos:
   - jckeen/dotfiles' weekly
 ledger_line weeklyone jckeen/dotfiles 8 > "$STATE/dispatch.jsonl"
-if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+if dispatch && [[ "$(created_count)" -eq 2 ]]; then
   ok "a weekly routine dispatched eight days ago runs again"
 else
   fail "a weekly routine past its window did not run"
@@ -523,7 +537,7 @@ new_case
 routine alpha false 'repos:
   - jckeen/dotfiles'
 ledger_line alpha jckeen/dotfiles 6 > "$STATE/dispatch.jsonl"
-if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+if dispatch && [[ "$(created_count)" -eq 2 ]]; then
   ok "a daily routine is not held back by the weekly cadence check"
 else
   fail "the cadence check leaked into daily routines"
@@ -595,7 +609,7 @@ holder=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$CASE_DIR/held" ]] && break; sleep 0.2; done
 kill -9 "$holder" 2>/dev/null
 wait "$holder" 2>/dev/null
-if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+if dispatch && [[ "$(created_count)" -eq 2 ]]; then
   ok "a SIGKILLed holder leaves no stale lock behind"
 else
   fail "a killed holder wedged the next run"
@@ -645,10 +659,10 @@ routine alpha false 'repos: all'
 printf '' > "$STATE/dispatch.jsonl"
 chmod 400 "$STATE/dispatch.jsonl"
 if ! dispatch \
-  && outgrep "COULD NOT record it in" \
+  && outgrep "refusing to create a session" \
   && [[ "$(jq -r '.failures' "$STATE/status.json")" -ge 1 ]] \
   && [[ "$(jq -r '.created_this_run' "$STATE/status.json")" == "0" ]]; then
-  ok "an unwritable ledger fails the run instead of reporting a dispatch"
+  ok "an unwritable ledger refuses to create a session at all"
 else
   fail "a failed ledger append passed as a successful dispatch"
   sed 's/^/      | /' "$CASE_DIR/out"
@@ -670,8 +684,8 @@ cat > "$CASE_DIR/sources-p2.json" <<'P2'
 {"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}]}
 P2
 if FAKE_SOURCES="$CASE_DIR/sources-p1.json" FAKE_SOURCES_P2="$CASE_DIR/sources-p2.json" dispatch \
-  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]] \
-  && grep -Fq '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl" \
+  && [[ "$(created_count)" -eq 2 ]] \
+  && [[ "$(created_repo jckeen/atlas)" -ge 1 ]] \
   && outgrep "sources: 2 over 2 page(s)"; then
   ok "a second page of GET /sources is followed and its repositories dispatched"
 else
@@ -712,8 +726,8 @@ routine zeta false 'repos:
 # ordering is the only thing that can pick zeta.
 ledger_line alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
 if CAP=1 dispatch \
-  && grep -Fq '"routine":"zeta"' "$STATE/dispatch.jsonl" \
-  && [[ "$(grep -c '"routine":"alpha"' "$STATE/dispatch.jsonl")" -eq 1 ]] \
+  && [[ "$(created_routine zeta)" -ge 1 ]] \
+  && [[ "$(created_routine alpha)" -eq 1 ]] \
   && outgrep "alpha / jckeen/dotfiles — daily cap 1 reached; deferred to a later day"; then
   ok "the never-dispatched routine wins the last slot, and the other is deferred"
 else
@@ -732,7 +746,7 @@ fi
 # Among pairs that have never run, the order has to be deterministic.
 new_case
 routine alpha false 'repos: all'
-if CAP=1 dispatch && grep -Fq '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl"; then
+if CAP=1 dispatch && [[ "$(created_repo jckeen/atlas)" -ge 1 ]]; then
   ok "never-dispatched pairs break ties deterministically by routine then repository"
 else
   fail "tie-breaking is not deterministic"
@@ -744,8 +758,8 @@ new_case
 routine alpha false 'repos: all'
 { ledger_line alpha jckeen/atlas 3; ledger_line alpha jckeen/dotfiles 9; } > "$STATE/dispatch.jsonl"
 CAP=1 dispatch
-if [[ "$(grep -c '"repo":"jckeen/dotfiles"' "$STATE/dispatch.jsonl")" -eq 2 ]] \
-  && [[ "$(grep -c '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl")" -eq 1 ]]; then
+if [[ "$(created_repo jckeen/dotfiles)" -eq 2 ]] \
+  && [[ "$(created_repo jckeen/atlas)" -eq 1 ]]; then
   ok "the least-recently-dispatched repository takes the slot"
 else
   fail "ordering ignored the last-dispatch time"
@@ -760,13 +774,99 @@ routine alpha false 'repos: all'
 : > "$STATE/dispatch.jsonl"
 chmod 400 "$STATE/dispatch.jsonl"
 if ! dispatch && outgrep "ABORTED: ledger unwritable" \
-  && [[ "$(grep -c '/sessions' "$FAKE_CURL_ARGV")" -eq 1 ]]; then
-  ok "an unwritable ledger aborts the run after one session, not after every pair"
+  && [[ "$(grep -c '/sessions' "$FAKE_CURL_ARGV")" -eq 0 ]]; then
+  ok "an unwritable ledger aborts before any session is created, not after each pair"
 else
   fail "an unwritable ledger kept creating unrecorded sessions"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 chmod 600 "$STATE/dispatch.jsonl" 2>/dev/null || true
+
+echo "── fourth review round ──"
+
+# [medium] a POST can create a session remotely and then time out, and a process
+# killed between the POST and the ledger append looks the same. Without a
+# write-ahead record the pair vanished from the ledger entirely: the next run
+# dispatched it again and the original session never counted against the cap.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+if FAKE_CURL_FAIL_POST=1 dispatch; then
+  fail "a failed POST did not fail the run"
+else
+  if outgrep "outcome UNKNOWN" \
+    && [[ "$(attempted_count)" -eq 1 ]] && [[ "$(created_count)" -eq 0 ]]; then
+    ok "a POST whose outcome is unknown leaves an attempted record, not nothing"
+  else
+    fail "an ambiguous POST left no ledger trace"
+    sed 's/^/      | /' "$CASE_DIR/out"
+  fi
+fi
+
+# That record must make the pair count as dispatched, so the next run does not
+# create a second session for work that may already be running.
+if dispatch && outgrep "already dispatched today" && [[ "$(created_count)" -eq 0 ]]; then
+  ok "an unresolved attempt is not retried the same day"
+else
+  fail "an unresolved attempt was dispatched again"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+if outgrep "recorded as attempted with no confirmed"; then
+  ok "the run reports unresolved attempts for reconciliation"
+else
+  fail "unresolved attempts are invisible"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A completed dispatch pairs its two records under one attempt id, so the cap
+# counts it once rather than twice.
+new_case
+routine alpha false 'repos: all'
+dispatch
+if [[ "$(created_count)" -eq 2 ]] && [[ "$(attempted_count)" -eq 2 ]] \
+  && [[ "$(jq -r '.dispatched_today' "$STATE/status.json")" == "2" ]]; then
+  ok "the two records of one dispatch count as one unit of spend"
+else
+  fail "the write-ahead record double-counted the spend"
+  sed 's/^/      | /' "$STATE/status.json"
+fi
+
+# [medium] a repeated repository passed every eligibility check before the first
+# session was created, so both copies dispatched.
+new_case
+printf '%s' "${VALID/repos: all/repos:
+  - jckeen/dotfiles
+  - jckeen/dotfiles}" > "$ROUTINES/alpha.md"
+if ! dispatch && outgrep "lists 'jckeen/dotfiles' more than once"; then
+  ok "a repository listed twice is rejected"
+else
+  fail "a duplicate repository entry was accepted"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Case variants resolve to the same source but were two different ledger keys.
+new_case
+printf '%s' "${VALID/repos: all/repos:
+  - jckeen/dotfiles
+  - jckeen/DotFiles}" > "$ROUTINES/alpha.md"
+if ! dispatch && outgrep "more than once (comparison ignores case)"; then
+  ok "a case variant of the same repository is rejected"
+else
+  fail "a case variant was treated as a second repository"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# And a single mixed-case entry still resolves and records one canonical spelling.
+new_case
+printf '%s' "${VALID/repos: all/repos:
+  - JCKeen/DotFiles}" > "$ROUTINES/alpha.md"
+if dispatch && [[ "$(created_repo jckeen/dotfiles)" -eq 1 ]]; then
+  ok "a mixed-case entry resolves and is recorded in one canonical spelling"
+else
+  fail "a mixed-case entry did not resolve"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
 
 echo "── --report ──"
 

@@ -139,6 +139,21 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   A fourth round closed the last two gaps. The ledger is now write-ahead: a
+   record goes in *before* the request and is upgraded after it, because a POST
+   that creates a session and then times out is indistinguishable from one that
+   never landed — and without the first record the pair vanished from the ledger,
+   so the next run dispatched it again and the original session never counted
+   against the cap. An unresolved attempt is reported for reconciliation against
+   `GET /sessions` and is not retried that day: a duplicate cloud session is the
+   one outcome this script must never produce on its own. Both records of a
+   dispatch share an attempt id, so the cap counts them once. And repository
+   identity is lowercased everywhere, with a repeated entry rejected outright,
+   because GitHub names are case-insensitive: `Owner/Repo` and `owner/repo`
+   resolved to the same source while keying the ledger differently, and every
+   eligibility check runs before the first session is created, so both copies
+   passed.
+
    A third round found the ordering problem. With more eligible pairs than the
    daily cap allows, a fixed alphabetical order starves the tail *permanently*:
    ten connected repositories and the default cap of 40 would let the first four

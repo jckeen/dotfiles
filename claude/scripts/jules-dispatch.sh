@@ -86,6 +86,10 @@ CREATED=0
 FAILURES=0
 SPENT=0
 DEFERRED=0
+ATTEMPT_SEQ=0
+# Ties one run's ledger records together, so the "attempted" and "created" lines
+# of a dispatch are recognisably one unit of spend.
+RUN_ID="$$.$(date -u +%s).${RANDOM}"
 
 usage() {
   # Printed from the header block above, which is the single copy of the
@@ -145,6 +149,9 @@ else
 fi
 
 command -v jq >/dev/null 2>&1 || die "jq is required (setup.sh installs it)"
+
+# One spelling for a repository everywhere (see lc() below).
+ONLY_REPO="$(printf '%s' "$ONLY_REPO" | tr '[:upper:]' '[:lower:]')"
 [[ "$MODE" == "dispatch" ]] && { command -v curl >/dev/null 2>&1 || die "curl is required"; }
 
 # ── Routine frontmatter ──────────────────────────────────────────────
@@ -157,6 +164,11 @@ FM_LABEL=""; FM_ACCEPTANCE=""; FM_PAUSED=""; FM_PROMPT=""
 FM_REPOS=()
 
 fm_fail() { printf 'jules-dispatch: %s: %s\n' "$1" "$2" >&2; return 1; }
+
+# GitHub repository identities are case-insensitive. One spelling is used
+# everywhere — frontmatter, --repo, the source listing, the ledger key — so a
+# case variant can never become a second identity for the same repository.
+lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 parse_routine() {
   local file="$1" stem line key value state="head" lineno=0 seen=" " in_repos=0
@@ -175,7 +187,11 @@ parse_routine() {
       fm)
         if [[ "$line" == "---" ]]; then state="body"; continue; fi
         if [[ "$in_repos" -eq 1 && "$line" =~ ^[[:space:]]+-[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then
-          FM_REPOS+=("${BASH_REMATCH[1]}"); continue
+          # Lowercased on the way in: GitHub repository names are
+          # case-insensitive, so "Owner/Repo" and "owner/repo" resolve to the same
+          # source but would otherwise be two different ledger keys — and the
+          # same repository would be dispatched twice in one run.
+          FM_REPOS+=("$(lc "${BASH_REMATCH[1]}")"); continue
         fi
         in_repos=0
         [[ "$line" =~ ^([a-z_]+):[[:space:]]*(.*)$ ]] \
@@ -194,7 +210,7 @@ parse_routine() {
           acceptance)      FM_ACCEPTANCE="$value" ;;
           paused)          FM_PAUSED="$value" ;;
           repos)
-            if [[ -n "$value" ]]; then FM_REPOS=("$value"); else in_repos=1; fi
+            if [[ -n "$value" ]]; then FM_REPOS=("$(lc "$value")"); else in_repos=1; fi
             ;;
           *) fm_fail "$file:$lineno" "unknown frontmatter key '$key'"; return 1 ;;
         esac
@@ -224,10 +240,17 @@ parse_routine() {
   [[ "$FM_PAUSED" == "true" || "$FM_PAUSED" == "false" ]] \
     || { fm_fail "$file" "paused must be 'true' or 'false', got '$FM_PAUSED'"; return 1; }
   [[ "${#FM_REPOS[@]}" -gt 0 ]] || { fm_fail "$file" "repos must be 'all' or a non-empty list"; return 1; }
-  local r
+  local r seen_repos=" "
   for r in "${FM_REPOS[@]}"; do
-    [[ "$r" == "all" || "$r" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
+    [[ "$r" == "all" || "$r" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]] \
       || { fm_fail "$file" "repos entry must be 'all' or OWNER/NAME, got '$r'"; return 1; }
+    # A repeated entry would dispatch the same repository twice: every
+    # eligibility check runs before the first session is created, so both copies
+    # pass. Rejected here rather than silently deduplicated, because a duplicate
+    # in a hand-edited catalog is a mistake worth seeing.
+    [[ "$seen_repos" == *" $r "* ]] \
+      && { fm_fail "$file" "repos lists '$r' more than once (comparison ignores case)"; return 1; }
+    seen_repos="$seen_repos$r "
   done
   if [[ "${#FM_REPOS[@]}" -gt 1 ]]; then
     for r in "${FM_REPOS[@]}"; do
@@ -326,22 +349,58 @@ sources_repos() {
     | if ((.githubRepo.owner // "") != "" and (.githubRepo.repo // "") != "")
       then (.githubRepo.owner + "/" + .githubRepo.repo)
       else ((.name // "") | split("/") | if length >= 2 then (.[-2] + "/" + .[-1]) else empty end)
-      end' <<<"$SOURCES_JSON" | sed '/^$/d' | sort -u
+      end' <<<"$SOURCES_JSON" | tr '[:upper:]' '[:lower:]' | sed '/^$/d' | sort -u
 }
 
 # ── Ledger ───────────────────────────────────────────────────────────
+# A dispatch writes TWO lines: "attempted" before the POST and "created" after
+# it, sharing one attempt id. Without the first, a POST that creates a session
+# remotely and then times out — or a process killed between the POST and the
+# append — leaves no trace at all, so the next run dispatches the pair again and
+# the original session never counts against the cap. The pre-record makes the
+# ambiguous case visible and fail-closed: the pair counts as dispatched, and the
+# run reports it for reconciliation against GET /sessions.
+#
+# Every count is over DISTINCT attempts, not lines, so the two records for one
+# dispatch are one unit of spend. Lines written before this scheme existed carry
+# no attempt id, so the key falls back to the session or the timestamp.
+readonly LEDGER_KEY='(if ((.attempt // "") == "") then ((.session // "") + (.dispatched_at // "")) else .attempt end)'
+
+ledger_append() { # status attempt repo source session url
+  jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
+    --arg repo "$3" --arg source "$4" --arg status "$1" --arg attempt "$2" \
+    --arg session "$5" --arg url "$6" \
+    '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
+      source: $source, status: $status, attempt: $attempt,
+      session: $session, url: $url}' >> "$LEDGER"
+}
+
 ledger_query() { # jq-filter -> value
   [[ -s "$LEDGER" ]] || { printf '0\n'; return 0; }
   jq -s "$@" "$LEDGER" 2>/dev/null \
     || die "dispatch ledger is not valid JSON lines: $LEDGER"
 }
 
-dispatched_today() { ledger_query --arg d "$TODAY" '[.[] | select(.date == $d)] | length'; }
+dispatched_today() {
+  ledger_query --arg d "$TODAY" \
+    "[.[] | select(.date == \$d) | $LEDGER_KEY] | unique | length"
+}
+
+# Attempts today with no matching "created" record: a session may or may not
+# exist for each one. Surfaced rather than retried, because a duplicate cloud
+# session is the one outcome this script must never produce on its own.
+unresolved_attempts() {
+  ledger_query --arg d "$TODAY" \
+    "[.[] | select(.date == \$d)] as \$t
+     | (\$t | map(select((.status // \"created\") == \"attempted\") | $LEDGER_KEY) | unique) as \$a
+     | (\$t | map(select((.status // \"created\") == \"created\") | $LEDGER_KEY) | unique) as \$c
+     | (\$a - \$c) | length"
+}
 
 already_dispatched() { # routine repo
   local n
   n="$(ledger_query --arg d "$TODAY" --arg r "$1" --arg p "$2" \
-        '[.[] | select(.date == $d and .routine == $r and .repo == $p)] | length')"
+        "[.[] | select(.date == \$d and .routine == \$r and .repo == \$p) | $LEDGER_KEY] | unique | length")"
   [[ "$n" -gt 0 ]]
 }
 
@@ -470,7 +529,22 @@ build_prompt() { # repo
 }
 
 dispatch_one() { # routine-file repo source
-  local repo="$2" source="$3" prompt response session url
+  local repo="$2" source="$3" prompt response session url attempt
+  ATTEMPT_SEQ=$((ATTEMPT_SEQ + 1))
+  attempt="$RUN_ID.$ATTEMPT_SEQ"
+
+  # Write-ahead. If this fails, nothing has been created yet, so the run can stop
+  # cleanly — the ledger is the only thing preserving idempotency and the cap.
+  if ! ledger_append attempted "$attempt" "$repo" "$source" "" ""; then
+    log "  !! $FM_NAME / $repo — cannot write $LEDGER; refusing to create a session"
+    log "     The ledger is the only thing preserving idempotency and the daily"
+    log "     cap, so this run stops here. Fix the ledger, then re-run."
+    record error "$FM_NAME" "$repo" "ledger unwritable; no session created"
+    FAILURES=$((FAILURES + 1))
+    # 3 is the caller's signal to abort the whole run, not just this pair.
+    return 3
+  fi
+
   prompt="$(build_prompt "$repo")"
   BODY_FILE="$(mktemp)"
   jq -n --arg prompt "$prompt" --arg title "jules-routine: $FM_NAME ($repo)" \
@@ -482,10 +556,16 @@ dispatch_one() { # routine-file repo source
     > "$BODY_FILE"
 
   if ! response="$(curl_api POST /sessions "$BODY_FILE")"; then
-    log "  !! $FM_NAME / $repo — POST /sessions failed"
-    record error "$FM_NAME" "$repo" "POST /sessions failed"
-    FAILURES=$((FAILURES + 1))
     rm -f "$BODY_FILE"; BODY_FILE=""
+    # The request may have reached Jules before the failure — a timeout after the
+    # server committed looks exactly like a request that never landed. The
+    # attempted record stands, so this pair is not retried today.
+    log "  !! $FM_NAME / $repo — POST /sessions failed; outcome UNKNOWN"
+    log "     A session may or may not have been created. The pair is recorded as"
+    log "     attempted and will not be retried today; reconcile against"
+    log "     GET /sessions before forcing it."
+    record error "$FM_NAME" "$repo" "POST /sessions failed; outcome unknown"
+    FAILURES=$((FAILURES + 1))
     return 1
   fi
   rm -f "$BODY_FILE"; BODY_FILE=""
@@ -499,21 +579,12 @@ dispatch_one() { # routine-file repo source
     return 1
   fi
 
-  # The session already exists at this point, so a failed ledger append is not a
-  # failed dispatch — it is an unrecorded one, which the next run would repeat.
-  # `dispatch_one` is called with `|| true`, so errexit is off inside it: the
-  # append has to be checked explicitly or the failure passes as a success.
-  if ! jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
-      --arg repo "$repo" --arg source "$source" --arg session "$session" --arg url "$url" \
-      '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
-        source: $source, session: $session, url: $url}' >> "$LEDGER"; then
-    log "  !! $FM_NAME / $repo — created $session but COULD NOT record it in $LEDGER"
-    log "     The ledger is the only thing preserving idempotency and the daily"
-    log "     cap, so this run stops here rather than creating more unrecorded"
-    log "     sessions. Fix the ledger, then re-run."
+  if ! ledger_append created "$attempt" "$repo" "$source" "$session" "$url"; then
+    log "  !! $FM_NAME / $repo — created $session but could not record it in $LEDGER"
+    log "     The attempted record already bounds the spend, so this is a"
+    log "     reconciliation problem rather than a duplicate-dispatch one."
     record error "$FM_NAME" "$repo" "session $session created but not recorded"
     FAILURES=$((FAILURES + 1))
-    # 3 is the caller's signal to abort the whole run, not just this pair.
     return 3
   fi
 
@@ -541,6 +612,12 @@ do_dispatch() {
   used="$(dispatched_today)"
   SPENT="$used"
   log "═══ jules-dispatch $NOW_ISO ═══"
+  local pending
+  pending="$(unresolved_attempts)"
+  if [[ "$pending" -gt 0 ]]; then
+    log "  !! $pending dispatch(es) today are recorded as attempted with no confirmed"
+    log "     session. Reconcile against GET /sessions; they are not retried."
+  fi
   log "catalog: $ROUTINE_DIR; sources: $(jq -r '.sources | length' <<<"$SOURCES_JSON") over $SOURCES_PAGES page(s); dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
 
   # ── Phase 1: which (routine, repository) pairs are eligible today ──
@@ -601,7 +678,13 @@ do_dispatch() {
   # order among pairs that have never run (all of which carry 0).
   local sorted line last_epoch
   sorted="$(mktemp)"
-  sort -t"$(printf '\t')" -k1,1n -k2,2 -k3,3 "$candidates" > "$sorted"
+  # Deduplicate on (routine, repository) before sorting. The parser already
+  # rejects a repeated entry in one routine, and repository identities are
+  # lowercased everywhere, so this is a backstop rather than the primary guard —
+  # but every eligibility check runs before the first session is created, so a
+  # duplicate reaching this queue would dispatch twice.
+  awk -F'\t' '!seen[$2 FS $3]++' "$candidates" \
+    | sort -t"$(printf '\t')" -k1,1n -k2,2 -k3,3 > "$sorted"
   rm -f "$candidates"
 
   while IFS="$(printf '\t')" read -r last_epoch FM_NAME repo source file; do
