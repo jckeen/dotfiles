@@ -172,6 +172,22 @@ here; each is resolved by the first live dispatch.
   reason.
 - **Where the CLI stores its credentials.** Undocumented; it is the whole reason
   dispatch goes through REST rather than `jules remote new`.
+- **The `jules version` invocation used by `setup.sh`.** The CLI reference lists
+  a `version` command, so the spelling is documented rather than guessed — but it
+  has never been executed on this machine, and no page states whether it writes
+  anything under `$HOME`. `setup.sh` therefore skips it entirely under
+  `--dry-run` and tolerates a non-zero exit outside it, so a wrong spelling or a
+  state-writing probe degrades to the string "installed" rather than breaking
+  setup or the dry-run no-writes contract.
+
+One property is deliberate rather than unverified, and is easy to mistake for a
+bug: **`--dry-run` still requires a valid key file.** It performs the live
+`GET /sources` — that call is how it resolves `repos: all` and how it reports a
+repository that is not connected — and only the session-creating `POST` is
+suppressed. So a dry run refuses on a missing, group-readable, or malformed key
+exactly as a real run does. What `--dry-run` guarantees is that it creates no
+session and leaves the state directory byte-identical, not that it works without
+a credential.
 
 ### The first live dispatch (operator step)
 
