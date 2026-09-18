@@ -340,10 +340,14 @@ fetch_sources() {
       || die "GET /sources returned more than $SOURCES_PAGE_LIMIT pages; refusing to keep paging"
     path="/sources?pageSize=100"
     if [[ -n "$token" ]]; then
-      # The token goes into a URL, so it is never interpolated unvalidated.
-      [[ "$token" =~ ^[A-Za-z0-9._~=-]+$ ]] \
-        || die "GET /sources returned a nextPageToken outside [A-Za-z0-9._~=-]"
-      path="$path&pageToken=$token"
+      # The token is opaque, so it is percent-encoded rather than restricted to an
+      # alphabet: a base64 token containing '+' or '/' is perfectly valid and an
+      # allowlist would abort discovery on it, making pagination depend on an
+      # undocumented encoding. @uri also neutralises anything that could break out
+      # of the query string. The length bound is the only limit kept.
+      [[ "${#token}" -le 4096 ]] \
+        || die "GET /sources returned a nextPageToken longer than 4096 characters"
+      path="$path&pageToken=$(jq -rn --arg t "$token" '$t|@uri')"
     fi
     body="$(curl_api GET "$path")" \
       || die "GET /sources failed on page $page — cannot resolve any repository"

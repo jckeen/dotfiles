@@ -780,15 +780,55 @@ else
   sed 's/^/      | /' "$FAKE_CURL_ARGV"
 fi
 
-# A token is interpolated into a URL, so it is validated first.
+# A page token is opaque and base64 tokens contain '+', '/' and '=', so it is
+# percent-encoded rather than restricted to an alphabet — an allowlist would abort
+# discovery on a perfectly valid token.
 new_case
 routine alpha false 'repos: all'
-printf '{"sources":[],"nextPageToken":"bad token; rm -rf /"}\n' > "$CASE_DIR/p1.json"
-if ! FAKE_SOURCES="$CASE_DIR/p1.json" FAKE_SOURCES_P2="$CASE_DIR/p1.json" dispatch \
-  && outgrep "nextPageToken outside"; then
-  ok "a nextPageToken outside the safe charset is refused"
+cat > "$CASE_DIR/p1.json" <<'B64'
+{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles"}}],
+ "nextPageToken":"a+b/c=d"}
+B64
+cat > "$CASE_DIR/p2.json" <<'B64P2'
+{"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}]}
+B64P2
+if FAKE_SOURCES="$CASE_DIR/p1.json" FAKE_SOURCES_P2="$CASE_DIR/p2.json" dispatch \
+  && grep -Fq -- 'pageToken=a%2Bb%2Fc%3Dd' "$FAKE_CURL_ARGV" \
+  && [[ "$(created_count)" -eq 2 ]]; then
+  ok "a base64 page token is percent-encoded and pagination continues"
 else
-  fail "a hostile nextPageToken was interpolated into a URL"
+  fail "a token containing + or / broke pagination"
+  sed 's/^/      | /' "$FAKE_CURL_ARGV"
+fi
+
+# Encoding also neutralises a token that would otherwise break out of the query
+# string, so no allowlist is needed for safety either.
+new_case
+routine alpha false 'repos: all'
+cat > "$CASE_DIR/p1.json" <<'HOSTILE'
+{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles"}}],
+ "nextPageToken":"x&pageSize=1 y"}
+HOSTILE
+cat > "$CASE_DIR/p2.json" <<'HOSTILEP2'
+{"sources":[]}
+HOSTILEP2
+if FAKE_SOURCES="$CASE_DIR/p1.json" FAKE_SOURCES_P2="$CASE_DIR/p2.json" dispatch \
+  && grep -Fq -- 'pageToken=x%26pageSize%3D1%20y' "$FAKE_CURL_ARGV"; then
+  ok "a token carrying query-string syntax is encoded, not injected"
+else
+  fail "a token was interpolated into the URL unencoded"
+  sed 's/^/      | /' "$FAKE_CURL_ARGV"
+fi
+
+new_case
+routine alpha false 'repos: all'
+big="$(printf 't%.0s' $(seq 1 5000))"
+printf '{"sources":[],"nextPageToken":"%s"}\n' "$big" > "$CASE_DIR/p1.json"
+if ! FAKE_SOURCES="$CASE_DIR/p1.json" FAKE_SOURCES_P2="$CASE_DIR/p1.json" dispatch \
+  && outgrep "longer than 4096 characters"; then
+  ok "an implausibly long page token is refused"
+else
+  fail "an unbounded page token was accepted"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 

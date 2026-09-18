@@ -139,6 +139,13 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   An eleventh round: the page token was guarded by a character allowlist, which
+   would have aborted source discovery on a perfectly valid base64 token containing
+   `+` or `/` — making pagination depend on an encoding the documentation never
+   promises. The token is opaque, so it is percent-encoded instead, which is both
+   correct for any token and sufficient to keep it from breaking out of the query
+   string. Only a length bound remains.
+
    A tenth round found the same subshell mistake a third time, and this one got a
    structural answer rather than another local fix. The ledger read that builds the
    report scope sat inside a `printf` argument, so a malformed ledger produced a
