@@ -187,6 +187,53 @@ Failures report a diagnostic hint and a private temporary log path without
 printing raw reviewer stderr, which may contain reviewed content. Inspect that
 log when needed and keep it out of repositories.
 
+### Low findings, filed issues, and `.codex-review-ignore`
+
+Low-severity findings never block a push; the gate files them as GitHub issues
+so they are not lost. Dedup is keyed on the **location** — the file a finding
+points at — not on its title, because Codex rewords titles between runs and a
+title-keyed dedup once filed one fixture finding sixteen times. Every filed
+issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker;
+before filing, the gate fetches the repo's `codex-review` issues once and
+matches on that marker:
+
+| Existing issue for that file | What the gate does |
+|------|------|
+| Open | Adds one comment naming the branch, sha, and the reworded title |
+| Closed as *not planned* | Prints `accepted (#N), skipping` and files nothing |
+| Closed as *completed* | Files a fresh issue — the fix regressed |
+| None | Files a new issue, marker included |
+
+**Closing an issue as *not planned* is the suppression mechanism.** Accepting a
+finding needs no config file: close it that way and the gate stops re-filing
+that location. A failed prefetch files nothing at all, since filing without the
+index is the duplicate noise this replaced. Issues are fetched and created
+through plain REST, never `gh issue list --search` or `gh issue create`, whose
+GraphQL backend egress-restricted sandboxes block; `harvest-codex-comments.sh`
+shares that one prefetch via `gate-lib.sh`.
+
+A repo may also declare path globs in a root `.codex-review-ignore` — one glob
+per line, `#` comments, `*` spanning `/`:
+
+```
+claude/scripts/tests/*
+```
+
+Those paths are hostile **by design**: gate fixtures embed injected verdicts,
+prompt-injection payloads, and synthetic credential markers, and a reviewer
+flagging them is reporting the fixture rather than a defect. The globs only
+steer the reviewer — matching paths **stay in the review scope** and are still
+reviewed for real bugs, and instruction-like text anywhere else stays
+suspicious. The file is repo content, so it is parsed as bounded untrusted data
+(200 lines, 256 bytes per line; control characters or non-UTF-8 reject the
+whole file) and fenced like the diff. A rejected file warns and the review
+proceeds without it. Because the file steers what the reviewer reports, it
+is itself a reviewer-instruction surface: a diff that touches it trips the
+self-review guard (independent review, then the documented override), a
+committed review reads the copy in the reviewed commit rather than the
+working tree, and a local copy that differs from it is a dirty instruction
+surface that blocks the review.
+
 ### Review of reviewer instructions and gates
 
 The Codex and Antigravity gates refuse changes to their own instruction

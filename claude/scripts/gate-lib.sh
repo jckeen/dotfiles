@@ -215,6 +215,192 @@ gate_verify_agy_model() {
   return 1
 }
 
+# ─── Filed-issue dedup by location ─────────────────────────────
+# Two feeds file GitHub issues out of Codex output: this gate's low findings
+# and harvest-codex-comments.sh's PR-bot comments. Both must answer the same
+# question before writing — "is this already tracked?" — so the fetch lives
+# here and both share one mechanism.
+#
+# Codex paraphrases finding titles between runs, so a title-keyed dedup filed
+# ONE fixture finding as sixteen issues. The stable key is the FILE the finding
+# points at (line numbers drift): every issue the gate files carries a hidden
+# marker `<!-- codex-gate-loc:<owner/repo>:<file> -->` and lookups grep for it.
+#
+# Existing issues are fetched ONCE via REST (repos/{owner}/{repo}/issues),
+# never `gh issue list --search` / `gh issue create`: those go through GitHub's
+# GraphQL API, which egress-restricted proxies (Claude Cloud routine sandboxes)
+# block, while plain REST under repos/{owner}/{repo}/... is served. jq's @tsv
+# escapes newlines, so the whole index is one record per issue in memory.
+GATE_ISSUE_REPO=""
+GATE_ISSUE_INDEX=""
+# Stands in for an absent state_reason so no field before the body is ever
+# empty; see the read-collapsing note in gate_issue_prefetch.
+GATE_ISSUE_NO_REASON="-"
+
+# gate_issue_marker <file> — the exact marker text for a location.
+gate_issue_marker() {
+  # The marker is an HTML comment; strip control characters and the closing
+  # sequence so a reviewer-supplied path cannot terminate it early.
+  local file
+  file="$(printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/-->//g')"
+  printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+}
+
+# gate_issue_index_marker <file> — the marker as it appears in GATE_ISSUE_INDEX.
+# The index is jq @tsv output, which doubles backslashes (and encodes tab, LF
+# and CR as \t \n \r, none of which survive gate_issue_marker's control-byte
+# strip), and `read -r` keeps those escapes literal. Lookups and in-run records
+# must use this form or a path containing a backslash never matches: its open
+# issue would be refiled every run and a not-planned closure would not suppress.
+gate_issue_index_marker() {
+  local marker
+  marker="$(gate_issue_marker "$1")"
+  printf '%s' "${marker//\\/\\\\}"
+}
+
+# gate_repo_slug — print `owner/name` for the current repo, or return 1.
+# Every write (issue create, comment) must name this slug explicitly: gh's
+# implicit repository (GH_REPO, an upstream default) can differ from the one
+# the index was built from, and an issue filed elsewhere is invisible to dedup.
+# The git remote is authoritative and needs no network; `gh repo view` is only
+# the fallback for a checkout with no github.com remote, and it is itself
+# GraphQL-backed — the very call a restricted sandbox may refuse. Accept a
+# bare two-part slug only: a nested or empty parse is a failure, never a guess.
+gate_repo_slug() {
+  local url slug=""
+  url="$(git config --get remote.origin.url 2>/dev/null)" || url=""
+  case "$url" in
+    *github.com[:/]*)
+      slug="${url##*github.com}"
+      slug="${slug#[:/]}"
+      slug="${slug%.git}"
+      slug="${slug%/}"
+      ;;
+  esac
+  if [[ "$slug" != */* || "$slug" == */*/* ]]; then
+    slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
+  fi
+  [[ "$slug" == */* && "$slug" != */*/* ]] || return 1
+  printf '%s\n' "$slug"
+}
+
+# gate_issue_prefetch [<owner/repo>] — resolve the repo slug (unless the caller
+# already knows it) and load every issue, ALL states, into GATE_ISSUE_INDEX as
+# "number<TAB>state<TAB>state_reason<TAB>body". Pull requests share the
+# endpoint and are dropped. Returns 1 when the slug or the fetch is
+# unavailable; a caller that files anyway files blind, which is the duplicate
+# noise this exists to stop.
+gate_issue_prefetch() {
+  if [[ -n "${1:-}" ]]; then
+    GATE_ISSUE_REPO="$1"
+  else
+    GATE_ISSUE_REPO="$(gate_repo_slug)" || GATE_ISSUE_REPO=""
+  fi
+  [[ "$GATE_ISSUE_REPO" == */* ]] || return 1
+  # An absent state_reason becomes GATE_ISSUE_NO_REASON, never "". Tab is an
+  # IFS *whitespace* character, so `read` collapses a run of tabs into one
+  # delimiter: an empty middle field would shift the body left into $reason and
+  # the marker would never be found — silently defeating the dedup. Keeping
+  # every field before the trailing body non-empty is what makes the read exact.
+  # `gh api --jq` takes no --arg, so the placeholder travels as an env var and
+  # is read with jq's env.NAME — one source of truth shared with the index
+  # record gate_issue_remember appends.
+  GATE_ISSUE_INDEX="$(GATE_ISSUE_NO_REASON="$GATE_ISSUE_NO_REASON" \
+    gh api "repos/$GATE_ISSUE_REPO/issues?state=all&per_page=100" --paginate \
+    --jq '.[] | select(.pull_request == null)
+          | [(.number|tostring), .state, (.state_reason // env.GATE_ISSUE_NO_REASON), (.body // "")] | @tsv' 2>/dev/null)" || return 1
+  return 0
+}
+
+# gate_issue_lookup <file> — print one of:
+#   open <number>      an open issue tracks this location: comment, don't file
+#   accepted <number>  closed as not_planned: the finding is accepted, skip
+#   none               no match, or only closed-as-completed (regressed): file
+# Closing an issue as *not planned* IS the suppression mechanism — accepting a
+# finding needs no extra config file. Closing it as *completed* means the code
+# was fixed, so the same location reappearing is a regression worth filing.
+# Open wins over accepted so a reopened finding keeps collecting comments.
+gate_issue_lookup() {
+  local marker num state reason body accepted=""
+  marker="$(gate_issue_index_marker "$1")"
+  while IFS=$'\t' read -r num state reason body; do
+    [[ -n "$num" && "$body" == *"$marker"* ]] || continue
+    if [[ "$state" == "open" ]]; then
+      printf 'open %s\n' "$num"
+      return 0
+    fi
+    [[ "$reason" == "not_planned" && -z "$accepted" ]] && accepted="$num"
+  done <<<"$GATE_ISSUE_INDEX"
+  if [[ -n "$accepted" ]]; then
+    printf 'accepted %s\n' "$accepted"
+  else
+    printf 'none\n'
+  fi
+}
+
+# gate_issue_remember <number> <file> — add a just-filed issue to the index so
+# a second finding at the same location in this run comments instead of filing.
+gate_issue_remember() {
+  GATE_ISSUE_INDEX+=$'\n'"$1"$'\t'"open"$'\t'"$GATE_ISSUE_NO_REASON"$'\t'"$(gate_issue_index_marker "$2")"
+}
+
+# ─── .codex-review-ignore ──────────────────────────────────────
+# A per-repo list of path globs whose contents are hostile-by-design test data
+# (adversarial fixtures, prompt-injection samples). Matching changed paths stay
+# in the diff; the gate only tells the reviewer not to report instruction-like
+# strings inside them. The file is repo content, so it is untrusted input like
+# the diff: bounded (200 lines, 256 bytes per line), control characters and
+# non-UTF-8 reject the whole file, and the result is fenced as data.
+
+# gate_read_ignore_file <path> — print the accepted globs one per line, or
+# print the rejection reason on stderr and return 1. A missing file is empty.
+gate_read_ignore_file() {
+  [[ -f "$1" ]] || return 0
+  python3 - "$1" <<'PYIGNORE'
+import sys
+from pathlib import Path
+raw = Path(sys.argv[1]).read_bytes()
+lines = raw.split(b"\n")
+if lines and lines[-1] == b"":
+    lines.pop()
+if len(lines) > 200:
+    sys.exit("more than 200 lines")
+globs = []
+for number, line in enumerate(lines, 1):
+    try:
+        text = line.decode("utf-8")
+    except UnicodeDecodeError:
+        sys.exit(f"line {number} is not UTF-8")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        sys.exit(f"line {number} contains a control character")
+    if len(line) > 256:
+        sys.exit(f"line {number} is longer than 256 bytes")
+    text = text.strip()
+    if not text or text.startswith("#"):
+        continue
+    globs.append(text)
+print("\n".join(globs))
+PYIGNORE
+}
+
+# gate_match_ignored_paths <globs> <paths> — print each path that matches any
+# glob. Shell pattern semantics: `*` spans `/` (so `**` is a synonym), `?` and
+# `[...]` as usual; no extglob.
+gate_match_ignored_paths() {
+  local globs="$1" paths="$2" path glob
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    while IFS= read -r glob; do
+      [[ -n "$glob" ]] || continue
+      # shellcheck disable=SC2053  # The unquoted right-hand side is the glob on purpose.
+      if [[ "$path" == $glob ]]; then
+        printf '%s\n' "$path"
+        break
+      fi
+    done <<<"$globs"
+  done <<<"$paths"
+}
+
 # ─── Portable timeout ──────────────────────────────────────────
 # _tmo — GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run without
 # a ceiling rather than hard-fail on macOS (#151). Exit 124 (timed out) is only
