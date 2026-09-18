@@ -55,6 +55,15 @@ uvx ruff@0.16.8 format --check .
 left (e.g. B023 loop-variable closures) is fixed by hand, never with a
 blanket `noqa`.
 
+If your PR touches `.github/workflows/*.yml` or any tracked `.json`:
+
+- Run [`actionlint`](https://github.com/rhysd/actionlint) from the repo root
+  (the version CI pins is in [`ci.yml`](workflows/ci.yml)) — it must report
+  nothing. It shellchecks every inline `run:` block, which the ShellCheck
+  action cannot see.
+- Run `git ls-files -z '*.json' | xargs -0 -n1 jq empty` — every tracked JSON
+  file must parse.
+
 ## Commit Style
 
 We use [Conventional Commits](https://www.conventionalcommits.org/) — this
