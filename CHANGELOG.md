@@ -179,6 +179,12 @@
   seventh day: "weekly" actually meant every eighth day, about forty-five runs a
   year instead of fifty-two. The comparison is strict now, with cases at six, seven,
   eight days and one second inside the boundary.
+- The request-body build is checked, and everything that can fail locally now runs
+  BEFORE the write-ahead record. `dispatch_one` executes with errexit disabled
+  because its caller inspects the return code, so an unchecked `jq` failure would
+  have POSTed an empty body — and the write-ahead record would then have blocked the
+  retry and consumed a slot for a session that provably never existed. A local
+  failure now leaves the ledger untouched and the pair retryable.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

@@ -1141,6 +1141,42 @@ else
   fail "a leading-zero margin was accepted"
 fi
 
+echo "── fifteenth review round ──"
+
+# [medium] the jq that builds the request body was unchecked, and errexit is off
+# inside dispatch_one (its caller uses `|| rc=$?`), so a failure still POSTed an
+# empty body — while the write-ahead record blocked the retry and consumed a slot
+# for a session that provably never existed. A jq stub that fails on the body
+# build (three -n arguments) but works everywhere else drives it.
+new_case
+routine alpha false 'repos: all'
+cat > "$BIN/jq" <<JQFAKE
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == *automationMode* ]]; then exit 9; fi
+done
+exec $(command -v jq) "\$@"
+JQFAKE
+chmod +x "$BIN/jq"
+if ! dispatch \
+  && outgrep "could not build the request body; no session created" \
+  && [[ "$(grep -c '/sessions' "$FAKE_CURL_ARGV")" -eq 0 ]]; then
+  ok "a failed request-body build never reaches POST"
+else
+  fail "an unbuildable request body was still POSTed"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# And it must leave NOTHING in the ledger: the failure is local and certain, so
+# the pair has to stay retryable rather than be marked attempted.
+if [[ ! -s "$STATE/dispatch.jsonl" ]]; then
+  ok "a local build failure records no attempt, so the pair stays retryable"
+else
+  fail "a local failure consumed a slot for a session that never existed"
+  sed 's/^/      | /' "$STATE/dispatch.jsonl"
+fi
+rm -f "$BIN/jq"
+
 echo "── --report ──"
 
 # gh is stubbed, so the assertion is on the bucketing and the arithmetic, not on

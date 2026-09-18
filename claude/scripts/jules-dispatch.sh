@@ -673,22 +673,11 @@ dispatch_one() { # routine-file repo source
   ATTEMPT_SEQ=$((ATTEMPT_SEQ + 1))
   attempt="$RUN_ID.$ATTEMPT_SEQ"
 
-  # Write-ahead. If this fails, nothing has been created yet, so the run can stop
-  # cleanly — the ledger is the only thing preserving idempotency and the cap.
-  if ! ledger_append attempted "$attempt" "$repo" "$source" "" ""; then
-    log "  !! $FM_NAME / $repo — cannot write $LEDGER; refusing to create a session"
-    log "     The ledger is the only thing preserving idempotency and the daily"
-    log "     cap, so this run stops here. Fix the ledger, then re-run."
-    record error "$FM_NAME" "$repo" "ledger unwritable; no session created"
-    FAILURES=$((FAILURES + 1))
-    # 3 is the caller's signal to abort the whole run, not just this pair.
-    return 3
-  fi
-
-  prompt="$(build_prompt "$repo")"
-  # Checked explicitly: this function is called with `|| rc=$?`, which disables
-  # errexit inside it, so a failed mktemp would otherwise leave BODY_FILE empty
-  # and the request body would be written to — and read from — the empty path.
+  # Everything that can fail LOCALLY happens before the write-ahead record, so a
+  # local failure leaves nothing in the ledger and the pair is retried next run
+  # rather than being marked attempted for a session that provably never existed.
+  # This function is called with `|| rc=$?`, which disables errexit inside it, so
+  # each step is checked explicitly rather than trusted to abort.
   if ! BODY_FILE="$(mktemp)" || [[ -z "$BODY_FILE" ]]; then
     log "  !! $FM_NAME / $repo — mktemp failed; no session created"
     record error "$FM_NAME" "$repo" "mktemp failed"
@@ -696,13 +685,34 @@ dispatch_one() { # routine-file repo source
     BODY_FILE=""
     return 1
   fi
-  jq -n --arg prompt "$prompt" --arg title "jules-routine: $FM_NAME ($repo)" \
-    --arg source "$source" --arg mode "$JULES_AUTOMATION_MODE" \
-    --arg branch "$STARTING_BRANCH" '
-    {prompt: $prompt, title: $title, automationMode: $mode, requirePlanApproval: false,
-     sourceContext: ({source: $source}
-       + (if $branch == "" then {} else {githubRepoContext: {startingBranch: $branch}} end))}' \
-    > "$BODY_FILE"
+
+  prompt="$(build_prompt "$repo")"
+  if ! jq -n --arg prompt "$prompt" --arg title "jules-routine: $FM_NAME ($repo)" \
+      --arg source "$source" --arg mode "$JULES_AUTOMATION_MODE" \
+      --arg branch "$STARTING_BRANCH" '
+      {prompt: $prompt, title: $title, automationMode: $mode, requirePlanApproval: false,
+       sourceContext: ({source: $source}
+         + (if $branch == "" then {} else {githubRepoContext: {startingBranch: $branch}} end))}' \
+      > "$BODY_FILE" || [[ ! -s "$BODY_FILE" ]]; then
+    log "  !! $FM_NAME / $repo — could not build the request body; no session created"
+    record error "$FM_NAME" "$repo" "request body generation failed"
+    FAILURES=$((FAILURES + 1))
+    rm -f "$BODY_FILE"; BODY_FILE=""
+    return 1
+  fi
+
+  # Write-ahead. Nothing has been created yet, so a failure here can stop the run
+  # cleanly — the ledger is the only thing preserving idempotency and the cap.
+  if ! ledger_append attempted "$attempt" "$repo" "$source" "" ""; then
+    log "  !! $FM_NAME / $repo — cannot write $LEDGER; refusing to create a session"
+    log "     The ledger is the only thing preserving idempotency and the daily"
+    log "     cap, so this run stops here. Fix the ledger, then re-run."
+    record error "$FM_NAME" "$repo" "ledger unwritable; no session created"
+    FAILURES=$((FAILURES + 1))
+    rm -f "$BODY_FILE"; BODY_FILE=""
+    # 3 is the caller's signal to abort the whole run, not just this pair.
+    return 3
+  fi
 
   if ! response="$(curl_api POST /sessions "$BODY_FILE")"; then
     rm -f "$BODY_FILE"; BODY_FILE=""
