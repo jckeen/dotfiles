@@ -30,6 +30,23 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `gen-instruction-files.sh` | Builds the three global instruction files (`claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md`) from the canonical sources in `agents/canon/` (ADR 0007) — shared rule blocks in `CANON.md`, per-tool voice in `fragments/`. `--check` verifies the committed artifacts are byte-current (run in CI via `check-agent-parity.sh`). Tests: `tests/agent-parity.test.sh` | Build (writes the three generated files) | Yes — regenerates committed artifacts |
 | `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
 
+### Test suites
+
+Every suite in `tests/` is wired into `.github/workflows/ci.yml`. Beyond the
+per-script suites named in the table above:
+
+| Suite | What it pins |
+| --- | --- |
+| `tests/review-multipart.property.test.py` | Hypothesis properties for the fragment splitter: fragments rejoin to the original, none exceeds the UTF-8 byte bound, none is empty, each is a contiguous byte slice of the packet, and a bound too small for one character fails closed |
+| `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, an over-cap diff, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
+| `tests/setup-fuzz-layouts.test.sh` | Seeded fuzzer over `setup.sh --yes --dry-run`: pseudo-random `$HOME` layouts (`.bashrc`, `.gitconfig`, `.claude`, `~/.agents/skills`, dangling links, a bun stub, `~/.codex`) each asserted byte-identical before and after. `SEED` reproduces a run and is printed on failure; `LAYOUTS` sets the count |
+| `tests/lib-snapshot.sh` | Not a suite — the shared full-fidelity directory snapshot (every path, file hash, and symlink target) sourced by `setup-dry-run.test.sh` and `setup-fuzz-layouts.test.sh` so both compare identically |
+
+Hypothesis is pinned in `tests/requirements-property.txt` and installed by the
+`property tests` CI step. The property suites import it unconditionally and exit
+with the install command rather than skipping, so a missing dependency cannot
+turn into silent zero coverage.
+
 ## Large review requests
 
 The Codex gate sends oversized requests as contiguous direct-input parts in one

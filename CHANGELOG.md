@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-09-18 — test: Hypothesis property suites and a seeded setup.sh layout fuzzer
+
+- The two pure-logic Python tools had example-based suites only. Hypothesis
+  properties now cover `review-multipart.py`'s splitter — fragments rejoin to
+  the original, none exceeds the UTF-8 byte bound, none is empty, each is a
+  contiguous byte slice, and a bound too small for one character raises rather
+  than truncating (#420, #444) — and `review-receipt.py`'s `classify_tier`
+  against an oracle written from the risk list rather than from the module's own
+  `risk()`/`docsafe()` helpers, since an oracle built from the implementation
+  agrees with whatever bug the implementation has.
+- `review-receipt.py check` is now fuzzed against single-leaf receipt tampering:
+  every integrity-bearing leaf of a real receipt is refused. The five
+  audit-metadata leaves the receipt deliberately does not bind
+  (`policy.tier1_max_lines` and the four `reviewer.*` model/executable fields)
+  are enumerated and excluded, so the threat-model boundary is written down
+  instead of discovered.
+- `setup-fuzz-layouts.test.sh` draws seeded pseudo-random `$HOME` layouts and
+  asserts the `--dry-run` no-writes contract (#133) against each, rather than
+  against the single hand-built layout `setup-dry-run.test.sh` uses. `SEED`
+  makes a red run reproducible and is printed on every failure.
+- The snapshot helper moved to `tests/lib-snapshot.sh` so both setup suites
+  assert "zero mutations" with the identical comparison; `setup-dry-run.test.sh`
+  sources it and is otherwise unchanged.
+- `codex-review-gate.test.sh` covers three more malformed-classifier shapes
+  (empty helper output, a JSON `null`, a one-element array); each must keep
+  `GATE_TIER=2` and the full review pass.
+
 ## 2026-09-17 — fix(review-multipart): byte-bounded fragments and CODEX_HOME isolation
 
 - The multipart transport sliced a large review request into 200,000-character

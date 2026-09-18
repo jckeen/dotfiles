@@ -267,12 +267,31 @@ jobs:
           python3 claude/scripts/tests/review-receipt.test.py
           python3 claude/scripts/tests/workflow-shipping.test.py
           python3 claude/scripts/tests/workflow-shipping-rewrites.test.py
+      # Hypothesis property suites for the two pure-logic Python tools: the
+      # multipart splitter's UTF-8 byte bound (#420, #444) and the receipt tier
+      # classifier plus single-leaf receipt tampering. Both import Hypothesis
+      # unconditionally and exit with the install command rather than skipping,
+      # so a missing dependency is a red run instead of silent zero coverage.
+      - name: property tests
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m pip install --user -r claude/scripts/tests/requirements-property.txt
+          python3 claude/scripts/tests/review-multipart.property.test.py
+          python3 claude/scripts/tests/review-receipt.property.test.py
+
       # setup.sh --dry-run must never write to $HOME (issue #133). The test
       # runs the installer against a throwaway HOME and asserts a
       # byte-identical before/after snapshot.
       - name: setup-dry-run (no-writes contract)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/setup-dry-run.test.sh
+
+      # The same contract, fuzzed: seeded pseudo-random $HOME layouts, each
+      # asserted byte-identical before and after the dry run. SEED is printed on
+      # failure so a red run reproduces exactly; LAYOUTS sets the count.
+      - name: setup-fuzz-layouts (seeded no-writes fuzzer)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/setup-fuzz-layouts.test.sh
 
       # setup.sh must refuse to publish $HOME links from a linked git
       # worktree: the links would dangle when the worktree is removed.
