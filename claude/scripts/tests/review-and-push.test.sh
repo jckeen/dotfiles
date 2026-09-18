@@ -435,6 +435,27 @@ want_gates "an unknown REVIEW_LANE dispatches no gate" ""
 want_refusal "an unknown REVIEW_LANE is refused" "REVIEW_LANE must be auto, codex, or antigravity"
 clean_lane_repo
 
+# The lane classification must use the SAME tier-1 cap the gate captures into
+# the receipt. Classifying under the default while the gate captures an
+# unreadable GATE_TIER1_MAX_LINES routed an ordinary diff to Antigravity whose
+# receipt then required Codex: the gate exited 0, so nothing degraded and the
+# push dead-ended at the receipt check with no fallback.
+new_lane_repo widget.ts
+run_lane GATE_TIER1_MAX_LINES=invalid
+want_gates "an unreadable tier-1 cap routes an ordinary diff to Codex" "$CODEX_GATE"
+assert "the unreadable-cap run names the codex lane" \
+  "grep -qF -- 'Review lane: codex (required: codex)' <<<\"\$OUT\""
+clean_lane_repo
+
+# And a readable non-default cap flows through: a docs diff above a cap of 1 is
+# tier 2, so it takes the ordinary lane rather than the tier-1 exemption.
+new_lane_repo notes.md
+run_lane GATE_TIER1_MAX_LINES=1
+want_gates "a small tier-1 cap demotes a docs diff to the ordinary lane" "$AGY_GATE"
+assert "the small-cap docs run names the antigravity lane" \
+  "grep -qF -- 'Review lane: antigravity (required: antigravity)' <<<\"\$OUT\""
+clean_lane_repo
+
 # Regression: the wrapper's own bookkeeping variables must not be re-exported
 # into the gate's environment. A bare `GATE_RC` in the wrapper silently
 # overwrote a caller-exported GATE_RC (bash keeps an imported name exported), so

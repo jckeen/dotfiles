@@ -382,7 +382,14 @@ esac
 
 # `lane` is read-only — it mints nothing, so classifying here cannot invalidate
 # a receipt, and a classification failure stops the run rather than guessing.
-if ! LANE_JSON=$(python3 "$SCRIPT_DIR/review-receipt.py" lane --repo "$REPO_DIR" --scope committed); then
+#
+# The cap MUST be the one the gate will capture into the receipt
+# (gate_extract_diff passes GATE_TIER1_MAX_LINES the same way). Classifying
+# under a different policy can route an ordinary diff to Antigravity while the
+# receipt that run mints requires Codex — and because the gate exited 0 nothing
+# degrades, so the push dead-ends at the final receipt check with no fallback.
+if ! LANE_JSON=$(python3 "$SCRIPT_DIR/review-receipt.py" lane --repo "$REPO_DIR" \
+  --scope committed "--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}"); then
   echo "Cannot classify the committed delta; not reviewing or pushing." >&2
   exit 1
 fi
