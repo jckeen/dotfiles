@@ -31,14 +31,14 @@
 #   JULES_STARTING_BRANCH  optional starting branch for every session; omitted
 #                       from the request when unset, letting the API choose
 #   JULES_TRACKER       owner/name#issue for --post (default jckeen/dotfiles#446)
-#   JULES_LOCK_STALE_SECONDS  age at which an abandoned dispatch lock is
-#                       reclaimed (default 7200)
+#   JULES_FLOCK         flock(1) to use (default flock); a test seam for the
+#                       branch taken when flock is unavailable
 #
 # State (all under JULES_STATE_DIR):
 #   dispatch.jsonl   one line per created session — the idempotency ledger
 #   status.json      last run's outcome, for hooks and the status line
 #   dispatch.log     appended run log
-#   dispatch.lock    held for the duration of a dispatch (not a dry run)
+#   dispatch.lock    flock'd for the duration of a dispatch (not a dry run)
 #
 # Requires: bash, curl, jq. --report additionally requires gh.
 
@@ -85,6 +85,7 @@ NOW_EPOCH="$(date -u +%s)"
 CREATED=0
 FAILURES=0
 SPENT=0
+DEFERRED=0
 
 usage() {
   # Printed from the header block above, which is the single copy of the
@@ -375,76 +376,40 @@ ledger_repos() { # distinct repos ever dispatched to
 # ── Run events (for status.json) ─────────────────────────────────────
 EVENTS_FILE="$(mktemp)"
 BODY_FILE=""
-LOCK_DIR=""
-RECLAIM_DIR=""
 LOCK_HELD=0
-# Identifies this process as the owner of any lock it creates, so cleanup can
-# never remove a lock that belongs to another run.
-LOCK_TOKEN="$$.$(date -u +%s).${RANDOM}"
-# An abandoned lock must not disable the timer forever, so one older than this is
-# reclaimed. Well above any plausible run: the dispatch is a handful of HTTPS
-# calls, each capped at 60s.
-LOCK_STALE_SECONDS="${JULES_LOCK_STALE_SECONDS:-7200}"
-# `exit` stays last so the trap preserves the original exit status. The lock is
-# removed only when this process owns it — never another run's.
-trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; [[ "$LOCK_HELD" -eq 1 ]] && release_dir "$LOCK_DIR"; release_dir "$RECLAIM_DIR"; exit' EXIT
+# Test seam: lets the suite exercise the flock-absent branch on a machine that
+# has flock. Locking only; it reaches no credential and no URL.
+FLOCK_BIN="${JULES_FLOCK:-flock}"
+# `exit` stays last so the trap preserves the original exit status. The flock is
+# released by the kernel when this process exits; the lock file itself stays, as
+# an empty file is the lock's identity and nothing reads its contents.
+trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; exit' EXIT
 
-dir_mtime() { stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null; }
-
-lock_age() { # dir -> seconds, or return 1 if it does not exist
-  local m
-  m="$(dir_mtime "$1")" || return 1
-  [[ -n "$m" ]] || return 1
-  printf '%s' $((NOW_EPOCH - m))
-}
-
-# Create <dir> as a lock owned by this process. mkdir is atomic on POSIX, so the
-# winner is decided by the kernel; the owner token lets the holder prove the lock
-# it later removes is still its own.
-claim_dir() {
-  mkdir "$1" 2>/dev/null && printf '%s\n' "$LOCK_TOKEN" > "$1/owner"
-}
-
-release_dir() { # remove <dir> only if this process still owns it
-  [[ -n "$1" && -d "$1" ]] || return 0
-  [[ "$(cat "$1/owner" 2>/dev/null)" == "$LOCK_TOKEN" ]] || return 0
-  rm -rf "$1"
-}
-
-# Reading the ledger, deciding eligibility, creating a session and recording it
-# is one critical section: a manual run overlapping the 09:00 timer would
-# otherwise read the same spend and dispatch the same routine twice, defeating
-# both the idempotency check and the daily cap.
+# Serialize the critical section — reading the ledger, deciding eligibility,
+# creating a session, recording it — so a manual run overlapping the 09:00 timer
+# cannot read the same spend and dispatch the same routine twice.
 #
-# Reclaiming an abandoned lock is a read-check-replace sequence and is NOT
-# atomic on its own: two processes can both see the stale directory, and after
-# the first removes and recreates it the second removes that fresh lock and
-# takes its own. So the reclaim runs under a second atomic lock, and re-reads the
-# age inside it — if another run got there first, the lock is fresh and this run
-# stands down. The reclaim lock is age-reclaimed the same way and removed by the
-# EXIT trap, so a killed run cannot wedge it permanently.
+# flock, not a lock directory: the kernel releases an flock when the holder dies,
+# so there is no abandoned lock and nothing to reclaim. Two attempts at making
+# mkdir-based reclamation safe were both read-check-replace races — the second
+# only moved the race into the lock that was guarding the first. A primitive with
+# no staleness concept removes the whole class.
+#
+# flock(1) ships in util-linux, so it is present wherever the systemd timer runs.
+# Where it is absent (macOS has no flock(1), and no systemd timer either) the run
+# says so rather than reporting a serialization it does not have. Fd 9 is a
+# literal, not a {var} allocation, so this parses under bash 3.2.
+LOCK_FILE=""
 acquire_lock() {
-  LOCK_DIR="$STATE_DIR/dispatch.lock"
-  local reclaim="$STATE_DIR/dispatch.lock.reclaim" rc=1 age rage
-  if claim_dir "$LOCK_DIR"; then LOCK_HELD=1; return 0; fi
-
-  if ! mkdir "$reclaim" 2>/dev/null; then
-    rage="$(lock_age "$reclaim")" || return 1
-    [[ "$rage" -ge "$LOCK_STALE_SECONDS" ]] || return 1
-    rm -rf "$reclaim"
-    mkdir "$reclaim" 2>/dev/null || return 1
+  LOCK_FILE="$STATE_DIR/dispatch.lock"
+  if ! command -v "$FLOCK_BIN" >/dev/null 2>&1; then
+    log "  !! flock not found — this run is NOT serialized against a concurrent dispatch"
+    return 0
   fi
-  printf '%s\n' "$LOCK_TOKEN" > "$reclaim/owner"
-  RECLAIM_DIR="$reclaim"
-
-  if age="$(lock_age "$LOCK_DIR")" && [[ "$age" -ge "$LOCK_STALE_SECONDS" ]]; then
-    log "  !! reclaiming a stale dispatch lock (${age}s old): $LOCK_DIR"
-    rm -rf "$LOCK_DIR"
-    if claim_dir "$LOCK_DIR"; then LOCK_HELD=1; rc=0; fi
-  fi
-  release_dir "$RECLAIM_DIR"
-  RECLAIM_DIR=""
-  return "$rc"
+  exec 9>"$LOCK_FILE" || die "cannot open the dispatch lock: $LOCK_FILE"
+  "$FLOCK_BIN" -n 9 || return 1
+  LOCK_HELD=1
+  return 0
 }
 
 record() { # kind routine repo detail
@@ -459,13 +424,34 @@ write_status() {
     --arg checked_at "$NOW_ISO" --arg date "$TODAY" \
     --argjson cap "$DAILY_CAP" --argjson created "$CREATED" \
     --argjson dispatched_today "$(dispatched_today)" --argjson failures "$FAILURES" \
+    --argjson serialized "$([[ "$LOCK_HELD" -eq 1 ]] && printf 'true' || printf 'false')" \
+    --argjson deferred "$DEFERRED" \
     '{checked_at: $checked_at, date: $date, daily_cap: $cap,
       created_this_run: $created, dispatched_today: $dispatched_today,
+      deferred_to_a_later_day: $deferred, serialized: $serialized,
       failures: $failures, events: $events}' > "$tmp"
   mv "$tmp" "$STATUS_FILE"
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────
+# When the catalog produces more eligible pairs than the daily cap allows, the
+# order decides what never runs. Alphabetical order starves the tail
+# permanently: with ten connected repositories and the default cap, the first
+# four routines would consume the whole budget every single day and the last two
+# would never dispatch once.
+#
+# So candidates are ordered by how long it has been since that exact
+# (routine, repository) pair last ran — never-dispatched first. Whatever the cap
+# defers today sits at the front of tomorrow's queue, which makes the cap a rate
+# limit rather than a cliff.
+last_dispatch_epoch() { # routine repo -> epoch seconds, 0 if never
+  [[ -s "$LEDGER" ]] || { printf '0'; return 0; }
+  ledger_query --arg r "$1" --arg p "$2" \
+    '[.[] | select(.routine == $r and .repo == $p)
+          | ((.dispatched_at // "") | (try fromdateiso8601 catch 0))]
+     | max // 0'
+}
+
 # Callers read this through a process substitution, whose subshell cannot fail
 # the run — so an empty selection is rejected up front in check_selection(),
 # never from in here.
@@ -544,23 +530,22 @@ do_dispatch() {
     mkdir -p "$STATE_DIR"
     chmod 700 "$STATE_DIR" 2>/dev/null || true
     # A dry run needs no lock: it creates nothing and must leave the state dir
-    # byte-identical, so a lock directory there would itself be a mutation.
+    # byte-identical, so a lock file there would itself be a mutation.
     if ! acquire_lock; then
       log "another dispatch already holds $STATE_DIR/dispatch.lock — nothing to do"
       exit 0
     fi
   fi
 
-  # One budget counter for the whole run: seeded from the ledger (what earlier
-  # runs already spent today) and incremented per dispatch, so the cap holds in
-  # a dry run too — where nothing is appended to the ledger to re-read.
   local used
   used="$(dispatched_today)"
   SPENT="$used"
   log "═══ jules-dispatch $NOW_ISO ═══"
   log "catalog: $ROUTINE_DIR; sources: $(jq -r '.sources | length' <<<"$SOURCES_JSON") over $SOURCES_PAGES page(s); dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
 
-  local file repo source scope interval rc
+  # ── Phase 1: which (routine, repository) pairs are eligible today ──
+  local candidates file repo source scope interval rc
+  candidates="$(mktemp)"
   while IFS= read -r file; do
     if ! parse_routine "$file"; then
       log "  !! $(basename "$file") — frontmatter rejected; not dispatched"
@@ -580,6 +565,7 @@ do_dispatch() {
     else
       scope="$(printf '%s\n' "${FM_REPOS[@]}")"
     fi
+    interval="$(schedule_interval)"
 
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue
@@ -598,39 +584,66 @@ do_dispatch() {
         continue
       fi
 
-      interval="$(schedule_interval)"
       if [[ "$interval" -gt 0 ]] && dispatched_within "$FM_NAME" "$repo" "$interval"; then
         log "  -- $FM_NAME / $repo — schedule: $FM_SCHEDULE, dispatched inside the last $((interval / 86400)) day(s); skipped"
         record skipped "$FM_NAME" "$repo" "inside the $FM_SCHEDULE cadence window"
         continue
       fi
 
-      if [[ "$SPENT" -ge "$DAILY_CAP" ]]; then
-        log "  -- $FM_NAME / $repo — daily cap $DAILY_CAP reached; skipped"
-        record skipped "$FM_NAME" "$repo" "daily cap reached"
-        continue
-      fi
-
-      if [[ "$DRY_RUN" -eq 1 ]]; then
-        SPENT=$((SPENT + 1))
-        log "  [DRY] would dispatch $FM_NAME / $repo via $source"
-        record would-dispatch "$FM_NAME" "$repo" "$source"
-        continue
-      fi
-
-      SPENT=$((SPENT + 1))
-      rc=0
-      dispatch_one "$file" "$repo" "$source" || rc=$?
-      if [[ "$rc" -eq 3 ]]; then
-        write_status
-        log "═══ jules-dispatch ABORTED: ledger unwritable (created=$CREATED failures=$FAILURES) ═══"
-        exit 1
-      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(last_dispatch_epoch "$FM_NAME" "$repo")" "$FM_NAME" "$repo" "$source" "$file" \
+        >> "$candidates"
     done <<<"$scope"
   done < <(routine_files)
 
+  # ── Phase 2: dispatch in fairness order, under the cap ────────────
+  # Oldest last-dispatch first, then routine and repository for a deterministic
+  # order among pairs that have never run (all of which carry 0).
+  local sorted line last_epoch
+  sorted="$(mktemp)"
+  sort -t"$(printf '\t')" -k1,1n -k2,2 -k3,3 "$candidates" > "$sorted"
+  rm -f "$candidates"
+
+  while IFS="$(printf '\t')" read -r last_epoch FM_NAME repo source file; do
+    [[ -n "$FM_NAME" ]] || continue
+
+    if [[ "$SPENT" -ge "$DAILY_CAP" ]]; then
+      DEFERRED=$((DEFERRED + 1))
+      log "  -- $FM_NAME / $repo — daily cap $DAILY_CAP reached; deferred to a later day"
+      record deferred "$FM_NAME" "$repo" "daily cap reached"
+      continue
+    fi
+
+    # Re-read the routine: phase 2 needs its prompt and limits, and re-parsing
+    # keeps the catalog file the single source of those values.
+    if ! parse_routine "$file"; then
+      log "  !! $(basename "$file") — frontmatter rejected between phases; not dispatched"
+      record error "$(basename "$file" .md)" "$repo" "frontmatter rejected"
+      FAILURES=$((FAILURES + 1))
+      continue
+    fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      SPENT=$((SPENT + 1))
+      log "  [DRY] would dispatch $FM_NAME / $repo via $source (last run: $last_epoch)"
+      record would-dispatch "$FM_NAME" "$repo" "$source"
+      continue
+    fi
+
+    SPENT=$((SPENT + 1))
+    rc=0
+    dispatch_one "$file" "$repo" "$source" || rc=$?
+    if [[ "$rc" -eq 3 ]]; then
+      rm -f "$sorted"
+      write_status
+      log "═══ jules-dispatch ABORTED: ledger unwritable (created=$CREATED failures=$FAILURES) ═══"
+      exit 1
+    fi
+  done < "$sorted"
+  rm -f "$sorted"
+
   write_status
-  log "═══ jules-dispatch done: created=$CREATED failures=$FAILURES ═══"
+  log "═══ jules-dispatch done: created=$CREATED deferred=$DEFERRED failures=$FAILURES ═══"
   [[ "$FAILURES" -eq 0 ]] || exit 1
 }
 

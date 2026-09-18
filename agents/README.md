@@ -74,10 +74,15 @@ name, the hard limits, the required label, and the acceptance line, so the
 prompt a session receives carries the frontmatter's concrete values — the file
 never repeats them in prose.
 
-A dispatch run holds a lock directory under the state directory, so a manual
-invocation that overlaps the timer is a clean no-op rather than a second
-dispatch of the same routine. An abandoned lock older than
-`JULES_LOCK_STALE_SECONDS` is reclaimed, loudly.
+A dispatch run holds an `flock` on a file under the state directory, so a manual
+invocation that overlaps the timer is a clean no-op rather than a second dispatch
+of the same routine. The kernel releases it when the holder exits, so a killed
+run leaves nothing behind to reclaim.
+
+When the catalog offers more eligible pairs than `JULES_DAILY_CAP` allows, the
+pair whose last dispatch is oldest goes first — never-dispatched pairs ahead of
+everything. Whatever the cap defers sits at the front of the next day's queue,
+so a large catalog slows down rather than silently dropping its last routines.
 
 **Adding a routine** means answering one question: what evidence makes a pull
 request from this routine obviously correct? If the answer is "a reviewer's

@@ -556,43 +556,77 @@ else
 fi
 
 # [medium] a manual run overlapping the timer read the same spend and dispatched
-# the same routine twice. The lock is a directory, so mkdir is the whole test.
+# the same routine twice. Serialization is an flock, so the test takes a real one.
 new_case
 routine alpha false 'repos: all'
-mkdir -p "$STATE/dispatch.lock"
-if dispatch && outgrep "another dispatch already holds" \
+: > "$STATE/dispatch.lock"
+( flock -x 9 && printf 'held\n' > "$CASE_DIR/held" && sleep 30 ) 9>"$STATE/dispatch.lock" &
+holder=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$CASE_DIR/held" ]] && break; sleep 0.2; done
+if [[ -f "$CASE_DIR/held" ]] && dispatch \
+  && outgrep "another dispatch already holds" \
   && [[ ! -f "$STATE/dispatch.jsonl" ]]; then
-  ok "a held lock makes the run a clean no-op rather than a double dispatch"
+  ok "a held flock makes the run a clean no-op rather than a double dispatch"
 else
-  fail "a held lock did not stop the run"
+  fail "a held flock did not stop the run"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
 
+# The kernel drops the flock when the process exits, so there is no stale lock to
+# reclaim — the property that made two rounds of mkdir-based reclamation
+# unnecessary. After a normal run the lock must be immediately takeable.
 new_case
 routine alpha false 'repos: all'
-if dispatch && [[ ! -e "$STATE/dispatch.lock" ]]; then
-  ok "the lock is released when the run finishes"
+if dispatch && flock -n "$STATE/dispatch.lock" -c true; then
+  ok "the flock is released when the run exits, so nothing has to reclaim it"
 else
   fail "the lock outlived the run"
 fi
 
-# An abandoned lock (a killed run, a reboot mid-dispatch) must not disable the
-# timer forever.
+# A killed run must not wedge the timer either: SIGKILL releases an flock the
+# same way a clean exit does.
 new_case
 routine alpha false 'repos: all'
-mkdir -p "$STATE/dispatch.lock"
-if JULES_LOCK_STALE_SECONDS=0 JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
-     JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
-   && outgrep "reclaiming a stale dispatch lock" \
-   && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
-  ok "a stale lock is reclaimed loudly and the run proceeds"
+: > "$STATE/dispatch.lock"
+( flock -x 9 && printf 'held\n' > "$CASE_DIR/held" && sleep 30 ) 9>"$STATE/dispatch.lock" &
+holder=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$CASE_DIR/held" ]] && break; sleep 0.2; done
+kill -9 "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+if dispatch && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]]; then
+  ok "a SIGKILLed holder leaves no stale lock behind"
 else
-  fail "a stale lock was not reclaimed"
+  fail "a killed holder wedged the next run"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
-# A dry run must not create the lock either — the state dir has to stay
-# byte-identical, and a lock directory in it is a mutation.
+# Where flock is unavailable the run must say the serialization is missing rather
+# than imply one it does not have.
+new_case
+routine alpha false 'repos: all'
+if JULES_FLOCK=jules-no-such-flock-binary JULES_API_KEY_FILE="$KEY" \
+     JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
+   && outgrep "flock not found — this run is NOT serialized" \
+   && [[ "$(jq -r '.serialized' "$STATE/status.json")" == "false" ]]; then
+  ok "an unavailable flock is reported, and status.json says the run was not serialized"
+else
+  fail "a missing flock was silently ignored"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos: all'
+if dispatch && [[ "$(jq -r '.serialized' "$STATE/status.json")" == "true" ]]; then
+  ok "status.json records that a normal run held the lock"
+else
+  fail "status.json did not record the lock"
+fi
+
+# A dry run must not take the lock either — the state dir has to stay
+# byte-identical, and a lock file in it is a mutation.
 new_case
 routine alpha false 'repos: all'
 before="$(snapshot "$STATE")"
@@ -665,40 +699,56 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
-# [medium] the stale-lock reclaim is a read-check-replace sequence and is not
-# atomic on its own: two runs could both see the stale lock, and the loser would
-# delete the winner's fresh one. The reclaim now runs under its own lock, so a
-# held reclaim lock must stop a second run from reclaiming at all.
-# The main lock is aged past the window while the reclaim lock is fresh — the
-# state a losing process sees when the winner is mid-reclaim. It must stand down
-# rather than delete the lock the winner just created.
+# [medium] with more eligible pairs than the cap allows, a fixed alphabetical
+# order starved the tail permanently: the first routines would eat the whole
+# budget every day and the last ones would never run once. Candidates are now
+# ordered by how long it has been since that pair last ran.
 new_case
-routine alpha false 'repos: all'
-mkdir -p "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim"
-touch -d '1970-01-02' "$STATE/dispatch.lock" 2>/dev/null \
-  || touch -t 197001020000 "$STATE/dispatch.lock"
-if dispatch \
-   && outgrep "another dispatch already holds" \
-   && [[ ! -f "$STATE/dispatch.jsonl" ]] \
-   && [[ -d "$STATE/dispatch.lock" ]]; then
-  ok "a held reclaim lock stops a stale lock being reclaimed twice"
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+routine zeta false 'repos:
+  - jckeen/dotfiles'
+# alpha ran yesterday; zeta has never run. Alphabetically alpha wins, so fairness
+# ordering is the only thing that can pick zeta.
+ledger_line alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+if CAP=1 dispatch \
+  && grep -Fq '"routine":"zeta"' "$STATE/dispatch.jsonl" \
+  && [[ "$(grep -c '"routine":"alpha"' "$STATE/dispatch.jsonl")" -eq 1 ]] \
+  && outgrep "alpha / jckeen/dotfiles — daily cap 1 reached; deferred to a later day"; then
+  ok "the never-dispatched routine wins the last slot, and the other is deferred"
 else
-  fail "the reclaim critical section is not exclusive"
+  fail "the cap starved the never-dispatched routine"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
-# An abandoned reclaim lock must not wedge reclamation forever either.
+if [[ "$(jq -r '.deferred_to_a_later_day' "$STATE/status.json")" == "1" ]] \
+   && [[ "$(jq -r '[.events[] | select(.kind == "deferred")] | length' "$STATE/status.json")" == "1" ]]; then
+  ok "status.json counts the work the cap pushed to a later day"
+else
+  fail "deferred work is not reported"
+  sed 's/^/      | /' "$STATE/status.json"
+fi
+
+# Among pairs that have never run, the order has to be deterministic.
 new_case
 routine alpha false 'repos: all'
-mkdir -p "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim"
-touch -d '1970-01-02' "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim" 2>/dev/null \
-  || touch -t 197001020000 "$STATE/dispatch.lock" "$STATE/dispatch.lock.reclaim"
-if dispatch && outgrep "reclaiming a stale dispatch lock" \
-  && [[ "$(grep -c . "$STATE/dispatch.jsonl")" -eq 2 ]] \
-  && [[ ! -e "$STATE/dispatch.lock.reclaim" ]]; then
-  ok "an abandoned reclaim lock is itself reclaimed and then released"
+if CAP=1 dispatch && grep -Fq '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl"; then
+  ok "never-dispatched pairs break ties deterministically by routine then repository"
 else
-  fail "an abandoned reclaim lock wedged the run"
+  fail "tie-breaking is not deterministic"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The oldest pair goes first when several have run before.
+new_case
+routine alpha false 'repos: all'
+{ ledger_line alpha jckeen/atlas 3; ledger_line alpha jckeen/dotfiles 9; } > "$STATE/dispatch.jsonl"
+CAP=1 dispatch
+if [[ "$(grep -c '"repo":"jckeen/dotfiles"' "$STATE/dispatch.jsonl")" -eq 2 ]] \
+  && [[ "$(grep -c '"repo":"jckeen/atlas"' "$STATE/dispatch.jsonl")" -eq 1 ]]; then
+  ok "the least-recently-dispatched repository takes the slot"
+else
+  fail "ordering ignored the last-dispatch time"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 

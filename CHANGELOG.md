@@ -63,16 +63,21 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- A second round found four more. `GET /sources` is paginated (`pageSize`
+- Later rounds found six more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
   runs under a second lock and re-reads the age inside it, because the
-  read-check-replace was not atomic and the loser could delete the winner's fresh
-  lock. A failed ledger append aborts the run instead of returning to a loop that
-  creates an unrecorded session per remaining pair. And the systemd installer
-  reads the script it validates out of the unit's own `ExecStart`, so it can no
-  longer pass while enabling a service whose script is missing.
+  read-check-replace was not atomic — and then the reclaim lock had the same
+  problem, so serialization is now an `flock`, which the kernel releases when the
+  holder dies and which therefore has no stale state to reclaim at all. A failed
+  ledger append aborts the run instead of returning to a loop that creates an
+  unrecorded session per remaining pair. The systemd installer reads the script it
+  validates out of the unit's own `ExecStart`, so it can no longer pass while
+  enabling a service whose script is missing. And dispatch order is now
+  least-recently-dispatched first: a fixed alphabetical order meant that with more
+  eligible pairs than the cap allows, the tail of the catalog would never run
+  once, on any day.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

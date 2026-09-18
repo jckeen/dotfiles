@@ -126,8 +126,12 @@ Adopt Jules as the routine lane.
    connected, which reads like a configuration problem rather than a bug; the
    listing now asks for 100 per page and follows the token, validating it before
    it reaches a URL. The stale-lock reclaim is a read-check-replace sequence and
-   is not atomic on its own, so it runs under a second lock and re-reads the age
-   inside it; a lock is only ever removed by the process whose token it carries.
+   is not atomic on its own. Two attempts to make it safe with `mkdir` were both
+   races — the second only moved the race into the lock guarding the first — so
+   serialization is an `flock`: the kernel releases it when the holder dies, which
+   removes the staleness concept and the whole class of bug with it. Where
+   `flock(1)` is absent (macOS, which also has no systemd timer) the run reports
+   that it is not serialized rather than implying that it is.
    A failed ledger append now aborts the whole run rather than returning to a
    loop that would create an unrecorded session for every remaining pair. And
    `claude/systemd/install.sh` reads the script it validates out of the unit's own
@@ -135,7 +139,16 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
-   Two rounds turned up the same bash mistake twice in different dress: a `die`
+   A third round found the ordering problem. With more eligible pairs than the
+   daily cap allows, a fixed alphabetical order starves the tail *permanently*:
+   ten connected repositories and the default cap of 40 would let the first four
+   routines consume the whole budget every day, and the weekly fuzzer and the test
+   pruner would never run once. Candidates are now ordered by how long it has been
+   since that exact (routine, repository) pair last ran, never-dispatched first, so
+   what the cap defers today leads tomorrow's queue and the cap is a rate limit
+   rather than a cliff.
+
+   Three rounds turned up the same bash mistake twice in different dress: a `die`
    inside a process substitution and an assignment inside a command substitution
    both happen in a subshell, so neither reached the caller. The first made an
    empty routine selection look like a successful run; the second silently
