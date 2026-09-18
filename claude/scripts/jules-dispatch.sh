@@ -748,6 +748,15 @@ do_dispatch() {
       continue
     fi
 
+    # Re-read means re-check: an operator pausing a routine while earlier requests
+    # are in flight expects the queued ones to stop too. Phase one's check was
+    # against the file as it was then.
+    if [[ "$FM_PAUSED" == "true" ]]; then
+      log "  -- $FM_NAME / $repo — paused between phases; skipped"
+      record skipped "$FM_NAME" "$repo" "paused between phases"
+      continue
+    fi
+
     if [[ "$DRY_RUN" -eq 1 ]]; then
       SPENT=$((SPENT + 1))
       log "  [DRY] would dispatch $FM_NAME / $repo via $source (last run: $last_epoch)"
@@ -777,7 +786,7 @@ do_dispatch() {
 # dependence on strftime %G/%V, which not every jq build supports.
 do_report() {
   command -v gh >/dev/null 2>&1 || die "--report needs the GitHub CLI (gh) on PATH"
-  local file repo scope label rows="" prs cutoff truncated=""
+  local file repo scope label rows="" prs cutoff truncated="" failed_queries=""
   cutoff=$((NOW_EPOCH - REPORT_DAYS * 86400))
 
   while IFS= read -r file; do
@@ -797,6 +806,10 @@ do_report() {
       if ! prs="$(gh pr list --repo "$repo" --state all --limit "$REPORT_LIMIT" \
             --search "label:$label" --json state,createdAt,mergedAt 2>/dev/null)"; then
         printf 'jules-dispatch: gh pr list failed for %s (label %s)\n' "$repo" "$label" >&2
+        # A non-zero exit at the end is no help to someone reading the posted
+        # table: the counts would look complete and a routine could be retired on
+        # them. Carry the failure into the report body itself.
+        failed_queries="$failed_queries$repo ($label); "
         FAILURES=$((FAILURES + 1))
         continue
       fi
@@ -839,6 +852,10 @@ do_report() {
   if [[ -n "$truncated" ]]; then
     caveat="$(printf '\n**These counts are incomplete.** The pull request fetch hit its %s-item bound for: %s\nRaise JULES_REPORT_LIMIT or narrow --days before acting on the merge rates.\n' \
       "$REPORT_LIMIT" "${truncated%; }")"
+  fi
+  if [[ -n "$failed_queries" ]]; then
+    caveat="$caveat$(printf '\n**These counts are incomplete.** The pull request query FAILED for: %s\nThose repositories contribute nothing to the table above. Do not retire a routine\non these numbers until the query succeeds.\n' \
+      "${failed_queries%; }")"
   fi
   printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n%s\nTuning rule (ADR-0009): a routine whose merge rate stays under 30%% for two\nweeks running gets its prompt rewritten or `paused: true`.\n' \
     "$REPORT_DAYS" "$NOW_ISO" "$table" "$caveat"

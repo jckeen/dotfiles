@@ -949,6 +949,7 @@ case "$1" in
     cat > "$GH_COMMENT_BODY"
     exit 0 ;;
 esac
+if [[ -n "${GH_FAIL_LIST:-}" && "$1" == "pr" ]]; then exit 1; fi
 now=$(date -u +%s)
 recent=$(iso $((now - 2 * 86400)))
 older=$(iso $((now - 9 * 86400)))
@@ -1080,6 +1081,79 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 unset GH_ARGV GH_COMMENT_BODY
+
+echo "── sixth review round ──"
+
+# [medium] a failed query incremented FAILURES and skipped the repository, but the
+# posted table carried no note — and a non-zero exit code afterwards is no help to
+# someone reading the comment. A routine could be retired on counts that silently
+# omit a repository.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if ! PATH="$GHBIN:$PATH" GH_FAIL_LIST=1 JULES_STATE_DIR="$STATE" \
+       JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" --report --days 14 \
+       > "$CASE_DIR/out" 2>&1 \
+   && outgrep "query FAILED for: jckeen/dotfiles (jules-routine:alpha)"; then
+  ok "a failed pull request query caveats the report instead of only the exit code"
+else
+  fail "a failed query produced a table that looked complete"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The caveat has to reach the posted comment, which is what people actually read.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+PATH="$GHBIN:$PATH" GH_FAIL_LIST=1 JULES_STATE_DIR="$STATE" \
+  JULES_ROUTINE_DIR="$ROUTINES" JULES_TRACKER="jckeen/dotfiles#446" \
+  "$DISPATCH" --report --days 14 --post > "$CASE_DIR/out" 2>&1 || true
+if [[ -f "$CASE_DIR/gh-comment" ]] && grep -Fq 'query FAILED for' "$CASE_DIR/gh-comment"; then
+  ok "the posted comment carries the failure caveat"
+else
+  fail "the posted comment omitted the failure caveat"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+unset GH_ARGV GH_COMMENT_BODY
+
+# [medium] phase two rereads the catalog file, so it must recheck paused: an
+# operator pausing a routine while earlier requests are in flight expects the
+# queued ones to stop too.
+new_case
+routine alpha false 'repos: all'
+cat > "$BIN/curl" <<PAUSEFAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FAKE_CURL_ARGV"
+url=""; method="GET"; prev=""
+for a in "\$@"; do
+  case "\$a" in https://*) url="\$a" ;; esac
+  [[ "\$prev" == "-X" ]] && method="\$a"
+  prev="\$a"
+done
+cat >/dev/null
+case "\$method:\$url" in
+  GET:*/sources*) cat "\$FAKE_SOURCES" ;;
+  POST:*/sessions)
+    # Pause the routine mid-run, the moment the first session is created.
+    sed -i 's/^paused: false/paused: true/' "$ROUTINES/alpha.md"
+    n=\$(( \$(cat "\$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "\$n" > "\$FAKE_SEQ"
+    printf '{"name":"sessions/s%s","id":"s%s","url":"u"}\n' "\$n" "\$n" ;;
+  *) exit 1 ;;
+esac
+PAUSEFAKE
+chmod +x "$BIN/curl"
+if dispatch && outgrep "paused between phases; skipped" \
+  && [[ "$(created_count)" -eq 1 ]]; then
+  ok "a routine paused mid-run stops dispatching its queued repositories"
+else
+  fail "a routine paused mid-run kept dispatching"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
 
 echo "── systemd installer (generalised unit loop) ──"
 

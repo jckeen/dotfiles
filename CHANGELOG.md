@@ -63,7 +63,7 @@
   read the same spend and dispatched twice; a failed ledger append is reported as
   an unrecorded dispatch rather than a success, since the session already exists
   by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found twelve more. `GET /sources` is paginated (`pageSize`
+- Later rounds found fourteen more. `GET /sources` is paginated (`pageSize`
   defaults to 30), so the listing now asks for 100 per page and follows
   `nextPageToken`, validating it before it reaches a URL — otherwise every
   repository past the 30th was reported as not connected. The stale-lock reclaim
@@ -95,6 +95,11 @@
   directory instead of running unserialized behind a warning. And `--report` says
   when its fetch hit the bound, because the bound applies before the date window
   and the retirement rule is decided on those counts.
+- A sixth round, both findings about trusting a partial answer: a failed
+  `gh pr list` skipped its repository and set the exit code while the posted table
+  said nothing, so the failure now appears in the report body and in the comment;
+  and phase two rechecks `paused` after rereading the catalog, so pausing a
+  routine mid-run stops its queued repositories too.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

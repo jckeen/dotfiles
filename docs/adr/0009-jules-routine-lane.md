@@ -139,6 +139,14 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   A sixth round found two, both about trusting a partial answer. A failed
+   `gh pr list` skipped its repository and set the exit code, but the posted table
+   said nothing — and an exit code no one sees is not a caveat, so a routine could
+   be retired on counts that silently omit a repository; the failure now appears in
+   the report body and in the posted comment. And phase two rereads the catalog
+   file, so it now rechecks `paused` as well: an operator pausing a routine while
+   earlier requests are in flight expects the queued repositories to stop too.
+
    A fifth round found four more, one of them the kind only a reviewer reading for
    exactly this finds: `JULES_DAILY_CAP=08` disabled the cap entirely, because
    bash reads a leading zero as octal inside `[[ -ge ]]`, the comparison errors,
