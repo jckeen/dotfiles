@@ -16,8 +16,8 @@ import subprocess
 import sys
 import tempfile
 import threading
-import unicodedata
 from typing import BinaryIO
+import unicodedata
 
 DEFAULT_MAX_BYTES = 200_000
 MAX_DIAGNOSTIC_BYTES = 64_000
@@ -91,11 +91,7 @@ def git(
     index_file: Path | None = None,
     inherit_index: bool = True,
 ) -> str:
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("GIT_")
-    }
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     for key in (
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_OBJECT_DIRECTORY",
@@ -148,9 +144,7 @@ def skip_nul_terminated(stream: BinaryIO, context: str) -> None:
 def shared_index_name(index_file: Path, oid_bytes: int) -> str | None:
     file_size = index_file.stat().st_size
     with index_file.open("rb") as stream:
-        signature, version, entry_count = struct.unpack(
-            ">4sII", read_exact(stream, 12, "header")
-        )
+        signature, version, entry_count = struct.unpack(">4sII", read_exact(stream, 12, "header"))
         if signature != b"DIRC" or version not in (2, 3, 4):
             raise ValueError("unsupported Git index format")
         minimum_entry_bytes = 40 + oid_bytes + 3
@@ -313,8 +307,7 @@ def isolated_git_view(
     (git_dir / "HEAD").write_text("ref: refs/heads/review\n", encoding="ascii")
     if len(base) == 64:
         (git_dir / "config").write_text(
-            "[core]\n\trepositoryFormatVersion = 1\n"
-            "[extensions]\n\tobjectFormat = sha256\n",
+            "[core]\n\trepositoryFormatVersion = 1\n[extensions]\n\tobjectFormat = sha256\n",
             encoding="ascii",
         )
     elif len(base) != 40:
@@ -335,9 +328,7 @@ def isolated_git_view(
     if inherited_index is not None:
         source_index = caller_path(inherited_index)
     else:
-        source_index = Path(
-            git_value(git(repo, "rev-parse", "--git-path", "index"))
-        )
+        source_index = Path(git_value(git(repo, "rev-parse", "--git-path", "index")))
         if not source_index.is_absolute():
             source_index = repo / source_index
     isolated_index = workspace / "index"
@@ -349,9 +340,7 @@ def isolated_git_view(
             source_shared_index,
             isolated_index.parent / shared_index,
         )
-    source_objects = Path(
-        git_value(git(repo, "rev-parse", "--git-path", "objects"))
-    )
+    source_objects = Path(git_value(git(repo, "rev-parse", "--git-path", "objects")))
     if not source_objects.is_absolute():
         source_objects = repo / source_objects
     alternates = [source_objects]
@@ -363,11 +352,7 @@ def isolated_git_view(
                 inherited_path = repo / inherited_path
             alternates.append(inherited_path)
 
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("GIT_")
-    }
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_ATTR_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -538,8 +523,7 @@ def repo_path(value: str) -> str:
 
 def has_terminal_control(value: str) -> bool:
     return any(
-        character not in "\n\t"
-        and unicodedata.category(character).startswith("C")
+        character not in "\n\t" and unicodedata.category(character).startswith("C")
         for character in value
     )
 

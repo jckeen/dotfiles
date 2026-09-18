@@ -1,0 +1,20 @@
+# EditorConfig: https://editorconfig.org
+# Declares the conventions already observed across the tree; nothing here
+# reformats existing files. claude/systemd/install.sh is the one 4-space shell
+# script and keeps its width until it is next rewritten.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_size = 4
+
+# Two trailing spaces are a Markdown hard line break.
+[*.md]
+trim_trailing_whitespace = false

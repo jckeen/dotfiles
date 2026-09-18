@@ -42,7 +42,6 @@ import tempfile
 import time
 from typing import Callable
 
-
 MAX_RECORD_BYTES = 4096
 MAX_CMDLINE_BYTES = 4096
 MAX_PROC_STAT_BYTES = 64 * 1024 * 1024
@@ -133,9 +132,7 @@ def _read_boot_time(proc_stat_path: Path) -> int:
     raise ValueError("process stat has no boot time")
 
 
-def _load_exact_identity(
-    identity_file: Path, expected_uid: int
-) -> dict[str, object]:
+def _load_exact_identity(identity_file: Path, expected_uid: int) -> dict[str, object]:
     identity = _load_json_record(identity_file, expected_uid)
     if set(identity) != {"bootId", "pid", "processStartTime", "startTicks"}:
         raise ValueError("identity fields are invalid")
@@ -145,17 +142,12 @@ def _load_exact_identity(
         raise ValueError("identity start ticks are invalid")
     if not isinstance(identity["bootId"], str) or not identity["bootId"]:
         raise ValueError("identity boot ID is invalid")
-    if (
-        not isinstance(identity["processStartTime"], str)
-        or not identity["processStartTime"]
-    ):
+    if not isinstance(identity["processStartTime"], str) or not identity["processStartTime"]:
         raise ValueError("identity display time is invalid")
     return identity
 
 
-def _process_identity(
-    proc_root: Path, pid: int, clock_ticks: int
-) -> dict[str, object]:
+def _process_identity(proc_root: Path, pid: int, clock_ticks: int) -> dict[str, object]:
     if clock_ticks <= 0:
         raise ValueError("clock tick rate is invalid")
     boot_time = _read_boot_time(proc_root / "stat")
@@ -167,9 +159,7 @@ def _process_identity(
     if not boot_id:
         raise ValueError("boot ID is empty")
 
-    pid_stat = _read_bounded(proc_root / str(pid) / "stat", MAX_RECORD_BYTES).decode(
-        "ascii"
-    )
+    pid_stat = _read_bounded(proc_root / str(pid) / "stat", MAX_RECORD_BYTES).decode("ascii")
     closing_paren = pid_stat.rfind(")")
     if closing_paren < 0:
         raise ValueError("process stat is malformed")
@@ -216,8 +206,13 @@ def _managed_executable(
             if len(relative.parts) != 3 or relative.parts[1:] != ("bin", "codex"):
                 continue
             paths = (
-                root, root / "packages", installation, releases,
-                executable.parent.parent, executable.parent, executable,
+                root,
+                root / "packages",
+                installation,
+                releases,
+                executable.parent.parent,
+                executable.parent,
+                executable,
             )
             for path in paths:
                 metadata = path.stat()
@@ -254,9 +249,7 @@ def _validate_managed_process(
     if recorded_start is not None and identity["processStartTime"] != recorded_start:
         raise ValueError("process display time does not match")
 
-    executable, installation = _managed_executable(
-        proc_root, pid, home, codex_home, expected_uid
-    )
+    executable, installation = _managed_executable(proc_root, pid, home, codex_home, expected_uid)
     cmdline = _read_bounded(process_dir / "cmdline", MAX_CMDLINE_BYTES)
     if not cmdline.endswith(b"\0"):
         raise ValueError("process command line does not match")
@@ -270,7 +263,7 @@ def _validate_managed_process(
     if argv_zero.is_absolute():
         for suffix in (("current", "codex"), ("current", "bin", "codex")):
             if (
-                argv_zero.parts[-len(suffix):] == suffix
+                argv_zero.parts[-len(suffix) :] == suffix
                 and argv_zero.parents[len(suffix) - 1].resolve(strict=True) == installation
             ):
                 updated_launcher = True
@@ -285,8 +278,11 @@ def _validate_managed_process(
 
 
 def _write_identity(
-    identity_file: Path, identity: dict[str, object], expected_uid: int,
-    *, create_only: bool = False,
+    identity_file: Path,
+    identity: dict[str, object],
+    expected_uid: int,
+    *,
+    create_only: bool = False,
 ) -> None:
     parent = identity_file.parent
     parent_metadata = parent.stat()
@@ -300,12 +296,8 @@ def _write_identity(
         if not stat.S_ISREG(existing.st_mode) or existing.st_uid != expected_uid:
             raise ValueError("existing identity file is invalid")
 
-    payload = (json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n").encode(
-        "utf-8"
-    )
-    temp_fd, temp_name = tempfile.mkstemp(
-        dir=parent, prefix=f".{identity_file.name}.", text=False
-    )
+    payload = (json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    temp_fd, temp_name = tempfile.mkstemp(dir=parent, prefix=f".{identity_file.name}.", text=False)
     try:
         os.fchmod(temp_fd, 0o600)
         with os.fdopen(temp_fd, "wb", closefd=True) as temp_file:
@@ -497,9 +489,12 @@ def repair_pid_records(
         updater_fd = pidfd_open(expected["pid"])
         pidfds.append(updater_fd)
         common = dict(
-            proc_root=proc_root, home=home, codex_home=pid_file.parent.parent,
+            proc_root=proc_root,
+            home=home,
+            codex_home=pid_file.parent.parent,
             recorded_start=None,
-            expected_uid=expected_uid, clock_ticks=clock_ticks,
+            expected_uid=expected_uid,
+            clock_ticks=clock_ticks,
         )
         updater = _validate_managed_process(pid=expected["pid"], **common)
         # Wall-clock text can drift under WSL; these kernel fields cannot.
@@ -518,9 +513,7 @@ def repair_pid_records(
             **common,
         )
         missing: list[tuple[Path, dict[str, object]]] = []
-        for path, identity in (
-            (pid_file, updater), (pid_file.parent / "app-server.pid", server)
-        ):
+        for path, identity in ((pid_file, updater), (pid_file.parent / "app-server.pid", server)):
             record = {key: identity[key] for key in ("pid", "processStartTime")}
             try:
                 existing = _load_pid_record(path, expected_uid)
@@ -560,9 +553,7 @@ def main(argv: list[str]) -> int:
     daemon_dir = home / ".codex/app-server-daemon"
     pid_file = Path(argv[2]) if len(argv) == 4 else daemon_dir / "app-server-updater.pid"
     identity_file = (
-        Path(argv[3])
-        if len(argv) == 4
-        else daemon_dir / "app-server-updater.identity.json"
+        Path(argv[3]) if len(argv) == 4 else daemon_dir / "app-server-updater.identity.json"
     )
     try:
         clock_ticks = os.sysconf("SC_CLK_TCK")
@@ -576,8 +567,11 @@ def main(argv: list[str]) -> int:
         "expected_uid": os.getuid(),
         "clock_ticks": clock_ticks,
     }
-    actions = {"snapshot": snapshot_updater, "recover": terminate_stale_updater,
-               "repair": repair_pid_records}
+    actions = {
+        "snapshot": snapshot_updater,
+        "recover": terminate_stale_updater,
+        "repair": repair_pid_records,
+    }
     succeeded = actions[argv[1]](**common)
     return 0 if succeeded else 1
 
