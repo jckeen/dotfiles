@@ -1,0 +1,15 @@
+# Python lint + format for every *.py in the repo (WS2 PR 2). Lives in
+# ruff.toml, not pyproject.toml: a root pyproject makes uv/pip treat dotfiles
+# as a Python project. CI runs `uvx ruff@<this version>`; keep the two in sync.
+required-version = "==0.16.8"
+line-length = 100
+# macOS system python floor; claude_run.py requires 3.9+.
+target-version = "py39"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# Long lines are the formatter's job; strings and comments it can't wrap stay.
+ignore = ["E501"]
+
+[lint.isort]
+force-sort-within-sections = true

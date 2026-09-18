@@ -1968,7 +1968,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                         self.git("clean", "-fd")
                         path = self.repo / name
 
-                        def materialize(kind):
+                        def materialize(kind, path=path):
                             path.unlink(missing_ok=True)
                             if kind == "link":
                                 path.symlink_to("MODE_REVIEW_MARKER")
