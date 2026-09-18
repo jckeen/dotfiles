@@ -216,6 +216,12 @@ jobs:
           claude/scripts/tests/install-integrity.test.sh
           claude/scripts/check-install-integrity.sh
 
+      - name: tests-wired (self-test + checker)
+        if: ${{ !cancelled() }}
+        run: |
+          claude/scripts/tests/check-tests-wired.test.sh
+          claude/scripts/check-tests-wired.sh
+
       # Self-test only: enumeration is pure (fixture tree in), no live
       # ~/.claude needed. Gate schemas and Python receipt helpers must be
       # linked beside their gate scripts.

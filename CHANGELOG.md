@@ -19,6 +19,21 @@
   line-length in GENERATED `AGENTPACK.yaml` and `openai.yaml`, and
   `mkdocs.yml` is already asserted by `mkdocs build --strict` in `pages.yml`.
 
+## 2026-09-17 — ci: guard that every test file is wired into a workflow
+
+- Three test files shipped unwired in the last two fixes and were caught by
+  hand each time. New `claude/scripts/check-tests-wired.sh` makes the wiring
+  a CI assertion: every `claude/scripts/tests/*.test.{sh,py}` and
+  `codex/tests/*.py` path must appear in `ci.yml` or `smoke-install.yml` with
+  YAML comments stripped, or in a test file those workflows already run (one
+  level of transitivity, which is how `codex-remote-recovery.test.sh` reaches
+  `codex/tests/test_remote_control_recover.py`). `OPT_OUT` carries the one
+  test that needs a real Codex binary, with its reason.
+- `tests/check-tests-wired.test.sh` covers wired, unwired, comment-only
+  mention, transitive, smoke-install, opt-out, and missing-workflow cases, and
+  ends by running the real checker against the repo — so the guard proves it
+  is itself wired. Both run in the `checks` job beside `install-integrity`.
+
 ## 2026-09-17 — fix(review-multipart): byte-bounded fragments and CODEX_HOME isolation
 
 - The multipart transport sliced a large review request into 200,000-character
