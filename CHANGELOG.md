@@ -6,188 +6,75 @@
   that cannot fail, drifted duplicate helpers, lint debt, doc drift — now have a
   lane. `agents/routines/*.md` holds one standing prompt per routine, six to
   start, and `claude/scripts/jules-dispatch.sh` turns the catalog into one Jules
-  session per routine per repository per day. The rationale, the verified API
-  surface, and the items still unverified are in
-  `docs/adr/0009-jules-routine-lane.md`.
+  session per routine per repository per day. Rationale, the API surface verified
+  on the day, and what remains unverified: `docs/adr/0009-jules-routine-lane.md`.
 - Routine frontmatter is a contract, not documentation: the dispatcher parses it
-  strictly and refuses to dispatch a routine whose header does not validate —
-  unknown key, missing key, a label that disagrees with the name, a non-integer
-  limit. The prompt a session receives is the body with the frontmatter's
-  concrete values prepended, so a routine file never repeats its own limits in
-  prose.
-- Dispatch goes through the REST API, not the `jules` CLI: the CLI's credential
-  location is documented nowhere, so a unit under `ProtectHome=read-only` cannot
-  be shown to work. The API key must be a regular file, not a symlink, mode
-  0600, non-empty, and at least 20 characters, and it reaches `curl` through a
-  config file on stdin so it never enters argv or a log. The host is a constant
-  in the script, `curl` runs with `--proto =https` and without `-L`, and a
-  repository's `source` is always read back from `GET /sources` rather than
-  constructed.
-- A daily ledger under `~/.local/state/jules/` makes a run idempotent per
-  calendar day, which matters because the timer is `Persistent=true` and a
-  missed run catches up alongside the scheduled one. `JULES_DAILY_CAP` bounds
-  the spend; `--dry-run` resolves and prints while leaving the state directory
-  byte-identical.
+  strictly and refuses a routine whose header does not validate. `schedule` is
+  enforced, not decorative — a weekly routine runs on the seventh day. The prompt
+  a session receives is the body with the frontmatter's concrete limits
+  prepended, so a routine file never repeats its own limits in prose. An edit
+  made mid-run is honoured: the whole eligibility decision is re-checked before
+  each session, so pausing a routine or dropping a repository stops the ones
+  still queued.
+- Dispatch goes through the REST API, not the `jules` CLI, whose credential
+  location is documented nowhere and so cannot be shown to work under
+  `ProtectHome=read-only`. The key must be a regular file, not a symlink, mode
+  0600, non-empty and at least 20 characters; it reaches `curl` through a config
+  file on stdin so it never enters argv or a log; the variable holding it is
+  unset before assignment so an inherited export cannot carry it into a child's
+  environment. The host is a constant, every request leads with `-q` so a
+  `~/.curlrc` cannot re-enable redirects or tracing, and `-L` is never passed. A
+  repository's `source` is always read back from `GET /sources`, following
+  `nextPageToken`, and never constructed.
+- The ledger is write-ahead — a record before the request, upgraded after it —
+  because a session created by a request that then timed out would otherwise be
+  invisible, dispatched again by the next run and absent from the cap. Anything
+  that can fail locally happens before that record, so a local failure leaves the
+  pair retryable. Unresolved attempts are reported for reconciliation and not
+  retried that day. `JULES_DAILY_CAP` bounds the spend, and the least
+  recently dispatched pair goes first, so the cap defers work to a later day
+  instead of starving the tail of the catalog permanently.
 - New `jules-dispatch.{service,timer}` at 09:00, hardened like
-  `git-hygiene.service`, with the state directory as its only writable path —
-  the key directory is deliberately absent, so the unit reads the credential and
-  can never rewrite it. `claude/systemd/install.sh` is now a loop over a table
-  of unit pairs; adding a timer is one row.
+  `git-hygiene.service`, with the state directory as its only writable path — the
+  key directory is deliberately absent, so the unit reads the credential and can
+  never rewrite it. `claude/systemd/install.sh` is now a loop over a table of
+  unit pairs, and reads the script it validates out of each unit's own
+  `ExecStart` rather than a second copy of the path that could disagree with it.
 - A root `AGENTS.md` joins the generated instruction files (ADR-0007): the short
   brief an agent reads from the checkout itself when it has no session history.
-  It is enforced by the generator's byte-currency check rather than the
-  concept-parity phrase list, because holding a deliberately short cloud brief
-  to every local file's phrases would defeat the reason it is short.
-- `setup.sh` installs the Jules CLI npm-global beside Codex, prints `jules
-  login` as a manual step under `--yes` (a browser flow must never run
-  unattended), and reports `jules_installed` in the completion summary.
+  Enforced by the generator's byte-currency check rather than the concept-parity
+  phrase list, because holding a deliberately short cloud brief to every local
+  file's phrases would defeat the reason it is short.
+- `setup.sh` installs the CLI npm-global beside Codex, prints `jules login` as a
+  manual step under `--yes`, and reports `jules_installed`.
   `agents/capabilities.json` gains `jules` as a fourth runtime — `unsupported`
   for every locally-provisioned capability, because it installs nothing on this
   machine — and a `routine-lane` capability where the dispatcher is the provider.
-- Measurement ships with the lane: `--report [--days N]` tallies opened, merged,
-  and closed per routine per week from the `jules-routine:*` labels. The
-  retirement rule is in the ADR and `agents/README.md` — under 30% merge rate
-  for two weeks running means the prompt gets rewritten or `paused: true`.
-- `tests/jules-dispatch.test.sh` drives the whole thing against a fake `curl`,
-  so none of this waited on a live key: the credential refusals, the key's
-  absence from argv and every state file (with a negative control so the check
-  cannot pass vacuously), same-day idempotency, the cap, the unconnected-repo
-  skip, `paused: true`, the `--dry-run` snapshot, and the generalised systemd
-  installer. It also asserts the shipped catalog parses, so the first timer
-  firing is not what discovers a typo.
-- Nine things the review passes changed, each now with a test: `schedule` is
-  enforced rather than parsed and ignored, so the weekly fuzzer no longer runs
-  seven times a week; `curl` gets `-q` first, so a `location` or `trace` line in
-  a `~/.curlrc` cannot make the key follow a redirect or reach a trace file; a
-  run holds a lock directory, because a manual invocation overlapping the timer
-  read the same spend and dispatched twice; a failed ledger append is reported as
-  an unrecorded dispatch rather than a success, since the session already exists
-  by then; and `--dry-run` suppresses the `--report --post` comment.
-- Later rounds found twenty-one more. `GET /sources` is paginated (`pageSize`
-  defaults to 30), so the listing now asks for 100 per page and follows
-  `nextPageToken`, validating it before it reaches a URL — otherwise every
-  repository past the 30th was reported as not connected. The stale-lock reclaim
-  runs under a second lock and re-reads the age inside it, because the
-  read-check-replace was not atomic — and then the reclaim lock had the same
-  problem, so serialization is now an `flock`, which the kernel releases when the
-  holder dies and which therefore has no stale state to reclaim at all. A failed
-  ledger append aborts the run instead of returning to a loop that creates an
-  unrecorded session per remaining pair. The systemd installer reads the script it
-  validates out of the unit's own `ExecStart`, so it can no longer pass while
-  enabling a service whose script is missing. And dispatch order is now
-  least-recently-dispatched first: a fixed alphabetical order meant that with more
-  eligible pairs than the cap allows, the tail of the catalog would never run
-  once, on any day.
-- The ledger is write-ahead: a record is written before the request and upgraded
-  after it. A POST that creates a session and then times out is
-  indistinguishable from one that never landed, and without the first record the
-  pair vanished from the ledger — so the next run dispatched it again and the
-  original session never counted against the cap. Unresolved attempts are
-  reported for reconciliation against `GET /sessions` and are not retried that
-  day. Repository identity is also lowercased everywhere and a repeated entry is
-  rejected, because GitHub names are case-insensitive and both copies passed every
-  eligibility check before the first session was created.
-- A fifth round: `JULES_DAILY_CAP=08` disabled the cap outright, because bash
-  reads a leading zero as octal inside `[[ -ge ]]` and an errored test is a false
-  one — verified locally, and leading zeros are now rejected wherever a value
-  reaches arithmetic. A run crossing UTC midnight stops rather than recording
-  against the previous day. A missing `flock(1)` falls back to an atomic lock
-  directory instead of running unserialized behind a warning. And `--report` says
-  when its fetch hit the bound, because the bound applies before the date window
-  and the retirement rule is decided on those counts.
-- A sixth round, both findings about trusting a partial answer: a failed
-  `gh pr list` skipped its repository and set the exit code while the posted table
-  said nothing, so the failure now appears in the report body and in the comment;
-  and phase two rechecks `paused` after rereading the catalog, so pausing a
-  routine mid-run stops its queued repositories too.
-- A seventh round found both of those fixes one level too narrow, which is the
-  lesson worth keeping. Phase two rechecked `paused` but nothing else phase one had
-  decided, so a repository dropped from a routine mid-run still dispatched; the
-  whole eligibility decision now lives in one function. The report caveat named
-  failed queries but not routines whose frontmatter was rejected, equally absent
-  from the table and equally invisible in a posted comment; the reasons a report can
-  be partial now go through one builder.
-- One low finding promoted rather than filed, because it is in the credential
-  surface: if the caller's environment already exported a variable of the name the
-  script uses for the API key, a plain assignment keeps the export attribute and
-  the key lands in every child process's environment, readable from
-  `/proc/PID/environ`. Verified both ways locally; the variable is now unset before
-  assignment, and the test asserts on what a child process actually received.
-  Closes #465.
-- An eighth round closed the day-boundary gap properly: checking the UTC date
-  before each candidate misses the request's own duration, so a POST begun just
-  before midnight could create a session on the next day while both ledger records
-  carried this one. A dispatch is now refused unless more of the day remains than a
-  request can consume, with the timeout and the margin derived from one constant.
-- A ninth round: `--report` queried only a routine's current repositories, so
-  removing one deleted its pull request history from the window and moved the merge
-  rate the retirement rule is decided on, with nothing to say a repository had been
-  dropped. The scope is now the current list union what the ledger records for that
-  routine.
-- A tenth round found the same subshell mistake a third time, and it got a
-  structural answer: the ledger read building the report scope sat inside a
-  `printf` argument, so a malformed ledger produced a report over current
-  repositories only, with no caveat and a zero exit. The ledger is now validated
-  once at startup from the main shell — the only place a refusal can stop the run —
-  so no query of it can fail quietly wherever it is nested. The three instances
-  were a `die` in a process substitution, an assignment in a command substitution,
-  and a read nested in a `printf` argument.
-- One low finding was a fair hit on this branch's own test: a case set a hostile
-  `CURLRC` and asserted that nothing changed, which a stub `curl` makes true
-  whatever the dispatcher does. A fake curl cannot prove the real one ignores a
-  config file. Replaced with the assertions that are actually checkable here —
-  `-q` leads the argument list, `--proto =https` is passed, `-L` never is.
-  Shipping a test that cannot fail would have contradicted the routine this same
-  change adds for finding them. Closes #456.
-- An eleventh round: the pagination token was guarded by a character allowlist,
-  which would have aborted source discovery on a valid base64 token containing `+`
-  or `/` and made pagination depend on an encoding the documentation never
-  promises. The token is opaque, so it is percent-encoded instead — correct for any
-  token, and enough on its own to stop one breaking out of the query string. Only a
-  length bound remains.
-- The test suite's synthetic API key no longer imitates a real one. The first
-  fixture carried the usual Google key prefix and gitleaks' generic-api-key rule
-  blocked the push — the scanner doing exactly its job. A fixture only has to
-  satisfy the dispatcher's own rules (regular file, 0600, non-empty, at least 20
-  characters, restricted charset); looking like a credential was never part of
-  that, and a repository-wide scanner should not have to carry an exception for a
-  test's aesthetic choice.
-- New root `.gitleaksignore` with one audited entry: the commit that introduced
-  that fixture still carries the old string, and both the pre-push hook and the
-  `secret-scan` CI job scan full history on a pull request. The entry names the
-  commit, the rule, and why the match is harmless, and the file's header states the
-  standard — an entry means someone looked, never that the scanner was
-  inconvenient. It can be deleted once this branch is squash-merged, since the
-  squashed commit carries only the current tree.
-- Two findings against the suite itself, the second the more serious: the tests
-  used the real UTC clock, so the dispatcher's own day-edge guard would have failed
-  every dispatch case — and the new CI job — for two minutes once a day. The suite
-  now pins the margin to zero and the guard's own cases set their own value. And a
-  failed `mktemp -d` left the work directory empty, which made the stub path `/bin`
-  and had the suite attempt to overwrite the installed `/bin/curl`; every `mktemp`
-  in both files is now checked, including the one inside `dispatch_one`, where the
-  caller's `|| rc=$?` disables errexit.
-- The ledger append is now built in memory and written with a single `printf`, and
-  the ledger is validated only after the run owns the lock. Before, a `--report` run
-  or a dispatch about to stand down could read the file mid-append and reject a torn
-  line, turning an intended clean no-op into a failed run. And the suite pins the
-  clock as well as the margin: even at margin zero, a test invocation spanning UTC
-  midnight would have stopped a run mid-catalog, because the dispatcher captures the
-  date once and halts when it changes.
-- The weekly cadence window was inclusive, so a daily timer firing at the same time
-  each day found a seven-day-old record still inside the cooldown and skipped the
-  seventh day: "weekly" actually meant every eighth day, about forty-five runs a
-  year instead of fifty-two. The comparison is strict now, with cases at six, seven,
-  eight days and one second inside the boundary.
-- The request-body build is checked, and everything that can fail locally now runs
-  BEFORE the write-ahead record. `dispatch_one` executes with errexit disabled
-  because its caller inspects the return code, so an unchecked `jq` failure would
-  have POSTed an empty body — and the write-ahead record would then have blocked the
-  retry and consumed a slot for a session that provably never existed. A local
-  failure now leaves the ledger untouched and the pair retryable.
+- Measurement ships with the lane: `--report` tallies opened, merged and closed
+  per routine per week, covering every repository the routine was ever dispatched
+  to rather than only the ones it currently lists, and states in the report body
+  whenever the numbers are partial. The retirement rule is in the ADR and
+  `agents/README.md`.
+- `tests/jules-dispatch.test.sh` drives all of it against a fake `curl` with a
+  pinned clock, so none of it waited on a live key and none of it can fail on a
+  schedule. The independent review and fifteen Codex gate rounds are recorded in
+  the ADR, along with the twenty-eight further issues they found and the
+  categories those fell into. Two lessons are worth carrying out of this repo:
+  three findings were one bash mistake in different dress — a `die` in a process
+  substitution, an assignment in a command substitution, a read nested in a
+  `printf` argument, each running in a subshell whose exit status the caller
+  never saw — and twice a test was deleted rather than shipped because it could
+  not fail, which would have contradicted `useless-test-pruner`, a routine this
+  same change adds.
+- New root `.gitleaksignore` with one audited entry: an earlier commit on the
+  branch carries a test fixture shaped like a Google API key, which the scanner
+  caught correctly. The fixture has been renamed; the entry names the commit and
+  why the match is harmless, and the file's header states that an entry means
+  someone looked, never that the scanner was inconvenient.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
+
 ## 2026-09-18 — test: Hypothesis property suites and a seeded setup.sh layout fuzzer
 
 - The two pure-logic Python tools had example-based suites only. Hypothesis
