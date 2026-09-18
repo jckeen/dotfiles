@@ -58,6 +58,30 @@ jobs:
         working-directory: claude/hooks
         run: bunx tsc --noEmit
 
+  # Every *.py in the repo is linted and format-checked with the ruff version
+  # pinned in ruff.toml (`required-version`); bump both together. Intended as
+  # a required status check, so it stays its own job under this exact name —
+  # keep it in sync with docs/BRANCH_PROTECTION.md and the live rule. The
+  # metaschema check is the only thing that validates the gate's output schema
+  # file itself.
+  python-lint:
+    name: python-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+
+      - name: ruff check
+        run: uvx ruff@0.16.8 check .
+
+      - name: ruff format --check
+        run: uvx ruff@0.16.8 format --check .
+
+      - name: codex-review-schema.json is a valid JSON Schema
+        run: uvx check-jsonschema@0.38.0 --check-metaschema claude/scripts/codex-review-schema.json
+
   # doc-truth is a required status check (branch protection), so it stays its
   # own job under that exact name. Keep this in sync with the required checks.
   doc-truth:

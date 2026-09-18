@@ -11,8 +11,8 @@ changes; this example is not evidence that every setting is enabled.
 
 1. Require a pull request before merging
 2. Require **1 approving review**
-3. Require status checks to pass: `shellcheck`, `tsc`, `doc-truth`, `checks`,
-   `agentpack-generated`, and the two `smoke-install` matrix jobs
+3. Require status checks to pass: `shellcheck`, `tsc`, `python-lint`, `doc-truth`,
+   `checks`, `agentpack-generated`, and the two `smoke-install` matrix jobs
    (`setup.sh syntax + --help (ubuntu-latest)` and
    `setup.sh syntax + --help (macos-latest)`)
 4. Require branches to be up to date before merging
@@ -34,6 +34,7 @@ cat > /tmp/main-protection.json <<'JSON'
     "contexts": [
       "shellcheck",
       "tsc",
+      "python-lint",
       "doc-truth",
       "checks",
       "agentpack-generated",
@@ -93,7 +94,7 @@ Target output for this configuration:
 ```json
 {
   "reviews": 1,
-  "checks": ["shellcheck", "tsc", "doc-truth", "checks", "agentpack-generated", "setup.sh syntax + --help (ubuntu-latest)", "setup.sh syntax + --help (macos-latest)"],
+  "checks": ["shellcheck", "tsc", "python-lint", "doc-truth", "checks", "agentpack-generated", "setup.sh syntax + --help (ubuntu-latest)", "setup.sh syntax + --help (macos-latest)"],
   "signed": true,
   "force_push": false,
   "admins": true
@@ -106,7 +107,8 @@ any differences before changing the live rule.
 ## Notes
 
 - The status-check contexts must match the **job names**: `shellcheck`, `tsc`,
-  `doc-truth`, `checks`, and `agentpack-generated` live in `.github/workflows/ci.yml`;
+  `python-lint`, `doc-truth`, `checks`, and `agentpack-generated` live in
+  `.github/workflows/ci.yml`;
   the two `setup.sh syntax + --help (...)` contexts are the matrix jobs of
   `.github/workflows/smoke-install.yml`. If you rename a job, update both this
   doc and the protection rule.
@@ -118,6 +120,11 @@ any differences before changing the live rule.
   so it reports on every PR and is safe to require (#237) — a manifest-stale
   PR that edits `claude/skills/*/SKILL.md` or `claude/agents/*.md` without
   regenerating `claude/AGENTPACK.yaml` is blocked at merge, not noticed after.
+- `python-lint` (ruff check + format --check over every `*.py`, plus the
+  gate schema's metaschema check) has no `paths:` filter, so it reports on
+  every PR and is safe to require. Add it to the live rule only **after** the
+  PR that introduces the job has merged: a required context that no open PR
+  can produce leaves them hanging on "Expected".
 - `checks` is required: it bundles the behavioral suites, gate self-tests,
   parity checks, and install-integrity checks. It reports on every PR, so a
   failing test must block merging even when the standalone lint jobs pass.

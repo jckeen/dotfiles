@@ -476,7 +476,7 @@ cct "$@"
                         )
                         socket = str(fixture / "tmux.sock")
 
-                        def tmux(*args):
+                        def tmux(*args, socket=socket, fixture=fixture, env=env):
                             return subprocess.run(
                                 [tmux_binary, "-S", socket, "-f", "/dev/null", *args],
                                 cwd=fixture,
@@ -516,7 +516,7 @@ cct "$@"
                                 timeout=10,
                             )
                             self.assertEqual(result.returncode, 0, result.stderr)
-                            wait_until(lambda: (fixture / "agent-cwd").exists())
+                            wait_until(lambda fixture=fixture: (fixture / "agent-cwd").exists())
                             target = "=project_:" if case == "literal" else "=project:"
                             result = tmux("show-environment", "-t", target[:-1], "CCT_DIR")
                             self.assertEqual(result.stdout.strip(), "CCT_DIR=" + str(project))
@@ -524,7 +524,9 @@ cct "$@"
                             result = tmux("send-keys", "-t", target, probe, "Enter")
                             self.assertEqual(result.returncode, 0, result.stderr)
                             wait_until(
-                                lambda: tmux("has-session", "-t", target[:-1]).returncode != 0
+                                lambda target=target: (
+                                    tmux("has-session", "-t", target[:-1]).returncode != 0
+                                )
                             )
                             self.assertFalse(marker.exists(), "argument executed as a tmux command")
                             self.assertEqual(

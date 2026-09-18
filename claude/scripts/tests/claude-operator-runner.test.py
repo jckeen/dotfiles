@@ -392,7 +392,8 @@ class RunnerTests(unittest.TestCase):
             json.loads((self.out / "result.json").read_text())["session_id"], state["session_id"]
         )
         event_types = [
-            json.loads(l)["type"] for l in (self.out / "events.jsonl").read_text().splitlines()
+            json.loads(line)["type"]
+            for line in (self.out / "events.jsonl").read_text().splitlines()
         ]
         self.assertEqual(event_types, ["system", "assistant", "result"])
         kinds = [e["event"] for e in self.events(outcome)]

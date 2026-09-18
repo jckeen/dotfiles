@@ -402,7 +402,7 @@ def instruction_links(
     }
     for path in sorted(links):
 
-        def unsupported(reason):
+        def unsupported(reason, path=path):
             raise ValueError("unsupported instruction symlink: " + path + " (" + reason + ")")
 
         mode, content = workspace.get(path, ("missing", b""))
