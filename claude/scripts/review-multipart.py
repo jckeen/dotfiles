@@ -9,6 +9,11 @@ import sys
 import uuid
 
 
+# Maximum UTF-8 bytes per fragment, before the small envelope. Bounding by
+# characters instead let token-dense Unicode reach four times this size (#420).
+FRAGMENT_BYTES = 200000
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -22,11 +27,26 @@ def strict_json(text):
     return json.loads(text, object_pairs_hook=unique)
 
 
+def fragment(raw):
+    # Split on UTF-8 byte counts, backing off over continuation bytes so no
+    # multibyte character is cut in half; every fragment is valid UTF-8 alone.
+    parts, start = [], 0
+    while start < len(raw):
+        end = min(start + FRAGMENT_BYTES, len(raw))
+        while end > start and end < len(raw) and raw[end] & 0xC0 == 0x80:
+            end -= 1
+        if end == start:
+            raise ValueError('fragment bound cannot hold one character')
+        parts.append(raw[start:end].decode('utf-8', errors='strict'))
+        start = end
+    return parts
+
+
 def prepare(packet, directory):
     raw = packet.read_bytes()
-    text = raw.decode('utf-8', errors='strict')
-    # <= 800000 UTF-8 bytes, including non-ASCII, before the small envelope.
-    parts = [text[start:start + 200000] for start in range(0, len(text), 200000)]
+    # Reject a non-UTF-8 packet before writing any part file.
+    raw.decode('utf-8', errors='strict')
+    parts = fragment(raw)
     if not parts:
         raise ValueError('empty request')
     manifest = {'sha256': digest(raw), 'catalogSha256': digest((directory / 'catalog.json').read_bytes()), 'parts': []}

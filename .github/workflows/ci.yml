@@ -245,6 +245,22 @@ jobs:
       - name: codex-review-gate (self-test)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/codex-review-gate.test.sh
+      # Multipart direct-input transport: a >1MB review request is split into
+      # byte-bounded fragments delivered in one native session. The shell
+      # fixture stubs the native CLI; the Python suite covers the splitter and
+      # the history/manifest checks (#419, #420).
+      - name: codex-review multipart transport
+        if: ${{ !cancelled() }}
+        run: |
+          bash claude/scripts/tests/codex-review-multipart.test.sh
+          python3 claude/scripts/tests/review-multipart.test.py
+      # review-and-push.sh must refuse inherited Git routing and catch an
+      # executable-bit flip that core.fileMode=false hides from git status
+      # (#401, #402). The fixtures stop at the pre-push checkpoints, so
+      # nothing here pushes or spends review quota.
+      - name: review-and-push (routing and exec-bit guards)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/review-and-push.test.sh
       - name: review receipts and shipping boundaries
         if: ${{ !cancelled() }}
         run: |

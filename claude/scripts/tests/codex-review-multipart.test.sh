@@ -42,7 +42,7 @@ if index>1:
 else: assert 'resume' not in sys.argv
 assert not Path('.git/review-receipts/codex.json').exists(), 'intermediate approval leaked'
 # Simulate native persisted history; checks read records, not reviewer ack claims.
-home=Path.home()/'.codex';home.mkdir(exist_ok=True)
+home=Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')));home.mkdir(parents=True,exist_ok=True)
 rollout=capture/'rollout.jsonl'
 if index==1: records=[{'type':'session_meta','payload':{'id':thread}}]
 else: records=[json.loads(line) for line in rollout.read_text().splitlines()]
@@ -83,11 +83,16 @@ if mode!='no-result': Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dum
 PY
 chmod +x "$FIXTURE/bin/codex"
 export CODEX_GATE_BIN="$FIXTURE/bin/codex"
+# review-multipart.py reads CODEX_HOME before $HOME, so setting HOME alone
+# leaves the transport check pointed at whatever CODEX_HOME the runner
+# exported (#419). Poison it here and pin it per invocation below: an
+# inherited value must never reach the fixture's native-session lookup.
+export CODEX_HOME="$FIXTURE/inherited-codex-home"
 for MODE in approve compacted lost-input writable wrong-window tamper-part tamper-manifest wrong-session wrong-ack missing-completion event-error no-result failed-cli signal repo-change; do
  export MODE CAPTURE="$FIXTURE/$MODE"
  mkdir "$CAPTURE"
  set +e
- (cd "$FIXTURE/repo" && HOME="$FIXTURE/home" "$GATE" --uncommitted --no-issues --claim 'Complete fixture claim' --repro 'inspect all fixture lines') > "$CAPTURE/output" 2>&1
+ (cd "$FIXTURE/repo" && HOME="$FIXTURE/home" CODEX_HOME="$FIXTURE/home/.codex" "$GATE" --uncommitted --no-issues --claim 'Complete fixture claim' --repro 'inspect all fixture lines') > "$CAPTURE/output" 2>&1
  rc=$?
  set -e
  if [[ "$MODE" == approve ]]; then
@@ -97,5 +102,9 @@ for MODE in approve compacted lost-input writable wrong-window tamper-part tampe
    [[ "$rc" -ne 0 && ! -f "$FIXTURE/repo/.git/review-receipts/codex.json" ]] || { echo "FAIL: $MODE accepted"; exit 1; }
  fi
  [[ ! -e "$(cat "$CAPTURE/transport-dir")" ]] || { echo "FAIL: transport leaked"; exit 1; }
+ # Nothing may touch the poisoned home: the stub and the checker both follow
+ # CODEX_HOME, so without this the pin could be dropped and every mode would
+ # still pass against the inherited value.
+ [[ ! -e "$CODEX_HOME" ]] || { echo "FAIL: inherited CODEX_HOME reached the fixture"; exit 1; }
  echo "ok - $MODE: exact direct multipart input, native session and receipt"
 done

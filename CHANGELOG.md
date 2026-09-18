@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-17 — fix(review-multipart): byte-bounded fragments and CODEX_HOME isolation
+
+- The multipart transport sliced a large review request into 200,000-character
+  fragments, so token-dense Unicode produced 800,000-byte fragments far past
+  the window the receiving model was sized for (#420). Fragments are now
+  bounded by UTF-8 bytes and split only on character boundaries; ASCII
+  requests are unaffected.
+- `codex-review-multipart.test.sh` set only `HOME`, but the transport check
+  reads `CODEX_HOME` first, so a runner that already exported it defeated the
+  fixture's isolation (#419). The fixture pins `CODEX_HOME` per invocation,
+  exports a poisoned value around the loop, and asserts that poisoned home is
+  never created — dropping the pin now fails the suite instead of passing
+  against the inherited value.
+- Neither `codex-review-multipart.test.sh` nor `review-multipart.test.py` was
+  wired into CI; both now run in the `checks` job. `review-and-push.test.sh`
+  shipped unwired too and joins them there.
+
 ## 2026-09-17 — fix(agy-gate): zero timeout, long failure reports, measured input cap
 
 - `ANTIGRAVITY_GATE_TIMEOUT=0` is documented as "disabled" but the outer
