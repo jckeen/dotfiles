@@ -608,17 +608,23 @@ else
   sed 's/^/      | /' "$FAKE_CURL_ARGV"
 fi
 
-# The end-to-end version of the same guarantee: a hostile ~/.curlrc must not
-# change what the dispatcher sends.
+# What the -q guarantee rests on, stated precisely. A fake curl cannot prove that
+# the REAL curl ignores a configuration file — only curl can do that — so this
+# does not pretend to: it pins the two things that are actually checkable here,
+# which are that -q leads the argument list and that -L is never passed. An
+# earlier version of this case set a hostile CURLRC and asserted "nothing
+# changed", which a stub curl makes true no matter what the dispatcher does.
 new_case
 routine alpha false 'repos: all'
-printf 'location\ntrace = %s/curl-trace.txt\n' "$CASE_DIR" > "$CASE_DIR/curlrc"
-if CURL_HOME="$CASE_DIR" CURLRC="$CASE_DIR/curlrc" dispatch \
-  && [[ ! -e "$CASE_DIR/curl-trace.txt" ]] \
-  && ! grep -Fq -- "$GOOD_KEY" "$FAKE_CURL_ARGV"; then
-  ok "a CURLRC enabling redirects and tracing changes nothing"
+dispatch
+argv="$(cat "$FAKE_CURL_ARGV")"
+if [[ "${argv%% *}" == "-q" ]] \
+  && ! grep -Eq -- '(^| )(-L|--location)( |$)' "$FAKE_CURL_ARGV" \
+  && grep -Fq -- '--proto =https' "$FAKE_CURL_ARGV"; then
+  ok "every request leads with -q, passes --proto =https, and never passes -L"
 else
-  fail "a hostile CURLRC affected the request"
+  fail "the curl invocation lost one of its transport guarantees"
+  sed 's/^/      | /' "$FAKE_CURL_ARGV"
 fi
 
 # [medium] a manual run overlapping the timer read the same spend and dispatched

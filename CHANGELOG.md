@@ -132,6 +132,13 @@
   so no query of it can fail quietly wherever it is nested. The three instances
   were a `die` in a process substitution, an assignment in a command substitution,
   and a read nested in a `printf` argument.
+- One low finding was a fair hit on this branch's own test: a case set a hostile
+  `CURLRC` and asserted that nothing changed, which a stub `curl` makes true
+  whatever the dispatcher does. A fake curl cannot prove the real one ignores a
+  config file. Replaced with the assertions that are actually checkable here —
+  `-q` leads the argument list, `--proto =https` is passed, `-L` never is.
+  Shipping a test that cannot fail would have contradicted the routine this same
+  change adds for finding them. Closes #456.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
