@@ -107,6 +107,13 @@
   failed queries but not routines whose frontmatter was rejected, equally absent
   from the table and equally invisible in a posted comment; the reasons a report can
   be partial now go through one builder.
+- One low finding promoted rather than filed, because it is in the credential
+  surface: if the caller's environment already exported a variable of the name the
+  script uses for the API key, a plain assignment keeps the export attribute and
+  the key lands in every child process's environment, readable from
+  `/proc/PID/environ`. Verified both ways locally; the variable is now unset before
+  assignment, and the test asserts on what a child process actually received.
+  Closes #465.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

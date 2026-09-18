@@ -75,6 +75,10 @@ case "$method:$url" in
 esac
 FAKE
 chmod +x "$BIN/curl"
+cp "$BIN/curl" "$WORK/curl.default"
+# Several cases install a specialised curl; they call this to put the default one
+# back so a later case is never silently running on someone else's stub.
+restore_fake_curl() { cp "$WORK/curl.default" "$BIN/curl"; chmod +x "$BIN/curl"; }
 export PATH="$BIN:$PATH"
 export FAKE_CURL_ARGV="$WORK/curl-argv.log"
 export FAKE_SEQ="$WORK/curl-seq"
@@ -237,6 +241,47 @@ else
   fail "a well-formed run did not exit 0"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
+
+# An inherited export of the same variable name would keep its export attribute
+# through the script's own assignment, putting the key in the environment of
+# every child process — where /proc/PID/environ exposes it. The fake curl dumps
+# its environment so the assertion is on what a child actually received.
+new_case
+routine alpha false 'repos: all'
+cat > "$BIN/curl" <<'ENVFAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_CURL_ARGV"
+env >> "$FAKE_CURL_ENV"
+url=""; method="GET"; prev=""
+for a in "$@"; do
+  case "$a" in https://*) url="$a" ;; esac
+  [[ "$prev" == "-X" ]] && method="$a"
+  prev="$a"
+done
+cat >/dev/null
+case "$method:$url" in
+  GET:*/sources*) cat "$FAKE_SOURCES" ;;
+  POST:*/sessions)
+    n=$(( $(cat "$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "$FAKE_SEQ"
+    printf '{"name":"sessions/s%s","id":"s%s","url":"u"}\n' "$n" "$n" ;;
+  *) exit 1 ;;
+esac
+ENVFAKE
+chmod +x "$BIN/curl"
+export FAKE_CURL_ENV="$CASE_DIR/curl-env"
+: > "$FAKE_CURL_ENV"
+if API_KEY=some-inherited-value JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" \
+     JULES_ROUTINE_DIR="$ROUTINES" "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
+   && [[ -s "$FAKE_CURL_ENV" ]] \
+   && ! grep -Fq -- "$GOOD_KEY" "$FAKE_CURL_ENV"; then
+  ok "the key is absent from a child process's environment, even when API_KEY was exported in"
+else
+  fail "the key reached a child process environment"
+  grep -F 'API_KEY' "$FAKE_CURL_ENV" | sed 's/^/      | /'
+fi
+unset FAKE_CURL_ENV
+restore_fake_curl
 
 echo "── dispatch behaviour ──"
 

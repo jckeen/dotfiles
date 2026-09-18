@@ -79,6 +79,12 @@ MODE="dispatch"
 REPORT_DAYS=28
 POST=0
 
+# Dropped before it is assigned, not just emptied: if the caller's environment
+# already exported a variable of this name, a plain assignment KEEPS the export
+# attribute and the key is then in the environment of every child — curl, jq, gh —
+# readable from /proc/PID/environ. Verified: exporting it first and assigning
+# leaves it in `env`; unsetting first does not.
+unset -v API_KEY
 API_KEY=""
 SOURCES_JSON=""
 SOURCES_PAGES=0

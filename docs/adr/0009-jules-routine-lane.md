@@ -139,6 +139,14 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   One low finding was worth promoting rather than filing: if the caller's
+   environment already exported a variable of the name the script uses for the
+   key, a plain assignment KEEPS the export attribute, and the key is then in the
+   environment of every child process — `curl`, `jq`, `gh` — readable from
+   `/proc/PID/environ`. Verified locally both ways. The variable is unset before
+   it is assigned, and the test asserts on the environment a child actually
+   received.
+
    A seventh round found both previous fixes one level too narrow, which is the
    lesson worth keeping: a review finding is a category, not an instance. Phase two
    rechecked `paused` but not the rest of what phase one had decided, so a
