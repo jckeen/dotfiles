@@ -1713,7 +1713,9 @@ if kind == 'writer':
                     owner = module.os if attribute in ("readlink", "scandir") else module.Path
                     original = getattr(owner, attribute)
 
-                    def unavailable(candidate, *args, **kwargs):
+                    def unavailable(
+                        candidate, *args, target=target, error=error, original=original, **kwargs
+                    ):
                         if Path(candidate) == target:
                             raise error("fixture evidence unavailable")
                         return original(candidate, *args, **kwargs)
@@ -1733,7 +1735,7 @@ if kind == 'writer':
             for error in (PermissionError, FileNotFoundError):
                 with self.subTest(state=state, error=error.__name__):
 
-                    def unavailable(candidate):
+                    def unavailable(candidate, error=error):
                         if candidate == tasks:
                             raise error("task enumeration unavailable")
                         return original(candidate)
@@ -1745,7 +1747,7 @@ if kind == 'writer':
                 with self.subTest(state=state, change=change):
                     observations = 0
 
-                    def changing(candidate):
+                    def changing(candidate, change=change):
                         nonlocal observations
                         if candidate != tasks:
                             return original(candidate)

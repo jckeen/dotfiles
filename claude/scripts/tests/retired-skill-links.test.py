@@ -543,7 +543,9 @@ class RetirementTests(unittest.TestCase):
                     replacement.symlink_to("operator-selected-target")
                 rename = os.rename
 
-                def replace_then_capture(*args, **kwargs):
+                def replace_then_capture(
+                    *args, replacement=replacement, destination=destination, rename=rename, **kwargs
+                ):
                     os.replace(replacement, destination)
                     rename(*args, **kwargs)
 

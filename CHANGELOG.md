@@ -32,6 +32,28 @@
   cover it, and a committed review reads the copy in the reviewed commit,
   never the working tree.
 
+## 2026-09-18 — style(python): adopt ruff and gate it in CI
+
+- Every `*.py` in the repo is now formatted by `ruff format` and linted with
+  `E,F,W,I,B,UP` (`E501` ignored: line length is the formatter's job). The
+  config is a root `ruff.toml`, not a `pyproject.toml`, because a root
+  pyproject makes uv/pip treat dotfiles as a Python project; `required-version`
+  pins ruff and the CI job runs the same pin via `uvx`. Target is `py39`, the
+  macOS system python floor.
+- The one-time sweep reformatted 23 files and fixed 77 findings. The
+  formatter and `--fix` cleared E701/E702/I001; the 20 B023 loop-variable
+  closures (four test suites and `review-receipt.py`) and one E741 were fixed
+  by hand by binding the loop variable as a default argument — every closure
+  is called within its own iteration, so behaviour is unchanged. No `noqa` or
+  `per-file-ignores` were added.
+- New required-style CI job `python-lint` (`ruff check`, `ruff format
+  --check`, and `check-jsonschema --check-metaschema` over the Codex review
+  output schema, which nothing validated before). Add it to branch protection
+  after this lands (`docs/BRANCH_PROTECTION.md`).
+- Shipped as two PRs so the reformat did not bury the review: the
+  mechanical `ruff format`/`--fix` output landed first on its own, then
+  this config, hand-fix and CI change on top of it.
+
 ## 2026-09-18 — ci: actionlint, JSON validity, .editorconfig
 
 - The `checks` job now runs [actionlint](https://github.com/rhysd/actionlint)
