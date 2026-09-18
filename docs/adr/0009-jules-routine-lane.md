@@ -139,6 +139,21 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   The last rounds were all about the seams the earlier fixes created. The ledger
+   append is built in memory and written with one `printf`, because a single small
+   write to an O_APPEND file is atomic and a concurrent reader must never see half a
+   line — otherwise a `--report` run, or a dispatch about to stand down on the lock,
+   would reject a torn record and turn an intended no-op into a failure; and the
+   ledger is validated only once the run owns the lock, for the same reason. The
+   test suite pins both the day-edge margin and the clock, because a suite that
+   fails for two minutes a day, or for one second at midnight, is worse than no
+   suite. A `mktemp` failure could have had the suite overwrite the installed
+   `/bin/curl`. And twice a case was deleted rather than shipped, because a fake
+   `curl` cannot prove the real one ignores a config file and a default margin
+   cannot be distinguished from zero at an ordinary time of day — shipping an
+   assertion that cannot fail would have contradicted `useless-test-pruner`, a
+   routine this same change adds.
+
    An eleventh round: the page token was guarded by a character allowlist, which
    would have aborted source discovery on a perfectly valid base64 token containing
    `+` or `/` — making pagination depend on an encoding the documentation never

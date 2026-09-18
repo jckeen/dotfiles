@@ -37,6 +37,8 @@
 #                       report says so when a repository hits it
 #   JULES_DAY_EDGE_MARGIN  seconds of the UTC day that must remain before a
 #                       dispatch may start (default: the request timeout + 60)
+#   JULES_NOW_EPOCH     override the clock (test seam; it decides the date a
+#                       dispatch is recorded against, so do not set it in anger)
 #
 # State (all under JULES_STATE_DIR):
 #   dispatch.jsonl   one line per created session — the idempotency ledger
@@ -99,9 +101,25 @@ unset -v API_KEY
 API_KEY=""
 SOURCES_JSON=""
 SOURCES_PAGES=0
-TODAY="$(date -u +%Y-%m-%d)"
-NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-NOW_EPOCH="$(date -u +%s)"
+# Every time reading goes through these, and JULES_NOW_EPOCH overrides the clock.
+# That exists so the test suite is deterministic: without it a test invocation
+# spanning UTC midnight makes the run stop mid-catalog and the assertions fail on a
+# schedule. Strictly validated, and documented as a test seam — it decides the date
+# a dispatch is RECORDED against, so it is not a production knob.
+now_epoch() {
+  if [[ -n "${JULES_NOW_EPOCH:-}" ]]; then
+    [[ "$JULES_NOW_EPOCH" =~ ^[1-9][0-9]*$ ]] \
+      || die "JULES_NOW_EPOCH must be a positive integer with no leading zeros"
+    printf '%s' "$JULES_NOW_EPOCH"
+  else
+    date -u +%s
+  fi
+}
+epoch_to() { date -u -d "@$1" "+$2" 2>/dev/null || date -u -r "$1" "+$2"; }
+
+NOW_EPOCH="$(now_epoch)"
+TODAY="$(epoch_to "$NOW_EPOCH" '%Y-%m-%d')"
+NOW_ISO="$(epoch_to "$NOW_EPOCH" '%Y-%m-%dT%H:%M:%SZ')"
 CREATED=0
 FAILURES=0
 SPENT=0
@@ -402,13 +420,25 @@ sources_repos() {
 # no attempt id, so the key falls back to the session or the timestamp.
 readonly LEDGER_KEY='(if ((.attempt // "") == "") then ((.session // "") + (.dispatched_at // "")) else .attempt end)'
 
+# Built in memory, then appended with ONE printf. A single write of less than
+# PIPE_BUF bytes to a file opened O_APPEND (which `>>` does) is atomic, so a
+# concurrent reader — a --report run, or a dispatch that is about to stand down on
+# the lock — never sees half a line. Letting jq write straight into the file would
+# give no such guarantee, and a reader rejecting a torn line would turn an intended
+# clean no-op into a failed run. The length is checked rather than assumed.
 ledger_append() { # status attempt repo source session url
-  jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
+  local line
+  line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
     --arg repo "$3" --arg source "$4" --arg status "$1" --arg attempt "$2" \
     --arg session "$5" --arg url "$6" \
     '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
       source: $source, status: $status, attempt: $attempt,
-      session: $session, url: $url}' >> "$LEDGER"
+      session: $session, url: $url}')" || return 1
+  [[ "${#line}" -lt 4000 ]] || {
+    printf 'jules-dispatch: ledger record too long to append atomically\n' >&2
+    return 1
+  }
+  printf '%s\n' "$line" >> "$LEDGER"
 }
 
 # Validated ONCE, here, from the main shell. Every later query runs inside a
@@ -591,7 +621,7 @@ routine_files() {
 # Seconds until the next UTC midnight. The POSIX epoch is UTC-aligned, so the
 # remainder is the seconds elapsed in the current UTC day — no date parsing and
 # nothing platform-specific.
-seconds_left_in_utc_day() { printf '%s' $((86400 - ($(date -u +%s) % 86400))); }
+seconds_left_in_utc_day() { printf '%s' $((86400 - ($(now_epoch) % 86400))); }
 
 # Everything phase one decided that a mid-run edit to the catalog can invalidate.
 # One function, so a new eligibility rule cannot be added to phase one and
@@ -708,7 +738,6 @@ dispatch_one() { # routine-file repo source
 }
 
 do_dispatch() {
-  validate_ledger
   read_api_key
   fetch_sources
 
@@ -722,6 +751,11 @@ do_dispatch() {
       exit 0
     fi
   fi
+
+  # Validated only once this run owns the lock. Before it, an overlapping
+  # invocation could read the ledger mid-append and refuse a run that should have
+  # been a clean no-op.
+  validate_ledger
 
   local used
   used="$(dispatched_today)"
@@ -815,7 +849,7 @@ do_dispatch() {
     # to finish inside it. Nothing is lost — ordering is least-recently-dispatched
     # first, so the remaining pairs lead the next run's queue.
     day_left="$(seconds_left_in_utc_day)"
-    if [[ "$(date -u +%Y-%m-%d)" != "$TODAY" ]]; then
+    if [[ "$(epoch_to "$(now_epoch)" '%Y-%m-%d')" != "$TODAY" ]]; then
       log "  -- the UTC day rolled over mid-run; stopping so nothing is recorded"
       log "     against $TODAY. The next run picks up where this one left off."
       record deferred "$FM_NAME" "$repo" "UTC day rolled over mid-run"

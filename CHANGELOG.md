@@ -167,6 +167,13 @@
   and had the suite attempt to overwrite the installed `/bin/curl`; every `mktemp`
   in both files is now checked, including the one inside `dispatch_one`, where the
   caller's `|| rc=$?` disables errexit.
+- The ledger append is now built in memory and written with a single `printf`, and
+  the ledger is validated only after the run owns the lock. Before, a `--report` run
+  or a dispatch about to stand down could read the file mid-append and reject a torn
+  line, turning an intended clean no-op into a failed run. And the suite pins the
+  clock as well as the margin: even at margin zero, a test invocation spanning UTC
+  midnight would have stopped a run mid-catalog, because the dispatcher captures the
+  date once and halts when it changes.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.

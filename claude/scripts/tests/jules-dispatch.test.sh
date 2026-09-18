@@ -39,11 +39,16 @@ WORK="$(mktemp -d)" || { echo "FAIL - mktemp -d failed; cannot run"; exit 1; }
 [[ -n "$WORK" && -d "$WORK" ]] || { echo "FAIL - mktemp -d produced no directory"; exit 1; }
 trap '[[ -n "${WORK:-}" ]] && rm -rf "$WORK"' EXIT
 
-# Ordinary dispatch cases must not depend on the wall clock. The dispatcher
-# refuses to start a dispatch inside the last two minutes of the UTC day, so
-# without this the whole suite — and the CI job running it — would fail for that
-# window once a day. The cases that exercise the guard set their own value.
+# Ordinary dispatch cases must not depend on the wall clock, in either of the two
+# ways they otherwise would. The margin guard refuses to start a dispatch inside
+# the last two minutes of the UTC day; and even with the margin at zero, a test
+# invocation spanning UTC midnight would make the run stop mid-catalog, because the
+# dispatcher captures the date once and halts when it changes. So the clock is
+# pinned as well. Without both, this suite — and the CI job running it — would fail
+# on a schedule. The cases that exercise either guard set their own values.
 export JULES_DAY_EDGE_MARGIN=0
+# Noon UTC on a fixed date: far from any boundary, and stable across runs.
+export JULES_NOW_EPOCH=1789041600
 
 # Long enough and inside the allowed charset, so every refusal below is
 # attributable to the property under test rather than to the key itself. It is
@@ -297,6 +302,18 @@ else
 fi
 unset FAKE_CURL_ENV
 restore_fake_curl
+
+# The clock seam has to actually reach the ledger, or pinning it proves nothing.
+new_case
+routine alpha false 'repos: all'
+if dispatch \
+  && [[ "$(ledger_jq -r '.[0].date')" == "2026-09-10" ]] \
+  && [[ "$(ledger_jq -r '.[0].dispatched_at')" == "2026-09-10T12:00:00Z" ]]; then
+  ok "the pinned clock is what the ledger records, so the suite has no wall-clock dependency"
+else
+  fail "the clock seam did not reach the ledger"
+  sed 's/^/      | /' "$STATE/dispatch.jsonl"
+fi
 
 echo "── dispatch behaviour ──"
 
@@ -566,10 +583,12 @@ echo "── review findings from the Codex gate ──"
 # [high] schedule was parsed, validated, and then never consulted: a weekly
 # routine ran every day under the daily timer. Six days ago is inside the
 # window, eight days ago is outside it.
+# Relative to the SAME pinned clock the dispatcher uses, or "days ago" would be
+# measured from a different now than the eligibility window is.
 ledger_line() { # routine repo days-ago
-  local at
-  at="$(date -u -d "@$(( $(date -u +%s) - $3 * 86400 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-        || date -u -r "$(( $(date -u +%s) - $3 * 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+  local e at
+  e=$((JULES_NOW_EPOCH - $3 * 86400))
+  at="$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ)"
   printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","session":"old","url":""}\n' \
     "$at" "${at%%T*}" "$1" "$2"
 }
@@ -1102,13 +1121,14 @@ cat > "$GHBIN/gh" <<'GHSTUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_ARGV"
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+now() { printf '%s' "${JULES_NOW_EPOCH:-$(date -u +%s)}"; }
 case "$1" in
   "issue")
     cat > "$GH_COMMENT_BODY"
     exit 0 ;;
 esac
 if [[ -n "${GH_FAIL_LIST:-}" && "$1" == "pr" ]]; then exit 1; fi
-now=$(date -u +%s)
+now=$(now)
 recent=$(iso $((now - 2 * 86400)))
 older=$(iso $((now - 9 * 86400)))
 printf '[{"state":"MERGED","createdAt":"%s","mergedAt":"%s"},{"state":"CLOSED","createdAt":"%s","mergedAt":null},{"state":"OPEN","createdAt":"%s","mergedAt":null}]\n' \
