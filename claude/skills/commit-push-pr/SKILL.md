@@ -11,7 +11,7 @@ Commit, push, and create a PR for the current work. $ARGUMENTS
 3. Run affected build/test/lint checks on the final changes. If they fail, fix them first and restage only the intended corrections.
 4. Write a conventional commit message (`type: short description`) based on the actual changes
 5. Commit
-6. **Run the local Codex review gate** — `~/.claude/scripts/codex-review-gate.sh --require` (or the repo copy). Run it **after the last commit, before the push**; select `--base <ref>` when needed to identify the PR base. It reviews the committed delta and records private evidence bound to the artifact.
+6. **Run the gate for the lane this diff requires** — ask `python3 ~/.claude/scripts/review-receipt.py lane --repo . --scope committed` first (ADR-0008). `required_lane: antigravity` (ordinary tier-2 work) selects `~/.claude/scripts/antigravity-review-gate.sh --require`; `required_lane: codex` (risk surfaces, or a classification the helper could not read) selects `~/.claude/scripts/codex-review-gate.sh --require` and is never downgradable; `required_lane: any` (tier-1 docs diff) takes either gate's tier valve. Run it **after the last commit, before the push**; select `--base <ref>` when needed to identify the PR base. It reviews the committed delta and records private evidence bound to the artifact. `review-and-push.sh` performs this selection itself.
    - Blocking findings, unreadable output, or an unavailable reviewer stop shipping. Fix in a follow-up commit, repeat affected verification, and rerun final review. A degraded run does not approve shipping.
    - Exit 0 alone does not establish completed review. Distinguish a successful-review receipt from an explicit tier/no-diff exemption and report exemptions as such.
    - If the self-instruction guard blocks, independently read those instructions and obtain refutation from a different model family. Record that evidence and the reason before a scoped `CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1` override, or use the Antigravity gate with `--require` and its receipt as the independent alternate. Never bypass hooks.
@@ -20,10 +20,10 @@ Commit, push, and create a PR for the current work. $ARGUMENTS
 
    ```bash
    python3 ~/.claude/scripts/review-receipt.py check --repo . \
-     --head "$(git rev-parse HEAD)" --reviewer codex
+     --head "$(git rev-parse HEAD)"
    ```
 
-   Use `--reviewer antigravity` for the independently approved alternate gate and the same `--base <ref>` if one was selected. Missing, stale, or mismatched evidence blocks shipping; only a checker-accepted current exemption may replace review under the applicable gate policy. Any subsequent artifact edit invalidates approval: commit the intended edits, rerun affected verification and required reviews, then recheck. Push the current non-default branch, creating its upstream if needed.
+   No `--reviewer`: the receipt's own recorded classification decides which lanes may ship this diff (ADR-0008), so naming a lane there could only narrow the check, never satisfy a stronger requirement. Pass the same `--base <ref>` if one was selected. Missing, stale, mismatched, or below-requirement evidence blocks shipping; only a checker-accepted current exemption may replace review under the applicable gate policy. Any subsequent artifact edit invalidates approval: commit the intended edits, rerun affected verification and required reviews, then recheck. Push the current non-default branch, creating its upstream if needed.
    For an explicitly selected nondefault PR base, use `REVIEW_RECEIPT_BASE=<ref> git push ...` with the same reviewed base. Without this one-push setting the hook requires the repository's default base; never select a narrower base just to pass it.
 9. Create a PR with `gh pr create`:
    - Title: concise, under 70 characters

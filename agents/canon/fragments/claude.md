@@ -154,6 +154,16 @@ rationale: `MULTI-AGENT.md`. The operative rules:
   high-risk changes also require a reviewer from a different model family.
   Record the actual reviewer evidence; a requested model label alone does not
   establish the model used, and a text-diff review is not browser evidence.
+- **Ask which lane before running a gate** (ADR-0008):
+  `review-receipt.py lane --repo . --scope committed` names the required lane.
+  Ordinary tier-2 work goes to `antigravity-review-gate.sh`; a risk surface (or
+  a classification the helper could not read) requires `codex-review-gate.sh`
+  and is never downgradable; a tier-1 docs diff takes either gate's tier valve.
+  `review-receipt.py check` refuses a receipt whose lane ranks below the
+  requirement, so run the *named* gate rather than the familiar one — and check
+  the receipt with no `--reviewer`. An Antigravity gate that exits 3 could not
+  run and falls back to Codex; exit 2 is a verdict and never falls back.
+  `review-and-push.sh` performs the whole selection itself.
 - **Handoff payload:** when I hand work to another agent, the note carries the
   *claim to disprove* and the *exact repro command*, not just "please review."
   For gate-mediated refutation, pass them directly:

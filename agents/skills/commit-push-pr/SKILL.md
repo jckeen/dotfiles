@@ -26,10 +26,26 @@ make a pull request.
    - `refactor: ...`
    - `test: ...`
    - `chore: ...`
-6. Run `~/.claude/scripts/codex-review-gate.sh --require --committed` **after the last
-   commit, before the push**. Supply `--base <ref>` when needed to identify the
-   PR base. The gate reviews the committed delta and records private evidence
-   bound to that artifact.
+6. Ask which lane the diff requires, then run **that** gate with `--require
+   --committed` **after the last commit, before the push**. Supply `--base <ref>`
+   when needed to identify the PR base. The gate reviews the committed delta and
+   records private evidence bound to that artifact.
+
+   ```bash
+   python3 ~/.claude/scripts/review-receipt.py lane --repo . --scope committed
+   ```
+
+   - `required_lane: antigravity` (ordinary tier-2 work) →
+     `~/.claude/scripts/antigravity-review-gate.sh --require --committed`.
+   - `required_lane: codex` (risk surfaces, or an unreadable classification) →
+     `~/.claude/scripts/codex-review-gate.sh --require --committed`. Never
+     downgradable: an Antigravity receipt cannot ship such a diff, and the gate
+     says so when it runs as the supplementary lane (ADR-0008).
+   - `required_lane: any` (tier-1 docs diff) → either gate; its tier valve mints
+     the exemption receipt without dispatching a reviewer.
+   - An Antigravity gate that exits 3 could not run at all — rerun the diff
+     through the Codex gate. Exit 2 is a verdict; fix the findings instead.
+   - `review-and-push.sh` performs this whole selection itself.
    - Blocking findings, unreadable output, or an unavailable reviewer stop
      shipping. Fix in a follow-up commit and repeat affected verification and
      final review. Do not treat a degraded run as approval.
@@ -54,12 +70,14 @@ make a pull request.
 
    ```bash
    python3 ~/.claude/scripts/review-receipt.py check --repo . \
-     --head "$(git rev-parse HEAD)" --reviewer codex
+     --head "$(git rev-parse HEAD)"
    ```
 
-   Use `--reviewer antigravity` for the independently approved alternate gate
-   and the same `--base <ref>` if one was selected. A missing, stale, or
-   mismatched receipt blocks the push; only a checker-accepted current
+   No `--reviewer`: the receipt's own recorded classification decides which
+   lanes may ship this diff (ADR-0008), so naming a lane there could only
+   narrow the check, never satisfy a stronger requirement. Pass the same
+   `--base <ref>` if one was selected. A missing, stale,
+   mismatched, or below-requirement receipt blocks the push; only a checker-accepted current
    exemption may replace completed review under the applicable gate policy.
    Any subsequent artifact edit invalidates approval. Recommit intended edits,
    rerun affected verification and required reviews, and recheck the receipt.

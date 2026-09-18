@@ -24,7 +24,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `test-coverage.sh` | Writes tests for uncovered code | Fix (edit + test) | Yes — review with `git diff` |
 | `fix-issues.sh` | Picks up GitHub issues, creates fix branches | Commit (edit + commit) | Yes — review branches |
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
-| `review-and-push.sh` | Reviews committed changes with the required Codex gate, validates the receipt, and pushes the current branch | Artifact review + push | Only pushes after validation |
+| `review-and-push.sh` | Classifies the committed delta, runs the gate for the **required review lane** (ADR-0008), validates the receipt, and pushes the current branch | Artifact review + push | Only pushes after validation |
 | `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Installs are user-scope, so both this script's fast path and that hook count user-scope installs only and ignore `--scope project` plugins. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift. Tests: `tests/plugin-drift.test.sh` (fast path + drift hook) | Install (calls `claude plugin install`) | No file edits — updates plugin state |
 | `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`, so unlike the rest of this directory it holds to a bash 3.2 floor — the macOS system bash (#424); the `doc-truth (bash 3.2)` CI job runs its tests against a real 3.2.57. Tests: `tests/doc-truth.test.sh` | Read-only | No |
 | `gen-instruction-files.sh` | Builds the three global instruction files (`claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md`) from the canonical sources in `agents/canon/` (ADR 0007) — shared rule blocks in `CANON.md`, per-tool voice in `fragments/`. `--check` verifies the committed artifacts are byte-current (run in CI via `check-agent-parity.sh`). Tests: `tests/agent-parity.test.sh` | Build (writes the three generated files) | Yes — regenerates committed artifacts |
@@ -66,9 +66,12 @@ What `review-and-push.sh` does:
 
 1. Requires a clean non-default branch, then pins the current commit.
 2. Runs the detected test suite and stops on failure.
-3. Runs the Codex review gate with `--require --committed` on the committed artifact.
+3. Classifies the committed artifact with `review-receipt.py lane` and runs the
+   gate for the **required lane** with `--require --committed` (ADR-0008).
 4. Prompts for confirmation, unless `--auto-push` was selected.
-5. Validates the Codex receipt after confirmation, immediately before push.
+5. Validates the receipt after confirmation, immediately before push, naming the
+   lane it dispatched. That enforces the diff's lane requirement and also
+   requires the review this run performed to still be approved.
 6. Pushes the reviewed commit to the current branch with an explicit refspec.
 
 Blocking findings, failed reviewer execution, and missing or stale receipts
@@ -186,6 +189,36 @@ Failures report a diagnostic hint and a private temporary log path without
 printing raw reviewer stderr, which may contain reviewed content. Inspect that
 log when needed and keep it out of repositories.
 
+### Review lanes (ADR-0008)
+
+One classifier names the lane, and the receipt carries the answer, so the lane
+requirement is enforced at the push boundary rather than by whichever gate
+someone chose to run.
+
+| Subcommand | What it does |
+|---|---|
+| `review-receipt.py lane --repo . --scope committed [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand |
+| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Run it with **no** `--reviewer`; naming a lane only narrows the check |
+| `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
+
+`required_lane` is one of `any` (tier-1 docs diff — either gate's exemption
+receipt ships it), `antigravity` (ordinary tier-2 work — the default lane), or
+`codex` (a risk surface, an empty changed-path list, or a classification the
+helper could not compute). Lanes rank `any < antigravity < codex`. Size alone
+never escalates the lane: a large ordinary diff is still ordinary.
+
+On a codex-required diff the Antigravity gate still runs and still mints its
+receipt, announcing itself as a **supplementary** lane — an independent-lineage
+second opinion, not shipping evidence. Receipts are version 2; a version-1
+receipt carries no lane requirement and is rejected outright, so the first push
+after this landed needs a fresh gate run.
+
+The ledger is written by `complete` (0600, append-only) and is **never read by
+`check`**: a forged ledger cannot approve a push and an unwritable one cannot
+block one. The dotfiles risk list is deliberately unnarrowed, so most diffs in
+*this* repository still require Codex; read `stats` before concluding anything
+about lane cost.
+
 ### Review of reviewer instructions and gates
 
 The Codex and Antigravity gates refuse changes to their own instruction
@@ -210,9 +243,9 @@ Each script uses scoped `--allowedTools` to limit what Claude can do:
 | **TIER_FIX** | Above + edit + write files + run tests | Commit, push |
 | **TIER_COMMIT** | Above + git add/commit/branch/checkout | Push, run arbitrary commands |
 
-`review-and-push.sh` uses the required Codex gate and its artifact receipt, then
-performs `git push` from bash after the confirmation and evidence checks. The
-tiers above describe scripts that invoke Claude through `common.sh`.
+`review-and-push.sh` runs the required lane's gate and validates its artifact
+receipt, then performs `git push` from bash after the confirmation and evidence
+checks. The tiers above describe scripts that invoke Claude through `common.sh`.
 
 ## Full Auto Mode
 
@@ -269,6 +302,8 @@ Environment variables:
 | `MODEL=sonnet` | Override model (default: opus) |
 | `CLAUDE_REPOS="~/a ~/b"` | Explicit repo list for `overnight.sh` |
 | `CLAUDE_DEV_DIR=/path` | Dev directory for auto-detection (default: `~/dev`) |
+| `REVIEW_LANE=auto\|codex\|antigravity` | Override the review lane chosen by `review-and-push.sh` (default `auto`). Escalation is honoured; `antigravity` on a codex-required diff is **refused**, not honoured (ADR-0008) |
+| `REVIEW_LANE_FALLBACK=codex\|block` | What to do when the Antigravity gate exits 3 (could not run). Default `codex` re-runs the diff through the Codex gate and records the degradation in the lane ledger; `block` refuses the push. A blocking verdict (exit 2) never falls back |
 
 ## Logs
 
