@@ -1,0 +1,17 @@
+# .gitleaksignore — audited historical findings, one fingerprint per line.
+# Format: <commit>:<file>:<rule-id>:<line>. Read by the pre-push hook and by the
+# secret-scan CI job, which scans full history on a pull request.
+#
+# An entry here means a human looked at the finding and established it is not a
+# credential. It is never a way to quiet the scanner on something unexamined: if
+# you cannot say in one line why the match is harmless, it does not belong here.
+
+# The jules-dispatch test suite's synthetic API key, in the commit that
+# introduced it. The fixture was shaped like a Google API key, which is exactly
+# what generic-api-key is meant to catch, so the scanner was right; it has since
+# been renamed to a self-describing string that matches no rule. The value never
+# authenticated anything — it exists so the suite can prove the dispatcher's key
+# handling refuses a bad mode, keeps the key out of argv, and keeps it out of
+# child environments. This entry covers only the historical commit; the string is
+# absent from the current tree.
+d4284539f73088df49e87553687e02b7802e4fff:claude/scripts/tests/jules-dispatch.test.sh:generic-api-key:40

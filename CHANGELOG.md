@@ -152,6 +152,13 @@
   characters, restricted charset); looking like a credential was never part of
   that, and a repository-wide scanner should not have to carry an exception for a
   test's aesthetic choice.
+- New root `.gitleaksignore` with one audited entry: the commit that introduced
+  that fixture still carries the old string, and both the pre-push hook and the
+  `secret-scan` CI job scan full history on a pull request. The entry names the
+  commit, the rule, and why the match is harmless, and the file's header states the
+  standard — an entry means someone looked, never that the scanner was
+  inconvenient. It can be deleted once this branch is squash-merged, since the
+  squashed commit carries only the current tree.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
