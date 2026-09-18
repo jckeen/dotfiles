@@ -1,0 +1,12 @@
+# .codex-review-ignore — path globs whose contents are hostile BY DESIGN.
+#
+# Read by codex-review-gate.sh. Matching paths STAY in the review scope: the
+# only effect is that the reviewer is told not to report instruction-like
+# strings inside them as findings. Shell glob semantics, so `*` spans `/`.
+# One glob per line; `#` starts a comment.
+#
+# The gate test suites embed adversarial fixtures on purpose — injected
+# reviewer verdicts, prompt-injection payloads, and synthetic credential
+# markers — so a reviewer flagging those strings is reporting the fixture
+# rather than a defect.
+claude/scripts/tests/*
