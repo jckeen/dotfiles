@@ -119,10 +119,12 @@ def oid(repo, ref):
 
 def named_instruction(path):
     name = Path(path).name
-    return (
-        re.search(r"(AGENTS|CLAUDE|GEMINI|FABLE|MULTI-AGENT).*\.md$", name) is not None
-        or name == "SKILL.md"
-    )
+    # .codex-review-ignore steers what the Codex reviewer reports, so it is an
+    # instruction surface: a dirty copy blocks a committed review and an edit
+    # to it is never a tier-1 change.
+    return re.search(
+        r"(AGENTS|CLAUDE|GEMINI|FABLE|MULTI-AGENT).*\.md$", name
+    ) is not None or name in ("SKILL.md", ".codex-review-ignore")
 
 
 def source_instruction(path):

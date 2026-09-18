@@ -31,6 +31,23 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
 | `check-tests-wired.sh` | Fails when a test file under `claude/scripts/tests/` or `codex/tests/` is run by no workflow: every enumerated path must appear in `ci.yml` or `smoke-install.yml` with YAML comments stripped, or in a test file those workflows already run (one level of transitivity). `OPT_OUT` lists the tests that cannot run in CI, each with its reason. Runs in the `checks` job. Tests: `tests/check-tests-wired.test.sh` | Read-only | No |
 
+### Test suites
+
+Every suite in `tests/` is wired into `.github/workflows/ci.yml`. Beyond the
+per-script suites named in the table above:
+
+| Suite | What it pins |
+| --- | --- |
+| `tests/review-multipart.property.test.py` | Hypothesis properties for the fragment splitter: fragments rejoin to the original, none exceeds the UTF-8 byte bound, none is empty, each is a contiguous byte slice of the packet, and a bound too small for one character fails closed |
+| `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, an over-cap diff, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
+| `tests/setup-fuzz-layouts.test.sh` | Seeded fuzzer over `setup.sh --yes --dry-run`: pseudo-random `$HOME` layouts (`.bashrc`, `.gitconfig`, `.claude`, `~/.agents/skills`, dangling links, a bun stub, `~/.codex`) each asserted byte-identical before and after. `SEED` reproduces a run and is printed on failure; `LAYOUTS` sets the count |
+| `tests/lib-snapshot.sh` | Not a suite — the shared full-fidelity directory snapshot (every path, file hash, and symlink target) sourced by `setup-dry-run.test.sh` and `setup-fuzz-layouts.test.sh` so both compare identically |
+
+Hypothesis is pinned in `tests/requirements-property.txt` and installed by the
+`property tests` CI step. The property suites import it unconditionally and exit
+with the install command rather than skipping, so a missing dependency cannot
+turn into silent zero coverage.
+
 ## Large review requests
 
 The Codex gate sends oversized requests as contiguous direct-input parts in one
@@ -218,6 +235,52 @@ The ledger is written by `complete` (0600, append-only) and is **never read by
 block one. The dotfiles risk list is deliberately unnarrowed, so most diffs in
 *this* repository still require Codex; read `stats` before concluding anything
 about lane cost.
+### Low findings, filed issues, and `.codex-review-ignore`
+
+Low-severity findings never block a push; the gate files them as GitHub issues
+so they are not lost. Dedup is keyed on the **location** — the file a finding
+points at — not on its title, because Codex rewords titles between runs and a
+title-keyed dedup once filed one fixture finding sixteen times. Every filed
+issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker;
+before filing, the gate fetches the repo's `codex-review` issues once and
+matches on that marker:
+
+| Existing issue for that file | What the gate does |
+|------|------|
+| Open | Adds one comment naming the branch, sha, and the reworded title |
+| Closed as *not planned* | Prints `accepted (#N), skipping` and files nothing |
+| Closed as *completed* | Files a fresh issue — the fix regressed |
+| None | Files a new issue, marker included |
+
+**Closing an issue as *not planned* is the suppression mechanism.** Accepting a
+finding needs no config file: close it that way and the gate stops re-filing
+that location. A failed prefetch files nothing at all, since filing without the
+index is the duplicate noise this replaced. Issues are fetched and created
+through plain REST, never `gh issue list --search` or `gh issue create`, whose
+GraphQL backend egress-restricted sandboxes block; `harvest-codex-comments.sh`
+shares that one prefetch via `gate-lib.sh`.
+
+A repo may also declare path globs in a root `.codex-review-ignore` — one glob
+per line, `#` comments, `*` spanning `/`:
+
+```
+claude/scripts/tests/*
+```
+
+Those paths are hostile **by design**: gate fixtures embed injected verdicts,
+prompt-injection payloads, and synthetic credential markers, and a reviewer
+flagging them is reporting the fixture rather than a defect. The globs only
+steer the reviewer — matching paths **stay in the review scope** and are still
+reviewed for real bugs, and instruction-like text anywhere else stays
+suspicious. The file is repo content, so it is parsed as bounded untrusted data
+(200 lines, 256 bytes per line; control characters or non-UTF-8 reject the
+whole file) and fenced like the diff. A rejected file warns and the review
+proceeds without it. Because the file steers what the reviewer reports, it
+is itself a reviewer-instruction surface: a diff that touches it trips the
+self-review guard (independent review, then the documented override), a
+committed review reads the copy in the reviewed commit rather than the
+working tree, and a local copy that differs from it is a dirty instruction
+surface that blocks the review.
 
 ### Review of reviewer instructions and gates
 
