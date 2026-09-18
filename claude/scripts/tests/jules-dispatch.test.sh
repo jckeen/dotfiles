@@ -35,9 +35,14 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# A key that is long enough and inside the allowed charset, so every refusal
-# below is attributable to the property under test and not to the key itself.
-GOOD_KEY="AIzaSyTESTKEYtestkeyTESTKEY0123456789"
+# Long enough and inside the allowed charset, so every refusal below is
+# attributable to the property under test rather than to the key itself. It is
+# deliberately NOT shaped like a real Google API key: the earlier fixture began
+# with the usual prefix and gitleaks' generic-api-key rule blocked the push, which
+# is the scanner doing its job. A fixture only has to satisfy the dispatcher's own
+# rules — regular file, mode 0600, non-empty, at least 20 characters, charset
+# [A-Za-z0-9._~+/=-] — and looking like a credential is no part of that.
+GOOD_KEY="not-a-real-credential-fixture-0123456789"
 
 # ── Fake curl ────────────────────────────────────────────────────────
 BIN="$WORK/bin"

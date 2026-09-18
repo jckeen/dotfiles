@@ -145,6 +145,13 @@
   promises. The token is opaque, so it is percent-encoded instead — correct for any
   token, and enough on its own to stop one breaking out of the query string. Only a
   length bound remains.
+- The test suite's synthetic API key no longer imitates a real one. The first
+  fixture carried the usual Google key prefix and gitleaks' generic-api-key rule
+  blocked the push — the scanner doing exactly its job. A fixture only has to
+  satisfy the dispatcher's own rules (regular file, 0600, non-empty, at least 20
+  characters, restricted charset); looking like a credential was never part of
+  that, and a repository-wide scanner should not have to carry an exception for a
+  test's aesthetic choice.
 - ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
   key only the operator holds. The ADR carries the exact commands for it and the
   list of what that run will resolve.
