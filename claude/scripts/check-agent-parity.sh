@@ -18,9 +18,13 @@
 #     claim-to-disprove handoff payload, two-floor grounding). Add a concept
 #     here when a new cross-agent rule is established.
 #
-#  2. Generation currency — the three files must be byte-identical to what
-#     gen-instruction-files.sh produces from agents/canon/. A hand-edit to a
-#     generated file, or a canon edit without regeneration, fails CI.
+#  2. Generation currency — every target in the generator's map must be
+#     byte-identical to what gen-instruction-files.sh produces from
+#     agents/canon/. A hand-edit to a generated file, or a canon edit without
+#     regeneration, fails CI. This is what enforces the root AGENTS.md, the
+#     cloud-agent brief added by ADR-0009: it is deliberately outside check 1,
+#     because it carries only the rules that survive with no session history
+#     and holding it to every local file's phrase list would defeat that.
 #
 # Known limit: phrase matching asserts a rule's phrase is PRESENT, not that it
 # is affirmed — a negated rewrite ("do NOT verify adversarially") would still

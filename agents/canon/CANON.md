@@ -1,23 +1,28 @@
 # Canonical shared agent rules (ADR-0007)
 
 This file is the single source for the rules every agent on this config —
-Claude Code, Codex, and Antigravity — must agree on word-for-word. Native
-import mechanisms are not universal (only Claude Code resolves `@` imports;
-Codex and Antigravity have none — evidence in ADR-0007), so the three
-instruction files are **generated build artifacts**:
+Claude Code, Codex, Antigravity, and the cloud routine lane (ADR-0009) — must
+agree on word-for-word. Native import mechanisms are not universal (only Claude
+Code resolves `@` imports; Codex and Antigravity have none — evidence in
+ADR-0007), so the instruction files are **generated build artifacts**:
 
-- `claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md` are built by
-  `claude/scripts/gen-instruction-files.sh` from the per-tool skeletons in
-  `agents/canon/fragments/` plus the shared blocks below.
+- `claude/CLAUDE.md`, `codex/AGENTS.md`, `antigravity/GEMINI.md` and the root
+  `AGENTS.md` are built by `claude/scripts/gen-instruction-files.sh` from the
+  per-tool skeletons in `agents/canon/fragments/` plus the shared blocks below.
+  The generator's target map is the authoritative list.
 - Edit a shared rule HERE (once), per-tool voice in the fragment, then
   regenerate and commit both. CI (`check-agent-parity.sh`) fails when a
   generated file is hand-edited or stale.
+- The root `AGENTS.md` is the short brief a cloud agent reads from the checkout
+  itself, so it carries only the rules that survive without session history. Its
+  concepts are not held in phrase parity with the three local files; byte
+  currency against `fragments/jules.md` is what CI asserts.
 
 Each block is delimited by `<!-- canon:ID -->` … `<!-- /canon:ID -->`; a
 fragment pulls it in with a line of the exact form `<!-- include:ID -->`.
 Prose outside blocks (like this preamble) is never emitted.
 
-## Authorized work (all three)
+## Authorized work (every local runtime)
 
 <!-- canon:authorized-work -->
 - Proceed with clear, in-scope work and honor explicit requests and applicable
