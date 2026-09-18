@@ -13,7 +13,7 @@
 #   ~/.agents/skills absent / empty / holding a foreign link to relink
 #   dangling symlink none / under ~/.agents/skills / at the top of $HOME
 #   ~/.codex         absent / present
-#   CODEX_MEMORY_REPO unset / a fixture with a bootstrap.sh
+#   CODEX_MEMORY_REPO an absent path in $HOME / a fixture with a bootstrap.sh
 #   bun              pruned from PATH / a stub on PATH
 #
 # Every symlink target lives inside the throwaway $HOME, so a write THROUGH a
@@ -53,12 +53,10 @@ SETUP="$REPO_ROOT/setup.sh"
 command -v snapshot >/dev/null 2>&1 \
   || { echo "FATAL - lib-snapshot.sh did not define snapshot()"; exit 1; }
 
-# setup.sh refuses to run from a linked git worktree (#412) and agents work in
-# worktrees by default; without this the suite would fail on the refusal rather
-# than on the contract it exists to check (#435). Safe here: every run targets a
-# throwaway HOME and the assertion is a byte-identical snapshot, so nothing
-# links to this checkout. The refusal stays covered by setup-worktree-guard.
-export DOTFILES_ALLOW_LINKED_WORKTREE=1
+# DOTFILES_ALLOW_LINKED_WORKTREE is passed per invocation below rather than
+# exported here: each layout runs under `env -i`, which would drop an exported
+# value and leave the suite failing on the linked-worktree refusal (#412, #435)
+# instead of on the contract it exists to check.
 
 SEED="${SEED:-$RANDOM}"
 LAYOUTS="${LAYOUTS:-25}"
@@ -116,7 +114,6 @@ echo "setup-fuzz-layouts: SEED=$SEED LAYOUTS=$LAYOUTS"
 for ((layout = 1; layout <= LAYOUTS; layout++)); do
   TESTHOME="$(mktemp -d)"
   MANIFEST=""
-  CODEX_MEMORY=""
   mkdir -p "$TESTHOME/elsewhere"
 
   draw bashrc absent plain mntc
@@ -173,7 +170,12 @@ for ((layout = 1; layout <= LAYOUTS; layout++)); do
   draw codex absent dir
   [ "$DRAWN" = dir ] && mkdir -p "$TESTHOME/.codex"
 
-  draw codex_memory unset fixture
+  # Never left unset: setup.sh defaults CODEX_MEMORY_REPO to a sibling
+  # codex-memory checkout beside DOTFILES_DIR, so an unset draw would read real
+  # private state outside TESTHOME, would not reliably exercise the
+  # absent-repository branch, and could write where the snapshot cannot see it.
+  # The absent draw points at a path inside TESTHOME that is never created.
+  draw codex_memory absent fixture
   if [ "$DRAWN" = fixture ]; then
     mkdir -p "$TESTHOME/codex-memory"
     cat > "$TESTHOME/codex-memory/bootstrap.sh" <<'BOOTSTRAP'
@@ -182,6 +184,11 @@ printf 'invoked\n' > "$HOME/codex-bootstrap-invoked"
 BOOTSTRAP
     chmod +x "$TESTHOME/codex-memory/bootstrap.sh"
     CODEX_MEMORY="$TESTHOME/codex-memory"
+  else
+    CODEX_MEMORY="$TESTHOME/absent-codex-memory"
+    if [ -e "$CODEX_MEMORY" ]; then
+      fail "layout $layout drew codex_memory=absent but $CODEX_MEMORY exists (SEED=$SEED)"
+    fi
   fi
 
   draw bun absent stub
@@ -202,10 +209,21 @@ BOOTSTRAP
     continue
   fi
 
-  runenv=(HOME="$TESTHOME" PATH="$RUN_PATH")
-  if [ -n "$CODEX_MEMORY" ]; then
-    runenv+=(CODEX_MEMORY_REPO="$CODEX_MEMORY")
-  fi
+  # env -i, not a few overrides: setup.sh reads DEV_DIR, DOTFILES_DIR, the
+  # installer pins, GIT_NAME/GIT_EMAIL and the private-memory repo paths from the
+  # environment. Anything inherited from the host would make the layout
+  # irreproducible from SEED and could redirect a write outside TESTHOME, where
+  # the before/after snapshot cannot see it. Everything setup.sh may see is
+  # listed here.
+  runenv=(
+    env -i
+    PATH="$RUN_PATH"
+    HOME="$TESTHOME"
+    TERM=dumb
+    LC_ALL=C
+    DOTFILES_ALLOW_LINKED_WORKTREE=1
+    CODEX_MEMORY_REPO="$CODEX_MEMORY"
+  )
 
   # The draw only means something if the environment matches it.
   if PATH="$RUN_PATH" command -v bun > /dev/null 2>&1; then
@@ -220,7 +238,7 @@ BOOTSTRAP
       || fail "layout $layout drew bun=absent but bun is still on PATH (SEED=$SEED)" ;;
   esac
 
-  env "${runenv[@]}" "$SETUP" --yes --dry-run > "$OUT" 2>&1
+  "${runenv[@]}" "$SETUP" --yes --dry-run > "$OUT" 2>&1
   rc=$?
 
   after="$(snapshot "$TESTHOME")"

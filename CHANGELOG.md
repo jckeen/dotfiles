@@ -20,6 +20,16 @@
   asserts the `--dry-run` no-writes contract (#133) against each, rather than
   against the single hand-built layout `setup-dry-run.test.sh` uses. `SEED`
   makes a red run reproducible and is printed on every failure.
+- Each layout runs under `env -i` with an explicit allowlist. setup.sh reads
+  `DEV_DIR`, `DOTFILES_DIR`, the installer pins, `GIT_NAME`/`GIT_EMAIL` and the
+  private-memory repo paths from the environment, and defaults
+  `CODEX_MEMORY_REPO` to a sibling checkout, so an inherited value would make a
+  layout irreproducible from `SEED` and could redirect a write outside the
+  throwaway `$HOME` where the snapshot cannot see it. For the same reason the
+  `bun=absent` draw prunes every `PATH` entry providing `bun` instead of leaving
+  `PATH` alone, and the absent private-memory draw points at a path inside the
+  throwaway `$HOME` that is never created. An "absent" axis that is not really
+  absent tests nothing.
 - The snapshot helper moved to `tests/lib-snapshot.sh` so both setup suites
   assert "zero mutations" with the identical comparison; `setup-dry-run.test.sh`
   sources it and is otherwise unchanged.
