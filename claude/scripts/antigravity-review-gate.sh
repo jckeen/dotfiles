@@ -78,6 +78,14 @@
 #      verifiably failed (review ran on the wrong model)
 #   3  agy could not run — or the diff was above a size cap — AND the gate was
 #      REQUIRED, or the model pin was unverifiable in a REQUIRED run
+#
+# Lane routing (ADR-0008): this is the DEFAULT lane for ordinary tier-2 diffs.
+# On a diff that requires the Codex lane (risk surfaces, or a classification the
+# gate could not read) it still runs and still mints its receipt, but announces
+# itself as a SUPPLEMENTARY lane — review-receipt.py check refuses a receipt
+# whose lane ranks below the required one, so shipping such a diff needs
+# codex-review-gate.sh. Exit 3 is what review-and-push.sh treats as "this lane
+# could not run" and falls back to Codex for; exit 2 never falls back.
 
 set -euo pipefail
 
@@ -278,6 +286,24 @@ if [[ "$GATE_TIER" -eq 1 ]]; then
   green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
   echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
   exit 0
+fi
+
+# ─── Supplementary lane (ADR-0008) ─────────────────────────────
+# A codex-required diff — a risk surface, or one the classifier could not read —
+# cannot ship on an Antigravity receipt: review-receipt.py check refuses a lane
+# below the required one. The review still runs and still mints its receipt,
+# because an independent-lineage second opinion is worth having (and is what a
+# Codex-family implementer needs for cross-family review). It is supplementary
+# evidence, not the shipping gate. Say so rather than let the receipt imply it.
+if [[ "$GATE_REQUIRED_LANE" == codex ]]; then
+  yellow "⚠ supplementary lane: this diff requires the Codex lane."
+  yellow "  Reason: $GATE_TIER_REASON"
+  if [[ -n "$GATE_RISK_PATHS" ]]; then
+    yellow "  Risk surfaces:"
+    sed 's/^/    /' <<<"$GATE_RISK_PATHS"
+  fi
+  yellow "  This receipt is a second opinion; it will NOT satisfy the pre-push"
+  yellow "  receipt check. Run codex-review-gate.sh --require to ship (ADR-0008)."
 fi
 
 # ─── Step 3: local validation before dispatch ────────────────────────────

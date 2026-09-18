@@ -3,8 +3,10 @@
 # Builds throwaway git repos under mktemp and drives only the pre-push
 # checkpoints, so nothing here runs tests, spends review quota, or pushes:
 # every case is expected to be refused before the remote is ever contacted.
-# Covers #401 (inherited Git routing must fail closed) and #402 (executable-bit
-# drift must be detected when core.fileMode=false hides it from git status).
+# Covers #401 (inherited Git routing must fail closed), #402 (executable-bit
+# drift must be detected when core.fileMode=false hides it from git status), and
+# ADR-0008 lane routing (which gate a classified diff dispatches, and what the
+# degraded-Antigravity fallback does).
 # Run directly; exit 1 on any failure. Mirrors antigravity-review-gate.test.sh.
 set -uo pipefail
 
@@ -266,6 +268,196 @@ run GIT_WORK_TREE=/nonexistent/routed
 want_refusal "routing is reported first" "$ROUTING_MSG"
 want_absent "tree inspection is skipped when routing is refused" "$MODE_MSG"
 rm -rf "$R"
+
+# ── ADR-0008: lane routing dispatches exactly one gate ────────────────
+# These cases need the run to reach step 3, so each fixture carries a real bare
+# origin (check_destination runs before the gate). The two gates are replaced by
+# recording fakes through a scripts directory whose review-and-push.sh is a
+# SYMLINK to the real script: SCRIPT_DIR is derived with dirname, not readlink,
+# so the production script resolves its siblings here with no test hook in it.
+# Nothing mints a receipt, so every run still stops at the pre-push receipt
+# check — what each case asserts is which gate was dispatched, and with what.
+LANE_DIR=""
+ORIGIN=""
+GATE_LOG=""
+
+make_lane_scripts() {
+  LANE_DIR="$(mktemp -d)"
+  GATE_LOG="$LANE_DIR/gates.log"
+  : > "$GATE_LOG"
+  ln -s "$SCRIPT" "$LANE_DIR/review-and-push.sh"
+  ln -s "$SCRIPT_DIR/../common.sh" "$LANE_DIR/common.sh"
+  ln -s "$SCRIPT_DIR/../gate-lib.sh" "$LANE_DIR/gate-lib.sh"
+  ln -s "$SCRIPT_DIR/../review-receipt.py" "$LANE_DIR/review-receipt.py"
+  # Written without ${var^^} or other bash-4 forms: the suite has to run on the
+  # macOS bash 3.2 floor too.
+  cat > "$LANE_DIR/antigravity-review-gate.sh" <<EOF
+#!/usr/bin/env bash
+printf 'antigravity %s\n' "\$*" >> "$GATE_LOG"
+exit "\${FAKE_AGY_RC:-0}"
+EOF
+  cat > "$LANE_DIR/codex-review-gate.sh" <<EOF
+#!/usr/bin/env bash
+printf 'codex %s\n' "\$*" >> "$GATE_LOG"
+exit "\${FAKE_CODEX_RC:-0}"
+EOF
+  chmod +x "$LANE_DIR/antigravity-review-gate.sh" "$LANE_DIR/codex-review-gate.sh"
+}
+
+# new_lane_repo <changed path> — a repo on `feature` with a pushable bare origin
+# and one committed change at <changed path>, which is what the lane classifier
+# reads.
+new_lane_repo() {
+  local path="$1"
+  make_lane_scripts
+  R="$(mktemp -d)"
+  ORIGIN="$(mktemp -d)"
+  git -C "$ORIGIN" init -q --bare -b main
+  git -C "$R" init -q -b main
+  git -C "$R" config user.email t@t.test
+  git -C "$R" config user.name test
+  git -C "$R" config core.fileMode true
+  echo "base line" > "$R/code.txt"
+  git -C "$R" add code.txt
+  git -C "$R" commit -qm init
+  git -C "$R" remote add origin "$ORIGIN"
+  git -C "$R" push -q origin main
+  git -C "$R" checkout -qb feature
+  mkdir -p "$R/$(dirname "$path")"
+  printf 'lane fixture change\n' > "$R/$path"
+  git -C "$R" add -- "$path"
+  git -C "$R" commit -qm "lane fixture"
+}
+
+clean_lane_repo() {
+  rm -rf "$R" "$ORIGIN" "$LANE_DIR"
+}
+
+# run_lane [env assignments...] — invoke the symlinked script on $R.
+run_lane() {
+  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM "$@" \
+    "$LANE_DIR/review-and-push.sh" "$R" --auto-push </dev/null 2>&1)"
+  RC=$?
+}
+
+# want_gates <name> <expected gate log> — the dispatched gates, in order.
+want_gates() {
+  local name="$1" want="$2" got
+  got="$(cat "$GATE_LOG")"
+  if [[ "$got" == "$want" ]]; then
+    pass=$((pass + 1))
+    echo "ok   - $name"
+  else
+    failed=$((failed + 1))
+    echo "FAIL - $name"
+    echo "      | want: ${want:-<none>}"
+    echo "      | got:  ${got:-<none>}"
+    sed 's/^/      | /' <<<"$OUT"
+  fi
+}
+
+AGY_GATE="antigravity --require --committed"
+CODEX_GATE="codex --require --committed"
+
+# A baseline check that the fixture really reaches step 3, so every "only gate X
+# ran" assertion below is evidence about routing rather than about an early exit.
+new_lane_repo widget.ts
+run_lane
+want_gates "an ordinary tier-2 diff dispatches only the Antigravity gate" "$AGY_GATE"
+assert "the ordinary run names the antigravity lane" \
+  "grep -qF -- 'Review lane: antigravity (required: antigravity)' <<<\"\$OUT\""
+want_refusal "no receipt means the push is still refused" "no valid committed review receipt"
+clean_lane_repo
+
+# A risk surface keeps the Codex gate. claude/scripts/* is on the dotfiles risk
+# list, which ADR-0008 deliberately does not narrow.
+new_lane_repo claude/scripts/tool.sh
+run_lane
+want_gates "a risk-surface diff dispatches only the Codex gate" "$CODEX_GATE"
+assert "the risk run names the codex lane" \
+  "grep -qF -- 'Review lane: codex (required: codex)' <<<\"\$OUT\""
+clean_lane_repo
+
+# Tier 1 needs no reviewer at all; the exemption receipt still has to come from
+# somewhere, so the cheapest gate runs and its tier valve mints it.
+new_lane_repo notes.md
+run_lane
+want_gates "a tier-1 diff dispatches the cheapest gate only" "$AGY_GATE"
+assert "the tier-1 run says no reviewer dispatch is required" \
+  "grep -qF -- 'Review lane: none required (tier-1 diff)' <<<\"\$OUT\""
+clean_lane_repo
+
+# ── Degraded Antigravity (exit 3) falls back; a verdict (exit 2) does not ──
+new_lane_repo widget.ts
+run_lane FAKE_AGY_RC=3
+want_gates "a degraded Antigravity gate falls back to Codex" "$AGY_GATE
+$CODEX_GATE"
+assert "the fallback is announced" \
+  "grep -qF -- 'falling back to the Codex lane' <<<\"\$OUT\""
+clean_lane_repo
+
+new_lane_repo widget.ts
+run_lane FAKE_AGY_RC=3 REVIEW_LANE_FALLBACK=block
+want_gates "REVIEW_LANE_FALLBACK=block refuses instead of falling back" "$AGY_GATE"
+want_refusal "the block refusal names the setting" "REVIEW_LANE_FALLBACK=block"
+clean_lane_repo
+
+new_lane_repo widget.ts
+run_lane FAKE_AGY_RC=2
+want_gates "blocking findings (exit 2) never fall back to Codex" "$AGY_GATE"
+assert "an exit-2 verdict propagates" "[ \"\$RC\" -eq 2 ]"
+assert "an exit-2 verdict is not announced as a fallback" \
+  "! grep -qF -- 'falling back' <<<\"\$OUT\""
+clean_lane_repo
+
+# A Codex-lane failure has no fallback of its own — there is no stronger lane.
+new_lane_repo claude/scripts/tool.sh
+run_lane FAKE_CODEX_RC=3
+want_gates "a degraded Codex gate does not fall back to Antigravity" "$CODEX_GATE"
+assert "a degraded Codex gate propagates its exit status" "[ \"\$RC\" -eq 3 ]"
+clean_lane_repo
+
+# ── REVIEW_LANE overrides: escalation allowed, downgrade refused ──────
+new_lane_repo widget.ts
+run_lane REVIEW_LANE=codex
+want_gates "REVIEW_LANE=codex escalates an ordinary diff" "$CODEX_GATE"
+clean_lane_repo
+
+new_lane_repo claude/scripts/tool.sh
+run_lane REVIEW_LANE=antigravity
+want_gates "REVIEW_LANE=antigravity dispatches no gate on a risk diff" ""
+want_refusal "the downgrade refusal names the required lane" "requires the Codex lane"
+clean_lane_repo
+
+new_lane_repo widget.ts
+run_lane REVIEW_LANE=nonsense
+want_gates "an unknown REVIEW_LANE dispatches no gate" ""
+want_refusal "an unknown REVIEW_LANE is refused" "REVIEW_LANE must be auto, codex, or antigravity"
+clean_lane_repo
+
+# Regression: the wrapper's own bookkeeping variables must not be re-exported
+# into the gate's environment. A bare `GATE_RC` in the wrapper silently
+# overwrote a caller-exported GATE_RC (bash keeps an imported name exported), so
+# a gate that was told to fail exited 0 and the guard passed for the wrong
+# reason. This fake reads GATE_RC the way the shipping fixtures' gate does.
+new_lane_repo widget.ts
+cat > "$LANE_DIR/antigravity-review-gate.sh" <<EOF
+#!/usr/bin/env bash
+printf 'antigravity %s\n' "\$*" >> "$GATE_LOG"
+exit "\${GATE_RC:-0}"
+EOF
+chmod +x "$LANE_DIR/antigravity-review-gate.sh"
+run_lane GATE_RC=2
+want_gates "a caller-exported GATE_RC still reaches the gate" "$AGY_GATE"
+assert "the gate's GATE_RC exit status is propagated" "[ \"\$RC\" -eq 2 ]"
+clean_lane_repo
+
+new_lane_repo widget.ts
+run_lane REVIEW_LANE_FALLBACK=nonsense
+want_gates "an unknown REVIEW_LANE_FALLBACK dispatches no gate" ""
+want_refusal "an unknown REVIEW_LANE_FALLBACK is refused" "REVIEW_LANE_FALLBACK must be codex or block"
+clean_lane_repo
+
 
 rm -rf "$FAKE_HOME"
 echo "$pass passed, $failed failed"

@@ -88,6 +88,10 @@ gate_record_pass() {
   [[ -z "${GATE_REQUESTED_MODEL:-}" ]] || args+=(--requested-model "$GATE_REQUESTED_MODEL")
   [[ -z "${GATE_OBSERVED_MODEL:-}" ]] || args+=(--observed-model "$GATE_OBSERVED_MODEL")
   [[ -z "${GATE_MODEL_EVIDENCE:-}" ]] || args+=(--model-evidence "$GATE_MODEL_EVIDENCE")
+  # Lane-ledger annotation only (ADR-0008); it never affects receipt validity.
+  # review-and-push.sh sets it when a degraded Antigravity gate handed this diff
+  # to Codex, so `review-receipt.py stats` can count the fallbacks.
+  [[ -z "${REVIEW_LANE_NOTE:-}" ]] || args+=(--note "$REVIEW_LANE_NOTE")
   python3 "$RECEIPT_HELPER" "${args[@]}" || exit 2
 }
 
@@ -111,9 +115,16 @@ gate_fence() {
 # A reduced pass must use the same captured policy as receipt validation.
 # Classification errors keep the full pass; only validated helper output
 # can select a docs-only exemption.
+# GATE_REQUIRED_LANE is the weakest lane allowed to ship the diff (ADR-0008)
+# and GATE_RISK_PATHS the risk surfaces that forced it, one per line. Both
+# default to the strongest answer: every path out of this function that could
+# not read a validated classification leaves GATE_REQUIRED_LANE=codex, so a
+# malformed classifier can only ever over-require review, never under-require it.
 gate_classify_tier() {
   GATE_TIER=2
   GATE_TIER_REASON="full pass (default)"
+  GATE_REQUIRED_LANE=codex
+  GATE_RISK_PATHS=""
   if [[ "${GATE_FORCE_FULL:-0}" == "1" ]]; then
     GATE_TIER_REASON="full pass (GATE_FORCE_FULL=1)"
     return 0
@@ -123,8 +134,13 @@ gate_classify_tier() {
     GATE_TIER_REASON="full pass (artifact classification failed)"
     return 0
   fi
+  # A tier-2 diff may never carry required_lane "any": that pairing would let a
+  # tier-1 exemption receipt ship work the valve sent to a full review.
   if ! jq -se 'length == 1 and (.[0] | type == "object" and
-      (.tier == 1 or .tier == 2) and (.reason | type == "string"))' \
+      (.tier == 1 or .tier == 2) and (.reason | type == "string") and
+      (.required_lane == "any" or .required_lane == "antigravity" or .required_lane == "codex") and
+      (.tier == 1 or .required_lane != "any") and
+      (.risk_paths | type == "array") and (.risk_paths | map(type) | all(. == "string")))' \
       <<< "$classification" >/dev/null 2>&1; then
     GATE_TIER_REASON="full pass (invalid artifact classification)"
     return 0
@@ -133,6 +149,55 @@ gate_classify_tier() {
   GATE_TIER="$(jq -r '.tier' <<< "$classification")"
   # shellcheck disable=SC2034
   GATE_TIER_REASON="$(jq -r '.reason' <<< "$classification")"
+  # shellcheck disable=SC2034  # Read by the sourcing gates and review-and-push.sh.
+  GATE_REQUIRED_LANE="$(jq -r '.required_lane' <<< "$classification")"
+  # shellcheck disable=SC2034
+  GATE_RISK_PATHS="$(jq -r '.risk_paths[]' <<< "$classification")"
+  return 0
+}
+
+# ─── Lane selection (ADR-0008) ─────────────────────────────────
+# gate_select_lane <required-lane> — print the lane to dispatch:
+#   codex        the diff requires the Codex lane, or REVIEW_LANE=codex
+#   antigravity  ordinary tier-2 work, or REVIEW_LANE=antigravity where allowed
+#   skip         tier 1 (required lane "any"): no reviewer needs to be
+#                dispatched at all. A caller that still needs shipping evidence
+#                runs the cheapest gate, whose tier-1 valve mints the exemption
+#                receipt without spending any model quota.
+# Returns 1 (with a reason on stdout/stderr) on an unusable request. The one
+# asymmetry is deliberate: REVIEW_LANE=antigravity on a codex-required diff is
+# REFUSED rather than honoured, because that request is exactly the downgrade
+# the required lane exists to prevent. Escalation (REVIEW_LANE=codex on an
+# ordinary diff) is always allowed.
+gate_select_lane() {
+  local required="${1:-}" requested="${REVIEW_LANE:-auto}"
+  # Refusals go to stderr: callers read the chosen lane from stdout.
+  case "$required" in
+    any|antigravity|codex) ;;
+    *) red "✖ gate_select_lane: unknown required lane '$required'." >&2; return 1 ;;
+  esac
+  case "$requested" in
+    auto) ;;
+    codex) printf 'codex\n'; return 0 ;;
+    antigravity)
+      if [[ "$required" == codex ]]; then
+        red "✖ REVIEW_LANE=antigravity refused: this diff requires the Codex lane." >&2
+        red "  A risk-surface diff is never downgradable (ADR-0008); unset REVIEW_LANE." >&2
+        return 1
+      fi
+      printf 'antigravity\n'
+      return 0
+      ;;
+    *)
+      red "✖ REVIEW_LANE must be auto, codex, or antigravity (got '$requested')." >&2
+      return 1
+      ;;
+  esac
+  case "$required" in
+    any)         printf 'skip\n' ;;
+    antigravity) printf 'antigravity\n' ;;
+    codex)       printf 'codex\n' ;;
+  esac
   return 0
 }
 

@@ -77,6 +77,8 @@ unset ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF
 unset ANTIGRAVITY_GATE_MODEL
 unset GATE_FORCE_FULL
 unset GATE_TIER1_MAX_LINES
+unset REVIEW_LANE
+unset REVIEW_LANE_NOTE
 
 new_repo() {
   R="$(mktemp -d)"
@@ -522,6 +524,33 @@ new_repo
 printf 'notes about rotation\n' > "$R/token-rotation.md"
 printf -- '- [P1] Broken thing — token-rotation.md:1\n' > "$AGY_FAKE_DIR/output"
 check "risk-surface filename escalates to the full pass (and still blocks)" 2 "BLOCKING findings" --uncommitted
+rm -rf "$R"
+
+# ── ADR-0008: supplementary lane on a codex-required diff ─────────────
+# The gate must still run, still mint its receipt, and say the receipt cannot
+# ship the diff. Silently minting a receipt here is the fail-open ADR-0008 closes.
+new_repo
+printf 'notes about hosts\n' > "$R/hostnames.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "codex-required diff announces the supplementary lane" 0 "supplementary lane" --uncommitted
+assert "supplementary run still dispatches the review" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+assert "supplementary run still mints an antigravity receipt" \
+  "[ -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "the supplementary receipt records the codex requirement" \
+  "grep -qF '\"required_lane\":\"codex\"' '$R/.git/review-receipts/antigravity.json'"
+# And the receipt is refused for shipping, which is the whole point of saying so.
+assert "the supplementary receipt cannot ship the diff" \
+  "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer antigravity >/dev/null 2>&1"
+rm -rf "$R"
+
+# An ordinary tier-2 diff is this lane's own work: no supplementary warning.
+new_repo
+printf 'ordinary change\n' > "$R/widget.ts"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "ordinary tier-2 diff is reviewed as the primary lane" 0 "LGTB verdict" --uncommitted
+assert "ordinary diff carries no supplementary warning" \
+  "! (cd '$R' && '$GATE' --uncommitted 2>&1 | grep -qF 'supplementary lane')"
 rm -rf "$R"
 
 new_repo
@@ -1010,7 +1039,11 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
     check "$source_instruction requires alternate review" 0 "LGTB verdict" --committed --require
   fi
   assert "source instruction reaches alternate reviewer" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
-  assert "source instruction receives reviewed alternate evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  # ADR-0008: the review really happened and the receipt is complete, but an
+  # instruction surface is codex-required, so this receipt cannot ship the diff.
+  assert "source instruction receives reviewed alternate evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  assert "source instruction records the codex lane requirement" "jq -e '.classification.required_lane == \"codex\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  assert "alternate evidence alone cannot ship a source instruction" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
 done
 
@@ -1045,7 +1078,10 @@ for instruction in .claude/commands/check.md .gemini/commands/check.md .agents/e
     check "committed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
   fi
   assert "agent document reaches alternate reviewer" "grep -q 'AGENT_DOCUMENT_MARKER' '$AGY_FAKE_DIR/stdin'"
-  assert "agent document receives valid alternate receipt" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  assert "agent document receives a completed alternate receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  # ADR-0008: agent-document diffs are codex-required; the Antigravity receipt
+  # is a supplementary second opinion and is refused as shipping evidence.
+  assert "alternate evidence alone cannot ship an agent document" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
 done
 

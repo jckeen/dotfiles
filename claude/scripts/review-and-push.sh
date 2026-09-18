@@ -1,13 +1,33 @@
 #!/usr/bin/env bash
 # review-and-push.sh — Review overnight changes, then push if safe
-# Uses the required Codex gate and validates its receipt immediately before push.
+# Routes the committed delta to the required review lane and validates the
+# resulting receipt immediately before push.
 #
 # Flow:
 #   1. Require a clean working tree and pin the commit to review
 #   2. Run tests — STOP if they fail
-#   3. Run the required Codex review gate on the committed delta
+#   3. Classify the committed delta and run the REQUIRED lane's gate on it
 #   4. Prompt to push (or accept --auto-push)
 #   5. Validate the current review receipt, then push
+#
+# Lane routing (ADR-0008): `review-receipt.py lane` classifies the committed
+# delta and gate_select_lane picks the gate. Ordinary tier-2 work goes to the
+# Antigravity gate; a risk surface keeps the Codex gate and is never
+# downgradable; a tier-1 diff needs no reviewer dispatch and collects its
+# exemption receipt through the cheapest lane. The receipt check at step 5 names
+# the lane that was dispatched rather than a hardcoded one: review-receipt.py
+# refuses any receipt whose lane ranks below what the diff requires, and naming
+# the dispatched lane additionally requires the review this run performed to
+# still be approved.
+#
+# Environment:
+#   REVIEW_LANE=auto|codex|antigravity   override the lane (auto is the default;
+#     `antigravity` on a codex-required diff is REFUSED, not honoured).
+#   REVIEW_LANE_FALLBACK=codex|block     what to do when the Antigravity gate
+#     exits 3 (could not run: agy missing, byte/line cap, unverifiable model
+#     pin). Default `codex` re-runs the diff through the Codex gate and records
+#     the degradation in the lane ledger; `block` refuses the push instead.
+#     A blocking verdict (exit 2) never falls back — a refusal is not an outage.
 #
 # Usage:
 #   review-and-push.sh /path/to/repo              # interactive (prompts before push)
@@ -22,6 +42,9 @@ SCRIPT_DIR="$(cd -- "$SCRIPT_DIR" && pwd && printf .)" || exit 1
 SCRIPT_DIR=${SCRIPT_DIR%$'\n.'}
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# Lane selection is shared with both gates (ADR-0008).
+# shellcheck source=gate-lib.sh
+source "$SCRIPT_DIR/gate-lib.sh"
 
 AUTO_PUSH=false
 
@@ -347,7 +370,69 @@ echo ""
 # ─── Step 3: Review the committed artifact ──────────────────────
 
 check_review_target
-"$SCRIPT_DIR/codex-review-gate.sh" --require --committed
+
+REVIEW_LANE_FALLBACK="${REVIEW_LANE_FALLBACK:-codex}"
+case "$REVIEW_LANE_FALLBACK" in
+  codex|block) ;;
+  *)
+    echo "error: REVIEW_LANE_FALLBACK must be codex or block (got '$REVIEW_LANE_FALLBACK')." >&2
+    exit 1
+    ;;
+esac
+
+# `lane` is read-only — it mints nothing, so classifying here cannot invalidate
+# a receipt, and a classification failure stops the run rather than guessing.
+if ! LANE_JSON=$(python3 "$SCRIPT_DIR/review-receipt.py" lane --repo "$REPO_DIR" --scope committed); then
+  echo "Cannot classify the committed delta; not reviewing or pushing." >&2
+  exit 1
+fi
+if ! REQUIRED_LANE=$(printf '%s' "$LANE_JSON" |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["required_lane"])'); then
+  echo "Cannot read the lane classification; not reviewing or pushing." >&2
+  exit 1
+fi
+DISPATCH_LANE=$(gate_select_lane "$REQUIRED_LANE") || exit 1
+
+run_review_gate() {
+  case "$1" in
+    codex)       "$SCRIPT_DIR/codex-review-gate.sh" --require --committed ;;
+    antigravity) "$SCRIPT_DIR/antigravity-review-gate.sh" --require --committed ;;
+    *)           echo "error: unknown review lane '$1'." >&2; return 1 ;;
+  esac
+}
+
+if [[ "$DISPATCH_LANE" == skip ]]; then
+  echo "═══ Review lane: none required (tier-1 diff) ═══"
+  echo "Collecting the tier-1 exemption receipt through the Antigravity gate;"
+  echo "its tier valve mints the receipt without dispatching a reviewer."
+  DISPATCH_LANE=antigravity
+else
+  echo "═══ Review lane: $DISPATCH_LANE (required: $REQUIRED_LANE) ═══"
+fi
+
+# Namespaced deliberately: a bare GATE_* name here would be re-exported into
+# the gate's own environment if the caller had one set, silently overriding it.
+REVIEW_GATE_RC=0
+run_review_gate "$DISPATCH_LANE" || REVIEW_GATE_RC=$?
+# Exit 3 means the lane could not run at all — agy missing, a diff above its
+# byte/line cap, an unverifiable model pin. Exit 2 is a verdict (blocking
+# findings, or a verifiably wrong model) and must NEVER fall back: a refusal is
+# not an outage, and re-asking a different reviewer would be verdict shopping.
+if [[ "$REVIEW_GATE_RC" -eq 3 && "$DISPATCH_LANE" == antigravity ]]; then
+  if [[ "$REVIEW_LANE_FALLBACK" == block ]]; then
+    echo "The Antigravity gate could not run (exit 3) and REVIEW_LANE_FALLBACK=block — not pushing." >&2
+    exit 1
+  fi
+  echo "The Antigravity gate could not run (exit 3); falling back to the Codex lane."
+  # Recorded in the lane ledger so `review-receipt.py stats` can count how often
+  # the Gemini lane degrades rather than leaving it invisible.
+  export REVIEW_LANE_NOTE="antigravity-degraded(exit 3): Antigravity gate could not run; reviewed by Codex"
+  check_review_target
+  DISPATCH_LANE=codex
+  REVIEW_GATE_RC=0
+  run_review_gate codex || REVIEW_GATE_RC=$?
+fi
+[[ "$REVIEW_GATE_RC" -eq 0 ]] || exit "$REVIEW_GATE_RC"
 check_review_target
 
 if [[ "$AUTO_PUSH" != "true" ]]; then
@@ -361,6 +446,12 @@ fi
 # The confirmation or another process may have changed the reviewed artifact.
 check_review_target
 check_destination
-python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD" --reviewer codex
+# The lane that was actually dispatched, not a hardcoded one. gate_select_lane
+# only ever returns a lane at or above the requirement, so naming it here
+# enforces the ADR-0008 requirement AND additionally requires the gate this run
+# performed to still be approved: a stronger lane that ran and then lost its
+# approval must not be able to ship on a weaker lane's older receipt.
+python3 "$SCRIPT_DIR/review-receipt.py" check --repo "$REPO_DIR" --head "$REVIEWED_HEAD" \
+  --reviewer "$DISPATCH_LANE"
 git push --no-follow-tags "${PUSH_CREATION_LEASE[@]}" -- "$PUSH_URL" "$REVIEWED_HEAD:$BRANCH_REF"
 echo "Pushed."
