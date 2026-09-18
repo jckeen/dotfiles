@@ -139,6 +139,19 @@ Adopt Jules as the routine lane.
    second copy of that path in the installer could agree with the checkout the
    installer was run from while disagreeing with what systemd will execute.
 
+   A fifth round found four more, one of them the kind only a reviewer reading for
+   exactly this finds: `JULES_DAILY_CAP=08` disabled the cap entirely, because
+   bash reads a leading zero as octal inside `[[ -ge ]]`, the comparison errors,
+   and an errored test is a false one — so every candidate dispatched. Verified
+   locally before fixing. Leading zeros are now rejected wherever a value reaches
+   an arithmetic comparison, including `max_files` and `max_prs_per_run`. A run
+   that crosses UTC midnight stops instead of recording against the previous day
+   and spending its budget. A missing `flock(1)` now falls back to an atomic lock
+   directory rather than running unserialized behind a warning, because a warning
+   is not a guarantee. And `--report` says when its fetch hit the bound, since the
+   bound is applied before the date window and the retirement rule is decided on
+   those numbers.
+
    A fourth round closed the last two gaps. The ledger is now write-ahead: a
    record goes in *before* the request and is upgraded after it, because a POST
    that creates a session and then times out is indistinguishable from one that

@@ -133,7 +133,14 @@ outgrep() { grep -Fq -- "$1" "$CASE_DIR/out"; }
 # A dispatch writes two ledger lines (write-ahead "attempted", then "created"),
 # so counts are over records. Lines seeded by ledger_below carry no status and
 # stand for a completed past dispatch, which is why the default is "created".
-ledger_jq() { jq -s "$@" "$STATE/dispatch.jsonl" 2>/dev/null || printf '0'; }
+# Guard on the file rather than falling back on jq's exit status: jq 1.7 with -s
+# on a missing file BOTH prints a result for the empty slurp and exits non-zero,
+# so a `|| printf 0` fallback appends a second value and every numeric comparison
+# using it becomes a syntax error.
+ledger_jq() {
+  [[ -s "$STATE/dispatch.jsonl" ]] || { printf '0'; return 0; }
+  jq -s "$@" "$STATE/dispatch.jsonl"
+}
 created_count() { ledger_jq '[.[] | select((.status // "created") == "created")] | length'; }
 created_routine() {
   ledger_jq --arg r "$1" '[.[] | select(.routine == $r and ((.status // "created") == "created"))] | length'
@@ -616,18 +623,39 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
-# Where flock is unavailable the run must say the serialization is missing rather
-# than imply one it does not have.
+# Where flock is unavailable the run must still be serialized: a warning is not a
+# guarantee, and two concurrent runs would read the same ledger and both
+# dispatch. The fallback is an atomic mkdir, with no staleness logic — reclaiming
+# is the race the flock was adopted to avoid.
+noflock() {
+  JULES_FLOCK=jules-no-such-flock-binary JULES_API_KEY_FILE="$KEY" \
+    JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" JULES_DAILY_CAP="${CAP:-40}" \
+    "$DISPATCH" > "$CASE_DIR/out" 2>&1
+}
+
 new_case
 routine alpha false 'repos: all'
-if JULES_FLOCK=jules-no-such-flock-binary JULES_API_KEY_FILE="$KEY" \
-     JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
-     "$DISPATCH" > "$CASE_DIR/out" 2>&1 \
-   && outgrep "flock not found — this run is NOT serialized" \
-   && [[ "$(jq -r '.serialized' "$STATE/status.json")" == "false" ]]; then
-  ok "an unavailable flock is reported, and status.json says the run was not serialized"
+if noflock \
+   && outgrep "serialized with a lock directory instead" \
+   && [[ "$(jq -r '.serialized' "$STATE/status.json")" == "true" ]] \
+   && [[ "$(created_count)" -eq 2 ]] \
+   && [[ ! -e "$STATE/dispatch.lock.d" ]]; then
+  ok "without flock the run serializes on a lock directory and releases it"
 else
-  fail "a missing flock was silently ignored"
+  fail "the flock fallback did not serialize"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A held fallback directory must stop a second run, exactly as the flock does.
+new_case
+routine alpha false 'repos: all'
+mkdir -p "$STATE/dispatch.lock.d"
+if noflock && outgrep "another dispatch already holds" \
+   && [[ "$(created_count)" -eq 0 ]] \
+   && [[ -d "$STATE/dispatch.lock.d" ]]; then
+  ok "a held fallback lock directory stops the run and is not stolen"
+else
+  fail "the fallback lock did not exclude a second run"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
@@ -868,6 +896,43 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
+echo "── fifth review round ──"
+
+# [medium] bash reads "08" as octal inside [[ -ge ]], the test errors, and an
+# errored test is a false one — so the cap stopped applying entirely.
+new_case
+routine alpha false 'repos: all'
+if ! CAP=08 dispatch && outgrep "no leading zeros"; then
+  ok "a cap with a leading zero is refused instead of silently disabling the cap"
+else
+  fail "a leading-zero cap was accepted"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos: all'
+if CAP=08 dispatch; then
+  fail "a leading-zero cap still dispatched"
+elif [[ "$(created_count)" -eq 0 ]]; then
+  ok "a refused cap creates nothing at all"
+else
+  fail "a refused cap still created sessions"
+fi
+
+# The same class in the frontmatter, which also reaches an arithmetic comparison.
+bad_case "a max_files with a leading zero is rejected" \
+  "${VALID/max_files: 2/max_files: 08}" "no leading zeros"
+
+new_case
+routine alpha false 'repos: all'
+if ! JULES_REPORT_LIMIT=0 JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+       "$DISPATCH" --report > "$CASE_DIR/out" 2>&1 \
+   && outgrep "JULES_REPORT_LIMIT must be a positive integer"; then
+  ok "a zero report limit is refused"
+else
+  fail "a zero report limit was accepted"
+fi
+
 echo "── --report ──"
 
 # gh is stubbed, so the assertion is on the bucketing and the arithmetic, not on
@@ -926,6 +991,38 @@ if [[ ! -s "$FAKE_CURL_ARGV" ]]; then
 else
   fail "--report called the API"
   sed 's/^/      | /' "$FAKE_CURL_ARGV"
+fi
+
+# [medium] the fetch bound is applied before the date window, so a busy routine
+# reported partial counts — and the retirement rule is decided on these numbers.
+# The stub returns three PRs, so a bound of three is a hit.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     JULES_REPORT_LIMIT=3 "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && outgrep "These counts are incomplete." \
+   && outgrep "jckeen/dotfiles (jules-routine:alpha)"; then
+  ok "a report that hit its fetch bound says the counts are incomplete"
+else
+  fail "a truncated report looked authoritative"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+     "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
+   && ! outgrep "These counts are incomplete."; then
+  ok "a report inside its bound carries no truncation warning"
+else
+  fail "an untruncated report warned anyway"
+  sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
 new_case

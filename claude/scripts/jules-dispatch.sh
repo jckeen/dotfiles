@@ -33,6 +33,8 @@
 #   JULES_TRACKER       owner/name#issue for --post (default jckeen/dotfiles#446)
 #   JULES_FLOCK         flock(1) to use (default flock); a test seam for the
 #                       branch taken when flock is unavailable
+#   JULES_REPORT_LIMIT  --report pull-request fetch bound (default 1000); the
+#                       report says so when a repository hits it
 #
 # State (all under JULES_STATE_DIR):
 #   dispatch.jsonl   one line per created session — the idempotency ledger
@@ -68,6 +70,7 @@ DAILY_CAP="${JULES_DAILY_CAP:-40}"
 ROUTINE_DIR="${JULES_ROUTINE_DIR:-$REPO_ROOT/agents/routines}"
 STARTING_BRANCH="${JULES_STARTING_BRANCH:-}"
 TRACKER="${JULES_TRACKER:-jckeen/dotfiles#446}"
+REPORT_LIMIT="${JULES_REPORT_LIMIT:-1000}"
 
 DRY_RUN=0
 ONLY_ROUTINE=""
@@ -129,11 +132,19 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-[[ "$REPORT_DAYS" =~ ^[1-9][0-9]*$ ]] || die "--days must be a positive integer"
+[[ "$REPORT_DAYS" =~ ^[1-9][0-9]*$ ]] \
+  || die "--days must be a positive integer with no leading zeros, got: $REPORT_DAYS"
 [[ -n "$ONLY_REPO" && ! "$ONLY_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
   && die "--repo must be OWNER/NAME, got: $ONLY_REPO"
 [[ "$POST" -eq 1 && "$MODE" != "report" ]] && die "--post only applies to --report"
-[[ "$DAILY_CAP" =~ ^[0-9]+$ ]] || die "JULES_DAILY_CAP must be a non-negative integer"
+# No leading zeros: bash reads "08" as octal inside [[ -ge ]], the comparison
+# errors out, and an errored test is a false one — so the cap silently stopped
+# applying and every candidate dispatched. Verified: `[[ 100 -ge 08 ]]` exits 1
+# with "value too great for base".
+[[ "$REPORT_LIMIT" =~ ^[1-9][0-9]*$ ]] \
+  || die "JULES_REPORT_LIMIT must be a positive integer with no leading zeros, got: $REPORT_LIMIT"
+[[ "$DAILY_CAP" =~ ^(0|[1-9][0-9]*)$ ]] \
+  || die "JULES_DAILY_CAP must be a non-negative integer with no leading zeros, got: $DAILY_CAP"
 [[ -d "$ROUTINE_DIR" ]] || die "routine catalog not found: $ROUTINE_DIR"
 
 # An empty selection must not look like a successful run that found no work.
@@ -232,8 +243,10 @@ parse_routine() {
   [[ "$FM_NAME" == "$stem" ]] || { fm_fail "$file" "name '$FM_NAME' does not match the filename"; return 1; }
   [[ "$FM_SCHEDULE" == "daily" || "$FM_SCHEDULE" == "weekly" ]] \
     || { fm_fail "$file" "schedule must be 'daily' or 'weekly', got '$FM_SCHEDULE'"; return 1; }
-  [[ "$FM_MAX_PRS" =~ ^[1-9][0-9]*$ ]] || { fm_fail "$file" "max_prs_per_run must be a positive integer"; return 1; }
-  [[ "$FM_MAX_FILES" =~ ^[1-9][0-9]*$ ]] || { fm_fail "$file" "max_files must be a positive integer"; return 1; }
+  # Leading zeros excluded by the [1-9] anchor: these values reach arithmetic
+  # comparisons, where bash reads a leading zero as octal and errors.
+  [[ "$FM_MAX_PRS" =~ ^[1-9][0-9]*$ ]] || { fm_fail "$file" "max_prs_per_run must be a positive integer with no leading zeros"; return 1; }
+  [[ "$FM_MAX_FILES" =~ ^[1-9][0-9]*$ ]] || { fm_fail "$file" "max_files must be a positive integer with no leading zeros"; return 1; }
   [[ "$FM_LABEL" == "jules-routine:$FM_NAME" ]] \
     || { fm_fail "$file" "label must be 'jules-routine:$FM_NAME', got '$FM_LABEL'"; return 1; }
   [[ -n "$FM_ACCEPTANCE" ]] || { fm_fail "$file" "acceptance must not be empty"; return 1; }
@@ -436,13 +449,15 @@ ledger_repos() { # distinct repos ever dispatched to
 EVENTS_FILE="$(mktemp)"
 BODY_FILE=""
 LOCK_HELD=0
+LOCK_FALLBACK_DIR=""
 # Test seam: lets the suite exercise the flock-absent branch on a machine that
 # has flock. Locking only; it reaches no credential and no URL.
 FLOCK_BIN="${JULES_FLOCK:-flock}"
 # `exit` stays last so the trap preserves the original exit status. The flock is
 # released by the kernel when this process exits; the lock file itself stays, as
 # an empty file is the lock's identity and nothing reads its contents.
-trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; exit' EXIT
+# Only the process that created the fallback directory ever removes it.
+trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; [[ -n "$LOCK_FALLBACK_DIR" ]] && rmdir "$LOCK_FALLBACK_DIR" 2>/dev/null; exit' EXIT
 
 # Serialize the critical section — reading the ledger, deciding eligibility,
 # creating a session, recording it — so a manual run overlapping the 09:00 timer
@@ -459,15 +474,29 @@ trap 'rm -f "$EVENTS_FILE"; [[ -n "$BODY_FILE" ]] && rm -f "$BODY_FILE"; exit' E
 # says so rather than reporting a serialization it does not have. Fd 9 is a
 # literal, not a {var} allocation, so this parses under bash 3.2.
 LOCK_FILE=""
+LOCK_FALLBACK_DIR=""
 acquire_lock() {
   LOCK_FILE="$STATE_DIR/dispatch.lock"
-  if ! command -v "$FLOCK_BIN" >/dev/null 2>&1; then
-    log "  !! flock not found — this run is NOT serialized against a concurrent dispatch"
+  if command -v "$FLOCK_BIN" >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE" || die "cannot open the dispatch lock: $LOCK_FILE"
+    "$FLOCK_BIN" -n 9 || return 1
+    LOCK_HELD=1
     return 0
   fi
-  exec 9>"$LOCK_FILE" || die "cannot open the dispatch lock: $LOCK_FILE"
-  "$FLOCK_BIN" -n 9 || return 1
+
+  # No flock (macOS): fall back to an atomic mkdir rather than running
+  # unserialized — a warning is not a guarantee, and two concurrent runs would
+  # read the same ledger and both dispatch. Deliberately no staleness logic: a
+  # reclaim is a read-check-replace race, which is what the flock replaced. The
+  # cost is that a SIGKILLed run leaves the directory behind, so the message
+  # names the exact path to remove.
+  if ! mkdir "$STATE_DIR/dispatch.lock.d" 2>/dev/null; then
+    return 1
+  fi
+  LOCK_FALLBACK_DIR="$STATE_DIR/dispatch.lock.d"
   LOCK_HELD=1
+  log "  -- flock not found; serialized with a lock directory instead"
+  log "     If a run was killed, remove $LOCK_FALLBACK_DIR by hand."
   return 0
 }
 
@@ -690,6 +719,19 @@ do_dispatch() {
   while IFS="$(printf '\t')" read -r last_epoch FM_NAME repo source file; do
     [[ -n "$FM_NAME" ]] || continue
 
+    # TODAY and the spend were read once, before the network calls. A run that
+    # crosses UTC midnight would keep recording against yesterday and spending
+    # yesterday's budget, and another run that day could then redispatch those
+    # pairs. Stop instead: the remaining work leads tomorrow's queue anyway,
+    # because ordering is least-recently-dispatched first.
+    if [[ "$(date -u +%Y-%m-%d)" != "$TODAY" ]]; then
+      log "  -- the UTC day rolled over mid-run; stopping so nothing is recorded"
+      log "     against $TODAY. The next run picks up where this one left off."
+      record deferred "$FM_NAME" "$repo" "UTC day rolled over mid-run"
+      DEFERRED=$((DEFERRED + 1))
+      break
+    fi
+
     if [[ "$SPENT" -ge "$DAILY_CAP" ]]; then
       DEFERRED=$((DEFERRED + 1))
       log "  -- $FM_NAME / $repo — daily cap $DAILY_CAP reached; deferred to a later day"
@@ -735,7 +777,7 @@ do_dispatch() {
 # dependence on strftime %G/%V, which not every jq build supports.
 do_report() {
   command -v gh >/dev/null 2>&1 || die "--report needs the GitHub CLI (gh) on PATH"
-  local file repo scope label rows="" prs cutoff
+  local file repo scope label rows="" prs cutoff truncated=""
   cutoff=$((NOW_EPOCH - REPORT_DAYS * 86400))
 
   while IFS= read -r file; do
@@ -752,11 +794,18 @@ do_report() {
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue
       [[ -n "$ONLY_REPO" && "$repo" != "$ONLY_REPO" ]] && continue
-      if ! prs="$(gh pr list --repo "$repo" --state all --limit 200 \
+      if ! prs="$(gh pr list --repo "$repo" --state all --limit "$REPORT_LIMIT" \
             --search "label:$label" --json state,createdAt,mergedAt 2>/dev/null)"; then
         printf 'jules-dispatch: gh pr list failed for %s (label %s)\n' "$repo" "$label" >&2
         FAILURES=$((FAILURES + 1))
         continue
+      fi
+      # The fetch is bounded, and the bound is applied BEFORE the date window, so
+      # a busy routine could silently report partial counts — and the retirement
+      # rule is decided on these numbers. Say so rather than letting a truncated
+      # merge rate look authoritative.
+      if [[ "$(jq -r 'length' <<<"$prs")" -ge "$REPORT_LIMIT" ]]; then
+        truncated="$truncated$repo ($label); "
       fi
       rows="$rows$(jq -r --arg routine "$FM_NAME" --argjson now "$NOW_EPOCH" \
         --argjson cutoff "$cutoff" '
@@ -786,8 +835,13 @@ do_report() {
       }
     }' | { read -r h1; read -r h2; printf '%s\n%s\n' "$h1" "$h2"; sort -t'|' -k2,2 -k3,3n; })"
 
-  printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n\nTuning rule (ADR-0009): a routine whose merge rate stays under 30%% for two\nweeks running gets its prompt rewritten or `paused: true`.\n' \
-    "$REPORT_DAYS" "$NOW_ISO" "$table"
+  local caveat=""
+  if [[ -n "$truncated" ]]; then
+    caveat="$(printf '\n**These counts are incomplete.** The pull request fetch hit its %s-item bound for: %s\nRaise JULES_REPORT_LIMIT or narrow --days before acting on the merge rates.\n' \
+      "$REPORT_LIMIT" "${truncated%; }")"
+  fi
+  printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n%s\nTuning rule (ADR-0009): a routine whose merge rate stays under 30%% for two\nweeks running gets its prompt rewritten or `paused: true`.\n' \
+    "$REPORT_DAYS" "$NOW_ISO" "$table" "$caveat"
 
   if [[ "$POST" -eq 1 ]]; then
     [[ "$TRACKER" =~ ^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)#([0-9]+)$ ]] \
@@ -799,8 +853,8 @@ do_report() {
       [[ "$FAILURES" -eq 0 ]] || exit 1
       return 0
     fi
-    printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n' \
-      "$REPORT_DAYS" "$NOW_ISO" "$table" \
+    printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n%s' \
+      "$REPORT_DAYS" "$NOW_ISO" "$table" "$caveat" \
       | gh issue comment "${BASH_REMATCH[2]}" --repo "${BASH_REMATCH[1]}" --body-file -
   fi
 
