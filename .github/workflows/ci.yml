@@ -401,6 +401,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/git-hygiene-prune.test.sh
 
+      # The first live Jules dispatch needs an API key that only the operator
+      # holds, so the credential refusals, the idempotency ledger, the daily cap
+      # and the --dry-run no-writes contract are pinned against a fake curl.
+      - name: jules-dispatch (self-test)
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/jules-dispatch.test.sh
+
       # SessionStart reminder: deadline-first ordering, past-due flags, and the
       # verified/added freshness rule are pinned against crafted queues.
       - name: released worktree lifecycle (self-test)

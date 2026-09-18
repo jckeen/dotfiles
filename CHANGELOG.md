@@ -47,6 +47,81 @@
   Read the ledger before proposing any change to the risk list.
 - Breaking: every existing receipt is invalidated by the version bump, so the
   first push after this lands needs a fresh gate run.
+## 2026-09-18 — feat: Jules as the daily-routine lane (ADR-0009)
+
+- The standing, evidence-checkable cleanups nobody schedules — dead code, tests
+  that cannot fail, drifted duplicate helpers, lint debt, doc drift — now have a
+  lane. `agents/routines/*.md` holds one standing prompt per routine, six to
+  start, and `claude/scripts/jules-dispatch.sh` turns the catalog into one Jules
+  session per routine per repository per day. Rationale, the API surface verified
+  on the day, and what remains unverified: `docs/adr/0009-jules-routine-lane.md`.
+- Routine frontmatter is a contract, not documentation: the dispatcher parses it
+  strictly and refuses a routine whose header does not validate. `schedule` is
+  enforced, not decorative — a weekly routine runs on the seventh day. The prompt
+  a session receives is the body with the frontmatter's concrete limits
+  prepended, so a routine file never repeats its own limits in prose. An edit
+  made mid-run is honoured: the whole eligibility decision is re-checked before
+  each session, so pausing a routine or dropping a repository stops the ones
+  still queued.
+- Dispatch goes through the REST API, not the `jules` CLI, whose credential
+  location is documented nowhere and so cannot be shown to work under
+  `ProtectHome=read-only`. The key must be a regular file, not a symlink, mode
+  0600, non-empty and at least 20 characters; it reaches `curl` through a config
+  file on stdin so it never enters argv or a log; the variable holding it is
+  unset before assignment so an inherited export cannot carry it into a child's
+  environment. The host is a constant, every request leads with `-q` so a
+  `~/.curlrc` cannot re-enable redirects or tracing, and `-L` is never passed. A
+  repository's `source` is always read back from `GET /sources`, following
+  `nextPageToken`, and never constructed.
+- The ledger is write-ahead — a record before the request, upgraded after it —
+  because a session created by a request that then timed out would otherwise be
+  invisible, dispatched again by the next run and absent from the cap. Anything
+  that can fail locally happens before that record, so a local failure leaves the
+  pair retryable. Unresolved attempts are reported for reconciliation and not
+  retried that day. `JULES_DAILY_CAP` bounds the spend, and the least
+  recently dispatched pair goes first, so the cap defers work to a later day
+  instead of starving the tail of the catalog permanently.
+- New `jules-dispatch.{service,timer}` at 09:00, hardened like
+  `git-hygiene.service`, with the state directory as its only writable path — the
+  key directory is deliberately absent, so the unit reads the credential and can
+  never rewrite it. `claude/systemd/install.sh` is now a loop over a table of
+  unit pairs, and reads the script it validates out of each unit's own
+  `ExecStart` rather than a second copy of the path that could disagree with it.
+- A root `AGENTS.md` joins the generated instruction files (ADR-0007): the short
+  brief an agent reads from the checkout itself when it has no session history.
+  Enforced by the generator's byte-currency check rather than the concept-parity
+  phrase list, because holding a deliberately short cloud brief to every local
+  file's phrases would defeat the reason it is short.
+- `setup.sh` installs the CLI npm-global beside Codex, prints `jules login` as a
+  manual step under `--yes`, and reports `jules_installed`.
+  `agents/capabilities.json` gains `jules` as a fourth runtime — `unsupported`
+  for every locally-provisioned capability, because it installs nothing on this
+  machine — and a `routine-lane` capability where the dispatcher is the provider.
+- Measurement ships with the lane: `--report` tallies opened, merged and closed
+  per routine per week, covering every repository the routine was ever dispatched
+  to rather than only the ones it currently lists, and states in the report body
+  whenever the numbers are partial. The retirement rule is in the ADR and
+  `agents/README.md`.
+- `tests/jules-dispatch.test.sh` drives all of it against a fake `curl` with a
+  pinned clock, so none of it waited on a live key and none of it can fail on a
+  schedule. The independent review and fifteen Codex gate rounds are recorded in
+  the ADR, along with the twenty-eight further issues they found and the
+  categories those fell into. Two lessons are worth carrying out of this repo:
+  three findings were one bash mistake in different dress — a `die` in a process
+  substitution, an assignment in a command substitution, a read nested in a
+  `printf` argument, each running in a subshell whose exit status the caller
+  never saw — and twice a test was deleted rather than shipped because it could
+  not fail, which would have contradicted `useless-test-pruner`, a routine this
+  same change adds.
+- New root `.gitleaksignore` with one audited entry: an earlier commit on the
+  branch carries a test fixture shaped like a Google API key, which the scanner
+  caught correctly. The fixture has been renamed; the entry names the commit and
+  why the match is harmless, and the file's header states that an entry means
+  someone looked, never that the scanner was inconvenient.
+- ADR status is **Proposed**, not Accepted: the first live dispatch needs an API
+  key only the operator holds. The ADR carries the exact commands for it and the
+  list of what that run will resolve.
+
 ## 2026-09-18 — test: Hypothesis property suites and a seeded setup.sh layout fuzzer
 
 - The two pure-logic Python tools had example-based suites only. Hypothesis

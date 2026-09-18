@@ -1,0 +1,42 @@
+[Unit]
+Description=Daily Jules routine dispatch (agents/routines -> jules.googleapis.com)
+Documentation=https://github.com/jckeen/dotfiles
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+ExecStart=%h/dev/dotfiles/claude/scripts/jules-dispatch.sh
+
+# ─── Hardening ───────────────────────────────────────────────
+# Mirrors git-hygiene.service. systemd directives do NOT accept inline `#`
+# comments on the same line; every annotation below lives on its own line.
+
+# Block setuid/setgid escalation.
+NoNewPrivileges=true
+# Private /tmp and /var/tmp for this unit.
+PrivateTmp=true
+# Entire FS becomes read-only except API filesystems (/proc, /sys) and ReadWritePaths.
+ProtectSystem=strict
+# ProtectHome=tmpfs would break this service — it reads the dispatcher and the
+# routine catalog from $HOME/dev/dotfiles and the API key from
+# $HOME/.config/jules/. Read-only home plus one explicit writable path instead.
+ProtectHome=read-only
+# The ONLY writable path: the ledger, status.json, and the run log. The key
+# directory is deliberately absent, so ProtectHome=read-only leaves
+# ~/.config/jules readable and unwritable — this unit can never rewrite,
+# truncate, or chmod the credential it reads.
+ReadWritePaths=%h/.local/state/jules
+# Drop AF_NETLINK, AF_PACKET, raw sockets — keep only UNIX + IPv4/IPv6 (HTTPS).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Forbid creating new user/mount/net/uts/ipc/pid/cgroup namespaces.
+RestrictNamespaces=true
+# Lock personality(2) — block legacy ABI / x86_32 emulation switching.
+LockPersonality=true
+# Block W+X memory — bash, curl, and jq do not JIT, so this is safe here.
+MemoryDenyWriteExecute=true
+# Whitelist common syscalls for typical services; everything else returns EPERM.
+SystemCallFilter=@system-service
+# Return EPERM for filtered syscalls (friendlier than SIGSYS for app-level handling).
+SystemCallErrorNumber=EPERM
