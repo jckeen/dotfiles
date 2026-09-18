@@ -9,8 +9,10 @@
 #                                      form <!-- include:ID --> is replaced by
 #                                      that canon block's content
 #
-# Targets (committed build artifacts — setup.sh symlinks them unchanged):
-#   claude/CLAUDE.md, codex/AGENTS.md, antigravity/GEMINI.md
+# Targets (committed build artifacts — the TARGET map below is the list):
+#   claude/CLAUDE.md, codex/AGENTS.md, antigravity/GEMINI.md are symlinked into
+#   place by setup.sh; the root AGENTS.md is read in-repo by cloud agents that
+#   clone it (Jules, a Codex cloud task), so it is committed and never linked.
 #
 # Native imports are not universal — Codex and Antigravity resolve no include
 # syntax in their instruction files (evidence in ADR-0007) — so shared rules
@@ -34,11 +36,15 @@ cd "$REPO_ROOT"
 
 CANON="agents/canon/CANON.md"
 FRAG_DIR="agents/canon/fragments"
-TOOLS=(claude codex antigravity)
+TOOLS=(claude codex antigravity jules)
 declare -A TARGET=(
   [claude]="claude/CLAUDE.md"
   [codex]="codex/AGENTS.md"
   [antigravity]="antigravity/GEMINI.md"
+  # Root AGENTS.md: the brief a cloud agent reads from the checkout itself.
+  # Deliberately short — Codex concatenates a repo's root AGENTS.md with the
+  # global ~/.codex/AGENTS.md under a 32 KiB cap (ADR-0007).
+  [jules]="AGENTS.md"
 )
 
 CHECK=0
@@ -150,5 +156,9 @@ if [[ "$CHECK" -eq 1 ]]; then
     echo "  Edit agents/canon/ sources, then run claude/scripts/gen-instruction-files.sh" >&2
     exit 1
   fi
-  echo "✓ gen: claude/CLAUDE.md, codex/AGENTS.md, antigravity/GEMINI.md are byte-current with agents/canon/"
+  # The target list is printed from the map, not spelled out here, so adding a
+  # target cannot leave this line quietly claiming to have checked fewer files.
+  targets=()
+  for tool in "${TOOLS[@]}"; do targets+=("${TARGET[$tool]}"); done
+  echo "✓ gen: ${targets[*]} are byte-current with agents/canon/"
 fi

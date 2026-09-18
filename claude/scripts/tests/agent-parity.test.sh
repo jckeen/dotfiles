@@ -158,10 +158,20 @@ codex_frag() {
   w agents/canon/fragments/codex.md "${lines[@]}"
 }
 
+# The root AGENTS.md brief (ADR-0009). It is a generator target but is NOT held
+# to the RULES phrase list, so the fixture fragment carries no concepts — that
+# absence is itself the assertion that check 1 does not reach it.
+jules_frag() {
+  w agents/canon/fragments/jules.md \
+    '# Repository guidance for cloud agents' \
+    '- One pull request per finding.'
+}
+
 all_frags() {
   claude_frag
   gemini_frag
   codex_frag "${1:-}"
+  jules_frag
 }
 
 # --- Case 1: all files complete → pass ---------------------------------------
@@ -293,11 +303,37 @@ assert "include marker inside a canon block fails generation loudly" $?
 new_repo
 all_frags
 gen
-h1="$(cat "$R/claude/CLAUDE.md" "$R/codex/AGENTS.md" "$R/antigravity/GEMINI.md" | sha256sum)"
+h1="$(cat "$R/claude/CLAUDE.md" "$R/codex/AGENTS.md" "$R/antigravity/GEMINI.md" "$R/AGENTS.md" | sha256sum)"
 gen
-h2="$(cat "$R/claude/CLAUDE.md" "$R/codex/AGENTS.md" "$R/antigravity/GEMINI.md" | sha256sum)"
+h2="$(cat "$R/claude/CLAUDE.md" "$R/codex/AGENTS.md" "$R/antigravity/GEMINI.md" "$R/AGENTS.md" | sha256sum)"
 [[ "$h1" == "$h2" ]]
 assert "running the generator twice changes nothing" $?
+
+# --- Case 18: the root AGENTS.md is a generator target -----------------------
+# ADR-0009's cloud-agent brief. It is built from fragments/jules.md, and it is
+# the ONLY target outside the RULES phrase list — so its enforcement rests
+# entirely on the currency check, which these two cases pin.
+new_repo
+all_frags
+gen
+grep -qF -- '- One pull request per finding.' "$R/AGENTS.md" \
+  && grep -qF -- 'GENERATED FILE' "$R/AGENTS.md"
+assert "root AGENTS.md is generated from fragments/jules.md with the banner" $?
+
+new_repo
+all_frags
+gen
+echo '- Sneaky hand-edited cloud rule.' >> "$R/AGENTS.md"
+check "hand-edit to the root AGENTS.md fails currency check" 1 "stale or hand-edited"
+
+# --- Case 19: a missing jules fragment fails generation ----------------------
+new_repo
+claude_frag
+gemini_frag
+codex_frag
+gen 2> /dev/null
+grep -q 'fragments/jules.md' "$R/gen.err"
+assert "a missing jules fragment fails generation by name" $?
 
 echo "---"
 echo "$pass passed, $failed failed"

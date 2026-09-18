@@ -78,6 +78,7 @@ cd dotfiles
 gh auth login          # GitHub CLI — choose HTTPS + browser
 claude                 # Sign in to Claude (or 'claude auth login' if it doesn't prompt)
 codex login            # Optional: sign in for Codex CLI
+jules login            # Optional: sign in for the Jules CLI (cloud routine lane)
 ```
 
 You're done. Open a new PowerShell 7 window and try `wsl6`, or run `cc` inside WSL.
@@ -113,6 +114,7 @@ cd dotfiles
 gh auth login
 claude
 codex login            # Optional
+jules login            # Optional
 ```
 
 > **Why macOS?** Native Unix toolchain, no VM overhead, excellent terminal options (Terminal.app, iTerm2, Ghostty, Warp — pick your favorite). The setup script handles macOS-specific things (osxkeychain credential helper, brew package install, zsh `.bash_aliases` sourcing) automatically.
@@ -132,6 +134,7 @@ cd dotfiles
 gh auth login
 claude
 codex login            # Optional
+jules login            # Optional
 ```
 
 > **Node.js first:** unlike macOS, `setup.sh` does not auto-install Node on
@@ -213,7 +216,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 `setup.sh` installs CLI tools, wires the public and private layers for all three runtimes, and configures platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
 
 <details>
-<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, tmux, claude, codex, agy, bun)</summary>
+<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, tmux, claude, codex, agy, jules, bun)</summary>
 
 <br>
 
@@ -226,6 +229,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `tmux` | Detachable sessions for the opt-in `cct` launcher | Homebrew / apt |
 | `claude` | Claude Code CLI | SHA-256-pinned official native installer |
 | `codex` | OpenAI Codex CLI | npm |
+| `jules` | Google Jules CLI — the cloud routine lane (ADR-0009); `jules login` for interactive use, an API key file for the daily dispatcher | npm |
 | `agy` | Google Antigravity CLI (Gemini agent runtime) | SHA-256-pinned official installer; release payload checksum-verified by the vendor installer |
 | `bun` | Runtime for `*.hook.ts` hooks | Pinned GitHub release (`BUN_VERSION` in `setup.sh`), SHA-256-verified against the release's `SHASUMS256.txt` |
 
@@ -256,6 +260,8 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Subagents** | `claude/agents/*.md` | 18 specialized review agents |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts; launchers re-source this file when it changed since the shell started |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
+| **Cloud-agent brief** | `AGENTS.md` (repo root) | The short working contract an agent reads from the checkout itself when it has no session history — Jules, a Codex cloud task (generated from `agents/canon/` per ADR-0007) |
+| **Routine catalog** | `agents/routines/*.md` | Standing prompts for the cloud routine lane, one file per routine, with a frontmatter contract the dispatcher enforces (ADR-0009) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
 | **Codex config examples** | `codex/*.toml.example` | Templates only; live `~/.codex/config.toml` stays local |
 | **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`; generated from `agents/canon/` per ADR-0007) |
@@ -477,7 +483,8 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 
 **Edit these only with public-safe content:**
 - `claude/AgentPack.md` — add, remove, or modify review agents
-- `agents/canon/` — the instruction sources (ADR-0007): shared cross-agent rules in `CANON.md`, per-tool voice in `fragments/`. `claude/CLAUDE.md`, `codex/AGENTS.md`, and `antigravity/GEMINI.md` are generated from here by `claude/scripts/gen-instruction-files.sh` — never edit them directly
+- `agents/canon/` — the instruction sources (ADR-0007): shared cross-agent rules in `CANON.md`, per-tool voice in `fragments/`. Every instruction file named in that script's target map — including the root `AGENTS.md` — is generated from here by `claude/scripts/gen-instruction-files.sh`; never edit them directly
+- `agents/routines/*.md` — the cloud routine lane's standing prompts (ADR-0009); `claude/scripts/jules-dispatch.sh --dry-run` shows what a day would dispatch
 - `agents/skills/*/SKILL.md` — reusable agent-neutral workflows (Codex + Antigravity)
 - `codex/config.toml.example` — example Codex config only
 - `.bash_aliases` — your shell shortcuts
@@ -533,7 +540,7 @@ dotfiles/
 ├── claude/                 # Claude Code layer — CLAUDE.md, hooks, skills, agents, scripts, statusline
 ├── codex/                  # Public-safe Codex layer — AGENTS.md, config example, Codex-only skills
 ├── antigravity/            # Public-safe Antigravity (agy) layer — GEMINI.md, hooks, agy-only skills
-├── agents/                 # Agent-neutral shared skills, consumed by Codex + Antigravity
+├── agents/                 # Agent-neutral shared skills + the cloud routine catalog
 └── windows/                # PowerShell helpers — wsl6, ccgrid/cctab/ccpane
 ```
 
