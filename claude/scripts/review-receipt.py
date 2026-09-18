@@ -6,7 +6,7 @@ No Git worktree diff is used: clean filters can execute even with --no-textconv.
 """
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import difflib
 import fnmatch
 import hashlib
@@ -21,6 +21,13 @@ import tempfile
 import uuid
 
 LANES = ("codex", "antigravity")
+# ADR-0008. `any < antigravity < codex`: a receipt ships a diff when its lane
+# ranks at or above the lane the diff requires. "any" is not a reviewer — it is
+# the requirement a tier-1 exemption places on whichever lane recorded it.
+LANE_RANK = {"any": 0, "antigravity": 1, "codex": 2}
+# review-and-push.sh stamps this prefix on the ledger note when an Antigravity
+# gate that could not run (exit 3) handed the diff to Codex. `stats` counts it.
+DEGRADED_NOTE_PREFIX = "antigravity-degraded"
 AGENT_NAMESPACES = (
     "codex",
     ".codex",
@@ -312,6 +319,14 @@ def file_bytes(repo, path, directory_is_missing=False):
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("cannot snapshot non-file: " + path)
     return ("100755" if info.st_mode & 0o111 else "100644"), file.read_bytes()
+
+
+def repo_root(repo):
+    # `lane` and `stats` are read-only; resolving the work tree root here keeps
+    # them from provisioning the receipt directory that layout() creates.
+    return Path(
+        os.fsdecode(git(repo, "rev-parse", "--show-toplevel").removesuffix(b"\n"))
+    ).resolve()
 
 
 def layout(repo):
@@ -733,28 +748,53 @@ def validate_artifact(record):
     return patch
 
 
+def required_lane(tier, risk_paths, changed_paths, unclassifiable=False):
+    """The weakest review lane that may ship this diff (ADR-0008).
+
+    Tier 1 is satisfied by either lane's exemption receipt. A tier-2 diff that
+    touches no risk surface is ordinary work and the Antigravity lane is
+    enough — that is where the Codex quota saving comes from. Risk paths, an
+    empty changed-path list, and a diff the classifier could not read all fail
+    toward Codex, the same fail-toward-the-strongest rule the tier valve uses.
+    Size alone never escalates the lane: a large ordinary diff is still ordinary.
+    """
+    if tier == 1:
+        return "any"
+    if unclassifiable or risk_paths or not changed_paths:
+        return "codex"
+    return "antigravity"
+
+
 def classify_tier(artifact, patch, policy):
     max_lines = policy["tier1_max_lines"]
     if not isinstance(max_lines, str):
         raise ValueError("malformed tier-1 policy")
+    paths = artifact["changed_paths"]
+    risk_paths = [path for path in paths if risk(path)]
+
+    def verdict(tier, reason, unclassifiable=False):
+        return {
+            "tier": tier,
+            "reason": reason,
+            "risk_paths": risk_paths,
+            "required_lane": required_lane(tier, risk_paths, paths, unclassifiable),
+        }
+
     if not re.fullmatch(r"[0-9]+", max_lines):
-        return {"tier": 2, "reason": "full pass (captured tier-1 cap is not a number)"}
+        return verdict(2, "full pass (captured tier-1 cap is not a number)", True)
     try:
         limit = int(max_lines)
     except ValueError:
-        return {"tier": 2, "reason": "full pass (captured tier-1 cap is not supported)"}
+        return verdict(2, "full pass (captured tier-1 cap is not supported)", True)
     lines = patch.count(b"\n")
     if lines > limit:
-        return {"tier": 2, "reason": f"full pass (diff is {lines} lines > tier-1 cap {max_lines})"}
-    if not artifact["changed_paths"]:
-        return {"tier": 2, "reason": "full pass (could not enumerate changed paths)"}
-    for path in artifact["changed_paths"]:
+        return verdict(2, f"full pass (diff is {lines} lines > tier-1 cap {max_lines})")
+    if not paths:
+        return verdict(2, "full pass (could not enumerate changed paths)")
+    for path in paths:
         if not passive_modes(artifact["changed_modes"][path]) or not docsafe(path):
-            return {
-                "tier": 2,
-                "reason": "full pass (active, risk, or unclassified path: " + path + ")",
-            }
-    return {"tier": 1, "reason": f"docs-only diff, {lines} lines ≤ {max_lines}"}
+            return verdict(2, "full pass (active, risk, or unclassified path: " + path + ")")
+    return verdict(1, f"docs-only diff, {lines} lines ≤ {max_lines}")
 
 
 def exemption(outcome, artifact, patch, policy):
@@ -778,6 +818,83 @@ def classify(args):
     if (snapshot.parent / "diff.patch").read_bytes() != patch:
         raise ValueError("review diff changed during review")
     print(json.dumps(classify_tier(record["artifact"], patch, record["policy"])))
+
+
+def lane(args):
+    """Print the classification for the current diff without minting anything.
+
+    review-and-push.sh and any other dispatcher consults this to pick a gate;
+    it writes no receipt, no attempt marker and no run directory, so calling it
+    can never invalidate an approval that is already in hand.
+    """
+    repo = repo_root(args.repo)
+    base = resolve_base(repo, args.base)
+    scope = args.scope
+    if scope == "auto":
+        scope = (
+            "committed"
+            if git(repo, "rev-list", "--max-count=1", oid(repo, base) + "..HEAD").strip()
+            else "uncommitted"
+        )
+    artifact, patch = stable_capture(repo, base, scope)
+    if args.scope == "auto" and scope == "uncommitted" and not artifact["changed_paths"]:
+        artifact, patch = stable_capture(repo, base, "committed")
+    print(json.dumps(classify_tier(artifact, patch, {"tier1_max_lines": args.tier1_max_lines})))
+
+
+def ledger_append(receipts, entry):
+    """Append one measurement record to the append-only lane ledger.
+
+    `check` never reads this file: it is telemetry for `stats`, so a forged
+    ledger cannot approve a push and an unwritable one cannot block one. A
+    failure is reported on stderr rather than discarding a receipt that is
+    already recorded.
+    """
+    path = receipts / "ledger.jsonl"
+    try:
+        # O_NOFOLLOW: the ledger is never a symlink to somewhere else.
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(encoded(entry) + b"\n")
+    except OSError as exc:
+        print("review-receipt: lane ledger not recorded: " + str(exc), file=sys.stderr)
+
+
+def stats(args):
+    """Print lane x outcome counts over the recent ledger window."""
+    if args.since_days < 0:
+        raise ValueError("--since-days must not be negative")
+    _, _, receipts = layout(args.repo)
+    ledger = receipts / "ledger.jsonl"
+    if ledger.is_symlink():
+        raise ValueError("lane ledger must not be a symlink")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=args.since_days)
+    counts, degraded, unreadable, total = {}, 0, 0, 0
+    if ledger.is_file():
+        for line in ledger.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                when = datetime.fromisoformat(entry["completed_at"])
+                key = (str(entry["lane"]), str(entry["outcome"]))
+                note = str(entry.get("note") or "")
+            except (ValueError, KeyError, TypeError, AttributeError):
+                unreadable += 1
+                continue
+            if when.tzinfo is None or when < cutoff:
+                continue
+            total += 1
+            counts[key] = counts.get(key, 0) + 1
+            if key[0] == "codex" and note.startswith(DEGRADED_NOTE_PREFIX):
+                degraded += 1
+    print(f"review lanes, last {args.since_days} day(s): {total} completed review(s)")
+    for (name, outcome), count in sorted(counts.items()):
+        print(f"  {name:<12} {outcome:<8} {count}")
+    print(f"  antigravity degraded \u2192 codex: {degraded}")
+    if unreadable:
+        print(f"  unreadable ledger lines: {unreadable}")
 
 
 def resolve_base(repo, requested=None):
@@ -818,13 +935,18 @@ def begin(args):
     run = Path(tempfile.mkdtemp(prefix="run-", dir=str(receipts)))
     (run / "diff.patch").write_bytes(patch)
     os.chmod(run / "diff.patch", 0o600)
+    policy = {"tier1_max_lines": args.tier1_max_lines}
     record = {
-        "version": 1,
+        # Version 2 adds "classification": check recomputes it and refuses a
+        # receipt whose lane ranks below what the diff requires, so a version-1
+        # receipt (which carries no lane requirement) can no longer ship.
+        "version": 2,
         "attempt": attempt,
         "repository": str(repo),
         "git_directory": str(directory),
         "artifact": artifact,
-        "policy": {"tier1_max_lines": args.tier1_max_lines},
+        "policy": policy,
+        "classification": classify_tier(artifact, patch, policy),
         "reviewer": {"name": args.reviewer, "executable": args.executable or None},
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -859,6 +981,22 @@ def complete(args):
         raise ValueError("Git directory changed during review")
     validate_artifact(record)
     atomic_json(receipts / (record["reviewer"]["name"] + ".json"), record)
+    # The ledger records what the artifact actually is, not what the snapshot
+    # claims: a tampered stored classification stays in the receipt for `check`
+    # to reject rather than being laundered into the measurement.
+    classification = classify_tier(record["artifact"], patch, record["policy"])
+    ledger_append(
+        receipts,
+        {
+            "completed_at": record["completion"]["completed_at"],
+            "lane": record["reviewer"]["name"],
+            "outcome": args.outcome,
+            "tier": classification["tier"],
+            "required_lane": classification["required_lane"],
+            "head": record["artifact"]["head"],
+            "note": args.note or "",
+        },
+    )
     print("Review receipt recorded for " + record["artifact"]["head"])
 
 
@@ -869,15 +1007,15 @@ def check(args):
         raise ValueError("outgoing commit is not the reviewed worktree HEAD")
     expected_base = oid(repo, resolve_base(repo, args.base))
     errors = []
-    for lane in (args.reviewer,) if args.reviewer else LANES:
+    for lane_name in (args.reviewer,) if args.reviewer else LANES:
         try:
-            record = read_json(receipts / (lane + ".json"))
+            record = read_json(receipts / (lane_name + ".json"))
             if (
                 type(record["version"]) is not int
-                or record["version"] != 1
+                or record["version"] != 2
                 or record["repository"] != str(repo)
                 or record["git_directory"] != str(directory)
-                or record["reviewer"]["name"] != lane
+                or record["reviewer"]["name"] != lane_name
                 or record["artifact"]["scope"] != "committed"
                 or record["artifact"]["head"] != head
                 or record["completion"]["status"] != "completed"
@@ -903,7 +1041,32 @@ def check(args):
                 raise ValueError("completed review output is empty")
             patch = validate_artifact(record)
             exemption(completion["outcome"], record["artifact"], patch, record["policy"])
-            print("Valid " + lane + " review receipt for " + head)
+            # Recompute on the re-captured patch: the stored classification is
+            # receipt content, so only the recomputation is authoritative, and a
+            # mismatch means the receipt was edited after the gate wrote it.
+            current = classify_tier(record["artifact"], patch, record["policy"])
+            if record["classification"] != current:
+                raise ValueError("receipt classification does not match the reviewed artifact")
+            required = current["required_lane"]
+            if LANE_RANK[lane_name] < LANE_RANK[required]:
+                raise ValueError(
+                    "receipt lane below required lane: "
+                    + lane_name
+                    + " < "
+                    + required
+                    + " ("
+                    + current["reason"]
+                    + ")"
+                )
+            print(
+                "Valid "
+                + lane_name
+                + " review receipt for "
+                + head
+                + " (required lane: "
+                + required
+                + ")"
+            )
             return
         except (
             OSError,
@@ -913,7 +1076,7 @@ def check(args):
             AttributeError,
             subprocess.SubprocessError,
         ) as exc:
-            errors.append(lane + ": " + str(exc))
+            errors.append(lane_name + ": " + str(exc))
     raise ValueError("no valid committed review receipt; " + "; ".join(errors))
 
 
@@ -935,10 +1098,19 @@ def main():
     for name in ("verify", "classify"):
         sub = commands.add_parser(name)
         sub.add_argument("--snapshot", required=True)
+    sub = commands.add_parser("lane")
+    sub.add_argument("--repo", default=".")
+    sub.add_argument("--base")
+    sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), default="committed")
+    sub.add_argument("--tier1-max-lines", default="200")
+    sub = commands.add_parser("stats")
+    sub.add_argument("--repo", default=".")
+    sub.add_argument("--since-days", type=int, default=7)
     sub = commands.add_parser("complete")
     sub.add_argument("--snapshot", required=True)
     sub.add_argument("--outcome", choices=("passed", "tier-1", "no-diff"), required=True)
     sub.add_argument("--output")
+    sub.add_argument("--note")
     sub.add_argument("--requested-model")
     sub.add_argument("--observed-model")
     sub.add_argument("--model-evidence")
