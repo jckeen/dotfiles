@@ -77,16 +77,36 @@ trap 'rm -f "$OUT"; [ -z "$TESTHOME" ] || rm -rf "$TESTHOME"' EXIT
 # <command> removed. The `checks` job installs Bun before this suite runs, so a
 # bun=absent draw that merely left PATH alone would still let setup.sh find Bun
 # and the missing-Bun installer branch would never be exercised.
+# path_without <command> <pathlist> — echo <pathlist> with every entry that
+# provides <command> removed. The list is an ARGUMENT, not $PATH: the self-check
+# below has to run the filter over a synthetic list, and overriding PATH for the
+# call would also hide this function's own tr and paste.
 path_without() {
-  local want="$1"
-  printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r entry; do
+  local want="$1" list="$2"
+  # printf '%s\n', not '%s': `read` returns non-zero on a final line with no
+  # trailing newline and the loop body never runs for it, so the last entry would
+  # be dropped whether or not it provides <want>. With a minimal PATH such as
+  # /usr/bin that empties the result and takes the preconditions below down with
+  # it. _assert_filter_keeps_all_entries pins this.
+  printf '%s\n' "$list" | tr ':' '\n' | while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     [ -x "$entry/$want" ] && continue
     printf '%s\n' "$entry"
   done | paste -sd: -
 }
 
-BUN_ABSENT_PATH="$(path_without bun)"
+# Neither directory exists, so nothing is filtered and every entry must survive.
+_assert_filter_keeps_all_entries() {
+  local got
+  got="$(path_without bun "/nonexistent-aa:/nonexistent-bb")"
+  if [ "$got" != "/nonexistent-aa:/nonexistent-bb" ]; then
+    echo "FATAL - path_without dropped entries: expected /nonexistent-aa:/nonexistent-bb, got '$got'"
+    exit 1
+  fi
+}
+_assert_filter_keeps_all_entries
+
+BUN_ABSENT_PATH="$(path_without bun "$PATH")"
 if PATH="$BUN_ABSENT_PATH" command -v bun > /dev/null 2>&1; then
   echo "FATAL - could not build a bun-free PATH; the bun=absent draw would be a no-op"
   exit 1
