@@ -266,11 +266,15 @@ per line, `#` comments, `*` spanning `/`:
 
 ```
 claude/scripts/tests/*
+agents/routines/*
+AGENTS.md
 ```
 
 Those paths are hostile **by design**: gate fixtures embed injected verdicts,
-prompt-injection payloads, and synthetic credential markers, and a reviewer
-flagging them is reporting the fixture rather than a defect. The globs only
+prompt-injection payloads, and synthetic credential markers, and Jules routine
+prompts plus the generated root `AGENTS.md` are instructions for a cloud agent
+(ADR-0009), so a reviewer flagging them is reporting the fixture or the prompt
+rather than a defect. The globs only
 steer the reviewer — matching paths **stay in the review scope** and are still
 reviewed for real bugs, and instruction-like text anywhere else stays
 suspicious. The file is repo content, so it is parsed as bounded untrusted data
