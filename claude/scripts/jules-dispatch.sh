@@ -28,8 +28,9 @@
 #   JULES_DAILY_CAP     max sessions created per calendar day (default 40)
 #   JULES_STATE_DIR     state directory (default ~/.local/state/jules)
 #   JULES_ROUTINE_DIR   routine catalog (default <repo>/agents/routines)
-#   JULES_STARTING_BRANCH  optional starting branch for every session; omitted
-#                       from the request when unset, letting the API choose
+#   JULES_STARTING_BRANCH  starting branch for every session; when unset, each
+#                       repository's default branch as reported by GET /sources
+#                       (GitHubRepoContext.startingBranch is required)
 #   JULES_TRACKER       owner/name#issue for --post (default jckeen/dotfiles#446)
 #   JULES_FLOCK         flock(1) to use (default flock); a test seam for the
 #                       branch taken when flock is unavailable
@@ -397,6 +398,18 @@ resolve_source() { # OWNER/NAME -> source resource name, or empty
     | map(select(. != "")) | first // empty' <<<"$SOURCES_JSON"
 }
 
+# GET /sources reports each repository's default branch under
+# githubRepo.defaultBranch.displayName. startingBranch is REQUIRED inside
+# GitHubRepoContext — the API answered INVALID_ARGUMENT to a body without it on
+# 2026-09-19 — so this is where the dispatcher gets one when the operator has
+# not set JULES_STARTING_BRANCH.
+source_default_branch() { # source resource name -> branch, or empty
+  jq -r --arg name "$1" '
+    [ (.sources // [])[] | select((.name // "") == $name)
+      | (.githubRepo.defaultBranch.displayName // "") ]
+    | map(select(. != "")) | first // empty' <<<"$SOURCES_JSON"
+}
+
 sources_repos() {
   jq -r '
     (.sources // [])[]
@@ -669,7 +682,7 @@ build_prompt() { # repo
 }
 
 dispatch_one() { # routine-file repo source
-  local repo="$2" source="$3" prompt response session url attempt
+  local repo="$2" source="$3" prompt response session url attempt branch
   ATTEMPT_SEQ=$((ATTEMPT_SEQ + 1))
   attempt="$RUN_ID.$ATTEMPT_SEQ"
 
@@ -686,13 +699,27 @@ dispatch_one() { # routine-file repo source
     return 1
   fi
 
+  # A request without startingBranch is invalid, so a pair with no branch is a
+  # LOCAL failure: refused here, before the write-ahead record, and retried on
+  # the next run once the operator sets JULES_STARTING_BRANCH or the source
+  # reports a default branch.
+  branch="$STARTING_BRANCH"
+  [[ -n "$branch" ]] || branch="$(source_default_branch "$source")"
+  if [[ -z "$branch" ]]; then
+    log "  !! $FM_NAME / $repo — no starting branch: GET /sources reports no default"
+    log "     branch for $source and JULES_STARTING_BRANCH is unset; no session created"
+    record error "$FM_NAME" "$repo" "no starting branch; no session created"
+    FAILURES=$((FAILURES + 1))
+    rm -f "$BODY_FILE"; BODY_FILE=""
+    return 1
+  fi
+
   prompt="$(build_prompt "$repo")"
   if ! jq -n --arg prompt "$prompt" --arg title "jules-routine: $FM_NAME ($repo)" \
       --arg source "$source" --arg mode "$JULES_AUTOMATION_MODE" \
-      --arg branch "$STARTING_BRANCH" '
+      --arg branch "$branch" '
       {prompt: $prompt, title: $title, automationMode: $mode, requirePlanApproval: false,
-       sourceContext: ({source: $source}
-         + (if $branch == "" then {} else {githubRepoContext: {startingBranch: $branch}} end))}' \
+       sourceContext: {source: $source, githubRepoContext: {startingBranch: $branch}}}' \
       > "$BODY_FILE" || [[ ! -s "$BODY_FILE" ]]; then
     log "  !! $FM_NAME / $repo — could not build the request body; no session created"
     record error "$FM_NAME" "$repo" "request body generation failed"

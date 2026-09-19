@@ -307,14 +307,16 @@ here; each is resolved by the first live dispatch.
 - **The exact `source` string for a given repository.** The reference documents
   `sources/{source}`; the guide shows `sources/github/{owner}/{repo}`. The
   dispatcher therefore resolves it from `GET /sources` by matching owner and
-  name, and never constructs it. The live run records what the field actually
-  contains.
-- **Whether `githubRepoContext` may be omitted.** `startingBranch` is
-  documented as required *inside* `GitHubRepoContext`, while
-  `githubRepoContext` itself is optional on `SourceContext`. The dispatcher
-  omits the object unless `JULES_STARTING_BRANCH` is set. If the API rejects
-  that, the first dispatch fails loudly with the API's own message and the
-  variable is the fix.
+  name, and never constructs it. Observed 2026-09-19: `GET /sources` returned
+  `sources/github/jckeen/dotfiles`, i.e. the guide's spelling, for 33 sources.
+- **Whether `githubRepoContext` may be omitted.** Answered 2026-09-19 by the
+  first live dispatch: it may not. `POST /sessions` without it returned
+  `400 INVALID_ARGUMENT` ("Request contains an invalid argument."), and no
+  session was created. `GET /sources` reports each repository's default branch
+  as `githubRepo.defaultBranch.displayName` (`main` for `jckeen/dotfiles`), so
+  the dispatcher now sends that branch unless `JULES_STARTING_BRANCH` overrides
+  it, and refuses a pair with neither before the write-ahead record. The
+  resent request created `sessions/11332863501956419331`.
 - **Whether API-created sessions draw on the same 300-task daily pool, and any
   API-specific rate limit.** The usage-limits page documents plan task limits
   and says nothing about the API. `JULES_DAILY_CAP` defaults to 40 for that
