@@ -10,3 +10,9 @@
 # markers — so a reviewer flagging those strings is reporting the fixture
 # rather than a defect.
 claude/scripts/tests/*
+
+# Jules routine prompts (ADR-0009) are instructions for a cloud agent by
+# design, and the generated root AGENTS.md is the brief for one: every line is
+# directive on purpose (#466).
+agents/routines/*
+AGENTS.md

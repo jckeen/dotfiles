@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-19 — chore(codex-gate): declare Jules routine prompts in `.codex-review-ignore`
+
+- `agents/routines/*` and the generated root `AGENTS.md` are instruction-bearing
+  by design (ADR-0009), and the gate filed one low finding per file for exactly
+  that (#457–#464, closed as not planned). Declaring them steers the reviewer off
+  those strings; the paths stay in review scope. Closes #466.
+
 ## 2026-09-18 — feat(review): Antigravity-first ordinary lane, Codex for risk surfaces (ADR-0008)
 
 - **Closed a pre-push fail-open.** `githooks/pre-push` calls `review-receipt.py
