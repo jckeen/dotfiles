@@ -1571,7 +1571,7 @@ lane_of() {
   (
     # shellcheck source=claude/scripts/gate-lib.sh
     . "$SCRIPT_DIR/../gate-lib.sh"
-    if [[ -n "$value" ]]; then REVIEW_LANE="$value"; else unset REVIEW_LANE; fi
+    if [[ -n "$value" ]]; then export REVIEW_LANE="$value"; else unset REVIEW_LANE; fi
     gate_select_lane "$required" 2>&1
   )
 }
