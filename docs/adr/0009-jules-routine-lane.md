@@ -1,6 +1,6 @@
 # 0009. Jules as the daily-routine lane
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-19, after the first live dispatch)
 - **Date:** 2026-09-18
 
 ## Context
@@ -287,23 +287,32 @@ command, and forbidden from touching CI, hooks, or instruction surfaces — and
 that the measurement loop retires a routine that does not earn its merges rather
 than leaving it to accumulate noise.
 
-Status stays **Proposed** until the first live dispatch, which needs an API key
-only the operator holds. That run is what converts the unverified items below
-into recorded facts.
+Status moved to **Accepted** on 2026-09-19: the first live dispatch
+(`doc-drift-fixer` on `jckeen/dotfiles`, session `11332863501956419331`, PR
+#477) converted the items below from assumptions into recorded facts. The three
+gaps it also exposed are tracked in #479 and do not change the decision.
 
-### Still UNVERIFIED
+### Verified by the first live dispatch (2026-09-19)
 
-Each of these is unverified because the documentation does not state it, not
-because it was not looked for. None is load-bearing for the code that ships
-here; each is resolved by the first live dispatch.
+Each of these was unverified because the documentation does not state it, not
+because it was not looked for. None was load-bearing for the code that shipped.
 
-- **The bot's PR author login.** Assumed `google-labs-jules[bot]`. Nothing in
-  the API or CLI documentation names it. It is needed for the custodian's
-  trusted-bot allowlist (see Handoffs), so the allowlist entry must wait for the
-  first real pull request rather than be guessed into place.
-- **Whether Jules pushes branches to the same repository or to a fork.** This
-  decides whether the existing `delete-branch-on-close.yml` cleanup covers
-  routine branches at all.
+- **The bot's PR author login.** The pull request's *author* is the connecting
+  account (`jckeen`); the *commit* author is `google-labs-jules[bot]
+  <161369871+google-labs-jules[bot]@users.noreply.github.com>`. The PR body
+  ends with "PR created automatically by Jules for task <id> started by
+  @<login>". The commit is unsigned (`verification.reason: unsigned`), and a
+  commit author, a body footer, or a branch name can be written by anyone with
+  push access, so none of them authenticates provenance. The only authenticated
+  signal is the Jules API: `GET /sessions/{id}` lists the pull request under
+  `outputs[].pullRequest` for a session the dispatcher's ledger created. The
+  required `jules-routine:*` label was NOT applied — Jules has no label
+  affordance (#479).
+- **Whether Jules pushes branches to the same repository or to a fork.** Same
+  repository: branch `jules-11332863501956419331-9a0451b0`
+  (`jules-<session id>-<8 hex>`), base `main`. `delete-branch-on-close.yml`
+  removed it the moment PR #477 closed unmerged, so routine branches need no
+  extra cleanup.
 - **The exact `source` string for a given repository.** The reference documents
   `sources/{source}`; the guide shows `sources/github/{owner}/{repo}`. The
   dispatcher therefore resolves it from `GET /sources` by matching owner and
@@ -371,11 +380,18 @@ custodian changes over.
 These belong to the private `claude-memory` repository and are not in this
 change:
 
-- **Custodian trusted-bot allowlist** — add the Jules bot's author login once
-  the first routine pull request confirms it. Until then the custodian treats a
-  routine PR as an unknown author, which is the safe default.
-- **Routine-PR classifier** — recognise the `jules-routine:*` label family so a
-  routine pull request is classified as routine work. The narrow auto-merge gate
+- **Custodian trusted-bot allowlist** — there is no login to allowlist. The PR
+  author is the connecting account and the commit author is an unsigned
+  `google-labs-jules[bot]`, both reproducible by any contributor, so an
+  author-keyed allowlist would let an unrelated PR impersonate a routine. Trust
+  a routine PR only when the Jules API confirms it: the PR URL appears in
+  `outputs[].pullRequest` of a session whose id is in the dispatcher's ledger.
+  The dispatcher should publish that reconciliation (a `--reconcile` pass or a
+  ledger field) so the custodian never re-derives provenance from PR text.
+- **Routine-PR classifier** — the `jules-routine:*` label is not applied by the
+  platform (#479), and the `jules-` branch prefix and body footer are hints for
+  triage only, never a trust key. Classification follows the same API-confirmed
+  session → PR mapping as the allowlist above. The narrow auto-merge gate
   does not change: docs-only, lockfile, or version-only diffs, with CI green and
   no Codex `CHANGES_REQUESTED`. A code-changing routine PR waits for the
   conductor, and the Codex bot review remains the cross-family check.
