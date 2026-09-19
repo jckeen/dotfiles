@@ -398,6 +398,15 @@ if ! REQUIRED_LANE=$(printf '%s' "$LANE_JSON" |
   echo "Cannot read the lane classification; not reviewing or pushing." >&2
   exit 1
 fi
+# GATE_FORCE_FULL=1 makes gate_classify_tier skip classification and keep the
+# strongest lane. The `lane` helper does not read that flag, so mirror it here:
+# otherwise an ordinary diff is dispatched to Antigravity, whose gate announces
+# itself as supplementary, while the receipt check (which recomputes the
+# ordinary classification) still ships it — the forced full pass would be
+# honoured by the gate's message and by nothing else.
+if [[ "${GATE_FORCE_FULL:-0}" == "1" ]]; then
+  REQUIRED_LANE=codex
+fi
 DISPATCH_LANE=$(gate_select_lane "$REQUIRED_LANE") || exit 1
 
 run_review_gate() {

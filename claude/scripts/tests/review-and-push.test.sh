@@ -435,6 +435,22 @@ want_gates "an unknown REVIEW_LANE dispatches no gate" ""
 want_refusal "an unknown REVIEW_LANE is refused" "REVIEW_LANE must be auto, codex, or antigravity"
 clean_lane_repo
 
+# GATE_FORCE_FULL=1 keeps the strongest lane inside gate_classify_tier; the
+# wrapper must select the same lane, or an ordinary diff goes to Antigravity
+# (announcing itself as supplementary) and ships on the ordinary classification.
+new_lane_repo widget.ts
+run_lane GATE_FORCE_FULL=1
+want_gates "GATE_FORCE_FULL=1 routes an ordinary diff to Codex" "$CODEX_GATE"
+assert "GATE_FORCE_FULL=1 names codex as the required lane" \
+  "grep -qF -- 'Review lane: codex (required: codex)' <<<\"\$OUT\""
+clean_lane_repo
+
+new_lane_repo widget.ts
+run_lane GATE_FORCE_FULL=1 REVIEW_LANE=antigravity
+want_gates "GATE_FORCE_FULL=1 refuses REVIEW_LANE=antigravity" ""
+want_refusal "the forced-full downgrade refusal names the required lane" "requires the Codex lane"
+clean_lane_repo
+
 # The lane classification must use the SAME tier-1 cap the gate captures into
 # the receipt. Classifying under the default while the gate captures an
 # unreadable GATE_TIER1_MAX_LINES routed an ordinary diff to Antigravity whose

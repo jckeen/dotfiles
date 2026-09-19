@@ -23,7 +23,8 @@
   with `--require --committed`, and drops `--reviewer codex` from its receipt
   check. `REVIEW_LANE=auto|codex|antigravity` overrides the choice: escalation is
   honoured, and `antigravity` on a codex-required diff is **refused** rather than
-  honoured.
+  honoured. `GATE_FORCE_FULL=1` keeps the strongest lane in the wrapper too, as
+  it already did inside `gate_classify_tier` (Codex gate finding on #473).
 - **A degraded lane is not a verdict.** `REVIEW_LANE_FALLBACK=codex|block`
   (default `codex`): Antigravity exit 3 — agy missing, an unverifiable model pin,
   a diff above its measured 185 KB input window — falls back to Codex and records
