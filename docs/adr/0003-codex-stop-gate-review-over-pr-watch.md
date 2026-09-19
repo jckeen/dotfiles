@@ -1,7 +1,12 @@
 # 0003. Codex stop-gate review over a PR-comment-watching loop
 
-- **Status:** Accepted
+- **Status:** Accepted (amended by ADR-0008)
 - **Date:** 2026-06-03
+
+> **Amended by [0008](0008-antigravity-first-ordinary-lane.md)** — the stop-gate
+> mechanism stands, but the reviewer is no longer always Codex: ordinary tier-2
+> diffs take the Antigravity gate, and Codex is reserved for risk surfaces and
+> refutation.
 
 ## Context
 

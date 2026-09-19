@@ -118,6 +118,8 @@ unset CODEX_GATE_REQUIRED
 unset CODEX_GATE_ALLOW_INSTRUCTION_DIFF
 unset GATE_FORCE_FULL
 unset GATE_TIER1_MAX_LINES
+unset REVIEW_LANE
+unset REVIEW_LANE_NOTE
 
 new_repo() {
   R="$(mktemp -d)"
@@ -1108,7 +1110,7 @@ for mutation in target-worktree target-index target-commit link-worktree link-in
   git -C "$R" commit -qam work
   approve_clean
   check "canonical link permits codex receipt before $mutation" 0 "Codex review passed" --committed --require --no-issues
-  assert "canonical link codex receipt is valid" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer codex >/dev/null 2>&1"
+  assert "canonical link codex receipt is valid" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   case "$mutation" in
     target-*)
       printf 'Changed canonical instructions.\n' > "$R/CLAUDE.md"
@@ -1131,7 +1133,7 @@ for mutation in target-worktree target-index target-commit link-worktree link-in
       fi
       ;;
   esac
-  assert "$mutation stales codex shipping evidence" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer codex >/dev/null 2>&1"
+  assert "$mutation stales codex shipping evidence" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -f "$CODEX_FAKE_DIR/invoked"
   check "$mutation blocks a new codex review" 2 "instruction symlink" --committed --require --no-issues
   assert "$mutation prevents codex dispatch and approval" "[ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ]"
@@ -1523,14 +1525,72 @@ import sys
 print(os.environ['CLASSIFY_OUTPUT'])
 sys.exit(int(os.environ.get('CLASSIFY_RC', '0')))
 PY
-export CLASSIFY_OUTPUT='{"tier":1,"reason":"captured docs policy"}' CLASSIFY_RC=0
-assert "shared classifier accepts helper tier and reason" "(source '$SCRIPT_DIR/../gate-lib.sh'; RECEIPT_HELPER='$SHIM_DIR/classify.py'; GATE_RUN_DIR='$SHIM_DIR'; gate_classify_tier; [[ \$GATE_TIER == 1 && \$GATE_TIER_REASON == 'captured docs policy' ]])"
-for CLASSIFY_OUTPUT in 'broken' '{}' '{"tier":1}' '{"tier":"1","reason":"docs"}' '{"tier":1,"reason":null}' '{"tier":0,"reason":"docs"}' '' 'null' '[{"tier":1,"reason":"docs"}]' $'{"tier":1,"reason":"docs"}\n{"tier":1,"reason":"docs"}'; do
-  assert "malformed helper classification keeps full review" "(source '$SCRIPT_DIR/../gate-lib.sh'; RECEIPT_HELPER='$SHIM_DIR/classify.py'; GATE_RUN_DIR='$SHIM_DIR'; gate_classify_tier; [[ \$GATE_TIER == 2 ]])"
+# classify_shim <expr> — evaluate <expr> with gate-lib.sh sourced and the
+# classifier replaced by the PATH shim above, so the helper's contract with the
+# bash side is asserted without capturing a real diff.
+classify_shim() {
+  printf "(source '%s/../gate-lib.sh'; RECEIPT_HELPER='%s/classify.py'; GATE_RUN_DIR='%s'; gate_classify_tier; %s)" \
+    "$SCRIPT_DIR" "$SHIM_DIR" "$SHIM_DIR" "$1"
+}
+export CLASSIFY_OUTPUT='{"tier":1,"reason":"captured docs policy","risk_paths":[],"required_lane":"any"}' CLASSIFY_RC=0
+assert "shared classifier accepts helper tier and reason" \
+  "$(classify_shim "[[ \$GATE_TIER == 1 && \$GATE_TIER_REASON == 'captured docs policy' ]]")"
+# ADR-0008: the lane fields travel with the tier, and a tier-1 diff requires
+# nothing stronger than "any".
+assert "shared classifier exports the required lane" \
+  "$(classify_shim "[[ \$GATE_REQUIRED_LANE == any && -z \$GATE_RISK_PATHS ]]")"
+export CLASSIFY_OUTPUT='{"tier":2,"reason":"ordinary","risk_paths":[],"required_lane":"antigravity"}'
+assert "ordinary tier-2 classification selects the antigravity lane" \
+  "$(classify_shim "[[ \$GATE_TIER == 2 && \$GATE_REQUIRED_LANE == antigravity && -z \$GATE_RISK_PATHS ]]")"
+export CLASSIFY_OUTPUT='{"tier":2,"reason":"risk","risk_paths":["claude/scripts/x.sh","githooks/pre-push"],"required_lane":"codex"}'
+assert "risk classification selects the codex lane and names the paths" \
+  "$(classify_shim "[[ \$GATE_REQUIRED_LANE == codex ]] && grep -qxF 'githooks/pre-push' <<<\"\$GATE_RISK_PATHS\"")"
+# Every malformed shape must land on tier 2 AND the strongest lane: a classifier
+# the gate cannot read must never be able to relax the lane requirement. The
+# last two entries are the ADR-0008 additions — an unknown lane name and a
+# tier-2/`any` pairing that would let a tier-1 exemption ship a full-pass diff.
+for CLASSIFY_OUTPUT in 'broken' '{}' '{"tier":1}' '{"tier":"1","reason":"docs"}' '{"tier":1,"reason":null}' '{"tier":0,"reason":"docs"}' '' 'null' '[{"tier":1,"reason":"docs"}]' $'{"tier":1,"reason":"docs"}\n{"tier":1,"reason":"docs"}' '{"tier":1,"reason":"docs","risk_paths":[],"required_lane":"gemini"}' '{"tier":1,"reason":"docs","risk_paths":[],"required_lane":null}' '{"tier":1,"reason":"docs","risk_paths":"none","required_lane":"any"}' '{"tier":1,"reason":"docs","risk_paths":[7],"required_lane":"any"}' '{"tier":1,"reason":"docs","required_lane":"any"}' '{"tier":2,"reason":"docs","risk_paths":[],"required_lane":"any"}'; do
+  assert "malformed helper classification keeps full review" \
+    "$(classify_shim "[[ \$GATE_TIER == 2 && \$GATE_REQUIRED_LANE == codex ]]")"
 done
-export CLASSIFY_OUTPUT='{"tier":1,"reason":"docs"}' CLASSIFY_RC=1
-assert "failed helper classification keeps full review" "(source '$SCRIPT_DIR/../gate-lib.sh'; RECEIPT_HELPER='$SHIM_DIR/classify.py'; GATE_RUN_DIR='$SHIM_DIR'; gate_classify_tier; [[ \$GATE_TIER == 2 ]])"
+export CLASSIFY_OUTPUT='{"tier":1,"reason":"docs","risk_paths":[],"required_lane":"any"}' CLASSIFY_RC=1
+assert "failed helper classification keeps full review" \
+  "$(classify_shim "[[ \$GATE_TIER == 2 && \$GATE_REQUIRED_LANE == codex ]]")"
+export CLASSIFY_OUTPUT='{"tier":1,"reason":"docs","risk_paths":[],"required_lane":"any"}' CLASSIFY_RC=0
+export GATE_FORCE_FULL=1
+assert "forced full pass keeps the strongest lane" \
+  "$(classify_shim "[[ \$GATE_TIER == 2 && \$GATE_REQUIRED_LANE == codex ]]")"
+unset GATE_FORCE_FULL
 unset CLASSIFY_OUTPUT CLASSIFY_RC
+
+# ─── gate_select_lane (ADR-0008) ───────────────────────────────
+# lane_of <REVIEW_LANE value, empty for unset> <required lane> — print
+# gate_select_lane's answer (or its refusal text) and return its exit status.
+lane_of() {
+  local value="$1" required="$2"
+  (
+    # shellcheck source=claude/scripts/gate-lib.sh
+    . "$SCRIPT_DIR/../gate-lib.sh"
+    if [[ -n "$value" ]]; then export REVIEW_LANE="$value"; else unset REVIEW_LANE; fi
+    gate_select_lane "$required" 2>&1
+  )
+}
+assert "auto sends a codex-required diff to codex" "[[ \"\$(lane_of '' codex)\" == codex ]]"
+assert "auto sends an ordinary diff to antigravity" "[[ \"\$(lane_of '' antigravity)\" == antigravity ]]"
+assert "auto skips reviewer dispatch for a tier-1 diff" "[[ \"\$(lane_of '' any)\" == skip ]]"
+assert "REVIEW_LANE=codex escalates an ordinary diff" "[[ \"\$(lane_of codex antigravity)\" == codex ]]"
+assert "REVIEW_LANE=codex escalates a tier-1 diff" "[[ \"\$(lane_of codex any)\" == codex ]]"
+assert "REVIEW_LANE=antigravity is honoured on an ordinary diff" "[[ \"\$(lane_of antigravity antigravity)\" == antigravity ]]"
+assert "REVIEW_LANE=antigravity is honoured on a tier-1 diff" "[[ \"\$(lane_of antigravity any)\" == antigravity ]]"
+# The one downgrade that must never be honoured: a risk-surface diff cannot be
+# talked out of the Codex lane by an environment variable.
+assert "REVIEW_LANE=antigravity is refused on a codex-required diff" "! lane_of antigravity codex >/dev/null"
+# A here-string, not a pipe: `set -o pipefail` would report the refusing
+# command's own exit status instead of grep's verdict.
+assert "the refusal names the required lane" "grep -qF 'requires the Codex lane' <<<\"\$(lane_of antigravity codex)\""
+assert "an unknown REVIEW_LANE value is refused" "! lane_of gemini antigravity >/dev/null"
+assert "an unknown required lane is refused" "! lane_of '' nonsense >/dev/null"
+assert "a missing required lane is refused" "! (. '$SCRIPT_DIR/../gate-lib.sh'; gate_select_lane >/dev/null 2>&1)"
 
 assert "explicit committed scope selects immutable objects" "(source '$SCRIPT_DIR/../gate-lib.sh'; FORCE_UNCOMMITTED=false; FORCE_COMMITTED=true; gate_select_diff_target; [[ \$GATE_SCOPE == committed ]])"
 

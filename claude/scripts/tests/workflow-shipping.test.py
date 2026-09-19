@@ -27,7 +27,9 @@ class ShippingTests(unittest.TestCase):
         self.scripts = self.source / "claude/scripts"
         self.scripts.mkdir(parents=True)
         (self.source / "githooks").mkdir()
-        for name in ("review-and-push.sh", "common.sh"):
+        # gate-lib.sh is sourced by review-and-push.sh for gate_select_lane
+        # (ADR-0008), so the staged scripts directory has to carry it.
+        for name in ("review-and-push.sh", "common.sh", "gate-lib.sh"):
             shutil.copy2(ROOT / "claude/scripts" / name, self.scripts / name)
         self.hook = self.source / "githooks/pre-push"
         shutil.copy2(ROOT / "githooks/pre-push", self.hook)
@@ -39,12 +41,27 @@ class ShippingTests(unittest.TestCase):
             CODEX_GATE_BIN=str(self.bin / "codex"),
             REAL_GIT=REAL_GIT,
             LOG_DIR=str(self.root / "logs"),
+            # These suites assert the routing, dirty-tree and push boundaries
+            # around ONE gate, and the staged scripts directory only carries a
+            # Codex gate. Pin the lane so those boundaries are what is being
+            # measured; lane selection itself is covered by
+            # review-and-push.test.sh and pre-push-receipt.test.sh. Escalation
+            # to codex is always permitted (ADR-0008), so this cannot mask a
+            # lane the wrapper would have refused.
+            REVIEW_LANE="codex",
         )
         for key in list(self.env):
             if (
                 key.startswith("BASH_FUNC_")
                 or key.startswith("GIT_")
-                or key in ("GITLEAKS_SKIP", "REVIEW_RECEIPT_BASE", "CODEX_GATE_TIMEOUT")
+                or key
+                in (
+                    "GITLEAKS_SKIP",
+                    "REVIEW_RECEIPT_BASE",
+                    "CODEX_GATE_TIMEOUT",
+                    "REVIEW_LANE_FALLBACK",
+                    "REVIEW_LANE_NOTE",
+                )
             ):
                 del self.env[key]
         self.command("git", ["init", "-qb", "main"])
@@ -72,6 +89,10 @@ class ShippingTests(unittest.TestCase):
             self.scripts / "review-receipt.py",
             """import json, os, sys
 with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(["receipt", *sys.argv[1:]]) + "\\n")
+if sys.argv[1:2] == ["lane"]:
+    print(json.dumps({"tier": 2, "reason": "fixture", "risk_paths": [],
+                      "required_lane": os.environ.get("LANE_REQUIRED", "codex")}))
+    sys.exit(0)
 head = sys.argv[sys.argv.index("--head") + 1]
 sys.exit(0 if head == os.environ["VALID_HEAD"] and os.environ.get("RECEIPT_FAIL") != "1" else 2)
 """,
@@ -403,7 +424,8 @@ if [ "${DIRTY_DURING_TESTS:-0}" = 1 ]; then echo changed-during-tests >> code.tx
         self.env["DIRTY_DURING_REVIEW"] = "1"
         result = self.run_wrapper()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.events(), ["gate"])
+        self.assertEqual(self.events()[1:], ["gate"])
+        self.assertIn('"lane"', self.events()[0])
         self.assertIn("uncommitted changes", result.stdout + result.stderr)
 
     def test_wrapper_cannot_treat_failed_status_as_clean(self):

@@ -64,7 +64,7 @@ invalidates approval. Repeat affected checks and review after fixes, then
 validate the private review receipt immediately before shipping. Exit 0 alone
 is not proof of completed review; report tier/no-diff exemptions separately.
 
-## Proportionality: gate tiers (#212)
+## Proportionality: gate tiers (#212) and review lanes (ADR-0008)
 
 Not every diff earns the full adversarial tax. Both review gates
 (`codex-review-gate.sh`, `antigravity-review-gate.sh`) run a cheap classifier
@@ -94,6 +94,41 @@ error, an unmeasurable diff, or an unknown file class escalates to tier 2 —
 nothing ever falls back to the skip. Renames can't launder either: diffs and
 changed-path lists are computed with `--no-renames`, so `git mv guard.sh
 notes.md` is classified under both paths and reviewed as a full delete+add.
+
+### Which lane reviews it (ADR-0008)
+
+The same classifier also names the **required lane**, and the receipt carries it:
+
+- **Tier 1** requires lane `any` — either gate's exemption receipt ships it.
+- **Tier 2 with no risk path** requires `antigravity`. This is the default lane
+  for ordinary work; the Codex GitHub bot supplies the cross-family second
+  opinion after the push.
+- **Risk paths, an empty changed-path list, or an unreadable classification**
+  require `codex`. Size alone never escalates the lane: a large ordinary diff is
+  still ordinary.
+
+Lanes rank `any < antigravity < codex`, and a receipt ships a diff only when its
+lane ranks at or above the requirement — enforced by `review-receipt.py check`,
+so `githooks/pre-push` needs no lane logic of its own. Escalation is always
+allowed (`REVIEW_LANE=codex`); **downgrade never is** — `REVIEW_LANE=antigravity`
+on a codex-required diff is refused rather than honoured. On such a diff the
+Antigravity gate still runs and still mints its receipt, announcing itself as a
+**supplementary** lane: an independent-lineage second opinion, not the shipping
+gate.
+
+A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
+model pin, a diff above the byte cap) means the lane could not run, so
+`review-and-push.sh` falls back to Codex and records the degradation in the lane
+ledger; `REVIEW_LANE_FALLBACK=block` refuses the push instead. Exit 2 — blocking
+findings, or a verifiably wrong model — never falls back.
+
+`review-and-push.sh` checks the receipt naming the lane it dispatched, which also
+requires the review that run performed to still be approved. Checking by hand,
+use the generic no-`--reviewer` form above: it enforces the same lane requirement
+without needing to know which lane ran. Read the ledger with
+`review-receipt.py stats --since-days 7` before drawing conclusions about lane
+cost; the dotfiles risk list is deliberately unnarrowed, so most diffs *in this
+repository* stay on Codex.
 
 ## Handoff payload
 
@@ -138,18 +173,28 @@ and sandbox settings. Consult `claude/scripts/antigravity-review-gate.sh` and
 `claude/scripts/gate-lib.sh` for the executable invocation and validation rules.
 A matching dispatch label does not establish actual per-run model identity.
 
-Shipping uses the applicable `commit-push-pr` skill. Run the chosen gate with
-`--require` after the last commit; degraded or failed execution supplies no
-approval. Immediately before push, check the receipt against the outgoing HEAD:
+Shipping uses the applicable `commit-push-pr` skill. Ask which lane the diff
+requires, then run **that** gate with `--require` after the last commit;
+degraded or failed execution supplies no approval:
+
+```sh
+python3 ~/.claude/scripts/review-receipt.py lane --repo . --scope committed
+```
+
+Immediately before push, check the receipt against the outgoing HEAD — with no
+`--reviewer`, so the receipt's own recorded classification decides which lanes
+may ship it:
 
 ```sh
 python3 ~/.claude/scripts/review-receipt.py check --repo . \
-  --head "$(git rev-parse HEAD)" --reviewer codex
+  --head "$(git rev-parse HEAD)"
 ```
 
-Use `--reviewer antigravity` for an independently approved alternate gate and
-pass the same `--base <ref>` if one was selected. Successful review receipts and
-explicit current tier/no-diff exemptions are distinct evidence. Missing or stale
-evidence blocks shipping. A receipt records artifact review; it does not itself
-prove different model lineage or real runtime/browser verification. Never bypass
-hooks to evade a missing review or receipt.
+Pass the same `--base <ref>` if one was selected. Naming a lane with
+`--reviewer` narrows the check to that lane; it can never satisfy a stronger
+requirement, so use it for diagnosis rather than for shipping. Successful review
+receipts and explicit current tier/no-diff exemptions are distinct evidence.
+Missing, stale, or below-requirement evidence blocks shipping. A receipt records
+artifact review; it does not itself prove different model lineage or real
+runtime/browser verification. Never bypass hooks to evade a missing review or
+receipt.

@@ -77,6 +77,8 @@ unset ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF
 unset ANTIGRAVITY_GATE_MODEL
 unset GATE_FORCE_FULL
 unset GATE_TIER1_MAX_LINES
+unset REVIEW_LANE
+unset REVIEW_LANE_NOTE
 
 new_repo() {
   R="$(mktemp -d)"
@@ -193,6 +195,29 @@ new_repo
 echo "change" >> "$R/code.txt"
 printf '%s\n' '- [P1] real finding — code.txt:1' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/output"
 check "expiry note imitated on stdout cannot degrade past a blocking finding" 2 "BLOCKING findings" --uncommitted
+rm -rf "$R"
+
+# A partial review that already carries a blocking finding is a verdict, not a
+# degraded lane: exit 2 with and without --require, on every post-dispatch
+# failure path, so review-and-push.sh's exit-3 fallback can never let Codex
+# approve over it (ADR-0008). A P3-only partial still degrades (tested above).
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr"
+check "expired print timeout with a blocking finding is a verdict" 2 "verdict, not a degraded lane" --uncommitted
+check "expired print timeout with a blocking finding is a verdict under --require" 2 "verdict, not a degraded lane" --uncommitted --require
+assert "that verdict mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -rf "$R"
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s\n' '- [P2] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf '124\n' > "$AGY_FAKE_DIR/exit"
+check "agy timeout (124) after a blocking finding is a verdict under --require" 2 "verdict, not a degraded lane" --uncommitted --require
+printf '7\n' > "$AGY_FAKE_DIR/exit"
+check "agy nonzero exit after a blocking finding is a verdict under --require" 2 "verdict, not a degraded lane" --uncommitted --require
+check "agy nonzero exit after a blocking finding is a verdict without --require" 2 "verdict, not a degraded lane" --uncommitted
+rm -f "$AGY_FAKE_DIR/exit"
 rm -rf "$R"
 
 # A benign stderr diagnostic must not defeat a clean final-line verdict, and
@@ -460,6 +485,12 @@ printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 export AGY_CONVERSATIONS_DIR="$R/does-not-exist"
 check "missing propagation line degrades to a warning" 0 "MODEL PIN UNVERIFIED" --uncommitted
 check "missing propagation line fails hard with --require" 3 "MODEL PIN UNVERIFIED" --uncommitted --require
+# A review that produced blocking findings is a verdict even when the pin is
+# unverifiable: exit 2, never the degraded exit 3 that review-and-push.sh
+# answers with a Codex fallback (ADR-0008: no verdict shopping).
+printf -- '- [P1] real defect in code.txt\n' > "$AGY_FAKE_DIR/output"
+check "blocking findings under an unverifiable pin exit 2, not 3" 2 "verdict, not a degraded lane" --uncommitted --require
+assert "no receipt is minted for that verdict" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R"
 
@@ -509,6 +540,36 @@ check "docs-only small diff takes the tier-1 skip" 0 "tier-1 skip" --uncommitted
 assert "agy not invoked on a tier-1 skip" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
+# ADR-0008 relies on the tier valve sitting BEFORE the agy-presence check: with
+# ordinary work routed here, a machine with no agy must still be able to mint a
+# tier-1 exemption rather than degrading every docs diff to the Codex lane.
+# Asserted by running with agy removed from PATH entirely.
+new_repo
+printf '# Title\n\nDocs only.\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+# A PATH built from every executable the current one offers EXCEPT agy, so the
+# case cannot pass by accident on a machine that simply lacks some other tool.
+NO_AGY_PATH="$(mktemp -d)"
+while IFS= read -r candidate; do
+  agy_free_name="${candidate##*/}"
+  [ "$agy_free_name" = agy ] && continue
+  [ -e "$NO_AGY_PATH/$agy_free_name" ] || ln -s "$candidate" "$NO_AGY_PATH/$agy_free_name" 2>/dev/null
+done <<<"$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r agy_free_dir; do
+  [ -d "$agy_free_dir" ] || continue
+  find "$agy_free_dir" -maxdepth 1 -type f -perm -u+x 2>/dev/null
+  find "$agy_free_dir" -maxdepth 1 -type l 2>/dev/null
+done)"
+SAVED_PATH="$PATH"
+PATH="$NO_AGY_PATH"
+assert "agy really is absent from the reduced PATH" "! command -v agy >/dev/null 2>&1"
+check "tier-1 skip needs no agy on PATH" 0 "tier-1 skip" --uncommitted --require
+PATH="$SAVED_PATH"
+assert "the agy-free tier-1 run minted its exemption receipt" \
+  "[ -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "the agy-free tier-1 receipt is a tier-1 exemption" \
+  "jq -e '.completion.outcome == \"tier-1\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+rm -rf "$NO_AGY_PATH" "$R"
+
 new_repo
 printf '# Title\n' > "$R/README.md"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
@@ -522,6 +583,33 @@ new_repo
 printf 'notes about rotation\n' > "$R/token-rotation.md"
 printf -- '- [P1] Broken thing — token-rotation.md:1\n' > "$AGY_FAKE_DIR/output"
 check "risk-surface filename escalates to the full pass (and still blocks)" 2 "BLOCKING findings" --uncommitted
+rm -rf "$R"
+
+# ── ADR-0008: supplementary lane on a codex-required diff ─────────────
+# The gate must still run, still mint its receipt, and say the receipt cannot
+# ship the diff. Silently minting a receipt here is the fail-open ADR-0008 closes.
+new_repo
+printf 'notes about hosts\n' > "$R/hostnames.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "codex-required diff announces the supplementary lane" 0 "supplementary lane" --uncommitted
+assert "supplementary run still dispatches the review" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+assert "supplementary run still mints an antigravity receipt" \
+  "[ -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "the supplementary receipt records the codex requirement" \
+  "grep -qF '\"required_lane\":\"codex\"' '$R/.git/review-receipts/antigravity.json'"
+# And the receipt is refused for shipping, which is the whole point of saying so.
+assert "the supplementary receipt cannot ship the diff" \
+  "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" --reviewer antigravity >/dev/null 2>&1"
+rm -rf "$R"
+
+# An ordinary tier-2 diff is this lane's own work: no supplementary warning.
+new_repo
+printf 'ordinary change\n' > "$R/widget.ts"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "ordinary tier-2 diff is reviewed as the primary lane" 0 "LGTB verdict" --uncommitted
+assert "ordinary diff carries no supplementary warning" \
+  "! (cd '$R' && '$GATE' --uncommitted 2>&1 | grep -qF 'supplementary lane')"
 rm -rf "$R"
 
 new_repo
@@ -1010,7 +1098,11 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
     check "$source_instruction requires alternate review" 0 "LGTB verdict" --committed --require
   fi
   assert "source instruction reaches alternate reviewer" "grep -q 'SOURCE_INSTRUCTION_REVIEW_MARKER' '$AGY_FAKE_DIR/stdin'"
-  assert "source instruction receives reviewed alternate evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  # ADR-0008: the review really happened and the receipt is complete, but an
+  # instruction surface is codex-required, so this receipt cannot ship the diff.
+  assert "source instruction receives reviewed alternate evidence" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  assert "source instruction records the codex lane requirement" "jq -e '.classification.required_lane == \"codex\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  assert "alternate evidence alone cannot ship a source instruction" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
 done
 
@@ -1045,7 +1137,10 @@ for instruction in .claude/commands/check.md .gemini/commands/check.md .agents/e
     check "committed $instruction dispatches alternate review" 0 "LGTB verdict" --committed --require
   fi
   assert "agent document reaches alternate reviewer" "grep -q 'AGENT_DOCUMENT_MARKER' '$AGY_FAKE_DIR/stdin'"
-  assert "agent document receives valid alternate receipt" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  assert "agent document receives a completed alternate receipt" "jq -e '.completion.outcome == \"passed\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  # ADR-0008: agent-document diffs are codex-required; the Antigravity receipt
+  # is a supplementary second opinion and is refused as shipping evidence.
+  assert "alternate evidence alone cannot ship an agent document" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
   rm -rf "$R"
 done
 

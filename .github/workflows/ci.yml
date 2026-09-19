@@ -294,6 +294,11 @@ jobs:
       - name: review-and-push (routing and exec-bit guards)
         if: ${{ !cancelled() }}
         run: claude/scripts/tests/review-and-push.test.sh
+      # ADR-0008: the pre-push hook must refuse a receipt whose lane ranks below
+      # what the diff requires. Drives the real hook over a local bare origin.
+      - name: pre-push receipt lane enforcement
+        if: ${{ !cancelled() }}
+        run: claude/scripts/tests/pre-push-receipt.test.sh
       - name: review receipts and shipping boundaries
         if: ${{ !cancelled() }}
         run: |

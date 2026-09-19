@@ -2256,6 +2256,205 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.begin()
         self.check(False)
 
+    # ─── ADR-0008: lane routing ────────────────────────────────────
+    # `lane` is the read-only classifier both bash gates and review-and-push.sh
+    # consult before choosing a reviewer, and the receipt's stored classification
+    # is what makes `check` refuse a lane too weak for the diff.
+
+    def lane(self, scope="committed", base="main", tier1_max_lines=None):
+        policy = ("--tier1-max-lines=" + tier1_max_lines,) if tier1_max_lines is not None else ()
+        return json.loads(
+            self.run_helper(
+                "lane", "--repo", str(self.repo), "--base", base, "--scope", scope, *policy
+            )
+        )
+
+    def check_refusal(self, *args):
+        """Run `check` expecting a refusal; return its combined output.
+
+        run_helper returns stdout only, and every refusal reason is written to
+        stderr, so a lane or classification rejection has to be read here.
+        """
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(HELPER),
+                "check",
+                "--repo",
+                str(self.repo),
+                "--head",
+                self.git("rev-parse", "HEAD"),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
+        return process.stdout + process.stderr
+
+    def receipts_dir(self):
+        return Path(self.git("rev-parse", "--absolute-git-dir")) / "review-receipts"
+
+    def commit_paths(self, *paths, message="lane fixture"):
+        for path in paths:
+            target = self.repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("lane routing fixture\n")
+            self.git("add", "--", path)
+        self.git("commit", "-qm", message)
+
+    def test_lane_reports_required_lane_and_mints_nothing(self):
+        # code.txt (from setUp) is ordinary work: tier 2, no risk surface.
+        self.assertFalse(self.receipts_dir().exists())
+        ordinary = self.lane()
+        self.assertEqual(ordinary["tier"], 2)
+        self.assertEqual(ordinary["required_lane"], "antigravity")
+        self.assertEqual(ordinary["risk_paths"], [])
+        self.assertIsInstance(ordinary["reason"], str)
+        # A read-only classifier must not provision the receipt layout.
+        self.assertFalse(self.receipts_dir().exists())
+
+        self.git("reset", "--hard", "main")
+        self.commit_paths("notes.md")
+        docs = self.lane()
+        self.assertEqual(docs["tier"], 1)
+        self.assertEqual(docs["required_lane"], "any")
+
+        self.git("reset", "--hard", "main")
+        self.commit_paths("token.txt")
+        risky = self.lane()
+        self.assertEqual(risky["tier"], 2)
+        self.assertEqual(risky["required_lane"], "codex")
+        self.assertEqual(risky["risk_paths"], ["token.txt"])
+
+        self.git("reset", "--hard", "main")
+        self.commit_paths("claude/scripts/tool.sh")
+        self.assertEqual(self.lane()["required_lane"], "codex")
+        self.assertFalse(self.receipts_dir().exists())
+
+    def test_oversize_ordinary_diff_still_routes_to_antigravity(self):
+        # Above the tier-1 cap the diff is tier 2, but size alone is not risk:
+        # the point of the lane split is that ordinary bulk goes to Gemini.
+        self.git("reset", "--hard", "main")
+        (self.repo / "bulk.txt").write_text("".join(f"line {n}\n" for n in range(50)))
+        self.git("add", "bulk.txt")
+        self.git("commit", "-qm", "bulk")
+        classification = self.lane(tier1_max_lines="5")
+        self.assertEqual(classification["tier"], 2)
+        self.assertEqual(classification["required_lane"], "antigravity")
+
+    def test_antigravity_receipt_cannot_ship_a_codex_required_diff(self):
+        self.git("reset", "--hard", "main")
+        self.commit_paths("token.txt")
+        self.complete(self.begin(reviewer="antigravity"))
+        # pre-push calls `check` with no --reviewer; the fail-open this closes is
+        # exactly that path accepting the first valid receipt of either lane.
+        for args in ((), ("--reviewer", "antigravity")):
+            with self.subTest(args=args):
+                self.assertIn("receipt lane below required lane", self.check_refusal(*args))
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        self.check(True, "--reviewer", "codex")
+
+    def test_antigravity_receipt_ships_an_ordinary_diff(self):
+        self.complete(self.begin(reviewer="antigravity"))
+        self.assertIn("required lane: antigravity", self.check())
+        self.assertIn("required lane: antigravity", self.check(True, "--reviewer", "antigravity"))
+
+    def test_any_lane_ships_a_tier_one_docs_diff(self):
+        self.git("reset", "--hard", "main")
+        self.commit_paths("notes.md")
+        self.complete(self.begin(reviewer="antigravity"), "tier-1")
+        self.assertIn("required lane: any", self.check())
+
+    def test_tampered_classification_is_rejected(self):
+        self.complete(self.begin(reviewer="antigravity"))
+        receipt = self.receipts_dir() / "antigravity.json"
+        record = json.loads(receipt.read_bytes())
+        for field, value in (
+            ("required_lane", "any"),
+            ("tier", 1),
+            ("risk_paths", ["invented.txt"]),
+            ("reason", "rewritten"),
+        ):
+            with self.subTest(field=field):
+                tampered = json.loads(json.dumps(record))
+                tampered["classification"][field] = value
+                receipt.write_text(json.dumps(tampered))
+                self.assertIn("classification", self.check_refusal())
+        receipt.write_text(json.dumps(record))
+        self.check()
+
+    def test_tampered_classification_cannot_downgrade_a_codex_required_diff(self):
+        self.git("reset", "--hard", "main")
+        self.commit_paths("token.txt")
+        self.complete(self.begin(reviewer="antigravity"))
+        receipt = self.receipts_dir() / "antigravity.json"
+        record = json.loads(receipt.read_bytes())
+        record["classification"]["required_lane"] = "antigravity"
+        record["classification"]["risk_paths"] = []
+        receipt.write_text(json.dumps(record))
+        self.check(False)
+
+    def test_version_one_receipt_is_rejected(self):
+        self.complete(self.begin(reviewer="antigravity"))
+        receipt = self.receipts_dir() / "antigravity.json"
+        record = json.loads(receipt.read_bytes())
+        self.assertEqual(record["version"], 2)
+        record["version"] = 1
+        record.pop("classification")
+        receipt.write_text(json.dumps(record))
+        self.check(False)
+
+    def test_completions_land_in_an_append_only_ledger(self):
+        self.complete(self.begin(reviewer="antigravity"))
+        ledger = self.receipts_dir() / "ledger.jsonl"
+        self.assertEqual(stat.S_IMODE(ledger.stat().st_mode), 0o600)
+        entry = json.loads(ledger.read_text().splitlines()[-1])
+        self.assertEqual(entry["lane"], "antigravity")
+        self.assertEqual(entry["outcome"], "passed")
+        self.assertEqual(entry["tier"], 2)
+        self.assertEqual(entry["required_lane"], "antigravity")
+        self.assertEqual(entry["head"], self.git("rev-parse", "HEAD"))
+        self.assertEqual(entry["note"], "")
+        # `check` must never consult the ledger: an unreadable one cannot block
+        # a push, and a forged one cannot approve it.
+        ledger.write_text("not json at all\n")
+        self.check()
+
+    def test_ledger_notes_a_degraded_antigravity_fallback_in_stats(self):
+        self.git("reset", "--hard", "main")
+        self.commit_paths("token.txt")
+        self.run_helper(
+            "complete",
+            "--snapshot",
+            str(self.begin(reviewer="codex")),
+            "--outcome",
+            "passed",
+            "--output",
+            str(self.result),
+            "--note",
+            "antigravity-degraded(exit 3): agy CLI not found on PATH",
+        )
+        self.complete(self.begin(reviewer="antigravity"))
+        report = self.run_helper("stats", "--repo", str(self.repo))
+        self.assertIn("codex", report)
+        self.assertIn("antigravity", report)
+        self.assertIn("antigravity degraded → codex: 1", report)
+        # A window that excludes today's entries reports none of them.
+        self.assertIn(
+            "antigravity degraded → codex: 0",
+            self.run_helper("stats", "--repo", str(self.repo), "--since-days", "0"),
+        )
+
+    def test_stats_survives_a_corrupt_ledger(self):
+        self.complete(self.begin(reviewer="antigravity"))
+        ledger = self.receipts_dir() / "ledger.jsonl"
+        with ledger.open("a") as stream:
+            stream.write('{"completed_at":"nonsense"}\n{\n\n')
+        report = self.run_helper("stats", "--repo", str(self.repo))
+        self.assertIn("unreadable ledger lines: 2", report)
+
 
 if __name__ == "__main__":
     unittest.main()

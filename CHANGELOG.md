@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-09-18 — feat(review): Antigravity-first ordinary lane, Codex for risk surfaces (ADR-0008)
+
+- **Closed a pre-push fail-open.** `githooks/pre-push` calls `review-receipt.py
+  check` with no `--reviewer`, and `check` returned on the first valid receipt of
+  *either* lane — so an Antigravity-only receipt already shipped a risk-surface
+  diff. Receipts are now version 2 and carry the classification that produced
+  them; `check` recomputes it on the re-captured patch, refuses a mismatch, and
+  refuses a receipt whose lane ranks below what the diff requires. The hook
+  itself needed no change, which `tests/pre-push-receipt.test.sh` proves by
+  driving the real hook over a local bare origin.
+- **One classifier names the lane.** `classify_tier` now returns `{tier, reason,
+  risk_paths, required_lane}` with `required_lane ∈ any | antigravity | codex`
+  (tier 1 → `any`; tier 2 with no risk path → `antigravity`; risk paths, an
+  empty changed-path list, or an unreadable classification → `codex`). Lanes rank
+  `any < antigravity < codex`. Size alone never escalates the lane. New
+  read-only `review-receipt.py lane` prints that JSON and mints nothing.
+- **Dispatch.** `gate_classify_tier` exports `GATE_REQUIRED_LANE` and
+  `GATE_RISK_PATHS` — every path that could not read a validated classification
+  leaves the lane at `codex` — and new `gate_select_lane` turns a requirement
+  into the gate to run. `review-and-push.sh` classifies, dispatches that gate
+  with `--require --committed`, and drops `--reviewer codex` from its receipt
+  check. `REVIEW_LANE=auto|codex|antigravity` overrides the choice: escalation is
+  honoured, and `antigravity` on a codex-required diff is **refused** rather than
+  honoured. `GATE_FORCE_FULL=1` keeps the strongest lane in the wrapper too, as
+  it already did inside `gate_classify_tier` (Codex gate finding on #473).
+- **A degraded lane is not a verdict.** `REVIEW_LANE_FALLBACK=codex|block`
+  (default `codex`): Antigravity exit 3 — agy missing, an unverifiable model pin,
+  a diff above its measured 185 KB input window — falls back to Codex and records
+  the degradation. Exit 2 (blocking findings, verifiably wrong model) never falls
+  back; re-asking a different reviewer would be verdict shopping.
+- On a codex-required diff the Antigravity gate still runs and still mints its
+  receipt, now announcing itself as a **supplementary** lane: an
+  independent-lineage second opinion, not shipping evidence.
+- **Measurement.** `complete` appends `{completed_at, lane, outcome, tier,
+  required_lane, head, note}` to `<git-dir>/review-receipts/ledger.jsonl` (0600,
+  append-only, `O_NOFOLLOW`, never read by `check` — a forged ledger cannot
+  approve a push and an unwritable one cannot block one). New
+  `review-receipt.py stats [--since-days N]` prints lane × outcome plus the
+  "antigravity degraded → codex" count. Nothing before this could count reviews
+  per lane: `run-*` directories are ephemeral and `<lane>.json` is overwritten
+  per attempt.
+- **The dotfiles risk list is deliberately NOT narrowed** (`*scripts/*`, hooks,
+  `.github/`, instruction files, and the `auth|token|secret|…|schema|migration`
+  substrings), so most diffs *in this repository* still require Codex. The quota
+  saving lands in the application repos where ordinary diffs are the common case.
+  Read the ledger before proposing any change to the risk list.
+- Breaking: every existing receipt is invalidated by the version bump, so the
+  first push after this lands needs a fresh gate run.
 ## 2026-09-18 — feat: Jules as the daily-routine lane (ADR-0009)
 
 - The standing, evidence-checkable cleanups nobody schedules — dead code, tests
