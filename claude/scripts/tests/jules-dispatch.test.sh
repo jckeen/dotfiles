@@ -70,7 +70,11 @@ cat > "$BIN/curl" <<'FAKE'
 printf '%s\n' "$*" >> "$FAKE_CURL_ARGV"
 url=""; method="GET"; prev=""
 for a in "$@"; do
-  case "$a" in https://*) url="$a" ;; esac
+  case "$a" in
+    https://*) url="$a" ;;
+    # --data-binary @file: keep a copy so a case can assert the request body.
+    @*) [[ -n "${FAKE_BODY:-}" ]] && cp "${a#@}" "$FAKE_BODY" ;;
+  esac
   [[ "$prev" == "-X" ]] && method="$a"
   prev="$a"
 done
@@ -103,13 +107,14 @@ export PATH="$BIN:$PATH"
 export FAKE_CURL_ARGV="$WORK/curl-argv.log"
 export FAKE_SEQ="$WORK/curl-seq"
 export FAKE_SOURCES="$WORK/sources.json"
+export FAKE_BODY="$WORK/curl-body.json"
 
 cat > "$FAKE_SOURCES" <<'SRC'
 {"sources":[
   {"name":"sources/github/jckeen/dotfiles","id":"github/jckeen/dotfiles",
-   "githubRepo":{"owner":"jckeen","repo":"dotfiles"}},
+   "githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}},
   {"name":"sources/github/jckeen/atlas","id":"github/jckeen/atlas",
-   "githubRepo":{"owner":"jckeen","repo":"atlas"}}
+   "githubRepo":{"owner":"jckeen","repo":"atlas","defaultBranch":{"displayName":"develop"}}}
 ]}
 SRC
 
@@ -127,7 +132,7 @@ new_case() {
   printf '%s\n' "$GOOD_KEY" > "$KEY"
   chmod 600 "$KEY"
   : > "$FAKE_CURL_ARGV"
-  rm -f "$FAKE_SEQ"
+  rm -f "$FAKE_SEQ" "$FAKE_BODY"
 }
 
 routine() { # name paused repos-block [schedule]
@@ -316,6 +321,53 @@ else
 fi
 
 echo "── dispatch behaviour ──"
+
+# GitHubRepoContext.startingBranch is REQUIRED (sessions reference, and the API
+# answered INVALID_ARGUMENT to a body without it on 2026-09-19). GET /sources
+# reports each repository's default branch, so the dispatcher derives it per
+# repository rather than needing an operator-set value for every session.
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas'
+if dispatch && [[ "$(jq -r '.sourceContext.githubRepoContext.startingBranch' "$FAKE_BODY")" == "develop" ]]; then
+  ok "startingBranch is the source's default branch when JULES_STARTING_BRANCH is unset"
+else
+  fail "the request body did not carry the source's default branch"
+  jq -c '.sourceContext' "$FAKE_BODY" 2>/dev/null | sed 's/^/      | /'
+fi
+
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas'
+if JULES_STARTING_BRANCH=release dispatch \
+  && [[ "$(jq -r '.sourceContext.githubRepoContext.startingBranch' "$FAKE_BODY")" == "release" ]]; then
+  ok "JULES_STARTING_BRANCH overrides the source's default branch"
+else
+  fail "JULES_STARTING_BRANCH did not override the default branch"
+  jq -c '.sourceContext' "$FAKE_BODY" 2>/dev/null | sed 's/^/      | /'
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A source with no default branch and no override cannot make a valid request:
+# the pair fails locally BEFORE the write-ahead record, so nothing is charged
+# against the cap and the other repository still dispatches.
+new_case
+routine alpha false 'repos: all'
+cat > "$CASE_DIR/sources-nobranch.json" <<'NB'
+{"sources":[
+  {"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}},
+  {"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}
+]}
+NB
+FAKE_SOURCES="$CASE_DIR/sources-nobranch.json" dispatch; rc=$?
+if [[ "$rc" -ne 0 ]] && outgrep "jckeen/atlas — no starting branch" \
+  && [[ "$(created_count)" -eq 1 ]] && [[ "$(created_repo jckeen/dotfiles)" -eq 1 ]] \
+  && [[ "$(ledger_jq '[.[] | select(.repo == "jckeen/atlas")] | length')" -eq 0 ]]; then
+  ok "a source without a default branch is refused locally and leaves no ledger record"
+else
+  fail "a source without a default branch was not refused before the write-ahead record (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
 
 new_case
 routine alpha false 'repos: all'
@@ -821,11 +873,11 @@ echo "── second review round ──"
 new_case
 routine alpha false 'repos: all'
 cat > "$CASE_DIR/sources-p1.json" <<'P1'
-{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles"}}],
+{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}}],
  "nextPageToken":"tok-page-2"}
 P1
 cat > "$CASE_DIR/sources-p2.json" <<'P2'
-{"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}]}
+{"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas","defaultBranch":{"displayName":"main"}}}]}
 P2
 if FAKE_SOURCES="$CASE_DIR/sources-p1.json" FAKE_SOURCES_P2="$CASE_DIR/sources-p2.json" dispatch \
   && [[ "$(created_count)" -eq 2 ]] \
@@ -851,11 +903,11 @@ fi
 new_case
 routine alpha false 'repos: all'
 cat > "$CASE_DIR/p1.json" <<'B64'
-{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles"}}],
+{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}}],
  "nextPageToken":"a+b/c=d"}
 B64
 cat > "$CASE_DIR/p2.json" <<'B64P2'
-{"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}]}
+{"sources":[{"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas","defaultBranch":{"displayName":"main"}}}]}
 B64P2
 if FAKE_SOURCES="$CASE_DIR/p1.json" FAKE_SOURCES_P2="$CASE_DIR/p2.json" dispatch \
   && grep -Fq -- 'pageToken=a%2Bb%2Fc%3Dd' "$FAKE_CURL_ARGV" \
@@ -871,7 +923,7 @@ fi
 new_case
 routine alpha false 'repos: all'
 cat > "$CASE_DIR/p1.json" <<'HOSTILE'
-{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles"}}],
+{"sources":[{"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}}],
  "nextPageToken":"x&pageSize=1 y"}
 HOSTILE
 cat > "$CASE_DIR/p2.json" <<'HOSTILEP2'

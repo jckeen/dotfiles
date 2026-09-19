@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-19 — fix(jules-dispatch): send the source's default branch as startingBranch
+
+- `GitHubRepoContext.startingBranch` is required: the first live `POST /sessions`
+  without it returned `400 INVALID_ARGUMENT` (ADR-0009's open question,
+  answered). The dispatcher now takes the branch from `GET /sources`
+  (`githubRepo.defaultBranch.displayName`) unless `JULES_STARTING_BRANCH`
+  overrides it, and refuses a pair with neither before the write-ahead record so
+  nothing is charged against the cap. The fake curl in `jules-dispatch.test.sh`
+  now captures the request body; three cases cover the derived branch, the
+  override, and the refusal.
+
 ## 2026-09-19 — chore(codex-gate): declare Jules routine prompts in `.codex-review-ignore`
 
 - `agents/routines/*` and the generated root `AGENTS.md` are instruction-bearing
