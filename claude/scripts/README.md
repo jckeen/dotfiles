@@ -486,9 +486,11 @@ exemption and still retains the worktree. It stays an assertion rather than an
 inference because a pid-1 child cannot have been started inside a checkout,
 but a user unit can pass a descriptor to the manager's file-descriptor store
 (`FDSTORE=1`) and close its own copy, which no unprivileged scan can see. Both
-commands need the flag, since retirement inspects again, and the release record
-lists each exempted pid, command and parent under `exempt_processes` for the
-recovery record to carry into the archive. Other hosts require an explicit
+commands need the flag, since retirement inspects again. The release record
+lists each exempted pid, command and parent under `exempt_processes`, and the
+recovery record carries that list into the archive beside
+`retirement_exempt_processes`, what the retirement scans themselves skipped —
+the two differ when the session manager restarted in between. Other hosts require an explicit
 platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.

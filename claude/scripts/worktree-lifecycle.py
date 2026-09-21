@@ -536,8 +536,9 @@ def assess(repo, path, trust_process_manager=False):
         raise ValueError("HEAD, path or branch changed since release")
     clean(path)
     check_admin_metadata(admin)
-    active_processes(path, trust_process_manager=trust_process_manager)
-    active_processes(admin, trust_process_manager=trust_process_manager)
+    scans = active_processes(path, trust_process_manager=trust_process_manager)
+    scans += active_processes(admin, trust_process_manager=trust_process_manager)
+    exempt = {process["pid"]: process for process in scans}
     if any(admin.glob("*.lock")):
         raise ValueError("Git operation is active; retain worktree")
     slug = record["github_repo"]
@@ -589,7 +590,17 @@ def assess(repo, path, trust_process_manager=False):
     if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", merge):
         raise ValueError("missing merged artifact identity")
     git(repo, "merge-base", "--is-ancestor", merge, base)
-    return item, admin, dict(record, merge=merge, default_head=base, default_branch=default)
+    return (
+        item,
+        admin,
+        dict(
+            record,
+            merge=merge,
+            default_head=base,
+            default_branch=default,
+            retirement_exempt_processes=[exempt[pid] for pid in sorted(exempt)],
+        ),
+    )
 
 
 def check_relocatable_worktree(path):
@@ -671,9 +682,21 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False):
     (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
     # Recheck after archival. Released ownership is still required, but even
     # an exited writer may have changed the source after the earlier sample.
+    # Each scan can exempt different identities than release did, because the
+    # session manager may have restarted since; the archive records every
+    # exemption any retirement scan observed, so that key never compares.
+    volatile = ("files", "retirement_exempt_processes")
     again, _, current = assess(repo, path, trust_process_manager)
-    if current != {k: v for k, v in record.items() if k != "files"} or again != item:
+    if {k: v for k, v in current.items() if k not in volatile} != {
+        k: v for k, v in record.items() if k not in volatile
+    } or again != item:
         raise ValueError(f"worktree changed during archival; retained; archive: {archive}")
+    observed = {
+        process["pid"]: process
+        for process in record["retirement_exempt_processes"]
+        + current["retirement_exempt_processes"]
+    }
+    record["retirement_exempt_processes"] = [observed[pid] for pid in sorted(observed)]
     # A completed writer no longer appears in process evidence. Bind the
     # final source state to the actual saved bytes, including archive hardlinks;
     # ignore access/modify timestamps that do not change recoverable content.

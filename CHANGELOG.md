@@ -19,6 +19,12 @@
   descriptor to the manager's file-descriptor store (`FDSTORE=1`) and close its
   own copy, and no unprivileged scan can read those targets. The residual is the
   operator's call, so the exemption is opt-in on both commands and recorded.
+- **What the archive shows** (Codex review finding, medium): retirement inspects
+  again and its scans can exempt different pids than release did, so
+  `recovery.json` now carries `retirement_exempt_processes` — every identity
+  either retirement scan skipped — beside the release record's
+  `exempt_processes`. A restarted session manager therefore changes the archived
+  identities without failing the archival recheck, which ignores that key.
 - Seven cases cover it: the pair refusing release until asserted, the asserted
   pair released and retired end to end with real `EACCES` (record and
   `recovery.json` both list it), retirement still needing the flag, the

@@ -1904,8 +1904,34 @@ if kind == 'writer':
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         archive = Path(json.loads(result.stdout)["archive"])
+        recovery = json.loads((archive / "recovery.json").read_text())
+        self.assertEqual(recovery["exempt_processes"], exempt)
+        self.assertEqual(recovery["retirement_exempt_processes"], exempt)
+
+    def test_archive_records_the_identities_retirement_itself_exempted(self):
+        # The session manager can restart between release and retirement, so
+        # the archive must name what the retirement scans actually skipped.
+        released = self.denied_user_session()
+        self.merged()
+        self.assertEqual(self.release("--trust-process-manager").returncode, 0)
+        for entry in (self.proc / "356", self.proc / "362"):
+            self.allow_session_evidence(entry)
+            shutil.rmtree(entry)
+        for pid, comm, ppid in ((500, "systemd", 1), (501, "(sd-pam)", 500)):
+            self.deny_session_evidence(self.session_process(pid, comm, ppid))
+        result = self.retire(
+            "--apply", "--archive-dir", str(self.root / "archive"), "--trust-process-manager"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = Path(json.loads(result.stdout)["archive"])
+        recovery = json.loads((archive / "recovery.json").read_text())
+        self.assertEqual(recovery["exempt_processes"], released)
         self.assertEqual(
-            json.loads((archive / "recovery.json").read_text())["exempt_processes"], exempt
+            recovery["retirement_exempt_processes"],
+            [
+                {"pid": 500, "comm": "systemd", "ppid": 1},
+                {"pid": 501, "comm": "(sd-pam)", "ppid": 500},
+            ],
         )
 
     def test_readable_session_manager_reference_still_refuses_release(self):
