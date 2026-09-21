@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-09-21 — fix(worktree-lifecycle): exempt the uninspectable systemd user-session pair
+
+- `release` (and therefore `retire`) always refused on any systemd user-session
+  host: `systemd --user` and its `(sd-pam)` helper are same-uid processes whose
+  cwd, root, exe, descriptor targets and maps refuse this user with `EACCES`,
+  and fail-closed retained on that. New `--trust-process-manager` exempts that
+  pair, and only on the whole signature (current user's credentials, every
+  reference of every thread denied with `EACCES`, and an identity the user
+  cannot forge) — one readable reference is evidence, not an exemption. Without the flag the refusal now names the pid and
+  the flag instead of repeating the generic message. Each exempted pid, comm and
+  ppid lands in the release record's `exempt_processes` and travels into the
+  recovery record, so the archive shows what was never inspected.
+- **Identity comes from the system manager** (Codex review finding, medium):
+  `PPid` 1 does not mean pid 1 started a process — an orphan is reparented — and
+  `comm` is self-settable, so the first draft would have exempted a same-user
+  look-alike. The manager is now the pid `systemctl show --property=MainPID
+  user@<uid>.service` reports, and the helper must be a `(sd-pam)` child of that
+  pid in the manager's own session, which a service cannot be: systemd starts
+  each service in a session of its own. A host where that pid cannot be resolved
+  exempts nothing.
+- **Why an assertion rather than an inference** (Codex review finding, medium):
+  pid 1 starting a process proves no shell in a worktree did, so it holds no
+  cwd, root, exe or mapping there — but a user unit can hand a worktree
+  descriptor to the manager's file-descriptor store (`FDSTORE=1`) and close its
+  own copy, and no unprivileged scan can read those targets. The residual is the
+  operator's call, so the exemption is opt-in on both commands and recorded.
+- **What the archive shows** (Codex review finding, medium): retirement inspects
+  again and its scans can exempt different pids than release did, so
+  `recovery.json` now carries `retirement_exempt_processes` — every identity
+  either retirement scan skipped — beside the release record's
+  `exempt_processes`. A restarted session manager therefore changes the archived
+  identities without failing the archival recheck, which ignores that key.
+- Cases: the pair refusing release until asserted, the asserted pair released and
+  retired end to end with real `EACCES` (record and `recovery.json` both list
+  it), retirement still needing the flag, the archive recording what retirement
+  itself exempted after the manager restarts under a new pid, the manager's
+  descriptor table that lists names while refusing every target, seven identity
+  look-alikes that retain even under the assertion (including an unnamed pid
+  claiming `comm` `systemd` and a `(sd-pam)` child in a session of its own),
+  partial readability on each of the five surfaces, and `EPERM` instead of
+  `EACCES`. The fixture answers for the system manager the way it answers for
+  `gh`. Closes #475.
+
 ## 2026-09-21 — fix(gen): SIGPIPE in --check, plus checker docs and an unasserted count
 
 - **`gen-instruction-files.sh --check` no longer dies of SIGPIPE.** The stale-diff

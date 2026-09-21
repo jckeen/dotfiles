@@ -7,6 +7,7 @@ that its session is finished; the timer never releases or removes worktrees.
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -336,15 +337,158 @@ def inspect_thread(path, entry):
             raise
 
 
-def active_processes(path, proc_root=Path("/proc")):
-    """Retain visible thread references; missing live-task evidence is unsafe."""
+def process_identity(entry):
+    """The command, parent pid and single owning uid recorded for a process.
+
+    Both files stay world-readable after a process clears its dumpable flag,
+    so identity remains verifiable for one whose references are denied below.
+    """
+    comm = os.fsdecode((entry / "comm").read_bytes().removesuffix(b"\n"))
+    fields = {}
+    for line in (entry / "status").read_bytes().split(b"\n"):
+        key, _, value = line.partition(b":")
+        fields[os.fsdecode(key)] = value.split()
+    owners = {int(value) for value in fields["Uid"]}
+    if len(owners) != 1 or len(fields["PPid"]) != 1:
+        raise ValueError("ambiguous process identity")
+    return comm, int(fields["PPid"][0]), owners.pop()
+
+
+def readlink_denied(link):
+    """True only when an existing link refuses this user with EACCES."""
+    try:
+        os.readlink(link)
+    except OSError as error:
+        return error.errno == errno.EACCES
+    return False
+
+
+def evidence_denied(thread):
+    """True when every filesystem reference of a thread refuses us with EACCES.
+
+    A readable reference is partial evidence to inspect instead, and another
+    errno describes a different failure; both disqualify the exemption below.
+    """
+    if not all(readlink_denied(thread / name) for name in ("cwd", "root", "exe")):
+        return False
+    try:
+        with (thread / "maps").open("rb"):
+            return False
+    except OSError as error:
+        if error.errno != errno.EACCES:
+            return False
+    # A session manager's own descriptor table can be listable while every
+    # target refuses readlink; its (sd-pam) helper refuses even enumeration.
+    try:
+        with os.scandir(thread / "fd") as descriptors:
+            targets = [Path(descriptor.path) for descriptor in descriptors]
+    except OSError as error:
+        return error.errno == errno.EACCES
+    return all(readlink_denied(target) for target in targets)
+
+
+def session_manager_pid(uid):
+    """The pid the system manager reports for this user's session manager.
+
+    Nothing in /proc establishes this: an orphan is reparented to pid 1 and
+    any process can rename its own `comm`, so a same-user look-alike could
+    otherwise present the whole signature below. Ask the manager that started
+    the session instead; the user cannot influence its answer.
+    """
+    pid = int(
+        text(run(["systemctl", "show", "--property=MainPID", "--value", f"user@{uid}.service"]))
+    )
+    if pid <= 0:
+        raise ValueError("no systemd session manager for this user")
+    return pid
+
+
+def process_session(entry):
+    """The process group and session of a pid, from world-readable stat."""
+    # comm sits in parentheses and may itself contain spaces or parentheses.
+    fields = os.fsdecode((entry / "stat").read_bytes()).rpartition(")")[2].split()
+    return int(fields[2]), int(fields[3])
+
+
+def denied_session_process(proc_root, entry, uid, manager):
+    """Identify a systemd user-session process no scan can read, or None.
+
+    Every systemd user session contributes two same-uid processes whose
+    references are unreadable: `systemd --user` and its `(sd-pam)` helper
+    change credentials at exec, which clears dumpable and makes cwd, root,
+    exe, descriptor targets and maps refuse this user with EACCES. Retaining
+    on uninspectable evidence therefore retains every worktree on every
+    systemd host, which is what `--trust-process-manager` exempts -- and only
+    for exactly that pair. The manager is the pid the system manager names,
+    not whatever claims the name. The helper must be its child and share its
+    session, which a service cannot: the manager starts each one in a session
+    of its own, so only a process it forked without exec is in there with it.
+
+    What the operator asserts, rather than this scan proving it, is the
+    descriptor residual: a user unit can pass a worktree descriptor to the
+    manager's file-descriptor store (`FDSTORE=1`) and close its own copy,
+    leaving the manager the last holder, and readlink on those targets is
+    exactly what EACCES denies. The structural argument covers the rest --
+    a session manager was not started from a checkout this user created later
+    -- and any readable reference is evidence rather than an exemption, so a
+    look-alike that leaks one inspectable reference still retains the
+    worktree. Every exemption is recorded in the release record.
+    """
+    try:
+        comm, ppid, owner = process_identity(entry)
+        if owner != uid:
+            return None
+        if int(entry.name) == manager:
+            if comm != "systemd" or ppid != 1:
+                return None
+        else:
+            if comm != "(sd-pam)" or ppid != manager:
+                return None
+            if process_session(entry) != process_session(proc_root / str(manager)):
+                return None
+        threads = [thread for thread in (entry / "task").iterdir() if thread.name.isdigit()]
+        if not threads or not all(evidence_denied(thread) for thread in threads):
+            return None
+    except (OSError, ValueError, KeyError, IndexError):
+        # Unreadable or malformed identity is never an exemption; the caller
+        # inspects the process and reports what it could not establish.
+        return None
+    return dict(pid=int(entry.name), comm=comm, ppid=ppid)
+
+
+def active_processes(path, proc_root=Path("/proc"), trust_process_manager=False):
+    """Retain visible thread references; missing live-task evidence is unsafe.
+
+    Returns the systemd user-session processes the operator's assertion
+    exempted, so callers can record the identities no scan could read.
+    """
     if not proc_root.is_dir():
         raise ValueError("automatic process inspection requires /proc; retain on this platform")
+    uid = os.getuid()
+    # Resolve the one pid an exemption can apply to before scanning. A host
+    # without a systemd user session simply exempts nothing.
+    try:
+        manager = session_manager_pid(uid)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        manager = None
+    exempt = []
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            if entry.stat().st_uid != os.getuid():
+            if entry.stat().st_uid != uid:
+                continue
+            session = None
+            if manager is not None:
+                session = denied_session_process(proc_root, entry, uid, manager)
+            if session is not None:
+                if not trust_process_manager:
+                    raise ValueError(
+                        "cannot inspect this user's systemd session process "
+                        f"{session['pid']} ({session['comm']}); retain worktree or assert "
+                        "--trust-process-manager"
+                    )
+                exempt.append(session)
                 continue
             # The leader may be a zombie while workers still hold references.
             # Threads can also have private cwd/root and descriptor tables.
@@ -367,9 +511,10 @@ def active_processes(path, proc_root=Path("/proc")):
                 except OSError:
                     pass
             raise ValueError("cannot inspect a same-user process; retain worktree") from error
+    return exempt
 
 
-def release(repo, path, head, owner, pr, slug):
+def release(repo, path, head, owner, pr, slug, trust_process_manager=False):
     item, admin = selected(repo, path)
     path = Path(item["path"])
     if item["HEAD"] != head:
@@ -378,8 +523,10 @@ def release(repo, path, head, owner, pr, slug):
         raise ValueError("release needs an owner and valid GitHub repository/PR")
     clean(path)
     check_admin_metadata(admin)
-    active_processes(path)
-    active_processes(admin)
+    # Record what no scan could read so the archive shows the exemption.
+    scans = active_processes(path, trust_process_manager=trust_process_manager)
+    scans += active_processes(admin, trust_process_manager=trust_process_manager)
+    exempt = {item["pid"]: item for item in scans}
     if (admin / MARKER).exists():
         previous = marker(admin)
         if previous["owner"] != owner:
@@ -392,6 +539,7 @@ def release(repo, path, head, owner, pr, slug):
         owner=owner,
         pr=pr,
         github_repo=slug,
+        exempt_processes=[exempt[pid] for pid in sorted(exempt)],
         released_at=datetime.now(timezone.utc).isoformat(),
     )
     with tempfile.NamedTemporaryFile(mode="w", dir=admin, delete=False) as stream:
@@ -404,7 +552,7 @@ def release(repo, path, head, owner, pr, slug):
     return data
 
 
-def assess(repo, path):
+def assess(repo, path, trust_process_manager=False):
     item, admin = selected(repo, path)
     path = Path(item["path"])
     try:
@@ -419,8 +567,9 @@ def assess(repo, path):
         raise ValueError("HEAD, path or branch changed since release")
     clean(path)
     check_admin_metadata(admin)
-    active_processes(path)
-    active_processes(admin)
+    scans = active_processes(path, trust_process_manager=trust_process_manager)
+    scans += active_processes(admin, trust_process_manager=trust_process_manager)
+    exempt = {process["pid"]: process for process in scans}
     if any(admin.glob("*.lock")):
         raise ValueError("Git operation is active; retain worktree")
     slug = record["github_repo"]
@@ -472,7 +621,17 @@ def assess(repo, path):
     if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", merge):
         raise ValueError("missing merged artifact identity")
     git(repo, "merge-base", "--is-ancestor", merge, base)
-    return item, admin, dict(record, merge=merge, default_head=base, default_branch=default)
+    return (
+        item,
+        admin,
+        dict(
+            record,
+            merge=merge,
+            default_head=base,
+            default_branch=default,
+            retirement_exempt_processes=[exempt[pid] for pid in sorted(exempt)],
+        ),
+    )
 
 
 def check_relocatable_worktree(path):
@@ -483,8 +642,8 @@ def check_relocatable_worktree(path):
         raise ValueError("core.worktree overrides require separate retirement; retain worktree")
 
 
-def retire(repo, path, apply, archive_dir):
-    item, admin, record = assess(repo, path)
+def retire(repo, path, apply, archive_dir, trust_process_manager=False):
+    item, admin, record = assess(repo, path, trust_process_manager)
     if not apply:
         return dict(
             disposition="ready", path=item["path"], owner=record["owner"], head=item["HEAD"]
@@ -554,9 +713,21 @@ def retire(repo, path, apply, archive_dir):
     (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
     # Recheck after archival. Released ownership is still required, but even
     # an exited writer may have changed the source after the earlier sample.
-    again, _, current = assess(repo, path)
-    if current != {k: v for k, v in record.items() if k != "files"} or again != item:
+    # Each scan can exempt different identities than release did, because the
+    # session manager may have restarted since; the archive records every
+    # exemption any retirement scan observed, so that key never compares.
+    volatile = ("files", "retirement_exempt_processes")
+    again, _, current = assess(repo, path, trust_process_manager)
+    if {k: v for k, v in current.items() if k not in volatile} != {
+        k: v for k, v in record.items() if k not in volatile
+    } or again != item:
         raise ValueError(f"worktree changed during archival; retained; archive: {archive}")
+    observed = {
+        process["pid"]: process
+        for process in record["retirement_exempt_processes"]
+        + current["retirement_exempt_processes"]
+    }
+    record["retirement_exempt_processes"] = [observed[pid] for pid in sorted(observed)]
     # A completed writer no longer appears in process evidence. Bind the
     # final source state to the actual saved bytes, including archive hardlinks;
     # ignore access/modify timestamps that do not change recoverable content.
@@ -685,6 +856,12 @@ def main():
     parser.add_argument("--pr", type=int)
     parser.add_argument("--github-repo")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--trust-process-manager",
+        action="store_true",
+        help="assert that this user's uninspectable systemd session manager and its (sd-pam) "
+        "helper hold no reference to the worktree; each exempted pid is recorded",
+    )
     parser.add_argument("--archive-dir", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
@@ -705,10 +882,22 @@ def main():
             if not all((args.head, args.owner, args.pr, args.github_repo)):
                 raise ValueError("release requires --head, --owner, --pr and --github-repo")
             result = release(
-                args.repo, args.worktree, args.head, args.owner, args.pr, args.github_repo
+                args.repo,
+                args.worktree,
+                args.head,
+                args.owner,
+                args.pr,
+                args.github_repo,
+                args.trust_process_manager,
             )
         else:
-            result = retire(args.repo, args.worktree.resolve(), args.apply, args.archive_dir)
+            result = retire(
+                args.repo,
+                args.worktree.resolve(),
+                args.apply,
+                args.archive_dir,
+                args.trust_process_manager,
+            )
         print(json.dumps(result, indent=2))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"worktree-lifecycle: {error}", file=sys.stderr)
