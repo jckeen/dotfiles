@@ -117,6 +117,23 @@ def oid(repo, ref):
     )
 
 
+def own_worktrees(repo):
+    """Real paths of this repository's own worktrees, main checkout included.
+
+    `git ls-files --others` reports any directory it refuses to descend into as a
+    single entry with a trailing slash, and a directory only has to *look* like a
+    repository to qualify (a `.git` holding HEAD, objects and refs). Dropping such
+    an entry is safe only for this repo's own worktrees (#474); every other
+    boundary keeps failing closed in file_bytes(), so a fabricated `.git` cannot
+    hide a dirty instruction file behind it.
+    """
+    return {
+        os.path.realpath(os.fsdecode(line[len(b"worktree ") :]))
+        for line in git(repo, "worktree", "list", "--porcelain").split(b"\n")
+        if line.startswith(b"worktree ")
+    }
+
+
 def named_instruction(path):
     name = Path(path).name
     # .codex-review-ignore steers what the Codex reviewer reports, so it is an
@@ -161,14 +178,27 @@ def modes_differ(mode1, mode2, file_mode=True):
 def instruction(path):
     parts = Path(path).parts
     name = parts[-1]
-    hook = any(p in ("githooks", ".githooks") for p in parts) or ("claude", "hooks") in zip(
-        parts, parts[1:]
+    # Where the hook tree starts, so the vendored test below can fire only *below*
+    # it: a dependency that vendors a githooks/ directory must not thereby hide its
+    # own AGENTS.md from the sweep.
+    hook_at = next(
+        (
+            index
+            for index, p in enumerate(parts)
+            if p in ("githooks", ".githooks")
+            or (
+                p in ("claude", ".claude", ".codex", ".gemini")
+                and parts[index + 1 : index + 2] == ("hooks",)
+            )
+        ),
+        None,
     )
     # A dependency's own CLAUDE.md is not this repo's instruction surface, so the
     # vendored test short-circuits the whole predicate rather than clearing just
-    # `hook` — named_instruction() matches on basename alone and would win (#439).
-    if hook and (
-        any(p in ("node_modules", ".bun", "dist", "__pycache__") for p in parts)
+    # the hook term — named_instruction() matches on basename alone and would win
+    # over it (#439).
+    if hook_at is not None and (
+        any(p in ("node_modules", ".bun", "dist", "__pycache__") for p in parts[hook_at + 1 :])
         or name
         in (
             "bun.lock",
@@ -183,7 +213,7 @@ def instruction(path):
     return (
         any(p in AGENT_NAMESPACES for p in parts)
         or source_instruction(path)
-        or hook
+        or hook_at is not None
         or named_instruction(path)
         or name
         in (
@@ -536,10 +566,15 @@ def capture(repo, base, scope):
     tracked_files = {
         path for path, (mode, _) in staged.items() if mode in ("100644", "100755", "120000")
     }
+    worktrees = own_worktrees(repo)
+
+    def own_boundary(path):
+        return path.endswith("/") and os.path.realpath(repo / path.rstrip("/")) in worktrees
+
     untracked = {
         os.fsdecode(p)
         for p in git(repo, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
-        if p
+        if p and not own_boundary(os.fsdecode(p))
     }
     paths = []
     if scope == "committed":
@@ -569,12 +604,11 @@ def capture(repo, base, scope):
         for p in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
             b"\0"
         )
-        # A trailing slash marks a nested repository (a worktree under
-        # .claude/worktrees/, say) that git lists without descending into it, so
-        # nothing behind that boundary is an instruction surface of this repo and
-        # untracked_sha256 must not bind to the directory entry either (#474).
+        # One of this repo's own worktrees, listed as a directory entry git will
+        # not descend into: nothing behind that boundary is an instruction surface
+        # of this repo, and untracked_sha256 must not bind to the entry (#474).
         if p
-        and not p.endswith(b"/")
+        and not own_boundary(os.fsdecode(p))
         and not private_agent_data(os.fsdecode(p))
         and instruction(os.fsdecode(p))
     }
