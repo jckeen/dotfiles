@@ -220,6 +220,10 @@ printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],
                 self.assertEqual(retry.returncode, 3, retry.stdout + retry.stderr)
                 self.assertIn("rc=42", retry.stdout + retry.stderr)
                 self.assertFalse((receipts / "codex.json").exists())
+                # The retry's `begin` retires the alternate lane's receipt too
+                # (#480): a failed newer review must leave nothing behind for the
+                # lane-blind `check` githooks/pre-push runs to accept.
+                self.assertFalse((receipts / "antigravity.json").exists())
                 alternate_check = t.command(
                     "python3",
                     [
@@ -231,8 +235,8 @@ printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],
                         t.head,
                     ],
                 )
-                self.assertEqual(alternate_check.returncode, 0, alternate_check.stderr)
-                self.assertIn("Valid antigravity", alternate_check.stdout)
+                self.assertEqual(alternate_check.returncode, 2, alternate_check.stdout)
+                self.assertIn("no valid committed review receipt", alternate_check.stderr)
                 wrapper.communicate("y\n", timeout=15)
                 self.assertNotEqual(wrapper.returncode, 0, transcript.read_text())
             finally:
@@ -244,7 +248,23 @@ printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],
             self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base
         )
         self.assertNotIn("scan", t.events())
-        # The generic hook still accepts an explicitly used alternate receipt.
+        # A direct push cannot fall back to the alternate receipt the failed
+        # retry retired (#480): the hook's lane-blind `check` finds none, and it
+        # refuses before the secret scan it would otherwise run.
+        blocked = t.command("git", ["push", str(t.remote), t.head + ":refs/heads/feature"])
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("no valid committed review receipt", blocked.stderr)
+        self.assertNotIn("scan", t.events())
+        self.assertEqual(
+            self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base
+        )
+        # A review that runs again and approves ships the same commit, scan included.
+        failure_flag.unlink()
+        approved = t.command(
+            "bash",
+            [str(t.scripts / "codex-review-gate.sh"), "--require", "--committed", "--no-issues"],
+        )
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
         self.git("push", str(t.remote), t.head + ":refs/heads/feature")
         self.assertIn("scan", t.events())
         self.assertEqual(

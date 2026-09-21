@@ -2371,6 +2371,34 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.begin()
         self.check(False)
 
+    def test_failed_new_run_invalidates_a_competing_lane_receipt(self):
+        """A review beginning in one lane retires the other lane's approval too.
+
+        Both gates exit 2 on blocking findings WITHOUT recording a receipt, so
+        the only trace of a blocked review is the attempt its `begin` opened.
+        githooks/pre-push calls `check` with no `--reviewer`, so a surviving
+        competing approval would ship the diff the newest verdict rejected.
+        """
+        for approved, blocked in (("antigravity", "codex"), ("codex", "antigravity")):
+            with self.subTest(approved=approved, blocked=blocked):
+                self.complete(self.begin(reviewer=approved))
+                self.check()
+                snapshot = self.begin(reviewer=blocked)
+                self.check(False)
+                self.check(False, "--reviewer", approved)
+                # This closes a bypass, not the lane: the re-run that approves ships.
+                self.complete(snapshot)
+                self.check()
+                self.check(True, "--reviewer", blocked)
+
+    def test_competing_in_flight_review_cannot_record_after_a_newer_begin(self):
+        first = self.begin(reviewer="antigravity")
+        second = self.begin(reviewer="codex")
+        self.complete(first, ok=False)
+        self.check(False)
+        self.complete(second)
+        self.check()
+
     # ─── ADR-0008: lane routing ────────────────────────────────────
     # `lane` is the read-only classifier both bash gates and review-and-push.sh
     # consult before choosing a reviewer, and the receipt's stored classification

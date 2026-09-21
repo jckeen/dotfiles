@@ -837,6 +837,28 @@ def invalidate(receipts, lane):
     return attempt
 
 
+def supersede(receipts, lane):
+    """Retire EVERY lane's evidence for this artifact, then open `lane`'s attempt.
+
+    A review starting in one lane must not leave another lane's older approval
+    standing: both gates exit 2 on blocking findings WITHOUT recording a receipt,
+    so the only trace of a blocked review is the attempt its `begin` opened.
+    githooks/pre-push calls `check` with no `--reviewer`, which accepts either
+    lane's receipt, so a surviving competing approval would ship the diff the
+    newest verdict rejected. Bumping the competing attempt token as well
+    supersedes a review already in flight there, so the only receipt that can
+    exist is the one this attempt records. Re-running a lane and approving ships
+    as before — this closes a bypass, not a lane.
+
+    The competing lanes go first: an interruption must never leave a lane OTHER
+    than this one holding evidence the new review is overriding.
+    """
+    for other in LANES:
+        if other != lane:
+            invalidate(receipts, other)
+    return invalidate(receipts, lane)
+
+
 def assert_attempt(record):
     _, _, receipts = layout(record["repository"])
     marker = read_json(receipts / (record["reviewer"]["name"] + ".attempt.json"))
@@ -1029,7 +1051,10 @@ def resolve_base(repo, requested=None):
 
 def begin(args):
     repo, directory, receipts = layout(args.repo)
-    attempt = invalidate(receipts, args.reviewer)
+    # Cross-lane: only a review that actually starts can reach a verdict, so the
+    # `invalidate` subcommand (a gate's cancellation trap, which may fire before
+    # `begin`) keeps its own-lane scope and cannot cost an untouched approval.
+    attempt = supersede(receipts, args.reviewer)
     scope = args.scope
     if scope == "auto":
         scope = (

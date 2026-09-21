@@ -244,6 +244,19 @@ second opinion, not shipping evidence. Receipts are version 2; a version-1
 receipt carries no lane requirement and is rejected outright, so the first push
 after this landed needs a fresh gate run.
 
+**One artifact holds at most one receipt.** `begin` retires *every* lane's
+receipt and attempt token, not only its own, so the receipt that survives always
+belongs to the most recently started review. Both gates exit 2 on blocking
+findings **without** recording anything, so a blocked review leaves no approval
+for `check` to accept — an older receipt from the other lane cannot ship a diff
+the newest verdict rejected. Re-run the lane and approve and the push goes
+through as usual. Two consequences: a review already in flight in the other lane
+can no longer record its outcome once a newer one starts, and a supplementary
+second opinion belongs **before** the shipping review, because running it
+afterwards retires the shipping receipt. A gate's cancellation trap uses
+`invalidate`, which stays own-lane: a review that never started cannot reach a
+verdict, so it must not cost an untouched approval.
+
 The ledger is written by `complete` (0600, append-only) and is **never read by
 `check`**: a forged ledger cannot approve a push and an unwritable one cannot
 block one. The dotfiles risk list is deliberately unnarrowed, so most diffs in

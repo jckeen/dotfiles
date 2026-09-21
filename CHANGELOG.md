@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-21 — fix(review-receipt): a blocked review retires the other lane's approval
+
+- **A failed newer review can no longer be bypassed by an older competing
+  approval.** `begin` invalidated only its own lane, so with an Antigravity
+  approval already in hand for the unchanged HEAD, a Codex gate that then
+  reported blocking findings and exited 2 left that approval standing — and
+  because `githooks/pre-push` calls `check` with no `--reviewer`, which accepts
+  either lane's receipt, a plain `git push` shipped the diff the newest verdict
+  had just rejected. `begin` now retires every lane's receipt and attempt token,
+  not just its own, so the only receipt that can exist belongs to the most recent
+  attempt; a blocked review, which records nothing, therefore leaves nothing for
+  the push boundary to accept. Re-running the lane and approving ships as before.
+  Bumping the competing attempt token also supersedes a review already in flight
+  in the other lane, closing the same hole when the two overlap in time. The
+  `invalidate` subcommand keeps its own-lane scope: a gate's cancellation trap can
+  fire before `begin`, and a review that never started cannot reach a verdict, so
+  it must not cost an untouched approval. Receipt format and every other lane
+  rule are unchanged, so existing receipts stay valid. `review-receipt.test.py`
+  covers both lane orderings and the in-flight case, and
+  `tests/pre-push-receipt.test.sh` drives the real hook and a real `git push`:
+  before the fix the blocked-review push reached the origin. Closes #480.
+
 ## 2026-09-21 — fix(review-receipt): nested worktrees and vendored instruction names
 
 - **An own worktree no longer aborts the snapshot, and only an own worktree is

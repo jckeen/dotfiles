@@ -114,7 +114,11 @@ allowed (`REVIEW_LANE=codex`); **downgrade never is** — `REVIEW_LANE=antigravi
 on a codex-required diff is refused rather than honoured. On such a diff the
 Antigravity gate still runs and still mints its receipt, announcing itself as a
 **supplementary** lane: an independent-lineage second opinion, not the shipping
-gate.
+gate. Run that second opinion **before** the shipping review: starting a review
+in either lane retires the other lane's receipt for the same artifact, so that a
+blocking verdict cannot be bypassed by an older approval (#480) — which also
+means a supplementary run afterwards retires the receipt you were going to push
+on.
 
 A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
 model pin, a diff above the byte cap) means the lane could not run, so
