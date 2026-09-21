@@ -58,6 +58,14 @@ set -euo pipefail
 readonly JULES_API_HOST="jules.googleapis.com"
 readonly JULES_API_BASE="https://${JULES_API_HOST}/v1alpha"
 readonly JULES_AUTOMATION_MODE="AUTO_CREATE_PR"
+# The commit-subject types check-commit-format.sh enforces. That check is
+# required, so a non-conventional subject makes a routine pull request
+# unmergeable — the first live run's `No changes needed: doc drift checkers pass`
+# did exactly that (#479). The catalog files already asked for conventional
+# subjects and the session ignored them, so the requirement is repeated in the
+# header this script injects, where it is the first thing the session reads.
+# jules-dispatch.test.sh asserts this list still matches the checker's TYPES.
+readonly COMMIT_TYPES='feat|fix|refactor|chore|docs|test|style|perf|build|ci|revert'
 # A bound on paging, so a server that keeps handing back a token cannot spin
 # here forever. 100 sources per page, so this is 5000 repositories.
 readonly SOURCES_PAGE_LIMIT=50
@@ -677,12 +685,13 @@ still_eligible() { # repo -> 0 if it should still dispatch
 }
 
 build_prompt() { # repo
-  printf 'Repository: %s\nRoutine: %s\nHard limits: at most %s pull request(s) this run; at most %s file(s) changed per pull request.\nRequired PR label: %s\nAcceptance: %s\n\n%s' \
-    "$1" "$FM_NAME" "$FM_MAX_PRS" "$FM_MAX_FILES" "$FM_LABEL" "$FM_ACCEPTANCE" "$FM_PROMPT"
+  printf 'Repository: %s\nRoutine: %s\nHard limits: at most %s pull request(s) this run; at most %s file(s) changed per pull request; every commit subject is conventional — "type: short description", type one of %s.\nRequired PR label: %s\nAcceptance: %s\n\n%s' \
+    "$1" "$FM_NAME" "$FM_MAX_PRS" "$FM_MAX_FILES" "$COMMIT_TYPES" \
+    "$FM_LABEL" "$FM_ACCEPTANCE" "$FM_PROMPT"
 }
 
-dispatch_one() { # routine-file repo source
-  local repo="$2" source="$3" prompt response session url attempt branch
+dispatch_one() { # routine-file repo source starting-branch
+  local repo="$2" source="$3" branch="$4" prompt response session url attempt
   ATTEMPT_SEQ=$((ATTEMPT_SEQ + 1))
   attempt="$RUN_ID.$ATTEMPT_SEQ"
 
@@ -696,21 +705,6 @@ dispatch_one() { # routine-file repo source
     record error "$FM_NAME" "$repo" "mktemp failed"
     FAILURES=$((FAILURES + 1))
     BODY_FILE=""
-    return 1
-  fi
-
-  # A request without startingBranch is invalid, so a pair with no branch is a
-  # LOCAL failure: refused here, before the write-ahead record, and retried on
-  # the next run once the operator sets JULES_STARTING_BRANCH or the source
-  # reports a default branch.
-  branch="$STARTING_BRANCH"
-  [[ -n "$branch" ]] || branch="$(source_default_branch "$source")"
-  if [[ -z "$branch" ]]; then
-    log "  !! $FM_NAME / $repo — no starting branch: GET /sources reports no default"
-    log "     branch for $source and JULES_STARTING_BRANCH is unset; no session created"
-    record error "$FM_NAME" "$repo" "no starting branch; no session created"
-    FAILURES=$((FAILURES + 1))
-    rm -f "$BODY_FILE"; BODY_FILE=""
     return 1
   fi
 
@@ -812,7 +806,7 @@ do_dispatch() {
   log "catalog: $ROUTINE_DIR; sources: $(jq -r '.sources | length' <<<"$SOURCES_JSON") over $SOURCES_PAGES page(s); dispatched today: $used/$DAILY_CAP$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
 
   # ── Phase 1: which (routine, repository) pairs are eligible today ──
-  local candidates file repo source scope interval rc last_run
+  local candidates file repo source scope interval rc last_run branch
   candidates="$(mktemp)" || die "mktemp failed while collecting candidates"
   [[ -n "$candidates" ]] || die "mktemp produced no candidates file"
   while IFS= read -r file; do
@@ -859,11 +853,32 @@ do_dispatch() {
         continue
       fi
 
+      # startingBranch is REQUIRED in GitHubRepoContext, so a pair with no branch
+      # can never make a valid request: it is refused here, in the phase a dry run
+      # and a live run both go through. Two reasons this is not left to the POST:
+      # a dry run would otherwise promise a dispatch the live run refuses, and the
+      # cap is spent in phase two, so a refusal there would defer a valid pair
+      # behind it for a session that was never created. The next run retries this
+      # pair once JULES_STARTING_BRANCH is set or the source reports a default.
+      # GET /sources is read once per run, so nothing re-resolves this in phase two.
+      branch="$STARTING_BRANCH"
+      [[ -n "$branch" ]] || branch="$(source_default_branch "$source")"
+      if [[ -z "$branch" ]]; then
+        log "  !! $FM_NAME / $repo — no starting branch: GET /sources reports no default"
+        log "     branch for $source and JULES_STARTING_BRANCH is unset; no session created"
+        record error "$FM_NAME" "$repo" "no starting branch; no session created"
+        FAILURES=$((FAILURES + 1))
+        continue
+      fi
+
       if ! last_run="$(last_dispatch_epoch "$FM_NAME" "$repo")"; then
         die "cannot read the dispatch ledger: $LEDGER"
       fi
-      printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$last_run" "$FM_NAME" "$repo" "$source" "$file" >> "$candidates"
+      # The branch goes last: every field before it is non-empty by construction,
+      # and an empty field ahead of the last one would shift the whole line as
+      # `read` splits it.
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$last_run" "$FM_NAME" "$repo" "$source" "$file" "$branch" >> "$candidates"
     done <<<"$scope"
   done < <(routine_files)
 
@@ -882,7 +897,7 @@ do_dispatch() {
     | sort -t"$(printf '\t')" -k1,1n -k2,2 -k3,3 > "$sorted"
   rm -f "$candidates"
 
-  while IFS="$(printf '\t')" read -r last_epoch FM_NAME repo source file; do
+  while IFS="$(printf '\t')" read -r last_epoch FM_NAME repo source file branch; do
     [[ -n "$FM_NAME" ]] || continue
 
     # TODAY and the day's spend were read once, before the network calls. Two ways
@@ -932,14 +947,14 @@ do_dispatch() {
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       SPENT=$((SPENT + 1))
-      log "  [DRY] would dispatch $FM_NAME / $repo via $source (last run: $last_epoch)"
+      log "  [DRY] would dispatch $FM_NAME / $repo via $source from $branch (last run: $last_epoch)"
       record would-dispatch "$FM_NAME" "$repo" "$source"
       continue
     fi
 
     SPENT=$((SPENT + 1))
     rc=0
-    dispatch_one "$file" "$repo" "$source" || rc=$?
+    dispatch_one "$file" "$repo" "$source" "$branch" || rc=$?
     if [[ "$rc" -eq 3 ]]; then
       rm -f "$sorted"
       write_status
