@@ -164,6 +164,9 @@ def instruction(path):
     hook = any(p in ("githooks", ".githooks") for p in parts) or ("claude", "hooks") in zip(
         parts, parts[1:]
     )
+    # A dependency's own CLAUDE.md is not this repo's instruction surface, so the
+    # vendored test short-circuits the whole predicate rather than clearing just
+    # `hook` — named_instruction() matches on basename alone and would win (#439).
     if hook and (
         any(p in ("node_modules", ".bun", "dist", "__pycache__") for p in parts)
         or name
@@ -176,7 +179,7 @@ def instruction(path):
             "pnpm-lock.yaml",
         )
     ):
-        hook = False
+        return False
     return (
         any(p in AGENT_NAMESPACES for p in parts)
         or source_instruction(path)
@@ -566,7 +569,14 @@ def capture(repo, base, scope):
         for p in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
             b"\0"
         )
-        if p and not private_agent_data(os.fsdecode(p)) and instruction(os.fsdecode(p))
+        # A trailing slash marks a nested repository (a worktree under
+        # .claude/worktrees/, say) that git lists without descending into it, so
+        # nothing behind that boundary is an instruction surface of this repo and
+        # untracked_sha256 must not bind to the directory entry either (#474).
+        if p
+        and not p.endswith(b"/")
+        and not private_agent_data(os.fsdecode(p))
+        and instruction(os.fsdecode(p))
     }
     files, workspace, omitted, blobs = {}, {}, set(), {}
 

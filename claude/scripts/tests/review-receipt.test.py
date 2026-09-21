@@ -1387,6 +1387,11 @@ class ReceiptTests(unittest.TestCase):
             "claude/hooks/node_modules/x/index.d.ts",
             "claude/hooks/bun.lock",
             "claude/hooks/package.json",
+            # A dependency's own instruction-shaped files are not this repo's
+            # instruction surface either: bun-types ships a CLAUDE.md (#439).
+            "claude/hooks/node_modules/bun-types/CLAUDE.md",
+            "claude/hooks/node_modules/some-pkg/AGENTS.md",
+            "claude/hooks/node_modules/some-pkg/skills/x/SKILL.md",
         ):
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1401,6 +1406,31 @@ class ReceiptTests(unittest.TestCase):
         committed_artifact = json.loads(committed_snapshot.read_text())["artifact"]
         self.assertEqual(committed_artifact["changed_paths"], ["code.txt"])
         self.complete(committed_snapshot)
+
+    def test_nested_repository_directory_is_not_snapshotted(self):
+        (self.repo / ".git/info/exclude").write_text(".claude/worktrees/\n")
+        baseline = json.loads(self.begin("committed").read_text())["artifact"]
+        nested = self.repo / ".claude/worktrees/agent-x"
+        nested.mkdir(parents=True)
+        subprocess.check_output(
+            ["git", "init", "-q", "-b", "main", str(nested)], stderr=subprocess.PIPE
+        )
+        (nested / "AGENTS.md").write_text("instructions of the nested repo\n")
+        # Git reports a nested repository as a single directory entry with a
+        # trailing slash and never reads through the boundary (#474).
+        self.assertEqual(
+            self.git("ls-files", "--others", "--ignored", "--exclude-standard"),
+            ".claude/worktrees/agent-x/",
+        )
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        snapshot = self.begin("committed")
+        artifact = json.loads(snapshot.read_text())["artifact"]
+        self.assertEqual(artifact["untracked_sha256"], baseline["untracked_sha256"])
+        self.assertEqual(artifact["worktree_sha256"], baseline["worktree_sha256"])
+        self.assertEqual(artifact["changed_paths"], ["code.txt"])
+        self.complete(snapshot)
+        uncommitted = json.loads(self.begin("uncommitted").read_text())["artifact"]
+        self.assertEqual(uncommitted["changed_paths"], [])
 
     def test_exec_bit_drift_ignored_when_core_filemode_false(self):
         self.git("config", "core.filemode", "false")
@@ -1446,6 +1476,7 @@ class ReceiptTests(unittest.TestCase):
             ".githooks/pre-push",
             "node_modules/example/.codex/config.toml",
             "node_modules/example/AGENTS.md",
+            "claude/skills/x/SKILL.md",
         ):
             with self.subTest(path=name):
                 (self.repo / ".git/info/exclude").write_text(name + "\n")

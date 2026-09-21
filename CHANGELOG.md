@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-21 — fix(review-receipt): nested worktrees and vendored instruction names
+
+- **A nested repository no longer aborts the snapshot.** `git ls-files --others
+  --ignored` reports a nested repo as one directory entry with a trailing slash
+  and never descends through the boundary, so the `.claude/worktrees/agent-…/`
+  entry matched `instruction()` and reached `file_bytes()`, which refuses a
+  directory. Every gate run from the main checkout failed with `cannot snapshot
+  non-file` while any worktree was retained. The `ignored_instructions`
+  comprehension now skips trailing-slash entries, so nothing behind the boundary
+  binds `untracked_sha256` either. Closes #474.
+- **A dependency's own `CLAUDE.md` is not an instruction surface.** #426 cleared
+  only the `hook` term of `instruction()`, and `named_instruction()` matches on
+  basename alone, so `claude/hooks/node_modules/bun-types/CLAUDE.md` still
+  blocked a committed review on a clean tree. The vendored/lockfile test now
+  short-circuits the whole predicate. Real `AGENTS.md`, `SKILL.md` and
+  `node_modules/example/AGENTS.md` outside a hook tree stay in scope, which
+  `review-receipt.test.py` asserts alongside the three name variants that slipped
+  through. Closes #439.
+
 ## 2026-09-19 — fix(jules-dispatch): send the source's default branch as startingBranch
 
 - `GitHubRepoContext.startingBranch` is required: the first live `POST /sessions`
