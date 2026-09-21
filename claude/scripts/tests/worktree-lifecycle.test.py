@@ -2009,8 +2009,17 @@ if kind == 'writer':
         module, _ = self.process_fixture()
         entry = self.session_process(356, "systemd", 1)
         self.env["FIXTURE_SESSION_MANAGER"] = "356"
-        self.addCleanup(patch.dict(os.environ, self.env).start)
+        environment = patch.dict(os.environ, self.env)
+        environment.start()
+        self.addCleanup(environment.stop)
         surfaces = ("cwd", "root", "exe", "descriptors", "maps")
+        # Pin the seam: denying every surface does exempt this pid, so each
+        # case below fails the predicate rather than never reaching it.
+        with self.denied_process_reads(module, entry, surfaces):
+            self.assertEqual(
+                module.active_processes(self.worktree, self.proc, trust_process_manager=True),
+                [{"pid": 356, "comm": "systemd", "ppid": 1}],
+            )
         for readable in surfaces:
             with self.subTest(readable=readable):
                 denied = tuple(name for name in surfaces if name != readable)
