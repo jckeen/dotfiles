@@ -369,6 +369,78 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
+# The refusal is a LOCAL one, so it must not consume a slot of the daily cap
+# either: at cap 1 the branchless pair is refused and the valid pair behind it
+# still gets the day's one session, rather than meeting "daily cap reached".
+new_case
+routine alpha false 'repos: all'
+cat > "$CASE_DIR/sources-nobranch.json" <<'NB'
+{"sources":[
+  {"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}},
+  {"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}
+]}
+NB
+# atlas sorts before dotfiles and both have never run, so the branchless pair is
+# first in the fairness order — the position that spent the cap before the fix.
+CAP=1 FAKE_SOURCES="$CASE_DIR/sources-nobranch.json" dispatch; rc=$?
+if [[ "$rc" -ne 0 ]] && outgrep "jckeen/atlas — no starting branch" \
+  && [[ "$(created_count)" -eq 1 ]] && [[ "$(created_repo jckeen/dotfiles)" -eq 1 ]] \
+  && ! outgrep "daily cap"; then
+  ok "a branchless pair spends no cap slot, so the next valid pair still dispatches"
+else
+  fail "the branchless pair consumed the daily cap (rc=$rc, created=$(created_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A dry run has to name the same dispatchable pairs a live run would: the branch
+# is resolved in the shared eligibility phase, so the preview reports the refusal
+# instead of promising a dispatch that the live run then refuses.
+new_case
+routine alpha false 'repos: all'
+cat > "$CASE_DIR/sources-nobranch.json" <<'NB'
+{"sources":[
+  {"name":"sources/github/jckeen/dotfiles","githubRepo":{"owner":"jckeen","repo":"dotfiles","defaultBranch":{"displayName":"main"}}},
+  {"name":"sources/github/jckeen/atlas","githubRepo":{"owner":"jckeen","repo":"atlas"}}
+]}
+NB
+before="$(snapshot "$STATE")"
+FAKE_SOURCES="$CASE_DIR/sources-nobranch.json" dispatch --dry-run; rc=$?
+if [[ "$rc" -ne 0 ]] && outgrep "jckeen/atlas — no starting branch" \
+  && ! outgrep "would dispatch alpha / jckeen/atlas" \
+  && outgrep "would dispatch alpha / jckeen/dotfiles" \
+  && [[ "$before" == "$(snapshot "$STATE")" ]]; then
+  ok "--dry-run reports the branchless pair's refusal rather than a dispatch, and writes nothing"
+else
+  fail "--dry-run previewed a dispatch the live run would refuse (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# #479 gap 1: the first live run's bot commit subject was "No changes needed:
+# doc drift checkers pass", which the required commit-format check rejects. The
+# catalog files already asked for conventional subjects and the bot ignored it,
+# so the requirement belongs in the header the dispatcher injects — the first
+# thing the session reads. Asserted against the checker's own type set, so the
+# prompt cannot drift away from what CI enforces.
+new_case
+routine alpha false 'repos:
+  - jckeen/atlas'
+expected_types="$(sed -n "s/^TYPES='\(.*\)'\$/\1/p" "$REPO_ROOT/claude/scripts/check-commit-format.sh")"
+if dispatch; then
+  hard_limits="$(jq -r '.prompt' "$FAKE_BODY" | grep -F 'Hard limits:' || true)"
+  if [[ -z "$expected_types" ]]; then
+    fail "could not read TYPES from check-commit-format.sh — the drift assertion is vacuous"
+  elif [[ "$hard_limits" == *"type: short description"* \
+    && "$hard_limits" == *"$expected_types"* ]]; then
+    ok "the injected Hard limits line demands conventional commit subjects, with the checker's type set"
+  else
+    fail "the Hard limits line does not carry the conventional-subject requirement"
+    printf '      | %s\n' "$hard_limits"
+  fi
+else
+  fail "the run that should have built a prompt did not exit 0"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
 new_case
 routine alpha false 'repos: all'
 if dispatch && [[ "$(created_count)" -eq 2 ]]; then
