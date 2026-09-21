@@ -387,13 +387,30 @@ def evidence_denied(thread):
     return all(readlink_denied(target) for target in targets)
 
 
-def session_manager(entry, uid):
-    """True when this pid is this user's own `systemd --user` session manager."""
-    comm, ppid, owner = process_identity(entry)
-    return comm == "systemd" and ppid == 1 and owner == uid
+def session_manager_pid(uid):
+    """The pid the system manager reports for this user's session manager.
+
+    Nothing in /proc establishes this: an orphan is reparented to pid 1 and
+    any process can rename its own `comm`, so a same-user look-alike could
+    otherwise present the whole signature below. Ask the manager that started
+    the session instead; the user cannot influence its answer.
+    """
+    pid = int(
+        text(run(["systemctl", "show", "--property=MainPID", "--value", f"user@{uid}.service"]))
+    )
+    if pid <= 0:
+        raise ValueError("no systemd session manager for this user")
+    return pid
 
 
-def denied_session_process(proc_root, entry, uid):
+def process_session(entry):
+    """The process group and session of a pid, from world-readable stat."""
+    # comm sits in parentheses and may itself contain spaces or parentheses.
+    fields = os.fsdecode((entry / "stat").read_bytes()).rpartition(")")[2].split()
+    return int(fields[2]), int(fields[3])
+
+
+def denied_session_process(proc_root, entry, uid, manager):
     """Identify a systemd user-session process no scan can read, or None.
 
     Every systemd user session contributes two same-uid processes whose
@@ -402,31 +419,37 @@ def denied_session_process(proc_root, entry, uid):
     exe, descriptor targets and maps refuse this user with EACCES. Retaining
     on uninspectable evidence therefore retains every worktree on every
     systemd host, which is what `--trust-process-manager` exempts -- and only
-    for exactly that pair, on the whole signature. Pid 1 started them, so no
-    shell in a worktree did, and a process that dropped privileges under pid 1
-    has no working directory, root, executable or mapping in a checkout this
-    user later created. Its descriptors are not provable: a user unit can pass
-    one to the manager's file-descriptor store (`FDSTORE=1`) and close its
-    own copy, so the manager can outlive the only holder of a worktree
-    descriptor. That residual is the operator's explicit assertion, not this
-    scan's inference, so the exemption stays opt-in and every exempted
-    identity is recorded in the release record. Any readable reference is
-    evidence rather than an exemption, so a same-user look-alike that leaks
-    one inspectable reference still retains the worktree.
+    for exactly that pair. The manager is the pid the system manager names,
+    not whatever claims the name. The helper must be its child and share its
+    session, which a service cannot: the manager starts each one in a session
+    of its own, so only a process it forked without exec is in there with it.
+
+    What the operator asserts, rather than this scan proving it, is the
+    descriptor residual: a user unit can pass a worktree descriptor to the
+    manager's file-descriptor store (`FDSTORE=1`) and close its own copy,
+    leaving the manager the last holder, and readlink on those targets is
+    exactly what EACCES denies. The structural argument covers the rest --
+    a session manager was not started from a checkout this user created later
+    -- and any readable reference is evidence rather than an exemption, so a
+    look-alike that leaks one inspectable reference still retains the
+    worktree. Every exemption is recorded in the release record.
     """
     try:
         comm, ppid, owner = process_identity(entry)
         if owner != uid:
             return None
-        if comm == "systemd":
-            if ppid != 1:
+        if int(entry.name) == manager:
+            if comm != "systemd" or ppid != 1:
                 return None
-        elif comm != "(sd-pam)" or not session_manager(proc_root / str(ppid), uid):
-            return None
+        else:
+            if comm != "(sd-pam)" or ppid != manager:
+                return None
+            if process_session(entry) != process_session(proc_root / str(manager)):
+                return None
         threads = [thread for thread in (entry / "task").iterdir() if thread.name.isdigit()]
         if not threads or not all(evidence_denied(thread) for thread in threads):
             return None
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, IndexError):
         # Unreadable or malformed identity is never an exemption; the caller
         # inspects the process and reports what it could not establish.
         return None
@@ -442,6 +465,12 @@ def active_processes(path, proc_root=Path("/proc"), trust_process_manager=False)
     if not proc_root.is_dir():
         raise ValueError("automatic process inspection requires /proc; retain on this platform")
     uid = os.getuid()
+    # Resolve the one pid an exemption can apply to before scanning. A host
+    # without a systemd user session simply exempts nothing.
+    try:
+        manager = session_manager_pid(uid)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        manager = None
     exempt = []
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -449,7 +478,9 @@ def active_processes(path, proc_root=Path("/proc"), trust_process_manager=False)
         try:
             if entry.stat().st_uid != uid:
                 continue
-            session = denied_session_process(proc_root, entry, uid)
+            session = None
+            if manager is not None:
+                session = denied_session_process(proc_root, entry, uid, manager)
             if session is not None:
                 if not trust_process_manager:
                     raise ValueError(

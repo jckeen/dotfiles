@@ -64,10 +64,19 @@ class LifecycleTests(unittest.TestCase):
             "else: sys.exit(2)\n"
         )
         (self.bin / "gh").chmod(0o700)
+        # The session manager's identity comes from the system manager, so the
+        # fixture answers for it. No session manager by default.
+        (self.bin / "systemctl").write_text(
+            "#!/usr/bin/env python3\nimport os,sys\n"
+            'if "user@%d.service" % os.getuid() not in sys.argv: sys.exit(2)\n'
+            'print(os.environ.get("FIXTURE_SESSION_MANAGER", "0"))\n'
+        )
+        (self.bin / "systemctl").chmod(0o700)
         self.env = dict(
             os.environ,
             PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
             FIXTURE_PR=str(self.metadata),
+            FIXTURE_SESSION_MANAGER="0",
         )
         # Scope process evidence to processes owned by this disposable fixture.
         # The real scanner still runs; unrelated protected host services cannot
@@ -156,22 +165,27 @@ class LifecycleTests(unittest.TestCase):
         (entry / "task/123").symlink_to(entry, target_is_directory=True)
         return module, entry
 
-    def session_process(self, pid, comm, ppid, uid=None):
+    def session_process(self, pid, comm, ppid, uid=None, session=None):
         """A same-user process whose every reference points into the worktree.
 
         Models a systemd user-session process: identity stays readable while
         the evidence below it can be denied, so only the exemption can let a
-        release proceed while such a process is visible.
+        release proceed while such a process is visible. A process gets its
+        own session, as every service the manager starts does.
         """
         owner = os.getuid() if uid is None else uid
+        session = pid if session is None else session
         status = (
             f"Name:\t{comm}\nState:\tS (sleeping)\nPPid:\t{ppid}\n"
             f"Uid:\t{owner}\t{owner}\t{owner}\t{owner}\n"
         )
+        # pid, comm in parentheses, state, ppid, pgrp, session, then the rest.
+        stat = f"{pid} ({comm}) S {ppid} {session} {session} 0 -1 4194560 0 0\n"
         entry = self.proc / str(pid)
         thread = entry / "task" / str(pid)
         thread.mkdir(parents=True)
         (entry / "comm").write_text(comm + "\n")
+        (entry / "stat").write_text(stat)
         for directory in (entry, thread):
             (directory / "status").write_text(status)
         (thread / "cwd").symlink_to(self.worktree)
@@ -1875,8 +1889,10 @@ if kind == 'writer':
 
     def denied_user_session(self):
         """The pair every systemd user session contributes, unreadable."""
+        self.env["FIXTURE_SESSION_MANAGER"] = "356"
         for pid, comm, ppid in ((356, "systemd", 1), (362, "(sd-pam)", 356)):
-            self.deny_session_evidence(self.session_process(pid, comm, ppid))
+            # The helper shares the manager's session; a service would not.
+            self.deny_session_evidence(self.session_process(pid, comm, ppid, session=356))
         return [
             {"pid": 356, "comm": "systemd", "ppid": 1},
             {"pid": 362, "comm": "(sd-pam)", "ppid": 356},
@@ -1917,8 +1933,10 @@ if kind == 'writer':
         for entry in (self.proc / "356", self.proc / "362"):
             self.allow_session_evidence(entry)
             shutil.rmtree(entry)
+        # A restart means a new pid, and the system manager names that one.
+        self.env["FIXTURE_SESSION_MANAGER"] = "500"
         for pid, comm, ppid in ((500, "systemd", 1), (501, "(sd-pam)", 500)):
-            self.deny_session_evidence(self.session_process(pid, comm, ppid))
+            self.deny_session_evidence(self.session_process(pid, comm, ppid, session=500))
         result = self.retire(
             "--apply", "--archive-dir", str(self.root / "archive"), "--trust-process-manager"
         )
@@ -1941,13 +1959,20 @@ if kind == 'writer':
         self.assertIn("active process", result.stderr)
 
     def test_session_exemption_requires_the_whole_process_identity(self):
+        # 356 is the only pid the system manager vouches for in this fixture.
+        self.env["FIXTURE_SESSION_MANAGER"] = "356"
         cases = {
-            "manager pid 1 did not start": [(356, "systemd", 2)],
-            "pid-1 child that is not the session manager": [(400, "bash", 1)],
-            "another user's session manager": [(401, "systemd", 1, os.getuid() + 1)],
-            "helper of a manager pid 1 did not start": [
-                (402, "systemd", 2),
-                (403, "(sd-pam)", 402),
+            "not the pid the system manager names": [(357, "systemd", 1, None, 357)],
+            "the named pid renamed": [(356, "bash", 1, None, 356)],
+            "the named pid is not a pid-1 child": [(356, "systemd", 2, None, 356)],
+            "another user's credentials": [(356, "systemd", 1, os.getuid() + 1, 356)],
+            "helper of an unnamed manager": [
+                (357, "systemd", 1, None, 357),
+                (358, "(sd-pam)", 357, None, 357),
+            ],
+            "helper in a session of its own": [
+                (356, "systemd", 1, None, 356),
+                (362, "(sd-pam)", 356, None, 362),
             ],
             "helper with no visible parent": [(404, "(sd-pam)", 999999)],
         }
@@ -1966,18 +1991,25 @@ if kind == 'writer':
     def test_listable_descriptor_table_with_denied_targets_is_exempt(self):
         # The actual session manager lists its own descriptor table while
         # every target refuses readlink; (sd-pam) refuses even enumeration.
+        from unittest.mock import patch
+
         module, _ = self.process_fixture()
         entry = self.session_process(356, "systemd", 1)
+        self.env["FIXTURE_SESSION_MANAGER"] = "356"
         surfaces = ("cwd", "root", "exe", "descriptors", "maps")
-        with self.denied_process_reads(module, entry, surfaces):
+        with patch.dict(os.environ, self.env), self.denied_process_reads(module, entry, surfaces):
             self.assertEqual(
                 module.active_processes(self.worktree, self.proc, trust_process_manager=True),
                 [{"pid": 356, "comm": "systemd", "ppid": 1}],
             )
 
     def test_partial_or_differently_denied_evidence_retains_the_worktree(self):
+        from unittest.mock import patch
+
         module, _ = self.process_fixture()
         entry = self.session_process(356, "systemd", 1)
+        self.env["FIXTURE_SESSION_MANAGER"] = "356"
+        self.addCleanup(patch.dict(os.environ, self.env).start)
         surfaces = ("cwd", "root", "exe", "descriptors", "maps")
         for readable in surfaces:
             with self.subTest(readable=readable):

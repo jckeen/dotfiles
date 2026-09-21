@@ -477,15 +477,19 @@ Every systemd user session runs two same-user processes whose references no
 scan can read: `systemd --user` and its `(sd-pam)` helper changed credentials
 at exec, which clears dumpable and refuses this user every read below. Release
 and retirement therefore refuse on those hosts until the operator asserts
-`--trust-process-manager`, naming the session manager it vouches for. The
-assertion skips a process only when its credentials are the current user's,
-pid 1 started it (or its parent is such a `systemd`), and every working
-directory, root, executable, descriptor and mapping read of every thread is
-refused with `EACCES`; one readable reference is evidence rather than an
-exemption and still retains the worktree. It stays an assertion rather than an
-inference because a pid-1 child cannot have been started inside a checkout,
-but a user unit can pass a descriptor to the manager's file-descriptor store
-(`FDSTORE=1`) and close its own copy, which no unprivileged scan can see. Both
+`--trust-process-manager`. The assertion skips a process only when its
+credentials are the current user's, every working directory, root, executable,
+descriptor and mapping read of every thread is refused with `EACCES`, and it is
+one of exactly two identities: the pid the system manager reports as `MainPID`
+of `user@<uid>.service`, or a `(sd-pam)` child of that pid sharing its session.
+Neither `PPid` nor `comm` is trusted for this — an orphan is reparented to pid 1
+and any process can rename itself — and a service cannot borrow the manager's
+session, because the manager starts each one in a session of its own. One
+readable reference is evidence rather than an exemption and still retains the
+worktree; so does a host where no session manager can be resolved. It stays an
+assertion rather than an inference because a user unit can pass a descriptor to
+the manager's file-descriptor store (`FDSTORE=1`) and close its own copy, which
+no unprivileged scan can see. Both
 commands need the flag, since retirement inspects again. The release record
 lists each exempted pid, command and parent under `exempt_processes`, and the
 recovery record carries that list into the archive beside
