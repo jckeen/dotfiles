@@ -21,6 +21,21 @@
   covers both lane orderings and the in-flight case, and
   `tests/pre-push-receipt.test.sh` drives the real hook and a real `git push`:
   before the fix the blocked-review push reached the origin. Closes #480.
+- **The attempt transition is serialized, so two gates cannot start at once and
+  both stay live.** Retiring the competing lane and opening this lane's attempt
+  are several file operations, and two concurrent `begin` calls could interleave
+  them: each retired the other's lane before either wrote its own token, leaving
+  BOTH tokens live and the bypass above reachable again. Every writer of the
+  shared attempt and receipt state — `begin`, `complete`'s deciding attempt check
+  and receipt write, and the `invalidate` subcommand — now runs under an exclusive
+  `flock` on `<git-dir>/review-receipts/.lock`. flock rather than a lock
+  directory for the reason `jules-dispatch.sh` gives: the kernel releases it when
+  the holder dies, so a killed or cancelled gate cannot wedge the next one.
+  `check` stays lock-free by design — it re-asserts the attempt token on both
+  sides of the artifact capture, so a transition landing mid-check can only make
+  it refuse, and a slow check must never block a gate. Found by a non-gate review
+  of the first commit; the three new tests fail on it, the interleaving one with
+  both lanes reported live.
 
 ## 2026-09-21 — fix(review-receipt): nested worktrees and vendored instruction names
 

@@ -257,6 +257,15 @@ afterwards retires the shipping receipt. A gate's cancellation trap uses
 `invalidate`, which stays own-lane: a review that never started cannot reach a
 verdict, so it must not cost an untouched approval.
 
+That transition is serialized by an exclusive `flock` on
+`<git-dir>/review-receipts/.lock`, held by every writer of the shared attempt and
+receipt state — `begin`, `complete`'s deciding attempt check and receipt write,
+and `invalidate`. Two gates starting at once would otherwise interleave their
+cross-lane invalidations and leave both lanes' attempt tokens live. `check` is
+deliberately lock-free: it re-asserts the attempt token on both sides of the
+artifact capture, so a transition landing mid-check can only make it refuse, and a
+slow check never blocks a gate.
+
 The ledger is written by `complete` (0600, append-only) and is **never read by
 `check`**: a forged ledger cannot approve a push and an unwritable one cannot
 block one. The dotfiles risk list is deliberately unnarrowed, so most diffs in

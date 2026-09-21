@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Receipt fixtures exercise real Git objects without invoking a reviewer."""
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -2397,6 +2398,136 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.complete(first, ok=False)
         self.check(False)
         self.complete(second)
+        self.check()
+
+    def hold_attempt_lock(self):
+        """Hold the receipt directory's exclusive lock, as a gate mid-transition does.
+
+        Registers the release as cleanup so a failing assertion inside the held
+        window cannot wedge the rest of the suite.
+        """
+        descriptor = os.open(
+            self.receipts_dir() / ".lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600
+        )
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+
+    def test_begin_waits_for_a_concurrent_attempt_transition(self):
+        """`begin` must not walk into the middle of another run's transition.
+
+        Retiring the competing lane and opening this lane's attempt are several
+        file operations. Two gates beginning at once could interleave them so that
+        each retired the other's lane before either wrote its own token, leaving
+        BOTH tokens live — and a blocking verdict in one lane bypassable by the
+        other's approval all over again. The held lock stands in for the other gate
+        being mid-transition, with no pause hook in the shipping code.
+        """
+        self.complete(self.begin(reviewer="antigravity"))
+        descriptor = self.hold_attempt_lock()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "begin",
+                    "--repo",
+                    str(self.repo),
+                    "--base",
+                    "main",
+                    "--scope",
+                    "committed",
+                    "--reviewer",
+                    "codex",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        # Blocked before the transition, so it retired nothing on the way in.
+        self.assertTrue((self.receipts_dir() / "antigravity.json").is_file())
+        self.check()
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        self.begin(reviewer="codex")
+        self.check(False)
+
+    def test_complete_waits_for_a_concurrent_attempt_transition(self):
+        """The deciding attempt check and the receipt write are one transition."""
+        snapshot = self.begin(reviewer="codex")
+        descriptor = self.hold_attempt_lock()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "complete",
+                    "--snapshot",
+                    str(snapshot),
+                    "--outcome",
+                    "passed",
+                    "--output",
+                    str(self.result),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        self.assertFalse((self.receipts_dir() / "codex.json").exists())
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        self.complete(snapshot)
+        self.check()
+
+    def test_interleaved_begins_leave_exactly_one_live_attempt(self):
+        """Two gates beginning at once leave one live attempt, not two.
+
+        Both runs are queued behind a held lock so they contend for real rather
+        than by luck of scheduling. Afterwards exactly one snapshot's token is
+        live, the loser cannot record, and the approval the two of them retired
+        cannot ship in its place.
+        """
+        self.complete(self.begin(reviewer="antigravity"))
+        receipts = self.receipts_dir()
+        descriptor = self.hold_attempt_lock()
+        lanes = ("antigravity", "codex")
+        running = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(HELPER),
+                    "begin",
+                    "--repo",
+                    str(self.repo),
+                    "--base",
+                    "main",
+                    "--scope",
+                    "committed",
+                    "--reviewer",
+                    lane_name,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for lane_name in lanes
+        ]
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        snapshots = {}
+        for lane_name, process in zip(lanes, running):
+            out, err = process.communicate(timeout=60)
+            self.assertEqual(process.returncode, 0, out + err)
+            snapshots[lane_name] = Path(out.strip()) / "snapshot.json"
+        live = [
+            lane_name
+            for lane_name in lanes
+            if json.loads((receipts / (lane_name + ".attempt.json")).read_bytes())["attempt"]
+            == json.loads(snapshots[lane_name].read_bytes())["attempt"]
+        ]
+        self.assertEqual(len(live), 1, live)
+        self.assertFalse((receipts / "antigravity.json").exists())
+        loser = next(lane_name for lane_name in lanes if lane_name != live[0])
+        self.complete(snapshots[loser], ok=False)
+        self.check(False)
+        self.complete(snapshots[live[0]])
         self.check()
 
     # ─── ADR-0008: lane routing ────────────────────────────────────
