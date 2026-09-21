@@ -317,7 +317,10 @@ because it was not looked for. None was load-bearing for the code that shipped.
   `sources/{source}`; the guide shows `sources/github/{owner}/{repo}`. The
   dispatcher therefore resolves it from `GET /sources` by matching owner and
   name, and never constructs it. Observed 2026-09-19: `GET /sources` returned
-  `sources/github/jckeen/dotfiles`, i.e. the guide's spelling, for 33 sources.
+  `sources/github/jckeen/dotfiles`, i.e. the guide's spelling. How many
+  repositories are connected is deliberately not written down here — the
+  live count comes from `GET /sources`, which `jules-dispatch.sh --dry-run`
+  reads and logs as `sources: N over P page(s)`.
 - **Whether `githubRepoContext` may be omitted.** Answered 2026-09-19 by the
   first live dispatch: it may not. `POST /sessions` without it returned
   `400 INVALID_ARGUMENT` ("Request contains an invalid argument."), and no

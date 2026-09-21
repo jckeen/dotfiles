@@ -43,6 +43,30 @@
   `EACCES`. The fixture answers for the system manager the way it answers for
   `gh`. Closes #475.
 
+## 2026-09-21 — fix(gen): SIGPIPE in --check, plus checker docs and an unasserted count
+
+- **`gen-instruction-files.sh --check` no longer dies of SIGPIPE.** The stale-diff
+  preview was `sed … | head -20`, which makes `sed` the pipe *writer*: once a diff
+  outgrew the pipe buffer, `head` closed the read end, `sed` took SIGPIPE, and
+  `pipefail` + `set -e` ended `--check` inside the target loop — remaining targets
+  were never compared and the operator saw a bare exit 141 instead of the stale
+  list. `head` now reads the file first and `sed` indents what it emits, the fix
+  #422 applied to the Antigravity gate. A new `agent-parity.test.sh` case builds a
+  200k-line stale target followed by a second stale one and asserts exit 1 with
+  both names in the summary; it reproduced exit 141 before the change. The other
+  `| head` sites in `claude/scripts/` were re-checked rather than trusted: none
+  runs under `set -e`, and three wrap the pipeline in `|| true`. Closes #443.
+- **Every drift guard is in the scripts table.** `claude/scripts/README.md` listed
+  a couple of the `check-*` scripts; it now carries a row for each one, naming
+  what it asserts and the CI job and step that runs it — including the three that
+  reach CI only through another script or only as a self-test, and the two that
+  are local guards rather than CI gates. Closes #445.
+- **ADR-0009 no longer states a source count.** The 2026-09-19 observation that
+  `GET /sources` uses the guide's `sources/github/{owner}/{repo}` spelling stands;
+  the fixed number of connected repositories beside it was asserted nowhere and
+  now points at `jules-dispatch.sh --dry-run`, which logs the live count it read.
+  Closes #485.
+
 ## 2026-09-21 — fix(jules-dispatch): resolve the starting branch while deciding eligibility
 
 - The branch lookup moved out of `dispatch_one` and into phase one, the
