@@ -378,13 +378,16 @@ assert "the risk run names the codex lane" \
   "grep -qF -- 'Review lane: codex (required: codex)' <<<\"\$OUT\""
 clean_lane_repo
 
-# Tier 1 needs no reviewer at all; the exemption receipt still has to come from
-# somewhere, so the cheapest gate runs and its tier valve mints it.
+# Tier 1 needs no reviewer at all, so no gate is dispatched: the wrapper records
+# the exemption receipt itself (#482) and the push proceeds on it.
 new_lane_repo notes.md
 run_lane
-want_gates "a tier-1 diff dispatches the cheapest gate only" "$AGY_GATE"
+want_gates "a tier-1 diff dispatches no gate at all" ""
 assert "the tier-1 run says no reviewer dispatch is required" \
   "grep -qF -- 'Review lane: none required (tier-1 diff)' <<<\"\$OUT\""
+assert "the tier-1 run records its own exemption receipt" \
+  "jq -e '.completion.outcome == \"tier-1\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+assert "the tier-1 run pushes" "[ \"\$RC\" -eq 0 ] && grep -qF -- 'Pushed.' <<<\"\$OUT\""
 clean_lane_repo
 
 # ── Degraded Antigravity (exit 3) falls back; a verdict (exit 2) does not ──
@@ -415,6 +418,60 @@ new_lane_repo claude/scripts/tool.sh
 run_lane FAKE_CODEX_RC=3
 want_gates "a degraded Codex gate does not fall back to Antigravity" "$CODEX_GATE"
 assert "a degraded Codex gate propagates its exit status" "[ \"\$RC\" -eq 3 ]"
+clean_lane_repo
+
+# ── #482: a tier-1 exemption outranks every reviewer size limit ────────
+# The Antigravity gate applies its line cap and its measured prompt-byte cap
+# BEFORE its tier valve, so routing a tier-1 diff through that gate made a
+# docs-only push depend on agy's input window: exit 3, then a needless Codex
+# fallback — or, under REVIEW_LANE_FALLBACK=block, an outright refusal of a diff
+# that needs no review at all. These cases run the REAL Antigravity gate so the
+# limits under test are the shipping ones; the Codex gate stays a recording fake
+# so a fallback is visible without spending any review quota.
+use_real_gate() {
+  rm -f "$LANE_DIR/$1-review-gate.sh"
+  ln -s "$SCRIPT_DIR/../$1-review-gate.sh" "$LANE_DIR/$1-review-gate.sh"
+}
+SIZE_MSG="conserve plan quota"
+
+for fallback in codex block; do
+  new_lane_repo notes.md
+  use_real_gate antigravity
+  run_lane REVIEW_LANE_FALLBACK="$fallback" ANTIGRAVITY_GATE_MAX_LINES=1 ANTIGRAVITY_GATE_MAX_BYTES=1
+  want_gates "an oversized tier-1 diff dispatches no gate (fallback=$fallback)" ""
+  assert "the oversized tier-1 diff pushes (fallback=$fallback)" \
+    "[ \"\$RC\" -eq 0 ] && grep -qF -- 'Pushed.' <<<\"\$OUT\""
+  want_absent "no reviewer size limit is consulted (fallback=$fallback)" "$SIZE_MSG"
+  want_absent "no degradation is recorded (fallback=$fallback)" "falling back"
+  assert "the oversized tier-1 receipt is an exemption (fallback=$fallback)" \
+    "jq -e '.completion.outcome == \"tier-1\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
+  assert "the exemption receipt validates for the pushed head (fallback=$fallback)" \
+    "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  assert "the oversized tier-1 diff reached the remote (fallback=$fallback)" \
+    "[ \"\$(git -C '$ORIGIN' rev-parse feature)\" = \"\$(git -C '$R' rev-parse HEAD)\" ]"
+  clean_lane_repo
+done
+
+# The same oversized diff that is NOT tier 1 keeps the existing behaviour: the
+# real gate cannot run, and the exit-3 fallback policy decides what happens.
+new_lane_repo widget.ts
+use_real_gate antigravity
+run_lane ANTIGRAVITY_GATE_MAX_LINES=1
+want_gates "an oversized ordinary diff still falls back to Codex" "$CODEX_GATE"
+assert "the oversized ordinary diff reports the size failure" \
+  "grep -qF -- '$SIZE_MSG' <<<\"\$OUT\""
+assert "the oversized ordinary fallback is announced" \
+  "grep -qF -- 'falling back to the Codex lane' <<<\"\$OUT\""
+want_refusal "the fallback run still needs a receipt" "no valid committed review receipt"
+clean_lane_repo
+
+new_lane_repo widget.ts
+use_real_gate antigravity
+run_lane REVIEW_LANE_FALLBACK=block ANTIGRAVITY_GATE_MAX_LINES=1
+want_gates "an oversized ordinary diff dispatches no Codex gate under block" ""
+want_refusal "the oversized ordinary diff is refused under block" "REVIEW_LANE_FALLBACK=block"
+assert "no receipt is minted for the refused ordinary diff" \
+  "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 clean_lane_repo
 
 # ── REVIEW_LANE overrides: escalation allowed, downgrade refused ──────
@@ -470,6 +527,19 @@ run_lane GATE_TIER1_MAX_LINES=1
 want_gates "a small tier-1 cap demotes a docs diff to the ordinary lane" "$AGY_GATE"
 assert "the small-cap docs run names the antigravity lane" \
   "grep -qF -- 'Review lane: antigravity (required: antigravity)' <<<\"\$OUT\""
+# The wrapper records an exemption ONLY for a tier-1 diff (#482): a docs diff the
+# cap demoted has to be reviewed, and the recording fake mints nothing.
+assert "a demoted docs diff gets no exemption receipt" \
+  "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+clean_lane_repo
+
+# A Markdown file that is an instruction surface is a risk path, so it is never
+# tier 1 and never takes the exemption path, however docs-like its name.
+new_lane_repo AGENTS.md
+run_lane
+want_gates "an instruction Markdown diff dispatches the Codex gate" "$CODEX_GATE"
+assert "an instruction Markdown diff gets no exemption receipt" \
+  "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 clean_lane_repo
 
 # Regression: the wrapper's own bookkeeping variables must not be re-exported

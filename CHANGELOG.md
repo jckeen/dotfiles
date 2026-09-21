@@ -33,6 +33,26 @@
   `review-receipt.test.py` asserts alongside the name variants that slipped
   through. The predicate is unchanged for all 256 tracked paths. Closes #439.
 
+## 2026-09-21 — fix(review): record tier-1 exemptions without dispatching a gate
+
+- A tier-1 (docs-only) diff needs no reviewer, but `review-and-push.sh` collected
+  its exemption receipt by running the Antigravity gate, whose line cap and
+  measured prompt-byte cap run *before* its tier valve. A docs-only diff above
+  either cap therefore exited 3, costing a needless Codex fallback — or, under
+  `REVIEW_LANE_FALLBACK=block`, refusing a push no reviewer was going to look at.
+  The wrapper now records the exemption itself through the same capture path the
+  gates use, so no reviewer's dispatch limits can decide whether an exemption is
+  available. `review-receipt.py` remains the authority: `complete --outcome
+  tier-1` refuses any artifact that is not a small docs-only diff and `check`
+  recomputes the classification, so nothing recorded this way can ship a diff
+  whose required lane is above `any`. Gates are unchanged, including the
+  Antigravity gate's refusal to exempt a diff too large for its own input window
+  when it is invoked directly. New dispatch cases in
+  `tests/review-and-push.test.sh` drive the real Antigravity gate with tiny caps
+  and assert the tier-1 push succeeds under both fallback settings, that a
+  demoted or instruction-surface Markdown diff gets no exemption, and that an
+  oversized *ordinary* diff still degrades and falls back as before. Closes #482.
+
 ## 2026-09-21 — fix(worktree-lifecycle): exempt the uninspectable systemd user-session pair
 
 - `release` (and therefore `retire`) always refused on any systemd user-session

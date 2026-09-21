@@ -13,8 +13,8 @@
 # Lane routing (ADR-0008): `review-receipt.py lane` classifies the committed
 # delta and gate_select_lane picks the gate. Ordinary tier-2 work goes to the
 # Antigravity gate; a risk surface keeps the Codex gate and is never
-# downgradable; a tier-1 diff needs no reviewer dispatch and collects its
-# exemption receipt through the cheapest lane. The receipt check at step 5 names
+# downgradable; a tier-1 diff dispatches no gate at all and this script records
+# its exemption receipt itself (#482). The receipt check at step 5 names
 # the lane that was dispatched rather than a hardcoded one: review-receipt.py
 # refuses any receipt whose lane ranks below what the diff requires, and naming
 # the dispatched lane additionally requires the review this run performed to
@@ -417,36 +417,72 @@ run_review_gate() {
   esac
 }
 
-if [[ "$DISPATCH_LANE" == skip ]]; then
-  echo "═══ Review lane: none required (tier-1 diff) ═══"
-  echo "Collecting the tier-1 exemption receipt through the Antigravity gate;"
-  echo "its tier valve mints the receipt without dispatching a reviewer."
-  DISPATCH_LANE=antigravity
-else
-  echo "═══ Review lane: $DISPATCH_LANE (required: $REQUIRED_LANE) ═══"
-fi
+# A tier-1 diff needs no reviewer (ADR-0008), so record its exemption here
+# instead of asking a gate for it. Both gates check their own dispatch
+# feasibility — line count, agy's measured input window, CLI presence — BEFORE
+# their tier valve, so a docs-only diff could make the Antigravity gate exit 3
+# and then cost a needless Codex fallback, or under REVIEW_LANE_FALLBACK=block
+# refuse a push that no reviewer was ever going to look at (#482). Nothing is
+# dispatched here, so no reviewer's size limit applies to it.
+#
+# review-receipt.py stays the authority: this uses the same capture path the
+# gates use (gate-lib.sh), `complete --outcome tier-1` REFUSES any artifact that
+# is not a small docs-only diff, and `check` recomputes the classification from
+# the re-captured patch. Nothing minted here can ship a diff whose required lane
+# is above `any`. The receipt is filed under the Antigravity lane because `check`
+# reads only the two lane names, and rank `antigravity ≥ any` satisfies tier 1.
+mint_tier1_exemption() {
+  # shellcheck disable=SC2034  # Dispatch metadata read by gate-lib.sh.
+  GATE_REVIEWER=antigravity GATE_CLI=agy
+  # gate_extract_diff reads the snapshot with jq, as both gates do.
+  command -v jq >/dev/null 2>&1 || {
+    echo "error: jq is required to record the tier-1 exemption receipt." >&2
+    return 1
+  }
+  # gate_resolve_base and gate_select_diff_target read these; the committed
+  # delta is the only scope `check` accepts as shipping evidence.
+  # shellcheck disable=SC2034  # BASE, FORCE_UNCOMMITTED, and FORCE_COMMITTED are read by gate-lib.sh.
+  BASE="" FORCE_UNCOMMITTED=false FORCE_COMMITTED=true
+  # Ledger annotation (never affects receipt validity) so `stats` can tell an
+  # exemption the wrapper recorded from one a gate's tier valve minted.
+  export REVIEW_LANE_NOTE="${REVIEW_LANE_NOTE:-tier-1 exemption: no reviewer dispatched}"
+  gate_init_receipt
+  gate_resolve_base
+  gate_select_diff_target
+  gate_extract_diff
+  gate_record_pass tier-1
+}
 
 # Namespaced deliberately: a bare GATE_* name here would be re-exported into
 # the gate's own environment if the caller had one set, silently overriding it.
 REVIEW_GATE_RC=0
-run_review_gate "$DISPATCH_LANE" || REVIEW_GATE_RC=$?
-# Exit 3 means the lane could not run at all — agy missing, a diff above its
-# byte/line cap, an unverifiable model pin. Exit 2 is a verdict (blocking
-# findings, or a verifiably wrong model) and must NEVER fall back: a refusal is
-# not an outage, and re-asking a different reviewer would be verdict shopping.
-if [[ "$REVIEW_GATE_RC" -eq 3 && "$DISPATCH_LANE" == antigravity ]]; then
-  if [[ "$REVIEW_LANE_FALLBACK" == block ]]; then
-    echo "The Antigravity gate could not run (exit 3) and REVIEW_LANE_FALLBACK=block — not pushing." >&2
-    exit 1
+if [[ "$DISPATCH_LANE" == skip ]]; then
+  echo "═══ Review lane: none required (tier-1 diff) ═══"
+  echo "Recording the tier-1 exemption receipt directly; no reviewer is"
+  echo "dispatched, so no reviewer's size limits apply to it."
+  mint_tier1_exemption
+  DISPATCH_LANE=antigravity
+else
+  echo "═══ Review lane: $DISPATCH_LANE (required: $REQUIRED_LANE) ═══"
+  run_review_gate "$DISPATCH_LANE" || REVIEW_GATE_RC=$?
+  # Exit 3 means the lane could not run at all — agy missing, a diff above its
+  # byte/line cap, an unverifiable model pin. Exit 2 is a verdict (blocking
+  # findings, or a verifiably wrong model) and must NEVER fall back: a refusal is
+  # not an outage, and re-asking a different reviewer would be verdict shopping.
+  if [[ "$REVIEW_GATE_RC" -eq 3 && "$DISPATCH_LANE" == antigravity ]]; then
+    if [[ "$REVIEW_LANE_FALLBACK" == block ]]; then
+      echo "The Antigravity gate could not run (exit 3) and REVIEW_LANE_FALLBACK=block — not pushing." >&2
+      exit 1
+    fi
+    echo "The Antigravity gate could not run (exit 3); falling back to the Codex lane."
+    # Recorded in the lane ledger so `review-receipt.py stats` can count how often
+    # the Gemini lane degrades rather than leaving it invisible.
+    export REVIEW_LANE_NOTE="antigravity-degraded(exit 3): Antigravity gate could not run; reviewed by Codex"
+    check_review_target
+    DISPATCH_LANE=codex
+    REVIEW_GATE_RC=0
+    run_review_gate codex || REVIEW_GATE_RC=$?
   fi
-  echo "The Antigravity gate could not run (exit 3); falling back to the Codex lane."
-  # Recorded in the lane ledger so `review-receipt.py stats` can count how often
-  # the Gemini lane degrades rather than leaving it invisible.
-  export REVIEW_LANE_NOTE="antigravity-degraded(exit 3): Antigravity gate could not run; reviewed by Codex"
-  check_review_target
-  DISPATCH_LANE=codex
-  REVIEW_GATE_RC=0
-  run_review_gate codex || REVIEW_GATE_RC=$?
 fi
 [[ "$REVIEW_GATE_RC" -eq 0 ]] || exit "$REVIEW_GATE_RC"
 check_review_target
