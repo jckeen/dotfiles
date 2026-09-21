@@ -138,6 +138,27 @@ def own_worktrees(repo):
     }
 
 
+def worktree_gitdir(directory):
+    """Realpath of the gitdir named by a linked worktree's `.git` pointer file.
+
+    A `.git` file is not proof of ownership on its own — `git init
+    --separate-git-dir` plants one that points at a foreign repository, and git
+    stops at that directory all the same — so the caller checks the target against
+    this repository's worktree store. None when the pointer is absent, unreadable
+    or malformed, which the caller treats as a foreign boundary (#474).
+    """
+    try:
+        pointer = (directory / ".git").read_bytes()
+    except OSError:
+        return None
+    for line in pointer.splitlines():
+        if line.startswith(b"gitdir:"):
+            return os.path.realpath(
+                os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
+            )
+    return None
+
+
 def named_instruction(path):
     name = Path(path).name
     # .codex-review-ignore steers what the Codex reviewer reports, so it is an
@@ -571,18 +592,40 @@ def capture(repo, base, scope):
         path for path, (mode, _) in staged.items() if mode in ("100644", "100755", "120000")
     }
     worktrees = own_worktrees(repo)
+    store = os.path.realpath(
+        os.path.join(
+            os.fsdecode(
+                git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+            ),
+            "worktrees",
+        )
+    )
 
     def own_boundary(path):
-        # A linked worktree always carries `.git` as a *file* holding a gitdir
-        # pointer, while a fabricated boundary needs `.git` to be a directory.
-        # Path equality alone is not enough: git keeps printing a `worktree` line
-        # for a registration whose directory was removed, and stops reporting it
-        # prunable once anything occupies the path again, so a decoy planted over
-        # a stale registration would otherwise inherit the allowlist (#474).
+        # Git stops at any directory that looks like a repository, so an entry is
+        # dropped only when it is one of *this* repo's worktrees: the registered
+        # path matches, and the directory's `.git` pointer names a gitdir in this
+        # repo's worktree store that points back at that same pointer file.
+        # Neither half suffices alone. Git keeps listing a registration whose
+        # directory was removed, and stops calling it prunable once anything
+        # occupies the path again; and a `.git` file proves nothing about
+        # ownership, since `git init --separate-git-dir` writes one that points at
+        # a foreign repository (#474).
         if not path.endswith("/"):
             return False
         directory = repo / path.rstrip("/")
-        return os.path.realpath(directory) in worktrees and (directory / ".git").is_file()
+        if os.path.realpath(directory) not in worktrees:
+            return False
+        gitdir = worktree_gitdir(directory)
+        if gitdir is None or os.path.dirname(gitdir) != store:
+            return False
+        try:
+            registered = (Path(gitdir) / "gitdir").read_bytes()
+        except OSError:
+            return False
+        return os.path.realpath(os.fsdecode(registered.strip())) == os.path.realpath(
+            directory / ".git"
+        )
 
     untracked = {
         os.fsdecode(p)

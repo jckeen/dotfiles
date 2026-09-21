@@ -1473,16 +1473,33 @@ class ReceiptTests(unittest.TestCase):
         # Git keeps printing a `worktree` line for a registration whose directory
         # was removed, and stops calling it prunable once anything occupies the
         # path again, so path equality alone would hand the allowlist to a decoy
-        # planted over the stale registration (#474).
+        # planted over the stale registration. Neither shape of decoy owns the
+        # path: a fabricated `.git` directory, or a foreign repository whose `.git`
+        # file points outside this repo's worktree store (#474).
         (self.repo / ".git/info/exclude").write_text(".claude/\n")
-        evil = self.repo / ".claude/skills/evil"
-        self.git("worktree", "add", "-q", str(evil), "-b", "wtevil")
-        shutil.rmtree(evil)
-        (evil / ".git/objects").mkdir(parents=True)
-        (evil / ".git/refs").mkdir()
-        (evil / ".git/HEAD").write_text("ref: refs/heads/main\n")
-        (evil / "SKILL.md").write_text("instructions of no worktree at all\n")
-        self.assertIn(str(evil), self.git("worktree", "list", "--porcelain"))
+        for decoy in ("fabricated", "separate-git-dir"):
+            with self.subTest(decoy=decoy):
+                evil = self.repo / ".claude/skills/evil"
+                self.git("worktree", "add", "-q", str(evil), "-b", "wt-" + decoy)
+                shutil.rmtree(evil)
+                if decoy == "fabricated":
+                    (evil / ".git/objects").mkdir(parents=True)
+                    (evil / ".git/refs").mkdir()
+                    (evil / ".git/HEAD").write_text("ref: refs/heads/main\n")
+                else:
+                    foreign = Path(self.tmp.name) / ("foreign-" + decoy)
+                    subprocess.check_output(
+                        ["git", "init", "-q", "--separate-git-dir", str(foreign), str(evil)],
+                        stderr=subprocess.PIPE,
+                    )
+                    self.assertTrue((evil / ".git").is_file())
+                (evil / "SKILL.md").write_text("instructions of no worktree at all\n")
+                self.assertIn(str(evil), self.git("worktree", "list", "--porcelain"))
+                self.expect_begin_refused()
+                shutil.rmtree(evil)
+                self.git("worktree", "prune")
+
+    def expect_begin_refused(self):
         self.run_helper(
             "begin",
             "--repo",

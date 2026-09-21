@@ -10,16 +10,18 @@
   while any agent worktree was retained. Both the `untracked` and the
   `ignored_instructions` comprehension now drop such an entry, but only when
   `os.path.realpath` of it is one of this repository's own worktrees per `git
-  worktree list --porcelain -z` *and* its `.git` is a file, which is what a linked
-  worktree carries and a fabricated boundary cannot. Two weaker forms of the check
-  were fail-open, both caught in review of this change: skipping every
-  trailing-slash entry let any directory holding a `.git` with HEAD, objects and
-  refs hide a dirty `.claude/skills/*/SKILL.md` and still mint a receipt, and path
-  equality alone let a decoy inherit the registration of a worktree whose
-  directory had been removed, since git keeps listing it and stops calling it
-  prunable once the path is occupied again. `-z` because git prints worktree paths
-  raw, so a newline in one would otherwise truncate the entry and synthesize a
-  line that was never a worktree. Every other boundary keeps failing closed.
+  worktree list --porcelain -z` *and* the directory's `.git` pointer file names a
+  gitdir inside this repo's worktree store that points back at that same pointer
+  file. Three weaker forms of the check were fail-open, each caught in review of
+  this change: skipping every trailing-slash entry let any directory holding a
+  `.git` with HEAD, objects and refs hide a dirty `.claude/skills/*/SKILL.md` and
+  still mint a receipt; the registered path alone let a decoy inherit the
+  registration of a worktree whose directory had been removed, since git keeps
+  listing it and stops calling it prunable once the path is occupied again; and
+  requiring only that `.git` be a file admitted a foreign repository planted there
+  with `git init --separate-git-dir`. `-z` because git prints worktree paths raw,
+  so a newline in one would otherwise truncate the entry and synthesize a line
+  that was never a worktree. Every other boundary keeps failing closed.
   Closes #474, closes #495.
 - **A dependency's own `CLAUDE.md` is not an instruction surface.** #426 cleared
   only the `hook` term of `instruction()`, and `named_instruction()` matches on
