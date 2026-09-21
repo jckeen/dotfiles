@@ -49,6 +49,12 @@ gen() {
   (cd "$R" && ./claude/scripts/gen-instruction-files.sh > /dev/null 2> "$R/gen.err")
 }
 
+# gen_check — same, in --check mode (compare only, never write). Its exit code
+# and stderr are what the currency contract is asserted on.
+gen_check() {
+  (cd "$R" && ./claude/scripts/gen-instruction-files.sh --check > /dev/null 2> "$R/gen.err")
+}
+
 # check <name> <expected-exit> [<required output fragment>]
 check() {
   local name="$1" want="$2" frag="${3:-}"
@@ -334,6 +340,27 @@ codex_frag
 gen 2> /dev/null
 grep -q 'fragments/jules.md' "$R/gen.err"
 assert "a missing jules fragment fails generation by name" $?
+
+# --- Case 20: a huge stale diff must not abort the --check loop (#443) --------
+# The diff preview was `sed … | head -20`, which makes sed the pipe WRITER:
+# once a diff outgrew the pipe buffer, head closed the read end, sed died of
+# SIGPIPE, pipefail propagated 141 and set -e ended --check inside the loop.
+# Later targets were then never compared and the operator saw a bare exit 141
+# instead of the stale list. Same shape as #422. `claude` is the first tool in
+# TOOLS, so the oversized diff lands on the first iteration and a second,
+# later target proves the loop survived it.
+new_repo
+all_frags
+gen
+seq 1 200000 > "$R/claude/CLAUDE.md" # diff far larger than the 64 KiB pipe buffer
+echo '- Sneaky hand-edited rule.' >> "$R/antigravity/GEMINI.md"
+gen_check
+rc=$?
+[[ "$rc" -eq 1 ]] \
+  && grep -qF -- 'stale or hand-edited' "$R/gen.err" \
+  && grep -qF -- 'claude/CLAUDE.md' "$R/gen.err" \
+  && grep -qF -- 'antigravity/GEMINI.md' "$R/gen.err"
+assert "a huge stale diff still reports every stale target" $?
 
 echo "---"
 echo "$pass passed, $failed failed"
