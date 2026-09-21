@@ -266,6 +266,14 @@ deliberately lock-free: it re-asserts the attempt token on both sides of the
 artifact capture, so a transition landing mid-check can only make it refuse, and a
 slow check never blocks a gate.
 
+**Known limitation: a degraded lane still costs the other lane's approval.** A
+gate that exits 3 — agy missing, a diff above its byte cap, an unverifiable model
+pin — has already run `begin`, so the other lane's receipt is gone even though a
+degraded lane is not a verdict. Recovery is to re-run the required gate. The
+refusal is deliberately conservative: nothing distinguishes "could not run" from
+"ran and blocked" at the push boundary without trusting the gate that failed. See
+#499 for the retraction design that would avoid the cost.
+
 The ledger is written by `complete` (0600, append-only) and is **never read by
 `check`**: a forged ledger cannot approve a push and an unwritable one cannot
 block one. The dotfiles risk list is deliberately unnarrowed, so most diffs in

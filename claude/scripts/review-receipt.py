@@ -1089,9 +1089,12 @@ def resolve_base(repo, requested=None):
 
 def begin(args):
     repo, directory, receipts = layout(args.repo)
-    # Cross-lane: only a review that actually starts can reach a verdict, so the
-    # `invalidate` subcommand (a gate's cancellation trap, which may fire before
-    # `begin`) keeps its own-lane scope and cannot cost an untouched approval.
+    # Cross-lane, unlike the own-lane `invalidate` subcommand. That scope matters
+    # only for a cancellation trap firing BEFORE this line: cancelling a review
+    # that never started then costs no other lane's approval. Once this returns,
+    # the other lane's receipt is already gone and the trap's scope changes
+    # nothing — including when this run goes on to degrade (exit 3) rather than
+    # reach a verdict. See #499.
     with attempt_lock(receipts):
         attempt = supersede(receipts, args.reviewer)
     scope = args.scope

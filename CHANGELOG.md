@@ -36,6 +36,18 @@
   it refuse, and a slow check must never block a gate. Found by a non-gate review
   of the first commit; the three new tests fail on it, the interleaving one with
   both lanes reported live.
+- **Both gates now say so before they retire anything.** `gate_init_receipt`
+  warns, ahead of `begin`, when the other lane already holds a receipt for this
+  artifact and names the recovery. The Antigravity gate's supplementary-lane
+  banner prints long after `begin` has run, so it was too late to be a warning.
+- **Documented: a degraded lane still costs the other lane's approval.** A gate
+  that exits 3 (agy missing, byte cap, unverifiable model pin) has already run
+  `begin`, so the other lane's receipt is gone even though a degraded lane is not
+  a verdict. Re-run the required gate. The refusal is deliberately conservative —
+  at the push boundary nothing distinguishes "could not run" from "ran and
+  blocked" without trusting the gate that failed — and the case is exercised by
+  `workflow-shipping-rewrites.test.py`. Follow-up issue #499 tracks a retraction
+  design that would not cost the approval.
 
 ## 2026-09-21 — fix(review-receipt): nested worktrees and vendored instruction names
 

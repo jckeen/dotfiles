@@ -124,7 +124,12 @@ A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
 model pin, a diff above the byte cap) means the lane could not run, so
 `review-and-push.sh` falls back to Codex and records the degradation in the lane
 ledger; `REVIEW_LANE_FALLBACK=block` refuses the push instead. Exit 2 — blocking
-findings, or a verifiably wrong model — never falls back.
+findings, or a verifiably wrong model — never falls back. It still costs the other
+lane's approval, though: the gate ran `begin` before it degraded, which retires
+every lane's receipt for that artifact, so re-run the required gate. The refusal
+is the conservative behaviour — at the push boundary nothing distinguishes "could
+not run" from "ran and blocked" without trusting the gate that failed — and #499
+tracks a retraction design that would avoid the cost.
 
 `review-and-push.sh` checks the receipt naming the lane it dispatched, which also
 requires the review that run performed to still be approved. Checking by hand,

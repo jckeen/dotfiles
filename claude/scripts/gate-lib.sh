@@ -16,10 +16,29 @@ bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 # ─── Artifact capture and receipts ─────────────────────────────
 # All content extraction belongs to the helper: even a normal worktree diff
 # can execute a configured clean filter before --no-textconv takes effect.
+# Starting a review retires EVERY lane's receipt for this artifact, not only this
+# lane's: a blocking verdict must not be bypassable by the other lane's older
+# approval (#480). Warn BEFORE anything is retired — the Antigravity gate's
+# supplementary-lane banner prints long after `begin` has already done it, so it
+# is too late to be a warning. Presence only: whether that receipt was valid is
+# `review-receipt.py check`'s business, not this line's.
+gate_warn_competing_receipt() {
+  local receipts other
+  receipts="$(git rev-parse --git-path review-receipts 2>/dev/null)" || return 0
+  for other in codex antigravity; do
+    [[ "$other" != "$GATE_REVIEWER" ]] || continue
+    [[ -f "$receipts/$other.json" ]] || continue
+    yellow "⚠ The $other lane already holds a receipt for this artifact; starting this review retires it (#480)."
+    yellow "  A review that then blocks must not leave an older approval able to ship."
+    yellow "  If $other was the required lane and already approved, re-run its gate before pushing."
+  done
+}
+
 gate_init_receipt() {
   RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
   command -v python3 >/dev/null 2>&1 || { red "Python 3 is required for artifact receipts."; exit 2; }
   [[ -f "$RECEIPT_HELPER" ]] || { red "Review receipt helper missing: $RECEIPT_HELPER"; exit 2; }
+  gate_warn_competing_receipt
   python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer "$GATE_REVIEWER" || exit 2
 }
 
