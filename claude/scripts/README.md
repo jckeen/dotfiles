@@ -95,7 +95,9 @@ What `review-and-push.sh` does:
 1. Requires a clean non-default branch, then pins the current commit.
 2. Runs the detected test suite and stops on failure.
 3. Classifies the committed artifact with `review-receipt.py lane` and runs the
-   gate for the **required lane** with `--require --committed` (ADR-0008).
+   gate for the **required lane** with `--require --committed` (ADR-0008). A
+   tier-1 diff dispatches no gate: the wrapper records the exemption receipt
+   itself, so a docs-only push never depends on a reviewer's size limits (#482).
 4. Prompts for confirmation, unless `--auto-push` was selected.
 5. Validates the receipt after confirmation, immediately before push, naming the
    lane it dispatched. That enforces the diff's lane requirement and also
@@ -229,8 +231,9 @@ someone chose to run.
 | `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
 | `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
 
-`required_lane` is one of `any` (tier-1 docs diff — either gate's exemption
-receipt ships it), `antigravity` (ordinary tier-2 work — the default lane), or
+`required_lane` is one of `any` (tier-1 docs diff — an exemption receipt from
+either lane ships it, whether a gate's tier valve or `review-and-push.sh`
+recorded it), `antigravity` (ordinary tier-2 work — the default lane), or
 `codex` (a risk surface, an empty changed-path list, or a classification the
 helper could not compute). Lanes rank `any < antigravity < codex`. Size alone
 never escalates the lane: a large ordinary diff is still ordinary.
