@@ -490,8 +490,8 @@ commands need the flag, since retirement inspects again. The release record
 lists each exempted pid, command and parent under `exempt_processes`, and the
 recovery record carries that list into the archive beside
 `retirement_exempt_processes`, what the retirement scans themselves skipped —
-the two differ when the session manager restarted in between. Other hosts require an explicit
-platform-appropriate review. These checks sample
+the two differ when the session manager restarted in between. Other hosts
+require an explicit platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.
 
