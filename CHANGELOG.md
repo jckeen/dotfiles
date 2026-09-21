@@ -32,6 +32,25 @@
   identity look-alikes that retain even under the assertion, partial readability
   on each of the five surfaces, and `EPERM` instead of `EACCES`. Closes #475.
 
+## 2026-09-21 — fix(jules-dispatch): resolve the starting branch while deciding eligibility
+
+- The branch lookup moved out of `dispatch_one` and into phase one, the
+  eligibility pass a dry run and a live run share. A pair whose source reports no
+  default branch and has no `JULES_STARTING_BRANCH` override is now refused
+  before it is queued, so it no longer spends a slot of the daily cap and defers
+  a valid pair behind it (#486), and `--dry-run` reports the same refusal instead
+  of promising a dispatch the live run rejects (#487). The resolved branch travels
+  with the candidate, so nothing re-resolves it in phase two.
+- The injected prompt header now demands conventional commit subjects, naming the
+  type set `check-commit-format.sh` enforces. The first live run's subject was
+  `No changes needed: doc drift checkers pass`, which that required check rejects;
+  the catalog files already asked for conventional subjects and the session
+  ignored them, so the requirement sits in the first line it reads. This is
+  option (b) of #479's gap 1 only — the empty-PR and label gaps stay open.
+- `jules-dispatch.test.sh`: three cases added (cap not spent by a branchless
+  pair, the dry-run refusal with a byte-identical state dir, and the header's
+  type list asserted against the checker's own `TYPES`, so the two cannot drift).
+
 ## 2026-09-19 — fix(jules-dispatch): send the source's default branch as startingBranch
 
 - `GitHubRepoContext.startingBranch` is required: the first live `POST /sessions`
