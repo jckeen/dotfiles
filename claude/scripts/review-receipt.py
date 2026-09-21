@@ -126,10 +126,14 @@ def own_worktrees(repo):
     an entry is safe only for this repo's own worktrees (#474); every other
     boundary keeps failing closed in file_bytes(), so a fabricated `.git` cannot
     hide a dirty instruction file behind it.
+
+    `-z` because git prints worktree paths raw: a path holding a newline would
+    otherwise split into two entries, truncating the real one and synthesizing a
+    line that was never a worktree.
     """
     return {
         os.path.realpath(os.fsdecode(line[len(b"worktree ") :]))
-        for line in git(repo, "worktree", "list", "--porcelain").split(b"\n")
+        for line in git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0")
         if line.startswith(b"worktree ")
     }
 
@@ -569,7 +573,16 @@ def capture(repo, base, scope):
     worktrees = own_worktrees(repo)
 
     def own_boundary(path):
-        return path.endswith("/") and os.path.realpath(repo / path.rstrip("/")) in worktrees
+        # A linked worktree always carries `.git` as a *file* holding a gitdir
+        # pointer, while a fabricated boundary needs `.git` to be a directory.
+        # Path equality alone is not enough: git keeps printing a `worktree` line
+        # for a registration whose directory was removed, and stops reporting it
+        # prunable once anything occupies the path again, so a decoy planted over
+        # a stale registration would otherwise inherit the allowlist (#474).
+        if not path.endswith("/"):
+            return False
+        directory = repo / path.rstrip("/")
+        return os.path.realpath(directory) in worktrees and (directory / ".git").is_file()
 
     untracked = {
         os.fsdecode(p)

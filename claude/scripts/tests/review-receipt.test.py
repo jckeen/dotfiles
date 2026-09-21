@@ -1414,15 +1414,23 @@ class ReceiptTests(unittest.TestCase):
     def test_own_worktree_directory_is_not_snapshotted(self):
         (self.repo / ".git/info/exclude").write_text(".claude/worktrees/\n")
         baseline = json.loads(self.begin("committed").read_text())["artifact"]
-        for name in (".claude/worktrees/agent-x", "visible/agent-y"):
+        # The last one holds a newline: git prints worktree paths raw, so a plain
+        # line-by-line parse of `worktree list --porcelain` would truncate it.
+        for name, branch in (
+            (".claude/worktrees/agent-x", "agent-x"),
+            ("visible/agent-y", "agent-y"),
+            (".claude/worktrees/od\nd", "odd"),
+        ):
             with self.subTest(worktree=name):
-                self.git("worktree", "add", "-q", name, "-b", Path(name).name)
+                self.git("worktree", "add", "-q", name, "-b", branch)
                 (self.repo / name / "AGENTS.md").write_text("instructions over there\n")
                 # Git reports a worktree as a single directory entry with a trailing
                 # slash and never reads through the boundary (#474). An ignored one
                 # is listed as ignored, a visible one as untracked.
-                listing = self.git("ls-files", "--others", "--ignored", "--exclude-standard")
-                listing += self.git("ls-files", "--others", "--exclude-standard")
+                listing = set()
+                for ignored in (("--ignored",), ()):
+                    entries = self.git("ls-files", "--others", "--exclude-standard", "-z", *ignored)
+                    listing |= {entry for entry in entries.split("\0") if entry}
                 self.assertIn(name + "/", listing)
                 snapshot = self.begin("committed")
                 artifact = json.loads(snapshot.read_text())["artifact"]
@@ -1460,6 +1468,33 @@ class ReceiptTests(unittest.TestCase):
                     ok=False,
                 )
                 shutil.rmtree(boundary)
+
+    def test_stale_worktree_registration_is_not_allowlisted(self):
+        # Git keeps printing a `worktree` line for a registration whose directory
+        # was removed, and stops calling it prunable once anything occupies the
+        # path again, so path equality alone would hand the allowlist to a decoy
+        # planted over the stale registration (#474).
+        (self.repo / ".git/info/exclude").write_text(".claude/\n")
+        evil = self.repo / ".claude/skills/evil"
+        self.git("worktree", "add", "-q", str(evil), "-b", "wtevil")
+        shutil.rmtree(evil)
+        (evil / ".git/objects").mkdir(parents=True)
+        (evil / ".git/refs").mkdir()
+        (evil / ".git/HEAD").write_text("ref: refs/heads/main\n")
+        (evil / "SKILL.md").write_text("instructions of no worktree at all\n")
+        self.assertIn(str(evil), self.git("worktree", "list", "--porcelain"))
+        self.run_helper(
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+            ok=False,
+        )
 
     def test_exec_bit_drift_ignored_when_core_filemode_false(self):
         self.git("config", "core.filemode", "false")
