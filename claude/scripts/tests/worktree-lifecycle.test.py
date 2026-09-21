@@ -2,6 +2,7 @@
 """Exercise lifecycle decisions on real disposable Git worktrees."""
 
 from contextlib import contextmanager, nullcontext
+import errno
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,72 @@ class LifecycleTests(unittest.TestCase):
         (entry / "task").mkdir()
         (entry / "task/123").symlink_to(entry, target_is_directory=True)
         return module, entry
+
+    def session_process(self, pid, comm, ppid, uid=None):
+        """A same-user process whose every reference points into the worktree.
+
+        Models a systemd user-session process: identity stays readable while
+        the evidence below it can be denied, so only the exemption can let a
+        release proceed while such a process is visible.
+        """
+        owner = os.getuid() if uid is None else uid
+        status = (
+            f"Name:\t{comm}\nState:\tS (sleeping)\nPPid:\t{ppid}\n"
+            f"Uid:\t{owner}\t{owner}\t{owner}\t{owner}\n"
+        )
+        entry = self.proc / str(pid)
+        thread = entry / "task" / str(pid)
+        thread.mkdir(parents=True)
+        (entry / "comm").write_text(comm + "\n")
+        for directory in (entry, thread):
+            (directory / "status").write_text(status)
+        (thread / "cwd").symlink_to(self.worktree)
+        (thread / "root").symlink_to("/")
+        (thread / "exe").symlink_to(sys.executable)
+        (thread / "fd").mkdir()
+        (thread / "fd/3").symlink_to(self.worktree / "file")
+        (thread / "maps").write_text(f"1000-2000 r--p 00000000 00:01 1 {self.worktree}/file\n")
+        return entry
+
+    def deny_session_evidence(self, entry):
+        """Deny a thread's evidence with an actual EACCES, as procfs does."""
+        self.addCleanup(self.allow_session_evidence, entry)
+        for thread in sorted((entry / "task").iterdir()):
+            thread.chmod(0o000)
+            try:
+                os.readlink(thread / "cwd")
+            except PermissionError:
+                continue
+            self.skipTest("denying process evidence by mode requires a non-root user")
+
+    def allow_session_evidence(self, entry):
+        """Undo mode-based denial so removal can descend into the fixture."""
+        if not entry.exists():
+            return
+        for thread in sorted((entry / "task").iterdir()):
+            thread.chmod(0o700)
+
+    @contextmanager
+    def denied_process_reads(self, module, entry, surfaces, code=errno.EACCES):
+        """Refuse exactly these surfaces below a pid, as a protected pid does."""
+        from unittest.mock import patch
+
+        # A plain function, not a partial: Path.open must still bind its path.
+        def refusing(original):
+            def refuse(candidate, *args, **kwargs):
+                reference = Path(candidate)
+                if entry in reference.parents:
+                    name = "descriptors" if reference.parent.name == "fd" else reference.name
+                    if name in surfaces:
+                        raise PermissionError(code, os.strerror(code))
+                return original(candidate, *args, **kwargs)
+
+            return refuse
+
+        with patch.object(module.os, "readlink", new=refusing(os.readlink)):
+            with patch.object(module.os, "scandir", new=refusing(os.scandir)):
+                with patch.object(module.Path, "open", new=refusing(Path.open)):
+                    yield
 
     def hidden_staged_work(self):
         admin = Path(self.run_git(self.worktree, "rev-parse", "--absolute-git-dir").strip())
@@ -1802,6 +1869,82 @@ if kind == 'writer':
         for data in ("", "incomplete mapping\n"):
             with self.subTest(maps=data):
                 (entry / "maps").write_text(data)
+                with self.assertRaisesRegex(ValueError, "cannot inspect"):
+                    module.active_processes(self.worktree, self.proc)
+
+    def test_denied_user_session_pair_is_exempted_and_recorded(self):
+        manager = self.session_process(356, "systemd", 1)
+        helper = self.session_process(362, "(sd-pam)", 356)
+        self.deny_session_evidence(manager)
+        self.deny_session_evidence(helper)
+        exempt = [
+            {"pid": 356, "comm": "systemd", "ppid": 1},
+            {"pid": 362, "comm": "(sd-pam)", "ppid": 356},
+        ]
+        self.merged()
+        result = self.release()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["exempt_processes"], exempt)
+        result = self.retire("--apply", "--archive-dir", str(self.root / "archive"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = Path(json.loads(result.stdout)["archive"])
+        self.assertEqual(
+            json.loads((archive / "recovery.json").read_text())["exempt_processes"], exempt
+        )
+
+    def test_readable_session_manager_reference_still_refuses_release(self):
+        self.session_process(356, "systemd", 1)
+        result = self.release()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("active process", result.stderr)
+
+    def test_session_exemption_requires_the_whole_process_identity(self):
+        cases = {
+            "manager pid 1 did not start": [(356, "systemd", 2)],
+            "pid-1 child that is not the session manager": [(400, "bash", 1)],
+            "another user's session manager": [(401, "systemd", 1, os.getuid() + 1)],
+            "helper of a manager pid 1 did not start": [
+                (402, "systemd", 2),
+                (403, "(sd-pam)", 402),
+            ],
+            "helper with no visible parent": [(404, "(sd-pam)", 999999)],
+        }
+        for label, specs in cases.items():
+            with self.subTest(case=label):
+                entries = [self.session_process(*spec) for spec in specs]
+                for entry in entries:
+                    self.deny_session_evidence(entry)
+                result = self.release()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("cannot inspect", result.stderr)
+                for entry in entries:
+                    self.allow_session_evidence(entry)
+                    shutil.rmtree(entry)
+
+    def test_listable_descriptor_table_with_denied_targets_is_exempt(self):
+        # The actual session manager lists its own descriptor table while
+        # every target refuses readlink; (sd-pam) refuses even enumeration.
+        module, _ = self.process_fixture()
+        entry = self.session_process(356, "systemd", 1)
+        surfaces = ("cwd", "root", "exe", "descriptors", "maps")
+        with self.denied_process_reads(module, entry, surfaces):
+            self.assertEqual(
+                module.active_processes(self.worktree, self.proc),
+                [{"pid": 356, "comm": "systemd", "ppid": 1}],
+            )
+
+    def test_partial_or_differently_denied_evidence_retains_the_worktree(self):
+        module, _ = self.process_fixture()
+        entry = self.session_process(356, "systemd", 1)
+        surfaces = ("cwd", "root", "exe", "descriptors", "maps")
+        for readable in surfaces:
+            with self.subTest(readable=readable):
+                denied = tuple(name for name in surfaces if name != readable)
+                with self.denied_process_reads(module, entry, denied):
+                    with self.assertRaisesRegex(ValueError, "cannot inspect|active process"):
+                        module.active_processes(self.worktree, self.proc)
+        with self.subTest(denial="EPERM"):
+            with self.denied_process_reads(module, entry, surfaces, code=errno.EPERM):
                 with self.assertRaisesRegex(ValueError, "cannot inspect"):
                     module.active_processes(self.worktree, self.proc)
 

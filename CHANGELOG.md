@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-21 — fix(worktree-lifecycle): exempt the uninspectable systemd user-session pair
+
+- `release` (and therefore `retire`) always refused on any systemd user-session
+  host: `systemd --user` and its `(sd-pam)` helper are same-uid processes whose
+  cwd, root, exe, descriptor targets and maps refuse this user with `EACCES`,
+  and fail-closed retained on that. The scan now skips a process only on the
+  whole signature (current user's credentials, `comm` `systemd` with `PPid` 1 or
+  `(sd-pam)` under such a `systemd`, and every reference denied with `EACCES`) —
+  one readable reference is evidence, not an exemption. Each skipped pid, comm
+  and ppid lands in the release record's `exempt_processes` and travels into the
+  recovery record, so the archive shows what was never inspected. Five cases
+  cover the exempted pair, the descriptor table that lists names while refusing
+  every target, four identity look-alikes, partial readability on each surface
+  and `EPERM` instead of `EACCES`. Closes #475.
+
 ## 2026-09-19 — fix(jules-dispatch): send the source's default branch as startingBranch
 
 - `GitHubRepoContext.startingBranch` is required: the first live `POST /sessions`

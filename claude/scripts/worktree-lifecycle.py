@@ -7,6 +7,7 @@ that its session is finished; the timer never releases or removes worktrees.
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -336,15 +337,116 @@ def inspect_thread(path, entry):
             raise
 
 
+def process_identity(entry):
+    """The command, parent pid and single owning uid recorded for a process.
+
+    Both files stay world-readable after a process clears its dumpable flag,
+    so identity remains verifiable for one whose references are denied below.
+    """
+    comm = os.fsdecode((entry / "comm").read_bytes().removesuffix(b"\n"))
+    fields = {}
+    for line in (entry / "status").read_bytes().split(b"\n"):
+        key, _, value = line.partition(b":")
+        fields[os.fsdecode(key)] = value.split()
+    owners = {int(value) for value in fields["Uid"]}
+    if len(owners) != 1 or len(fields["PPid"]) != 1:
+        raise ValueError("ambiguous process identity")
+    return comm, int(fields["PPid"][0]), owners.pop()
+
+
+def readlink_denied(link):
+    """True only when an existing link refuses this user with EACCES."""
+    try:
+        os.readlink(link)
+    except OSError as error:
+        return error.errno == errno.EACCES
+    return False
+
+
+def evidence_denied(thread):
+    """True when every filesystem reference of a thread refuses us with EACCES.
+
+    A readable reference is partial evidence to inspect instead, and another
+    errno describes a different failure; both disqualify the exemption below.
+    """
+    if not all(readlink_denied(thread / name) for name in ("cwd", "root", "exe")):
+        return False
+    try:
+        with (thread / "maps").open("rb"):
+            return False
+    except OSError as error:
+        if error.errno != errno.EACCES:
+            return False
+    # A session manager's own descriptor table can be listable while every
+    # target refuses readlink; its (sd-pam) helper refuses even enumeration.
+    try:
+        with os.scandir(thread / "fd") as descriptors:
+            targets = [Path(descriptor.path) for descriptor in descriptors]
+    except OSError as error:
+        return error.errno == errno.EACCES
+    return all(readlink_denied(target) for target in targets)
+
+
+def session_manager(entry, uid):
+    """True when this pid is this user's own `systemd --user` session manager."""
+    comm, ppid, owner = process_identity(entry)
+    return comm == "systemd" and ppid == 1 and owner == uid
+
+
+def denied_session_process(proc_root, entry, uid):
+    """Identify a systemd user-session process no scan can read, or None.
+
+    Every systemd user session contributes two same-uid processes whose
+    references are unreadable: `systemd --user` and its `(sd-pam)` helper
+    change credentials at exec, which clears dumpable and makes cwd, root,
+    exe, descriptor targets and maps refuse this user with EACCES. Retaining
+    on uninspectable evidence would therefore retain every worktree on every
+    systemd host, so exempt exactly that pair, and only on the whole
+    signature. Pid 1 started them, so no shell in a worktree did, and a
+    process that dropped privileges under pid 1 holds no cwd, root,
+    executable, descriptor or mapping in a checkout this user later created.
+    Any readable reference is evidence rather than an exemption, so a
+    same-user look-alike that leaks one inspectable reference still retains
+    the worktree. Callers record each exemption in the release record.
+    """
+    try:
+        comm, ppid, owner = process_identity(entry)
+        if owner != uid:
+            return None
+        if comm == "systemd":
+            if ppid != 1:
+                return None
+        elif comm != "(sd-pam)" or not session_manager(proc_root / str(ppid), uid):
+            return None
+        threads = [thread for thread in (entry / "task").iterdir() if thread.name.isdigit()]
+        if not threads or not all(evidence_denied(thread) for thread in threads):
+            return None
+    except (OSError, ValueError, KeyError):
+        # Unreadable or malformed identity is never an exemption; the caller
+        # inspects the process and reports what it could not establish.
+        return None
+    return dict(pid=int(entry.name), comm=comm, ppid=ppid)
+
+
 def active_processes(path, proc_root=Path("/proc")):
-    """Retain visible thread references; missing live-task evidence is unsafe."""
+    """Retain visible thread references; missing live-task evidence is unsafe.
+
+    Returns the exempted systemd user-session processes, so callers can record
+    the identities whose references no scan could read.
+    """
     if not proc_root.is_dir():
         raise ValueError("automatic process inspection requires /proc; retain on this platform")
+    uid = os.getuid()
+    exempt = []
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            if entry.stat().st_uid != os.getuid():
+            if entry.stat().st_uid != uid:
+                continue
+            session = denied_session_process(proc_root, entry, uid)
+            if session is not None:
+                exempt.append(session)
                 continue
             # The leader may be a zombie while workers still hold references.
             # Threads can also have private cwd/root and descriptor tables.
@@ -367,6 +469,7 @@ def active_processes(path, proc_root=Path("/proc")):
                 except OSError:
                     pass
             raise ValueError("cannot inspect a same-user process; retain worktree") from error
+    return exempt
 
 
 def release(repo, path, head, owner, pr, slug):
@@ -378,8 +481,8 @@ def release(repo, path, head, owner, pr, slug):
         raise ValueError("release needs an owner and valid GitHub repository/PR")
     clean(path)
     check_admin_metadata(admin)
-    active_processes(path)
-    active_processes(admin)
+    # Record what no scan could read so the archive shows the exemption.
+    exempt = {item["pid"]: item for item in active_processes(path) + active_processes(admin)}
     if (admin / MARKER).exists():
         previous = marker(admin)
         if previous["owner"] != owner:
@@ -392,6 +495,7 @@ def release(repo, path, head, owner, pr, slug):
         owner=owner,
         pr=pr,
         github_repo=slug,
+        exempt_processes=[exempt[pid] for pid in sorted(exempt)],
         released_at=datetime.now(timezone.utc).isoformat(),
     )
     with tempfile.NamedTemporaryFile(mode="w", dir=admin, delete=False) as stream:

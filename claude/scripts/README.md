@@ -471,8 +471,17 @@ committed blobs; transformed checkout contents and active content filters also
 require separate retirement. Inspection does not execute those filters.
 Process inspection requires Linux `/proc` and checks same-user processes'
 working directories, roots, executables, open descriptors and file-backed
-memory mappings. Missing or unreadable evidence retains the worktree. Other
-hosts require an explicit platform-appropriate review. These checks sample
+memory mappings. Missing or unreadable evidence retains the worktree, with one
+exemption: every systemd user session runs two same-user processes whose
+references no scan can read, `systemd --user` and its `(sd-pam)` helper, and
+without the exemption release would be impossible on those hosts. A process is
+skipped only when its credentials are the current user's, pid 1 started it (or
+its parent is such a `systemd`), and every one of its working directory, root,
+executable, descriptor and mapping reads is refused with `EACCES`. A single
+readable reference is evidence rather than an exemption and still retains the
+worktree. The release record lists each skipped pid, command and parent under
+`exempt_processes`, and the recovery record carries that list into the archive.
+Other hosts require an explicit platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.
 
