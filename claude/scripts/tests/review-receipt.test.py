@@ -1382,11 +1382,20 @@ class ReceiptTests(unittest.TestCase):
     def test_ignored_hook_dependencies_and_manifests_are_excluded_from_review(self):
         (self.repo / ".git/info/exclude").write_text(
             "claude/hooks/node_modules/\nclaude/hooks/bun.lock\nclaude/hooks/package.json\n"
+            ".claude/hooks/node_modules/\n.codex/hooks/node_modules/\n"
         )
         for name in (
             "claude/hooks/node_modules/x/index.d.ts",
             "claude/hooks/bun.lock",
             "claude/hooks/package.json",
+            # A dependency's own instruction-shaped files are not this repo's
+            # instruction surface either: bun-types ships a CLAUDE.md (#439).
+            "claude/hooks/node_modules/bun-types/CLAUDE.md",
+            "claude/hooks/node_modules/some-pkg/AGENTS.md",
+            "claude/hooks/node_modules/some-pkg/skills/x/SKILL.md",
+            # The installed hook trees vendor the same dependencies.
+            ".claude/hooks/node_modules/bun-types/CLAUDE.md",
+            ".codex/hooks/node_modules/some-pkg/AGENTS.md",
         ):
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1401,6 +1410,108 @@ class ReceiptTests(unittest.TestCase):
         committed_artifact = json.loads(committed_snapshot.read_text())["artifact"]
         self.assertEqual(committed_artifact["changed_paths"], ["code.txt"])
         self.complete(committed_snapshot)
+
+    def test_own_worktree_directory_is_not_snapshotted(self):
+        (self.repo / ".git/info/exclude").write_text(".claude/worktrees/\n")
+        baseline = json.loads(self.begin("committed").read_text())["artifact"]
+        # The last one holds a newline: git prints worktree paths raw, so a plain
+        # line-by-line parse of `worktree list --porcelain` would truncate it.
+        for name, branch in (
+            (".claude/worktrees/agent-x", "agent-x"),
+            ("visible/agent-y", "agent-y"),
+            (".claude/worktrees/od\nd", "odd"),
+        ):
+            with self.subTest(worktree=name):
+                self.git("worktree", "add", "-q", name, "-b", branch)
+                (self.repo / name / "AGENTS.md").write_text("instructions over there\n")
+                # Git reports a worktree as a single directory entry with a trailing
+                # slash and never reads through the boundary (#474). An ignored one
+                # is listed as ignored, a visible one as untracked.
+                listing = set()
+                for ignored in (("--ignored",), ()):
+                    entries = self.git("ls-files", "--others", "--exclude-standard", "-z", *ignored)
+                    listing |= {entry for entry in entries.split("\0") if entry}
+                self.assertIn(name + "/", listing)
+                snapshot = self.begin("committed")
+                artifact = json.loads(snapshot.read_text())["artifact"]
+                self.assertEqual(artifact["untracked_sha256"], baseline["untracked_sha256"])
+                self.assertEqual(artifact["worktree_sha256"], baseline["worktree_sha256"])
+                self.assertEqual(artifact["changed_paths"], ["code.txt"])
+                self.complete(snapshot)
+                uncommitted = json.loads(self.begin("uncommitted").read_text())["artifact"]
+                self.assertEqual(uncommitted["changed_paths"], [])
+
+    def test_fabricated_repository_boundary_fails_closed(self):
+        # A directory only has to look like a repository for git to stop at it, so
+        # a `.git` that no worktree owns must not silently drop a dirty instruction
+        # file from the snapshot (#474).
+        # The ignored case reaches the snapshot as an instruction surface, the
+        # visible one as untracked; both must refuse rather than drop the entry.
+        (self.repo / ".git/info/exclude").write_text(".claude/\n")
+        for name in (".claude/skills/evil", "vendor/nested"):
+            with self.subTest(boundary=name):
+                boundary = self.repo / name
+                (boundary / ".git/objects").mkdir(parents=True)
+                (boundary / ".git/refs").mkdir()
+                (boundary / ".git/HEAD").write_text("ref: refs/heads/main\n")
+                (boundary / "SKILL.md").write_text("instructions of no repo at all\n")
+                self.run_helper(
+                    "begin",
+                    "--repo",
+                    str(self.repo),
+                    "--base",
+                    "main",
+                    "--scope",
+                    "committed",
+                    "--reviewer",
+                    "codex",
+                    ok=False,
+                )
+                shutil.rmtree(boundary)
+
+    def test_stale_worktree_registration_is_not_allowlisted(self):
+        # Git keeps printing a `worktree` line for a registration whose directory
+        # was removed, and stops calling it prunable once anything occupies the
+        # path again, so path equality alone would hand the allowlist to a decoy
+        # planted over the stale registration. Neither shape of decoy owns the
+        # path: a fabricated `.git` directory, or a foreign repository whose `.git`
+        # file points outside this repo's worktree store (#474).
+        (self.repo / ".git/info/exclude").write_text(".claude/\n")
+        for decoy in ("fabricated", "separate-git-dir"):
+            with self.subTest(decoy=decoy):
+                evil = self.repo / ".claude/skills/evil"
+                self.git("worktree", "add", "-q", str(evil), "-b", "wt-" + decoy)
+                shutil.rmtree(evil)
+                if decoy == "fabricated":
+                    (evil / ".git/objects").mkdir(parents=True)
+                    (evil / ".git/refs").mkdir()
+                    (evil / ".git/HEAD").write_text("ref: refs/heads/main\n")
+                else:
+                    foreign = Path(self.tmp.name) / ("foreign-" + decoy)
+                    subprocess.check_output(
+                        ["git", "init", "-q", "--separate-git-dir", str(foreign), str(evil)],
+                        stderr=subprocess.PIPE,
+                    )
+                    self.assertTrue((evil / ".git").is_file())
+                (evil / "SKILL.md").write_text("instructions of no worktree at all\n")
+                self.assertIn(str(evil), self.git("worktree", "list", "--porcelain"))
+                self.expect_begin_refused()
+                shutil.rmtree(evil)
+                self.git("worktree", "prune")
+
+    def expect_begin_refused(self):
+        self.run_helper(
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+            ok=False,
+        )
 
     def test_exec_bit_drift_ignored_when_core_filemode_false(self):
         self.git("config", "core.filemode", "false")
@@ -1446,6 +1557,10 @@ class ReceiptTests(unittest.TestCase):
             ".githooks/pre-push",
             "node_modules/example/.codex/config.toml",
             "node_modules/example/AGENTS.md",
+            # A vendored githooks/ directory must not hide the dependency's own
+            # AGENTS.md: the vendored test only fires below the hook marker (#439).
+            "node_modules/example/githooks/AGENTS.md",
+            "claude/skills/x/SKILL.md",
         ):
             with self.subTest(path=name):
                 (self.repo / ".git/info/exclude").write_text(name + "\n")

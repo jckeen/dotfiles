@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-09-21 — fix(review-receipt): nested worktrees and vendored instruction names
+
+- **An own worktree no longer aborts the snapshot, and only an own worktree is
+  dropped.** `git ls-files --others` reports a directory it will not descend into
+  as one entry with a trailing slash, so the `.claude/worktrees/agent-…/` entry
+  matched `instruction()` and reached `file_bytes()`, which refuses a directory:
+  every gate run from the main checkout failed with `cannot snapshot non-file`
+  while any agent worktree was retained. Both the `untracked` and the
+  `ignored_instructions` comprehension now drop such an entry, but only when
+  `os.path.realpath` of it is one of this repository's own worktrees per `git
+  worktree list --porcelain -z` *and* the directory's `.git` pointer file names a
+  gitdir inside this repo's worktree store that points back at that same pointer
+  file. Three weaker forms of the check were fail-open, each caught in review of
+  this change: skipping every trailing-slash entry let any directory holding a
+  `.git` with HEAD, objects and refs hide a dirty `.claude/skills/*/SKILL.md` and
+  still mint a receipt; the registered path alone let a decoy inherit the
+  registration of a worktree whose directory had been removed, since git keeps
+  listing it and stops calling it prunable once the path is occupied again; and
+  requiring only that `.git` be a file admitted a foreign repository planted there
+  with `git init --separate-git-dir`. `-z` because git prints worktree paths raw,
+  so a newline in one would otherwise truncate the entry and synthesize a line
+  that was never a worktree. Every other boundary keeps failing closed.
+  Closes #474, closes #495.
+- **A dependency's own `CLAUDE.md` is not an instruction surface.** #426 cleared
+  only the `hook` term of `instruction()`, and `named_instruction()` matches on
+  basename alone, so `claude/hooks/node_modules/bun-types/CLAUDE.md` still
+  blocked a committed review on a clean tree. The vendored/lockfile test now
+  short-circuits the whole predicate, fires only *below* the hook marker so a
+  dependency that vendors a `githooks/` directory cannot hide its own `AGENTS.md`,
+  and recognises the installed hook trees (`.claude/hooks`, `.codex/hooks`,
+  `.gemini/hooks`) alongside `claude/hooks`. Real `AGENTS.md`, `SKILL.md` and
+  `node_modules/example/AGENTS.md` outside a hook tree stay in scope, which
+  `review-receipt.test.py` asserts alongside the name variants that slipped
+  through. The predicate is unchanged for all 256 tracked paths. Closes #439.
+
 ## 2026-09-21 — fix(review): record tier-1 exemptions without dispatching a gate
 
 - A tier-1 (docs-only) diff needs no reviewer, but `review-and-push.sh` collected

@@ -117,6 +117,48 @@ def oid(repo, ref):
     )
 
 
+def own_worktrees(repo):
+    """Real paths of this repository's own worktrees, main checkout included.
+
+    `git ls-files --others` reports any directory it refuses to descend into as a
+    single entry with a trailing slash, and a directory only has to *look* like a
+    repository to qualify (a `.git` holding HEAD, objects and refs). Dropping such
+    an entry is safe only for this repo's own worktrees (#474); every other
+    boundary keeps failing closed in file_bytes(), so a fabricated `.git` cannot
+    hide a dirty instruction file behind it.
+
+    `-z` because git prints worktree paths raw: a path holding a newline would
+    otherwise split into two entries, truncating the real one and synthesizing a
+    line that was never a worktree.
+    """
+    return {
+        os.path.realpath(os.fsdecode(line[len(b"worktree ") :]))
+        for line in git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0")
+        if line.startswith(b"worktree ")
+    }
+
+
+def worktree_gitdir(directory):
+    """Realpath of the gitdir named by a linked worktree's `.git` pointer file.
+
+    A `.git` file is not proof of ownership on its own — `git init
+    --separate-git-dir` plants one that points at a foreign repository, and git
+    stops at that directory all the same — so the caller checks the target against
+    this repository's worktree store. None when the pointer is absent, unreadable
+    or malformed, which the caller treats as a foreign boundary (#474).
+    """
+    try:
+        pointer = (directory / ".git").read_bytes()
+    except OSError:
+        return None
+    for line in pointer.splitlines():
+        if line.startswith(b"gitdir:"):
+            return os.path.realpath(
+                os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
+            )
+    return None
+
+
 def named_instruction(path):
     name = Path(path).name
     # .codex-review-ignore steers what the Codex reviewer reports, so it is an
@@ -161,11 +203,27 @@ def modes_differ(mode1, mode2, file_mode=True):
 def instruction(path):
     parts = Path(path).parts
     name = parts[-1]
-    hook = any(p in ("githooks", ".githooks") for p in parts) or ("claude", "hooks") in zip(
-        parts, parts[1:]
+    # Where the hook tree starts, so the vendored test below can fire only *below*
+    # it: a dependency that vendors a githooks/ directory must not thereby hide its
+    # own AGENTS.md from the sweep.
+    hook_at = next(
+        (
+            index
+            for index, p in enumerate(parts)
+            if p in ("githooks", ".githooks")
+            or (
+                p in ("claude", ".claude", ".codex", ".gemini")
+                and parts[index + 1 : index + 2] == ("hooks",)
+            )
+        ),
+        None,
     )
-    if hook and (
-        any(p in ("node_modules", ".bun", "dist", "__pycache__") for p in parts)
+    # A dependency's own CLAUDE.md is not this repo's instruction surface, so the
+    # vendored test short-circuits the whole predicate rather than clearing just
+    # the hook term — named_instruction() matches on basename alone and would win
+    # over it (#439).
+    if hook_at is not None and (
+        any(p in ("node_modules", ".bun", "dist", "__pycache__") for p in parts[hook_at + 1 :])
         or name
         in (
             "bun.lock",
@@ -176,11 +234,11 @@ def instruction(path):
             "pnpm-lock.yaml",
         )
     ):
-        hook = False
+        return False
     return (
         any(p in AGENT_NAMESPACES for p in parts)
         or source_instruction(path)
-        or hook
+        or hook_at is not None
         or named_instruction(path)
         or name
         in (
@@ -533,10 +591,46 @@ def capture(repo, base, scope):
     tracked_files = {
         path for path, (mode, _) in staged.items() if mode in ("100644", "100755", "120000")
     }
+    worktrees = own_worktrees(repo)
+    store = os.path.realpath(
+        os.path.join(
+            os.fsdecode(
+                git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+            ),
+            "worktrees",
+        )
+    )
+
+    def own_boundary(path):
+        # Git stops at any directory that looks like a repository, so an entry is
+        # dropped only when it is one of *this* repo's worktrees: the registered
+        # path matches, and the directory's `.git` pointer names a gitdir in this
+        # repo's worktree store that points back at that same pointer file.
+        # Neither half suffices alone. Git keeps listing a registration whose
+        # directory was removed, and stops calling it prunable once anything
+        # occupies the path again; and a `.git` file proves nothing about
+        # ownership, since `git init --separate-git-dir` writes one that points at
+        # a foreign repository (#474).
+        if not path.endswith("/"):
+            return False
+        directory = repo / path.rstrip("/")
+        if os.path.realpath(directory) not in worktrees:
+            return False
+        gitdir = worktree_gitdir(directory)
+        if gitdir is None or os.path.dirname(gitdir) != store:
+            return False
+        try:
+            registered = (Path(gitdir) / "gitdir").read_bytes()
+        except OSError:
+            return False
+        return os.path.realpath(os.fsdecode(registered.strip())) == os.path.realpath(
+            directory / ".git"
+        )
+
     untracked = {
         os.fsdecode(p)
         for p in git(repo, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
-        if p
+        if p and not own_boundary(os.fsdecode(p))
     }
     paths = []
     if scope == "committed":
@@ -566,7 +660,13 @@ def capture(repo, base, scope):
         for p in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
             b"\0"
         )
-        if p and not private_agent_data(os.fsdecode(p)) and instruction(os.fsdecode(p))
+        # One of this repo's own worktrees, listed as a directory entry git will
+        # not descend into: nothing behind that boundary is an instruction surface
+        # of this repo, and untracked_sha256 must not bind to the entry (#474).
+        if p
+        and not own_boundary(os.fsdecode(p))
+        and not private_agent_data(os.fsdecode(p))
+        and instruction(os.fsdecode(p))
     }
     files, workspace, omitted, blobs = {}, {}, set(), {}
 
