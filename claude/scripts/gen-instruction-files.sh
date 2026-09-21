@@ -134,7 +134,11 @@ for tool in "${TOOLS[@]}"; do
   if [[ "$CHECK" -eq 1 ]]; then
     if ! diff -u "$target" "$out" > "$tmp/$tool.diff" 2>&1; then
       stale+=("$target")
-      sed "s|^|  |" "$tmp/$tool.diff" | head -20 >&2
+      # head reads FIRST, sed second (#443, same shape as #422): with sed as the
+      # pipe writer, a diff past the pipe buffer killed it with SIGPIPE, and
+      # pipefail + set -e ended --check here — later targets never compared and
+      # the stale list never printed.
+      head -n 20 "$tmp/$tool.diff" | sed "s|^|  |" >&2
     fi
   else
     mkdir -p "$(dirname "$target")"
