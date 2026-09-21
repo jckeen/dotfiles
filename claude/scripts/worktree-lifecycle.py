@@ -400,14 +400,19 @@ def denied_session_process(proc_root, entry, uid):
     references are unreadable: `systemd --user` and its `(sd-pam)` helper
     change credentials at exec, which clears dumpable and makes cwd, root,
     exe, descriptor targets and maps refuse this user with EACCES. Retaining
-    on uninspectable evidence would therefore retain every worktree on every
-    systemd host, so exempt exactly that pair, and only on the whole
-    signature. Pid 1 started them, so no shell in a worktree did, and a
-    process that dropped privileges under pid 1 holds no cwd, root,
-    executable, descriptor or mapping in a checkout this user later created.
-    Any readable reference is evidence rather than an exemption, so a
-    same-user look-alike that leaks one inspectable reference still retains
-    the worktree. Callers record each exemption in the release record.
+    on uninspectable evidence therefore retains every worktree on every
+    systemd host, which is what `--trust-process-manager` exempts -- and only
+    for exactly that pair, on the whole signature. Pid 1 started them, so no
+    shell in a worktree did, and a process that dropped privileges under pid 1
+    has no working directory, root, executable or mapping in a checkout this
+    user later created. Its descriptors are not provable: a user unit can pass
+    one to the manager's file-descriptor store (`FDSTORE=1`) and close its
+    own copy, so the manager can outlive the only holder of a worktree
+    descriptor. That residual is the operator's explicit assertion, not this
+    scan's inference, so the exemption stays opt-in and every exempted
+    identity is recorded in the release record. Any readable reference is
+    evidence rather than an exemption, so a same-user look-alike that leaks
+    one inspectable reference still retains the worktree.
     """
     try:
         comm, ppid, owner = process_identity(entry)
@@ -428,11 +433,11 @@ def denied_session_process(proc_root, entry, uid):
     return dict(pid=int(entry.name), comm=comm, ppid=ppid)
 
 
-def active_processes(path, proc_root=Path("/proc")):
+def active_processes(path, proc_root=Path("/proc"), trust_process_manager=False):
     """Retain visible thread references; missing live-task evidence is unsafe.
 
-    Returns the exempted systemd user-session processes, so callers can record
-    the identities whose references no scan could read.
+    Returns the systemd user-session processes the operator's assertion
+    exempted, so callers can record the identities no scan could read.
     """
     if not proc_root.is_dir():
         raise ValueError("automatic process inspection requires /proc; retain on this platform")
@@ -446,6 +451,12 @@ def active_processes(path, proc_root=Path("/proc")):
                 continue
             session = denied_session_process(proc_root, entry, uid)
             if session is not None:
+                if not trust_process_manager:
+                    raise ValueError(
+                        "cannot inspect this user's systemd session process "
+                        f"{session['pid']} ({session['comm']}); retain worktree or assert "
+                        "--trust-process-manager"
+                    )
                 exempt.append(session)
                 continue
             # The leader may be a zombie while workers still hold references.
@@ -472,7 +483,7 @@ def active_processes(path, proc_root=Path("/proc")):
     return exempt
 
 
-def release(repo, path, head, owner, pr, slug):
+def release(repo, path, head, owner, pr, slug, trust_process_manager=False):
     item, admin = selected(repo, path)
     path = Path(item["path"])
     if item["HEAD"] != head:
@@ -482,7 +493,9 @@ def release(repo, path, head, owner, pr, slug):
     clean(path)
     check_admin_metadata(admin)
     # Record what no scan could read so the archive shows the exemption.
-    exempt = {item["pid"]: item for item in active_processes(path) + active_processes(admin)}
+    scans = active_processes(path, trust_process_manager=trust_process_manager)
+    scans += active_processes(admin, trust_process_manager=trust_process_manager)
+    exempt = {item["pid"]: item for item in scans}
     if (admin / MARKER).exists():
         previous = marker(admin)
         if previous["owner"] != owner:
@@ -508,7 +521,7 @@ def release(repo, path, head, owner, pr, slug):
     return data
 
 
-def assess(repo, path):
+def assess(repo, path, trust_process_manager=False):
     item, admin = selected(repo, path)
     path = Path(item["path"])
     try:
@@ -523,8 +536,8 @@ def assess(repo, path):
         raise ValueError("HEAD, path or branch changed since release")
     clean(path)
     check_admin_metadata(admin)
-    active_processes(path)
-    active_processes(admin)
+    active_processes(path, trust_process_manager=trust_process_manager)
+    active_processes(admin, trust_process_manager=trust_process_manager)
     if any(admin.glob("*.lock")):
         raise ValueError("Git operation is active; retain worktree")
     slug = record["github_repo"]
@@ -587,8 +600,8 @@ def check_relocatable_worktree(path):
         raise ValueError("core.worktree overrides require separate retirement; retain worktree")
 
 
-def retire(repo, path, apply, archive_dir):
-    item, admin, record = assess(repo, path)
+def retire(repo, path, apply, archive_dir, trust_process_manager=False):
+    item, admin, record = assess(repo, path, trust_process_manager)
     if not apply:
         return dict(
             disposition="ready", path=item["path"], owner=record["owner"], head=item["HEAD"]
@@ -658,7 +671,7 @@ def retire(repo, path, apply, archive_dir):
     (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
     # Recheck after archival. Released ownership is still required, but even
     # an exited writer may have changed the source after the earlier sample.
-    again, _, current = assess(repo, path)
+    again, _, current = assess(repo, path, trust_process_manager)
     if current != {k: v for k, v in record.items() if k != "files"} or again != item:
         raise ValueError(f"worktree changed during archival; retained; archive: {archive}")
     # A completed writer no longer appears in process evidence. Bind the
@@ -789,6 +802,12 @@ def main():
     parser.add_argument("--pr", type=int)
     parser.add_argument("--github-repo")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--trust-process-manager",
+        action="store_true",
+        help="assert that this user's uninspectable systemd session manager and its (sd-pam) "
+        "helper hold no reference to the worktree; each exempted pid is recorded",
+    )
     parser.add_argument("--archive-dir", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
@@ -809,10 +828,22 @@ def main():
             if not all((args.head, args.owner, args.pr, args.github_repo)):
                 raise ValueError("release requires --head, --owner, --pr and --github-repo")
             result = release(
-                args.repo, args.worktree, args.head, args.owner, args.pr, args.github_repo
+                args.repo,
+                args.worktree,
+                args.head,
+                args.owner,
+                args.pr,
+                args.github_repo,
+                args.trust_process_manager,
             )
         else:
-            result = retire(args.repo, args.worktree.resolve(), args.apply, args.archive_dir)
+            result = retire(
+                args.repo,
+                args.worktree.resolve(),
+                args.apply,
+                args.archive_dir,
+                args.trust_process_manager,
+            )
         print(json.dumps(result, indent=2))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"worktree-lifecycle: {error}", file=sys.stderr)

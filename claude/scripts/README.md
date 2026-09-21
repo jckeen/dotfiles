@@ -471,17 +471,25 @@ committed blobs; transformed checkout contents and active content filters also
 require separate retirement. Inspection does not execute those filters.
 Process inspection requires Linux `/proc` and checks same-user processes'
 working directories, roots, executables, open descriptors and file-backed
-memory mappings. Missing or unreadable evidence retains the worktree, with one
-exemption: every systemd user session runs two same-user processes whose
-references no scan can read, `systemd --user` and its `(sd-pam)` helper, and
-without the exemption release would be impossible on those hosts. A process is
-skipped only when its credentials are the current user's, pid 1 started it (or
-its parent is such a `systemd`), and every one of its working directory, root,
-executable, descriptor and mapping reads is refused with `EACCES`. A single
-readable reference is evidence rather than an exemption and still retains the
-worktree. The release record lists each skipped pid, command and parent under
-`exempt_processes`, and the recovery record carries that list into the archive.
-Other hosts require an explicit platform-appropriate review. These checks sample
+memory mappings. Missing or unreadable evidence retains the worktree.
+
+Every systemd user session runs two same-user processes whose references no
+scan can read: `systemd --user` and its `(sd-pam)` helper changed credentials
+at exec, which clears dumpable and refuses this user every read below. Release
+and retirement therefore refuse on those hosts until the operator asserts
+`--trust-process-manager`, naming the session manager it vouches for. The
+assertion skips a process only when its credentials are the current user's,
+pid 1 started it (or its parent is such a `systemd`), and every working
+directory, root, executable, descriptor and mapping read of every thread is
+refused with `EACCES`; one readable reference is evidence rather than an
+exemption and still retains the worktree. It stays an assertion rather than an
+inference because a pid-1 child cannot have been started inside a checkout,
+but a user unit can pass a descriptor to the manager's file-descriptor store
+(`FDSTORE=1`) and close its own copy, which no unprivileged scan can see. Both
+commands need the flag, since retirement inspects again, and the release record
+lists each exempted pid, command and parent under `exempt_processes` for the
+recovery record to carry into the archive. Other hosts require an explicit
+platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.
 

@@ -101,7 +101,7 @@ class LifecycleTests(unittest.TestCase):
             timeout=15,
         )
 
-    def release(self):
+    def release(self, *args):
         return self.cli(
             "release",
             "--worktree",
@@ -114,6 +114,7 @@ class LifecycleTests(unittest.TestCase):
             "7",
             "--github-repo",
             "fixture/repo",
+            *args,
         )
 
     def merged(self):
@@ -776,7 +777,7 @@ if kind == 'writer':
         original_assess = lifecycle.assess
         assessments = []
 
-        def assess_after_completed_writer(repo, path):
+        def assess_after_completed_writer(repo, path, *args):
             assessments.append(path)
             if len(assessments) == 2:
                 subprocess.run(
@@ -790,7 +791,7 @@ if kind == 'writer':
                     check=True,
                     timeout=5,
                 )
-            return original_assess(repo, path)
+            return original_assess(repo, path, *args)
 
         with (
             patch.dict(os.environ, self.env),
@@ -1872,20 +1873,35 @@ if kind == 'writer':
                 with self.assertRaisesRegex(ValueError, "cannot inspect"):
                     module.active_processes(self.worktree, self.proc)
 
-    def test_denied_user_session_pair_is_exempted_and_recorded(self):
-        manager = self.session_process(356, "systemd", 1)
-        helper = self.session_process(362, "(sd-pam)", 356)
-        self.deny_session_evidence(manager)
-        self.deny_session_evidence(helper)
-        exempt = [
+    def denied_user_session(self):
+        """The pair every systemd user session contributes, unreadable."""
+        for pid, comm, ppid in ((356, "systemd", 1), (362, "(sd-pam)", 356)):
+            self.deny_session_evidence(self.session_process(pid, comm, ppid))
+        return [
             {"pid": 356, "comm": "systemd", "ppid": 1},
             {"pid": 362, "comm": "(sd-pam)", "ppid": 356},
         ]
-        self.merged()
+
+    def test_denied_user_session_pair_retains_until_the_operator_asserts_it(self):
+        self.denied_user_session()
         result = self.release()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("cannot inspect this user's systemd session process", result.stderr)
+        self.assertIn("--trust-process-manager", result.stderr)
+
+    def test_asserted_user_session_pair_is_exempted_and_recorded(self):
+        exempt = self.denied_user_session()
+        self.merged()
+        result = self.release("--trust-process-manager")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["exempt_processes"], exempt)
+        # Retirement inspects again, so it needs the same explicit assertion.
         result = self.retire("--apply", "--archive-dir", str(self.root / "archive"))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--trust-process-manager", result.stderr)
+        result = self.retire(
+            "--apply", "--archive-dir", str(self.root / "archive"), "--trust-process-manager"
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         archive = Path(json.loads(result.stdout)["archive"])
         self.assertEqual(
@@ -1914,9 +1930,9 @@ if kind == 'writer':
                 entries = [self.session_process(*spec) for spec in specs]
                 for entry in entries:
                     self.deny_session_evidence(entry)
-                result = self.release()
+                result = self.release("--trust-process-manager")
                 self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn("cannot inspect", result.stderr)
+                self.assertIn("cannot inspect a same-user process", result.stderr)
                 for entry in entries:
                     self.allow_session_evidence(entry)
                     shutil.rmtree(entry)
@@ -1929,7 +1945,7 @@ if kind == 'writer':
         surfaces = ("cwd", "root", "exe", "descriptors", "maps")
         with self.denied_process_reads(module, entry, surfaces):
             self.assertEqual(
-                module.active_processes(self.worktree, self.proc),
+                module.active_processes(self.worktree, self.proc, trust_process_manager=True),
                 [{"pid": 356, "comm": "systemd", "ppid": 1}],
             )
 
@@ -1941,12 +1957,16 @@ if kind == 'writer':
             with self.subTest(readable=readable):
                 denied = tuple(name for name in surfaces if name != readable)
                 with self.denied_process_reads(module, entry, denied):
-                    with self.assertRaisesRegex(ValueError, "cannot inspect|active process"):
-                        module.active_processes(self.worktree, self.proc)
+                    with self.assertRaisesRegex(
+                        ValueError, "cannot inspect a same-user process|active process"
+                    ):
+                        module.active_processes(
+                            self.worktree, self.proc, trust_process_manager=True
+                        )
         with self.subTest(denial="EPERM"):
             with self.denied_process_reads(module, entry, surfaces, code=errno.EPERM):
-                with self.assertRaisesRegex(ValueError, "cannot inspect"):
-                    module.active_processes(self.worktree, self.proc)
+                with self.assertRaisesRegex(ValueError, "cannot inspect a same-user process"):
+                    module.active_processes(self.worktree, self.proc, trust_process_manager=True)
 
     def test_stashes_survive_retirement(self):
         (self.repo / "file").write_text("private stash\n")

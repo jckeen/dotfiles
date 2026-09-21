@@ -5,15 +5,26 @@
 - `release` (and therefore `retire`) always refused on any systemd user-session
   host: `systemd --user` and its `(sd-pam)` helper are same-uid processes whose
   cwd, root, exe, descriptor targets and maps refuse this user with `EACCES`,
-  and fail-closed retained on that. The scan now skips a process only on the
-  whole signature (current user's credentials, `comm` `systemd` with `PPid` 1 or
-  `(sd-pam)` under such a `systemd`, and every reference denied with `EACCES`) —
-  one readable reference is evidence, not an exemption. Each skipped pid, comm
-  and ppid lands in the release record's `exempt_processes` and travels into the
-  recovery record, so the archive shows what was never inspected. Five cases
-  cover the exempted pair, the descriptor table that lists names while refusing
-  every target, four identity look-alikes, partial readability on each surface
-  and `EPERM` instead of `EACCES`. Closes #475.
+  and fail-closed retained on that. New `--trust-process-manager` exempts that
+  pair, and only on the whole signature (current user's credentials, `comm`
+  `systemd` with `PPid` 1 or `(sd-pam)` under such a `systemd`, and every
+  reference of every thread denied with `EACCES`) — one readable reference is
+  evidence, not an exemption. Without the flag the refusal now names the pid and
+  the flag instead of repeating the generic message. Each exempted pid, comm and
+  ppid lands in the release record's `exempt_processes` and travels into the
+  recovery record, so the archive shows what was never inspected.
+- **Why an assertion rather than an inference** (Codex review finding, medium):
+  pid 1 starting a process proves no shell in a worktree did, so it holds no
+  cwd, root, exe or mapping there — but a user unit can hand a worktree
+  descriptor to the manager's file-descriptor store (`FDSTORE=1`) and close its
+  own copy, and no unprivileged scan can read those targets. The residual is the
+  operator's call, so the exemption is opt-in on both commands and recorded.
+- Seven cases cover it: the pair refusing release until asserted, the asserted
+  pair released and retired end to end with real `EACCES` (record and
+  `recovery.json` both list it), retirement still needing the flag, the
+  manager's descriptor table that lists names while refusing every target, five
+  identity look-alikes that retain even under the assertion, partial readability
+  on each of the five surfaces, and `EPERM` instead of `EACCES`. Closes #475.
 
 ## 2026-09-19 — fix(jules-dispatch): send the source's default branch as startingBranch
 
