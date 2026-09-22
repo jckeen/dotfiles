@@ -77,6 +77,20 @@
   commits. Closes #525.
 
 The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these.
+## 2026-09-22 — docs(scripts): checker rows say what the checkers check
+
+- **The `check-doc-refs.sh` and `check-skill-parity.sh` rows describe every guard
+  the scripts run.** The doc-refs row named only the hook and skill path checks,
+  so a documentation edit rejected for a broken relative link had no row to
+  explain it; it now names the link check, what it skips, and the allowlisted
+  docs. The skill-parity row stated a fixed number of guards and omitted the
+  `agents/skill-coverage.tsv` disposition check entirely; it now lists that guard
+  and states no total. Harvested from the GitHub Codex bot's review of #489.
+  Closes #545. Closes #546.
+- **The 2026-09-21 note on `| head` sites says what was actually found.** Two of
+  the re-checked pipelines wrap in `|| true`, one relies on the absence of
+  `set -e`, and one is an `if` condition; the entry claimed three `|| true`.
+  Closes #544.
 
 ## 2026-09-22 — fix(gate): the ignore list, the tier ceiling, and the boundary sweep
 
@@ -529,7 +543,8 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   200k-line stale target followed by a second stale one and asserts exit 1 with
   both names in the summary; it reproduced exit 141 before the change. The other
   `| head` sites in `claude/scripts/` were re-checked rather than trusted: none
-  runs under `set -e`, and three wrap the pipeline in `|| true`. Closes #443.
+  runs under `set -e`; two wrap the pipeline in `|| true`, one relies on the
+  absence of `set -e`, and one is an `if` condition. Closes #443.
 - **Every drift guard is in the scripts table.** `claude/scripts/README.md` listed
   a couple of the `check-*` scripts; it now carries a row for each one, naming
   what it asserts and the CI job and step that runs it — including the three that
