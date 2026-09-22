@@ -6,8 +6,10 @@ No Git worktree diff is used: clean filters can execute even with --no-textconv.
 """
 
 import argparse
+import contextlib
 from datetime import datetime, timedelta, timezone
 import difflib
+import fcntl
 import fnmatch
 import hashlib
 import json
@@ -837,6 +839,64 @@ def invalidate(receipts, lane):
     return attempt
 
 
+@contextlib.contextmanager
+def attempt_lock(receipts):
+    """Hold the receipt directory's exclusive lock for one attempt transition.
+
+    `supersede` is several file operations, and two gates beginning at once could
+    interleave them: each retired the OTHER lane before either wrote its own
+    attempt token, so both tokens ended up live and a blocking verdict in one lane
+    was again bypassable by the other lane's approval. Every writer of the shared
+    attempt and receipt state runs inside this lock, so no run ever observes a
+    half-finished transition.
+
+    flock, not a lock directory, for the reason jules-dispatch.sh gives: the
+    kernel releases it when the holder dies, so a killed or cancelled gate cannot
+    wedge the next one. Acquired only by the outermost writers (`begin`,
+    `complete`, the `invalidate` subcommand) — an flock is held per open file
+    description, so a nested acquisition in the same process would deadlock.
+    `check` deliberately stays lock-free: it re-asserts the attempt token on both
+    sides of the artifact capture, so a transition landing mid-check can only make
+    it refuse, and a long check must not block a gate.
+    """
+    # O_NOFOLLOW for the reason read_json refuses a symlink: nothing in the
+    # receipt directory may redirect writes outside it. The file holds no data.
+    descriptor = os.open(
+        receipts / ".lock",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def supersede(receipts, lane):
+    """Retire EVERY lane's evidence for this artifact, then open `lane`'s attempt.
+
+    A review starting in one lane must not leave another lane's older approval
+    standing: both gates exit 2 on blocking findings WITHOUT recording a receipt,
+    so the only trace of a blocked review is the attempt its `begin` opened.
+    githooks/pre-push calls `check` with no `--reviewer`, which accepts either
+    lane's receipt, so a surviving competing approval would ship the diff the
+    newest verdict rejected. Bumping the competing attempt token as well
+    supersedes a review already in flight there, so the only receipt that can
+    exist is the one this attempt records. Re-running a lane and approving ships
+    as before — this closes a bypass, not a lane.
+
+    The competing lanes go first: an interruption must never leave a lane OTHER
+    than this one holding evidence the new review is overriding. Callers hold
+    `attempt_lock`, which is what makes the whole transition atomic against a
+    concurrent gate rather than merely ordered.
+    """
+    for other in LANES:
+        if other != lane:
+            invalidate(receipts, other)
+    return invalidate(receipts, lane)
+
+
 def assert_attempt(record):
     _, _, receipts = layout(record["repository"])
     marker = read_json(receipts / (record["reviewer"]["name"] + ".attempt.json"))
@@ -1029,7 +1089,14 @@ def resolve_base(repo, requested=None):
 
 def begin(args):
     repo, directory, receipts = layout(args.repo)
-    attempt = invalidate(receipts, args.reviewer)
+    # Cross-lane, unlike the own-lane `invalidate` subcommand. That scope matters
+    # only for a cancellation trap firing BEFORE this line: cancelling a review
+    # that never started then costs no other lane's approval. Once this returns,
+    # the other lane's receipt is already gone and the trap's scope changes
+    # nothing — including when this run goes on to degrade (exit 3) rather than
+    # reach a verdict. See #499.
+    with attempt_lock(receipts):
+        attempt = supersede(receipts, args.reviewer)
     scope = args.scope
     if scope == "auto":
         scope = (
@@ -1087,8 +1154,13 @@ def complete(args):
     repo, directory, receipts = layout(record["repository"])
     if str(directory) != record["git_directory"]:
         raise ValueError("Git directory changed during review")
-    validate_artifact(record)
-    atomic_json(receipts / (record["reviewer"]["name"] + ".json"), record)
+    # The authoritative attempt check and the write it authorizes are one
+    # transition: a `supersede` interleaving between them would otherwise file a
+    # receipt the newer review had already retired. The earlier checks above are
+    # fail-fast; this one decides.
+    with attempt_lock(receipts):
+        validate_artifact(record)
+        atomic_json(receipts / (record["reviewer"]["name"] + ".json"), record)
     # The ledger records what the artifact actually is, not what the snapshot
     # claims: a tampered stored classification stays in the receipt for `check`
     # to reject rather than being laundered into the measurement.
@@ -1226,7 +1298,10 @@ def main():
     try:
         if args.command == "invalidate":
             _, _, receipts = layout(args.repo)
-            invalidate(receipts, args.reviewer)
+            # Locked at the call site, never inside invalidate(): supersede()
+            # already holds the lock when it calls it.
+            with attempt_lock(receipts):
+                invalidate(receipts, args.reviewer)
         elif args.command == "verify":
             validate_artifact(read_json(Path(args.snapshot)))
         else:

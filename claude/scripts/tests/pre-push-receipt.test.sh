@@ -35,6 +35,7 @@ R=""
 ORIGIN=""
 OUT=""
 RC=0
+RUN=""
 
 # A throwaway HOME so no real Git or tool config is consulted.
 FAKE_HOME="$(mktemp -d)"
@@ -85,13 +86,22 @@ new_repo() {
   ln -sf "$HOOK" "$R/.git/hooks/pre-push"
 }
 
+# begin_review <lane> — open an attempt for <lane> without completing it: the
+# state a gate leaves behind when it exits 2 on blocking findings.
+begin_review() {
+  RUN="$(python3 "$RECEIPT" begin --repo "$R" --base origin/main \
+    --scope committed --reviewer "$1")" || return 1
+}
+
+# finish_review [outcome] — record <outcome> for the run begin_review opened.
+finish_review() {
+  python3 "$RECEIPT" complete --snapshot "$RUN/snapshot.json" \
+    --outcome "${1:-passed}" --output "$RESULT" >/dev/null || return 1
+}
+
 # mint <lane> [outcome] — record a completed receipt for <lane> on HEAD.
 mint() {
-  local lane="$1" outcome="${2:-passed}" run
-  run="$(python3 "$RECEIPT" begin --repo "$R" --base origin/main \
-    --scope committed --reviewer "$lane")" || return 1
-  python3 "$RECEIPT" complete --snapshot "$run/snapshot.json" \
-    --outcome "$outcome" --output "$RESULT" >/dev/null || return 1
+  begin_review "$1" && finish_review "${2:-passed}"
 }
 
 push() {
@@ -135,6 +145,25 @@ new_repo notes.md
 assert "a tier-1 antigravity receipt is minted" "mint antigravity tier-1"
 push
 assert "a tier-1 exemption ships from the antigravity lane" "[ \"\$RC\" -eq 0 ]"
+cleanup
+
+# ── A blocked review retires the other lane's older approval ──────────
+# Both gates exit 2 on blocking findings WITHOUT recording a receipt, so a
+# blocked Codex run leaves only the attempt its `begin` opened. The hook calls
+# `check` with no --reviewer, so an Antigravity approval that outlived the newer
+# review would ship the very diff that review rejected.
+new_repo widget.ts
+assert "an antigravity receipt is minted before the codex run" "mint antigravity"
+assert "a codex review begins without recording a verdict" "begin_review codex"
+push
+assert "an older competing approval is BLOCKED after a blocked review" \
+  "[ \"\$RC\" -ne 0 ] && grep -qF 'BLOCKED' <<<\"\$OUT\""
+assert "nothing reached the origin" \
+  "! git -C '$ORIGIN' rev-parse --verify --quiet refs/heads/feature >/dev/null"
+# This closes a bypass, not the lane: the re-run that approves must still ship.
+assert "the codex re-run records its approval" "finish_review passed"
+push
+assert "the approving re-run ships the commit" "[ \"\$RC\" -eq 0 ]"
 cleanup
 
 # ── A receipt whose classification was edited is refused ──────────────

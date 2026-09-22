@@ -244,6 +244,36 @@ second opinion, not shipping evidence. Receipts are version 2; a version-1
 receipt carries no lane requirement and is rejected outright, so the first push
 after this landed needs a fresh gate run.
 
+**One artifact holds at most one receipt.** `begin` retires *every* lane's
+receipt and attempt token, not only its own, so the receipt that survives always
+belongs to the most recently started review. Both gates exit 2 on blocking
+findings **without** recording anything, so a blocked review leaves no approval
+for `check` to accept — an older receipt from the other lane cannot ship a diff
+the newest verdict rejected. Re-run the lane and approve and the push goes
+through as usual. Two consequences: a review already in flight in the other lane
+can no longer record its outcome once a newer one starts, and a supplementary
+second opinion belongs **before** the shipping review, because running it
+afterwards retires the shipping receipt. A gate's cancellation trap uses
+`invalidate`, which stays own-lane: a review that never started cannot reach a
+verdict, so it must not cost an untouched approval.
+
+That transition is serialized by an exclusive `flock` on
+`<git-dir>/review-receipts/.lock`, held by every writer of the shared attempt and
+receipt state — `begin`, `complete`'s deciding attempt check and receipt write,
+and `invalidate`. Two gates starting at once would otherwise interleave their
+cross-lane invalidations and leave both lanes' attempt tokens live. `check` is
+deliberately lock-free: it re-asserts the attempt token on both sides of the
+artifact capture, so a transition landing mid-check can only make it refuse, and a
+slow check never blocks a gate.
+
+**Known limitation: a degraded lane still costs the other lane's approval.** A
+gate that exits 3 — agy missing, a diff above its byte cap, an unverifiable model
+pin — has already run `begin`, so the other lane's receipt is gone even though a
+degraded lane is not a verdict. Recovery is to re-run the required gate. The
+refusal is deliberately conservative: nothing distinguishes "could not run" from
+"ran and blocked" at the push boundary without trusting the gate that failed. See
+#499 for the retraction design that would avoid the cost.
+
 The ledger is written by `complete` (0600, append-only) and is **never read by
 `check`**: a forged ledger cannot approve a push and an unwritable one cannot
 block one. The dotfiles risk list is deliberately unnarrowed, so most diffs in

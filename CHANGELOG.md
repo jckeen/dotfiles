@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-09-21 — fix(review-receipt): a blocked review retires the other lane's approval
+
+- **A failed newer review can no longer be bypassed by an older competing
+  approval.** `begin` invalidated only its own lane, so with an Antigravity
+  approval already in hand for the unchanged HEAD, a Codex gate that then
+  reported blocking findings and exited 2 left that approval standing — and
+  because `githooks/pre-push` calls `check` with no `--reviewer`, which accepts
+  either lane's receipt, a plain `git push` shipped the diff the newest verdict
+  had just rejected. `begin` now retires every lane's receipt and attempt token,
+  not just its own, so the only receipt that can exist belongs to the most recent
+  attempt; a blocked review, which records nothing, therefore leaves nothing for
+  the push boundary to accept. Re-running the lane and approving ships as before.
+  Bumping the competing attempt token also supersedes a review already in flight
+  in the other lane, closing the same hole when the two overlap in time. The
+  `invalidate` subcommand keeps its own-lane scope: a gate's cancellation trap can
+  fire before `begin`, and a review that never started cannot reach a verdict, so
+  it must not cost an untouched approval. Receipt format and every other lane
+  rule are unchanged, so existing receipts stay valid. `review-receipt.test.py`
+  covers both lane orderings and the in-flight case, and
+  `tests/pre-push-receipt.test.sh` drives the real hook and a real `git push`:
+  before the fix the blocked-review push reached the origin. Closes #480.
+- **The attempt transition is serialized, so two gates cannot start at once and
+  both stay live.** Retiring the competing lane and opening this lane's attempt
+  are several file operations, and two concurrent `begin` calls could interleave
+  them: each retired the other's lane before either wrote its own token, leaving
+  BOTH tokens live and the bypass above reachable again. Every writer of the
+  shared attempt and receipt state — `begin`, `complete`'s deciding attempt check
+  and receipt write, and the `invalidate` subcommand — now runs under an exclusive
+  `flock` on `<git-dir>/review-receipts/.lock`. flock rather than a lock
+  directory for the reason `jules-dispatch.sh` gives: the kernel releases it when
+  the holder dies, so a killed or cancelled gate cannot wedge the next one.
+  `check` stays lock-free by design — it re-asserts the attempt token on both
+  sides of the artifact capture, so a transition landing mid-check can only make
+  it refuse, and a slow check must never block a gate. Found by a non-gate review
+  of the first commit; the three new tests fail on it, the interleaving one with
+  both lanes reported live.
+- **Both gates now say so before they retire anything.** `gate_init_receipt`
+  warns, ahead of `begin`, when the other lane already holds a receipt for this
+  artifact and names the recovery. The Antigravity gate's supplementary-lane
+  banner prints long after `begin` has run, so it was too late to be a warning.
+- **Documented: a degraded lane still costs the other lane's approval.** A gate
+  that exits 3 (agy missing, byte cap, unverifiable model pin) has already run
+  `begin`, so the other lane's receipt is gone even though a degraded lane is not
+  a verdict. Re-run the required gate. The refusal is deliberately conservative —
+  at the push boundary nothing distinguishes "could not run" from "ran and
+  blocked" without trusting the gate that failed — and the case is exercised by
+  `workflow-shipping-rewrites.test.py`. Follow-up issue #499 tracks a retraction
+  design that would not cost the approval.
+
 ## 2026-09-21 — chore(doctor): declutter plugins and slim the always-loaded global instructions
 
 - **Eleven `[global]` plugins left `claude/plugins.txt`.** `/doctor` found eight
