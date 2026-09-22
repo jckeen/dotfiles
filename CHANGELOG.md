@@ -35,6 +35,34 @@
   drops the NUL *mid*-string with only a warning, so a byte the shell cannot
   carry is now caught inside `jq` and becomes a placeholder no pattern accepts.
   Three regression tests, and the embedded-newline case still passes.
+## 2026-09-22 — fix(worktree-lifecycle): a retired worktree releases its branch ref
+
+- **Applied retirement detaches the quarantined worktree's own metadata HEAD.**
+  Retiring fourteen merged task worktrees left every one of them registered with
+  its branch still checked out, so `git branch -D` — and any merged-branch
+  pruning — refused each of those branches forever with `cannot delete branch
+  'X' used by worktree at '<quarantine>'`. The detach is the last step, after the
+  recovery bundle and `recovery.json` are written, so the record still names the
+  branch the task worked on. It writes only that worktree's `HEAD` and reflog in
+  the source repository's worktree metadata: the quarantined directory, its
+  index, the bundle and the record are untouched, and the commit stays reachable
+  from the merged PR, the bundle and the detached HEAD. Verified through the same
+  `git worktree list --porcelain` the operator reads, and a preview detaches
+  nothing. Closes #498.
+- **`retire --delete-branch` finishes the post-merge cleanup, fail-closed.** It
+  deletes the local branch only when the ref still names the exact merged PR head
+  the collector already verified, is not a symbolic ref, and is held by no
+  worktree. `update-ref -d` enforces none of that: it deletes a branch another
+  worktree has checked out, and a worktree interrupted mid-rebase or mid-bisect
+  reports `detached` while Git still refuses to delete the branch it started
+  from, so the same `rebase-merge/head-name`, `rebase-apply/head-name` and
+  `BISECT_START` state Git reads is read here, with a test pinning both refusals
+  side by side. The delete passes the expected value so a concurrent update makes
+  Git refuse rather than discard an unverified commit, and `--no-deref` means a
+  ref that turned symbolic between the check and the write can only delete
+  itself, never the branch it points at. Every other state leaves the ref alone
+  and says why under `branch_deleted` and `branch_reason` instead of failing a
+  retirement that already completed.
 
 ## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
 
