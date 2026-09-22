@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-09-22 — fix(jules-dispatch): reconcile provenance says what it actually checked
+
+- **`commit_subjects_ok` is tri-state, so "not examined" can no longer read as
+  "ok"** (#508). The first live reconcile pass recorded
+  `{"action":"noop",…,"commit_subjects_ok":true}` for #477 — a pull request that
+  was already closed when the pass ran, whose only commit subject
+  (`No changes needed: doc drift checkers pass`) `check-commit-format.sh`
+  rejects. The pass never listed its commits. ADR-0009's custodian handoff reads
+  the reconcile record as the provenance a consumer must not re-derive from PR
+  text, and a boolean meaning "ok" *or* "never looked" cannot be keyed on. The
+  field is now `true` only where the commits were listed and checked, and JSON
+  `null` (present, not absent) on every branch that read none: a pull request
+  already closed or merged, an empty one the pass closed, a refused URL or ledger
+  field, a FAILED session, a session with no pull request. The record covers the
+  whole session, so `true` means *every* pull request of it was examined: a
+  `false` wins outright, but one unexamined pull request weakens a clean read
+  back to `null` in either order — caught by the Codex gate on the first round of
+  this fix, where a closed PR beside a clean one still read `true`.
+  `status.json`'s
+  `reconcile.blocked_subjects` is a count of pull requests whose commits *were*
+  read and rejected, so it is unchanged.
+- **A pull-request URL is validated before command substitution can trim it**
+  (#505, Codex gate, low). The whole-field contract held for an *embedded*
+  newline but not a trailing one: `$(jq -r …)` strips trailing newlines, so
+  `…/pull/9\n` reached the anchored pattern as `…/pull/9`, passed, and could
+  drive a real `gh` write. The value now leaves `jq` with a sentinel byte
+  appended and the sentinel is checked before it is stripped, so the newline is
+  still on the string when the pattern rejects it; a non-string `pullRequest.url`
+  is replaced with a placeholder rather than letting `jq -r` render a number or
+  an object into something the pattern might accept. A sentinel cannot rescue a
+  NUL, though — the gate's low finding on this fix, the same class one byte
+  further: `"…/pull/9\u0000"` is a legal JSON string and command substitution
+  drops the NUL *mid*-string with only a warning, so a byte the shell cannot
+  carry is now caught inside `jq` and becomes a placeholder no pattern accepts.
+  Three regression tests, and the embedded-newline case still passes.
 ## 2026-09-22 — fix(worktree-lifecycle): a retired worktree releases its branch ref
 
 - **Applied retirement detaches the quarantined worktree's own metadata HEAD.**
