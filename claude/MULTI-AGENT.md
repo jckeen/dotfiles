@@ -71,9 +71,12 @@ Not every diff earns the full adversarial tax. Both review gates
 (`gate_classify_tier` in `claude/scripts/gate-lib.sh`) — diff size plus
 changed-path match against risk surfaces — before dispatching any reviewer:
 
-- **Tier 1 (reduced):** docs-only diffs at or under `GATE_TIER1_MAX_LINES`
-  (default 200). The gate may skip, logging a `tier-1 skip` line. Force the
-  full pass anyway with `GATE_FORCE_FULL=1`.
+- **Tier 1 (reduced):** docs-only diffs at or under BOTH captured ceilings — 200
+  lines (`GATE_TIER1_MAX_LINES`) and 65536 bytes, because one 200,000-byte line
+  is a 1-line diff. The byte ceiling has no environment knob on purpose: every
+  caller inherits `review-receipt.py`'s default, so the gates and the shipping
+  wrapper cannot disagree about it. The gate may skip, logging a `tier-1 skip`
+  line. Force the full pass anyway with `GATE_FORCE_FULL=1`.
 - **Tier 2 (full):** anything touching a risk surface — auth/token/secret/
   credential names, path/host handling, schemas, hash chains, and gate/hook/
   CI/instruction files (AGENTS*.md, CLAUDE.md, GEMINI.md, SKILL.md, `codex/`,
@@ -85,9 +88,13 @@ Separately from the tiers, the Antigravity lane refuses diffs it could only
 review in part: `agy` print mode delivers about 185 KB of a single user message
 to the model and silently drops the rest (#409), so above
 `ANTIGRAVITY_GATE_MAX_BYTES` (default 185000) the gate degrades instead of
-dispatching. The cap is checked before the tier valve, so an oversized
-docs-only diff cannot collect a tier-1 receipt either. A large change gets no
-Gemini-lineage verdict until it is split.
+dispatching. A large change gets no Gemini-lineage verdict until it is split.
+Both gates check their size caps and their reviewer's availability only AFTER
+the tier valve (#494): those are facts about a dispatch, and a tier-1 diff has
+none. The tier-1 size ceiling is captured policy in `review-receipt.py`
+(`tier1_max_lines`, `tier1_max_bytes`), so both lanes and `check` give the same
+answer, and a byte-huge docs diff is escalated to a real review rather than
+exempted in one lane and refused in the other.
 
 Named failure mode: **the valve fails toward the full pass.** A classification
 error, an unmeasurable diff, or an unknown file class escalates to tier 2 —

@@ -1,5 +1,74 @@
 # Changelog
 
+## 2026-09-22 — fix(gate): the ignore list, the tier ceiling, and the boundary sweep
+
+- **`.codex-review-ignore` now exempts the FORM of a directive, never its
+  effect.** The globs exist because gate fixtures and the live Jules routine
+  prompts (ADR-0009) are imperative on purpose, and the reviewer kept reporting
+  that imperative voice as an embedded instruction (#466). But those routine
+  bodies are dispatched to a cloud agent, so the glob was also retiring the
+  prompt-injection check for exactly the content that check exists to protect.
+  The gate prompt now splits the exemption in two: do not report an
+  instruction-like string under those paths as a finding *about this
+  repository's instructions*, but DO report a directive whose effect would be to
+  bypass a limit, skip or disable a check/review/gate/test, weaken a guard, or
+  expose credentials. Same wording in the `.codex-review-ignore` header and the
+  script README; three gate assertions pin it. Refs #484.
+
+- **The gate self-test's startup-cancellation case interrupts one known phase
+  instead of racing the whole run.** It waited for a `run-*/snapshot.json` to
+  appear and then sent SIGINT, but `review-receipt.py begin` writes that file
+  early in `gate_extract_diff`, so the window it opened spanned everything after
+  it: on a loaded runner the signal landed mid-command-substitution (bash reports
+  a parse error and the gate exits 2) or after the review had already finished
+  (exit 0, a valid receipt) — two `main` failures, weeks apart, same case. The
+  signal now comes from inside the gate's first `jq` call, the `.artifact.scope`
+  read that follows capture and precedes any dispatch, while the gate is parked
+  waiting for that child; the case also asserts it reached the signalling phase
+  and dispatched no reviewer. Locally the old signal reproduced the "exit 0, left
+  a receipt" failure verbatim in 14 of 40 randomized-delay runs, and the new one
+  passed 15 of 15 plus every suite run since. Refs #512.
+- **Every repository boundary in the ignored sweep is inspected, not just the ones
+  whose own name looks like an instruction file.** `ls-files` collapses a
+  directory it will not descend into to one trailing-slash entry, and a hand-made
+  `.git` (HEAD, objects, refs — no `init`) is enough to earn that. The sweep
+  reached its fail-closed path only when `instruction(entry)` was true, so
+  `vendor/nested/` was dropped silently and `vendor/nested/CLAUDE.md` beneath it
+  was never seen: the receipt then asserted a clean instruction surface it had not
+  checked. Now a boundary is allowed only if it is one of this repository's own
+  registered worktrees (the #474 allowlist, `.git`-pointer check included) or a
+  real repository whose listing — tracked and untracked, deliberately without
+  `--exclude-standard`, so its own `.gitignore` cannot hide a file from us —
+  holds no instruction path, no further boundary and no gitlink. Anything else
+  refuses. The gitlink half came from the Codex gate on this very change: a
+  populated tracked submodule inside such a repository is printed as one bare path
+  with no trailing slash and its contents are never enumerated, so
+  `vendor/nested/dependency` passed every check while `dependency/CLAUDE.md` sat
+  underneath it. The listing is now read with `--stage`, mode `160000` refuses
+  whether or not the submodule is populated, and a path listed as a file where the
+  disk holds a directory refuses too. Benign vendored repositories still capture
+  normally. Refs #496.
+- **The tier-1 size ceiling is policy now, not one gate's prompt cap.** Whether a
+  docs-only diff could take the exemption depended on which gate you asked: the
+  Antigravity gate refused one above its 500-line or measured 185,000-byte
+  limits, the Codex gate above 5,000 lines or with no `codex` installed — and the
+  Codex lane minted the exemption the other refused. `classify_tier` now carries
+  `tier1_max_bytes` (default 65536, with no environment knob on purpose: the
+  shipping wrapper classifies before any gate runs, so a gate-only override would
+  pick the tier-1 skip and then refuse to record it) beside `tier1_max_lines`,
+  captured in the
+  receipt like every other policy field, so both lanes and `check` agree and a
+  byte-huge docs diff is **escalated to an ordinary review** instead of refused.
+  A receipt with no byte ceiling — one minted before this existed — reads as
+  unclassifiable and requires Codex. Both gates' tier valves moved ahead of their
+  size caps and of the `codex`/`agy` presence checks, since a tier-1 diff
+  dispatches no message for those limits to be about; the self-review guard stays
+  ahead of the valve, because it is about trust, not feasibility. ADR-0008
+  amended. Refs #494, #482.
+- **`gate_select_lane`'s `skip` comment describes the mechanism that exists.**
+  Since #492 a tier-1 diff dispatches no gate at all; `review-and-push.sh`
+  records the exemption itself. Refs #493.
+
 ## 2026-09-22 — feat(ci): a runner for this repo's own tests, and `checks` split into four shards
 
 - **`claude/scripts/run-tests.sh` — the answer to "run this repo's tests".**

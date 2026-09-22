@@ -46,8 +46,17 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(p.returncode == 0, ok, p.stdout + p.stderr)
         return p.stdout.strip()
 
-    def begin(self, scope="committed", base="main", tier1_max_lines=None, reviewer="codex"):
+    def begin(
+        self,
+        scope="committed",
+        base="main",
+        tier1_max_lines=None,
+        reviewer="codex",
+        tier1_max_bytes=None,
+    ):
         policy = ("--tier1-max-lines=" + tier1_max_lines,) if tier1_max_lines is not None else ()
+        if tier1_max_bytes is not None:
+            policy += ("--tier1-max-bytes=" + tier1_max_bytes,)
         return (
             Path(
                 self.run_helper(
@@ -1470,6 +1479,87 @@ class ReceiptTests(unittest.TestCase):
                 )
                 shutil.rmtree(boundary)
 
+    def test_ignored_fabricated_boundary_cannot_hide_an_instruction_file(self):
+        """#496: an IGNORED boundary was dropped whenever its own path was innocent.
+
+        `vendor/nested/` is not an instruction path, so the entry never reached the
+        fail-closed snapshot at all and `vendor/nested/CLAUDE.md` was never seen —
+        the receipt then claimed a clean instruction surface that it had not
+        checked. A fabricated `.git` (HEAD, objects, refs; no `git init`) is all it
+        takes for git to stop there.
+        """
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+
+        def fabricate():
+            (boundary / ".git/objects").mkdir(parents=True)
+            (boundary / ".git/refs").mkdir()
+            (boundary / ".git/HEAD").write_text("ref: refs/heads/main\n")
+
+        for hidden in ("CLAUDE.md", "AGENTS.md", "SKILL.md", "docs/CLAUDE.md"):
+            with self.subTest(hidden=hidden):
+                fabricate()
+                target = boundary / hidden
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("EVIL\n")
+                self.assertEqual(
+                    self.git("ls-files", "--others", "--ignored", "--exclude-standard"),
+                    "vendor/nested/",
+                )
+                self.expect_begin_refused()
+                shutil.rmtree(boundary)
+        # The boundary's own .gitignore must not decide what this repo's sweep can
+        # see, or hiding the file from the inspection would take one line.
+        fabricate()
+        (boundary / ".gitignore").write_text("CLAUDE.md\n")
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        self.expect_begin_refused()
+        shutil.rmtree(boundary)
+        # One level only: a boundary behind a boundary is refused, never descended.
+        fabricate()
+        (boundary / "inner/.git/objects").mkdir(parents=True)
+        (boundary / "inner/.git/refs").mkdir()
+        (boundary / "inner/.git/HEAD").write_text("ref: refs/heads/main\n")
+        (boundary / "inner/CLAUDE.md").write_text("EVIL\n")
+        self.expect_begin_refused()
+        shutil.rmtree(boundary)
+        # A directory git stopped at that is not a usable repository at all cannot
+        # be inspected, so it is refused rather than assumed empty.
+        boundary.mkdir(parents=True)
+        (boundary / ".git").write_text("gitdir: /nonexistent/elsewhere\n")
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        self.expect_begin_refused()
+        shutil.rmtree(boundary)
+        # Benign vendoring still works: a real repository with no instruction file
+        # behind it is inspected and allowed, ignored or not.
+        for ignored in (True, False):
+            with self.subTest(vendored_repo_ignored=ignored):
+                (self.repo / ".git/info/exclude").write_text("vendor/\n" if ignored else "\n")
+                boundary.mkdir(parents=True)
+                subprocess.check_output(
+                    ["git", "init", "-q", "-b", "main", str(boundary)], stderr=subprocess.PIPE
+                )
+                (boundary / "index.js").write_text("library code\n")
+                if ignored:
+                    self.run_helper(
+                        "begin",
+                        "--repo",
+                        str(self.repo),
+                        "--base",
+                        "main",
+                        "--scope",
+                        "committed",
+                        "--reviewer",
+                        "codex",
+                    )
+                else:
+                    # A visible boundary is untracked, and untracked boundaries have
+                    # always failed closed in file_bytes() — unchanged here.
+                    self.expect_begin_refused()
+                (boundary / "CLAUDE.md").write_text("EVIL\n")
+                self.expect_begin_refused()
+                shutil.rmtree(boundary)
+
     def test_stale_worktree_registration_is_not_allowlisted(self):
         # Git keeps printing a `worktree` line for a registration whose directory
         # was removed, and stops calling it prunable once anything occupies the
@@ -1499,6 +1589,110 @@ class ReceiptTests(unittest.TestCase):
                 self.expect_begin_refused()
                 shutil.rmtree(evil)
                 self.git("worktree", "prune")
+
+    def test_gitlink_behind_a_boundary_cannot_hide_an_instruction_file(self):
+        """A submodule inside a foreign ignored repository hides its whole tree.
+
+        `ls-files` prints a populated tracked submodule as ONE bare path — no
+        trailing slash — and never enumerates what is inside it, so inspecting a
+        boundary by its listing alone accepted `vendor/nested/dependency` (not an
+        instruction name, not a nested boundary) while `dependency/CLAUDE.md` sat
+        underneath, unchecked. Found by the Codex gate on the #496 change.
+
+        The gitlink is planted with `update-index --cacheinfo` rather than
+        `submodule add`: same index entry and same working tree, with no transport
+        and no `protocol.file.allow` dance.
+        """
+
+        def git_in(directory, *args):
+            return (
+                subprocess.check_output(
+                    ["git", "-C", str(directory), *args], stderr=subprocess.PIPE
+                )
+                .decode()
+                .strip()
+            )
+
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+        for hidden, populated in (("CLAUDE.md", True), ("SKILL.md", True), ("CLAUDE.md", False)):
+            with self.subTest(hidden=hidden, populated=populated):
+                boundary.mkdir(parents=True)
+                git_in(boundary, "init", "-q", "-b", "main")
+                git_in(boundary, "config", "user.name", "fixture")
+                git_in(boundary, "config", "user.email", "fixture@example.test")
+                (boundary / "index.js").write_text("library code\n")
+                git_in(boundary, "add", "index.js")
+                git_in(boundary, "commit", "-qm", "base")
+                head = git_in(boundary, "rev-parse", "HEAD")
+                submodule = boundary / "dependency"
+                submodule.mkdir()
+                if populated:
+                    (submodule / hidden).write_text("EVIL\n")
+                git_in(
+                    boundary,
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    "160000," + head + ",dependency",
+                )
+                # The listing the inspection reads: one bare path, mode 160000,
+                # and nothing at all about what the directory holds.
+                self.assertIn(
+                    "160000 " + head + " 0\tdependency", git_in(boundary, "ls-files", "-s")
+                )
+                self.assertIn("dependency", git_in(boundary, "ls-files", "--cached", "--others"))
+                self.assertNotIn(hidden, git_in(boundary, "ls-files", "--cached", "--others"))
+                # A gitlink is unenumerable either way, so an empty one is refused
+                # too: the boundary is only accepted when every path behind it was
+                # actually inspected.
+                for command in ("begin", "lane"):
+                    args = ["--repo", str(self.repo), "--base", "main", "--scope", "committed"]
+                    if command == "begin":
+                        args += ["--reviewer", "codex"]
+                    refusal = subprocess.run(
+                        [sys.executable, str(HELPER), command, *args],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(refusal.returncode, 2, refusal.stdout + refusal.stderr)
+                    self.assertIn("boundary", refusal.stderr)
+                shutil.rmtree(boundary)
+
+    def test_a_listed_boundary_path_that_is_a_directory_is_refused(self):
+        """The index says blob, the disk says directory: refuse either way.
+
+        Here git itself descends and lists `payload/CLAUDE.md`, so the instruction
+        check already refuses; the disk-directory backstop in the inspection covers
+        the same shape from the other side, for any listing that disagrees with the
+        working tree. This pins the OUTCOME — such a boundary never passes — rather
+        than which of the two checks caught it.
+        """
+
+        def git_in(directory, *args):
+            return (
+                subprocess.check_output(
+                    ["git", "-C", str(directory), *args], stderr=subprocess.PIPE
+                )
+                .decode()
+                .strip()
+            )
+
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+        boundary.mkdir(parents=True)
+        git_in(boundary, "init", "-q", "-b", "main")
+        git_in(boundary, "config", "user.name", "fixture")
+        git_in(boundary, "config", "user.email", "fixture@example.test")
+        (boundary / "payload").write_text("a blob, as far as the index knows\n")
+        git_in(boundary, "add", "payload")
+        git_in(boundary, "commit", "-qm", "base")
+        (boundary / "payload").unlink()
+        (boundary / "payload").mkdir()
+        (boundary / "payload/CLAUDE.md").write_text("EVIL\n")
+        listing = git_in(boundary, "ls-files", "--cached", "--others")
+        self.assertIn("payload", listing)
+        self.expect_begin_refused()
 
     def expect_begin_refused(self):
         self.run_helper(
@@ -2148,6 +2342,73 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                 record["policy"]["tier1_max_lines"] = limit
                 receipt_path.write_text(json.dumps(record))
                 self.check(False)
+
+    def test_tier1_byte_ceiling_escalates_a_byte_huge_docs_diff(self):
+        """#494: the tier-1 size ceiling is policy here, not one gate's prompt cap.
+
+        A docs-only diff of a single 200,000-byte line clears the line ceiling,
+        so before the byte ceiling existed it took the exemption in whichever
+        lane was asked while the Antigravity gate refused to dispatch it at all.
+        It now classifies tier 2 in both lanes and is escalated to an ordinary
+        review rather than refused.
+        """
+        self.git("checkout", "-B", "feature", "main")
+        (self.repo / "notes.md").write_text("x" * 200000 + "\n")
+        self.git("add", "notes.md")
+        self.git("commit", "-qm", "one very long documentation line")
+        snapshot = self.begin()
+        self.assertEqual(json.loads(snapshot.read_text())["policy"]["tier1_max_bytes"], "65536")
+        classification = json.loads(self.run_helper("classify", "--snapshot", str(snapshot)))
+        self.assertEqual(classification["tier"], 2)
+        self.assertIn("bytes", classification["reason"])
+        # Escalated to a real review, not refused: an ordinary docs path needs
+        # only the Antigravity lane.
+        self.assertEqual(classification["required_lane"], "antigravity")
+        self.complete(snapshot, "tier-1", ok=False)
+        self.complete(snapshot)
+        self.check()
+        # The ceiling is captured policy like the line ceiling, so raising it
+        # restores the exemption for the same artifact.
+        snapshot = self.begin(tier1_max_bytes="300000")
+        self.assertEqual(
+            json.loads(self.run_helper("classify", "--snapshot", str(snapshot)))["tier"], 1
+        )
+        self.complete(snapshot, "tier-1")
+        self.check()
+
+    def test_tier1_byte_policy_is_validated_fail_closed(self):
+        """A receipt whose byte ceiling is absent or unusable cannot ship tier 1.
+
+        A receipt minted before this policy field existed carries no ceiling at
+        all, which must read as "unclassifiable" (tier 2, Codex) rather than as
+        "no limit".
+        """
+        self.git("checkout", "-B", "feature", "main")
+        (self.repo / "notes.md").write_text("documentation\n")
+        self.git("add", "notes.md")
+        self.git("commit", "-qm", "documentation change")
+        self.complete(self.begin(), "tier-1")
+        self.check()
+        receipt_path = self.repo / ".git/review-receipts/codex.json"
+        record = json.loads(receipt_path.read_text())
+        for limit in ("invalid", "-1", "", None, [], 65536, "MISSING"):
+            with self.subTest(limit=limit):
+                mutated = json.loads(json.dumps(record))
+                if limit == "MISSING":
+                    del mutated["policy"]["tier1_max_bytes"]
+                else:
+                    mutated["policy"]["tier1_max_bytes"] = limit
+                receipt_path.write_text(json.dumps(mutated))
+                self.check(False)
+        for limit in ("invalid", "-1", ""):
+            with self.subTest(begin_limit=limit):
+                snapshot = self.begin(tier1_max_bytes=limit)
+                classification = json.loads(
+                    self.run_helper("classify", "--snapshot", str(snapshot))
+                )
+                self.assertEqual(classification["tier"], 2)
+                self.assertEqual(classification["required_lane"], "codex")
+                self.complete(snapshot, "tier-1", ok=False)
 
     def test_invalid_tier1_limit_requires_full_review(self):
         self.git("checkout", "-B", "feature", "main")

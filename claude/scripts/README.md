@@ -56,7 +56,7 @@ Beyond the per-script suites named in the table above:
 | Suite | What it pins |
 | --- | --- |
 | `tests/review-multipart.property.test.py` | Hypothesis properties for the fragment splitter: fragments rejoin to the original, none exceeds the UTF-8 byte bound, none is empty, each is a contiguous byte slice of the packet, and a bound too small for one character fails closed |
-| `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, an over-cap diff, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
+| `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, a diff over either captured ceiling (lines or bytes), a policy missing the byte ceiling, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
 | `tests/setup-fuzz-layouts.test.sh` | Seeded fuzzer over `setup.sh --yes --dry-run`: pseudo-random `$HOME` layouts (`.bashrc`, `.gitconfig`, `.claude`, `~/.agents/skills`, dangling links, a bun stub, `~/.codex`) each asserted byte-identical before and after. `SEED` reproduces a run and is printed on failure; `LAYOUTS` sets the count |
 | `tests/lib-snapshot.sh` | Not a suite — the shared full-fidelity directory snapshot (every path, file hash, and symlink target) sourced by `setup-dry-run.test.sh` and `setup-fuzz-layouts.test.sh` so both compare identically |
 
@@ -171,6 +171,19 @@ Automatic text conversion respects Git's binary classification; explicitly
 forced text conversion retains Git's configured behavior.
 Known ignored agent runtime credentials and state are excluded from instruction
 discovery. Named instruction files inside runtime directories remain covered.
+A directory Git refuses to descend into is reported as one trailing-slash entry,
+and a hand-made `.git` earns that treatment, so every such boundary in the
+ignored sweep is inspected rather than judged by its own name (#496): one of this
+repository's own registered worktrees is dropped, a real repository is allowed
+only when its own listing — tracked and untracked, without honouring its
+`.gitignore` — holds no instruction path, no further boundary and **no gitlink**,
+and anything else refuses. The gitlink case is why that listing is read with
+`--stage`: a populated tracked submodule inside such a repository is printed as
+one bare path with no trailing slash and its contents are never enumerated, so
+only its mode `160000` distinguishes a whole unchecked tree from an ordinary
+file. A path listed as a file where the working tree holds a directory is refused
+on the same grounds. A visible (non-ignored) boundary keeps failing closed in the
+snapshot itself.
 Recognized runtime artifacts explicitly included in the review target block
 review before their contents can reach a reviewer. These filename and directory
 rules are not a general secret scanner.
@@ -248,6 +261,23 @@ recorded it), `antigravity` (ordinary tier-2 work — the default lane), or
 helper could not compute). Lanes rank `any < antigravity < codex`. Size alone
 never escalates the lane: a large ordinary diff is still ordinary.
 
+Tier 1 has two captured size ceilings, both in the receipt's `policy` so the
+two lanes and `check` share one answer (#494): `tier1_max_lines` (default 200,
+override `GATE_TIER1_MAX_LINES`) and `tier1_max_bytes` (default 65536, **no
+environment override on purpose** — `review-and-push.sh` classifies with its own
+`lane` call before any gate runs, so a knob only the gates honoured would make
+the wrapper choose the tier-1 skip and then refuse to record the exemption it had
+just chosen; adding one means forwarding it there in the same change). The byte
+ceiling exists because the line ceiling is not
+a size limit — one 200,000-byte line is a 1-line diff — and it sits far below
+the Antigravity lane's measured 185,000-byte input window so that a diff the
+valve waves through would still be dispatchable there. A docs diff above either
+ceiling is **escalated to an ordinary review**, not refused, and a receipt whose
+policy is missing or unreadable classifies tier 2 requiring `codex`. Both gates
+therefore check their own size caps and their reviewer's availability only
+*after* the tier valve: those are facts about a dispatch, and a tier-1 diff has
+none.
+
 On a codex-required diff the Antigravity gate still runs and still mints its
 receipt, announcing itself as a **supplementary** lane — an independent-lineage
 second opinion, not shipping evidence. Receipts are version 2; a version-1
@@ -323,11 +353,17 @@ agents/routines/*
 AGENTS.md
 ```
 
-Those paths are hostile **by design**: gate fixtures embed injected verdicts,
+Those paths are directive **by design**: gate fixtures embed injected verdicts,
 prompt-injection payloads, and synthetic credential markers, and Jules routine
 prompts plus the generated root `AGENTS.md` are instructions for a cloud agent
 (ADR-0009), so a reviewer flagging them is reporting the fixture or the prompt
-rather than a defect. The globs only
+rather than a defect. The exemption is **by form, not by effect** (#484): the
+reviewer is told not to report an instruction-like string there as a finding
+*about this repository's instructions*, but a directive whose effect would be to
+bypass a limit, skip or disable a check/review/gate/test, weaken a guard, or
+expose credentials is still reported — the routine prompts are live prompts, so
+adding a glob must never retire the prompt-injection check for what runs under
+it. The globs only
 steer the reviewer — matching paths **stay in the review scope** and are still
 reviewed for real bugs, and instruction-like text anywhere else stays
 suspicious. The file is repo content, so it is parsed as bounded untrusted data

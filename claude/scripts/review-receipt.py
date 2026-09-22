@@ -30,6 +30,17 @@ LANE_RANK = {"any": 0, "antigravity": 1, "codex": 2}
 # review-and-push.sh stamps this prefix on the ledger note when an Antigravity
 # gate that could not run (exit 3) handed the diff to Codex. `stats` counts it.
 DEGRADED_NOTE_PREFIX = "antigravity-degraded"
+# Tier-1 ceilings, both captured into every receipt's policy so the two lanes and
+# `check` share one answer (#494). The byte ceiling exists because the line
+# ceiling alone is not a size limit: one 200,000-byte line is a 1-line diff. The
+# Antigravity lane's measured input window is 185,000 bytes for the WHOLE agy
+# print-mode message — preamble, fence markers and diff (#409,
+# antigravity-review-gate.sh) — so a diff the valve waves through must sit far
+# enough below that to still be dispatchable there if a caller forces the full
+# pass. 64 KiB is that, with room for the scaffolding, and is still ~3x the
+# largest plausible docs diff inside TIER1_MAX_LINES lines.
+TIER1_MAX_LINES = "200"
+TIER1_MAX_BYTES = "65536"
 AGENT_NAMESPACES = (
     "codex",
     ".codex",
@@ -126,8 +137,9 @@ def own_worktrees(repo):
     single entry with a trailing slash, and a directory only has to *look* like a
     repository to qualify (a `.git` holding HEAD, objects and refs). Dropping such
     an entry is safe only for this repo's own worktrees (#474); every other
-    boundary keeps failing closed in file_bytes(), so a fabricated `.git` cannot
-    hide a dirty instruction file behind it.
+    boundary fails closed — an ignored one in inspect_boundary(), a visible one in
+    file_bytes() — so a fabricated `.git` cannot hide a dirty instruction file
+    behind it (#496).
 
     `-z` because git prints worktree paths raw: a path holding a newline would
     otherwise split into two entries, truncating the real one and synthesizing a
@@ -159,6 +171,53 @@ def worktree_gitdir(directory):
                 os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
             )
     return None
+
+
+def boundary_listing(directory):
+    """Every (mode, path) a foreign repository boundary lists, tracked and untracked.
+
+    `git ls-files` stops at any directory that merely LOOKS like a repository — a
+    `.git` holding HEAD, objects and refs is enough, no `git init` required — so
+    "git stopped here" is no evidence that anything ever looked inside (#496).
+    This is that look.
+
+    Two calls, because the formats differ and each is then unambiguous: the index
+    with `--stage` (`<mode> <object> <stage>\\t<path>`, so a gitlink's mode 160000
+    is visible) and the untracked files as bare paths. `mode` is None for an
+    untracked entry.
+
+    The index half matters because a populated tracked submodule is printed as ONE
+    bare path with no trailing slash and its contents are never enumerated, so a
+    listing alone cannot tell it from an ordinary file — the caller refuses on the
+    mode instead.
+
+    Deliberately WITHOUT `--exclude-standard`: the boundary's own `.gitignore`
+    must not decide what this repository's instruction sweep is allowed to see,
+    and with no exclude option git applies no patterns at all, so every untracked
+    file is listed. Returns None when the directory is not a usable repository,
+    which the caller treats as a refusal rather than as an empty listing.
+    """
+    entries = []
+    try:
+        staged = git(directory, "ls-files", "-z", "--cached", "--stage")
+        others = git(directory, "ls-files", "-z", "--others")
+    except (subprocess.SubprocessError, OSError):
+        return None
+    for record in staged.split(b"\0"):
+        if not record:
+            continue
+        # Everything after the FIRST tab is the path, which may itself hold tabs.
+        metadata, separator, path = record.partition(b"\t")
+        if not separator:
+            return None
+        fields = metadata.split()
+        if len(fields) != 3:
+            return None
+        entries.append((fields[0].decode(), os.fsdecode(path)))
+    for path in others.split(b"\0"):
+        if path:
+            entries.append((None, os.fsdecode(path)))
+    return entries
 
 
 def named_instruction(path):
@@ -657,19 +716,70 @@ def capture(repo, base, scope):
             "private agent runtime data cannot be sent for review: "
             + ", ".join(sorted(private_inputs))
         )
-    ignored_instructions = {
-        os.fsdecode(p)
-        for p in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
-            b"\0"
-        )
-        # One of this repo's own worktrees, listed as a directory entry git will
-        # not descend into: nothing behind that boundary is an instruction surface
-        # of this repo, and untracked_sha256 must not bind to the entry (#474).
-        if p
-        and not own_boundary(os.fsdecode(p))
-        and not private_agent_data(os.fsdecode(p))
-        and instruction(os.fsdecode(p))
-    }
+
+    def inspect_boundary(entry):
+        """Refuse a foreign boundary that could be hiding an instruction file.
+
+        `ls-files` collapses a directory it will not descend into to one
+        trailing-slash entry, and a hand-made `.git` earns that. This used to be
+        decided by `instruction(entry)`, so a boundary whose own path was not an
+        instruction path — `vendor/nested/` — was dropped and the instruction file
+        beneath it was never seen, leaving the receipt's "no dirty instruction
+        surface" claim false (#496). Every boundary is inspected now, whatever its
+        own name: a real repository with no instruction file behind it is allowed,
+        and everything else refuses — a boundary that is not a usable repository,
+        one holding an instruction file, or one holding a further boundary, which
+        this deliberately does not descend into.
+        """
+        prefix = entry.rstrip("/")
+        listing = boundary_listing(repo / prefix)
+        if listing is None:
+            raise ValueError("cannot inspect repository boundary: " + entry)
+        for mode, name in listing:
+            path = prefix + "/" + name
+            if name.endswith("/"):
+                raise ValueError("repository boundary nested behind a boundary: " + path)
+            # A gitlink is a whole tree behind one bare path: `ls-files` neither
+            # marks it with a trailing slash nor enumerates what it holds, so an
+            # ordinary submodule name passed every other check while an instruction
+            # file sat underneath it. Refuse whether or not it is populated —
+            # unenumerable is unenumerable.
+            if mode == "160000":
+                raise ValueError("submodule behind repository boundary is uninspectable: " + path)
+            # Backstop for any listing that disagrees with the working tree: a path
+            # listed as a file while the disk holds a directory was not enumerated
+            # either.
+            try:
+                if stat.S_ISDIR((repo / prefix / name).lstat().st_mode):
+                    raise ValueError(
+                        "listed path behind repository boundary is a directory: " + path
+                    )
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            if instruction(path):
+                raise ValueError("instruction surface hidden behind repository boundary: " + path)
+
+    ignored_instructions = set()
+    for raw in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
+        b"\0"
+    ):
+        if not raw:
+            continue
+        entry = os.fsdecode(raw)
+        # own_boundary: one of this repo's own worktrees, listed as a directory
+        # entry git will not descend into. Nothing behind that boundary is an
+        # instruction surface of this repo, and untracked_sha256 must not bind to
+        # the entry (#474). private_agent_data: ignored agent runtime state is
+        # dropped from the sweep rather than blocking a review, as it has been
+        # since that data stopped being sent for review — including when it is
+        # itself a boundary, whose contents this never captures either way.
+        if own_boundary(entry) or private_agent_data(entry):
+            continue
+        if entry.endswith("/"):
+            inspect_boundary(entry)
+            continue
+        if instruction(entry):
+            ignored_instructions.add(entry)
     files, workspace, omitted, blobs = {}, {}, set(), {}
 
     def blob(obj):
@@ -937,6 +1047,10 @@ def classify_tier(artifact, patch, policy):
     max_lines = policy["tier1_max_lines"]
     if not isinstance(max_lines, str):
         raise ValueError("malformed tier-1 policy")
+    # A receipt minted before the byte ceiling existed carries no tier1_max_bytes
+    # at all. `.get` rather than `[...]` so that reads as "unclassifiable", the
+    # fail-closed answer, instead of crashing or meaning "no limit" (#494).
+    max_bytes = policy.get("tier1_max_bytes")
     paths = artifact["changed_paths"]
     risk_paths = [path for path in paths if risk(path)]
 
@@ -954,9 +1068,22 @@ def classify_tier(artifact, patch, policy):
         limit = int(max_lines)
     except ValueError:
         return verdict(2, "full pass (captured tier-1 cap is not supported)", True)
+    if not isinstance(max_bytes, str) or not re.fullmatch(r"[0-9]+", max_bytes):
+        return verdict(2, "full pass (captured tier-1 byte cap is not a number)", True)
+    try:
+        byte_limit = int(max_bytes)
+    except ValueError:
+        return verdict(2, "full pass (captured tier-1 byte cap is not supported)", True)
     lines = patch.count(b"\n")
     if lines > limit:
         return verdict(2, f"full pass (diff is {lines} lines > tier-1 cap {max_lines})")
+    # The line ceiling alone is not a size limit: one 200,000-byte line is a
+    # 1-line diff. The ceiling lives here rather than in a gate's prompt cap so
+    # both lanes and `check` agree, and so such a diff is ESCALATED to an
+    # ordinary review instead of being refused by whichever gate was asked
+    # (#494).
+    if len(patch) > byte_limit:
+        return verdict(2, f"full pass (diff is {len(patch)} bytes > tier-1 cap {max_bytes})")
     if not paths:
         return verdict(2, "full pass (could not enumerate changed paths)")
     for path in paths:
@@ -1007,7 +1134,18 @@ def lane(args):
     artifact, patch = stable_capture(repo, base, scope)
     if args.scope == "auto" and scope == "uncommitted" and not artifact["changed_paths"]:
         artifact, patch = stable_capture(repo, base, "committed")
-    print(json.dumps(classify_tier(artifact, patch, {"tier1_max_lines": args.tier1_max_lines})))
+    print(
+        json.dumps(
+            classify_tier(
+                artifact,
+                patch,
+                {
+                    "tier1_max_lines": args.tier1_max_lines,
+                    "tier1_max_bytes": args.tier1_max_bytes,
+                },
+            )
+        )
+    )
 
 
 def ledger_append(receipts, entry):
@@ -1110,7 +1248,10 @@ def begin(args):
     run = Path(tempfile.mkdtemp(prefix="run-", dir=str(receipts)))
     (run / "diff.patch").write_bytes(patch)
     os.chmod(run / "diff.patch", 0o600)
-    policy = {"tier1_max_lines": args.tier1_max_lines}
+    policy = {
+        "tier1_max_lines": args.tier1_max_lines,
+        "tier1_max_bytes": args.tier1_max_bytes,
+    }
     record = {
         # Version 2 adds "classification": check recomputes it and refuses a
         # receipt whose lane ranks below what the diff requires, so a version-1
@@ -1272,7 +1413,8 @@ def main():
         if name == "begin":
             sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), required=True)
             sub.add_argument("--executable")
-            sub.add_argument("--tier1-max-lines", default="200")
+            sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
+            sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
         if name == "check":
             sub.add_argument("--head", required=True)
     for name in ("verify", "classify"):
@@ -1282,7 +1424,8 @@ def main():
     sub.add_argument("--repo", default=".")
     sub.add_argument("--base")
     sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), default="committed")
-    sub.add_argument("--tier1-max-lines", default="200")
+    sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
+    sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
     sub = commands.add_parser("stats")
     sub.add_argument("--repo", default=".")
     sub.add_argument("--since-days", type=int, default=7)

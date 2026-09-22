@@ -67,6 +67,30 @@ routine rather than accidental, so both are decided here together.
    `check`). `review-receipt.py stats [--since-days N]` prints lane × outcome
    plus the degraded-fallback count.
 
+**Tier 1's size ceiling is policy, not a gate's prompt cap** (amended
+2026-09-22, #494). Whether a tier-1 exemption was *available* used to depend on
+which gate you asked, because each gate checked its own dispatch feasibility
+before its tier valve: the Antigravity lane refused a docs-only diff above its
+500-line or measured 185,000-byte limits, the Codex lane refused one above 5,000
+lines or on a machine with no `codex` installed — and the Codex lane minted the
+very exemption the other refused. A one-line, 200,000-byte docs diff was tier 1
+to the classifier and unreviewable to one gate.
+
+The ceiling therefore lives in `classify_tier` as captured policy —
+`tier1_max_lines` (default 200) beside `tier1_max_bytes` (default 65536) — so
+both lanes and `check` give one answer, and a docs diff above it is **escalated
+to an ordinary review** rather than refused by whichever gate was asked. 64 KiB
+sits far below the Antigravity lane's measured window, so a diff the valve waves
+through is still dispatchable there if a caller forces the full pass. A receipt
+whose byte ceiling is absent (one minted before this existed) or unreadable
+classifies tier 2 requiring `codex`: fail closed, never "no limit".
+
+Consequently **both gates now run their tier valve before their own size caps
+and before their reviewer-availability check.** Those are facts about a message
+that a tier-1 diff never sends. The self-review guard stays *ahead* of the
+valve: it is about trust, not feasibility, and must fire whether or not a
+reviewer runs.
+
 **Escalation is always allowed; downgrade never is.** `REVIEW_LANE=codex` on an
 ordinary diff is honoured. `REVIEW_LANE=antigravity` on a codex-required diff is
 **refused**, not honoured — that request is exactly the downgrade the required
@@ -120,9 +144,10 @@ read it with `stats` before proposing any change to the risk list.
   fallback keeps that from wedging a push, but a machine with no `agy` silently
   routes ordinary work back to Codex — visible only in the ledger, which is why
   `stats` counts the degradations. Tier-1 diffs are unaffected: the tier valve
-  sits ahead of the `agy`-presence check, so a docs-only diff still mints its
-  exemption receipt with no `agy` on `PATH` at all (asserted in
-  `tests/antigravity-review-gate.test.sh` against a PATH built without it).
+  sits ahead of BOTH gates' size caps and reviewer-availability checks, so a
+  docs-only diff still mints its exemption receipt with neither `agy` nor
+  `codex` on `PATH` at all (asserted in `tests/antigravity-review-gate.test.sh`
+  and `tests/codex-review-gate.test.sh` against a PATH built without them).
 - Two knobs exist where there were none (`REVIEW_LANE`,
   `REVIEW_LANE_FALLBACK`). Neither can weaken a codex-required diff, but both
   are surface a reader has to know about.

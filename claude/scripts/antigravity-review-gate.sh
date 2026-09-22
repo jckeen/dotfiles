@@ -51,6 +51,9 @@
 #     message reaches the model, and the rest is dropped with no truncation
 #     notice, so a larger prompt would certify a slice of the diff as a review
 #     of all of it.
+# Both are facts about a message this gate would SEND, so both are checked after
+# the tier-1 valve (#494): the tier-1 size ceiling is captured policy in
+# review-receipt.py, shared with the Codex lane and with `check`.
 # ANTIGRAVITY_GATE_TIMEOUT (default 360) is a whole number of seconds and sets
 # both agy's --print-timeout and the outer ceiling 30s above it; 0 disables
 # both, as GNU timeout documents for a zero duration.
@@ -256,6 +259,28 @@ if [[ "$NONSPACE" == 0 ]]; then
   exit 0
 fi
 
+# ─── Proportionality valve (#212) ──────────────────────────────
+# Docs-only small diffs take a reduced pass; anything touching a risk surface
+# gets the full review, never downgradable. The valve fails toward the full
+# pass — see gate_classify_tier in gate-lib.sh.
+#
+# The valve runs BEFORE this gate's own size caps (#494). It dispatches nothing,
+# so neither the line cap (plan quota) nor the measured agy input window — both
+# facts about a message that will never be sent — has anything to say about it.
+# The SIZE ceiling that does belong to the exemption is captured policy in
+# review-receipt.py (tier1_max_lines, tier1_max_bytes), shared by both lanes and
+# by `check`, so the one 200,000-byte docs line that used to be refused here and
+# exempted in the Codex lane now classifies tier 2 in both and is escalated to a
+# real review. The self-review guard above stays ahead of the valve: it is about
+# trust, not feasibility.
+gate_classify_tier
+if [[ "$GATE_TIER" -eq 1 ]]; then
+  gate_record_pass tier-1
+  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
+  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
+  exit 0
+fi
+
 N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
 if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
   degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."
@@ -264,10 +289,9 @@ fi
 # ─── Prompt assembly + the measured input-window cap (#409) ────
 # The prompt is built here, before dispatch and before the local checks, so
 # the byte cap measures the exact message agy would publish — preamble, fence
-# and diff — rather than the diff alone. It sits beside the line cap and ahead
-# of the tier-1 valve on purpose: the valve mints a receipt without
-# dispatching, and a docs-only diff of one 200,000-byte line clears its line
-# count while sitting far above the window. Fence the untrusted diff with a
+# and diff — rather than the diff alone. It sits beside the line cap, past the
+# tier-1 valve: both are dispatch-feasibility limits on a message that is only
+# sent for a full pass. Fence the untrusted diff with a
 # boundary the diff cannot forge: gate_fence derives it from a hash of the
 # diff itself, so injected text can't emit a matching closing marker.
 FENCE="$(gate_fence UNTRUSTED_DIFF "$DIFF_CONTENT")"
@@ -299,18 +323,6 @@ if [[ "$MAX_PROMPT_BYTES" -gt 0 ]]; then
   if [[ "$N_PROMPT_BYTES" -gt "$MAX_PROMPT_BYTES" ]]; then
     degrade "review prompt is $N_PROMPT_BYTES bytes (> $MAX_PROMPT_BYTES) — agy print mode delivers only the first ~185 KB of a single message, so the model would see only its first slice (#409). Split the change, or raise ANTIGRAVITY_GATE_MAX_BYTES (0 disables) once agy gains a documented large-input path."
   fi
-fi
-
-# ─── Proportionality valve (#212) ──────────────────────────────
-# Docs-only small diffs take a reduced pass; anything touching a risk surface
-# or above the size cap gets the full review, never downgradable. The valve
-# fails toward the full pass — see gate_classify_tier in gate-lib.sh.
-gate_classify_tier
-if [[ "$GATE_TIER" -eq 1 ]]; then
-  gate_record_pass tier-1
-  green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Antigravity review for this reduced-ceremony diff."
-  echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
-  exit 0
 fi
 
 # ─── Supplementary lane (ADR-0008) ─────────────────────────────

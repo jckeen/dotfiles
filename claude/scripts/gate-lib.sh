@@ -78,6 +78,14 @@ gate_extract_diff() {
   executable=${executable%$'\n.'}
   args+=(--executable "$executable")
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
+  # The tier-1 BYTE ceiling is deliberately NOT overridable from here: its only
+  # source is review-receipt.py's TIER1_MAX_BYTES, which every caller inherits by
+  # omitting the flag (#494). A knob honoured here alone would be honoured by half
+  # the pipeline — `review-and-push.sh` classifies with its own `lane` call before
+  # any gate runs, so a stricter ceiling here would make the wrapper choose the
+  # tier-1 skip and then refuse to record the exemption it had just chosen,
+  # failing a push instead of escalating it to a review. Adding the knob means
+  # forwarding it to that `lane` call in the same change, with a wrapper test.
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
   trap gate_cleanup EXIT
   # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.
@@ -181,8 +189,12 @@ gate_classify_tier() {
 #   antigravity  ordinary tier-2 work, or REVIEW_LANE=antigravity where allowed
 #   skip         tier 1 (required lane "any"): no reviewer needs to be
 #                dispatched at all. A caller that still needs shipping evidence
-#                runs the cheapest gate, whose tier-1 valve mints the exemption
-#                receipt without spending any model quota.
+#                records the exemption receipt itself — capture, then
+#                `review-receipt.py complete --outcome tier-1`, which refuses any
+#                artifact that is not a small docs-only diff
+#                (`review-and-push.sh` does this). Asking a gate for it instead
+#                couples the exemption to that gate's dispatch-feasibility
+#                limits (#482).
 # Returns 1 (with a reason on stdout/stderr) on an unusable request. The one
 # asymmetry is deliberate: REVIEW_LANE=antigravity on a codex-required diff is
 # REFUSED rather than honoured, because that request is exactly the downgrade
