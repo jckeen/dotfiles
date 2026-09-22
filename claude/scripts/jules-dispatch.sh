@@ -56,7 +56,12 @@
 #   dispatch.jsonl   the ledger: dispatch records (one line per attempt and one
 #                    per created session) plus `"kind":"reconcile"` records, one
 #                    per settled session. Every dispatch query filters on the
-#                    kind, so a reconcile record never counts as spend
+#                    kind, so a reconcile record never counts as spend. A
+#                    reconcile record's `commit_subjects_ok` is tri-state:
+#                    true/false only where this pass listed the pull request's
+#                    commits and checked them, null where it read none (a pull
+#                    request already closed or merged, an empty one it closed, a
+#                    refused URL, a FAILED session, no pull request at all)
 #   status.json      last run's outcome, for hooks and the status line; a
 #                    standalone --reconcile rewrites it too, with its own counts
 #   dispatch.log     appended run log
@@ -91,6 +96,12 @@ readonly RECONCILE_EMPTY_COMMENT='Closed by jules-dispatch --reconcile: the sess
 # jules-routine:* does not exist in a repository until a routine PR lands there.
 readonly RECONCILE_LABEL_COLOR='5319e7'
 readonly RECONCILE_LABEL_DESC='Opened by a Jules routine session (ADR-0009)'
+# Appended by jq to a pull-request URL and stripped in the shell, so that the
+# WHOLE field reaches the anchored pattern: command substitution eats trailing
+# newlines, and a URL ending in one would otherwise arrive already trimmed and
+# pass the whole-field check it must fail (#505). Any byte would do — the suffix
+# is removed by value, not by searching for it.
+readonly RECON_URL_SENTINEL='#'
 # A bound on paging, so a server that keeps handing back a token cannot spin
 # here forever. 100 sources per page, so this is 5000 repositories.
 readonly SOURCES_PAGE_LIMIT=50
@@ -1078,11 +1089,13 @@ RECON_PR_JSON=""
 RECON_PR_ACTIONS=""
 RECON_FIRST_URL=""
 RECON_FIRST_NUM=0
-RECON_SUBJECTS_OK=true
+# Tri-state, and it starts at the JSON null a branch that reads no commits must
+# record: "not examined" is not "nothing would be rejected" (#508).
+RECON_SUBJECTS_OK=null
 
 recon_reset_session() {
   RECON_PR_JSON=""; RECON_PR_ACTIONS=""; RECON_FIRST_URL=""; RECON_FIRST_NUM=0
-  RECON_SUBJECTS_OK=true; RECON_PENDING=()
+  RECON_SUBJECTS_OK=null; RECON_PENDING=()
 }
 
 recon_pr_entry() { # url pr-number action
@@ -1101,9 +1114,16 @@ recon_pr_entry() { # url pr-number action
   return 0
 }
 
-# commit_subjects_ok is true for a session whose pull requests this pass read
-# the commits of and found nothing the required check would reject; it is also
-# true where there was no pull request to read.
+# commit_subjects_ok is tri-state, because ADR-0009's custodian handoff treats
+# this record as provenance a consumer must not re-derive from the pull request
+# itself — and a boolean that means "ok" OR "never looked" cannot be keyed on
+# (#508). true: every pull request of this session had its commits listed and
+# nothing the required check would reject was found. false: they were listed and
+# at least one subject is rejected. null: this pass read no commits at all — a
+# pull request already closed or merged when it ran, an empty one it closed, a
+# URL or ledger field it refused, a FAILED session, a session with no pull
+# request. A session mixing the two weakens to the worse of them: any false
+# makes the record false, and only an actual clean read makes it true.
 recon_pend() { # session routine repo action detail
   local line action="$4"
   [[ -n "$RECON_PR_ACTIONS" ]] && action="${RECON_PR_ACTIONS// /+}"
@@ -1336,6 +1356,11 @@ reconcile_pr() { # session routine repo url
     RECON_BLOCKED_SUBJECTS=$((RECON_BLOCKED_SUBJECTS + 1))
     log "  -- $routine / $repo — $owner/$name#$num carries $bad_subjects commit subject(s)"
     log "     the required commit-format check rejects; its title is fixed, that check is not."
+  elif [[ "$bad_subjects" == "0" && "$RECON_SUBJECTS_OK" == "null" ]]; then
+    # The ONLY place the flag becomes true: the commits were listed here and
+    # none of them would be rejected. A false already recorded for an earlier
+    # pull request of the same session is never raised back to true.
+    RECON_SUBJECTS_OK=true
   fi
 
   action="unchanged"
@@ -1348,7 +1373,7 @@ reconcile_pr() { # session routine repo url
 
 reconcile_session() { # session routine repo
   local session="$1" routine="$2" repo="$3"
-  local id resp state n i url failed_any=0
+  local id resp state n i raw url failed_any=0
 
   recon_reset_session
   RECON_CHECKED=$((RECON_CHECKED + 1))
@@ -1429,14 +1454,26 @@ reconcile_session() { # session routine repo
   # Read one JSON value at a time rather than a newline-delimited list: a url
   # field carrying an embedded newline would otherwise be split into two URLs,
   # each passing the anchored pattern the whole field must fail.
+  #
+  # And carried out of jq with a sentinel appended, because command substitution
+  # strips TRAILING newlines: ".../pull/9\n" would otherwise reach the anchored
+  # pattern as ".../pull/9" and be acted on, which is the same whole-field
+  # contract broken at the other end of the string (#505). The sentinel is also
+  # the proof the value came out of jq intact — a non-string field is replaced
+  # by a placeholder here rather than letting jq -r render a number or an object
+  # into something the pattern might accept.
   for ((i = 0; i < n; i++)); do
-    if ! url="$(jq -r --argjson i "$i" \
+    if ! raw="$(jq -r --argjson i "$i" --arg s "$RECON_URL_SENTINEL" \
           '[.outputs[] | select((type == "object") and has("pullRequest"))]
-           | .[$i] | (.pullRequest.url // "")' <<<"$resp" 2>/dev/null)"; then
+           | .[$i] | (.pullRequest.url // "")
+           | (if type == "string" then . else "(non-string pullRequest.url)" end)
+           | . + $s' <<<"$resp" 2>/dev/null)" \
+       || [[ "$raw" != *"$RECON_URL_SENTINEL" ]]; then
       recon_fail "$routine / $repo — could not read output $i of $session" "$routine" "$repo"
       failed_any=1
       continue
     fi
+    url="${raw%"$RECON_URL_SENTINEL"}"
     reconcile_pr "$session" "$routine" "$repo" "$url" || failed_any=1
   done
 

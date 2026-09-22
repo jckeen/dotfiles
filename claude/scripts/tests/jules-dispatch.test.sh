@@ -2206,6 +2206,28 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
+# #508: commit_subjects_ok is provenance, not a summary — a record whose commits
+# this pass never listed has to say so. A pull request that was already CLOSED
+# when reconcile ran is a noop: it is never read for commits, so the flag is
+# JSON null (present, so a consumer sees "not examined" rather than a missing
+# key) and never true. This one's single commit subject is exactly the shape
+# check-commit-format.sh rejects, so a true here would be false provenance.
+new_case
+routine alpha false 'repos: all'
+session_line 954 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 954 https://github.com/jckeen/dotfiles/pull/954
+pr_fixture 954 '{"state":"CLOSED","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[]}'
+commits_fixture 954 '[{"parents":[{"sha":"a"}],"commit":{"message":"No changes needed: doc drift checkers pass"}}]'
+if recon_run && [[ "$(reconcile_action noop)" -eq 1 ]] \
+  && [[ "$(reconcile_jq -r '.[0] | has("commit_subjects_ok")')" == "true" ]] \
+  && [[ "$(reconcile_jq -r '.[0].commit_subjects_ok')" == "null" ]] \
+  && ! ghgrep 'pulls/954/commits'; then
+  ok "a closed PR whose commits were never read records commit_subjects_ok: null"
+else
+  fail "a closed PR whose commits were never read claimed its subjects were checked"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      | /' "$STATE/dispatch.jsonl"
+fi
+
 # Codex gate, [medium]: a session's records are settled together or not at all.
 # Appending them one at a time meant a failure after the first line left the
 # session looking reconciled while the rest of its pull-request provenance was
@@ -2297,6 +2319,26 @@ if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAK
   ok "a pull-request URL field carrying two URLs on separate lines is refused whole"
 else
   fail "an embedded newline split one URL field into two actionable URLs (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# Codex gate, [low] / #505: command substitution strips TRAILING newlines, so a
+# url field ending in "\n" reached the anchored pattern already trimmed and
+# passed the whole-field check it must fail — turning a value the contract
+# refuses into a write against a real pull request. The value now leaves jq with
+# a sentinel appended, so the trailing newline is still on it when the pattern
+# sees it.
+new_case
+routine alpha false 'repos: all'
+session_line 955 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/955","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9\\n"}}]}\n' \
+  > "$CASE_DIR/session-955.json"
+pr_fixture 9 '{"state":"OPEN","changedFiles":0,"title":"x","labels":[]}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a pull-request URL ending in a newline is refused, not trimmed into a valid one"
+else
+  fail "a trailing newline was stripped before the whole-field check saw it (rc=$rc)"
   sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
 fi
 
