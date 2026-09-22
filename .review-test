@@ -1,0 +1,10 @@
+# The test command for this repo, read by review-and-push.sh step 2 (#490):
+# the first line that is not blank and not a comment. REVIEW_TEST_CMD overrides
+# it; `claude/scripts/run-tests.sh` with no flags runs every suite.
+#
+# --changed, not the full run: all 48 suites measured 919s (15.3 min) on a
+# developer machine, which is too long to sit in front of every push. --changed
+# maps the branch's diff to the suites that can be affected and widens to all of
+# them whenever the mapping is unsure, and CI runs every suite on the PR
+# regardless — so the narrow run is never the only run.
+claude/scripts/run-tests.sh --changed

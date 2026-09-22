@@ -145,14 +145,29 @@ Adopt Jules as the routine lane.
    missing and every later run skipping the gap. The pull-request URL is
    matched whole, one JSON value at a time, because a field carrying an
    embedded newline would otherwise split into two URLs that each pass an
-   anchored pattern the field itself fails. The retitle has a boundary worth
+   anchored pattern the field itself fails — and it leaves `jq` with a sentinel
+   byte appended, because command substitution strips *trailing* newlines and a
+   URL ending in one would otherwise arrive already trimmed and pass the same
+   whole-field check from the other end of the string (#505). A byte the shell
+   cannot carry at all — a NUL, which command substitution drops mid-string with
+   only a warning — is caught inside `jq` and replaced, since no sentinel can
+   make the shell preserve it. The retitle has a boundary worth
    stating: the required
    commit-format check lints the *subjects of the commits a pull request adds*,
    not its title, so a conventional title fixes what a squash merge lands on
    `main` and nothing else. A routine PR whose bot commit subject is not
    conventional stays blocked, and rewriting the session's branch is not the
    dispatcher's to do, so the pass names the condition and records
-   `commit_subjects_ok: false` instead of reporting the PR as settled. The trap the
+   `commit_subjects_ok: false` instead of reporting the PR as settled. That field
+   is tri-state, because the custodian handoff below reads it as provenance:
+   `true` only where the pass listed the commits of *every* pull request of the
+   session and found nothing rejected, `false` where it listed them and one is
+   rejected, and JSON `null` where any of them went unread — a pull request
+   already closed or merged when the pass ran, an empty one it closed, a URL or
+   ledger field it refused, a FAILED session, a session with no pull request. A
+   boolean that meant "ok" *or* "never looked" could not be keyed on, and neither
+   could a `true` that one clean read had spoken for an unexamined sibling
+   with (#508). The trap the
    round had to close first was in the ledger: every spend query keys off
    `.date`, `.routine` and `.repo`, so a reconcile record would have counted as
    a dispatch and suppressed the very routine it belongs to on the next run —
@@ -431,7 +446,9 @@ change:
   --reconcile` writes a `"kind":"reconcile"` ledger record per settled session
   carrying the session name, the repository, and the pull-request URL and
   number it confirmed, so the custodian reads provenance from the ledger rather
-  than re-deriving it from PR text.
+  than re-deriving it from PR text. Every field of that record is provenance, so
+  `commit_subjects_ok` is tri-state rather than a boolean: a consumer must treat
+  `null` as "this pass never listed the commits" and go and look itself (#508).
 - **Routine-PR classifier** — the `jules-routine:*` label is applied after the
   fact by the reconcile pass, never by the platform (#479), so anything keying
   on the label has to wait for a reconcile pass to have run; between a session

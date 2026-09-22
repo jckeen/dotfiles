@@ -49,6 +49,127 @@
   Since #492 a tier-1 diff dispatches no gate at all; `review-and-push.sh`
   records the exemption itself. Refs #493.
 
+## 2026-09-22 — feat(ci): a runner for this repo's own tests, and `checks` split into four shards
+
+- **`claude/scripts/run-tests.sh` — the answer to "run this repo's tests".**
+  There wasn't one: dotfiles has no `package.json` or `pyproject.toml`, so
+  `review-and-push.sh` step 2 printed `(no test framework detected — skipping)`
+  and went on to mint a receipt attesting to a review and no test run at all
+  (#490; two agent sessions shipped on it). The runner discovers the same
+  enumeration `check-tests-wired.sh` asserts is wired into CI, names each suite
+  by its filename, and takes `--list`, a subset by name, `--changed`, and
+  `--verbose`; the summary is per-suite PASS/FAIL with wall times. Selecting
+  nothing is never a green run — an unknown name and an empty `tests/` fail
+  closed, and an unresolvable base ref, an empty diff, or a changed path the
+  name mapping cannot attribute widen the run to every suite rather than
+  quietly narrow it. The mapping follows names through every tracked non-test
+  file to a *fixpoint*, not to a depth limit, because no suite mentions
+  `gate-lib.sh` directly — it is reached through `codex-review-gate.sh`, and the
+  installer suites reach the root `lib-symlinks.sh` only through `setup.sh`, so
+  any fixed bound would drop a genuinely affected suite while other matches kept
+  the widening fallback from firing. Every rule only ever adds suites, so an
+  over-wide mapping costs time and never coverage. Every changed path must reach
+  a suite on its own — one mappable path cannot speak for an unmapped sibling —
+  and a rename or a deletion widens to everything. The `*.property.test.py` suites are a named SKIP when
+  Hypothesis is absent: they fail loudly by design, which is right for CI and
+  would make every fresh clone's pre-push run red.
+- **Step 2 takes its command from the repo, not from guesswork.**
+  `REVIEW_TEST_CMD`, else a `.review-test` line at the repo root, else framework
+  sniffing — where a bun lockfile or `bunfig.toml` keeps the project off npm
+  without overriding what it declares: a `package.json` `scripts.test` runs as
+  `bun run test`, and `bun test` (bun's own runner) is only for a bun project
+  that declares no test script, with `npm test` the fallback where there is no
+  bun at all. `.review-test`
+  runs through `bash -o pipefail -c`, not `eval`: not `eval` so a line read out
+  of the repository cannot reach the wrapper's variables and weaken the
+  checkpoints after it, and with `pipefail` because a child shell does not
+  inherit it and `<suite> | tee log` would otherwise report tee's success and
+  let a red suite reach the push. `REVIEW_TEST_CMD` is unset for the command's
+  own environment: it names *this* repo's tests, and that command is usually a
+  suite that runs the wrapper again against a fixture repo (about forty times in
+  `review-and-push.test.sh`), where inheriting it would recurse or fail — the
+  shipping fixtures scrub it for the same reason. A declared-but-empty file
+  fails closed. With nothing declared the step prints a
+  banner saying the receipt attests to no test run and records
+  `tests: skipped`, so a PR body can quote it honestly. This repo's
+  `.review-test` runs `run-tests.sh --changed`.
+- **The `checks` job is now four parallel shards (#472).** It had grown to
+  ~12.6 min of serial steps and a p90 of 10.6 min. `checks-shards` is a matrix
+  over `receipts`, `gates`, `runtime`, and `checkers`, grouped so the four
+  slowest suites — review receipts and shipping boundaries (3.6 min), the Codex
+  gate self-test (2.5 min), the claude-operator runner (1.8 min), and the
+  Antigravity gate self-test (1.7 min) — land in different shards. Wall time is
+  the slowest shard; a fifth shard would buy nothing, since the receipts suite
+  alone is the floor. No step was removed and every `run:` body is unchanged, so
+  `check-tests-wired.sh` still reads the same wiring shape; its fix-hint and the
+  `claude/scripts/README.md` rows now name the shards. `checks` itself stays as
+  a small aggregator job that `needs` the shards and fails unless all of them
+  succeeded — a matrix job produces one status context per leg, not one for the
+  set, and branch protection points at the single name.
+## 2026-09-22 — fix(jules-dispatch): reconcile provenance says what it actually checked
+
+- **`commit_subjects_ok` is tri-state, so "not examined" can no longer read as
+  "ok"** (#508). The first live reconcile pass recorded
+  `{"action":"noop",…,"commit_subjects_ok":true}` for #477 — a pull request that
+  was already closed when the pass ran, whose only commit subject
+  (`No changes needed: doc drift checkers pass`) `check-commit-format.sh`
+  rejects. The pass never listed its commits. ADR-0009's custodian handoff reads
+  the reconcile record as the provenance a consumer must not re-derive from PR
+  text, and a boolean meaning "ok" *or* "never looked" cannot be keyed on. The
+  field is now `true` only where the commits were listed and checked, and JSON
+  `null` (present, not absent) on every branch that read none: a pull request
+  already closed or merged, an empty one the pass closed, a refused URL or ledger
+  field, a FAILED session, a session with no pull request. The record covers the
+  whole session, so `true` means *every* pull request of it was examined: a
+  `false` wins outright, but one unexamined pull request weakens a clean read
+  back to `null` in either order — caught by the Codex gate on the first round of
+  this fix, where a closed PR beside a clean one still read `true`.
+  `status.json`'s
+  `reconcile.blocked_subjects` is a count of pull requests whose commits *were*
+  read and rejected, so it is unchanged.
+- **A pull-request URL is validated before command substitution can trim it**
+  (#505, Codex gate, low). The whole-field contract held for an *embedded*
+  newline but not a trailing one: `$(jq -r …)` strips trailing newlines, so
+  `…/pull/9\n` reached the anchored pattern as `…/pull/9`, passed, and could
+  drive a real `gh` write. The value now leaves `jq` with a sentinel byte
+  appended and the sentinel is checked before it is stripped, so the newline is
+  still on the string when the pattern rejects it; a non-string `pullRequest.url`
+  is replaced with a placeholder rather than letting `jq -r` render a number or
+  an object into something the pattern might accept. A sentinel cannot rescue a
+  NUL, though — the gate's low finding on this fix, the same class one byte
+  further: `"…/pull/9\u0000"` is a legal JSON string and command substitution
+  drops the NUL *mid*-string with only a warning, so a byte the shell cannot
+  carry is now caught inside `jq` and becomes a placeholder no pattern accepts.
+  Three regression tests, and the embedded-newline case still passes.
+## 2026-09-22 — fix(worktree-lifecycle): a retired worktree releases its branch ref
+
+- **Applied retirement detaches the quarantined worktree's own metadata HEAD.**
+  Retiring fourteen merged task worktrees left every one of them registered with
+  its branch still checked out, so `git branch -D` — and any merged-branch
+  pruning — refused each of those branches forever with `cannot delete branch
+  'X' used by worktree at '<quarantine>'`. The detach is the last step, after the
+  recovery bundle and `recovery.json` are written, so the record still names the
+  branch the task worked on. It writes only that worktree's `HEAD` and reflog in
+  the source repository's worktree metadata: the quarantined directory, its
+  index, the bundle and the record are untouched, and the commit stays reachable
+  from the merged PR, the bundle and the detached HEAD. Verified through the same
+  `git worktree list --porcelain` the operator reads, and a preview detaches
+  nothing. Closes #498.
+- **`retire --delete-branch` finishes the post-merge cleanup, fail-closed.** It
+  deletes the local branch only when the ref still names the exact merged PR head
+  the collector already verified, is not a symbolic ref, and is held by no
+  worktree. `update-ref -d` enforces none of that: it deletes a branch another
+  worktree has checked out, and a worktree interrupted mid-rebase or mid-bisect
+  reports `detached` while Git still refuses to delete the branch it started
+  from, so the same `rebase-merge/head-name`, `rebase-apply/head-name` and
+  `BISECT_START` state Git reads is read here, with a test pinning both refusals
+  side by side. The delete passes the expected value so a concurrent update makes
+  Git refuse rather than discard an unverified commit, and `--no-deref` means a
+  ref that turned symbolic between the check and the write can only delete
+  itself, never the branch it points at. Every other state leaves the ref alone
+  and says why under `branch_deleted` and `branch_reason` instead of failing a
+  retirement that already completed.
+
 ## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
 
 - **`--reconcile` closes empty routine pull requests and applies the label the

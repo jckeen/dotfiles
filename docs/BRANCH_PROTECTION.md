@@ -125,9 +125,16 @@ any differences before changing the live rule.
   every PR and is safe to require. Add it to the live rule only **after** the
   PR that introduces the job has merged: a required context that no open PR
   can produce leaves them hanging on "Expected".
-- `checks` is required: it bundles the behavioral suites, gate self-tests,
+- `checks` is required: it speaks for the behavioral suites, gate self-tests,
   parity checks, and install-integrity checks. It reports on every PR, so a
   failing test must block merging even when the standalone lint jobs pass.
+  Since #472 those suites run in the `checks-shards` matrix job
+  (`checks (receipts)`, `checks (gates)`, `checks (runtime)`,
+  `checks (checkers)`), and `checks` is a tiny aggregator that `needs` them and
+  fails unless every shard succeeded. A matrix job produces one status context
+  per leg rather than one for the set, so the aggregator is what keeps a single
+  required name. Do **not** require the individual shard contexts: their names
+  change whenever the grouping is rebalanced.
 - `secret-scan` and `commit-format` run on every PR. This example does not
   require their contexts; consult the live protection rule before calling a
   check advisory.

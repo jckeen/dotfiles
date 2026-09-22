@@ -74,9 +74,10 @@ for f in $TEST_GLOBS; do
 done
 
 if [ "$VIOLATIONS" -ne 0 ]; then
-  echo "  Fix: add a step to the 'checks' job in .github/workflows/ci.yml, e.g."
+  echo "  Fix: add a step to a 'checks-shards' shard in .github/workflows/ci.yml,"
+  echo "  in the lightest one (the header comment lists the shard weights), e.g."
   echo "      - name: <name> (self-test)"
-  echo '        if: ${{ !cancelled() }}'
+  echo '        if: ${{ !cancelled() && matrix.shard == '"'"'checkers'"'"' }}'
   echo "        run: claude/scripts/tests/<name>.test.sh"
   echo "  or add the path to OPT_OUT in check-tests-wired.sh with the reason it"
   echo "  cannot run in CI."

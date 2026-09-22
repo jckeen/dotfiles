@@ -61,6 +61,10 @@ class ShippingTests(unittest.TestCase):
                     "CODEX_GATE_TIMEOUT",
                     "REVIEW_LANE_FALLBACK",
                     "REVIEW_LANE_NOTE",
+                    # An operator running THIS repo's suites through the wrapper
+                    # would otherwise have their override inherited by the
+                    # wrapper runs staged here, against a fixture repo (#490).
+                    "REVIEW_TEST_CMD",
                 )
             ):
                 del self.env[key]
