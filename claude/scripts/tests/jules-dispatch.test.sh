@@ -2228,6 +2228,30 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      | /' "$STATE/dispatch.jsonl"
 fi
 
+# Codex gate, [medium] on the #508 fix: one record covers the whole session, so
+# `true` has to mean EVERY pull request of it was examined. A session with a
+# closed PR and a clean open one used to come out true — the clean read raised
+# the flag and the unexamined sibling never weakened it back, in either order —
+# and a consumer reading true would skip the one nothing looked at.
+for order in closed-first clean-first; do
+  new_case
+  routine alpha false 'repos: all'
+  session_line 956 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+  if [[ "$order" == closed-first ]]; then first=9561; second=9562; else first=9562; second=9561; fi
+  printf '{"name":"sessions/956","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/%s"}},{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/%s"}}]}\n' \
+    "$first" "$second" > "$CASE_DIR/session-956.json"
+  pr_fixture 9561 '{"state":"CLOSED","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[]}'
+  pr_fixture 9562 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): repair the anchor","labels":[{"name":"jules-routine:alpha"}]}'
+  commits_fixture 9562 '[{"parents":[{"sha":"a"}],"commit":{"message":"docs: fix the anchor"}}]'
+  if recon_run && [[ "$(reconcile_count)" -eq 1 ]] \
+    && [[ "$(reconcile_jq -r '.[0].commit_subjects_ok')" == "null" ]]; then
+    ok "a session mixing an unexamined PR with a clean one records null ($order)"
+  else
+    fail "one clean read spoke for a pull request nothing examined ($order)"
+    sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      | /' "$STATE/dispatch.jsonl"
+  fi
+done
+
 # Codex gate, [medium]: a session's records are settled together or not at all.
 # Appending them one at a time meant a failure after the first line left the
 # session looking reconciled while the rest of its pull-request provenance was

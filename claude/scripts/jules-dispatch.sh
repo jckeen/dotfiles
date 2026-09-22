@@ -57,11 +57,12 @@
 #                    per created session) plus `"kind":"reconcile"` records, one
 #                    per settled session. Every dispatch query filters on the
 #                    kind, so a reconcile record never counts as spend. A
-#                    reconcile record's `commit_subjects_ok` is tri-state:
-#                    true/false only where this pass listed the pull request's
-#                    commits and checked them, null where it read none (a pull
-#                    request already closed or merged, an empty one it closed, a
-#                    refused URL, a FAILED session, no pull request at all)
+#                    reconcile record's `commit_subjects_ok` is tri-state: true
+#                    only where this pass listed EVERY one of the session's pull
+#                    requests' commits and found nothing rejected, false where it
+#                    listed them and one is rejected, null where any of them went
+#                    unread (a pull request already closed or merged, an empty one
+#                    it closed, a refused URL, a FAILED session, no pull request)
 #   status.json      last run's outcome, for hooks and the status line; a
 #                    standalone --reconcile rewrites it too, with its own counts
 #   dispatch.log     appended run log
@@ -1089,13 +1090,16 @@ RECON_PR_JSON=""
 RECON_PR_ACTIONS=""
 RECON_FIRST_URL=""
 RECON_FIRST_NUM=0
-# Tri-state, and it starts at the JSON null a branch that reads no commits must
-# record: "not examined" is not "nothing would be rejected" (#508).
+# What the commit reads of this session found so far — null until one of them
+# happens, because "not examined" is not "nothing would be rejected" (#508) —
+# and whether any pull request of the session was settled without its commits
+# being read at all. The recorded flag is resolved from both in recon_pend.
 RECON_SUBJECTS_OK=null
+RECON_SUBJECTS_UNREAD=0
 
 recon_reset_session() {
   RECON_PR_JSON=""; RECON_PR_ACTIONS=""; RECON_FIRST_URL=""; RECON_FIRST_NUM=0
-  RECON_SUBJECTS_OK=null; RECON_PENDING=()
+  RECON_SUBJECTS_OK=null; RECON_SUBJECTS_UNREAD=0; RECON_PENDING=()
 }
 
 recon_pr_entry() { # url pr-number action
@@ -1117,21 +1121,31 @@ recon_pr_entry() { # url pr-number action
 # commit_subjects_ok is tri-state, because ADR-0009's custodian handoff treats
 # this record as provenance a consumer must not re-derive from the pull request
 # itself — and a boolean that means "ok" OR "never looked" cannot be keyed on
-# (#508). true: every pull request of this session had its commits listed and
+# (#508). true: EVERY pull request of this session had its commits listed and
 # nothing the required check would reject was found. false: they were listed and
-# at least one subject is rejected. null: this pass read no commits at all — a
-# pull request already closed or merged when it ran, an empty one it closed, a
-# URL or ledger field it refused, a FAILED session, a session with no pull
-# request. A session mixing the two weakens to the worse of them: any false
-# makes the record false, and only an actual clean read makes it true.
+# at least one subject is rejected. null: at least one pull request of the
+# session was settled without its commits being read — one already closed or
+# merged when the pass ran, an empty one it closed, a URL or ledger field it
+# refused — or there was nothing to read at all (a FAILED session, a session
+# with no pull request).
+#
+# So the flag is resolved here rather than accumulated: a false is a positive
+# finding and wins outright, but a clean read weakens back to null as soon as
+# any sibling pull request went unexamined, in either order. Otherwise a
+# consumer reading true would skip the one pull request nothing looked at.
 recon_pend() { # session routine repo action detail
-  local line action="$4"
+  local line action="$4" subjects_ok=null
+  if [[ "$RECON_SUBJECTS_OK" == false ]]; then
+    subjects_ok=false
+  elif [[ "$RECON_SUBJECTS_OK" == true && "$RECON_SUBJECTS_UNREAD" -eq 0 ]]; then
+    subjects_ok=true
+  fi
   [[ -n "$RECON_PR_ACTIONS" ]] && action="${RECON_PR_ACTIONS// /+}"
   line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg session "$1" \
     --arg routine "$2" --arg repo "$3" --arg url "$RECON_FIRST_URL" \
     --argjson pr "$RECON_FIRST_NUM" --arg action "$action" \
     --argjson prs "[$RECON_PR_JSON]" \
-    --argjson subjects_ok "$RECON_SUBJECTS_OK" \
+    --argjson subjects_ok "$subjects_ok" \
     --arg detail "$(printf '%s' "$5" | cut -c1-200)" \
     '{kind: "reconcile", reconciled_at: $at, date: $date, session: $session,
       routine: $routine, repo: $repo, pr_url: $url, pr: $pr,
@@ -1230,6 +1244,7 @@ reconcile_pr() { # session routine repo url
   if [[ ! "$url" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]]; then
     recon_fail "$routine / $repo — $session reported a pull request URL this dispatcher will not act on: $(one_line "$url")" "$routine" "$repo"
     recon_pr_entry "$(one_line "$url")" 0 error || return 1
+    RECON_SUBJECTS_UNREAD=1
     return 0
   fi
   owner="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"; num="${BASH_REMATCH[3]}"
@@ -1238,6 +1253,7 @@ reconcile_pr() { # session routine repo url
   if [[ "$(lc "$owner/$name")" != "$(lc "$repo")" ]]; then
     recon_fail "$routine / $repo — $session reported a pull request in $owner/$name, which is not the repository it was dispatched to" "$routine" "$repo"
     recon_pr_entry "$url" "$num" error || return 1
+    RECON_SUBJECTS_UNREAD=1
     return 0
   fi
 
@@ -1254,16 +1270,21 @@ reconcile_pr() { # session routine repo url
     return 1
   fi
 
+  # Nothing to do, and so nothing read: a closed or merged pull request's commits
+  # are never listed, which is exactly what the record has to say (#508).
   if [[ "$pr_state" != "OPEN" ]]; then
     log "  -- $routine / $repo — $owner/$name#$num is $pr_state; nothing to do"
     record reconciled "$routine" "$repo" "PR #$num $pr_state"
     recon_pr_entry "$url" "$num" noop || return 1
+    RECON_SUBJECTS_UNREAD=1
     return 0
   fi
 
   # An empty run is a good run — but an empty pull request is still an open pull
   # request asking for a review, so it is closed with the reason in one line.
   if [[ "$changed" -eq 0 ]]; then
+    # Closed rather than read, so its commits are not examined either.
+    RECON_SUBJECTS_UNREAD=1
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "  [DRY] would close $owner/$name#$num — the session produced no changes"
       recon_pr_entry "$url" "$num" closed-empty || return 1

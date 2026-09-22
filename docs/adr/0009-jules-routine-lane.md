@@ -156,12 +156,15 @@ Adopt Jules as the routine lane.
    conventional stays blocked, and rewriting the session's branch is not the
    dispatcher's to do, so the pass names the condition and records
    `commit_subjects_ok: false` instead of reporting the PR as settled. That field
-   is tri-state, because the custodian handoff below reads it as provenance: it
-   is `true` or `false` only where the pass actually listed the pull request's
-   commits, and JSON `null` where it read none — a pull request already closed or
-   merged when the pass ran, an empty one it closed, a URL or ledger field it
-   refused, a FAILED session, a session with no pull request. A boolean that
-   meant "ok" *or* "never looked" could not be keyed on (#508). The trap the
+   is tri-state, because the custodian handoff below reads it as provenance:
+   `true` only where the pass listed the commits of *every* pull request of the
+   session and found nothing rejected, `false` where it listed them and one is
+   rejected, and JSON `null` where any of them went unread — a pull request
+   already closed or merged when the pass ran, an empty one it closed, a URL or
+   ledger field it refused, a FAILED session, a session with no pull request. A
+   boolean that meant "ok" *or* "never looked" could not be keyed on, and neither
+   could a `true` that one clean read had spoken for an unexamined sibling
+   with (#508). The trap the
    round had to close first was in the ledger: every spend query keys off
    `.date`, `.routine` and `.repo`, so a reconcile record would have counted as
    a dispatch and suppressed the very routine it belongs to on the next run —

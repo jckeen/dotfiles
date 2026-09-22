@@ -10,12 +10,15 @@
   rejects. The pass never listed its commits. ADR-0009's custodian handoff reads
   the reconcile record as the provenance a consumer must not re-derive from PR
   text, and a boolean meaning "ok" *or* "never looked" cannot be keyed on. The
-  field is now `true`/`false` only where the commits were listed and checked, and
-  JSON `null` (present, not absent) on every branch that read none: a pull
-  request already closed or merged, an empty one the pass closed, a refused URL
-  or ledger field, a FAILED session, a session with no pull request. A session
-  with several pull requests weakens to the worse of them — any `false` wins, and
-  only an actual clean read produces `true`. `status.json`'s
+  field is now `true` only where the commits were listed and checked, and JSON
+  `null` (present, not absent) on every branch that read none: a pull request
+  already closed or merged, an empty one the pass closed, a refused URL or ledger
+  field, a FAILED session, a session with no pull request. The record covers the
+  whole session, so `true` means *every* pull request of it was examined: a
+  `false` wins outright, but one unexamined pull request weakens a clean read
+  back to `null` in either order — caught by the Codex gate on the first round of
+  this fix, where a closed PR beside a clean one still read `true`.
+  `status.json`'s
   `reconcile.blocked_subjects` is a count of pull requests whose commits *were*
   read and rejected, so it is unchanged.
 - **A pull-request URL is validated before command substitution can trim it**
