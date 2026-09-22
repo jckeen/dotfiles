@@ -5,7 +5,9 @@
 #
 # Flow:
 #   1. Require a clean working tree and pin the commit to review
-#   2. Run tests — STOP if they fail
+#   2. Run tests — STOP if they fail. The command is REVIEW_TEST_CMD, else the
+#      repo-root `.review-test` line, else a sniffed framework; when nothing
+#      declares one the step says so loudly and records `tests: skipped` (#490)
 #   3. Classify the committed delta and run the REQUIRED lane's gate on it
 #   4. Prompt to push (or accept --auto-push)
 #   5. Validate the current review receipt, then push
@@ -21,6 +23,8 @@
 # still be approved.
 #
 # Environment:
+#   REVIEW_TEST_CMD=<command line>       step 2's test command; outranks the
+#     repo-root `.review-test` file and framework sniffing (#490).
 #   REVIEW_LANE=auto|codex|antigravity   override the lane (auto is the default;
 #     `antigravity` on a codex-required diff is REFUSED, not honoured).
 #   REVIEW_LANE_FALLBACK=codex|block     what to do when the Antigravity gate
@@ -343,18 +347,89 @@ echo ""
 echo "═══ Running tests ═══"
 TEST_LOG=$(log_file "tests")
 
-# Detect and run the test command
+# Where the test command comes from, in order (#490): the REVIEW_TEST_CMD
+# environment variable, a `.review-test` file at the repo root holding one
+# command line, then framework sniffing. Framework sniffing alone could not
+# answer for a repo whose suites are plain scripts — dotfiles has no
+# package.json, so this step printed "no test framework detected — skipping"
+# and the run proceeded to mint a receipt attesting to no test run at all.
+#
+# `.review-test` is read from the repository under review and executed, so it
+# carries exactly the trust its test code already does — nothing more. It runs
+# through `bash -c` rather than `eval` so the line cannot reach this script's
+# own variables and functions and weaken the checkpoints after it, and with
+# `-o pipefail` because a child shell does not inherit it: `pytest | tee log`
+# would otherwise report tee's success and let a red suite reach the push.
 TEST_RESULT=0
-if [[ -f "package.json" ]]; then
-  npm test 2>&1 | tee "$TEST_LOG" || TEST_RESULT=$?
+TEST_CMD=""
+TEST_CMD_SOURCE=""
+if [[ -n "${REVIEW_TEST_CMD:-}" ]]; then
+  TEST_CMD="$REVIEW_TEST_CMD"
+  TEST_CMD_SOURCE="REVIEW_TEST_CMD"
+elif [[ -f ".review-test" ]]; then
+  # One command line; blank lines and # comments are skipped so the file can
+  # explain itself. A declared-but-empty file is a mistake, not a licence to
+  # skip: it fails closed below.
+  # No pipe: `| head -n 1` would hand the writer SIGPIPE, and pipefail plus
+  # set -e would abort the run on a long file instead of reading its first line.
+  TEST_CMD=$(awk '{ sub(/[[:space:]]+$/, "") } /^[[:space:]]*(#|$)/ { next } { print; exit }' \
+    .review-test)
+  TEST_CMD_SOURCE=".review-test"
+  if [[ -z "$TEST_CMD" ]]; then
+    echo "error: .review-test exists but declares no command; remove it or give it one command line." >&2
+    exit 1
+  fi
+# bun is this toolchain's runtime, so a bun lockfile or config wins over npm.
+# But a lockfile names the package MANAGER, not the test framework: when
+# package.json declares `scripts.test` (vitest, jest, a setup chain), that script
+# is what the project means by "run the tests" and `bun run test` runs it.
+# `bun test` — bun's own runner — is only for a bun project that declares none,
+# since invoking it on a vitest project would skip the declared setup entirely.
+# An unreadable package.json is treated as declaring nothing.
+elif [[ -f "bun.lock" ]] || [[ -f "bun.lockb" ]] || [[ -f "bunfig.toml" ]]; then
+  if [[ -f "package.json" ]] && python3 -c 'import json, sys
+with open("package.json") as handle:
+    scripts = json.load(handle).get("scripts") or {}
+sys.exit(0 if isinstance(scripts.get("test"), str) and scripts["test"].strip() else 1)' 2>/dev/null; then
+    TEST_CMD="bun run test"
+    TEST_CMD_SOURCE="detected bun + package.json scripts.test"
+  else
+    TEST_CMD="bun test"
+    TEST_CMD_SOURCE="detected bun"
+  fi
+elif [[ -f "package.json" ]]; then
+  TEST_CMD="npm test"
+  TEST_CMD_SOURCE="detected package.json"
 elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]]; then
-  pytest 2>&1 | tee "$TEST_LOG" || TEST_RESULT=$?
+  TEST_CMD="pytest"
+  TEST_CMD_SOURCE="detected Python project"
 elif [[ -f "Cargo.toml" ]]; then
-  cargo test 2>&1 | tee "$TEST_LOG" || TEST_RESULT=$?
+  TEST_CMD="cargo test"
+  TEST_CMD_SOURCE="detected Cargo.toml"
 elif [[ -f "go.mod" ]]; then
-  go test ./... 2>&1 | tee "$TEST_LOG" || TEST_RESULT=$?
+  TEST_CMD="go test ./..."
+  TEST_CMD_SOURCE="detected go.mod"
+fi
+
+if [[ -n "$TEST_CMD" ]]; then
+  echo "→ $TEST_CMD_SOURCE: $TEST_CMD"
+  bash -o pipefail -c -- "$TEST_CMD" 2>&1 | tee "$TEST_LOG" || TEST_RESULT=$?
+  # An `&&` one-liner here would be the last command of this branch, so set -e
+  # would exit on a failing test run before the banner below could print.
+  if [[ $TEST_RESULT -eq 0 ]]; then
+    echo "tests: passed ($TEST_CMD_SOURCE)"
+  fi
 else
-  echo "(no test framework detected — skipping)"
+  # Loud, because the receipt this run is about to mint says nothing about
+  # tests and the PR body must not imply otherwise.
+  echo "╔══════════════════════════════════════════════════════╗"
+  echo "║  ⚠  NO TESTS RUN — nothing declares a test command.  ║"
+  echo "║  The review receipt attests to a REVIEW ONLY; it     ║"
+  echo "║  does not attest to any test run.                    ║"
+  echo "║  Declare one in .review-test at the repo root, or    ║"
+  echo "║  set REVIEW_TEST_CMD, to close this gap.             ║"
+  echo "╚══════════════════════════════════════════════════════╝"
+  echo "tests: skipped"
 fi
 
 if [[ $TEST_RESULT -ne 0 ]]; then

@@ -181,14 +181,36 @@ jobs:
       - name: AGENTPACK.yaml matches skill/agent frontmatter
         run: claude/scripts/gen-agentpack.sh --check
 
-  # `checks` is a required status context for the bundled behavioral suites and
-  # policy checks. Keep its name in sync with docs/BRANCH_PROTECTION.md and the
-  # live rule. `if: ${{ !cancelled() }}` runs every step after earlier failures
-  # so one run surfaces all failures. The other required contexts retain their
-  # own job names; do not fold them into this job.
-  checks:
-    name: checks
+  # The bundled behavioral suites and policy checks, sharded (#472). Run
+  # serially this was ~12.6 min of steps and a p90 job duration of 10.6 min.
+  # Four shards, grouped so the four slowest suites land in different ones, put
+  # the wall time at the slowest shard; a fifth shard would buy nothing, because
+  # `review receipts and shipping boundaries` is 3.6 min on its own and that is
+  # the floor. Approximate shard weights: receipts 219s, gates 188s,
+  # runtime 180s, checkers 166s.
+  #
+  # Every suite step carries `if: ${{ !cancelled() && matrix.shard == '<name>' }}`.
+  # The shard name decides where the step runs; `!cancelled()` keeps the
+  # original property that one run surfaces every failure rather than stopping
+  # at the first. Adding a suite means adding a step with a shard name: put it
+  # in the lightest shard and keep the four slow suites apart.
+  #
+  # Not shard-gated: checkout, zsh, and bun. They are seconds and they run in
+  # parallel with the other shards, whereas gating them would turn moving a
+  # suite between shards into a silent missing-dependency failure.
+  #
+  # `checks` — the required status context — is the aggregator job below, not
+  # this one. The shard jobs' own contexts (`checks (gates)` and friends) are
+  # deliberately NOT required: branch protection points at one name.
+  checks-shards:
+    name: checks (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      # A red shard must not cancel its siblings, for the same reason every step
+      # carries !cancelled(): one run, every failure.
+      fail-fast: false
+      matrix:
+        shard: [receipts, gates, runtime, checkers]
     steps:
       - uses: actions/checkout@v4
 
@@ -202,49 +224,143 @@ jobs:
         with:
           bun-version: latest
 
+      # ── shard: receipts ──────────────────────────────────────────────
+      # The single slowest suite in the repo, alone with the other receipt
+      # checkpoint so nothing queues behind it.
+      - name: review receipts and shipping boundaries
+        if: ${{ !cancelled() && matrix.shard == 'receipts' }}
+        run: |
+          python3 claude/scripts/tests/review-receipt.test.py
+          python3 claude/scripts/tests/workflow-shipping.test.py
+          python3 claude/scripts/tests/workflow-shipping-rewrites.test.py
+      # ADR-0008: the pre-push hook must refuse a receipt whose lane ranks below
+      # what the diff requires. Drives the real hook over a local bare origin.
+      - name: pre-push receipt lane enforcement
+        if: ${{ !cancelled() && matrix.shard == 'receipts' }}
+        run: claude/scripts/tests/pre-push-receipt.test.sh
+
+      # ── shard: gates ─────────────────────────────────────────────────
+      # The Codex gate and the shipping wrapper that dispatches it.
+      - name: codex-review-gate (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'gates' }}
+        run: claude/scripts/tests/codex-review-gate.test.sh
+      # Multipart direct-input transport: a >1MB review request is split into
+      # byte-bounded fragments delivered in one native session. The shell
+      # fixture stubs the native CLI; the Python suite covers the splitter and
+      # the history/manifest checks (#419, #420).
+      - name: codex-review multipart transport
+        if: ${{ !cancelled() && matrix.shard == 'gates' }}
+        run: |
+          bash claude/scripts/tests/codex-review-multipart.test.sh
+          python3 claude/scripts/tests/review-multipart.test.py
+      # review-and-push.sh must refuse inherited Git routing, catch an
+      # executable-bit flip that core.fileMode=false hides from git status
+      # (#401, #402), and run the test command the repo declares (#490). The
+      # fixtures stop at the pre-push checkpoints, so nothing here pushes or
+      # spends review quota.
+      - name: review-and-push (routing, exec-bit, and test-command guards)
+        if: ${{ !cancelled() && matrix.shard == 'gates' }}
+        run: claude/scripts/tests/review-and-push.test.sh
+      # The repo's own test runner — what `.review-test` points review-and-push
+      # at. Fixture-driven, so it never runs the suites it discovers.
+      - name: run-tests runner (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'gates' }}
+        run: claude/scripts/tests/run-tests.test.sh
+
+      # ── shard: runtime ───────────────────────────────────────────────
+      # Launchers, daemons, and the timers that drive them.
+      #
+      # Offline mock suite for the claude-operator runner: a stub `claude`,
+      # a throwaway HOME with a crafted ~/.bashrc, and a from-scratch child
+      # environment. Never launches the real CLI or needs auth.
+      - name: claude-operator runner (mock suite)
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: python3 claude/scripts/tests/claude-operator-runner.test.py
+      # SessionStart reminder: deadline-first ordering, past-due flags, and the
+      # verified/added freshness rule are pinned against crafted queues.
+      - name: released worktree lifecycle (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: python3 claude/scripts/tests/worktree-lifecycle.test.py
+      # The first live Jules dispatch needs an API key that only the operator
+      # holds, so the credential refusals, the idempotency ledger, the daily cap
+      # and the --dry-run no-writes contract are pinned against a fake curl.
+      - name: jules-dispatch (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: claude/scripts/tests/jules-dispatch.test.sh
+      # Self-test only: the daily timer's prune runs unattended, so the SAFE
+      # class (what survives, what goes, what gh must confirm) is pinned with
+      # throwaway origin+clone fixtures and gh/curl PATH shims.
+      - name: git-hygiene prune + hygiene-cron (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: claude/scripts/tests/git-hygiene-prune.test.sh
+      - name: launcher and shell compatibility regressions
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: python3 claude/scripts/tests/launcher-regressions.test.py
+      - name: shared agent launcher preflight
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: bash claude/scripts/tests/agent-preflight.test.sh
+      # cx reconnects an already-enabled Codex Remote Control daemon without
+      # opting unconfigured hosts into remote access.
+      - name: cx Remote Control startup
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: bash claude/scripts/tests/cx-remote-control.test.sh
+      - name: Codex Remote Control stale-updater recovery
+        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
+        run: claude/scripts/tests/codex-remote-recovery.test.sh
+
+      # ── shard: checkers ──────────────────────────────────────────────
+      # The Antigravity gate plus the static checkers and installer contracts:
+      # many steps, most of them seconds.
+      # Self-test only: the gate itself needs an authenticated `agy`, so the
+      # fixtures stub it with a PATH shim and assert the gate's parsing/fail-
+      # closed behavior (#152/#153/#154).
+      - name: antigravity-review-gate (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/antigravity-review-gate.test.sh
+
       - name: doc-refs (self-test + checker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           claude/scripts/tests/doc-refs.test.sh
           claude/scripts/check-doc-refs.sh
 
       - name: no-personal-data (self-test + checker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           claude/scripts/tests/no-personal-data.test.sh
           claude/scripts/check-no-personal-data.sh
 
       - name: agent-parity (self-test + checker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           claude/scripts/tests/agent-parity.test.sh
           claude/scripts/check-agent-parity.sh
 
       - name: skill-parity (self-test + checker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           claude/scripts/tests/skill-parity.test.sh
           claude/scripts/check-skill-parity.sh
 
       - name: capability and workflow contracts
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           python3 claude/scripts/tests/capability-parity.test.py
           python3 claude/scripts/tests/workflow-invariants.test.py
           python3 claude/scripts/check-capability-parity.py
 
       - name: orchestrate review packet
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/orchestrate-review-packet.test.sh
 
       - name: install-integrity (self-test + checker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           claude/scripts/tests/install-integrity.test.sh
           claude/scripts/check-install-integrity.sh
 
       - name: tests-wired (self-test + checker)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           claude/scripts/tests/check-tests-wired.test.sh
           claude/scripts/check-tests-wired.sh
@@ -253,65 +369,29 @@ jobs:
       # ~/.claude needed. Gate schemas and Python receipt helpers must be
       # linked beside their gate scripts.
       - name: symlink-enumerate (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/symlink-enumerate.test.sh
 
       # Self-test only: the checker sweeps a live ~/.claude, which the CI
       # runner doesn't have; the fixtures point it at throwaway CLAUDE_DIRs
       # via CLAUDE_DIR (issue #231).
       - name: deployed-orphans (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/deployed-orphans.test.sh
 
       # build-site's awk frontmatter reader shares gen-agentpack's loud-failure
       # contract (issue #235); the site build itself runs in pages.yml.
       - name: build-site (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/build-site.test.sh
 
-      # Self-test only: the gate itself needs an authenticated `agy`, so the
-      # fixtures stub it with a PATH shim and assert the gate's parsing/fail-
-      # closed behavior (#152/#153/#154).
-      - name: antigravity-review-gate (self-test)
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/antigravity-review-gate.test.sh
-      - name: codex-review-gate (self-test)
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/codex-review-gate.test.sh
-      # Multipart direct-input transport: a >1MB review request is split into
-      # byte-bounded fragments delivered in one native session. The shell
-      # fixture stubs the native CLI; the Python suite covers the splitter and
-      # the history/manifest checks (#419, #420).
-      - name: codex-review multipart transport
-        if: ${{ !cancelled() }}
-        run: |
-          bash claude/scripts/tests/codex-review-multipart.test.sh
-          python3 claude/scripts/tests/review-multipart.test.py
-      # review-and-push.sh must refuse inherited Git routing and catch an
-      # executable-bit flip that core.fileMode=false hides from git status
-      # (#401, #402). The fixtures stop at the pre-push checkpoints, so
-      # nothing here pushes or spends review quota.
-      - name: review-and-push (routing and exec-bit guards)
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/review-and-push.test.sh
-      # ADR-0008: the pre-push hook must refuse a receipt whose lane ranks below
-      # what the diff requires. Drives the real hook over a local bare origin.
-      - name: pre-push receipt lane enforcement
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/pre-push-receipt.test.sh
-      - name: review receipts and shipping boundaries
-        if: ${{ !cancelled() }}
-        run: |
-          python3 claude/scripts/tests/review-receipt.test.py
-          python3 claude/scripts/tests/workflow-shipping.test.py
-          python3 claude/scripts/tests/workflow-shipping-rewrites.test.py
       # Hypothesis property suites for the two pure-logic Python tools: the
       # multipart splitter's UTF-8 byte bound (#420, #444) and the receipt tier
       # classifier plus single-leaf receipt tampering. Both import Hypothesis
       # unconditionally and exit with the install command rather than skipping,
       # so a missing dependency is a red run instead of silent zero coverage.
       - name: property tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           python3 -m pip install --user -r claude/scripts/tests/requirements-property.txt
           python3 claude/scripts/tests/review-multipart.property.test.py
@@ -321,123 +401,102 @@ jobs:
       # runs the installer against a throwaway HOME and asserts a
       # byte-identical before/after snapshot.
       - name: setup-dry-run (no-writes contract)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/setup-dry-run.test.sh
 
       # The same contract, fuzzed: seeded pseudo-random $HOME layouts, each
       # asserted byte-identical before and after the dry run. SEED is printed on
       # failure so a red run reproduces exactly; LAYOUTS sets the count.
       - name: setup-fuzz-layouts (seeded no-writes fuzzer)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/setup-fuzz-layouts.test.sh
 
       # setup.sh must refuse to publish $HOME links from a linked git
       # worktree: the links would dangle when the worktree is removed.
       - name: setup-worktree-guard (no links to temporary checkouts)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/setup-worktree-guard.test.sh
 
       - name: codex-skill-bundle (recursive link audit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/codex-skill-bundle.test.sh
 
       - name: Codex config examples
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/codex-config.test.sh
 
-      # Offline mock suite for the claude-operator runner: a stub `claude`,
-      # a throwaway HOME with a crafted ~/.bashrc, and a from-scratch child
-      # environment. Never launches the real CLI or needs auth.
-      - name: claude-operator runner (mock suite)
-        if: ${{ !cancelled() }}
-        run: python3 claude/scripts/tests/claude-operator-runner.test.py
-
-      # cx reconnects an already-enabled Codex Remote Control daemon without
-      # opting unconfigured hosts into remote access.
-      - name: cx Remote Control startup
-        if: ${{ !cancelled() }}
-        run: bash claude/scripts/tests/cx-remote-control.test.sh
-
-      - name: Codex Remote Control stale-updater recovery
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/codex-remote-recovery.test.sh
-
-      - name: shared agent launcher preflight
-        if: ${{ !cancelled() }}
-        run: bash claude/scripts/tests/agent-preflight.test.sh
-
-      - name: launcher and shell compatibility regressions
-        if: ${{ !cancelled() }}
-        run: python3 claude/scripts/tests/launcher-regressions.test.py
-
       - name: Codex comment harvest (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: python3 claude/scripts/tests/harvest-codex-comments.test.py
 
       - name: retired skill link migration (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: python3 claude/scripts/tests/retired-skill-links.test.py
 
       - name: Antigravity launcher
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/agy-launcher.test.sh
 
       - name: Antigravity config safety
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/antigravity-config.test.sh
 
       - name: Antigravity permission baseline (merge/check/prune)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/agy-permissions.test.sh
 
       - name: Claude memory sync boundary
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/memory-sync.test.sh
 
-      # Self-test only: the daily timer's prune runs unattended, so the SAFE
-      # class (what survives, what goes, what gh must confirm) is pinned with
-      # throwaway origin+clone fixtures and gh/curl PATH shims.
-      - name: git-hygiene prune + hygiene-cron (self-test)
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/git-hygiene-prune.test.sh
-
-      # The first live Jules dispatch needs an API key that only the operator
-      # holds, so the credential refusals, the idempotency ledger, the daily cap
-      # and the --dry-run no-writes contract are pinned against a fake curl.
-      - name: jules-dispatch (self-test)
-        if: ${{ !cancelled() }}
-        run: claude/scripts/tests/jules-dispatch.test.sh
-
-      # SessionStart reminder: deadline-first ordering, past-due flags, and the
-      # verified/added freshness rule are pinned against crafted queues.
-      - name: released worktree lifecycle (self-test)
-        if: ${{ !cancelled() }}
-        run: python3 claude/scripts/tests/worktree-lifecycle.test.py
-
       - name: operator-queue reminder (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh
 
       # Drift is measured against user-scope installs only: a `--scope project`
       # plugin is the target project's, not the manifest's.
       - name: plugin drift check (self-test)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/plugin-drift.test.sh
 
       # The pinned image bundles shellcheck and pyflakes, so every `run:`
       # block in .github/workflows is shellchecked here; the standalone
       # `shellcheck` job only sees files on disk, not inline workflow scripts.
       - name: actionlint
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
 
       - name: json-valid
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
           # shellcheck disable=SC2016 # $0 is the per-file argument of the inner sh, not the outer shell
           git ls-files -z '*.json' | xargs -0 -n1 sh -c 'jq empty "$0" || { echo "::error::invalid JSON: $0"; exit 1; }'
+
+  # `checks` is a required status context (branch protection), and a matrix job
+  # produces one context per leg rather than one for the set — so this job keeps
+  # the name and speaks for every shard. Keep it in sync with
+  # docs/BRANCH_PROTECTION.md and the live rule. The other required contexts
+  # retain their own job names; do not fold them in here.
+  checks:
+    name: checks
+    needs: [checks-shards]
+    # Not `always()`: a cancelled run must report cancelled, not failed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      # A matrix `needs` result is the aggregate: `success` only when every leg
+      # succeeded, so any red or skipped shard fails this context.
+      - name: Every checks shard succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.checks-shards.result }}
+        run: |
+          echo "checks shards: $SHARDS_RESULT"
+          if [ "$SHARDS_RESULT" != success ]; then
+            echo "::error::one or more checks shards did not succeed ($SHARDS_RESULT)"
+            exit 1
+          fi
 
   secret-scan:
     name: secret-scan
