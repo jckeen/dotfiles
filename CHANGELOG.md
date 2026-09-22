@@ -1,5 +1,62 @@
 # Changelog
 
+## 2026-09-22 — feat(ci): a runner for this repo's own tests, and `checks` split into four shards
+
+- **`claude/scripts/run-tests.sh` — the answer to "run this repo's tests".**
+  There wasn't one: dotfiles has no `package.json` or `pyproject.toml`, so
+  `review-and-push.sh` step 2 printed `(no test framework detected — skipping)`
+  and went on to mint a receipt attesting to a review and no test run at all
+  (#490; two agent sessions shipped on it). The runner discovers the same
+  enumeration `check-tests-wired.sh` asserts is wired into CI, names each suite
+  by its filename, and takes `--list`, a subset by name, `--changed`, and
+  `--verbose`; the summary is per-suite PASS/FAIL with wall times. Selecting
+  nothing is never a green run — an unknown name and an empty `tests/` fail
+  closed, and an unresolvable base ref, an empty diff, or a changed path the
+  name mapping cannot attribute widen the run to every suite rather than
+  quietly narrow it. The mapping follows names through every tracked non-test
+  file to a *fixpoint*, not to a depth limit, because no suite mentions
+  `gate-lib.sh` directly — it is reached through `codex-review-gate.sh`, and the
+  installer suites reach the root `lib-symlinks.sh` only through `setup.sh`, so
+  any fixed bound would drop a genuinely affected suite while other matches kept
+  the widening fallback from firing. Every rule only ever adds suites, so an
+  over-wide mapping costs time and never coverage. Every changed path must reach
+  a suite on its own — one mappable path cannot speak for an unmapped sibling —
+  and a rename or a deletion widens to everything. The `*.property.test.py` suites are a named SKIP when
+  Hypothesis is absent: they fail loudly by design, which is right for CI and
+  would make every fresh clone's pre-push run red.
+- **Step 2 takes its command from the repo, not from guesswork.**
+  `REVIEW_TEST_CMD`, else a `.review-test` line at the repo root, else framework
+  sniffing — where a bun lockfile or `bunfig.toml` keeps the project off npm
+  without overriding what it declares: a `package.json` `scripts.test` runs as
+  `bun run test`, and `bun test` (bun's own runner) is only for a bun project
+  that declares no test script, with `npm test` the fallback where there is no
+  bun at all. `.review-test`
+  runs through `bash -o pipefail -c`, not `eval`: not `eval` so a line read out
+  of the repository cannot reach the wrapper's variables and weaken the
+  checkpoints after it, and with `pipefail` because a child shell does not
+  inherit it and `<suite> | tee log` would otherwise report tee's success and
+  let a red suite reach the push. `REVIEW_TEST_CMD` is unset for the command's
+  own environment: it names *this* repo's tests, and that command is usually a
+  suite that runs the wrapper again against a fixture repo (about forty times in
+  `review-and-push.test.sh`), where inheriting it would recurse or fail — the
+  shipping fixtures scrub it for the same reason. A declared-but-empty file
+  fails closed. With nothing declared the step prints a
+  banner saying the receipt attests to no test run and records
+  `tests: skipped`, so a PR body can quote it honestly. This repo's
+  `.review-test` runs `run-tests.sh --changed`.
+- **The `checks` job is now four parallel shards (#472).** It had grown to
+  ~12.6 min of serial steps and a p90 of 10.6 min. `checks-shards` is a matrix
+  over `receipts`, `gates`, `runtime`, and `checkers`, grouped so the four
+  slowest suites — review receipts and shipping boundaries (3.6 min), the Codex
+  gate self-test (2.5 min), the claude-operator runner (1.8 min), and the
+  Antigravity gate self-test (1.7 min) — land in different shards. Wall time is
+  the slowest shard; a fifth shard would buy nothing, since the receipts suite
+  alone is the floor. No step was removed and every `run:` body is unchanged, so
+  `check-tests-wired.sh` still reads the same wiring shape; its fix-hint and the
+  `claude/scripts/README.md` rows now name the shards. `checks` itself stays as
+  a small aggregator job that `needs` the shards and fails unless all of them
+  succeeded — a matrix job produces one status context per leg, not one for the
+  set, and branch protection points at the single name.
 ## 2026-09-22 — fix(jules-dispatch): reconcile provenance says what it actually checked
 
 - **`commit_subjects_ok` is tri-state, so "not examined" can no longer read as

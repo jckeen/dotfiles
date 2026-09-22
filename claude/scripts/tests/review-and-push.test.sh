@@ -61,9 +61,11 @@ new_repo() {
 }
 
 # run [env assignments...] — invoke the script on $R with the caller's extra
-# environment. GIT_CONFIG_* is stripped so the guard sees only what a case sets.
+# environment. GIT_CONFIG_* is stripped so the guard sees only what a case sets,
+# and REVIEW_TEST_CMD so an operator who exported it to run THIS repo's suites
+# cannot have it inherited by ~40 nested wrapper runs on fixture repos.
 run() {
-  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM "$@" \
+  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u REVIEW_TEST_CMD "$@" \
     "$SCRIPT" "$R" --auto-push </dev/null 2>&1)"
   RC=$?
 }
@@ -335,7 +337,7 @@ clean_lane_repo() {
 
 # run_lane [env assignments...] — invoke the symlinked script on $R.
 run_lane() {
-  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM "$@" \
+  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u REVIEW_TEST_CMD "$@" \
     "$LANE_DIR/review-and-push.sh" "$R" --auto-push </dev/null 2>&1)"
   RC=$?
 }
@@ -565,6 +567,154 @@ want_gates "an unknown REVIEW_LANE_FALLBACK dispatches no gate" ""
 want_refusal "an unknown REVIEW_LANE_FALLBACK is refused" "REVIEW_LANE_FALLBACK must be codex or block"
 clean_lane_repo
 
+
+# ── #490: step 2 must be able to run THIS repo's kind of test suite ────
+# Framework sniffing alone answered nothing for a repo whose suites are plain
+# scripts: step 2 printed "no test framework detected — skipping" and the run
+# minted a receipt that attested to no test run. The command now comes from
+# REVIEW_TEST_CMD, then a repo-root `.review-test` line, then sniffing.
+# These reuse the lane fixtures (real bare origin, recording fake gates), since
+# step 2 runs only after the clean-tree and destination checkpoints.
+
+# add_committed <path> <line>... — write and commit a file in the lane fixture;
+# an uncommitted one would be refused by the cleanliness checkpoint first.
+add_committed() {
+  local p="$1"
+  shift
+  printf '%s\n' "$@" > "$R/$p"
+  git -C "$R" add -- "$p"
+  git -C "$R" commit -qm "fixture $p"
+}
+
+# make_test_shims — `bun` and `npm` on PATH that only announce themselves, so
+# the sniffing order is observable without either runtime being installed.
+make_test_shims() {
+  local tool
+  mkdir -p "$LANE_DIR/bin"
+  for tool in bun npm; do
+    printf '#!/usr/bin/env bash\necho "%s-shim-ran $*"\n' "$tool" > "$LANE_DIR/bin/$tool"
+    chmod +x "$LANE_DIR/bin/$tool"
+  done
+}
+
+new_lane_repo widget.ts
+add_committed .review-test 'echo review-test-file-ran'
+run_lane
+assert "a .review-test command runs" "grep -qF -- 'review-test-file-ran' <<<\"\$OUT\""
+assert "a .review-test run is reported as attested" \
+  "grep -qF -- 'tests: passed (.review-test)' <<<\"\$OUT\""
+assert "a passing test command does not stop the run" \
+  "! grep -qF -- 'TESTS FAILED' <<<\"\$OUT\""
+clean_lane_repo
+
+new_lane_repo widget.ts
+add_committed .review-test 'echo review-test-file-ran'
+run_lane REVIEW_TEST_CMD='echo env-cmd-ran'
+assert "REVIEW_TEST_CMD runs" "grep -qF -- 'env-cmd-ran' <<<\"\$OUT\""
+want_absent "REVIEW_TEST_CMD outranks .review-test" "review-test-file-ran"
+assert "the REVIEW_TEST_CMD run names its source" \
+  "grep -qF -- 'tests: passed (REVIEW_TEST_CMD)' <<<\"\$OUT\""
+clean_lane_repo
+
+# The override is unset for the command's own environment: it names THIS repo's
+# tests, and that command is usually a suite that runs the wrapper again on a
+# fixture repo, where inheriting it would recurse or fail.
+new_lane_repo widget.ts
+run_lane REVIEW_TEST_CMD='echo "override=${REVIEW_TEST_CMD:-unset}"'
+assert "REVIEW_TEST_CMD is not exported into its own command" \
+  "grep -qF -- 'override=unset' <<<\"\$OUT\""
+clean_lane_repo
+
+# A failing test command stops the wrapper where it always did: before any
+# reviewer is dispatched and long before a receipt could be minted.
+new_lane_repo widget.ts
+add_committed .review-test 'exit 3'
+run_lane
+want_refusal "a failing test command stops the wrapper" "TESTS FAILED"
+assert "a failing test command exits 1" "[ \"\$RC\" -eq 1 ]"
+want_gates "a failing test command dispatches no gate" ""
+clean_lane_repo
+
+# A child shell does not inherit pipefail, so `<suite> | tee log` — the obvious
+# thing to declare — would report tee's success and let a red suite reach the
+# push. The declared command runs under `bash -o pipefail`.
+new_lane_repo widget.ts
+add_committed .review-test 'false | cat'
+run_lane
+want_refusal "a failing command in a pipeline still stops the wrapper" "TESTS FAILED"
+want_gates "a masked pipeline failure dispatches no gate" ""
+clean_lane_repo
+
+# Comments and blank lines let the file explain itself; the first real line wins.
+new_lane_repo widget.ts
+add_committed .review-test '# how this repo runs its tests' '' 'echo first-real-line-ran' 'echo second-line-ignored'
+run_lane
+assert "a commented .review-test still runs its command" \
+  "grep -qF -- 'first-real-line-ran' <<<\"\$OUT\""
+want_absent "only the first .review-test command line is used" "second-line-ignored"
+clean_lane_repo
+
+# Declared-but-empty is a mistake, not a licence to skip.
+new_lane_repo widget.ts
+add_committed .review-test '# nothing but a comment'
+run_lane
+want_refusal "an empty .review-test fails closed" "declares no command"
+want_gates "an empty .review-test dispatches no gate" ""
+clean_lane_repo
+
+# bun is this toolchain's runtime: a bun lockfile outranks `npm test` (#490).
+new_lane_repo widget.ts
+add_committed package.json '{}'
+add_committed bun.lock ''
+make_test_shims
+run_lane PATH="$LANE_DIR/bin:$PATH"
+assert "a bun lockfile selects bun test" "grep -qF -- 'bun-shim-ran test' <<<\"\$OUT\""
+want_absent "bun is preferred over npm" "npm-shim-ran"
+clean_lane_repo
+
+new_lane_repo widget.ts
+add_committed package.json '{}'
+make_test_shims
+run_lane PATH="$LANE_DIR/bin:$PATH"
+assert "package.json alone falls back to npm test" \
+  "grep -qF -- 'npm-shim-ran test' <<<\"\$OUT\""
+want_absent "npm is not used when bun would be" "bun-shim-ran"
+clean_lane_repo
+
+# A lockfile names the package manager, not the test framework: a declared
+# scripts.test (vitest, jest, a setup chain) is what the project means by
+# running its tests, so it is run — through bun — instead of bun's own runner.
+new_lane_repo widget.ts
+add_committed package.json '{"scripts": {"test": "vitest run"}}'
+add_committed bun.lock ''
+make_test_shims
+run_lane PATH="$LANE_DIR/bin:$PATH"
+assert "a declared scripts.test runs through bun run" \
+  "grep -qF -- 'bun-shim-ran run test' <<<\"\$OUT\""
+want_absent "bun's own runner does not replace a declared scripts.test" \
+  "bun-shim-ran test"
+clean_lane_repo
+
+# ...and an unreadable package.json declares nothing, so bun's runner stands.
+new_lane_repo widget.ts
+add_committed package.json 'not json at all'
+add_committed bun.lock ''
+make_test_shims
+run_lane PATH="$LANE_DIR/bin:$PATH"
+assert "an unreadable package.json falls back to bun test" \
+  "grep -qF -- 'bun-shim-ran test' <<<\"\$OUT\""
+clean_lane_repo
+
+# Nothing declared: the step says so loudly and records a quotable outcome, so
+# a PR body cannot imply the receipt attests to a test run.
+new_lane_repo widget.ts
+run_lane
+assert "an undeclared test command records tests: skipped" \
+  "grep -qF -- 'tests: skipped' <<<\"\$OUT\""
+assert "an undeclared test command warns loudly" \
+  "grep -qF -- 'NO TESTS RUN' <<<\"\$OUT\""
+want_absent "the old quiet skip line is gone" "no test framework detected"
+clean_lane_repo
 
 rm -rf "$FAKE_HOME"
 echo "$pass passed, $failed failed"
