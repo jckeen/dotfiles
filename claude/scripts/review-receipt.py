@@ -322,10 +322,9 @@ def vendored_dependency(repo, path):
     the exemption holds only where installation is the evident explanation. The
     caller passes only entries `ls-files --ignored` reported, but that proves only
     the ENTRY is ignored: excluding one planted `AGENTS.md` by name would pass as
-    a vendored tree. So the `node_modules` directory itself must be ignored too
-    (`check-ignore` on it, with the trailing slash that makes a directory-only
-    pattern match), and the directory that owns it must hold a lockfile, checked
-    on disk as a regular file (never a symlink). Everything else — another
+    a vendored tree. So the `node_modules` directory itself — a real directory,
+    never a symlink — must be ignored too, and the directory that owns it must
+    hold a lockfile, checked on disk as a regular file (never a symlink). Everything else — another
     layout, no lockfile, a tree that is not ignored — stays an instruction
     surface and fails closed.
     """
@@ -344,8 +343,18 @@ def vendored_dependency(repo, path):
             continue
     if not locked:
         return False
+    tree = Path(*owner, "node_modules")
     try:
-        git(repo, "check-ignore", "-q", "--", str(Path(*owner, "node_modules")) + "/")
+        if not stat.S_ISDIR((repo / tree).lstat().st_mode):
+            return False
+    except OSError:
+        return False
+    try:
+        # No trailing slash: with one, `node_modules/*` matches the appended
+        # slash and reports a directory ignored whose children can be re-included
+        # (`!node_modules/keep.js`). Git stats the bare path itself, so a
+        # directory-only `node_modules/` pattern still matches it.
+        git(repo, "check-ignore", "-q", "--", str(tree))
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 1:
             return False

@@ -1784,6 +1784,11 @@ approve_clean
 echo 1 > "$CODEX_FAKE_DIR/rc"
 check "failed Codex run degrades after capture" 3 "not trusting the result" --committed --require --no-issues
 assert "a failed Codex run leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+# A failed run whose output already carries blocking findings is a verdict.
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a failed run carrying blocking findings is a verdict" 2 "a verdict, not a degraded lane" --committed --require --no-issues
+assert "that verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+seed_antigravity_receipt
 echo 0 > "$CODEX_FAKE_DIR/rc"
 printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "a blocking Codex verdict blocks" 2 "" --committed --require --no-issues

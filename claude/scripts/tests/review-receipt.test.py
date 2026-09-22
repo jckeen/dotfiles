@@ -3079,6 +3079,18 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
         self.assertIn("claude/scripts/node_modules/dep/CLAUDE.md", refused.stderr)
 
+    def test_ignored_contents_with_a_reincluded_child_are_not_a_vendored_tree(self):
+        """`node_modules/*` ignores the contents, not the directory (#514)."""
+        self.vendored_fixture(ignored=False, lockfiles=True)
+        (self.repo / ".git/info/exclude").write_text(
+            "/claude/skills/demo/node_modules/*\n"
+            "/claude/scripts/node_modules/*\n"
+            "!/claude/scripts/node_modules/keep.js\n"
+        )
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("claude/scripts/node_modules/dep/CLAUDE.md", refused.stderr)
+
     def test_vendored_exemption_is_limited_to_skills_and_scripts(self):
         self.vendored_fixture()
         elsewhere = self.repo / "claude/agents/node_modules/dep/AGENTS.md"

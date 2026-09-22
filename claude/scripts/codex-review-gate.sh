@@ -54,7 +54,8 @@
 #
 # Exit codes:
 #   0  clean, or only low findings (filed as issues)
-#   2  blocking findings present (critical/high/medium), or output unreadable
+#   2  blocking findings present (critical/high/medium) — even in the output of
+#      a failed run — or output unreadable
 #   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
@@ -88,6 +89,9 @@ cancel_review() {
   else
     printf '%s\n' "✖ Codex review cancelled; no approval from this attempt may be used."
   fi
+  # Still 3 after a claim (#499): the claim retired the other lane's approval,
+  # which fails closed, and the only consumer that falls back on an exit 3
+  # (review-and-push.sh) does so for the Antigravity lane alone, never this one.
   exit 3
 }
 trap cancel_review INT TERM HUP QUIT TSTP
@@ -548,6 +552,15 @@ set -e
 if [[ "$CODEX_RC" -ne 0 ]]; then
   report_diagnostic
   red "✖ Codex exited rc=$CODEX_RC — not trusting the result, even when findings were written."
+  # A failed run is never an approval, but blocking findings it did write are
+  # still a verdict against the artifact — the ADR-0008 rule the Antigravity
+  # gate applies to partial output. They claim (#499) and exit 2, which never
+  # falls back; anything else from a failed run stays a degraded lane.
+  if [[ -s "$OUT_FILE" ]] && jq -e '[.findings[]? | select(.severity == "critical" or .severity == "high" or .severity == "medium")] | length > 0' "$OUT_FILE" >/dev/null 2>&1; then
+    gate_claim
+    red "  Its output carries blocking findings: a verdict, not a degraded lane (ADR-0008)."
+    exit 2
+  fi
   exit 3
 fi
 gate_assert_unchanged
