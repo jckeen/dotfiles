@@ -1570,11 +1570,25 @@ assert "the exemption below the line cap is recorded" "[ \"\$(jq -r '.completion
 # No codex CLI anywhere: CODEX_GATE_BIN unset, an empty managed HOME, and a PATH
 # with no `codex` on it. An absent reviewer is dispatch feasibility, so it must
 # not deny the exemption — while a tier-2 diff on the same machine still degrades.
+#
+# The codex-free PATH is built by DROPPING the entries that provide a `codex`,
+# never by naming system directories: the gate also needs jq, python3 and git,
+# and on macOS those come from Homebrew, so a hardcoded /usr/bin:/bin would hide
+# them too and this case would assert "jq not found" instead of the exemption —
+# in the macOS suite that smoke-install.yml runs. Empty PATH entries mean the
+# current directory and are dropped as well, so a stray ./codex cannot answer.
 SAVED_PATH="$PATH"
 SAVED_BIN="$CODEX_GATE_BIN"
 unset CODEX_GATE_BIN
 mv "$SHIM_DIR/codex" "$SHIM_DIR/codex-parked"
-PATH="$SHIM_DIR:/usr/bin:/bin"
+NO_CODEX_PATH=""
+while IFS= read -r path_entry; do
+  [[ -n "$path_entry" ]] || continue
+  [[ -x "$path_entry/codex" ]] && continue
+  NO_CODEX_PATH="${NO_CODEX_PATH:+$NO_CODEX_PATH:}$path_entry"
+done < <(printf '%s\n' "${PATH//:/$'\n'}")
+assert "the codex-free PATH keeps the gate's other dependencies" "env PATH='$NO_CODEX_PATH' bash -c 'command -v jq >/dev/null && command -v python3 >/dev/null && command -v git >/dev/null && ! command -v codex >/dev/null'"
+PATH="$NO_CODEX_PATH"
 check "a tier-1 diff is exempt with no codex CLI installed" 0 "tier-1 skip" --no-issues --require
 assert "the exemption without a CLI names no executable" "jq -e '.reviewer.executable == null' '$R/.git/review-receipts/codex.json' >/dev/null"
 assert "shipping accepts an exemption recorded without a reviewer" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
