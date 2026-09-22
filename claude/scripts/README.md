@@ -570,12 +570,17 @@ worktree still has it checked out. The preview detaches nothing.
 
 Add `--delete-branch` to have retirement delete that local branch itself. It
 deletes only when the ref still names the exact merged PR head the collector
-verified, is not a symbolic ref, and is checked out by no worktree; the delete
-passes the expected value, so a concurrent update makes Git refuse rather than
-discard an unverified commit. Any other state — a release with no branch, a
-moved, absent or symbolic ref, a ref another worktree holds — leaves the ref in
-place and says why under `branch_deleted` and `branch_reason`, without failing
-the retirement it already completed.
+verified, is not a symbolic ref, and is held by no worktree — including one that
+reports `detached` because a rebase or bisect interrupted it, whose
+`rebase-merge/head-name`, `rebase-apply/head-name` and `BISECT_START` are read
+exactly as Git reads them, since `update-ref` refuses none of that itself. The
+delete passes the expected value, so a concurrent update makes Git refuse rather
+than discard an unverified commit, and `--no-deref` means a ref that turned
+symbolic in between can only delete itself, never the branch it points at. Any
+other state — a release with no branch, a moved, absent or symbolic ref, a ref
+another worktree holds — leaves the ref in place and says why under
+`branch_deleted` and `branch_reason`, without failing the retirement it already
+completed.
 
 The recovery record includes the original path, quarantine path and Git
 metadata path before the rename starts. If interruption leaves the tree in

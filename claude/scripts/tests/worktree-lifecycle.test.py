@@ -1147,12 +1147,51 @@ if kind == 'writer':
         self.assertIn("no branch", payload["branch_reason"])
         self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
 
-    def test_delete_branch_refuses_a_moved_missing_symbolic_or_shared_ref(self):
+    def lifecycle_module(self, name="lifecycle_branch"):
         import importlib.util
 
-        spec = importlib.util.spec_from_file_location("lifecycle_branch", SCRIPT)
+        spec = importlib.util.spec_from_file_location(name, SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+
+    def test_delete_branch_refuses_a_ref_a_rebase_or_bisect_still_holds(self):
+        module = self.lifecycle_module()
+        spare = self.root / "spare"
+        self.run_git(self.repo, "worktree", "add", "-q", "-b", "held", str(spare), self.head)
+        admin = Path(self.run_git(spare, "rev-parse", "--absolute-git-dir").strip())
+        self.run_git(spare, "checkout", "-q", "--detach")
+        # An interrupted rebase or bisect reports `detached` in worktree list
+        # while Git still refuses to delete the branch it started from. Write
+        # exactly the state Git reads, and pin that refusal beside our own.
+        states = {
+            "rebase-merge": {"head-name": "refs/heads/held\n"},
+            "rebase-apply": {"head-name": "refs/heads/held\n"},
+            ".": {"BISECT_LOG": "", "BISECT_START": "held\n"},
+        }
+        for directory, files in states.items():
+            with self.subTest(state=directory):
+                (admin / directory).mkdir(exist_ok=True)
+                for name, content in files.items():
+                    (admin / directory / name).write_text(content)
+                try:
+                    self.assertIn("detached", self.worktree_block(spare))
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        self.run_git(self.repo, "branch", "-D", "held")
+                    deleted, reason = module.delete_released_branch(
+                        self.repo, "refs/heads/held", self.head
+                    )
+                    self.assertFalse(deleted)
+                    self.assertIn("still held by", reason)
+                finally:
+                    for name in files:
+                        (admin / directory / name).unlink()
+                    if directory != ".":
+                        (admin / directory).rmdir()
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "held").strip(), self.head)
+
+    def test_delete_branch_refuses_a_moved_missing_symbolic_or_shared_ref(self):
+        module = self.lifecycle_module()
         main = self.run_git(self.repo, "rev-parse", "main").strip()
         self.run_git(self.repo, "branch", "moved", main)
         self.run_git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/topic")
@@ -1161,7 +1200,7 @@ if kind == 'writer':
             "refs/heads/moved": "moved",
             "refs/heads/gone": "no longer resolves",
             "refs/heads/alias": "symbolic",
-            "refs/heads/topic": "still checked out",
+            "refs/heads/topic": "still held by",
             "refs/tags/v1": "not a local branch",
         }
         for branch, expected in refusals.items():

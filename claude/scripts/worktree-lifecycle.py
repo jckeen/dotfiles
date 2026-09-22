@@ -660,6 +660,33 @@ def detach_worktree_head(repo, admin, head):
     git(repo, "--git-dir=" + str(admin), "update-ref", "--no-deref", "HEAD", head)
 
 
+def branch_holders(repo, branch):
+    """Every worktree Git itself counts as holding this branch.
+
+    A worktree that is mid-rebase or mid-bisect reports `detached` in worktree
+    list while Git still refuses to delete the branch it started from, and
+    `update-ref` enforces none of this, so read the same state Git reads:
+    `rebase-merge/head-name`, `rebase-apply/head-name` and `BISECT_START`, which
+    name either the full ref or its short form.
+    """
+    holders = []
+    names = (branch, branch.removeprefix("refs/heads/"))
+    for entry in worktrees(repo):
+        if entry.get("branch") == branch:
+            holders.append(entry["path"])
+            continue
+        admin = Path(text(git(entry["path"], "rev-parse", "--absolute-git-dir")))
+        for state in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
+            try:
+                held = (admin / state).read_text().strip()
+            except FileNotFoundError:
+                continue
+            if held in names:
+                holders.append(entry["path"])
+                break
+    return holders
+
+
 def delete_released_branch(repo, branch, verified_head):
     """Delete the released branch only when it still names the verified head.
 
@@ -669,8 +696,8 @@ def delete_released_branch(repo, branch, verified_head):
     moved, symbolic or still-checked-out ref -- leaves the ref alone and reports
     why. The final delete passes the expected value, so a concurrent update
     between the checks and the write makes Git refuse rather than discard an
-    unverified commit; `update-ref` does not itself refuse a branch another
-    worktree has checked out, so that is checked here.
+    unverified commit; `update-ref` refuses neither a branch another worktree
+    holds nor a redirection through a symbolic ref, so both are handled here.
     """
     if not branch:
         return False, "the retired worktree had no branch checked out"
@@ -685,10 +712,12 @@ def delete_released_branch(repo, branch, verified_head):
         return False, f"{branch} is a symbolic ref to {symref.strip()}"
     if objectname != verified_head:
         return False, f"{branch} moved to {objectname}; the verified merged head is {verified_head}"
-    holders = [entry["path"] for entry in worktrees(repo) if entry.get("branch") == branch]
+    holders = branch_holders(repo, branch)
     if holders:
-        return False, f"{branch} is still checked out by {holders[0]}"
-    git(repo, "update-ref", "-d", branch, verified_head)
+        return False, f"{branch} is still held by the worktree at {holders[0]}"
+    # --no-deref: a ref that turned symbolic between the check above and this
+    # write can then only delete itself, never the branch it points at.
+    git(repo, "update-ref", "--no-deref", "-d", branch, verified_head)
     return True, None
 
 

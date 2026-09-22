@@ -16,12 +16,18 @@
   nothing. Closes #498.
 - **`retire --delete-branch` finishes the post-merge cleanup, fail-closed.** It
   deletes the local branch only when the ref still names the exact merged PR head
-  the collector already verified, is not a symbolic ref, and is checked out by no
-  worktree — `update-ref -d` does not itself refuse a branch another worktree
-  holds, so that is checked, and the delete passes the expected value so a
-  concurrent update makes Git refuse rather than discard an unverified commit.
-  Every other state leaves the ref alone and says why under `branch_deleted` and
-  `branch_reason` instead of failing a retirement that already completed.
+  the collector already verified, is not a symbolic ref, and is held by no
+  worktree. `update-ref -d` enforces none of that: it deletes a branch another
+  worktree has checked out, and a worktree interrupted mid-rebase or mid-bisect
+  reports `detached` while Git still refuses to delete the branch it started
+  from, so the same `rebase-merge/head-name`, `rebase-apply/head-name` and
+  `BISECT_START` state Git reads is read here, with a test pinning both refusals
+  side by side. The delete passes the expected value so a concurrent update makes
+  Git refuse rather than discard an unverified commit, and `--no-deref` means a
+  ref that turned symbolic between the check and the write can only delete
+  itself, never the branch it points at. Every other state leaves the ref alone
+  and says why under `branch_deleted` and `branch_reason` instead of failing a
+  retirement that already completed.
 
 ## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
 
