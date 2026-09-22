@@ -120,6 +120,30 @@ Adopt Jules as the routine lane.
    session already exists by then; and `--dry-run` suppresses the `--report
    --post` comment, because "writes nothing" has to hold in every mode.
 
+   A fifth round closed the gap the first two live sessions opened: what the
+   platform leaves behind is not what the lane needs. A COMPLETED session opens
+   a pull request even when its change set is empty — the first one (#477) had
+   zero changed files, a title the required commit-format check rejects, and no
+   label — and a session can also complete with `outputs` null, no change set
+   and no pull request at all. None of that is fixable from the dispatch side,
+   so `--reconcile` settles it afterwards: for each `created` session in the
+   ledger it reads `GET /sessions/{id}`, closes an open pull request with zero
+   changed files with a one-line comment, applies `jules-routine:<routine>`
+   (creating the label, which no repository has until a routine PR lands there)
+   and rewrites a non-conventional title to `chore(<routine>): …`, and records
+   the outcome in the ledger. It runs standalone and at the end of every
+   dispatch, including one that created nothing. The pull-request URL is parsed
+   strictly and must name `github.com` over https and the same repository the
+   session was dispatched to, because a URL a remote service hands back is
+   otherwise a write primitive pointed at someone else's repository. Every
+   session with a terminal record is skipped without an API call, so the pass
+   is idempotent, and a session still running is skipped with no record at all
+   rather than having its outcome frozen at "we looked too early". The trap the
+   round had to close first was in the ledger: every spend query keys off
+   `.date`, `.routine` and `.repo`, so a reconcile record would have counted as
+   a dispatch and suppressed the very routine it belongs to on the next run —
+   all of them now filter on the record kind.
+
    A second round added four more. `GET /sources` is paginated — `pageSize`
    defaults to 30 and `nextPageToken` is omitted on the last page — so an
    unpaginated request would have reported every repository past the 30th as not
@@ -389,11 +413,17 @@ change:
   author-keyed allowlist would let an unrelated PR impersonate a routine. Trust
   a routine PR only when the Jules API confirms it: the PR URL appears in
   `outputs[].pullRequest` of a session whose id is in the dispatcher's ledger.
-  The dispatcher should publish that reconciliation (a `--reconcile` pass or a
-  ledger field) so the custodian never re-derives provenance from PR text.
-- **Routine-PR classifier** — the `jules-routine:*` label is not applied by the
-  platform (#479), and the `jules-` branch prefix and body footer are hints for
-  triage only, never a trust key. Classification follows the same API-confirmed
+  The dispatcher now publishes that reconciliation: `jules-dispatch.sh
+  --reconcile` writes a `"kind":"reconcile"` ledger record per settled session
+  carrying the session name, the repository, and the pull-request URL and
+  number it confirmed, so the custodian reads provenance from the ledger rather
+  than re-deriving it from PR text.
+- **Routine-PR classifier** — the `jules-routine:*` label is applied after the
+  fact by the reconcile pass, never by the platform (#479), so anything keying
+  on the label has to wait for a reconcile pass to have run; between a session
+  completing and the next pass the pull request carries no label at all. The
+  `jules-` branch prefix and body footer are hints for triage only, never a
+  trust key. Classification follows the same API-confirmed
   session → PR mapping as the allowlist above. The narrow auto-merge gate
   does not change: docs-only, lockfile, or version-only diffs, with CI green and
   no Codex `CHANGES_REQUESTED`. A code-changing routine PR waits for the

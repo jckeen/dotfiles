@@ -83,6 +83,19 @@ invocation that overlaps the timer is a clean no-op rather than a second dispatc
 of the same routine. The kernel releases it when the holder exits, so a killed
 run leaves nothing behind to reclaim.
 
+**After a session completes** the dispatcher settles it. The platform opens a
+pull request for every completed session — including one whose change set is
+empty — applies no label, and writes a title the required commit-format check
+rejects; a session can also complete having produced nothing at all. So every
+dispatch run ends with a reconcile pass, and `jules-dispatch.sh --reconcile`
+runs the same pass on its own: an open pull request with zero changed files is
+closed with a one-line comment, one that changed something gets the routine's
+`jules-routine:<name>` label and a `chore(<name>): …` title if its own is not
+conventional, and each outcome becomes a ledger record. That record is the only
+API-confirmed link between a session and a pull request, so it is what the
+custodian's classifier reads rather than the PR's text. The label therefore
+appears only after a reconcile pass has run, not the moment the PR opens.
+
 When the catalog offers more eligible pairs than `JULES_DAILY_CAP` allows, the
 pair whose last dispatch is oldest goes first — never-dispatched pairs ahead of
 everything. Whatever the cap defers sits at the front of the next day's queue,
