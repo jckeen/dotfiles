@@ -561,11 +561,37 @@ worktree against Git pruning and renames the actual directory to
 reports `quarantined` and the retained path. Late files and writes through open
 descriptors remain there, including ignored content that Git removal would
 discard. Retirement never deletes the retained directory or reclaims its disk
-space. Stashes, branch refs, and locked worktree metadata stay in the source
-repository. Cross-filesystem destinations and checkouts with an explicit
+space. Stashes and locked worktree metadata stay in the source repository.
+Cross-filesystem destinations and checkouts with an explicit
 `core.worktree` override are retained for separate handling. Other per-worktree
 settings are preserved, and Git's resolved directory and metadata location are
 verified after repair before reporting success.
+
+As its last step — after the bundle and the recovery record are written, so the
+record still names the branch the task worked on — applied retirement detaches
+the quarantined worktree's own metadata HEAD at the released commit. It writes
+only that worktree's `HEAD` and reflog inside the source repository's worktree
+metadata; the quarantined directory, its index, the bundle and the record are
+untouched, and the commit stays reachable from the merged PR, the bundle and the
+detached HEAD. The result reports `detached` and the former `branch`, and
+`git worktree list --porcelain` reports the quarantine as `detached`. The merged
+branch ref is therefore an ordinary deletable branch afterwards, rather than one
+`git branch -D` and merged-branch pruning refuse forever because a retired
+worktree still has it checked out. The preview detaches nothing.
+
+Add `--delete-branch` to have retirement delete that local branch itself. It
+deletes only when the ref still names the exact merged PR head the collector
+verified, is not a symbolic ref, and is held by no worktree — including one that
+reports `detached` because a rebase or bisect interrupted it, whose
+`rebase-merge/head-name`, `rebase-apply/head-name` and `BISECT_START` are read
+exactly as Git reads them, since `update-ref` refuses none of that itself. The
+delete passes the expected value, so a concurrent update makes Git refuse rather
+than discard an unverified commit, and `--no-deref` means a ref that turned
+symbolic in between can only delete itself, never the branch it points at. Any
+other state — a release with no branch, a moved, absent or symbolic ref, a ref
+another worktree holds — leaves the ref in place and says why under
+`branch_deleted` and `branch_reason`, without failing the retirement it already
+completed.
 
 The recovery record includes the original path, quarantine path and Git
 metadata path before the rename starts. If interruption leaves the tree in
