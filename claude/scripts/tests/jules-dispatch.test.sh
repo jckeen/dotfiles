@@ -1844,12 +1844,15 @@ recon_run() { # extra flags...
 }
 
 # A "created" dispatch record — the only kind reconcile looks at.
-session_line() { # session-id routine repo days-ago
-  local e at
+# The optional fifth argument is a raw JSON max_files value; without it the
+# record is shaped like one written before the limit was persisted (#530).
+session_line() { # session-id routine repo days-ago [max_files-json]
+  local e at mf=""
   e=$((JULES_NOW_EPOCH - $4 * 86400))
   at="$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ)"
-  printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","status":"created","attempt":"a%s","session":"sessions/%s","url":""}\n' \
-    "$at" "${at%%T*}" "$2" "$3" "$1" "$1"
+  [[ -n "${5:-}" ]] && mf=",\"max_files\":$5"
+  printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","status":"created","attempt":"a%s","session":"sessions/%s","url":""%s}\n' \
+    "$at" "${at%%T*}" "$2" "$3" "$1" "$1" "$mf"
 }
 
 # Shaped like the live record: outputs is an array whose pullRequest entry
@@ -2453,6 +2456,152 @@ else
   fail "status.json has no reconcile counts"
   cat "$STATE/status.json" 2>/dev/null | sed 's/^/      | /'
 fi
+
+# #527: GH_HOST supplies the hostname to any gh call that names none, and the
+# timer runs outside a repository that could supply one. The URL was validated
+# as github.com, so every reconcile gh call has to say github.com itself —
+# otherwise the close, label and title writes land on a same-named repository
+# on an Enterprise host.
+new_case
+routine alpha false 'repos: all'
+session_line 960 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+session_line 961 alpha jckeen/dotfiles 1 >> "$STATE/dispatch.jsonl"
+completed_with_pr 960 https://github.com/jckeen/dotfiles/pull/960
+completed_with_pr 961 https://github.com/jckeen/dotfiles/pull/961
+pr_fixture 960 '{"state":"OPEN","changedFiles":1,"title":"Routine: alpha - fix a link","labels":[]}'
+pr_fixture 961 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+if GH_HOST=ghe.example recon_run \
+  && ghgrep 'pr view 960 --repo github.com/jckeen/dotfiles' \
+  && ghgrep 'pr close 961 --repo github.com/jckeen/dotfiles' \
+  && ghgrep 'label create jules-routine:alpha --repo github.com/jckeen/dotfiles' \
+  && ghgrep 'pr edit 960 --repo github.com/jckeen/dotfiles --add-label' \
+  && ghgrep 'pr edit 960 --repo github.com/jckeen/dotfiles --title' \
+  && [[ "$(grep -c -- '^api ' "$FAKE_GH_ARGV")" -ge 1 ]] \
+  && [[ "$(grep '^api ' "$FAKE_GH_ARGV" | grep -cv -- '--hostname github.com')" -eq 0 ]] \
+  && [[ "$(grep -c -- '--repo jckeen/' "$FAKE_GH_ARGV")" -eq 0 ]]; then
+  ok "with GH_HOST set, every reconcile gh call is pinned to github.com"
+else
+  fail "a reconcile gh call left its host to GH_HOST"
+  sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# #529: the counter is named blocked_subjects, so it counts subjects — not the
+# pull requests that carry them.
+new_case
+routine alpha false 'repos: all'
+session_line 962 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 962 https://github.com/jckeen/dotfiles/pull/962
+pr_fixture 962 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): repair the anchor","labels":[]}'
+commits_fixture 962 '[{"parents":[{"sha":"a"}],"commit":{"message":"No changes needed"}},
+ {"parents":[{"sha":"a"}],"commit":{"message":"Update README.md"}}]'
+if recon_run && [[ "$(jq -r '.reconcile.blocked_subjects' "$STATE/status.json")" == "2" ]]; then
+  ok "status.json's blocked_subjects counts every rejected subject, not every PR"
+else
+  fail "blocked_subjects undercounted two rejected subjects in one PR"
+  cat "$STATE/status.json" 2>/dev/null | sed 's/^/      | /'
+fi
+
+# #531: outstanding sessions come from the ledger and can outlive their routine
+# file — or the whole catalog. Reconcile must still settle them.
+new_case
+session_line 963 gone jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 963 https://github.com/jckeen/dotfiles/pull/963
+pr_fixture 963 '{"state":"OPEN","changedFiles":0,"title":"Routine: gone - clean run","labels":[]}'
+rm -rf "$ROUTINES"
+if recon_run --routine gone && [[ "$(reconcile_action closed-empty)" -eq 1 ]]; then
+  ok "--reconcile --routine settles a session whose routine file and catalog are gone"
+else
+  fail "reconcile refused a session whose routine left the catalog"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+# A dispatch still needs the catalog.
+if ! dispatch --dry-run && outgrep "routine catalog not found"; then
+  ok "a dispatch with no catalog is still refused"
+else
+  fail "a dispatch ran without a catalog"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# #530: max_files is a hard per-PR limit. The dispatch record carries the limit
+# the session was given, so reconcile compares against what the session was
+# actually told, not against whatever the catalog says today.
+new_case
+routine alpha false 'repos: all'
+if dispatch --routine alpha --repo jckeen/dotfiles \
+  && [[ "$(dispatch_jq '[.[] | select(.status == "created") | .max_files] | .[0]')" == "2" ]]; then
+  ok "a dispatch record carries the routine's max_files"
+else
+  fail "the dispatch record does not carry max_files"
+  sed 's/^/      | /' "$STATE/dispatch.jsonl"
+fi
+
+new_case
+routine alpha false 'repos: all'
+session_line 964 alpha jckeen/dotfiles 1 2 > "$STATE/dispatch.jsonl"
+completed_with_pr 964 https://github.com/jckeen/dotfiles/pull/964
+pr_fixture 964 '{"state":"OPEN","changedFiles":3,"title":"Routine: alpha - fix three things","labels":[]}'
+if recon_run && [[ "$(reconcile_action blocked-oversized)" -eq 1 ]] \
+  && ! ghgrep '--add-label' && ! ghgrep '--title' && ! ghgrep 'pr close' \
+  && [[ "$(reconcile_jq -r '.[0].max_files')" == "2" ]] \
+  && [[ "$(reconcile_jq -r '.[0].prs[0].detail')" == *"3 files changed"* ]] \
+  && [[ "$(reconcile_jq -r '.[0].commit_subjects_ok')" == "null" ]] \
+  && [[ "$(jq -r '.reconcile.oversized' "$STATE/status.json")" == "1" ]] \
+  && outgrep "over the routine's max_files"; then
+  ok "a PR over its session's max_files is recorded blocked-oversized, not labeled"
+else
+  fail "an oversized routine PR was labeled as compliant"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+  reconcile_jq -c '.' | sed 's/^/      r /'
+fi
+
+new_case
+routine alpha false 'repos: all'
+session_line 965 alpha jckeen/dotfiles 1 2 > "$STATE/dispatch.jsonl"
+completed_with_pr 965 https://github.com/jckeen/dotfiles/pull/965
+pr_fixture 965 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): two files","labels":[]}'
+if recon_run && [[ "$(reconcile_action labeled)" -eq 1 ]] \
+  && [[ "$(reconcile_jq -r '.[0].max_files')" == "2" ]]; then
+  ok "a PR at exactly its max_files is labeled as usual"
+else
+  fail "a PR within its max_files was not labeled"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A record written before the limit was persisted has nothing to compare
+# against: the check is skipped, and the record says so with a null.
+new_case
+routine alpha false 'repos: all'
+session_line 966 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 966 https://github.com/jckeen/dotfiles/pull/966
+pr_fixture 966 '{"state":"OPEN","changedFiles":9,"title":"fix(docs): many files","labels":[]}'
+if recon_run && [[ "$(reconcile_action labeled)" -eq 1 ]] \
+  && [[ "$(reconcile_jq -r '.[0] | has("max_files")')" == "true" ]] \
+  && [[ "$(reconcile_jq -r '.[0].max_files')" == "null" ]] \
+  && outgrep "no max_files"; then
+  ok "a pre-limit dispatch record skips the max_files check and records max_files null"
+else
+  fail "a pre-limit dispatch record was not handled as unchecked"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The ledger is operator-editable: a limit that is not a positive integer is
+# refused, not coerced — and neither "-" nor "" may pass for an absent limit,
+# which would switch the check off; nor may an explicit null, since only a
+# record that predates the field skips the check (Codex gate, [medium]).
+for bad_mf in '"two"' '"-"' '""' '0' '2.5' 'null'; do
+  new_case
+  routine alpha false 'repos: all'
+  session_line 967 alpha jckeen/dotfiles 1 "$bad_mf" > "$STATE/dispatch.jsonl"
+  completed_with_pr 967 https://github.com/jckeen/dotfiles/pull/967
+  pr_fixture 967 '{"state":"OPEN","changedFiles":9,"title":"fix(docs): nine","labels":[]}'
+  recon_run; rc=$?
+  if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+    ok "a ledger max_files of $bad_mf is refused before any gh call"
+  else
+    fail "a malformed ledger max_files $bad_mf was acted on (rc=$rc)"
+    sed 's/^/      | /' "$CASE_DIR/out"
+  fi
+done
 
 echo "── systemd installer (generalised unit loop) ──"
 

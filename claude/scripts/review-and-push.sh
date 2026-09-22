@@ -24,7 +24,8 @@
 #
 # Environment:
 #   REVIEW_TEST_CMD=<command line>       step 2's test command; outranks the
-#     repo-root `.review-test` file and framework sniffing (#490).
+#     repo-root `.review-test` file and framework sniffing (#490). Empty means
+#     unset; whitespace-only is refused, like an empty `.review-test` (#519).
 #   REVIEW_LANE=auto|codex|antigravity   override the lane (auto is the default;
 #     `antigravity` on a codex-required diff is REFUSED, not honoured).
 #   REVIEW_LANE_FALLBACK=codex|block     what to do when the Antigravity gate
@@ -364,6 +365,13 @@ TEST_RESULT=0
 TEST_CMD=""
 TEST_CMD_SOURCE=""
 if [[ -n "${REVIEW_TEST_CMD:-}" ]]; then
+  # Whitespace-only fails closed like an empty .review-test (#519): `bash -c`
+  # would run nothing, exit 0, and report the tests as passed. An empty value
+  # still means unset and falls through.
+  if [[ -z "${REVIEW_TEST_CMD//[[:space:]]/}" ]]; then
+    echo "error: REVIEW_TEST_CMD is set but declares no command; unset it or give it one command line." >&2
+    exit 1
+  fi
   TEST_CMD="$REVIEW_TEST_CMD"
   TEST_CMD_SOURCE="REVIEW_TEST_CMD"
 elif [[ -f ".review-test" ]]; then
