@@ -402,6 +402,33 @@ gate_finish() {
   return "$rc"
 }
 trap gate_finish EXIT
+# Bash defers a signal's trap until the foreground reviewer exits, so a
+# cancelled run may already hold agy's output. Blocking finding lines in it are
+# a verdict (#499): claim and exit 2, as verdict_in_partial_output does. With
+# none, re-raise the signal with its default action, exactly as before this
+# handler existed — never a degraded exit 3, which review-and-push.sh would
+# answer with a Codex fallback. The trap runs inside the redirected `_tmo`
+# call, so it writes to the gate's own stdout/stderr, saved here as fds 8/9.
+exec 8>&1 9>&2
+cancel_agy_review() {
+  trap '' INT TERM HUP QUIT
+  local findings=""
+  [[ ! -s "$SUMMARY_FILE" ]] || findings="$(grep -E "$BLOCK_RE" "$SUMMARY_FILE" || true)"
+  if [[ -n "$findings" ]]; then
+    {
+      red "✖ Antigravity review cancelled after it reported blocking findings:"
+      sed 's/^/  /' <<<"$findings"
+      gate_claim
+    } >&8 2>&9
+    exit 2
+  fi
+  trap - "$1"
+  kill -s "$1" "$$"
+}
+for gate_signal in INT TERM HUP QUIT; do
+  # shellcheck disable=SC2064  # Bind each signal name now, deliberately.
+  trap "cancel_agy_review $gate_signal" "$gate_signal"
+done
 
 # Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
 # (macOS coreutils), else run without a ceiling rather than hard-fail on macOS

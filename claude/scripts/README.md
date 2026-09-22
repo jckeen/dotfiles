@@ -304,8 +304,9 @@ cap, a failed or partial run, an unverifiable model pin under `--require` — ne
 claimed, so the other lane's approval stays valid: a degraded lane is not a
 verdict (#499). Partial output that already carries blocking findings is a
 verdict and claims, and so is a failed local compile/lint check in the
-Antigravity gate and a failed or cancelled Codex run whose output is not
-verifiably free of blocking findings (exit 2, not 3). A verifiably wrong model (exit 2) claims nothing, since its
+Antigravity gate, an Antigravity run cancelled after agy wrote blocking
+findings, and a failed or cancelled Codex run whose output is not verifiably
+free of blocking findings (exit 2, not 3). A verifiably wrong model (exit 2) claims nothing, since its
 review is not evidence, and neither does a clean run whose pin could not be
 verified, which records no receipt either; its blocking exits still claim. Two consequences remain: a review already in flight in
 the other lane can no longer record its outcome once a newer one claims, and a

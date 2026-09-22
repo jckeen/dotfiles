@@ -1795,6 +1795,14 @@ printf '%s' '{"findings":[{"severity":"high"},"partial"]}' > "$CODEX_FAKE_DIR/ou
 check "a failed run with malformed output that may block is a verdict" 2 "may carry, blocking findings" --committed --require --no-issues
 assert "malformed failed output retires the Antigravity approval" "! antigravity_receipt_ships"
 seed_antigravity_receipt
+printf '%s' '{"verdict":"approve","summary":"x","findings":[{"severity":"high"}],"findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a duplicate key cannot shadow a blocker in failed output" 2 "may carry, blocking findings" --committed --require --no-issues
+assert "duplicate-key failed output retires the Antigravity approval" "! antigravity_receipt_ships"
+seed_antigravity_receipt
+printf '%s' '{"verdict":"needs-attention","summary":"wrong","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a needs-attention verdict in failed output is a verdict" 2 "may carry, blocking findings" --committed --require --no-issues
+assert "needs-attention failed output retires the Antigravity approval" "! antigravity_receipt_ships"
+seed_antigravity_receipt
 # A cancellation Bash defers until the reviewer exits must not discard the
 # blocking findings that reviewer already wrote.
 echo 0 > "$CODEX_FAKE_DIR/rc"

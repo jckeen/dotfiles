@@ -89,8 +89,10 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   once a gate can reach a verdict: the Codex gate after its reviewer produced
   output (and on a failed or cancelled run whose output is not verifiably free
   of blocking findings, which now exits 2 rather than 3), the Antigravity gate after its model-pin check, before a failed local
-  compile/lint check, and in `verdict_in_partial_output` before a partial
-  blocking verdict. `gate_record_pass`
+  compile/lint check, in `verdict_in_partial_output` before a partial
+  blocking verdict, and in a new cancellation handler when agy had already
+  written blocking findings (exit 2; otherwise the signal is re-raised as
+  before). `gate_record_pass`
   claims too, so no-diff and tier-1 receipts behave as before. `complete` refuses
   an unclaimed attempt. `begin` stays as capture-then-claim for other callers;
   receipt format is unchanged. The competing-receipt warning now prints at the

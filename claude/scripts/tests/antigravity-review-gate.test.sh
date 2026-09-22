@@ -1271,6 +1271,35 @@ assert "failed local validation retires the Codex approval" "! codex_receipt_shi
 rm -f "$SHIM_DIR/cargo"
 rm -rf "$R"
 
+# A cancellation Bash defers until agy exits must not discard the blocking
+# findings agy already wrote: they claim and exit 2. Without any, the signal is
+# re-raised as before, and the Codex approval survives.
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+cat > "$AGY_FAKE_DIR/mutate" <<'EOF'
+pid=$PPID
+for _ in 1 2 3 4; do
+  pid="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+  case "$(ps -o args= -p "$pid")" in
+    *antigravity-review-gate.sh*) kill -TERM "$pid"; break ;;
+  esac
+done
+EOF
+seed_codex_receipt
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+check "a cancellation after blocking agy output is a verdict" 2 "cancelled after it reported blocking findings" --committed --require
+assert "that cancellation retires the Codex approval" "! codex_receipt_ships"
+seed_codex_receipt
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "a cancellation after clean agy output re-raises the signal" 143 "" --committed --require
+assert "that cancellation leaves the Codex approval shippable" "codex_receipt_ships"
+rm -f "$AGY_FAKE_DIR/mutate"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require
