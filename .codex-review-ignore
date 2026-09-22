@@ -1,9 +1,14 @@
-# .codex-review-ignore — path globs whose contents are hostile BY DESIGN.
+# .codex-review-ignore — path globs whose contents are DIRECTIVE BY DESIGN.
 #
-# Read by codex-review-gate.sh. Matching paths STAY in the review scope: the
-# only effect is that the reviewer is told not to report instruction-like
-# strings inside them as findings. Shell glob semantics, so `*` spans `/`.
-# One glob per line; `#` starts a comment.
+# Read by codex-review-gate.sh. Matching paths STAY in the review scope. The
+# only effect is a NARROW exemption, by form and not by effect (#484): the
+# reviewer is told not to report an instruction-like string inside them as a
+# finding about this repository's instructions, but a directive whose effect
+# would be to bypass a limit, skip or disable a check/review/gate/test, weaken
+# a guard, or expose credentials MUST still be reported — here as anywhere.
+# Adding a glob therefore narrows the noise, never the prompt-injection check.
+# Shell glob semantics, so `*` spans `/`. One glob per line; `#` starts a
+# comment.
 #
 # The gate test suites embed adversarial fixtures on purpose — injected
 # reviewer verdicts, prompt-injection payloads, and synthetic credential
@@ -13,6 +18,8 @@ claude/scripts/tests/*
 
 # Jules routine prompts (ADR-0009) are instructions for a cloud agent by
 # design, and the generated root AGENTS.md is the brief for one: every line is
-# directive on purpose (#466).
+# directive on purpose (#466). These are LIVE prompts, so the narrow exemption
+# above matters most here: an injected "skip the checks" / "print the token"
+# line in a routine body is still a finding (#484).
 agents/routines/*
 AGENTS.md

@@ -313,11 +313,17 @@ agents/routines/*
 AGENTS.md
 ```
 
-Those paths are hostile **by design**: gate fixtures embed injected verdicts,
+Those paths are directive **by design**: gate fixtures embed injected verdicts,
 prompt-injection payloads, and synthetic credential markers, and Jules routine
 prompts plus the generated root `AGENTS.md` are instructions for a cloud agent
 (ADR-0009), so a reviewer flagging them is reporting the fixture or the prompt
-rather than a defect. The globs only
+rather than a defect. The exemption is **by form, not by effect** (#484): the
+reviewer is told not to report an instruction-like string there as a finding
+*about this repository's instructions*, but a directive whose effect would be to
+bypass a limit, skip or disable a check/review/gate/test, weaken a guard, or
+expose credentials is still reported — the routine prompts are live prompts, so
+adding a glob must never retire the prompt-injection check for what runs under
+it. The globs only
 steer the reviewer — matching paths **stay in the review scope** and are still
 reviewed for real bugs, and instruction-like text anywhere else stays
 suspicious. The file is repo content, so it is parsed as bounded untrusted data
