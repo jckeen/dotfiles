@@ -19,6 +19,44 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / "worktree-lifecycle.py"
 
 
+def host_git_marker(root):
+    """The first `.git` marker at or above a fixture root, if any.
+
+    Applied retirement walks every ancestor of the archive directory for Git
+    markers, and the fixture archives under the system temporary directory, so
+    a stray marker above it (host state) fails most of this suite with an
+    opaque Git exit (#511). Report that once, by path, instead.
+    """
+    for directory in (root, *root.parents):
+        if os.path.lexists(directory / ".git"):
+            return directory / ".git"
+    return None
+
+
+def setUpModule():
+    with tempfile.TemporaryDirectory() as probe:
+        marker = host_git_marker(Path(probe))
+    if marker is not None:
+        raise RuntimeError(
+            f"host state, not the code under test: a Git marker at {marker} sits above the "
+            "fixture root, and retirement inspects every archive ancestor; remove it or set "
+            "TMPDIR to a directory with no Git marker above it"
+        )
+
+
+class HostStateTests(unittest.TestCase):
+    def test_marker_above_a_nested_root_is_named(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            nested = base / "outer" / "inner" / "root"
+            nested.mkdir(parents=True)
+            self.assertIsNone(host_git_marker(nested))
+            (base / "outer" / ".git").mkdir()
+            self.assertEqual(host_git_marker(nested), base / "outer" / ".git")
+            (base / "outer" / "inner" / ".git").write_text("gitdir: nowhere\n")
+            self.assertEqual(host_git_marker(nested), base / "outer" / "inner" / ".git")
+
+
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1215,6 +1253,52 @@ if kind == 'writer':
         self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
         self.assertEqual(self.run_git(self.repo, "rev-parse", "moved").strip(), main)
 
+    def test_delete_branch_removes_the_branch_configuration_section(self):
+        # `update-ref -d` leaves branch.<name>.* behind, so a later branch of
+        # the same name would silently inherit its upstream and rebase settings.
+        self.run_git(self.repo, "config", "branch.topic.remote", "origin")
+        self.run_git(self.repo, "config", "branch.topic.merge", "refs/heads/topic")
+        self.run_git(self.repo, "config", "branch.topic.rebase", "true")
+        self.run_git(self.repo, "config", "branch.topic.x.remote", "origin")
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire(
+            "--apply", "--archive-dir", str(self.root / "archive"), "--delete-branch"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIs(payload["branch_deleted"], True, payload)
+        self.assertEqual(self.run_git(self.repo, "branch", "--list", "topic").strip(), "")
+        names = self.run_git(self.repo, "config", "--local", "--name-only", "--list").split()
+        self.assertEqual([name for name in names if name.rpartition(".")[0] == "branch.topic"], [])
+        # A branch whose name merely extends this one keeps its own section.
+        self.assertIn("branch.topic.x.remote", names)
+
+    def test_delete_branch_restores_a_ref_a_worktree_attached_during_deletion(self):
+        module = self.lifecycle_module()
+        self.run_git(self.repo, "branch", "spare", self.head)
+        late = self.root / "late"
+        original = module.branch_holders
+        calls = []
+
+        def attach_after_check(repo, branch):
+            holders = original(repo, branch)
+            calls.append(holders)
+            if len(calls) == 1:
+                # Another process attaches the branch between the holder check
+                # and the deletion.
+                self.run_git(self.repo, "worktree", "add", "-q", str(late), "spare")
+            return holders
+
+        module.branch_holders = attach_after_check
+        deleted, reason = module.delete_released_branch(self.repo, "refs/heads/spare", self.head)
+        self.assertFalse(deleted)
+        self.assertIn("restored", reason)
+        self.assertIn(str(late), reason)
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "spare").strip(), self.head)
+        self.assertEqual(self.run_git(late, "rev-parse", "HEAD").strip(), self.head)
+        self.assertEqual(self.run_git(late, "symbolic-ref", "HEAD").strip(), "refs/heads/spare")
+
     def test_final_ignored_write_is_preserved_in_locked_quarantine(self):
         from functools import partial
         from unittest.mock import patch
@@ -2097,6 +2181,38 @@ if kind == 'writer':
                 {"pid": 501, "comm": "(sd-pam)", "ppid": 500},
             ],
         )
+
+    def test_retained_archive_records_exemptions_the_second_scan_observed(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original_assess = lifecycle.assess
+        late = {"pid": 777, "comm": "systemd", "ppid": 1}
+        scans = []
+
+        def second_scan_exempts_more(repo, path, *args):
+            item, admin, record = original_assess(repo, path, *args)
+            scans.append(path)
+            if len(scans) == 2:
+                record["retirement_exempt_processes"] = [late]
+            return item, admin, record
+
+        with (
+            patch.dict(os.environ, self.env),
+            patch.object(lifecycle, "assess", second_scan_exempts_more),
+            patch.object(lifecycle, "archived_metadata_matches", return_value=False),
+        ):
+            with self.assertRaisesRegex(ValueError, "metadata changed.*retained.*archive:"):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / "archive")
+        self.assertEqual(len(scans), 2)
+        self.assertTrue(self.worktree.is_dir())
+        (archive,) = (self.root / "archive").iterdir()
+        recovery = json.loads((archive / "recovery.json").read_text())
+        self.assertIn(late, recovery["retirement_exempt_processes"])
 
     def test_readable_session_manager_reference_still_refuses_release(self):
         self.session_process(356, "systemd", 1)

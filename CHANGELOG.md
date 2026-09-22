@@ -1,5 +1,82 @@
 # Changelog
 
+## 2026-09-22 — fix(tests): the test runner and the wrapper refuse a selection that names nothing
+
+- **`run-tests.sh` refuses two files that derive one suite name.** Beside
+  `foo.test.sh`, a `foo.test.py` also derived `foo`, and the first-match lookup
+  meant `run-tests.sh foo` or a `--changed` diff touching the second file ran
+  the first one and reported green. Discovery now exits non-zero naming both
+  files, in every mode, so the extension-free names `--list`, subset selection,
+  `--changed` and `.review-test` use stay unchanged. The new cases in
+  `run-tests.test.sh` pin it. Closes #518.
+- **`review-and-push.sh` refuses a whitespace-only `REVIEW_TEST_CMD`.** It was
+  treated as a declared command; `bash -c` ran nothing, exited 0, and step 2
+  printed `tests: passed (REVIEW_TEST_CMD)`. It now fails closed before any gate
+  runs, the same as a `.review-test` that declares no command; an empty value
+  still means unset. The new cases in `review-and-push.test.sh` pin it.
+  Closes #519.
+## 2026-09-22 — fix(worktree-lifecycle): branch config, attach race, retained exemptions, host-state diagnostic
+
+- **`retire --delete-branch` removes the branch's config section.** It deleted
+  the ref with `update-ref -d`, which leaves `branch.<name>.*` in `.git/config`,
+  so a later branch of the same name silently inherited the old upstream, merge
+  and rebase settings. A successful delete now removes exactly that subsection
+  (never the section of a branch whose name merely extends it); a removal that
+  fails is reported in `branch_reason` rather than failing the retirement.
+  Closes #521.
+
+- **A worktree that attaches the branch mid-delete gets it back.** Git has no
+  lock that serializes `worktree add` against a ref deletion — `git branch -D`
+  has the same window — so the holder check was a stale snapshot. Holders are now
+  read again straight after the delete, and a worktree that attached in between
+  gets the ref restored (created only if still absent) and a refused
+  `branch_deleted`. This narrows the race rather than closing it: an attach
+  that resolved the branch before the delete but writes its `HEAD` after the
+  re-read can still land on a missing branch, and only a lock Git itself
+  honoured would close that. Refs #522.
+
+- **A retained archive names every exemption both retirement scans observed.**
+  The merged exemption list was only written with the quarantine paths, after
+  the metadata and relocation checks, so an archive retained by one of those
+  checks lacked the identities the second scan skipped. The record is now
+  rewritten immediately after the merge. Closes #542.
+
+- **The test suite names a stray Git marker above the temporary directory.**
+  Retirement inspects every archive ancestor, and the fixtures archive under the
+  system temp directory, so host state such as an empty `/tmp/.git` failed most
+  cases with an opaque `git could not verify evidence (exit 128)`. Module setup
+  now refuses once, naming the marker's path as host state; the tests in
+  `claude/scripts/tests/worktree-lifecycle.test.py` pin the check, the config
+  cleanup, the restore and the persisted exemptions. Closes #511.
+
+## 2026-09-22 — fix(jules-dispatch): the harvested review findings on --reconcile
+
+- **Every reconcile `gh` call names `github.com`.** The pull-request URL was
+  validated as github.com, but `--repo owner/name` without a host takes it from
+  `GH_HOST`, so an Enterprise default would have sent the close, label and title
+  writes to a same-named repository there. `pr view/close/edit` and `label
+  create` now pass `--repo github.com/<owner>/<name>`, and the commits read
+  passes `gh api --hostname github.com`. Closes #527.
+- **`max_files` is enforced before a routine pull request is labeled.** Every
+  dispatch record now carries the limit the session was given, and a pull
+  request over it is recorded `blocked-oversized` with the reason in its `prs`
+  entry, counted in `status.json` as `reconcile.oversized`, and left open,
+  unlabeled and unretitled for a person. A dispatch record written before the
+  field existed skips the check and its reconcile record carries `max_files:
+  null`; a ledger value that is not a positive integer is refused. Closes #530.
+- **`reconcile.blocked_subjects` counts subjects**, not the pull requests that
+  carry them. Closes #529.
+- **`--reconcile` no longer requires the routine catalog.** Its sessions come
+  from the ledger and outlive their routine files, so `--reconcile --routine
+  <removed>` and a pass over an emptied catalog now settle the sessions left
+  behind; dispatch and `--report` still refuse a missing or empty catalog.
+  Closes #531.
+- **ADR-0009 states the `commit_subjects_ok: null` contract exactly:** not
+  every pull request of the session was examined and none that was carries a
+  rejected subject — the pass may well have listed another pull request's
+  commits. Closes #525.
+
+The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these.
 ## 2026-09-22 — docs(scripts): checker rows say what the checkers check
 
 - **The `check-doc-refs.sh` and `check-skill-parity.sh` rows describe every guard
