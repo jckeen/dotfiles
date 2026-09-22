@@ -78,6 +78,11 @@ gate_extract_diff() {
   executable=${executable%$'\n.'}
   args+=(--executable "$executable")
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
+  # The tier-1 BYTE ceiling's default lives in review-receipt.py
+  # (TIER1_MAX_BYTES) and is omitted rather than repeated here, so the two lanes
+  # and `check` cannot drift apart on it (#494). An explicit override still
+  # reaches the helper, and an unusable one classifies tier 2 there.
+  [[ -z "${GATE_TIER1_MAX_BYTES:-}" ]] || args+=("--tier1-max-bytes=$GATE_TIER1_MAX_BYTES")
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
   trap gate_cleanup EXIT
   # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.

@@ -46,8 +46,17 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(p.returncode == 0, ok, p.stdout + p.stderr)
         return p.stdout.strip()
 
-    def begin(self, scope="committed", base="main", tier1_max_lines=None, reviewer="codex"):
+    def begin(
+        self,
+        scope="committed",
+        base="main",
+        tier1_max_lines=None,
+        reviewer="codex",
+        tier1_max_bytes=None,
+    ):
         policy = ("--tier1-max-lines=" + tier1_max_lines,) if tier1_max_lines is not None else ()
+        if tier1_max_bytes is not None:
+            policy += ("--tier1-max-bytes=" + tier1_max_bytes,)
         return (
             Path(
                 self.run_helper(
@@ -2148,6 +2157,73 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                 record["policy"]["tier1_max_lines"] = limit
                 receipt_path.write_text(json.dumps(record))
                 self.check(False)
+
+    def test_tier1_byte_ceiling_escalates_a_byte_huge_docs_diff(self):
+        """#494: the tier-1 size ceiling is policy here, not one gate's prompt cap.
+
+        A docs-only diff of a single 200,000-byte line clears the line ceiling,
+        so before the byte ceiling existed it took the exemption in whichever
+        lane was asked while the Antigravity gate refused to dispatch it at all.
+        It now classifies tier 2 in both lanes and is escalated to an ordinary
+        review rather than refused.
+        """
+        self.git("checkout", "-B", "feature", "main")
+        (self.repo / "notes.md").write_text("x" * 200000 + "\n")
+        self.git("add", "notes.md")
+        self.git("commit", "-qm", "one very long documentation line")
+        snapshot = self.begin()
+        self.assertEqual(json.loads(snapshot.read_text())["policy"]["tier1_max_bytes"], "65536")
+        classification = json.loads(self.run_helper("classify", "--snapshot", str(snapshot)))
+        self.assertEqual(classification["tier"], 2)
+        self.assertIn("bytes", classification["reason"])
+        # Escalated to a real review, not refused: an ordinary docs path needs
+        # only the Antigravity lane.
+        self.assertEqual(classification["required_lane"], "antigravity")
+        self.complete(snapshot, "tier-1", ok=False)
+        self.complete(snapshot)
+        self.check()
+        # The ceiling is captured policy like the line ceiling, so raising it
+        # restores the exemption for the same artifact.
+        snapshot = self.begin(tier1_max_bytes="300000")
+        self.assertEqual(
+            json.loads(self.run_helper("classify", "--snapshot", str(snapshot)))["tier"], 1
+        )
+        self.complete(snapshot, "tier-1")
+        self.check()
+
+    def test_tier1_byte_policy_is_validated_fail_closed(self):
+        """A receipt whose byte ceiling is absent or unusable cannot ship tier 1.
+
+        A receipt minted before this policy field existed carries no ceiling at
+        all, which must read as "unclassifiable" (tier 2, Codex) rather than as
+        "no limit".
+        """
+        self.git("checkout", "-B", "feature", "main")
+        (self.repo / "notes.md").write_text("documentation\n")
+        self.git("add", "notes.md")
+        self.git("commit", "-qm", "documentation change")
+        self.complete(self.begin(), "tier-1")
+        self.check()
+        receipt_path = self.repo / ".git/review-receipts/codex.json"
+        record = json.loads(receipt_path.read_text())
+        for limit in ("invalid", "-1", "", None, [], 65536, "MISSING"):
+            with self.subTest(limit=limit):
+                mutated = json.loads(json.dumps(record))
+                if limit == "MISSING":
+                    del mutated["policy"]["tier1_max_bytes"]
+                else:
+                    mutated["policy"]["tier1_max_bytes"] = limit
+                receipt_path.write_text(json.dumps(mutated))
+                self.check(False)
+        for limit in ("invalid", "-1", ""):
+            with self.subTest(begin_limit=limit):
+                snapshot = self.begin(tier1_max_bytes=limit)
+                classification = json.loads(
+                    self.run_helper("classify", "--snapshot", str(snapshot))
+                )
+                self.assertEqual(classification["tier"], 2)
+                self.assertEqual(classification["required_lane"], "codex")
+                self.complete(snapshot, "tier-1", ok=False)
 
     def test_invalid_tier1_limit_requires_full_review(self):
         self.git("checkout", "-B", "feature", "main")

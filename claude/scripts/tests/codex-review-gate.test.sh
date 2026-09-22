@@ -1526,6 +1526,58 @@ check "leading-dash invalid cap escalates to full review" 0 "Codex review passed
 unset GATE_TIER1_MAX_LINES
 rm -rf "$R"
 
+# ── #494: the tier valve runs before this gate's dispatch-feasibility checks ──
+# The exemption is a policy question, so it must not depend on this lane's line
+# cap or on whether a reviewer is even installed — a docs-only diff needs none.
+new_repo
+git -C "$R" checkout -qb feature
+seq 1 20 > "$R/notes.md"
+git -C "$R" add notes.md
+git -C "$R" commit -qm docs
+CODEX_GATE_MAX_LINES=1 \
+  check "a tier-1 diff is exempt below this gate's line cap" 0 "tier-1 skip" --no-issues --require
+assert "the exemption below the line cap dispatches nothing" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+assert "the exemption below the line cap is recorded" "[ \"\$(jq -r '.completion.outcome' '$R/.git/review-receipts/codex.json')\" = tier-1 ]"
+# No codex CLI anywhere: CODEX_GATE_BIN unset, an empty managed HOME, and a PATH
+# with no `codex` on it. An absent reviewer is dispatch feasibility, so it must
+# not deny the exemption — while a tier-2 diff on the same machine still degrades.
+SAVED_PATH="$PATH"
+SAVED_BIN="$CODEX_GATE_BIN"
+unset CODEX_GATE_BIN
+mv "$SHIM_DIR/codex" "$SHIM_DIR/codex-parked"
+PATH="$SHIM_DIR:/usr/bin:/bin"
+check "a tier-1 diff is exempt with no codex CLI installed" 0 "tier-1 skip" --no-issues --require
+assert "the exemption without a CLI names no executable" "jq -e '.reviewer.executable == null' '$R/.git/review-receipts/codex.json' >/dev/null"
+assert "shipping accepts an exemption recorded without a reviewer" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+seq 1 400 > "$R/notes.md"
+git -C "$R" commit -qam "docs above the tier-1 line cap"
+check "a tier-2 diff with no codex CLI still degrades" 3 "codex CLI not found" --no-issues --require
+assert "the degraded run left no receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+PATH="$SAVED_PATH"
+mv "$SHIM_DIR/codex-parked" "$SHIM_DIR/codex"
+export CODEX_GATE_BIN="$SAVED_BIN"
+rm -rf "$R"
+
+# A docs-only diff of one 200,000-byte line clears the tier-1 line count, and
+# used to take the exemption here while the Antigravity lane refused to dispatch
+# it at all. The captured tier1_max_bytes policy makes it tier 2 in both lanes,
+# so it is escalated to a real review rather than exempted or refused.
+new_repo
+git -C "$R" checkout -qb feature
+python3 - "$R/notes.md" <<'PYLONGLINE'
+import sys
+with open(sys.argv[1], 'w') as f:
+    f.write('x' * 200000 + '\n')
+PYLONGLINE
+git -C "$R" add notes.md
+git -C "$R" commit -qm "one very long documentation line"
+approve_clean
+check "a byte-huge docs diff is reviewed, not exempted" 0 "Codex review passed" --no-issues --require
+assert "the byte-huge docs diff dispatches a real review" "[ -e '$CODEX_FAKE_DIR/invoked' ]"
+assert "its receipt is a review, not a tier-1 exemption" "[ \"\$(jq -r '.completion.outcome' '$R/.git/review-receipts/codex.json')\" = passed ]"
+assert "the classification names the byte ceiling" "python3 '$SCRIPT_DIR/../review-receipt.py' lane --repo '$R' --scope committed | grep -qF 'bytes > tier-1 cap'"
+rm -rf "$R"
+
 cat > "$SHIM_DIR/classify.py" <<'PY'
 import os
 import sys

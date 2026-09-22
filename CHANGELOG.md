@@ -15,6 +15,24 @@
   expose credentials. Same wording in the `.codex-review-ignore` header and the
   script README; three gate assertions pin it. Refs #484.
 
+- **The tier-1 size ceiling is policy now, not one gate's prompt cap.** Whether a
+  docs-only diff could take the exemption depended on which gate you asked: the
+  Antigravity gate refused one above its 500-line or measured 185,000-byte
+  limits, the Codex gate above 5,000 lines or with no `codex` installed — and the
+  Codex lane minted the exemption the other refused. `classify_tier` now carries
+  `tier1_max_bytes` (default 65536) beside `tier1_max_lines`, captured in the
+  receipt like every other policy field, so both lanes and `check` agree and a
+  byte-huge docs diff is **escalated to an ordinary review** instead of refused.
+  A receipt with no byte ceiling — one minted before this existed — reads as
+  unclassifiable and requires Codex. Both gates' tier valves moved ahead of their
+  size caps and of the `codex`/`agy` presence checks, since a tier-1 diff
+  dispatches no message for those limits to be about; the self-review guard stays
+  ahead of the valve, because it is about trust, not feasibility. ADR-0008
+  amended. Refs #494, #482.
+- **`gate_select_lane`'s `skip` comment describes the mechanism that exists.**
+  Since #492 a tier-1 diff dispatches no gate at all; `review-and-push.sh`
+  records the exemption itself. Refs #493.
+
 ## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
 
 - **`--reconcile` closes empty routine pull requests and applies the label the

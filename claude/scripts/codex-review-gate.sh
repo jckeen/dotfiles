@@ -179,6 +179,14 @@ fi
 # Interactive shells already prefer the managed standalone release. Pin the
 # same executable here so login-shell PATH order cannot select an older CLI.
 # CODEX_GATE_BIN=codex intentionally requests PATH; invalid overrides fail closed.
+#
+# An ABSENT CLI is dispatch feasibility, not a policy, so it is recorded here and
+# acted on after the tier-1 valve (#494): a docs-only diff needs no reviewer, and
+# the exemption must not depend on whether this machine has codex installed. An
+# explicitly WRONG CODEX_GATE_BIN still fails immediately — that is a
+# misconfiguration, and honouring it silently would be the drift the pin exists
+# to prevent.
+GATE_CLI_MISSING=""
 if [[ "${CODEX_GATE_BIN+x}" == x ]]; then
   GATE_CLI="$(type -P -- "$CODEX_GATE_BIN" && printf .)" || GATE_CLI=""
   GATE_CLI=${GATE_CLI%$'\n.'}
@@ -193,12 +201,20 @@ elif [[ -f "${HOME:-}/.codex/packages/standalone/current/codex" && -x "${HOME:-}
 else
   GATE_CLI="$(type -P codex && printf .)" || GATE_CLI=""
   GATE_CLI=${GATE_CLI%$'\n.'}
-  [[ -f "$GATE_CLI" && -x "$GATE_CLI" ]] || degrade "codex CLI not found on PATH."
+  if [[ ! -f "$GATE_CLI" || ! -x "$GATE_CLI" ]]; then
+    GATE_CLI_MISSING="codex CLI not found on PATH."
+    # Keep the receipt's reviewer.executable resolution honest: gate_extract_diff
+    # looks this name up with `command -v`, which finds nothing, so the receipt
+    # records no executable — which is exactly what a tier-1 exemption is.
+    GATE_CLI=codex
+  fi
 fi
 # Resolve the launcher before artifact capture so the receipt names the file
 # actually invoked even if the managed release symlink changes during review.
-GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI" && printf .)"
-GATE_CLI=${GATE_CLI%$'\n.'}
+if [[ -z "$GATE_CLI_MISSING" ]]; then
+  GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI" && printf .)"
+  GATE_CLI=${GATE_CLI%$'\n.'}
+fi
 command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse structured review output)."
 [[ -f "$SCHEMA" ]] || degrade "review schema missing at $SCHEMA."
 
@@ -230,11 +246,6 @@ if [[ "$NONSPACE" == 0 ]]; then
   gate_record_pass no-diff
   green "✓ Diff is empty after lockfile/asset filtering — nothing to review."
   exit 0
-fi
-
-N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
-if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
-  degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — too large for a fenced review. Split the change, or review manually with 'codex review --base $BASE'."
 fi
 
 # ─── Self-review guard ─────────────────────────────────────────
@@ -269,9 +280,18 @@ fi
 
 # ─── Proportionality valve (#212) ──────────────────────────────
 # Docs-only small diffs take a reduced pass; anything touching a risk surface
-# or above the size cap gets the full review, never downgradable. The valve
-# fails toward the full pass — see gate_classify_tier in gate-lib.sh. An
-# adversarial dispatch always runs full: a claim to refute IS the job.
+# gets the full review, never downgradable. The valve fails toward the full
+# pass — see gate_classify_tier in gate-lib.sh. An adversarial dispatch always
+# runs full: a claim to refute IS the job.
+#
+# The valve runs BEFORE this gate's dispatch-feasibility checks — the line cap
+# and the codex CLI's presence — because it dispatches nothing (#494). Ordering
+# them the other way made the exemption depend on which gate was asked and on
+# whether this machine had a reviewer installed at all, while the SIZE ceiling
+# that belongs to the exemption is captured policy in review-receipt.py
+# (tier1_max_lines, tier1_max_bytes), shared by both lanes and by `check`.
+# The self-review guard stays ahead of the valve: it is about trust, not
+# feasibility, and must fire whether or not a reviewer runs.
 gate_classify_tier
 if [[ -n "$CLAIM" || -n "$REPRO" ]]; then
   GATE_TIER=2
@@ -282,6 +302,15 @@ if [[ "$GATE_TIER" -eq 1 ]]; then
   green "✓ tier-1 skip: $GATE_TIER_REASON — skipping the Codex review for this reduced-ceremony diff."
   echo "  (Set GATE_FORCE_FULL=1 to force the full pass.)"
   exit 0
+fi
+
+# ─── Dispatch feasibility (only now that a review will run) ────
+# A missing CLI was deferred from the resolution block above so that it cannot
+# deny a tier-1 exemption this machine needs no reviewer for (#494).
+[[ -z "$GATE_CLI_MISSING" ]] || degrade "$GATE_CLI_MISSING"
+N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
+if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
+  degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — too large for a fenced review. Split the change, or review manually with 'codex review --base $BASE'."
 fi
 
 bold "→ Codex review gate"

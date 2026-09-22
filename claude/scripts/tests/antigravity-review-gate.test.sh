@@ -418,11 +418,13 @@ ANTIGRAVITY_GATE_MAX_LINES=40000 ANTIGRAVITY_GATE_MAX_BYTES=0 \
 assert "disabled byte cap dispatches" "[ -e '$AGY_FAKE_DIR/invoked' ]"
 rm -rf "$R"
 
-# The tier-1 valve mints a receipt without dispatching, so the cap has to be
-# checked before it — as the line cap already is. A docs-only diff of one
-# 200,000-byte line clears the tier-1 line count while sitting far above the
-# input window, and must not collect a reduced-ceremony receipt for a change
-# no reviewer ever saw.
+# A docs-only diff of one 200,000-byte line clears the tier-1 LINE count while
+# sitting far above this lane's input window. It is not exempt — but the reason
+# is policy, not this gate's cap (#494): `classify_tier` carries a captured
+# tier1_max_bytes, so the diff is tier 2 in BOTH lanes and gets a real review.
+# The valve now runs before the caps, so the proof is that the SAME diff
+# dispatches once this gate's own window cap is out of the way; the cap still
+# degrades while it is in force, because the message really would be truncated.
 new_repo
 python3 - "$R/README.md" <<'PYLONGLINE'
 import sys
@@ -430,10 +432,29 @@ with open(sys.argv[1], 'w') as f:
     f.write('x' * 200000 + '\n')
 PYLONGLINE
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-check "one huge docs line cannot take the tier-1 skip" 0 "the model would see only its first" --uncommitted
+printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+check "one huge docs line is tier 2, so the window cap still degrades" 0 "the model would see only its first" --uncommitted
 assert "oversized docs diff mints no tier-1 receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 assert "oversized docs diff never dispatches" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
 check "oversized docs diff fails closed with --require" 3 "hard failure" --uncommitted --require
+ANTIGRAVITY_GATE_MAX_BYTES=0 \
+  check "a byte-huge docs diff is reviewed, not exempted, once the cap is off" 0 "LGTB verdict" --uncommitted
+assert "a byte-huge docs diff dispatches a real review" "[ -e '$AGY_FAKE_DIR/invoked' ]"
+assert "the receipt for it is a review, not a tier-1 exemption" "[ \"\$(jq -r '.completion.outcome' '$R/.git/review-receipts/antigravity.json')\" = passed ]"
+rm -f "$AGY_FAKE_DIR/invoked"
+rm -rf "$R"
+
+# The valve runs before both size caps, so a docs-only diff that is tier 1 by
+# policy takes the exemption even above a cap this gate would otherwise refuse
+# to dispatch under: nothing is dispatched, so no message limit applies (#494).
+new_repo
+printf 'documentation\n' >> "$R/README.md"
+git -C "$R" add README.md
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+ANTIGRAVITY_GATE_MAX_BYTES=1 ANTIGRAVITY_GATE_MAX_LINES=1 \
+  check "a tier-1 diff is exempt below any cap" 0 "tier-1 skip" --uncommitted --require
+assert "the tier-1 exemption dispatches nothing" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+assert "the tier-1 exemption is recorded" "[ \"\$(jq -r '.completion.outcome' '$R/.git/review-receipts/antigravity.json')\" = tier-1 ]"
 rm -rf "$R"
 
 # A small diff is unaffected by the default cap, and a non-integer cap is a

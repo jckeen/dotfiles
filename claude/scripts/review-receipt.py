@@ -30,6 +30,17 @@ LANE_RANK = {"any": 0, "antigravity": 1, "codex": 2}
 # review-and-push.sh stamps this prefix on the ledger note when an Antigravity
 # gate that could not run (exit 3) handed the diff to Codex. `stats` counts it.
 DEGRADED_NOTE_PREFIX = "antigravity-degraded"
+# Tier-1 ceilings, both captured into every receipt's policy so the two lanes and
+# `check` share one answer (#494). The byte ceiling exists because the line
+# ceiling alone is not a size limit: one 200,000-byte line is a 1-line diff. The
+# Antigravity lane's measured input window is 185,000 bytes for the WHOLE agy
+# print-mode message — preamble, fence markers and diff (#409,
+# antigravity-review-gate.sh) — so a diff the valve waves through must sit far
+# enough below that to still be dispatchable there if a caller forces the full
+# pass. 64 KiB is that, with room for the scaffolding, and is still ~3x the
+# largest plausible docs diff inside TIER1_MAX_LINES lines.
+TIER1_MAX_LINES = "200"
+TIER1_MAX_BYTES = "65536"
 AGENT_NAMESPACES = (
     "codex",
     ".codex",
@@ -937,6 +948,10 @@ def classify_tier(artifact, patch, policy):
     max_lines = policy["tier1_max_lines"]
     if not isinstance(max_lines, str):
         raise ValueError("malformed tier-1 policy")
+    # A receipt minted before the byte ceiling existed carries no tier1_max_bytes
+    # at all. `.get` rather than `[...]` so that reads as "unclassifiable", the
+    # fail-closed answer, instead of crashing or meaning "no limit" (#494).
+    max_bytes = policy.get("tier1_max_bytes")
     paths = artifact["changed_paths"]
     risk_paths = [path for path in paths if risk(path)]
 
@@ -954,9 +969,22 @@ def classify_tier(artifact, patch, policy):
         limit = int(max_lines)
     except ValueError:
         return verdict(2, "full pass (captured tier-1 cap is not supported)", True)
+    if not isinstance(max_bytes, str) or not re.fullmatch(r"[0-9]+", max_bytes):
+        return verdict(2, "full pass (captured tier-1 byte cap is not a number)", True)
+    try:
+        byte_limit = int(max_bytes)
+    except ValueError:
+        return verdict(2, "full pass (captured tier-1 byte cap is not supported)", True)
     lines = patch.count(b"\n")
     if lines > limit:
         return verdict(2, f"full pass (diff is {lines} lines > tier-1 cap {max_lines})")
+    # The line ceiling alone is not a size limit: one 200,000-byte line is a
+    # 1-line diff. The ceiling lives here rather than in a gate's prompt cap so
+    # both lanes and `check` agree, and so such a diff is ESCALATED to an
+    # ordinary review instead of being refused by whichever gate was asked
+    # (#494).
+    if len(patch) > byte_limit:
+        return verdict(2, f"full pass (diff is {len(patch)} bytes > tier-1 cap {max_bytes})")
     if not paths:
         return verdict(2, "full pass (could not enumerate changed paths)")
     for path in paths:
@@ -1007,7 +1035,18 @@ def lane(args):
     artifact, patch = stable_capture(repo, base, scope)
     if args.scope == "auto" and scope == "uncommitted" and not artifact["changed_paths"]:
         artifact, patch = stable_capture(repo, base, "committed")
-    print(json.dumps(classify_tier(artifact, patch, {"tier1_max_lines": args.tier1_max_lines})))
+    print(
+        json.dumps(
+            classify_tier(
+                artifact,
+                patch,
+                {
+                    "tier1_max_lines": args.tier1_max_lines,
+                    "tier1_max_bytes": args.tier1_max_bytes,
+                },
+            )
+        )
+    )
 
 
 def ledger_append(receipts, entry):
@@ -1110,7 +1149,10 @@ def begin(args):
     run = Path(tempfile.mkdtemp(prefix="run-", dir=str(receipts)))
     (run / "diff.patch").write_bytes(patch)
     os.chmod(run / "diff.patch", 0o600)
-    policy = {"tier1_max_lines": args.tier1_max_lines}
+    policy = {
+        "tier1_max_lines": args.tier1_max_lines,
+        "tier1_max_bytes": args.tier1_max_bytes,
+    }
     record = {
         # Version 2 adds "classification": check recomputes it and refuses a
         # receipt whose lane ranks below what the diff requires, so a version-1
@@ -1272,7 +1314,8 @@ def main():
         if name == "begin":
             sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), required=True)
             sub.add_argument("--executable")
-            sub.add_argument("--tier1-max-lines", default="200")
+            sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
+            sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
         if name == "check":
             sub.add_argument("--head", required=True)
     for name in ("verify", "classify"):
@@ -1282,7 +1325,8 @@ def main():
     sub.add_argument("--repo", default=".")
     sub.add_argument("--base")
     sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), default="committed")
-    sub.add_argument("--tier1-max-lines", default="200")
+    sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
+    sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
     sub = commands.add_parser("stats")
     sub.add_argument("--repo", default=".")
     sub.add_argument("--since-days", type=int, default=7)
