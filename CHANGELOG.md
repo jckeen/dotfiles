@@ -15,35 +15,6 @@
   runs, the same as a `.review-test` that declares no command; an empty value
   still means unset. The new cases in `review-and-push.test.sh` pin it.
   Closes #519.
-## 2026-09-22 — fix(jules-dispatch): the harvested review findings on --reconcile
-
-- **Every reconcile `gh` call names `github.com`.** The pull-request URL was
-  validated as github.com, but `--repo owner/name` without a host takes it from
-  `GH_HOST`, so an Enterprise default would have sent the close, label and title
-  writes to a same-named repository there. `pr view/close/edit` and `label
-  create` now pass `--repo github.com/<owner>/<name>`, and the commits read
-  passes `gh api --hostname github.com`. Closes #527.
-- **`max_files` is enforced before a routine pull request is labeled.** Every
-  dispatch record now carries the limit the session was given, and a pull
-  request over it is recorded `blocked-oversized` with the reason in its `prs`
-  entry, counted in `status.json` as `reconcile.oversized`, and left open,
-  unlabeled and unretitled for a person. A dispatch record written before the
-  field existed skips the check and its reconcile record carries `max_files:
-  null`; a ledger value that is not a positive integer is refused. Closes #530.
-- **`reconcile.blocked_subjects` counts subjects**, not the pull requests that
-  carry them. Closes #529.
-- **`--reconcile` no longer requires the routine catalog.** Its sessions come
-  from the ledger and outlive their routine files, so `--reconcile --routine
-  <removed>` and a pass over an emptied catalog now settle the sessions left
-  behind; dispatch and `--report` still refuse a missing or empty catalog.
-  Closes #531.
-- **ADR-0009 states the `commit_subjects_ok: null` contract exactly:** not
-  every pull request of the session was examined and none that was carries a
-  rejected subject — the pass may well have listed another pull request's
-  commits. Closes #525.
-
-The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these.
-
 ## 2026-09-22 — fix(worktree-lifecycle): branch config, attach race, retained exemptions, host-state diagnostic
 
 - **`retire --delete-branch` removes the branch's config section.** It deleted
@@ -77,6 +48,35 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   now refuses once, naming the marker's path as host state; the tests in
   `claude/scripts/tests/worktree-lifecycle.test.py` pin the check, the config
   cleanup, the restore and the persisted exemptions. Closes #511.
+
+## 2026-09-22 — fix(jules-dispatch): the harvested review findings on --reconcile
+
+- **Every reconcile `gh` call names `github.com`.** The pull-request URL was
+  validated as github.com, but `--repo owner/name` without a host takes it from
+  `GH_HOST`, so an Enterprise default would have sent the close, label and title
+  writes to a same-named repository there. `pr view/close/edit` and `label
+  create` now pass `--repo github.com/<owner>/<name>`, and the commits read
+  passes `gh api --hostname github.com`. Closes #527.
+- **`max_files` is enforced before a routine pull request is labeled.** Every
+  dispatch record now carries the limit the session was given, and a pull
+  request over it is recorded `blocked-oversized` with the reason in its `prs`
+  entry, counted in `status.json` as `reconcile.oversized`, and left open,
+  unlabeled and unretitled for a person. A dispatch record written before the
+  field existed skips the check and its reconcile record carries `max_files:
+  null`; a ledger value that is not a positive integer is refused. Closes #530.
+- **`reconcile.blocked_subjects` counts subjects**, not the pull requests that
+  carry them. Closes #529.
+- **`--reconcile` no longer requires the routine catalog.** Its sessions come
+  from the ledger and outlive their routine files, so `--reconcile --routine
+  <removed>` and a pass over an emptied catalog now settle the sessions left
+  behind; dispatch and `--report` still refuse a missing or empty catalog.
+  Closes #531.
+- **ADR-0009 states the `commit_subjects_ok: null` contract exactly:** not
+  every pull request of the session was examined and none that was carries a
+  rejected subject — the pass may well have listed another pull request's
+  commits. Closes #525.
+
+The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these.
 
 ## 2026-09-22 — fix(gate): the ignore list, the tier ceiling, and the boundary sweep
 
