@@ -102,8 +102,15 @@ def oracle_tier(artifact, patch, policy):
     cap = policy["tier1_max_lines"]
     if re.fullmatch(r"[0-9]+", cap) is None:
         return 2
+    # The byte ceiling (#494): one 200,000-byte line is a 1-line diff, so the line
+    # cap alone is not a size limit. A missing or unusable ceiling is tier 2.
+    byte_cap = policy.get("tier1_max_bytes")
+    if not isinstance(byte_cap, str) or re.fullmatch(r"[0-9]+", byte_cap) is None:
+        return 2
     lines = patch.count(b"\n")
     if lines > int(cap):
+        return 2
+    if len(patch) > int(byte_cap):
         return 2
     if not artifact["changed_paths"]:
         return 2
@@ -173,9 +180,15 @@ def classification_inputs(draw):
             )
         )
     cap = draw(st.sampled_from(("0", "1", "5", "200", "0500", "999999")))
+    byte_cap = draw(st.sampled_from(("0", "1", "8", "24", "65536", "0065536")))
     lines = draw(st.integers(min_value=0, max_value=12))
     artifact = {"changed_paths": paths, "changed_modes": modes}
-    return artifact, b"x\n" * lines, {"tier1_max_lines": cap}
+    return artifact, b"x\n" * lines, policy_for(cap, byte_cap)
+
+
+def policy_for(lines="200", size="65536"):
+    """The captured tier-1 policy both ceilings live in (#494)."""
+    return {"tier1_max_lines": lines, "tier1_max_bytes": size}
 
 
 def artifact_for(paths, modes):
@@ -212,7 +225,7 @@ class TierClassificationProperties(unittest.TestCase):
         result = receipt.classify_tier(
             artifact_for(paths, modes),
             b"x\n" * lines,
-            {"tier1_max_lines": "200"},
+            policy_for(),
         )
         self.assertEqual(result["tier"], 1, result["reason"])
 
@@ -226,7 +239,7 @@ class TierClassificationProperties(unittest.TestCase):
         result = receipt.classify_tier(
             artifact_for(paths, modes),
             b"x\n" * (200 + excess),
-            {"tier1_max_lines": "200"},
+            policy_for(),
         )
         self.assertEqual(result["tier"], 2)
 
@@ -239,7 +252,7 @@ class TierClassificationProperties(unittest.TestCase):
         result = receipt.classify_tier(
             artifact_for([path], modes),
             b"",
-            {"tier1_max_lines": "200"},
+            policy_for(),
         )
         self.assertEqual(result["tier"], 2)
 
@@ -253,7 +266,7 @@ class TierClassificationProperties(unittest.TestCase):
         result = receipt.classify_tier(
             artifact_for([path], [other, active]),
             b"",
-            {"tier1_max_lines": "200"},
+            policy_for(),
         )
         self.assertEqual(result["tier"], 2)
 
@@ -264,7 +277,7 @@ class TierClassificationProperties(unittest.TestCase):
         result = receipt.classify_tier(
             {"changed_paths": [], "changed_modes": {}},
             b"x\n" * lines,
-            {"tier1_max_lines": "200"},
+            policy_for(),
         )
         self.assertEqual(result["tier"], 2)
 
@@ -275,7 +288,7 @@ class TierClassificationProperties(unittest.TestCase):
             receipt.classify_tier(
                 artifact_for(["notes.md"], ["missing", "100644"]),
                 b"",
-                {"tier1_max_lines": cap},
+                policy_for(cap),
             )
 
     @given(cap=st.text(max_size=6).filter(lambda value: re.fullmatch(r"[0-9]+", value) is None))
@@ -284,9 +297,58 @@ class TierClassificationProperties(unittest.TestCase):
         result = receipt.classify_tier(
             artifact_for(["notes.md"], ["missing", "100644"]),
             b"",
-            {"tier1_max_lines": cap},
+            policy_for(cap),
         )
         self.assertEqual(result["tier"], 2)
+
+    @given(
+        byte_cap=st.one_of(
+            st.text(max_size=6).filter(lambda value: re.fullmatch(r"[0-9]+", value) is None),
+            st.integers(),
+            st.none(),
+            st.booleans(),
+        )
+    )
+    @settings(deadline=None)
+    def test_an_unusable_byte_cap_requires_the_strongest_lane(self, byte_cap):
+        # Unlike the line cap, an unusable BYTE cap never raises: a receipt minted
+        # before the field existed has none at all, and reading that as
+        # "unclassifiable" is the fail-closed answer (#494).
+        result = receipt.classify_tier(
+            artifact_for(["notes.md"], ["missing", "100644"]),
+            b"",
+            policy_for(size=byte_cap),
+        )
+        self.assertEqual(result["tier"], 2)
+        self.assertEqual(result["required_lane"], "codex")
+
+    @given(lines=st.integers(min_value=0, max_value=4))
+    @settings(deadline=None)
+    def test_a_policy_with_no_byte_cap_requires_the_strongest_lane(self, lines):
+        result = receipt.classify_tier(
+            artifact_for(["notes.md"], ["missing", "100644"]),
+            b"x\n" * lines,
+            {"tier1_max_lines": "200"},
+        )
+        self.assertEqual(result["tier"], 2)
+        self.assertEqual(result["required_lane"], "codex")
+
+    @given(
+        paths=st.lists(safe_doc_paths(), min_size=1, max_size=3, unique=True),
+        modes=st.lists(st.sampled_from(PASSIVE_MODES), min_size=1, max_size=2),
+        excess=st.integers(min_value=1, max_value=64),
+    )
+    @settings(deadline=None)
+    def test_one_long_line_above_the_byte_cap_is_tier_2(self, paths, modes, excess):
+        # The shape the byte ceiling exists for: a 1-line docs diff far above the
+        # size a reviewer could actually be handed.
+        result = receipt.classify_tier(
+            artifact_for(paths, modes),
+            b"x" * (1024 + excess) + b"\n",
+            policy_for(size="1024"),
+        )
+        self.assertEqual(result["tier"], 2)
+        self.assertIn("bytes", result["reason"])
 
 
 def leaf_keys(node, prefix=()):
@@ -316,6 +378,7 @@ class ReceiptTamperProperties(unittest.TestCase):
     # dict key and carries dots of its own (artifact.changed_modes['code.txt']).
     AUDIT_METADATA = frozenset(
         {
+            ("policy", "tier1_max_bytes"),
             ("policy", "tier1_max_lines"),
             ("reviewer", "executable"),
             ("reviewer", "model_evidence"),

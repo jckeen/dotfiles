@@ -1479,6 +1479,87 @@ class ReceiptTests(unittest.TestCase):
                 )
                 shutil.rmtree(boundary)
 
+    def test_ignored_fabricated_boundary_cannot_hide_an_instruction_file(self):
+        """#496: an IGNORED boundary was dropped whenever its own path was innocent.
+
+        `vendor/nested/` is not an instruction path, so the entry never reached the
+        fail-closed snapshot at all and `vendor/nested/CLAUDE.md` was never seen —
+        the receipt then claimed a clean instruction surface that it had not
+        checked. A fabricated `.git` (HEAD, objects, refs; no `git init`) is all it
+        takes for git to stop there.
+        """
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+
+        def fabricate():
+            (boundary / ".git/objects").mkdir(parents=True)
+            (boundary / ".git/refs").mkdir()
+            (boundary / ".git/HEAD").write_text("ref: refs/heads/main\n")
+
+        for hidden in ("CLAUDE.md", "AGENTS.md", "SKILL.md", "docs/CLAUDE.md"):
+            with self.subTest(hidden=hidden):
+                fabricate()
+                target = boundary / hidden
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("EVIL\n")
+                self.assertEqual(
+                    self.git("ls-files", "--others", "--ignored", "--exclude-standard"),
+                    "vendor/nested/",
+                )
+                self.expect_begin_refused()
+                shutil.rmtree(boundary)
+        # The boundary's own .gitignore must not decide what this repo's sweep can
+        # see, or hiding the file from the inspection would take one line.
+        fabricate()
+        (boundary / ".gitignore").write_text("CLAUDE.md\n")
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        self.expect_begin_refused()
+        shutil.rmtree(boundary)
+        # One level only: a boundary behind a boundary is refused, never descended.
+        fabricate()
+        (boundary / "inner/.git/objects").mkdir(parents=True)
+        (boundary / "inner/.git/refs").mkdir()
+        (boundary / "inner/.git/HEAD").write_text("ref: refs/heads/main\n")
+        (boundary / "inner/CLAUDE.md").write_text("EVIL\n")
+        self.expect_begin_refused()
+        shutil.rmtree(boundary)
+        # A directory git stopped at that is not a usable repository at all cannot
+        # be inspected, so it is refused rather than assumed empty.
+        boundary.mkdir(parents=True)
+        (boundary / ".git").write_text("gitdir: /nonexistent/elsewhere\n")
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        self.expect_begin_refused()
+        shutil.rmtree(boundary)
+        # Benign vendoring still works: a real repository with no instruction file
+        # behind it is inspected and allowed, ignored or not.
+        for ignored in (True, False):
+            with self.subTest(vendored_repo_ignored=ignored):
+                (self.repo / ".git/info/exclude").write_text("vendor/\n" if ignored else "\n")
+                boundary.mkdir(parents=True)
+                subprocess.check_output(
+                    ["git", "init", "-q", "-b", "main", str(boundary)], stderr=subprocess.PIPE
+                )
+                (boundary / "index.js").write_text("library code\n")
+                if ignored:
+                    self.run_helper(
+                        "begin",
+                        "--repo",
+                        str(self.repo),
+                        "--base",
+                        "main",
+                        "--scope",
+                        "committed",
+                        "--reviewer",
+                        "codex",
+                    )
+                else:
+                    # A visible boundary is untracked, and untracked boundaries have
+                    # always failed closed in file_bytes() — unchanged here.
+                    self.expect_begin_refused()
+                (boundary / "CLAUDE.md").write_text("EVIL\n")
+                self.expect_begin_refused()
+                shutil.rmtree(boundary)
+
     def test_stale_worktree_registration_is_not_allowlisted(self):
         # Git keeps printing a `worktree` line for a registration whose directory
         # was removed, and stops calling it prunable once anything occupies the

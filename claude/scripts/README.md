@@ -50,7 +50,7 @@ per-script suites named in the table above:
 | Suite | What it pins |
 | --- | --- |
 | `tests/review-multipart.property.test.py` | Hypothesis properties for the fragment splitter: fragments rejoin to the original, none exceeds the UTF-8 byte bound, none is empty, each is a contiguous byte slice of the packet, and a bound too small for one character fails closed |
-| `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, an over-cap diff, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
+| `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, a diff over either captured ceiling (lines or bytes), a policy missing the byte ceiling, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
 | `tests/setup-fuzz-layouts.test.sh` | Seeded fuzzer over `setup.sh --yes --dry-run`: pseudo-random `$HOME` layouts (`.bashrc`, `.gitconfig`, `.claude`, `~/.agents/skills`, dangling links, a bun stub, `~/.codex`) each asserted byte-identical before and after. `SEED` reproduces a run and is printed on failure; `LAYOUTS` sets the count |
 | `tests/lib-snapshot.sh` | Not a suite — the shared full-fidelity directory snapshot (every path, file hash, and symlink target) sourced by `setup-dry-run.test.sh` and `setup-fuzz-layouts.test.sh` so both compare identically |
 
@@ -161,6 +161,14 @@ Automatic text conversion respects Git's binary classification; explicitly
 forced text conversion retains Git's configured behavior.
 Known ignored agent runtime credentials and state are excluded from instruction
 discovery. Named instruction files inside runtime directories remain covered.
+A directory Git refuses to descend into is reported as one trailing-slash entry,
+and a hand-made `.git` earns that treatment, so every such boundary in the
+ignored sweep is inspected rather than judged by its own name (#496): one of this
+repository's own registered worktrees is dropped, a real repository is allowed
+only when its own listing — tracked and untracked, without honouring its
+`.gitignore` — holds no instruction path and no further boundary, and anything
+else refuses. A visible (non-ignored) boundary keeps failing closed in the
+snapshot itself.
 Recognized runtime artifacts explicitly included in the review target block
 review before their contents can reach a reviewer. These filename and directory
 rules are not a general secret scanner.

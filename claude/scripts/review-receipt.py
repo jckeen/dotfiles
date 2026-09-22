@@ -137,8 +137,9 @@ def own_worktrees(repo):
     single entry with a trailing slash, and a directory only has to *look* like a
     repository to qualify (a `.git` holding HEAD, objects and refs). Dropping such
     an entry is safe only for this repo's own worktrees (#474); every other
-    boundary keeps failing closed in file_bytes(), so a fabricated `.git` cannot
-    hide a dirty instruction file behind it.
+    boundary fails closed — an ignored one in inspect_boundary(), a visible one in
+    file_bytes() — so a fabricated `.git` cannot hide a dirty instruction file
+    behind it (#496).
 
     `-z` because git prints worktree paths raw: a path holding a newline would
     otherwise split into two entries, truncating the real one and synthesizing a
@@ -170,6 +171,27 @@ def worktree_gitdir(directory):
                 os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
             )
     return None
+
+
+def boundary_listing(directory):
+    """Every path a foreign repository boundary lists, tracked and untracked alike.
+
+    `git ls-files` stops at any directory that merely LOOKS like a repository — a
+    `.git` holding HEAD, objects and refs is enough, no `git init` required — so
+    "git stopped here" is no evidence that anything ever looked inside (#496).
+    This is that look.
+
+    Deliberately WITHOUT `--exclude-standard`: the boundary's own `.gitignore`
+    must not decide what this repository's instruction sweep is allowed to see,
+    and with no exclude option git applies no patterns at all, so every untracked
+    file is listed. Returns None when the directory is not a usable repository,
+    which the caller treats as a refusal rather than as an empty listing.
+    """
+    try:
+        listing = git(directory, "ls-files", "--cached", "--others", "-z")
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return [os.fsdecode(p) for p in listing.split(b"\0") if p]
 
 
 def named_instruction(path):
@@ -668,19 +690,53 @@ def capture(repo, base, scope):
             "private agent runtime data cannot be sent for review: "
             + ", ".join(sorted(private_inputs))
         )
-    ignored_instructions = {
-        os.fsdecode(p)
-        for p in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
-            b"\0"
-        )
-        # One of this repo's own worktrees, listed as a directory entry git will
-        # not descend into: nothing behind that boundary is an instruction surface
-        # of this repo, and untracked_sha256 must not bind to the entry (#474).
-        if p
-        and not own_boundary(os.fsdecode(p))
-        and not private_agent_data(os.fsdecode(p))
-        and instruction(os.fsdecode(p))
-    }
+
+    def inspect_boundary(entry):
+        """Refuse a foreign boundary that could be hiding an instruction file.
+
+        `ls-files` collapses a directory it will not descend into to one
+        trailing-slash entry, and a hand-made `.git` earns that. This used to be
+        decided by `instruction(entry)`, so a boundary whose own path was not an
+        instruction path — `vendor/nested/` — was dropped and the instruction file
+        beneath it was never seen, leaving the receipt's "no dirty instruction
+        surface" claim false (#496). Every boundary is inspected now, whatever its
+        own name: a real repository with no instruction file behind it is allowed,
+        and everything else refuses — a boundary that is not a usable repository,
+        one holding an instruction file, or one holding a further boundary, which
+        this deliberately does not descend into.
+        """
+        prefix = entry.rstrip("/")
+        listing = boundary_listing(repo / prefix)
+        if listing is None:
+            raise ValueError("cannot inspect repository boundary: " + entry)
+        for name in listing:
+            path = prefix + "/" + name
+            if name.endswith("/"):
+                raise ValueError("repository boundary nested behind a boundary: " + path)
+            if instruction(path):
+                raise ValueError("instruction surface hidden behind repository boundary: " + path)
+
+    ignored_instructions = set()
+    for raw in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
+        b"\0"
+    ):
+        if not raw:
+            continue
+        entry = os.fsdecode(raw)
+        # own_boundary: one of this repo's own worktrees, listed as a directory
+        # entry git will not descend into. Nothing behind that boundary is an
+        # instruction surface of this repo, and untracked_sha256 must not bind to
+        # the entry (#474). private_agent_data: ignored agent runtime state is
+        # dropped from the sweep rather than blocking a review, as it has been
+        # since that data stopped being sent for review — including when it is
+        # itself a boundary, whose contents this never captures either way.
+        if own_boundary(entry) or private_agent_data(entry):
+            continue
+        if entry.endswith("/"):
+            inspect_boundary(entry)
+            continue
+        if instruction(entry):
+            ignored_instructions.add(entry)
     files, workspace, omitted, blobs = {}, {}, set(), {}
 
     def blob(obj):

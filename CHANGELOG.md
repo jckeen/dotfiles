@@ -15,6 +15,19 @@
   expose credentials. Same wording in the `.codex-review-ignore` header and the
   script README; three gate assertions pin it. Refs #484.
 
+- **Every repository boundary in the ignored sweep is inspected, not just the ones
+  whose own name looks like an instruction file.** `ls-files` collapses a
+  directory it will not descend into to one trailing-slash entry, and a hand-made
+  `.git` (HEAD, objects, refs — no `init`) is enough to earn that. The sweep
+  reached its fail-closed path only when `instruction(entry)` was true, so
+  `vendor/nested/` was dropped silently and `vendor/nested/CLAUDE.md` beneath it
+  was never seen: the receipt then asserted a clean instruction surface it had not
+  checked. Now a boundary is allowed only if it is one of this repository's own
+  registered worktrees (the #474 allowlist, `.git`-pointer check included) or a
+  real repository whose listing — tracked and untracked, deliberately without
+  `--exclude-standard`, so its own `.gitignore` cannot hide a file from us —
+  holds no instruction path and no further boundary. Anything else refuses.
+  Benign vendored repositories still capture normally. Refs #496.
 - **The tier-1 size ceiling is policy now, not one gate's prompt cap.** Whether a
   docs-only diff could take the exemption depended on which gate you asked: the
   Antigravity gate refused one above its 500-line or measured 185,000-byte
