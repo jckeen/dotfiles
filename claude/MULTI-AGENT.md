@@ -71,11 +71,12 @@ Not every diff earns the full adversarial tax. Both review gates
 (`gate_classify_tier` in `claude/scripts/gate-lib.sh`) — diff size plus
 changed-path match against risk surfaces — before dispatching any reviewer:
 
-- **Tier 1 (reduced):** docs-only diffs at or under BOTH captured ceilings —
-  `GATE_TIER1_MAX_LINES` (default 200) and `GATE_TIER1_MAX_BYTES` (default
-  65536, because one 200,000-byte line is a 1-line diff). The gate may skip,
-  logging a `tier-1 skip` line. Force the full pass anyway with
-  `GATE_FORCE_FULL=1`.
+- **Tier 1 (reduced):** docs-only diffs at or under BOTH captured ceilings — 200
+  lines (`GATE_TIER1_MAX_LINES`) and 65536 bytes, because one 200,000-byte line
+  is a 1-line diff. The byte ceiling has no environment knob on purpose: every
+  caller inherits `review-receipt.py`'s default, so the gates and the shipping
+  wrapper cannot disagree about it. The gate may skip, logging a `tier-1 skip`
+  line. Force the full pass anyway with `GATE_FORCE_FULL=1`.
 - **Tier 2 (full):** anything touching a risk surface — auth/token/secret/
   credential names, path/host handling, schemas, hash chains, and gate/hook/
   CI/instruction files (AGENTS*.md, CLAUDE.md, GEMINI.md, SKILL.md, `codex/`,

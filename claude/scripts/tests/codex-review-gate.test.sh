@@ -1578,6 +1578,24 @@ assert "its receipt is a review, not a tier-1 exemption" "[ \"\$(jq -r '.complet
 assert "the classification names the byte ceiling" "python3 '$SCRIPT_DIR/../review-receipt.py' lane --repo '$R' --scope committed | grep -qF 'bytes > tier-1 cap'"
 rm -rf "$R"
 
+# The byte ceiling has ONE source — review-receipt.py's default, which every
+# caller inherits by omitting the flag. A gate-only environment knob would be
+# honoured by half the pipeline: `review-and-push.sh` classifies with its own
+# `lane` call first, so a stricter ceiling in the gate would pick the tier-1 skip
+# and then refuse to record the exemption, failing a push instead of escalating
+# it. The receipt's captured policy must therefore ignore the environment and
+# match what `lane` used.
+new_repo
+git -C "$R" checkout -qb feature
+seq 1 20 > "$R/notes.md"
+git -C "$R" add notes.md
+git -C "$R" commit -qm docs
+GATE_TIER1_MAX_BYTES=1 \
+  check "an environment byte ceiling does not steer the gate" 0 "tier-1 skip" --no-issues --require
+assert "the captured byte ceiling is the helper default" "[ \"\$(jq -r '.policy.tier1_max_bytes' '$R/.git/review-receipts/codex.json')\" = \"\$(python3 -c \"import importlib.util,pathlib; s=importlib.util.spec_from_file_location('r', pathlib.Path('$SCRIPT_DIR/../review-receipt.py')); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.TIER1_MAX_BYTES)\")\" ]"
+assert "the wrapper's own classification agrees with the receipt" "[ \"\$(GATE_TIER1_MAX_BYTES=1 python3 '$SCRIPT_DIR/../review-receipt.py' lane --repo '$R' --scope committed | jq -r '.tier')\" = \"\$(jq -r '.classification.tier' '$R/.git/review-receipts/codex.json')\" ]"
+rm -rf "$R"
+
 cat > "$SHIM_DIR/classify.py" <<'PY'
 import os
 import sys

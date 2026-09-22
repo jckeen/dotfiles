@@ -248,8 +248,12 @@ never escalates the lane: a large ordinary diff is still ordinary.
 
 Tier 1 has two captured size ceilings, both in the receipt's `policy` so the
 two lanes and `check` share one answer (#494): `tier1_max_lines` (default 200,
-override `GATE_TIER1_MAX_LINES`) and `tier1_max_bytes` (default 65536, override
-`GATE_TIER1_MAX_BYTES`). The byte ceiling exists because the line ceiling is not
+override `GATE_TIER1_MAX_LINES`) and `tier1_max_bytes` (default 65536, **no
+environment override on purpose** — `review-and-push.sh` classifies with its own
+`lane` call before any gate runs, so a knob only the gates honoured would make
+the wrapper choose the tier-1 skip and then refuse to record the exemption it had
+just chosen; adding one means forwarding it there in the same change). The byte
+ceiling exists because the line ceiling is not
 a size limit — one 200,000-byte line is a 1-line diff — and it sits far below
 the Antigravity lane's measured 185,000-byte input window so that a diff the
 valve waves through would still be dispatchable there. A docs diff above either

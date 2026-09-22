@@ -78,11 +78,14 @@ gate_extract_diff() {
   executable=${executable%$'\n.'}
   args+=(--executable "$executable")
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
-  # The tier-1 BYTE ceiling's default lives in review-receipt.py
-  # (TIER1_MAX_BYTES) and is omitted rather than repeated here, so the two lanes
-  # and `check` cannot drift apart on it (#494). An explicit override still
-  # reaches the helper, and an unusable one classifies tier 2 there.
-  [[ -z "${GATE_TIER1_MAX_BYTES:-}" ]] || args+=("--tier1-max-bytes=$GATE_TIER1_MAX_BYTES")
+  # The tier-1 BYTE ceiling is deliberately NOT overridable from here: its only
+  # source is review-receipt.py's TIER1_MAX_BYTES, which every caller inherits by
+  # omitting the flag (#494). A knob honoured here alone would be honoured by half
+  # the pipeline — `review-and-push.sh` classifies with its own `lane` call before
+  # any gate runs, so a stricter ceiling here would make the wrapper choose the
+  # tier-1 skip and then refuse to record the exemption it had just chosen,
+  # failing a push instead of escalating it to a review. Adding the knob means
+  # forwarding it to that `lane` call in the same change, with a wrapper test.
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
   trap gate_cleanup EXIT
   # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.

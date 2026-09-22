@@ -33,7 +33,10 @@
   Antigravity gate refused one above its 500-line or measured 185,000-byte
   limits, the Codex gate above 5,000 lines or with no `codex` installed — and the
   Codex lane minted the exemption the other refused. `classify_tier` now carries
-  `tier1_max_bytes` (default 65536) beside `tier1_max_lines`, captured in the
+  `tier1_max_bytes` (default 65536, with no environment knob on purpose: the
+  shipping wrapper classifies before any gate runs, so a gate-only override would
+  pick the tier-1 skip and then refuse to record it) beside `tier1_max_lines`,
+  captured in the
   receipt like every other policy field, so both lanes and `check` agree and a
   byte-huge docs diff is **escalated to an ordinary review** instead of refused.
   A receipt with no byte ceiling — one minted before this existed — reads as
