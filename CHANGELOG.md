@@ -87,8 +87,8 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   split: `review-receipt.py capture` opens only this lane's attempt, and `claim`
   — refusing a superseded attempt, then retiring every other lane — runs only
   once a gate can reach a verdict: the Codex gate after its reviewer produced
-  output (and on a failed run whose output already carries blocking findings,
-  which now exits 2 rather than 3), the Antigravity gate after its model-pin check, before a failed local
+  output (and on a failed or cancelled run whose output is not verifiably free
+  of blocking findings, which now exits 2 rather than 3), the Antigravity gate after its model-pin check, before a failed local
   compile/lint check, and in `verdict_in_partial_output` before a partial
   blocking verdict. `gate_record_pass`
   claims too, so no-diff and tier-1 receipts behave as before. `complete` refuses

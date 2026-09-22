@@ -1789,6 +1789,26 @@ printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severi
 check "a failed run carrying blocking findings is a verdict" 2 "a verdict, not a degraded lane" --committed --require --no-issues
 assert "that verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 seed_antigravity_receipt
+# Output that is not verifiably free of blockers fails closed: a trailing
+# scalar must not erase the high finding before it.
+printf '%s' '{"findings":[{"severity":"high"},"partial"]}' > "$CODEX_FAKE_DIR/output"
+check "a failed run with malformed output that may block is a verdict" 2 "may carry, blocking findings" --committed --require --no-issues
+assert "malformed failed output retires the Antigravity approval" "! antigravity_receipt_ships"
+seed_antigravity_receipt
+# A cancellation Bash defers until the reviewer exits must not discard the
+# blocking findings that reviewer already wrote.
+echo 0 > "$CODEX_FAKE_DIR/rc"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s\n' 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"' > "$CODEX_FAKE_DIR/mutate"
+check "a cancellation after blocking output is a verdict" 2 "Codex review cancelled" --committed --require --no-issues
+assert "that cancellation retires the Antigravity approval" "! antigravity_receipt_ships"
+rm -f "$CODEX_FAKE_DIR/mutate"
+seed_antigravity_receipt
+approve_clean
+printf '%s\n' 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"' > "$CODEX_FAKE_DIR/mutate"
+check "a cancellation after clean output stays degraded" 3 "Codex review cancelled" --committed --require --no-issues
+assert "that cancellation leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+rm -f "$CODEX_FAKE_DIR/mutate"
 echo 0 > "$CODEX_FAKE_DIR/rc"
 printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "a blocking Codex verdict blocks" 2 "" --committed --require --no-issues

@@ -55,7 +55,8 @@
 # Exit codes:
 #   0  clean, or only low findings (filed as issues)
 #   2  blocking findings present (critical/high/medium) — even in the output of
-#      a failed run — or output unreadable
+#      a failed or cancelled run, where output not verifiably free of them
+#      counts — or output unreadable
 #   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
@@ -71,10 +72,29 @@ case "${BASH_SOURCE[0]}" in
   */*) RECEIPT_HELPER="${BASH_SOURCE[0]%/*}/review-receipt.py" ;;
   *)   RECEIPT_HELPER="./review-receipt.py" ;;
 esac
+# True unless the reviewer's output is absent or VERIFIABLY free of blocking
+# findings: exactly one JSON object whose findings are all low-severity objects.
+# Malformed, truncated, multi-document or oddly typed output fails closed — a
+# failed or cancelled run must not hide a blocker it already wrote (#499).
+output_may_block() {
+  [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" ]] || return 1
+  ! jq -e -s 'length == 1 and (.[0] | type == "object")
+    and ((.[0].findings // []) | type == "array")
+    and all((.[0].findings // [])[]; type == "object" and .severity == "low")' \
+    "$OUT_FILE" >/dev/null 2>&1
+}
 cancel_review() {
   # Repeated signals must not interrupt receipt invalidation or cleanup. The
   # existing receipt API invalidates the whole lane.
   trap '' INT TERM HUP QUIT TSTP
+  # Bash defers this trap until the foreground reviewer exits, so its output
+  # may already hold blocking findings. Those are a verdict: claim while this
+  # attempt is still live, and exit 2 below rather than a degraded 3 (#499).
+  local verdict=3
+  if output_may_block && declare -F gate_claim >/dev/null && [[ -n "${GATE_RUN_DIR:-}" ]]; then
+    verdict=2
+    gate_claim
+  fi
   if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
     [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
   fi
@@ -89,10 +109,12 @@ cancel_review() {
   else
     printf '%s\n' "✖ Codex review cancelled; no approval from this attempt may be used."
   fi
-  # Still 3 after a claim (#499): the claim retired the other lane's approval,
-  # which fails closed, and the only consumer that falls back on an exit 3
-  # (review-and-push.sh) does so for the Antigravity lane alone, never this one.
-  exit 3
+  [[ "$verdict" != 2 ]] || red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
+  # Otherwise still 3, even after an earlier claim (#499): the claim retired the
+  # other lane's approval, which fails closed, and the only consumer that falls
+  # back on an exit 3 (review-and-push.sh) does so for the Antigravity lane
+  # alone, never this one.
+  exit "$verdict"
 }
 trap cancel_review INT TERM HUP QUIT TSTP
 
@@ -555,10 +577,11 @@ if [[ "$CODEX_RC" -ne 0 ]]; then
   # A failed run is never an approval, but blocking findings it did write are
   # still a verdict against the artifact — the ADR-0008 rule the Antigravity
   # gate applies to partial output. They claim (#499) and exit 2, which never
-  # falls back; anything else from a failed run stays a degraded lane.
-  if [[ -s "$OUT_FILE" ]] && jq -e '[.findings[]? | select(.severity == "critical" or .severity == "high" or .severity == "medium")] | length > 0' "$OUT_FILE" >/dev/null 2>&1; then
+  # falls back; only output that is verifiably free of them stays a degraded
+  # lane (output_may_block).
+  if output_may_block; then
     gate_claim
-    red "  Its output carries blocking findings: a verdict, not a degraded lane (ADR-0008)."
+    red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
     exit 2
   fi
   exit 3
