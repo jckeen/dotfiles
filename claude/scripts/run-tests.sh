@@ -9,7 +9,8 @@
 #
 # The suite list is the same enumeration check-tests-wired.sh asserts is wired
 # into CI: claude/scripts/tests/*.test.sh and *.test.py. A suite's NAME is its
-# filename with the .test.sh / .test.py suffix removed. Checkers are NOT run
+# filename with the .test.sh / .test.py suffix removed, and must be unique:
+# foo.test.sh beside foo.test.py fails discovery. Checkers are NOT run
 # here — several sweep a live ~/.claude that CI and a fresh clone do not have;
 # ci.yml runs them beside the suites.
 #
@@ -78,6 +79,17 @@ for f in "$TESTS_DIR"/*.test.sh "$TESTS_DIR"/*.test.py; do
   name="$(basename "$f")"
   name="${name%.test.sh}"
   name="${name%.test.py}"
+  # Two files deriving one name (foo.test.sh + foo.test.py) is refused, not
+  # resolved: suite_index answers with the first match, so selecting `foo` or a
+  # --changed diff touching the second file would silently run the other one
+  # (#518). Refusing keeps the extension-free names every caller already uses.
+  for i in "${!SUITE_NAMES[@]}"; do
+    if [ "${SUITE_NAMES[$i]}" = "$name" ]; then
+      echo "error: duplicate test suite name: $name — ${SUITE_FILES[$i]} and $f" >&2
+      echo "       rename one; a suite name must identify exactly one file." >&2
+      exit 1
+    fi
+  done
   SUITE_NAMES+=("$name")
 done
 

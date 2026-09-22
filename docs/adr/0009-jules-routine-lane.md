@@ -173,6 +173,23 @@ Adopt Jules as the routine lane.
    a dispatch and suppressed the very routine it belongs to on the next run —
    all of them now filter on the record kind.
 
+   Review of the shipped pass found four more. Every `gh` call it makes names
+   `github.com` itself (`--repo github.com/<owner>/<name>`, `gh api --hostname
+   github.com`): the URL was validated as github.com, but a hostless `--repo`
+   takes its host from `GH_HOST`, so an Enterprise default would have sent the
+   close, label and title writes to a same-named repository there (#527).
+   `max_files` is a hard per-PR limit, so every dispatch record now carries the
+   limit the session was given, and a pull request over it is recorded
+   `blocked-oversized` — left open, unlabeled and unretitled, because labeling
+   it would present it as a compliant routine result — with the count in
+   `status.json`'s `reconcile.oversized`; a record written before the limit was
+   persisted skips the check and its reconcile record carries `max_files: null`
+   (#530). `reconcile.blocked_subjects` counts rejected subjects, not the pull
+   requests carrying them (#529). And `--reconcile` no longer requires the
+   catalog: its sessions come from the ledger and outlive their routine files,
+   so a routine removed from the catalog, or an emptied catalog, must not strand
+   the sessions it left (#531).
+
    A second round added four more. `GET /sources` is paginated — `pageSize`
    defaults to 30 and `nextPageToken` is omitted on the last page — so an
    unpaginated request would have reported every repository past the 30th as not
@@ -447,8 +464,13 @@ change:
   carrying the session name, the repository, and the pull-request URL and
   number it confirmed, so the custodian reads provenance from the ledger rather
   than re-deriving it from PR text. Every field of that record is provenance, so
-  `commit_subjects_ok` is tri-state rather than a boolean: a consumer must treat
-  `null` as "this pass never listed the commits" and go and look itself (#508).
+  `commit_subjects_ok` is tri-state rather than a boolean: `null` means not
+  every pull request of the session was examined and none that was examined
+  carries a rejected subject — a rejection anywhere makes it `false` — so a
+  consumer must treat `null` as "some pull request here was never read" and go
+  and look itself, even when the pass did list another one's commits (#508,
+  #525). Likewise a record's `max_files` of `null` means the size limit was not
+  checked (#530).
 - **Routine-PR classifier** — the `jules-routine:*` label is applied after the
   fact by the reconcile pass, never by the platform (#479), so anything keying
   on the label has to wait for a reconcile pass to have run; between a session
