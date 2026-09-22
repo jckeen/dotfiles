@@ -181,8 +181,12 @@ gate_classify_tier() {
 #   antigravity  ordinary tier-2 work, or REVIEW_LANE=antigravity where allowed
 #   skip         tier 1 (required lane "any"): no reviewer needs to be
 #                dispatched at all. A caller that still needs shipping evidence
-#                runs the cheapest gate, whose tier-1 valve mints the exemption
-#                receipt without spending any model quota.
+#                records the exemption receipt itself — capture, then
+#                `review-receipt.py complete --outcome tier-1`, which refuses any
+#                artifact that is not a small docs-only diff
+#                (`review-and-push.sh` does this). Asking a gate for it instead
+#                couples the exemption to that gate's dispatch-feasibility
+#                limits (#482).
 # Returns 1 (with a reason on stdout/stderr) on an unusable request. The one
 # asymmetry is deliberate: REVIEW_LANE=antigravity on a codex-required diff is
 # REFUSED rather than honoured, because that request is exactly the downgrade
