@@ -61,9 +61,11 @@ new_repo() {
 }
 
 # run [env assignments...] — invoke the script on $R with the caller's extra
-# environment. GIT_CONFIG_* is stripped so the guard sees only what a case sets.
+# environment. GIT_CONFIG_* is stripped so the guard sees only what a case sets,
+# and REVIEW_TEST_CMD so an operator who exported it to run THIS repo's suites
+# cannot have it inherited by ~40 nested wrapper runs on fixture repos.
 run() {
-  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM "$@" \
+  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u REVIEW_TEST_CMD "$@" \
     "$SCRIPT" "$R" --auto-push </dev/null 2>&1)"
   RC=$?
 }
@@ -335,7 +337,7 @@ clean_lane_repo() {
 
 # run_lane [env assignments...] — invoke the symlinked script on $R.
 run_lane() {
-  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM "$@" \
+  OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u REVIEW_TEST_CMD "$@" \
     "$LANE_DIR/review-and-push.sh" "$R" --auto-push </dev/null 2>&1)"
   RC=$?
 }
@@ -612,6 +614,15 @@ assert "REVIEW_TEST_CMD runs" "grep -qF -- 'env-cmd-ran' <<<\"\$OUT\""
 want_absent "REVIEW_TEST_CMD outranks .review-test" "review-test-file-ran"
 assert "the REVIEW_TEST_CMD run names its source" \
   "grep -qF -- 'tests: passed (REVIEW_TEST_CMD)' <<<\"\$OUT\""
+clean_lane_repo
+
+# The override is unset for the command's own environment: it names THIS repo's
+# tests, and that command is usually a suite that runs the wrapper again on a
+# fixture repo, where inheriting it would recurse or fail.
+new_lane_repo widget.ts
+run_lane REVIEW_TEST_CMD='echo "override=${REVIEW_TEST_CMD:-unset}"'
+assert "REVIEW_TEST_CMD is not exported into its own command" \
+  "grep -qF -- 'override=unset' <<<\"\$OUT\""
 clean_lane_repo
 
 # A failing test command stops the wrapper where it always did: before any

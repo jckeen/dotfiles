@@ -423,7 +423,7 @@ Environment variables:
 | `MODEL=sonnet` | Override model (default: opus) |
 | `CLAUDE_REPOS="~/a ~/b"` | Explicit repo list for `overnight.sh` |
 | `CLAUDE_DEV_DIR=/path` | Dev directory for auto-detection (default: `~/dev`) |
-| `REVIEW_TEST_CMD="<command line>"` | Step 2's test command in `review-and-push.sh`; outranks the repo-root `.review-test` file and framework sniffing (#490) |
+| `REVIEW_TEST_CMD="<command line>"` | Step 2's test command in `review-and-push.sh`; outranks the repo-root `.review-test` file and framework sniffing (#490). Unset for the command's own environment, so a suite that invokes the wrapper again on a fixture repo does not inherit it |
 | `REVIEW_LANE=auto\|codex\|antigravity` | Override the review lane chosen by `review-and-push.sh` (default `auto`). Escalation is honoured; `antigravity` on a codex-required diff is **refused**, not honoured (ADR-0008) |
 | `REVIEW_LANE_FALLBACK=codex\|block` | What to do when the Antigravity gate exits 3 (could not run). Default `codex` re-runs the diff through the Codex gate and records the degradation in the lane ledger; `block` refuses the push. A blocking verdict (exit 2) never falls back |
 

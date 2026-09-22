@@ -35,7 +35,12 @@
   of the repository cannot reach the wrapper's variables and weaken the
   checkpoints after it, and with `pipefail` because a child shell does not
   inherit it and `<suite> | tee log` would otherwise report tee's success and
-  let a red suite reach the push. A declared-but-empty file fails closed. With nothing declared the step prints a
+  let a red suite reach the push. `REVIEW_TEST_CMD` is unset for the command's
+  own environment: it names *this* repo's tests, and that command is usually a
+  suite that runs the wrapper again against a fixture repo (about forty times in
+  `review-and-push.test.sh`), where inheriting it would recurse or fail — the
+  shipping fixtures scrub it for the same reason. A declared-but-empty file
+  fails closed. With nothing declared the step prints a
   banner saying the receipt attests to no test run and records
   `tests: skipped`, so a PR body can quote it honestly. This repo's
   `.review-test` runs `run-tests.sh --changed`.

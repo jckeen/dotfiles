@@ -413,7 +413,13 @@ fi
 
 if [[ -n "$TEST_CMD" ]]; then
   echo "→ $TEST_CMD_SOURCE: $TEST_CMD"
-  bash -o pipefail -c -- "$TEST_CMD" 2>&1 | tee "$TEST_LOG" || TEST_RESULT=$?
+  # -u REVIEW_TEST_CMD: the override names THIS repo's tests, and the command is
+  # very often a test suite that invokes this wrapper again on a fixture repo
+  # (review-and-push.test.sh does, ~40 times). Leaving it exported would make
+  # every nested run inherit it and either fail in the fixture's temporary repo
+  # or, with an absolute path, recursively run the whole suite from inside it.
+  env -u REVIEW_TEST_CMD bash -o pipefail -c -- "$TEST_CMD" 2>&1 |
+    tee "$TEST_LOG" || TEST_RESULT=$?
   # An `&&` one-liner here would be the last command of this branch, so set -e
   # would exit on a failing test run before the banner below could print.
   if [[ $TEST_RESULT -eq 0 ]]; then
