@@ -6,7 +6,8 @@ that its session is finished; the timer never releases or removes worktrees.
 Applied retirement detaches the quarantined worktree's own metadata HEAD as its
 last step, after the recovery bundle and record are written, so the record still
 names the branch while the merged branch ref becomes deletable; --delete-branch
-deletes it only when it still names the verified merged PR head.
+deletes it only when it still names the verified merged PR head, restores it if
+a worktree attached it during the delete, and removes its branch.<name> config.
 """
 
 import argparse
@@ -718,6 +719,25 @@ def delete_released_branch(repo, branch, verified_head):
     # --no-deref: a ref that turned symbolic between the check above and this
     # write can then only delete itself, never the branch it points at.
     git(repo, "update-ref", "--no-deref", "-d", branch, verified_head)
+    # Git offers no lock that serializes a worktree attaching a branch against
+    # deleting it (`git branch -D` has the same window). Once the ref is gone no
+    # new attach can succeed, so re-read holders now and restore the ref for any
+    # worktree that attached in between; the all-zero old value creates it only
+    # if still absent.
+    holders = branch_holders(repo, branch)
+    if holders:
+        git(repo, "update-ref", "--no-deref", branch, verified_head, "0" * len(verified_head))
+        return False, f"{branch} was attached by the worktree at {holders[0]}; restored the ref"
+    # `update-ref -d` leaves branch.<name>.* behind, and a later branch of the
+    # same name would inherit its upstream and rebase settings. Match the whole
+    # subsection, so branch `a` never claims the section of branch `a.b`.
+    section = b"branch." + branch.removeprefix("refs/heads/").encode()
+    try:
+        keys = git(repo, "config", "--local", "--null", "--name-only", "--list").split(b"\0")
+        if any(key.rpartition(b".")[0] == section for key in keys):
+            git(repo, "config", "--local", "--remove-section", section.decode())
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return True, f"deleted, but its branch configuration was not removed: {error}"
     return True, None
 
 
@@ -814,6 +834,9 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False, delete_b
         + current["retirement_exempt_processes"]
     }
     record["retirement_exempt_processes"] = [observed[pid] for pid in sorted(observed)]
+    # Persist the merged exemptions now: a later check may retain the worktree,
+    # and the retained archive must still name every identity a scan skipped.
+    (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
     # A completed writer no longer appears in process evidence. Bind the
     # final source state to the actual saved bytes, including archive hardlinks;
     # ignore access/modify timestamps that do not change recoverable content.
