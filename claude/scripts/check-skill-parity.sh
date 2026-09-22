@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-skill-parity.sh — drift guards for the skill layer (CI + local).
 #
-# Three checks, all born from real drift audits found:
+# Four checks, all born from real drift audits:
 #
 # 1. COUNT: README advertises "N slash commands", "N-agent", and
 #    "N specialized" — assert EVERY occurrence of each pattern matches the
@@ -20,6 +20,11 @@
 #    the skill dirs under claude/skills/ — no more, no less. (The table had
 #    drifted: it omitted /antigravity-review and listed the built-in /verify;
 #    only README's count was asserted, so nothing caught it — issue #210.)
+#
+# 4. WORKFLOW COVERAGE: every skill dir under claude/skills/ and agents/skills/
+#    has a disposition row in agents/skill-coverage.tsv (shared / claude-only /
+#    agent-only) — no duplicate, missing, or stale names, a valid scope, the
+#    dirs the scope implies, and a rationale for every runtime-specific skill.
 #
 # Usage: check-skill-parity.sh        exit 1 on any drift
 

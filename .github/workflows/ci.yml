@@ -482,12 +482,15 @@ jobs:
   checks:
     name: checks
     needs: [checks-shards]
-    # Not `always()`: a cancelled run must report cancelled, not failed.
-    if: ${{ !cancelled() }}
+    # `always()`, not `!cancelled()`: branch protection reads a skipped required
+    # job as success, so a run cancelled after a shard went red would leave this
+    # context green and the PR mergeable (#520). Running unconditionally lets
+    # the step below fail on a cancelled aggregate instead.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       # A matrix `needs` result is the aggregate: `success` only when every leg
-      # succeeded, so any red or skipped shard fails this context.
+      # succeeded, so any red, skipped, or cancelled shard fails this context.
       - name: Every checks shard succeeded
         env:
           SHARDS_RESULT: ${{ needs.checks-shards.result }}
