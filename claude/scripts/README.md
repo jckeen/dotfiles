@@ -584,7 +584,9 @@ commands need the flag, since retirement inspects again. The release record
 lists each exempted pid, command and parent under `exempt_processes`, and the
 recovery record carries that list into the archive beside
 `retirement_exempt_processes`, what the retirement scans themselves skipped —
-the two differ when the session manager restarted in between. Other hosts
+the two differ when the session manager restarted in between. The record is
+rewritten as soon as the two scans are merged, so an archive retained by a later
+check still names every identity either scan skipped. Other hosts
 require an explicit platform-appropriate review. These checks sample
 visible path references; the owner must account for activity in other process
 namespaces or through alternate mount paths when releasing the task.
@@ -623,7 +625,15 @@ reports `detached` because a rebase or bisect interrupted it, whose
 exactly as Git reads them, since `update-ref` refuses none of that itself. The
 delete passes the expected value, so a concurrent update makes Git refuse rather
 than discard an unverified commit, and `--no-deref` means a ref that turned
-symbolic in between can only delete itself, never the branch it points at. Any
+symbolic in between can only delete itself, never the branch it points at.
+Git has no lock that orders a worktree attaching the branch against its
+deletion (`git branch -D` has the same window), so holders are read again right
+after the delete; a worktree that attached in between gets the ref restored and
+`branch_deleted` is false. A successful delete also removes the branch's own
+`branch.<name>.*` section from the repository's local config, which
+`update-ref` leaves behind, so a later branch of that name inherits no stale
+upstream or rebase settings; a section it cannot remove is reported in
+`branch_reason`, not raised. Any
 other state — a release with no branch, a moved, absent or symbolic ref, a ref
 another worktree holds — leaves the ref in place and says why under
 `branch_deleted` and `branch_reason`, without failing the retirement it already
