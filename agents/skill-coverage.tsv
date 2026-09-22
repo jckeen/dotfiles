@@ -17,4 +17,4 @@ repo-health	agent-only	Claude uses its repo-scout agent for the equivalent read-
 review	shared
 session-retro	shared
 simplify	shared
-review-gates	claude-only	Claude wrapper for the gate mechanics; Codex and Antigravity get the same rules compiled into their generated instruction files via agents/canon.
+review-gates	claude-only	On-demand gate mechanics (lane selection, receipt check, exit-code fallback) for the Claude conductor. Codex and Antigravity carry only the four multi-agent non-negotiables via agents/canon and run the gate scripts directly.
