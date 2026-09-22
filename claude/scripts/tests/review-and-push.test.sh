@@ -662,6 +662,20 @@ want_refusal "an empty .review-test fails closed" "declares no command"
 want_gates "an empty .review-test dispatches no gate" ""
 clean_lane_repo
 
+# The same mistake through the override (#519): a whitespace-only
+# REVIEW_TEST_CMD made `bash -c` run nothing, exit 0, and report
+# `tests: passed (REVIEW_TEST_CMD)`. It fails closed like an empty .review-test
+# rather than falling through, since an override that was set says the operator
+# meant to name a command.
+new_lane_repo widget.ts
+add_committed .review-test 'echo review-test-file-ran'
+run_lane REVIEW_TEST_CMD=$' \t '
+want_refusal "a whitespace-only REVIEW_TEST_CMD fails closed" "REVIEW_TEST_CMD is set but declares no command"
+want_absent "a whitespace-only REVIEW_TEST_CMD is never reported as passed" "tests: passed"
+want_absent "a whitespace-only REVIEW_TEST_CMD does not fall through to .review-test" "review-test-file-ran"
+want_gates "a whitespace-only REVIEW_TEST_CMD dispatches no gate" ""
+clean_lane_repo
+
 # bun is this toolchain's runtime: a bun lockfile outranks `npm test` (#490).
 new_lane_repo widget.ts
 add_committed package.json '{}'
