@@ -91,6 +91,18 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   the re-checked pipelines wrap in `|| true`, one relies on the absence of
   `set -e`, and one is an `if` condition; the entry claimed three `|| true`.
   Closes #544.
+## 2026-09-22 — ci: the `checks` aggregator runs on a cancelled run
+
+- **A cancelled run leaves the required `checks` context red, not absent.** The
+  aggregator ran under `!cancelled()`, so cancelling a run after a shard had
+  gone red skipped it — and branch protection reads a skipped required job as
+  success, which left the PR mergeable on a run nothing had verified. It now
+  runs under `always()` and fails on any aggregate other than `success`,
+  cancelled included; `docs/BRANCH_PROTECTION.md` records why. Harvested from
+  the GitHub Codex bot's review of #513. Closes #520.
+- **`check-skill-parity.sh`'s header lists the workflow-coverage guard** it has
+  run since `agents/skill-coverage.tsv` existed; the header had stopped at the
+  guide table. Refs #545.
 
 ## 2026-09-22 — fix(gate): the ignore list, the tier ceiling, and the boundary sweep
 
