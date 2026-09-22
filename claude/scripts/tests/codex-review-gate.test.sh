@@ -376,6 +376,31 @@ if scenario.startswith('receipt'):
     environment['PYTHONPATH'] = str(fixture)
 if scenario == 'receipt-diagnostic-failure':
     environment['WRAPPER_FAIL_DIAGNOSTIC'] = '1'
+if scenario == 'startup':
+    # #512: the signal must land in ONE known startup phase. Waiting for a
+    # `run-*/snapshot.json` to appear and then signalling left a window that
+    # spanned the rest of the run — `begin` writes that file early in
+    # gate_extract_diff — so the interrupt landed anywhere from mid-command
+    # substitution (bash reported a parse error and the gate exited 2) to after
+    # the whole review had finished (exit 0, valid receipt). Signal from inside
+    # the gate's FIRST jq call instead: that is the `.artifact.scope` read in
+    # gate_extract_diff, immediately after the artifact was captured and long
+    # before any reviewer dispatch, and the gate is parked waiting for this child
+    # while the signal arrives, so the phase is the same on every run and on any
+    # load. The shim fires once (later jq calls must still work) and the gate pid
+    # comes from the file the harness writes right after Popen, as the
+    # bootstrap-dirname scenario does.
+    environment['REAL_JQ'] = shutil.which('jq')
+    environment['PATH'] = str(fixture) + os.pathsep + environment['PATH']
+    (fixture / 'jq').write_text('''#!/usr/bin/env bash
+if [[ ! -e "$CODEX_FAKE_DIR/startup-signalled" ]]; then
+  : > "$CODEX_FAKE_DIR/startup-signalled"
+  while [[ ! -s "$CODEX_FAKE_DIR/gate-pid" ]]; do sleep .01; done
+  kill -INT "$(cat "$CODEX_FAKE_DIR/gate-pid")"
+fi
+exec "$REAL_JQ" "$@"
+''')
+    (fixture / 'jq').chmod(0o700)
 if scenario.startswith('bootstrap'):
     environment['REAL_GIT'] = shutil.which('git')
     environment['REAL_DIRNAME'] = shutil.which('dirname')
@@ -413,25 +438,24 @@ try:
         assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation left the previous receipt'
         assert subprocess.run(checker, capture_output=True, timeout=8).returncode != 0, 'previous approval remains usable'
         sys.exit(0)
-    deadline = time.monotonic() + 8
-    while True:
-        if scenario.startswith('receipt'):
-            ready = (fixture / 'receipt-written').exists()
-        elif scenario == 'startup':
-            ready = bool(list(Path(repo, '.git', 'review-receipts').glob('run-*/snapshot.json')))
-        else:
-            ready = (fixture / 'reviewer-ready').exists()
-        if ready:
-            break
-        if process.poll() is not None or time.monotonic() >= deadline:
-            raise AssertionError('public wrapper never reached the requested cancellation phase')
-        time.sleep(.01)
-    signum = getattr(signal, scenario) if scenario.startswith('SIG') else signal.SIGINT
-    process.send_signal(signum)
-    if scenario == 'repeated':
-        for _ in range(3):
-            time.sleep(.03)
-            process.send_signal(signal.SIGTERM)
+    if scenario != 'startup':
+        deadline = time.monotonic() + 8
+        while True:
+            if scenario.startswith('receipt'):
+                ready = (fixture / 'receipt-written').exists()
+            else:
+                ready = (fixture / 'reviewer-ready').exists()
+            if ready:
+                break
+            if process.poll() is not None or time.monotonic() >= deadline:
+                raise AssertionError('public wrapper never reached the requested cancellation phase')
+            time.sleep(.01)
+        signum = getattr(signal, scenario) if scenario.startswith('SIG') else signal.SIGINT
+        process.send_signal(signum)
+        if scenario == 'repeated':
+            for _ in range(3):
+                time.sleep(.03)
+                process.send_signal(signal.SIGTERM)
     output, _ = process.communicate(timeout=10)
     failures = []
     diagnostics = [Path(line.removeprefix('  Private Codex diagnostic: ')) for line in output.splitlines() if line.startswith('  Private Codex diagnostic: ')]
@@ -439,6 +463,11 @@ try:
         details = diagnostic.read_bytes()
         if b'Traceback' in details or b'TypeError' in details:
             failures.append('reviewer diagnostic contains an unexpected Python failure')
+    if scenario == 'startup':
+        if not (fixture / 'startup-signalled').exists():
+            failures.append('startup cancellation never reached the signalling phase')
+        if (fixture / 'invoked').exists():
+            failures.append('startup cancellation dispatched a reviewer')
     if scenario == 'receipt-diagnostic-failure':
         if not (fixture / 'diagnostic-failed').exists():
             failures.append('diagnostic failure injection was not exercised')

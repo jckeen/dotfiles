@@ -15,6 +15,19 @@
   expose credentials. Same wording in the `.codex-review-ignore` header and the
   script README; three gate assertions pin it. Refs #484.
 
+- **The gate self-test's startup-cancellation case interrupts one known phase
+  instead of racing the whole run.** It waited for a `run-*/snapshot.json` to
+  appear and then sent SIGINT, but `review-receipt.py begin` writes that file
+  early in `gate_extract_diff`, so the window it opened spanned everything after
+  it: on a loaded runner the signal landed mid-command-substitution (bash reports
+  a parse error and the gate exits 2) or after the review had already finished
+  (exit 0, a valid receipt) — two `main` failures, weeks apart, same case. The
+  signal now comes from inside the gate's first `jq` call, the `.artifact.scope`
+  read that follows capture and precedes any dispatch, while the gate is parked
+  waiting for that child; the case also asserts it reached the signalling phase
+  and dispatched no reviewer. Locally the old signal reproduced the "exit 0, left
+  a receipt" failure verbatim in 14 of 40 randomized-delay runs, and the new one
+  passed 15 of 15 plus every suite run since. Refs #512.
 - **Every repository boundary in the ignored sweep is inspected, not just the ones
   whose own name looks like an instruction file.** `ls-files` collapses a
   directory it will not descend into to one trailing-slash entry, and a hand-made
