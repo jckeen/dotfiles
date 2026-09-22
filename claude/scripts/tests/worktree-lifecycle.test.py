@@ -1069,6 +1069,113 @@ if kind == 'writer':
         self.assertEqual(json.loads((archive / "recovery.json").read_text())["head"], self.head)
         self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
 
+    def worktree_block(self, path):
+        """The `git worktree list --porcelain` lines describing one checkout."""
+        target = Path(path).resolve()
+        for block in self.run_git(self.repo, "worktree", "list", "--porcelain").split("\n\n"):
+            lines = block.splitlines()
+            if lines and Path(lines[0].removeprefix("worktree ")).resolve() == target:
+                return lines
+        raise AssertionError(f"{path} is not a registered worktree")
+
+    def test_retirement_detaches_head_and_frees_the_branch_ref(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire("--apply", "--archive-dir", str(self.root / "archive"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        quarantine = Path(payload["quarantine"])
+        block = self.worktree_block(quarantine)
+        self.assertIn("detached", block)
+        self.assertNotIn("branch refs/heads/topic", block)
+        self.assertEqual(self.run_git(quarantine, "rev-parse", "HEAD").strip(), self.head)
+        self.assertEqual(payload["branch"], "refs/heads/topic")
+        self.assertIs(payload["detached"], True)
+        self.assertIs(payload["branch_deleted"], False)
+        # The record is written before the detach, so it still names the branch.
+        record = json.loads((Path(payload["archive"]) / "recovery.json").read_text())
+        self.assertEqual(record["branch"], "refs/heads/topic")
+        # Ordinary post-merge cleanup now succeeds instead of failing forever on
+        # the quarantined worktree's checkout (#498).
+        self.run_git(self.repo, "branch", "-D", "topic")
+        self.assertEqual(self.run_git(self.repo, "branch", "--list", "topic").strip(), "")
+        self.assertEqual(self.run_git(quarantine, "rev-parse", "HEAD").strip(), self.head)
+
+    def test_retirement_preview_detaches_nothing(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        preview = self.retire("--delete-branch")
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        payload = json.loads(preview.stdout)
+        self.assertEqual(payload["disposition"], "ready")
+        self.assertIs(payload["branch_deleted"], False)
+        self.assertIn("--apply", payload["branch_reason"])
+        block = self.worktree_block(self.worktree)
+        self.assertIn("branch refs/heads/topic", block)
+        self.assertNotIn("detached", block)
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
+        self.assertTrue(self.worktree.exists())
+
+    def test_delete_branch_removes_the_verified_merged_ref(self):
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire(
+            "--apply", "--archive-dir", str(self.root / "archive"), "--delete-branch"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIs(payload["branch_deleted"], True)
+        self.assertEqual(payload["branch"], "refs/heads/topic")
+        self.assertEqual(self.run_git(self.repo, "branch", "--list", "topic").strip(), "")
+        # The released commit stays recoverable from the detached quarantine and
+        # from the independent bundle after the ref is gone.
+        quarantine = Path(payload["quarantine"])
+        self.assertEqual(self.run_git(quarantine, "rev-parse", "HEAD").strip(), self.head)
+        bundle = str(Path(payload["archive"]) / "repository.bundle")
+        self.assertIn(self.head, self.run_git(self.repo, "bundle", "list-heads", bundle))
+
+    def test_delete_branch_leaves_an_unnamed_release_alone(self):
+        self.run_git(self.worktree, "checkout", "-q", "--detach")
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire(
+            "--apply", "--archive-dir", str(self.root / "archive"), "--delete-branch"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertIs(payload["branch_deleted"], False)
+        self.assertIn("no branch", payload["branch_reason"])
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
+
+    def test_delete_branch_refuses_a_moved_missing_symbolic_or_shared_ref(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("lifecycle_branch", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        main = self.run_git(self.repo, "rev-parse", "main").strip()
+        self.run_git(self.repo, "branch", "moved", main)
+        self.run_git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/topic")
+        self.run_git(self.repo, "branch", "spare", self.head)
+        refusals = {
+            "refs/heads/moved": "moved",
+            "refs/heads/gone": "no longer resolves",
+            "refs/heads/alias": "symbolic",
+            "refs/heads/topic": "still checked out",
+            "refs/tags/v1": "not a local branch",
+        }
+        for branch, expected in refusals.items():
+            with self.subTest(branch=branch):
+                deleted, reason = module.delete_released_branch(self.repo, branch, self.head)
+                self.assertFalse(deleted)
+                self.assertIn(expected, reason)
+        self.assertEqual(
+            module.delete_released_branch(self.repo, "refs/heads/spare", self.head), (True, None)
+        )
+        self.assertEqual(self.run_git(self.repo, "branch", "--list", "spare").strip(), "")
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "moved").strip(), main)
+
     def test_final_ignored_write_is_preserved_in_locked_quarantine(self):
         from functools import partial
         from unittest.mock import patch

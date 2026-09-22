@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-22 — fix(worktree-lifecycle): a retired worktree releases its branch ref
+
+- **Applied retirement detaches the quarantined worktree's own metadata HEAD.**
+  Retiring fourteen merged task worktrees left every one of them registered with
+  its branch still checked out, so `git branch -D` — and any merged-branch
+  pruning — refused each of those branches forever with `cannot delete branch
+  'X' used by worktree at '<quarantine>'`. The detach is the last step, after the
+  recovery bundle and `recovery.json` are written, so the record still names the
+  branch the task worked on. It writes only that worktree's `HEAD` and reflog in
+  the source repository's worktree metadata: the quarantined directory, its
+  index, the bundle and the record are untouched, and the commit stays reachable
+  from the merged PR, the bundle and the detached HEAD. Verified through the same
+  `git worktree list --porcelain` the operator reads, and a preview detaches
+  nothing. Closes #498.
+- **`retire --delete-branch` finishes the post-merge cleanup, fail-closed.** It
+  deletes the local branch only when the ref still names the exact merged PR head
+  the collector already verified, is not a symbolic ref, and is checked out by no
+  worktree — `update-ref -d` does not itself refuse a branch another worktree
+  holds, so that is checked, and the delete passes the expected value so a
+  concurrent update makes Git refuse rather than discard an unverified commit.
+  Every other state leaves the ref alone and says why under `branch_deleted` and
+  `branch_reason` instead of failing a retirement that already completed.
+
 ## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
 
 - **`--reconcile` closes empty routine pull requests and applies the label the

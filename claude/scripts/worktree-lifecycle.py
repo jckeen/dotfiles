@@ -3,6 +3,10 @@
 
 Inventory and retirement preview are read-only. Release is an owner's assertion
 that its session is finished; the timer never releases or removes worktrees.
+Applied retirement detaches the quarantined worktree's own metadata HEAD as its
+last step, after the recovery bundle and record are written, so the record still
+names the branch while the merged branch ref becomes deletable; --delete-branch
+deletes it only when it still names the verified merged PR head.
 """
 
 import argparse
@@ -642,12 +646,65 @@ def check_relocatable_worktree(path):
         raise ValueError("core.worktree overrides require separate retirement; retain worktree")
 
 
-def retire(repo, path, apply, archive_dir, trust_process_manager=False):
+def detach_worktree_head(repo, admin, head):
+    """Point a retired worktree's own HEAD at the released commit, by value.
+
+    Writes only `HEAD` and its reflog inside that worktree's metadata directory
+    in the source repository. The quarantined directory, its index, the recovery
+    bundle and the recovery record are never touched, and the commit stays
+    reachable from the merged PR, the bundle and this detached HEAD. A retired
+    worktree that keeps its branch checked out makes `git branch -D` of that
+    merged branch fail forever, with no supported way to finish the ordinary
+    post-merge cleanup except editing worktree metadata by hand.
+    """
+    git(repo, "--git-dir=" + str(admin), "update-ref", "--no-deref", "HEAD", head)
+
+
+def delete_released_branch(repo, branch, verified_head):
+    """Delete the released branch only when it still names the verified head.
+
+    `verified_head` is the head the collector already proved is the head of a
+    merged same-repository PR into the verified current default branch. Deletion
+    is the one step the quarantine cannot undo, so anything else -- an absent,
+    moved, symbolic or still-checked-out ref -- leaves the ref alone and reports
+    why. The final delete passes the expected value, so a concurrent update
+    between the checks and the write makes Git refuse rather than discard an
+    unverified commit; `update-ref` does not itself refuse a branch another
+    worktree has checked out, so that is checked here.
+    """
+    if not branch:
+        return False, "the retired worktree had no branch checked out"
+    if not branch.startswith("refs/heads/"):
+        return False, f"the released ref is not a local branch: {branch}"
+    git(repo, "check-ref-format", branch)
+    rows = text(git(repo, "for-each-ref", "--format=%(objectname) %(symref)", branch)).splitlines()
+    if len(rows) != 1:
+        return False, f"{branch} no longer resolves to exactly one local branch"
+    objectname, _, symref = rows[0].partition(" ")
+    if symref.strip():
+        return False, f"{branch} is a symbolic ref to {symref.strip()}"
+    if objectname != verified_head:
+        return False, f"{branch} moved to {objectname}; the verified merged head is {verified_head}"
+    holders = [entry["path"] for entry in worktrees(repo) if entry.get("branch") == branch]
+    if holders:
+        return False, f"{branch} is still checked out by {holders[0]}"
+    git(repo, "update-ref", "-d", branch, verified_head)
+    return True, None
+
+
+def retire(repo, path, apply, archive_dir, trust_process_manager=False, delete_branch=False):
     item, admin, record = assess(repo, path, trust_process_manager)
     if not apply:
-        return dict(
+        result = dict(
             disposition="ready", path=item["path"], owner=record["owner"], head=item["HEAD"]
         )
+        if delete_branch:
+            result.update(
+                branch=record.get("branch"),
+                branch_deleted=False,
+                branch_reason="preview only; --apply detaches HEAD and then deletes the branch",
+            )
+        return result
     if archive_dir is None:
         raise ValueError("--apply requires an explicit private --archive-dir")
     check_relocatable_worktree(path)
@@ -764,14 +821,47 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False):
         raise ValueError(
             f"quarantine interrupted; files and locked metadata retained; archive: {archive}"
         ) from error
-    return dict(
+    # Detach last, so every record above still names the branch this task
+    # worked on. Verify through the same porcelain the operator reads, because
+    # the point of the step is that no ref of the source repository is held by
+    # the quarantine any more.
+    try:
+        detach_worktree_head(repo, admin, item["HEAD"])
+        detached = next(
+            (entry for entry in worktrees(repo) if Path(entry["path"]).resolve() == quarantine),
+            None,
+        )
+        if detached is None or "branch" in detached or detached.get("HEAD") != item["HEAD"]:
+            raise ValueError("metadata HEAD is not detached at the released commit")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError(
+            "quarantine completed but the worktree HEAD could not be detached; the branch ref "
+            f"is retained; archive: {archive}"
+        ) from error
+    result = dict(
         disposition="quarantined",
         path=item["path"],
         quarantine=str(quarantine),
         head=item["HEAD"],
         archive=str(archive),
-        branch="retained with quarantined worktree",
+        branch=record.get("branch"),
+        detached=True,
+        branch_deleted=False,
+        branch_reason="detached; the merged branch ref is now deletable",
     )
+    if delete_branch:
+        # A refused deletion leaves a merged ref behind, which the operator can
+        # still delete; it never invalidates the completed retirement, so it is
+        # reported here rather than raised.
+        try:
+            deleted, reason = delete_released_branch(repo, record.get("branch"), item["HEAD"])
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            deleted, reason = False, f"branch deletion could not be verified: {error}"
+        result.update(
+            branch_deleted=deleted,
+            branch_reason=reason or "deleted; it still named the verified merged head",
+        )
+    return result
 
 
 def inventory(repo):
@@ -857,6 +947,12 @@ def main():
     parser.add_argument("--github-repo")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
+        "--delete-branch",
+        action="store_true",
+        help="after detaching, delete the released local branch when it still names the "
+        "verified merged PR head; any other state leaves the ref and reports why",
+    )
+    parser.add_argument(
         "--trust-process-manager",
         action="store_true",
         help="assert that this user's uninspectable systemd session manager and its (sd-pam) "
@@ -897,6 +993,7 @@ def main():
                 args.apply,
                 args.archive_dir,
                 args.trust_process_manager,
+                args.delete_branch,
             )
         print(json.dumps(result, indent=2))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
