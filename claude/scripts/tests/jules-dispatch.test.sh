@@ -133,11 +133,18 @@ cat > "$BIN/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_GH_ARGV:-/dev/null}"
 sub="${1:-} ${2:-}"
+[[ "${1:-}" == "api" ]] && sub="api"
 if [[ -n "${FAKE_GH_FAIL:-}" && "$sub" == "${FAKE_GH_FAIL}" ]]; then
   printf 'fake gh: forced failure for %s\n' "$sub" >&2
   exit 1
 fi
 case "$sub" in
+  # repos/OWNER/NAME/pulls/<n>/commits?per_page=100 — the exact source the
+  # commit-subject check needs, because it carries each commit's parents.
+  "api")
+    p="${2%%\?*}"; p="${p%/commits}"
+    f="${FAKE_GH_DIR:-}/commits-${p##*/}.json"
+    if [[ -f "$f" ]]; then cat "$f"; else printf '[]\n'; fi ;;
   "pr view")
     f="${FAKE_GH_DIR:-}/pr-$3.json"
     [[ -f "$f" ]] || { printf 'fake gh: no fixture for PR %s\n' "$3" >&2; exit 1; }
@@ -1849,6 +1856,9 @@ session_state() { # session-id raw-json
 pr_fixture() { # number json
   printf '%s\n' "$2" > "$CASE_DIR/pr-$1.json"
 }
+commits_fixture() { # number json-array
+  printf '%s\n' "$2" > "$CASE_DIR/commits-$1.json"
+}
 ghgrep() { grep -Fq -- "$1" "$FAKE_GH_ARGV"; }
 
 # An empty run is a good run, but an empty PR is still an open PR asking for a
@@ -2155,7 +2165,8 @@ new_case
 routine alpha false 'repos: all'
 session_line 945 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
 completed_with_pr 945 https://github.com/jckeen/dotfiles/pull/945
-pr_fixture 945 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[],"commits":[{"messageHeadline":"No changes needed: doc drift checkers pass"}]}'
+pr_fixture 945 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[]}'
+commits_fixture 945 '[{"parents":[{"sha":"a"}],"commit":{"message":"No changes needed: doc drift checkers pass\n\nbody"}}]'
 if recon_run && outgrep "the required commit-format check rejects" \
   && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == false)] | length')" -eq 1 ]] \
   && [[ "$(jq -r '.reconcile.blocked_subjects' "$STATE/status.json")" == "1" ]]; then
@@ -2169,10 +2180,16 @@ new_case
 routine alpha false 'repos: all'
 session_line 947 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
 completed_with_pr 947 https://github.com/jckeen/dotfiles/pull/947
-pr_fixture 947 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[],"commits":[{"messageHeadline":"docs: fix the anchor"}]}'
+pr_fixture 947 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[]}'
+# The checker excludes merge commits (git rev-list --no-merges) and skips the
+# revert auto-message, so reporting either as blocking would be a false alarm
+# on a pull request CI is perfectly happy with.
+commits_fixture 947 '[{"parents":[{"sha":"a"}],"commit":{"message":"docs: fix the anchor"}},
+ {"parents":[{"sha":"a"},{"sha":"b"}],"commit":{"message":"Merge branch main into jules-x"}},
+ {"parents":[{"sha":"a"}],"commit":{"message":"Revert \"docs: fix the anchor\""}}]'
 if recon_run && ! outgrep "the required commit-format check rejects" \
   && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == true)] | length')" -eq 1 ]]; then
-  ok "a PR whose commit subjects are conventional is recorded as unblocked"
+  ok "merge commits and revert auto-messages are skipped, exactly as the checker skips them"
 else
   fail "conventional commit subjects were reported as blocking"
   sed 's/^/      | /' "$CASE_DIR/out"
@@ -2204,21 +2221,74 @@ fi
 new_case
 routine alpha false 'repos: all'
 session_line 948 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
-longtitle="fix(docs): $(printf 'x%.0s' $(seq 1 200))"
 outputs=""
-for n in $(seq 9480 9494); do
+for n in $(seq 9480 9539); do
   outputs="$outputs{\"pullRequest\":{\"url\":\"https://github.com/jckeen/dotfiles/pull/$n\"}},"
-  printf '{"state":"OPEN","changedFiles":2,"title":"%s","labels":[{"name":"jules-routine:alpha"}]}\n' \
-    "$longtitle" > "$CASE_DIR/pr-$n.json"
+  printf '{"state":"OPEN","changedFiles":2,"title":"fix(docs): one","labels":[{"name":"jules-routine:alpha"}]}\n' \
+    > "$CASE_DIR/pr-$n.json"
 done
 printf '{"name":"sessions/948","state":"COMPLETED","outputs":[%s]}\n' "${outputs%,}" \
   > "$CASE_DIR/session-948.json"
 recon_run; rc=$?
 if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "atomically"; then
-  ok "a session whose records will not fit one atomic append records none of them"
+  ok "a session whose record will not fit one atomic append is refused, not truncated"
 else
   fail "an oversized session was half-recorded (rc=$rc records=$(reconcile_count))"
   sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: a pullRequest.url carrying an embedded newline was
+# split into two URLs before the anchored pattern ever saw it, so a single
+# malformed field could drive writes to two pull requests. Outputs are read one
+# JSON value at a time, and the anchored match rejects a value with a newline in
+# it whole.
+new_case
+routine alpha false 'repos: all'
+session_line 949 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/949","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9491\\nhttps://github.com/jckeen/dotfiles/pull/9492"}}]}\n' \
+  > "$CASE_DIR/session-949.json"
+pr_fixture 9491 '{"state":"OPEN","changedFiles":0,"title":"x","labels":[]}'
+pr_fixture 9492 '{"state":"OPEN","changedFiles":0,"title":"x","labels":[]}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a pull-request URL field carrying two URLs on separate lines is refused whole"
+else
+  fail "an embedded newline split one URL field into two actionable URLs (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# Codex gate, [medium]: a session whose outputs cannot be read is not a session
+# with no pull request. Recording no-pr would be terminal, and the real outcome
+# would never be looked at again.
+new_case
+routine alpha false 'repos: all'
+session_line 950 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+session_state 950 '{"name":"sessions/950","state":"COMPLETED","outputs":"not-an-array"}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "unreadable outputs"; then
+  ok "a COMPLETED session with unreadable outputs is a retryable failure, not a no-pr record"
+else
+  fail "an unreadable outputs value was recorded as 'no pull request' (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A session with more than one pull request gets ONE ledger record carrying all
+# of them, so "settled" is a single atomic fact rather than a line per PR.
+new_case
+routine alpha false 'repos: all'
+session_line 951 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/951","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9511"}},{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9512"}}]}\n' \
+  > "$CASE_DIR/session-951.json"
+pr_fixture 9511 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+pr_fixture 9512 '{"state":"MERGED","changedFiles":3,"title":"fix(docs): two","labels":[]}'
+if recon_run && [[ "$(reconcile_count)" -eq 1 ]] \
+  && [[ "$(reconcile_jq -r '.[0].prs | length')" -eq 2 ]] \
+  && [[ "$(reconcile_jq -r '.[0].action')" == "closed-empty+noop" ]]; then
+  ok "a session with two pull requests is settled by one ledger record naming both"
+else
+  fail "a multi-PR session was not settled by a single record"
+  sed 's/^/      | /' "$CASE_DIR/out"
+  cat "$STATE/dispatch.jsonl" | sed 's/^/      | /'
 fi
 
 # The routine name comes back out of the ledger, where nothing has revalidated

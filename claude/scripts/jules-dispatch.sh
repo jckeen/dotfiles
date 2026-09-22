@@ -1069,47 +1069,76 @@ recon_fail() { # message routine repo
 # multi-line git error cannot fake a log record. gh never sees the API key.
 one_line() { printf '%s' "$1" | tr '\n\r' '  ' | cut -c1-300; }
 
-# commit_subjects_ok defaults to true: the field only means something for a
-# pull request this pass actually inspected the commits of.
-recon_pend() { # session routine repo pr-url pr-number action detail [subjects-ok]
-  local line
+# One ledger record per session, built once the whole session is settled. Not
+# one per pull request: a record IS the "this session is done" marker, so two
+# appends could leave a session marked settled with half its provenance missing
+# and every later run skipping the gap. One line is the same unit every other
+# ledger append already writes.
+RECON_PR_JSON=""
+RECON_PR_ACTIONS=""
+RECON_FIRST_URL=""
+RECON_FIRST_NUM=0
+RECON_SUBJECTS_OK=true
+
+recon_reset_session() {
+  RECON_PR_JSON=""; RECON_PR_ACTIONS=""; RECON_FIRST_URL=""; RECON_FIRST_NUM=0
+  RECON_SUBJECTS_OK=true; RECON_PENDING=()
+}
+
+recon_pr_entry() { # url pr-number action
+  local entry
+  entry="$(jq -nc --arg url "$1" --argjson pr "$2" --arg action "$3" \
+    '{url: $url, pr: $pr, action: $action}')" || return 1
+  RECON_PR_JSON="${RECON_PR_JSON:+$RECON_PR_JSON,}$entry"
+  # Distinct action names in first-seen order: a one-pull-request session, which
+  # is what `max_prs_per_run` makes the norm, reads exactly as that request's
+  # outcome.
+  case " $RECON_PR_ACTIONS " in
+    *" $3 "*) ;;
+    *) RECON_PR_ACTIONS="${RECON_PR_ACTIONS:+$RECON_PR_ACTIONS }$3" ;;
+  esac
+  [[ -z "$RECON_FIRST_URL" ]] && { RECON_FIRST_URL="$1"; RECON_FIRST_NUM="$2"; }
+  return 0
+}
+
+# commit_subjects_ok is true for a session whose pull requests this pass read
+# the commits of and found nothing the required check would reject; it is also
+# true where there was no pull request to read.
+recon_pend() { # session routine repo action detail
+  local line action="$4"
+  [[ -n "$RECON_PR_ACTIONS" ]] && action="${RECON_PR_ACTIONS// /+}"
   line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg session "$1" \
-    --arg routine "$2" --arg repo "$3" --arg url "$4" --argjson pr "$5" \
-    --arg action "$6" --arg detail "$(printf '%s' "$7" | cut -c1-200)" \
-    --argjson subjects_ok "${8:-true}" \
+    --arg routine "$2" --arg repo "$3" --arg url "$RECON_FIRST_URL" \
+    --argjson pr "$RECON_FIRST_NUM" --arg action "$action" \
+    --argjson prs "[$RECON_PR_JSON]" \
+    --argjson subjects_ok "$RECON_SUBJECTS_OK" \
+    --arg detail "$(printf '%s' "$5" | cut -c1-200)" \
     '{kind: "reconcile", reconciled_at: $at, date: $date, session: $session,
       routine: $routine, repo: $repo, pr_url: $url, pr: $pr,
-      action: $action, commit_subjects_ok: $subjects_ok, detail: $detail}')" || return 1
-  RECON_PENDING+=("$line")
+      action: $action, prs: $prs, commit_subjects_ok: $subjects_ok,
+      detail: $detail}')" || return 1
+  RECON_PENDING=("$line")
 }
 
-# ONE append for the whole session, not one per record. A single write of less
-# than PIPE_BUF bytes to a file opened O_APPEND is atomic; several are not, and
-# a failure after the first line would leave the session looking reconciled
-# while the rest of its pull-request provenance was never written — which every
-# later run would then skip past for ever. Past the bound the session is refused
-# outright and retried, because half its provenance is worse than none.
+# The bound is checked rather than assumed, and a record past it is refused
+# outright: half a session's provenance is worse than none, because every later
+# run skips a session that already has a record.
 recon_flush() {
-  local blob
   [[ "${#RECON_PENDING[@]}" -eq 0 ]] && return 0
-  if [[ "$DRY_RUN" -eq 1 ]]; then RECON_PENDING=(); return 0; fi
-  printf -v blob '%s\n' "${RECON_PENDING[@]}"
+  local line="${RECON_PENDING[0]}"
   RECON_PENDING=()
-  if [[ "${#blob}" -ge 4000 ]]; then
-    recon_fail "a session's reconcile records total ${#blob} bytes, too long to append atomically; nothing recorded, retried on a later run" "" ""
-    return 1
-  fi
-  if ! printf '%s' "$blob" >> "$LEDGER"; then
-    recon_fail "could not append this session's reconcile records to $LEDGER" "" ""
+  if [[ "$DRY_RUN" -eq 1 ]]; then return 0; fi
+  if ! ledger_write_line "$line"; then
+    recon_fail "could not append this session's reconcile record to $LEDGER" "" ""
     return 1
   fi
 }
 
-# Every `created` session the ledger knows about that has no terminal reconcile
-# record yet. The already-reconciled set is computed in the SAME jq pass, so a
-# settled session costs no API call at all — that is the idempotency proof.
-# Emitted with `-` sentinels because the fields are read back through a tab IFS,
-# where an empty field before the last one silently shifts every field after it.
+# Every `created` session the ledger knows about that has no reconcile record
+# yet. The already-reconciled set is computed in the SAME jq pass, so a settled
+# session costs no API call at all — that is the idempotency proof. Emitted with
+# `-` sentinels because the fields are read back through a tab IFS, where an
+# empty field before the last one silently shifts every field after it.
 reconcile_candidates() {
   [[ -s "$LEDGER" ]] || return 0
   jq -sr --arg p "$ONLY_REPO" --arg r "$ONLY_ROUTINE" "
@@ -1165,20 +1194,22 @@ strip_routine_prefix() { # routine title
   printf '%s' "$t"
 }
 
-# 0 = settled (records may be pending), 1 = retryable failure, settle nothing.
+# 0 = settled, 1 = retryable failure; settle nothing on a 1.
 reconcile_pr() { # session routine repo url
   local session="$1" routine="$2" repo="$3" url="$4"
-  local owner name num out out2 pr_state changed title label newtitle action
-  local bad_subjects subjects_ok=true
+  local owner name num out out2 commits pr_state changed title label newtitle action
+  local bad_subjects
   local -a actions=()
 
-  # Strict, anchored, https-only, github.com only. Anything else is refused and
-  # recorded rather than acted on: the URL comes from a remote service, and a
-  # dispatcher that closes or relabels whatever it is handed is a write
-  # primitive pointed at someone else's repository.
+  # Strict, anchored, https-only, github.com only, and matched against the
+  # WHOLE field — a value carrying a newline fails `$` and is refused rather
+  # than becoming two actionable URLs. Anything else is recorded and acted on by
+  # nothing: the URL comes from a remote service, and a dispatcher that closes
+  # or relabels whatever it is handed is a write primitive pointed at someone
+  # else's repository.
   if [[ ! "$url" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]]; then
-    recon_fail "$routine / $repo — $session reported a pull request URL this dispatcher will not act on: $url" "$routine" "$repo"
-    recon_pend "$session" "$routine" "$repo" "$url" 0 error "pull request URL rejected" || return 1
+    recon_fail "$routine / $repo — $session reported a pull request URL this dispatcher will not act on: $(one_line "$url")" "$routine" "$repo"
+    recon_pr_entry "$(one_line "$url")" 0 error || return 1
     return 0
   fi
   owner="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"; num="${BASH_REMATCH[3]}"
@@ -1186,12 +1217,12 @@ reconcile_pr() { # session routine repo url
   # is not this run's to touch, however the API came to report it.
   if [[ "$(lc "$owner/$name")" != "$(lc "$repo")" ]]; then
     recon_fail "$routine / $repo — $session reported a pull request in $owner/$name, which is not the repository it was dispatched to" "$routine" "$repo"
-    recon_pend "$session" "$routine" "$repo" "$url" 0 error "pull request outside the dispatched repository" || return 1
+    recon_pr_entry "$url" "$num" error || return 1
     return 0
   fi
 
   if ! out="$("$GH_BIN" pr view "$num" --repo "$owner/$name" \
-        --json state,changedFiles,title,labels,commits 2>&1)"; then
+        --json state,changedFiles,title,labels 2>&1)"; then
     recon_fail "$routine / $repo — gh pr view $num failed: $(one_line "$out")" "$routine" "$repo"
     return 1
   fi
@@ -1206,7 +1237,7 @@ reconcile_pr() { # session routine repo url
   if [[ "$pr_state" != "OPEN" ]]; then
     log "  -- $routine / $repo — $owner/$name#$num is $pr_state; nothing to do"
     record reconciled "$routine" "$repo" "PR #$num $pr_state"
-    recon_pend "$session" "$routine" "$repo" "$url" "$num" noop "pull request is $pr_state" || return 1
+    recon_pr_entry "$url" "$num" noop || return 1
     return 0
   fi
 
@@ -1215,6 +1246,7 @@ reconcile_pr() { # session routine repo url
   if [[ "$changed" -eq 0 ]]; then
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "  [DRY] would close $owner/$name#$num — the session produced no changes"
+      recon_pr_entry "$url" "$num" closed-empty || return 1
       return 0
     fi
     if ! out="$("$GH_BIN" pr close "$num" --repo "$owner/$name" \
@@ -1225,7 +1257,7 @@ reconcile_pr() { # session routine repo url
     RECON_CLOSED=$((RECON_CLOSED + 1))
     log "  -> $routine / $repo — closed $owner/$name#$num (0 files changed)"
     record reconciled "$routine" "$repo" "closed empty PR #$num"
-    recon_pend "$session" "$routine" "$repo" "$url" "$num" closed-empty "0 files changed" || return 1
+    recon_pr_entry "$url" "$num" closed-empty || return 1
     return 0
   fi
 
@@ -1273,11 +1305,27 @@ reconcile_pr() { # session routine repo url
   # unmergeable by its own commit subjects is named and recorded rather than
   # settled in silence. That is what the conventional-subject line the
   # dispatcher injects into every prompt is there to prevent up front (#479).
-  bad_subjects="$(jq -r --arg re "$CONVENTIONAL_SUBJECT_RE" \
-    '[(.commits // [])[] | (.messageHeadline // "") | select((test($re)) | not)] | length' \
-    <<<"$out" 2>/dev/null || true)"
+  #
+  # The commits endpoint, not `gh pr view --json commits`: the checker runs
+  # `git rev-list --no-merges` and skips the revert auto-message, and only this
+  # payload carries each commit's parents. Reporting a merge commit as blocking
+  # would be a false alarm on a pull request CI is perfectly happy with.
+  if ! commits="$("$GH_BIN" api "repos/$owner/$name/pulls/$num/commits?per_page=100" 2>&1)"; then
+    recon_fail "$routine / $repo — gh api pulls/$num/commits failed: $(one_line "$commits")" "$routine" "$repo"
+    return 1
+  fi
+  if ! bad_subjects="$(jq -r --arg re "$CONVENTIONAL_SUBJECT_RE" '
+        [ .[]
+          | select(((.parents // []) | length) < 2)
+          | ((.commit.message // "") | split("\n")[0])
+          | select((startswith("Revert ")) | not)
+          | select((test($re)) | not) ]
+        | length' <<<"$commits" 2>/dev/null)"; then
+    recon_fail "$routine / $repo — pulls/$num/commits returned a payload this run cannot read" "$routine" "$repo"
+    return 1
+  fi
   if [[ "$bad_subjects" =~ ^[1-9][0-9]*$ ]]; then
-    subjects_ok=false
+    RECON_SUBJECTS_OK=false
     RECON_BLOCKED_SUBJECTS=$((RECON_BLOCKED_SUBJECTS + 1))
     log "  -- $routine / $repo — $owner/$name#$num carries $bad_subjects commit subject(s)"
     log "     the required commit-format check rejects; its title is fixed, that check is not."
@@ -1287,26 +1335,26 @@ reconcile_pr() { # session routine repo url
   [[ "${#actions[@]}" -gt 0 ]] && action="$(IFS='+'; printf '%s' "${actions[*]}")"
   log "  -> $routine / $repo — $owner/$name#$num $action"
   record reconciled "$routine" "$repo" "PR #$num $action"
-  recon_pend "$session" "$routine" "$repo" "$url" "$num" "$action" "$title" "$subjects_ok" || return 1
+  recon_pr_entry "$url" "$num" "$action" || return 1
   return 0
 }
 
 reconcile_session() { # session routine repo
   local session="$1" routine="$2" repo="$3"
-  local id resp state urls url failed_any=0
+  local id resp state n i url failed_any=0
 
-  RECON_PENDING=()
+  recon_reset_session
   RECON_CHECKED=$((RECON_CHECKED + 1))
 
   id="${session#sessions/}"
   if [[ "$id" == "$session" || ! "$id" =~ ^[0-9]+$ ]]; then
-    recon_fail "$routine / $repo — ledger session '$session' is not sessions/<digits>; nothing of it reaches a URL" "$routine" "$repo"
-    recon_pend "$session" "$routine" "$repo" "" 0 error "malformed session name" && recon_flush
+    recon_fail "$routine / $repo — ledger session '$(one_line "$session")' is not sessions/<digits>; nothing of it reaches a URL" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "malformed session name" && recon_flush
     return 1
   fi
   if [[ "$routine" == "-" || "$repo" == "-" ]]; then
     recon_fail "$session — the ledger record names no routine or repository, so there is nothing to check its pull request against" "$routine" "$repo"
-    recon_pend "$session" "$routine" "$repo" "" 0 error "ledger record missing routine or repo" && recon_flush
+    recon_pend "$session" "$routine" "$repo" error "ledger record missing routine or repo" && recon_flush
     return 1
   fi
   # Revalidated on the way out of the ledger, which nothing has checked since
@@ -1314,13 +1362,13 @@ reconcile_session() { # session routine repo
   # a scope outside the checker's [a-z0-9._/-] would produce a title the
   # commit-format check still rejects. A ledger is a file an operator can edit.
   if [[ ! "$routine" =~ ^[a-z0-9-]+$ ]]; then
-    recon_fail "$session — ledger routine name '$routine' is not [a-z0-9-]+; it would become a label and a commit scope" "$routine" "$repo"
-    recon_pend "$session" "$routine" "$repo" "" 0 error "ledger routine name rejected" && recon_flush
+    recon_fail "$session — ledger routine name '$(one_line "$routine")' is not [a-z0-9-]+; it would become a label and a commit scope" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "ledger routine name rejected" && recon_flush
     return 1
   fi
   if [[ ! "$repo" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]]; then
-    recon_fail "$session — ledger repository '$repo' is not OWNER/NAME; no pull request URL can be checked against it" "$routine" "$repo"
-    recon_pend "$session" "$routine" "$repo" "" 0 error "ledger repository rejected" && recon_flush
+    recon_fail "$session — ledger repository '$(one_line "$repo")' is not OWNER/NAME; no pull request URL can be checked against it" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "ledger repository rejected" && recon_flush
     return 1
   fi
 
@@ -1344,31 +1392,52 @@ reconcile_session() { # session routine repo
   if [[ "$state" == "FAILED" ]]; then
     log "  -- $routine / $repo — $session FAILED; recorded, no pull request to settle"
     record reconciled "$routine" "$repo" "session FAILED"
-    recon_pend "$session" "$routine" "$repo" "" 0 failed "session state FAILED" || return 1
+    recon_pend "$session" "$routine" "$repo" failed "session state FAILED" || return 1
     recon_flush
     return 0
   fi
 
-  urls="$(jq -r '(.outputs // [])[]? | (.pullRequest.url? // empty)' <<<"$resp" 2>/dev/null || true)"
-  if [[ -z "$urls" ]]; then
+  # A response whose outputs cannot be read is NOT a session without a pull
+  # request: recording no-pr would be terminal and the real outcome would never
+  # be looked at again. Counted as a failure and retried instead.
+  if ! n="$(jq -r 'if ((.outputs // null) == null) then 0
+                   elif (.outputs | type) == "array"
+                   then ([.outputs[] | select((type == "object") and has("pullRequest"))] | length)
+                   else error("outputs is not an array") end' <<<"$resp" 2>/dev/null)" \
+     || [[ ! "$n" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    recon_fail "$routine / $repo — GET /sessions/$id returned unreadable outputs; retried on a later run" "$routine" "$repo"
+    return 1
+  fi
+
+  if [[ "$n" -eq 0 ]]; then
     # Observed live: a COMPLETED session with `outputs` null — no change set, no
     # branch, no pull request. That is a real outcome, not an error.
     log "  -- $routine / $repo — $session COMPLETED with no pull request"
     record reconciled "$routine" "$repo" "completed with no pull request"
-    recon_pend "$session" "$routine" "$repo" "" 0 no-pr "session produced no pull request" || return 1
+    recon_pend "$session" "$routine" "$repo" no-pr "session produced no pull request" || return 1
     recon_flush
     return 0
   fi
 
-  while IFS= read -r url; do
-    [[ -n "$url" ]] || continue
+  # Read one JSON value at a time rather than a newline-delimited list: a url
+  # field carrying an embedded newline would otherwise be split into two URLs,
+  # each passing the anchored pattern the whole field must fail.
+  for ((i = 0; i < n; i++)); do
+    if ! url="$(jq -r --argjson i "$i" \
+          '[.outputs[] | select((type == "object") and has("pullRequest"))]
+           | .[$i] | (.pullRequest.url // "")' <<<"$resp" 2>/dev/null)"; then
+      recon_fail "$routine / $repo — could not read output $i of $session" "$routine" "$repo"
+      failed_any=1
+      continue
+    fi
     reconcile_pr "$session" "$routine" "$repo" "$url" || failed_any=1
-  done <<<"$urls"
+  done
 
   if [[ "$failed_any" -eq 1 ]]; then
-    RECON_PENDING=()
+    recon_reset_session
     return 1
   fi
+  recon_pend "$session" "$routine" "$repo" unchanged "state $state" || return 1
   recon_flush
 }
 

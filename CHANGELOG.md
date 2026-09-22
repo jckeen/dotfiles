@@ -54,12 +54,25 @@
   reads the pull request's commits, logs how many subjects the check rejects,
   records `commit_subjects_ok: false`, and counts them in `status.json` —
   instead of reporting a still-blocked pull request as fully settled.
-- **A session's records are one atomic append or none** (Codex gate, medium).
-  They were written a line at a time, so an append failure after the first line
-  left the session looking reconciled while the rest of its pull-request
-  provenance was never written, and every later run skipped it. The whole
-  session now goes in through one sub-PIPE_BUF write, and a session whose
-  records will not fit is refused and retried rather than half-recorded.
+- **One ledger record per session, not one per pull request** (Codex gate,
+  medium, twice). Records were appended a line at a time, so a failure after
+  the first line left the session looking reconciled while the rest of its
+  pull-request provenance was never written, and every later run skipped the
+  gap. A record now *is* the "this session is settled" marker: one line
+  carrying a `prs` array, which is the same unit of write every other ledger
+  append already relies on rather than a new claim about multi-line atomicity.
+  A record past the length bound is refused and retried rather than truncated.
+- **Three more ways the session response could mislead the pass** (Codex gate,
+  medium). A `pullRequest.url` carrying an embedded newline was split into two
+  URLs before the anchored pattern saw either, so one malformed field could
+  drive writes to two pull requests; outputs are now read one JSON value at a
+  time and the whole field must match. A response whose `outputs` could not be
+  parsed fell through to a terminal `no-pr` record, freezing an outcome nobody
+  had read; it is now a counted failure and retried. And the commit-subject
+  report is taken from `repos/{o}/{n}/pulls/{n}/commits`, the only payload that
+  carries each commit's parents, so merge commits and the revert auto-message
+  are skipped exactly as `check-commit-format.sh` skips them — otherwise a pull
+  request CI is perfectly happy with would have been reported as blocked.
 
 ## 2026-09-21 — fix(review-receipt): a blocked review retires the other lane's approval
 

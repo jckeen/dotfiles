@@ -138,10 +138,15 @@ Adopt Jules as the routine lane.
    otherwise a write primitive pointed at someone else's repository. Every
    session with a terminal record is skipped without an API call, so the pass
    is idempotent, and a session still running is skipped with no record at all
-   rather than having its outcome frozen at "we looked too early". A session's
-   records reach the ledger in one atomic append or not at all, because half a
-   session's provenance recorded is worse than none — every later run would
-   skip past the gap. The retitle has a boundary worth stating: the required
+   rather than having its outcome frozen at "we looked too early". A settled
+   session is exactly one ledger record, carrying a `prs` array rather than a
+   line per pull request: a record *is* the marker that the session is done, so
+   two of them could leave a session marked settled with half its provenance
+   missing and every later run skipping the gap. The pull-request URL is
+   matched whole, one JSON value at a time, because a field carrying an
+   embedded newline would otherwise split into two URLs that each pass an
+   anchored pattern the field itself fails. The retitle has a boundary worth
+   stating: the required
    commit-format check lints the *subjects of the commits a pull request adds*,
    not its title, so a conventional title fixes what a squash merge lands on
    `main` and nothing else. A routine PR whose bot commit subject is not
