@@ -148,7 +148,10 @@ Adopt Jules as the routine lane.
    anchored pattern the field itself fails — and it leaves `jq` with a sentinel
    byte appended, because command substitution strips *trailing* newlines and a
    URL ending in one would otherwise arrive already trimmed and pass the same
-   whole-field check from the other end of the string (#505). The retitle has a boundary worth
+   whole-field check from the other end of the string (#505). A byte the shell
+   cannot carry at all — a NUL, which command substitution drops mid-string with
+   only a warning — is caught inside `jq` and replaced, since no sentinel can
+   make the shell preserve it. The retitle has a boundary worth
    stating: the required
    commit-format check lints the *subjects of the commits a pull request adds*,
    not its title, so a conventional title fixes what a squash merge lands on

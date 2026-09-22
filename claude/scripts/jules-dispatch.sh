@@ -1483,11 +1483,19 @@ reconcile_session() { # session routine repo
   # the proof the value came out of jq intact — a non-string field is replaced
   # by a placeholder here rather than letting jq -r render a number or an object
   # into something the pattern might accept.
+  #
+  # A sentinel cannot rescue a NUL, though: `"…/pull/9\u0000"` is a legal JSON
+  # string, and command substitution drops the NUL *mid-string* with only a
+  # warning — so the pattern would see a URL the field is not. Any byte the shell
+  # cannot carry has to be caught before it leaves jq, so a value containing one
+  # becomes a placeholder no pattern accepts.
   for ((i = 0; i < n; i++)); do
     if ! raw="$(jq -r --argjson i "$i" --arg s "$RECON_URL_SENTINEL" \
           '[.outputs[] | select((type == "object") and has("pullRequest"))]
            | .[$i] | (.pullRequest.url // "")
            | (if type == "string" then . else "(non-string pullRequest.url)" end)
+           | (if (explode | index(0)) != null
+              then "(NUL byte in pullRequest.url)" else . end)
            | . + $s' <<<"$resp" 2>/dev/null)" \
        || [[ "$raw" != *"$RECON_URL_SENTINEL" ]]; then
       recon_fail "$routine / $repo — could not read output $i of $session" "$routine" "$repo"

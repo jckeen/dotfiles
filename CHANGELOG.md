@@ -29,8 +29,12 @@
   appended and the sentinel is checked before it is stripped, so the newline is
   still on the string when the pattern rejects it; a non-string `pullRequest.url`
   is replaced with a placeholder rather than letting `jq -r` render a number or
-  an object into something the pattern might accept. Two regression tests, and
-  the embedded-newline case still passes.
+  an object into something the pattern might accept. A sentinel cannot rescue a
+  NUL, though — the gate's low finding on this fix, the same class one byte
+  further: `"…/pull/9\u0000"` is a legal JSON string and command substitution
+  drops the NUL *mid*-string with only a warning, so a byte the shell cannot
+  carry is now caught inside `jq` and becomes a placeholder no pattern accepts.
+  Three regression tests, and the embedded-newline case still passes.
 
 ## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
 

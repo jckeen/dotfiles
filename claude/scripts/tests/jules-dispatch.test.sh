@@ -2366,6 +2366,25 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
 fi
 
+# Codex gate, [low], the same class as #505 one byte further: a sentinel cannot
+# rescue a NUL. `"…/pull/9\u0000"` is a legal JSON string and command
+# substitution drops the NUL mid-string with only a warning, so the anchored
+# pattern would see a URL the field is not. Bytes the shell cannot carry are
+# caught inside jq instead.
+new_case
+routine alpha false 'repos: all'
+session_line 957 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/957","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9\\u0000"}}]}\n' \
+  > "$CASE_DIR/session-957.json"
+pr_fixture 9 '{"state":"OPEN","changedFiles":0,"title":"x","labels":[]}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a pull-request URL carrying a NUL byte is refused, not silently shortened"
+else
+  fail "a NUL byte was dropped before the whole-field check saw it (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
 # Codex gate, [medium]: a session whose outputs cannot be read is not a session
 # with no pull request. Recording no-pr would be terminal, and the real outcome
 # would never be looked at again.
