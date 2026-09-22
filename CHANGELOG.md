@@ -46,6 +46,20 @@
   dispatch down with it. `status.json` gains a `reconcile` block.
   `tests/jules-dispatch.test.sh` covers all of it with a fake `gh` alongside the
   fake `curl`, and never the live API.
+- **The retitle's boundary is reported, not papered over** (Codex gate, high).
+  `check-commit-format.sh` lints the subjects of the commits a pull request
+  adds, not the pull request's title, so a conventional title fixes what a
+  squash merge lands on `main` and leaves the required check exactly as it was.
+  Rewriting a session's branch is not the dispatcher's to do, so the pass now
+  reads the pull request's commits, logs how many subjects the check rejects,
+  records `commit_subjects_ok: false`, and counts them in `status.json` —
+  instead of reporting a still-blocked pull request as fully settled.
+- **A session's records are one atomic append or none** (Codex gate, medium).
+  They were written a line at a time, so an append failure after the first line
+  left the session looking reconciled while the rest of its pull-request
+  provenance was never written, and every later run skipped it. The whole
+  session now goes in through one sub-PIPE_BUF write, and a session whose
+  records will not fit is refused and retried rather than half-recorded.
 
 ## 2026-09-21 — fix(review-receipt): a blocked review retires the other lane's approval
 

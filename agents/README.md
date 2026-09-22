@@ -94,7 +94,13 @@ closed with a one-line comment, one that changed something gets the routine's
 conventional, and each outcome becomes a ledger record. That record is the only
 API-confirmed link between a session and a pull request, so it is what the
 custodian's classifier reads rather than the PR's text. The label therefore
-appears only after a reconcile pass has run, not the moment the PR opens.
+appears only after a reconcile pass has run, not the moment the PR opens. The
+retitle fixes what a squash merge lands on the default branch; the required
+commit-format check lints the subjects of the commits the pull request adds, so
+a routine whose session writes a non-conventional commit subject still produces
+a blocked pull request. The pass reports that rather than fixing it — which is
+why the conventional-subject requirement is in the header every prompt opens
+with.
 
 When the catalog offers more eligible pairs than `JULES_DAILY_CAP` allows, the
 pair whose last dispatch is oldest goes first — never-dispatched pairs ahead of

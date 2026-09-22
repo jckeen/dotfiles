@@ -22,8 +22,11 @@
 #   --reconcile        settle each ledger session against GET /sessions: close a
 #                      pull request the session opened with zero changed files,
 #                      label and normalise the title of one that changed
-#                      something, and record the outcome. Runs on its own and at
-#                      the end of every dispatch; needs gh. Not with --report
+#                      something, and record the outcome. The title is what a
+#                      squash merge lands; a pull request whose own commit
+#                      subjects the format check rejects is reported, not fixed.
+#                      Runs on its own and at the end of every dispatch; needs
+#                      gh. Not with --report
 #   --report           tally routine PRs per week from GitHub instead of dispatching
 #   --days N           report window in days (default 28)
 #   --post             with --report, comment the table on the tracker issue
@@ -164,6 +167,7 @@ RECON_CHECKED=0
 RECON_CLOSED=0
 RECON_LABELED=0
 RECON_RETITLED=0
+RECON_BLOCKED_SUBJECTS=0
 RECON_FAILURES=0
 SPENT=0
 DEFERRED=0
@@ -662,6 +666,7 @@ write_status() {
     --argjson deferred "$DEFERRED" \
     --argjson recon_checked "$RECON_CHECKED" --argjson recon_closed "$RECON_CLOSED" \
     --argjson recon_labeled "$RECON_LABELED" --argjson recon_retitled "$RECON_RETITLED" \
+    --argjson recon_blocked "$RECON_BLOCKED_SUBJECTS" \
     --argjson recon_failures "$RECON_FAILURES" \
     '{checked_at: $checked_at, date: $date, daily_cap: $cap,
       created_this_run: $created, dispatched_today: $dispatched_today,
@@ -669,7 +674,7 @@ write_status() {
       failures: $failures,
       reconcile: {checked: $recon_checked, closed_empty: $recon_closed,
                   labeled: $recon_labeled, retitled: $recon_retitled,
-                  failures: $recon_failures},
+                  blocked_subjects: $recon_blocked, failures: $recon_failures},
       events: $events}' > "$tmp"
   mv "$tmp" "$STATUS_FILE"
 }
@@ -1064,29 +1069,40 @@ recon_fail() { # message routine repo
 # multi-line git error cannot fake a log record. gh never sees the API key.
 one_line() { printf '%s' "$1" | tr '\n\r' '  ' | cut -c1-300; }
 
-recon_pend() { # session routine repo pr-url pr-number action detail
+# commit_subjects_ok defaults to true: the field only means something for a
+# pull request this pass actually inspected the commits of.
+recon_pend() { # session routine repo pr-url pr-number action detail [subjects-ok]
   local line
   line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg session "$1" \
     --arg routine "$2" --arg repo "$3" --arg url "$4" --argjson pr "$5" \
     --arg action "$6" --arg detail "$(printf '%s' "$7" | cut -c1-200)" \
+    --argjson subjects_ok "${8:-true}" \
     '{kind: "reconcile", reconciled_at: $at, date: $date, session: $session,
       routine: $routine, repo: $repo, pr_url: $url, pr: $pr,
-      action: $action, detail: $detail}')" || return 1
+      action: $action, commit_subjects_ok: $subjects_ok, detail: $detail}')" || return 1
   RECON_PENDING+=("$line")
 }
 
+# ONE append for the whole session, not one per record. A single write of less
+# than PIPE_BUF bytes to a file opened O_APPEND is atomic; several are not, and
+# a failure after the first line would leave the session looking reconciled
+# while the rest of its pull-request provenance was never written — which every
+# later run would then skip past for ever. Past the bound the session is refused
+# outright and retried, because half its provenance is worse than none.
 recon_flush() {
-  local line
+  local blob
   [[ "${#RECON_PENDING[@]}" -eq 0 ]] && return 0
   if [[ "$DRY_RUN" -eq 1 ]]; then RECON_PENDING=(); return 0; fi
-  for line in "${RECON_PENDING[@]}"; do
-    if ! ledger_write_line "$line"; then
-      recon_fail "could not append a reconcile record to $LEDGER" "" ""
-      RECON_PENDING=()
-      return 1
-    fi
-  done
+  printf -v blob '%s\n' "${RECON_PENDING[@]}"
   RECON_PENDING=()
+  if [[ "${#blob}" -ge 4000 ]]; then
+    recon_fail "a session's reconcile records total ${#blob} bytes, too long to append atomically; nothing recorded, retried on a later run" "" ""
+    return 1
+  fi
+  if ! printf '%s' "$blob" >> "$LEDGER"; then
+    recon_fail "could not append this session's reconcile records to $LEDGER" "" ""
+    return 1
+  fi
 }
 
 # Every `created` session the ledger knows about that has no terminal reconcile
@@ -1153,6 +1169,7 @@ strip_routine_prefix() { # routine title
 reconcile_pr() { # session routine repo url
   local session="$1" routine="$2" repo="$3" url="$4"
   local owner name num out out2 pr_state changed title label newtitle action
+  local bad_subjects subjects_ok=true
   local -a actions=()
 
   # Strict, anchored, https-only, github.com only. Anything else is refused and
@@ -1174,7 +1191,7 @@ reconcile_pr() { # session routine repo url
   fi
 
   if ! out="$("$GH_BIN" pr view "$num" --repo "$owner/$name" \
-        --json state,changedFiles,title,labels 2>&1)"; then
+        --json state,changedFiles,title,labels,commits 2>&1)"; then
     recon_fail "$routine / $repo — gh pr view $num failed: $(one_line "$out")" "$routine" "$repo"
     return 1
   fi
@@ -1249,11 +1266,28 @@ reconcile_pr() { # session routine repo url
     actions+=(retitled)
   fi
 
+  # check-commit-format.sh lints the SUBJECTS of the commits a pull request
+  # adds, not its title, so retitling does not unblock the required check — it
+  # fixes what a squash merge lands on main and nothing more. Rewriting the
+  # session's branch is not this dispatcher's to do, so a pull request left
+  # unmergeable by its own commit subjects is named and recorded rather than
+  # settled in silence. That is what the conventional-subject line the
+  # dispatcher injects into every prompt is there to prevent up front (#479).
+  bad_subjects="$(jq -r --arg re "$CONVENTIONAL_SUBJECT_RE" \
+    '[(.commits // [])[] | (.messageHeadline // "") | select((test($re)) | not)] | length' \
+    <<<"$out" 2>/dev/null || true)"
+  if [[ "$bad_subjects" =~ ^[1-9][0-9]*$ ]]; then
+    subjects_ok=false
+    RECON_BLOCKED_SUBJECTS=$((RECON_BLOCKED_SUBJECTS + 1))
+    log "  -- $routine / $repo — $owner/$name#$num carries $bad_subjects commit subject(s)"
+    log "     the required commit-format check rejects; its title is fixed, that check is not."
+  fi
+
   action="unchanged"
   [[ "${#actions[@]}" -gt 0 ]] && action="$(IFS='+'; printf '%s' "${actions[*]}")"
   log "  -> $routine / $repo — $owner/$name#$num $action"
   record reconciled "$routine" "$repo" "PR #$num $action"
-  recon_pend "$session" "$routine" "$repo" "$url" "$num" "$action" "$title" || return 1
+  recon_pend "$session" "$routine" "$repo" "$url" "$num" "$action" "$title" "$subjects_ok" || return 1
   return 0
 }
 
@@ -1394,7 +1428,7 @@ do_reconcile() {
   log "═══ jules-dispatch --reconcile $NOW_ISO ═══"
   reconcile_pass || true
   write_status
-  log "═══ jules-dispatch reconcile done: checked=$RECON_CHECKED closed=$RECON_CLOSED labeled=$RECON_LABELED retitled=$RECON_RETITLED failures=$RECON_FAILURES ═══"
+  log "═══ jules-dispatch reconcile done: checked=$RECON_CHECKED closed=$RECON_CLOSED labeled=$RECON_LABELED retitled=$RECON_RETITLED blocked=$RECON_BLOCKED_SUBJECTS failures=$RECON_FAILURES ═══"
   [[ "$FAILURES" -eq 0 ]] || exit 1
 }
 

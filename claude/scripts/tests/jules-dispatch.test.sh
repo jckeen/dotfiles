@@ -2145,6 +2145,82 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
 fi
 
+# Codex gate, [high]: the required commit-format check lints COMMIT SUBJECTS in
+# the pull request's range, not the pull request's title. Retitling fixes what a
+# squash merge lands on main and nothing else, so a routine PR whose bot commit
+# subject is "No changes needed: ..." stays blocked. Nothing here can rewrite
+# someone else's branch, so the condition has to be named rather than settled in
+# silence.
+new_case
+routine alpha false 'repos: all'
+session_line 945 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 945 https://github.com/jckeen/dotfiles/pull/945
+pr_fixture 945 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[],"commits":[{"messageHeadline":"No changes needed: doc drift checkers pass"}]}'
+if recon_run && outgrep "the required commit-format check rejects" \
+  && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == false)] | length')" -eq 1 ]] \
+  && [[ "$(jq -r '.reconcile.blocked_subjects' "$STATE/status.json")" == "1" ]]; then
+  ok "a retitled PR whose commit subjects still fail the format check is named, not silently settled"
+else
+  fail "a PR left unmergeable by its commit subjects was recorded as fully settled"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos: all'
+session_line 947 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 947 https://github.com/jckeen/dotfiles/pull/947
+pr_fixture 947 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[],"commits":[{"messageHeadline":"docs: fix the anchor"}]}'
+if recon_run && ! outgrep "the required commit-format check rejects" \
+  && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == true)] | length')" -eq 1 ]]; then
+  ok "a PR whose commit subjects are conventional is recorded as unblocked"
+else
+  fail "conventional commit subjects were reported as blocking"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: a session's records are settled together or not at all.
+# Appending them one at a time meant a failure after the first line left the
+# session looking reconciled while the rest of its pull-request provenance was
+# never written — and every later run skipped it.
+new_case
+routine alpha false 'repos: all'
+session_line 946 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/946","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9461"}},{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9462"}}]}\n' \
+  > "$CASE_DIR/session-946.json"
+pr_fixture 9461 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): one","labels":[]}'
+pr_fixture 9462 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+FAKE_GH_FAIL="pr close" recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && ghgrep '--add-label'; then
+  ok "a multi-PR session whose last gh write fails records none of its outcomes"
+else
+  fail "a partly-failed session left a record that would make later runs skip it (rc=$rc records=$(reconcile_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# ...and the same rule at the write boundary: a session's records go into the
+# ledger in ONE append of less than PIPE_BUF bytes, or none of them do. Fifteen
+# long-titled pull requests are past that bound, so the session is refused and
+# retried rather than half-recorded and skipped for ever.
+new_case
+routine alpha false 'repos: all'
+session_line 948 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+longtitle="fix(docs): $(printf 'x%.0s' $(seq 1 200))"
+outputs=""
+for n in $(seq 9480 9494); do
+  outputs="$outputs{\"pullRequest\":{\"url\":\"https://github.com/jckeen/dotfiles/pull/$n\"}},"
+  printf '{"state":"OPEN","changedFiles":2,"title":"%s","labels":[{"name":"jules-routine:alpha"}]}\n' \
+    "$longtitle" > "$CASE_DIR/pr-$n.json"
+done
+printf '{"name":"sessions/948","state":"COMPLETED","outputs":[%s]}\n' "${outputs%,}" \
+  > "$CASE_DIR/session-948.json"
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "atomically"; then
+  ok "a session whose records will not fit one atomic append records none of them"
+else
+  fail "an oversized session was half-recorded (rc=$rc records=$(reconcile_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
 # The routine name comes back out of the ledger, where nothing has revalidated
 # it since the catalog parser saw it. It becomes a label and a commit scope, so
 # it is checked again rather than trusted — a ledger is a file an operator can

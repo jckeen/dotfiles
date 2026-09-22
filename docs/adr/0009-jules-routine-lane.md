@@ -138,7 +138,16 @@ Adopt Jules as the routine lane.
    otherwise a write primitive pointed at someone else's repository. Every
    session with a terminal record is skipped without an API call, so the pass
    is idempotent, and a session still running is skipped with no record at all
-   rather than having its outcome frozen at "we looked too early". The trap the
+   rather than having its outcome frozen at "we looked too early". A session's
+   records reach the ledger in one atomic append or not at all, because half a
+   session's provenance recorded is worse than none — every later run would
+   skip past the gap. The retitle has a boundary worth stating: the required
+   commit-format check lints the *subjects of the commits a pull request adds*,
+   not its title, so a conventional title fixes what a squash merge lands on
+   `main` and nothing else. A routine PR whose bot commit subject is not
+   conventional stays blocked, and rewriting the session's branch is not the
+   dispatcher's to do, so the pass names the condition and records
+   `commit_subjects_ok: false` instead of reporting the PR as settled. The trap the
    round had to close first was in the ledger: every spend query keys off
    `.date`, `.routine` and `.repo`, so a reconcile record would have counted as
    a dispatch and suppressed the very routine it belongs to on the next run —
