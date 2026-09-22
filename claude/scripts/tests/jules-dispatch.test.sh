@@ -2585,19 +2585,22 @@ else
 fi
 
 # The ledger is operator-editable: a limit that is not a positive integer is
-# refused, not coerced.
-new_case
-routine alpha false 'repos: all'
-session_line 967 alpha jckeen/dotfiles 1 '"two"' > "$STATE/dispatch.jsonl"
-completed_with_pr 967 https://github.com/jckeen/dotfiles/pull/967
-pr_fixture 967 '{"state":"OPEN","changedFiles":1,"title":"fix(docs): one","labels":[]}'
-recon_run; rc=$?
-if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
-  ok "a ledger max_files that is not a positive integer is refused before any gh call"
-else
-  fail "a malformed ledger max_files was acted on (rc=$rc)"
-  sed 's/^/      | /' "$CASE_DIR/out"
-fi
+# refused, not coerced — and neither "-" nor "" may pass for an absent limit,
+# which would switch the check off (Codex gate, [medium]).
+for bad_mf in '"two"' '"-"' '""' '0' '2.5'; do
+  new_case
+  routine alpha false 'repos: all'
+  session_line 967 alpha jckeen/dotfiles 1 "$bad_mf" > "$STATE/dispatch.jsonl"
+  completed_with_pr 967 https://github.com/jckeen/dotfiles/pull/967
+  pr_fixture 967 '{"state":"OPEN","changedFiles":9,"title":"fix(docs): nine","labels":[]}'
+  recon_run; rc=$?
+  if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+    ok "a ledger max_files of $bad_mf is refused before any gh call"
+  else
+    fail "a malformed ledger max_files $bad_mf was acted on (rc=$rc)"
+    sed 's/^/      | /' "$CASE_DIR/out"
+  fi
+done
 
 echo "── systemd installer (generalised unit loop) ──"
 
