@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-21 — chore(doctor): declutter plugins and slim the always-loaded global instructions
+
+- **Eleven `[global]` plugins left `claude/plugins.txt`.** `/doctor` found eight
+  with zero lifetime uses (playground, claude-code-setup, claude-md-management,
+  code-review, code-simplifier, frontend-design, github, greptile) that were
+  already disabled in `~/.claude/settings.json` but still installed, so
+  `PluginDriftCheck.hook.ts` warned at every session start; they are now
+  uninstalled and dropped from the manifest. `pr-review-toolkit` (six uses since
+  install, six resident agent descriptions), `feature-dev`, and
+  `commit-commands` are disabled and dropped for the same reason. Re-enable any
+  of them by restoring its manifest line and flipping `enabledPlugins`.
+- **The global instructions shed the README prose and the gate mechanics.**
+  `agents/canon/fragments/claude.md` loses the "this repo is public, repoint
+  the import" explanation (README material) and keeps only the four
+  non-negotiables of the multi-agent section; the lane-selection, handoff
+  payload, and verdict-persistence mechanics move to the new
+  `claude/skills/review-gates/SKILL.md`, loaded on demand. Concept parity is
+  unchanged (`check-agent-parity.sh` still finds every canonical rule), and
+  the generated `claude/CLAUDE.md` is regenerated in the same change.
+
 ## 2026-09-21 — fix(review-receipt): nested worktrees and vendored instruction names
 
 - **An own worktree no longer aborts the snapshot, and only an own worktree is
