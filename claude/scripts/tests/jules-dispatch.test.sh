@@ -90,10 +90,25 @@ case "$method:$url" in
     else
       cat "$FAKE_SOURCES"
     fi ;;
+  # Session ids are numeric in the real API, and jules-dispatch.sh refuses a
+  # non-numeric one before it can reach a URL — so the stub has to mint numeric
+  # ones or every reconcile pass would be asserting on a refusal.
+  GET:*/sessions/*)
+    sid="${url##*/sessions/}"
+    if [[ -f "${FAKE_SESSION_DIR:-}/session-$sid.json" ]]; then
+      cat "${FAKE_SESSION_DIR}/session-$sid.json"
+    elif [[ -n "${FAKE_SESSION_STRICT:-}" ]]; then
+      printf 'fake curl: no session fixture for %s\n' "$sid" >&2; exit 1
+    else
+      # The default: a session the platform is still working on. A reconcile
+      # pass over one of these writes nothing and calls no gh, which is what
+      # keeps the dispatch cases that are not about reconcile unchanged.
+      printf '{"name":"sessions/%s","state":"IN_PROGRESS"}\n' "$sid"
+    fi ;;
   POST:*/sessions)
     n=$(( $(cat "$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "$n" > "$FAKE_SEQ"
-    printf '{"name":"sessions/s%s","id":"s%s","url":"https://jules.google.com/task/s%s"}\n' "$n" "$n" "$n" ;;
+    printf '{"name":"sessions/%s","id":"%s","url":"https://jules.google.com/task/%s"}\n' "$n" "$n" "$n" ;;
   *)
     printf 'fake curl: unexpected %s %s\n' "$method" "$url" >&2; exit 1 ;;
 esac
@@ -108,6 +123,47 @@ export FAKE_CURL_ARGV="$WORK/curl-argv.log"
 export FAKE_SEQ="$WORK/curl-seq"
 export FAKE_SOURCES="$WORK/sources.json"
 export FAKE_BODY="$WORK/curl-body.json"
+
+# ── Fake gh ──────────────────────────────────────────────────────────
+# The reconcile pass is the only caller. Records argv, answers `pr view` from a
+# per-PR fixture the case writes, accepts the writes, and can be told to fail
+# one subcommand pair through FAKE_GH_FAIL ("pr close", "pr edit", ...). The
+# --report cases keep their own richer stub earlier on PATH.
+cat > "$BIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_GH_ARGV:-/dev/null}"
+sub="${1:-} ${2:-}"
+[[ "${1:-}" == "api" ]] && sub="api"
+if [[ -n "${FAKE_GH_FAIL:-}" && "$sub" == "${FAKE_GH_FAIL}" ]]; then
+  printf 'fake gh: forced failure for %s\n' "$sub" >&2
+  exit 1
+fi
+case "$sub" in
+  # repos/OWNER/NAME/pulls/<n>/commits?per_page=100 — the exact source the
+  # commit-subject check needs, because it carries each commit's parents.
+  "api")
+    # The endpoint path is whichever argument starts with repos/, since flags
+    # such as --paginate may sit in front of it.
+    p=""
+    for a in "$@"; do case "$a" in repos/*) p="$a"; break ;; esac; done
+    p="${p%%\?*}"; p="${p%/commits}"; p="${p##*/}"
+    f="${FAKE_GH_DIR:-}/commits-$p.json"
+    if [[ -f "$f" ]]; then cat "$f"; else printf '[]\n'; fi
+    # gh --paginate emits one JSON document per page, concatenated.
+    if [[ "$*" == *--paginate* && -f "${FAKE_GH_DIR:-}/commits2-$p.json" ]]; then
+      cat "${FAKE_GH_DIR}/commits2-$p.json"
+    fi ;;
+  "pr view")
+    f="${FAKE_GH_DIR:-}/pr-$3.json"
+    [[ -f "$f" ]] || { printf 'fake gh: no fixture for PR %s\n' "$3" >&2; exit 1; }
+    cat "$f" ;;
+  "pr close"|"pr edit"|"label create") : ;;
+  "label list") printf '[]\n' ;;
+  *) printf 'fake gh: unexpected %s\n' "$sub" >&2; exit 1 ;;
+esac
+FAKEGH
+chmod +x "$BIN/gh"
+export FAKE_GH_ARGV="$WORK/gh-argv.log"
 
 cat > "$FAKE_SOURCES" <<'SRC'
 {"sources":[
@@ -132,6 +188,9 @@ new_case() {
   printf '%s\n' "$GOOD_KEY" > "$KEY"
   chmod 600 "$KEY"
   : > "$FAKE_CURL_ARGV"
+  : > "$FAKE_GH_ARGV"
+  export FAKE_GH_DIR="$CASE_DIR"
+  export FAKE_SESSION_DIR="$CASE_DIR"
   rm -f "$FAKE_SEQ" "$FAKE_BODY"
 }
 
@@ -170,14 +229,28 @@ ledger_jq() {
   [[ -s "$STATE/dispatch.jsonl" ]] || { printf '0'; return 0; }
   jq -s "$@" "$STATE/dispatch.jsonl"
 }
-created_count() { ledger_jq '[.[] | select((.status // "created") == "created")] | length'; }
+# The ledger now also carries reconcile records, which have no .status — so
+# every dispatch count below has to exclude them by kind or a reconcile pass
+# would read as a dispatch. Same guard the dispatcher applies internally.
+dispatch_jq() {
+  [[ -s "$STATE/dispatch.jsonl" ]] || { printf '0'; return 0; }
+  jq -s '[.[] | select((.kind // "dispatch") == "dispatch")]' "$STATE/dispatch.jsonl" \
+    | jq "$@"
+}
+reconcile_jq() {
+  [[ -s "$STATE/dispatch.jsonl" ]] || { printf '0'; return 0; }
+  jq -s '[.[] | select(.kind == "reconcile")]' "$STATE/dispatch.jsonl" | jq "$@"
+}
+reconcile_count() { reconcile_jq 'length'; }
+reconcile_action() { reconcile_jq --arg a "$1" '[.[] | select(.action == $a)] | length'; }
+created_count() { dispatch_jq '[.[] | select((.status // "created") == "created")] | length'; }
 created_routine() {
-  ledger_jq --arg r "$1" '[.[] | select(.routine == $r and ((.status // "created") == "created"))] | length'
+  dispatch_jq --arg r "$1" '[.[] | select(.routine == $r and ((.status // "created") == "created"))] | length'
 }
 created_repo() {
-  ledger_jq --arg p "$1" '[.[] | select(.repo == $p and ((.status // "created") == "created"))] | length'
+  dispatch_jq --arg p "$1" '[.[] | select(.repo == $p and ((.status // "created") == "created"))] | length'
 }
-attempted_count() { ledger_jq '[.[] | select((.status // "") == "attempted")] | length'; }
+attempted_count() { dispatch_jq '[.[] | select((.status // "") == "attempted")] | length'; }
 
 # Full-fidelity snapshot: every path, every file hash, every symlink target.
 snapshot() {
@@ -286,10 +359,11 @@ done
 cat >/dev/null
 case "$method:$url" in
   GET:*/sources*) cat "$FAKE_SOURCES" ;;
+  GET:*/sessions/*) printf '{"state":"IN_PROGRESS"}\n' ;;
   POST:*/sessions)
     n=$(( $(cat "$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "$n" > "$FAKE_SEQ"
-    printf '{"name":"sessions/s%s","id":"s%s","url":"u"}\n' "$n" "$n" ;;
+    printf '{"name":"sessions/%s","id":"%s","url":"u"}\n' "$n" "$n" ;;
   *) exit 1 ;;
 esac
 ENVFAKE
@@ -559,7 +633,7 @@ echo "── --dry-run writes nothing ──"
 new_case
 routine alpha false 'repos: all'
 routine beta false 'repos: all'
-printf '{"dispatched_at":"2026-09-01T00:00:00Z","date":"2026-09-01","routine":"alpha","repo":"jckeen/dotfiles","source":"sources/github/jckeen/dotfiles","session":"sessions/old","url":""}\n' \
+printf '{"dispatched_at":"2026-09-01T00:00:00Z","date":"2026-09-01","routine":"alpha","repo":"jckeen/dotfiles","source":"sources/github/jckeen/dotfiles","session":"sessions/900001","url":""}\n' \
   > "$STATE/dispatch.jsonl"
 printf 'pre-existing log line\n' > "$STATE/dispatch.log"
 printf '{"checked_at":"2026-09-01T00:00:00Z"}\n' > "$STATE/status.json"
@@ -573,8 +647,10 @@ else
   fail "--dry-run mutated the state dir (rc=$rc)"
   diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed 's/^/      | /'
 fi
+# The reconcile pass a dry run also performs is read-only and GETs
+# /sessions/{id}, so the assertion is on the method rather than on the path.
 if grep -Fq 'would dispatch' "$CASE_DIR/out" && ! grep -Fq '"method":"POST"' "$FAKE_CURL_ARGV" \
-   && ! grep -Fq '/sessions' "$FAKE_CURL_ARGV"; then
+   && ! grep -Fq -- '-X POST' "$FAKE_CURL_ARGV"; then
   ok "--dry-run reports what it would do and never calls POST /sessions"
 else
   fail "--dry-run either reported nothing or created a session"
@@ -709,12 +785,17 @@ echo "── review findings from the Codex gate ──"
 # window, eight days ago is outside it.
 # Relative to the SAME pinned clock the dispatcher uses, or "days ago" would be
 # measured from a different now than the eligibility window is.
+SEEDED_SESSION=700000
 ledger_line() { # routine repo days-ago
   local e at
   e=$((JULES_NOW_EPOCH - $3 * 86400))
   at="$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ)"
-  printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","session":"old","url":""}\n' \
-    "$at" "${at%%T*}" "$1" "$2"
+  # A real session name, because every dispatch now ends with a reconcile pass
+  # and a malformed one in the ledger is a refusal, not a past dispatch. The
+  # fake curl answers an unknown id with IN_PROGRESS, so these settle nothing.
+  SEEDED_SESSION=$((SEEDED_SESSION + 1))
+  printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","session":"sessions/%s","url":""}\n' \
+    "$at" "${at%%T*}" "$1" "$2" "$SEEDED_SESSION"
 }
 
 new_case
@@ -762,7 +843,7 @@ routine weeklyone false 'repos:
   - jckeen/dotfiles' weekly
 e=$((JULES_NOW_EPOCH - 7 * 86400 + 1))
 at="$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ)"
-printf '{"dispatched_at":"%s","date":"%s","routine":"weeklyone","repo":"jckeen/dotfiles","source":"s","session":"old","url":""}\n' \
+printf '{"dispatched_at":"%s","date":"%s","routine":"weeklyone","repo":"jckeen/dotfiles","source":"s","session":"sessions/700900","url":""}\n' \
   "$at" "${at%%T*}" > "$STATE/dispatch.jsonl"
 if dispatch && outgrep "dispatched inside the last 7 day(s); skipped" \
   && [[ "$(created_count)" -eq 1 ]]; then
@@ -1507,12 +1588,13 @@ done
 cat >/dev/null
 case "\$method:\$url" in
   GET:*/sources*) cat "\$FAKE_SOURCES" ;;
+  GET:*/sessions/*) printf '{"state":"IN_PROGRESS"}\n' ;;
   POST:*/sessions)
     # Pause the routine mid-run, the moment the first session is created.
     sed -i 's/^paused: false/paused: true/' "$ROUTINES/alpha.md"
     n=\$(( \$(cat "\$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "\$n" > "\$FAKE_SEQ"
-    printf '{"name":"sessions/s%s","id":"s%s","url":"u"}\n' "\$n" "\$n" ;;
+    printf '{"name":"sessions/%s","id":"%s","url":"u"}\n' "\$n" "\$n" ;;
   *) exit 1 ;;
 esac
 PAUSEFAKE
@@ -1524,6 +1606,7 @@ else
   fail "a routine paused mid-run kept dispatching"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
+restore_fake_curl
 
 echo "── seventh review round ──"
 
@@ -1543,11 +1626,12 @@ done
 cat >/dev/null
 case "\$method:\$url" in
   GET:*/sources*) cat "\$FAKE_SOURCES" ;;
+  GET:*/sessions/*) printf '{"state":"IN_PROGRESS"}\n' ;;
   POST:*/sessions)
     sed -i '$1' "$ROUTINES/alpha.md"
     n=\$(( \$(cat "\$FAKE_SEQ" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "\$n" > "\$FAKE_SEQ"
-    printf '{"name":"sessions/s%s","id":"s%s","url":"u"}\n' "\$n" "\$n" ;;
+    printf '{"name":"sessions/%s","id":"%s","url":"u"}\n' "\$n" "\$n" ;;
   *) exit 1 ;;
 esac
 MUTFAKE
@@ -1588,6 +1672,7 @@ else
   fail "a schedule change mid-run was ignored"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
+restore_fake_curl
 
 # [medium] a routine whose frontmatter is rejected contributes nothing to the
 # report, so it has to be named in the report body rather than only in the exit
@@ -1743,6 +1828,546 @@ else
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 unset GH_ARGV GH_COMMENT_BODY
+
+echo "── --reconcile ──"
+
+# The platform opens a pull request for EVERY completed session, including one
+# that changed nothing: the first live run (#479) produced PR #477 with zero
+# changed files, the non-conventional title "Routine: doc-drift-fixer - clean
+# run", and no label. A second live session came back COMPLETED with `outputs`
+# null — no change set, no pull request at all. Reconcile is the pass that turns
+# both into a recorded outcome, and the ledger is the only place a routine PR's
+# provenance is API-confirmed.
+recon_run() { # extra flags...
+  JULES_API_KEY_FILE="$KEY" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
+    "$DISPATCH" --reconcile "$@" > "$CASE_DIR/out" 2>&1
+}
+
+# A "created" dispatch record — the only kind reconcile looks at.
+session_line() { # session-id routine repo days-ago
+  local e at
+  e=$((JULES_NOW_EPOCH - $4 * 86400))
+  at="$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"dispatched_at":"%s","date":"%s","routine":"%s","repo":"%s","source":"s","status":"created","attempt":"a%s","session":"sessions/%s","url":""}\n' \
+    "$at" "${at%%T*}" "$2" "$3" "$1" "$1"
+}
+
+# Shaped like the live record: outputs is an array whose pullRequest entry
+# carries a url and NO number field, which is why the dispatcher parses the url.
+completed_with_pr() { # session-id pr-url
+  printf '{"name":"sessions/%s","state":"COMPLETED","outputs":[{"changeSet":{"source":"sources/github/jckeen/dotfiles"}},{"pullRequest":{"url":"%s","title":"t","baseRef":"main","headRef":"jules-x"}}]}\n' \
+    "$1" "$2" > "$CASE_DIR/session-$1.json"
+}
+session_state() { # session-id raw-json
+  printf '%s\n' "$2" > "$CASE_DIR/session-$1.json"
+}
+pr_fixture() { # number json
+  printf '%s\n' "$2" > "$CASE_DIR/pr-$1.json"
+}
+commits_fixture() { # number json-array
+  printf '%s\n' "$2" > "$CASE_DIR/commits-$1.json"
+}
+commits_page2() { # number json-array
+  printf '%s\n' "$2" > "$CASE_DIR/commits2-$1.json"
+}
+ghgrep() { grep -Fq -- "$1" "$FAKE_GH_ARGV"; }
+
+# An empty run is a good run, but an empty PR is still an open PR asking for a
+# review. Reconcile closes it and says why in one line.
+new_case
+routine alpha false 'repos: all'
+session_line 901 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 901 https://github.com/jckeen/dotfiles/pull/901
+pr_fixture 901 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+if recon_run && ghgrep 'pr close 901' && ghgrep '--comment' \
+  && [[ "$(reconcile_action closed-empty)" -eq 1 ]] && ! ghgrep '--add-label'; then
+  ok "an open routine PR with zero changed files is closed with a one-line comment"
+else
+  fail "the empty routine PR was not closed"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# The platform applies no label and writes a non-conventional title, so a
+# routine PR arrives both unclassifiable and unmergeable. Reconcile fixes both.
+new_case
+routine alpha false 'repos: all'
+session_line 902 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 902 https://github.com/jckeen/dotfiles/pull/902
+pr_fixture 902 '{"state":"OPEN","changedFiles":3,"title":"Routine: alpha - drop the dead link","labels":[]}'
+if recon_run \
+  && ghgrep 'label create jules-routine:alpha' \
+  && ghgrep '--add-label jules-routine:alpha' \
+  && ghgrep '--title chore(alpha): drop the dead link' \
+  && [[ "$(reconcile_action labeled+retitled)" -eq 1 ]] \
+  && [[ "$(reconcile_count)" -eq 1 ]]; then
+  ok "a non-empty routine PR is labeled and its title normalised to a conventional subject"
+else
+  fail "the non-empty routine PR was not labeled and retitled"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# Retitling a subject the commit-format check already accepts would be churn,
+# and would bury whatever the session actually said it did.
+new_case
+routine alpha false 'repos: all'
+session_line 903 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 903 https://github.com/jckeen/dotfiles/pull/903
+pr_fixture 903 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): repair the broken anchor","labels":[]}'
+if recon_run && ghgrep '--add-label jules-routine:alpha' && ! ghgrep '--title' \
+  && [[ "$(reconcile_action labeled)" -eq 1 ]]; then
+  ok "a routine PR whose title is already conventional is labeled but not retitled"
+else
+  fail "a conventional title was rewritten"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# A merged or closed PR is somebody's decision. Record it and touch nothing.
+new_case
+routine alpha false 'repos: all'
+session_line 904 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 904 https://github.com/jckeen/dotfiles/pull/904
+pr_fixture 904 '{"state":"MERGED","changedFiles":4,"title":"Routine: alpha - done","labels":[]}'
+if recon_run && [[ "$(reconcile_action noop)" -eq 1 ]] \
+  && ! ghgrep 'pr close' && ! ghgrep 'pr edit' && ! ghgrep 'label create'; then
+  ok "a merged routine PR is recorded as a no-op and never written to"
+else
+  fail "a merged routine PR was written to"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# Idempotency is the whole contract: a session with a terminal record is skipped
+# WITHOUT an API call, so a daily timer cannot re-close or re-label anything.
+new_case
+routine alpha false 'repos: all'
+session_line 905 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 905 https://github.com/jckeen/dotfiles/pull/905
+pr_fixture 905 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+recon_run
+: > "$FAKE_GH_ARGV"; : > "$FAKE_CURL_ARGV"
+if recon_run && [[ ! -s "$FAKE_GH_ARGV" ]] && [[ ! -s "$FAKE_CURL_ARGV" ]] \
+  && [[ "$(reconcile_count)" -eq 1 ]]; then
+  ok "a session already reconciled is skipped without one API or gh call"
+else
+  fail "a reconciled session was processed again"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# A session still running is not a result. No record, so the next run retries it
+# — recording one would freeze the session's outcome at "we looked too early".
+new_case
+routine alpha false 'repos: all'
+session_line 906 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+session_state 906 '{"name":"sessions/906","state":"IN_PROGRESS"}'
+recon_run; rc=$?
+if [[ "$rc" -eq 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  completed_with_pr 906 https://github.com/jckeen/dotfiles/pull/906
+  pr_fixture 906 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+  if recon_run && [[ "$(reconcile_action closed-empty)" -eq 1 ]]; then
+    ok "an unfinished session is skipped with no record, and reconciles once it completes"
+  else
+    fail "the session did not reconcile after completing"
+    sed 's/^/      | /' "$CASE_DIR/out"
+  fi
+else
+  fail "an unfinished session was recorded or acted on (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Two outcomes that produce no pull request at all. The second is the observed
+# one: a COMPLETED session whose `outputs` is null.
+new_case
+routine alpha false 'repos: all'
+{ session_line 907 alpha jckeen/dotfiles 1; session_line 908 alpha jckeen/dotfiles 1; } \
+  > "$STATE/dispatch.jsonl"
+session_state 907 '{"name":"sessions/907","state":"FAILED"}'
+session_state 908 '{"name":"sessions/908","state":"COMPLETED","outputs":null}'
+if recon_run && [[ "$(reconcile_action failed)" -eq 1 ]] \
+  && [[ "$(reconcile_action no-pr)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a FAILED session and a COMPLETED one with no pull request are both recorded"
+else
+  fail "the no-pull-request outcomes were not recorded"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The dispatcher must never act on a URL the API hands it without checking where
+# it points: a PR url on another host, on http, or in a repository the session
+# was not dispatched to is refused before any gh call.
+bad_pr_url() { # label session-id url
+  new_case
+  routine alpha false 'repos: all'
+  session_line "$2" alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+  completed_with_pr "$2" "$3"
+  recon_run; local rc=$?
+  if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+    ok "$1"
+  else
+    fail "$1 (rc=$rc)"
+    sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+  fi
+}
+bad_pr_url "a pull-request URL on another host is refused, not acted on" \
+  909 'https://github.com.evil.example/jckeen/dotfiles/pull/9'
+bad_pr_url "a pull-request URL on http is refused, not acted on" \
+  910 'http://github.com/jckeen/dotfiles/pull/9'
+bad_pr_url "a pull-request URL in a repository the session was not dispatched to is refused" \
+  911 'https://github.com/someone-else/dotfiles/pull/9'
+bad_pr_url "a pull-request URL with an extra path segment is refused" \
+  912 'https://github.com/jckeen/dotfiles/pull/9/files'
+
+# A failed gh write is a failure, never a silent one — and it must not leave a
+# record claiming the PR was handled, or the next run would skip the repair.
+new_case
+routine alpha false 'repos: all'
+session_line 913 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 913 https://github.com/jckeen/dotfiles/pull/913
+pr_fixture 913 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+FAKE_GH_FAIL="pr close" recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "gh pr close failed"; then
+  ok "a failed gh write is counted as a failure and records no success"
+else
+  fail "a failed gh write was swallowed (rc=$rc, records=$(reconcile_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# The trap: every ledger query keys off .date/.routine/.repo, so a reconcile
+# record written today would have counted as a dispatch — eating the cap and
+# suppressing the very routine it belongs to.
+new_case
+routine alpha false 'repos: all'
+printf '{"kind":"reconcile","reconciled_at":"2026-09-10T11:00:00Z","date":"2026-09-10","routine":"alpha","repo":"jckeen/dotfiles","session":"sessions/920","pr_url":"","pr":0,"action":"no-pr","detail":""}\n' \
+  > "$STATE/dispatch.jsonl"
+if dispatch && [[ "$(created_count)" -eq 2 ]] && ! outgrep "already dispatched today"; then
+  ok "a reconcile record dated today is not counted as a dispatch"
+else
+  fail "a reconcile record suppressed today's dispatch"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Same trap against the weekly cadence window, which compares .dispatched_at.
+new_case
+routine weeklyone false 'repos:
+  - jckeen/dotfiles' weekly
+printf '{"kind":"reconcile","reconciled_at":"2026-09-09T11:00:00Z","dispatched_at":"2026-09-09T11:00:00Z","date":"2026-09-09","routine":"weeklyone","repo":"jckeen/dotfiles","session":"sessions/921","pr_url":"","pr":0,"action":"no-pr","detail":""}\n' \
+  > "$STATE/dispatch.jsonl"
+if dispatch && [[ "$(created_count)" -eq 1 ]] \
+  && ! outgrep "inside the weekly cadence window" \
+  && ! outgrep "dispatched inside the last 7 day(s)"; then
+  ok "a reconcile record does not hold a weekly routine inside its cadence window"
+else
+  fail "a reconcile record was read as a dispatch by the cadence check"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# "Writes nothing" has to hold in every mode. A dry run may read the API and
+# gh, and says what it would do, but the state dir comes out byte-identical.
+new_case
+routine alpha false 'repos: all'
+session_line 922 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 922 https://github.com/jckeen/dotfiles/pull/922
+pr_fixture 922 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+printf 'pre-existing log line\n' > "$STATE/dispatch.log"
+before="$(snapshot "$STATE")"
+recon_run --dry-run; rc=$?
+if [[ "$rc" -eq 0 ]] && [[ "$before" == "$(snapshot "$STATE")" ]] \
+  && outgrep "[DRY] would close" && ! ghgrep 'pr close'; then
+  ok "--dry-run --reconcile reports what it would do and leaves the state dir byte-identical"
+else
+  fail "--dry-run --reconcile wrote something (rc=$rc)"
+  diff <(printf '%s\n' "$before") <(printf '%s\n' "$(snapshot "$STATE")") | sed 's/^/      | /'
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Reconcile is not a separate chore to remember: every dispatch run ends with
+# one, after the sessions it just created are in the ledger.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+if dispatch; then
+  post_ln="$(grep -n -- '-X POST' "$FAKE_CURL_ARGV" | head -1 | cut -d: -f1)"
+  get_ln="$(grep -n -- '/sessions/1' "$FAKE_CURL_ARGV" | head -1 | cut -d: -f1)"
+  if [[ -n "$post_ln" && -n "$get_ln" && "$post_ln" -lt "$get_ln" ]]; then
+    ok "a dispatch run ends with a reconcile pass over the sessions it just created"
+  else
+    fail "the dispatch run did not reconcile after creating (post=$post_ln get=$get_ln)"
+    sed 's/^/      | /' "$FAKE_CURL_ARGV"
+  fi
+else
+  fail "the dispatch run that should have reconciled did not exit 0"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# --report tallies; --reconcile acts. Asking for both is a mistake, not a
+# composition, so it is refused rather than silently resolved one way.
+new_case
+routine alpha false 'repos: all'
+if ! recon_run --report && outgrep "--reconcile cannot be combined with --report"; then
+  ok "--reconcile with --report is refused"
+else
+  fail "--reconcile --report was accepted"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Standalone, gh is the whole point of the pass, so its absence is fatal.
+new_case
+routine alpha false 'repos: all'
+session_line 930 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 930 https://github.com/jckeen/dotfiles/pull/930
+if ! JULES_GH=gh-not-installed-here recon_run && outgrep "needs the GitHub CLI"; then
+  ok "a standalone --reconcile with no gh on PATH dies rather than reporting a clean pass"
+else
+  fail "a standalone --reconcile without gh did not die"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Inside a dispatch it must not be fatal: the sessions were created and their
+# ledger records matter more than the tidy-up. One failure, so the exit code
+# still says the run was not clean.
+new_case
+routine alpha false 'repos: all'
+session_line 931 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 931 https://github.com/jckeen/dotfiles/pull/931
+JULES_GH=gh-not-installed-here dispatch; rc=$?
+if [[ "$rc" -ne 0 ]] && outgrep "reconcile skipped" && [[ "$(created_count)" -eq 3 ]]; then
+  ok "a dispatch whose reconcile pass has no gh still dispatches, and says the pass was skipped"
+else
+  fail "a missing gh broke the dispatch itself (rc=$rc created=$(created_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# --repo narrows the pass the same way it narrows a dispatch.
+new_case
+routine alpha false 'repos: all'
+{ session_line 940 alpha jckeen/dotfiles 1; session_line 941 alpha jckeen/atlas 1; } \
+  > "$STATE/dispatch.jsonl"
+completed_with_pr 940 https://github.com/jckeen/dotfiles/pull/940
+completed_with_pr 941 https://github.com/jckeen/atlas/pull/941
+pr_fixture 940 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+pr_fixture 941 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+if recon_run --repo jckeen/atlas && ghgrep 'pr close 941' && ! ghgrep '940' \
+  && [[ "$(reconcile_count)" -eq 1 ]]; then
+  ok "--reconcile --repo touches only that repository's sessions"
+else
+  fail "--reconcile --repo reached another repository"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# A PR that already carries the label and a conventional subject needs no write
+# at all, but is still a terminal outcome and must be recorded as one.
+new_case
+routine alpha false 'repos: all'
+session_line 942 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 942 https://github.com/jckeen/dotfiles/pull/942
+pr_fixture 942 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): repair the anchor","labels":[{"name":"jules-routine:alpha"}]}'
+if recon_run && [[ "$(reconcile_action unchanged)" -eq 1 ]] \
+  && ! ghgrep 'pr edit' && ! ghgrep 'label create'; then
+  ok "a routine PR already labeled with a conventional title is recorded without a write"
+else
+  fail "an already-correct routine PR was written to"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# Codex gate, [high]: the required commit-format check lints COMMIT SUBJECTS in
+# the pull request's range, not the pull request's title. Retitling fixes what a
+# squash merge lands on main and nothing else, so a routine PR whose bot commit
+# subject is "No changes needed: ..." stays blocked. Nothing here can rewrite
+# someone else's branch, so the condition has to be named rather than settled in
+# silence.
+new_case
+routine alpha false 'repos: all'
+session_line 945 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 945 https://github.com/jckeen/dotfiles/pull/945
+pr_fixture 945 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[]}'
+commits_fixture 945 '[{"parents":[{"sha":"a"}],"commit":{"message":"No changes needed: doc drift checkers pass\n\nbody"}}]'
+if recon_run && outgrep "the required commit-format check rejects" \
+  && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == false)] | length')" -eq 1 ]] \
+  && [[ "$(jq -r '.reconcile.blocked_subjects' "$STATE/status.json")" == "1" ]]; then
+  ok "a retitled PR whose commit subjects still fail the format check is named, not silently settled"
+else
+  fail "a PR left unmergeable by its commit subjects was recorded as fully settled"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+new_case
+routine alpha false 'repos: all'
+session_line 947 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 947 https://github.com/jckeen/dotfiles/pull/947
+pr_fixture 947 '{"state":"OPEN","changedFiles":2,"title":"Routine: alpha - fix the anchor","labels":[]}'
+# The checker excludes merge commits (git rev-list --no-merges) and skips the
+# revert auto-message, so reporting either as blocking would be a false alarm
+# on a pull request CI is perfectly happy with.
+commits_fixture 947 '[{"parents":[{"sha":"a"}],"commit":{"message":"docs: fix the anchor"}},
+ {"parents":[{"sha":"a"},{"sha":"b"}],"commit":{"message":"Merge branch main into jules-x"}},
+ {"parents":[{"sha":"a"}],"commit":{"message":"Revert \"docs: fix the anchor\""}}]'
+if recon_run && ! outgrep "the required commit-format check rejects" \
+  && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == true)] | length')" -eq 1 ]]; then
+  ok "merge commits and revert auto-messages are skipped, exactly as the checker skips them"
+else
+  fail "conventional commit subjects were reported as blocking"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: a session's records are settled together or not at all.
+# Appending them one at a time meant a failure after the first line left the
+# session looking reconciled while the rest of its pull-request provenance was
+# never written — and every later run skipped it.
+new_case
+routine alpha false 'repos: all'
+session_line 946 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/946","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9461"}},{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9462"}}]}\n' \
+  > "$CASE_DIR/session-946.json"
+pr_fixture 9461 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): one","labels":[]}'
+pr_fixture 9462 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+FAKE_GH_FAIL="pr close" recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && ghgrep '--add-label'; then
+  ok "a multi-PR session whose last gh write fails records none of its outcomes"
+else
+  fail "a partly-failed session left a record that would make later runs skip it (rc=$rc records=$(reconcile_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# ...and the same rule at the write boundary: a session's records go into the
+# ledger in ONE append of less than PIPE_BUF bytes, or none of them do. Fifteen
+# long-titled pull requests are past that bound, so the session is refused and
+# retried rather than half-recorded and skipped for ever.
+new_case
+routine alpha false 'repos: all'
+session_line 948 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+outputs=""
+for n in $(seq 9480 9539); do
+  outputs="$outputs{\"pullRequest\":{\"url\":\"https://github.com/jckeen/dotfiles/pull/$n\"}},"
+  printf '{"state":"OPEN","changedFiles":2,"title":"fix(docs): one","labels":[{"name":"jules-routine:alpha"}]}\n' \
+    > "$CASE_DIR/pr-$n.json"
+done
+printf '{"name":"sessions/948","state":"COMPLETED","outputs":[%s]}\n' "${outputs%,}" \
+  > "$CASE_DIR/session-948.json"
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "atomically"; then
+  ok "a session whose record will not fit one atomic append is refused, not truncated"
+else
+  fail "an oversized session was half-recorded (rc=$rc records=$(reconcile_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: the commits endpoint pages at 100. A rejected subject
+# on page two was missed, and the terminal record meant nothing looked again.
+new_case
+routine alpha false 'repos: all'
+session_line 952 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 952 https://github.com/jckeen/dotfiles/pull/952
+pr_fixture 952 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): one","labels":[{"name":"jules-routine:alpha"}]}'
+commits_fixture 952 '[{"parents":[{"sha":"a"}],"commit":{"message":"docs: page one is fine"}}]'
+commits_page2 952 '[{"parents":[{"sha":"a"}],"commit":{"message":"No changes needed: page two is not"}}]'
+if recon_run && outgrep "the required commit-format check rejects" \
+  && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == false)] | length')" -eq 1 ]]; then
+  ok "a rejected commit subject on the second page of commits is still found"
+else
+  fail "commit-subject checking stopped after the first page"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: jq's // replaces false as well as null, so an
+# `outputs: false` response counted as zero pull requests and was recorded
+# terminally as no-pr instead of being retried.
+new_case
+routine alpha false 'repos: all'
+session_line 953 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+session_state 953 '{"name":"sessions/953","state":"COMPLETED","outputs":false}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "unreadable outputs"; then
+  ok "an outputs value of false is unreadable, not an absence of pull requests"
+else
+  fail "outputs: false was recorded as 'no pull request' (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: a pullRequest.url carrying an embedded newline was
+# split into two URLs before the anchored pattern ever saw it, so a single
+# malformed field could drive writes to two pull requests. Outputs are read one
+# JSON value at a time, and the anchored match rejects a value with a newline in
+# it whole.
+new_case
+routine alpha false 'repos: all'
+session_line 949 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/949","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9491\\nhttps://github.com/jckeen/dotfiles/pull/9492"}}]}\n' \
+  > "$CASE_DIR/session-949.json"
+pr_fixture 9491 '{"state":"OPEN","changedFiles":0,"title":"x","labels":[]}'
+pr_fixture 9492 '{"state":"OPEN","changedFiles":0,"title":"x","labels":[]}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a pull-request URL field carrying two URLs on separate lines is refused whole"
+else
+  fail "an embedded newline split one URL field into two actionable URLs (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# Codex gate, [medium]: a session whose outputs cannot be read is not a session
+# with no pull request. Recording no-pr would be terminal, and the real outcome
+# would never be looked at again.
+new_case
+routine alpha false 'repos: all'
+session_line 950 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+session_state 950 '{"name":"sessions/950","state":"COMPLETED","outputs":"not-an-array"}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "unreadable outputs"; then
+  ok "a COMPLETED session with unreadable outputs is a retryable failure, not a no-pr record"
+else
+  fail "an unreadable outputs value was recorded as 'no pull request' (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# A session with more than one pull request gets ONE ledger record carrying all
+# of them, so "settled" is a single atomic fact rather than a line per PR.
+new_case
+routine alpha false 'repos: all'
+session_line 951 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+printf '{"name":"sessions/951","state":"COMPLETED","outputs":[{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9511"}},{"pullRequest":{"url":"https://github.com/jckeen/dotfiles/pull/9512"}}]}\n' \
+  > "$CASE_DIR/session-951.json"
+pr_fixture 9511 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+pr_fixture 9512 '{"state":"MERGED","changedFiles":3,"title":"fix(docs): two","labels":[]}'
+if recon_run && [[ "$(reconcile_count)" -eq 1 ]] \
+  && [[ "$(reconcile_jq -r '.[0].prs | length')" -eq 2 ]] \
+  && [[ "$(reconcile_jq -r '.[0].action')" == "closed-empty+noop" ]]; then
+  ok "a session with two pull requests is settled by one ledger record naming both"
+else
+  fail "a multi-PR session was not settled by a single record"
+  sed 's/^/      | /' "$CASE_DIR/out"
+  cat "$STATE/dispatch.jsonl" | sed 's/^/      | /'
+fi
+
+# The routine name comes back out of the ledger, where nothing has revalidated
+# it since the catalog parser saw it. It becomes a label and a commit scope, so
+# it is checked again rather than trusted — a ledger is a file an operator can
+# edit, and a scope outside [a-z0-9._/-] would produce a title the commit-format
+# check still rejects.
+new_case
+routine alpha false 'repos: all'
+printf '{"dispatched_at":"2026-09-09T12:00:00Z","date":"2026-09-09","routine":"Bad Name","repo":"jckeen/dotfiles","source":"s","status":"created","attempt":"a944","session":"sessions/944","url":""}\n' \
+  > "$STATE/dispatch.jsonl"
+completed_with_pr 944 https://github.com/jckeen/dotfiles/pull/944
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a ledger routine name outside [a-z0-9-] is refused before it becomes a label or a scope"
+else
+  fail "an unvalidated routine name reached gh (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# status.json is what the hooks and the status line read, so the pass has to
+# show up there too.
+new_case
+routine alpha false 'repos: all'
+session_line 943 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 943 https://github.com/jckeen/dotfiles/pull/943
+pr_fixture 943 '{"state":"OPEN","changedFiles":0,"title":"Routine: alpha - clean run","labels":[]}'
+if recon_run \
+  && [[ "$(jq -r '.reconcile.checked' "$STATE/status.json")" == "1" ]] \
+  && [[ "$(jq -r '.reconcile.closed_empty' "$STATE/status.json")" == "1" ]] \
+  && [[ "$(jq -r '.reconcile.failures' "$STATE/status.json")" == "0" ]]; then
+  ok "status.json carries the reconcile counts"
+else
+  fail "status.json has no reconcile counts"
+  cat "$STATE/status.json" 2>/dev/null | sed 's/^/      | /'
+fi
 
 echo "── systemd installer (generalised unit loop) ──"
 

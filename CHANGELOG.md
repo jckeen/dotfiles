@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-09-22 — feat(jules-dispatch): --reconcile settles what a routine session left behind
+
+- **`--reconcile` closes empty routine pull requests and applies the label the
+  platform never does.** Two live sessions showed what the lane actually gets
+  back: a COMPLETED session opens a pull request even when its change set is
+  empty (#477 — zero changed files, the title `Routine: doc-drift-fixer - clean
+  run`, which the required commit-format check rejects, and no label), and a
+  second session completed with `outputs` null, no change set and no pull
+  request at all. None of that is fixable at dispatch time, so it is settled
+  afterwards. For each `created` session in the ledger the pass reads
+  `GET /sessions/{id}`; an open pull request with zero changed files is closed
+  with a one-line comment, one that changed something gets
+  `jules-routine:<routine>` (creating the label, which no repository carries
+  until a routine PR lands there) and, if its title is not a conventional
+  subject, a `chore(<routine>): …` one; a session that produced no pull request
+  or failed is recorded as such. The pass runs standalone and at the end of
+  every dispatch, including a dispatch that created nothing. Refs #479.
+- **The pull-request URL the API hands back is never trusted.** It is matched
+  against an anchored `https://github.com/<owner>/<name>/pull/<n>` pattern and
+  must name the same repository the session was dispatched to; anything else is
+  recorded as an error and acted on by nothing, because a URL from a remote
+  service attached to an ambient `gh` credential is otherwise a write primitive
+  pointed at someone else's repository. Every gh write is checked, so a failed
+  close or label is a counted failure and leaves no record claiming success —
+  which is what lets the next run retry it.
+- **Every ledger spend query now filters on the record kind.** A reconcile
+  record carries the same `.date`, `.routine`, and `.repo` as a dispatch, so
+  without the filter closing an empty pull request would have counted against
+  the daily cap, satisfied the same-day idempotency check, and held a weekly
+  routine inside its cadence window — suppressing the very routine the record
+  belongs to. `dispatched_today`, `unresolved_attempts`, `already_dispatched`,
+  `dispatched_within`, `last_dispatch_epoch`, and `ledger_repos` all share one
+  prelude, and a test pins that a ledger full of today's reconcile records still
+  dispatches the pair.
+- **Idempotent by ledger query, not by memory.** A session with a terminal
+  reconcile record is skipped without an API call; a session still running is
+  skipped with no record at all, so the next run looks again rather than
+  freezing its outcome at "we looked too early". Records for one session are
+  held until the whole session is settled, so a retryable failure part-way
+  through leaves nothing behind. `--dry-run` holds in the new mode too: it may
+  read `GET /sessions` and `gh pr view`, prints `[DRY] would …`, and leaves the
+  state directory byte-identical. Standalone the pass dies without `gh`; inside
+  a dispatch it logs one line and counts one failure rather than taking the
+  dispatch down with it. `status.json` gains a `reconcile` block.
+  `tests/jules-dispatch.test.sh` covers all of it with a fake `gh` alongside the
+  fake `curl`, and never the live API.
+- **The retitle's boundary is reported, not papered over** (Codex gate, high).
+  `check-commit-format.sh` lints the subjects of the commits a pull request
+  adds, not the pull request's title, so a conventional title fixes what a
+  squash merge lands on `main` and leaves the required check exactly as it was.
+  Rewriting a session's branch is not the dispatcher's to do, so the pass now
+  reads the pull request's commits, logs how many subjects the check rejects,
+  records `commit_subjects_ok: false`, and counts them in `status.json` —
+  instead of reporting a still-blocked pull request as fully settled.
+- **One ledger record per session, not one per pull request** (Codex gate,
+  medium, twice). Records were appended a line at a time, so a failure after
+  the first line left the session looking reconciled while the rest of its
+  pull-request provenance was never written, and every later run skipped the
+  gap. A record now *is* the "this session is settled" marker: one line
+  carrying a `prs` array, which is the same unit of write every other ledger
+  append already relies on rather than a new claim about multi-line atomicity.
+  A record past the length bound is refused and retried rather than truncated.
+- **Three more ways the session response could mislead the pass** (Codex gate,
+  medium). A `pullRequest.url` carrying an embedded newline was split into two
+  URLs before the anchored pattern saw either, so one malformed field could
+  drive writes to two pull requests; outputs are now read one JSON value at a
+  time and the whole field must match. A response whose `outputs` could not be
+  parsed fell through to a terminal `no-pr` record, freezing an outcome nobody
+  had read; it is now a counted failure and retried. And the commit-subject
+  report is taken from `repos/{o}/{n}/pulls/{n}/commits`, the only payload that
+  carries each commit's parents, so merge commits and the revert auto-message
+  are skipped exactly as `check-commit-format.sh` skips them — otherwise a pull
+  request CI is perfectly happy with would have been reported as blocked.
+- **Two more ways a malformed or long response could mislead the pass** (Codex
+  gate, medium). The commits endpoint pages at 100, so a rejected subject on
+  page two was missed under a terminal record that stopped anything looking
+  again; the fetch now paginates and the pages are concatenated locally. And
+  jq's `//` replaces `false` as well as `null`, so an `outputs: false` response
+  counted as zero pull requests and earned a permanent `no-pr` record — outputs
+  are now tested by type, and anything that is neither absent, null, nor an
+  array is a counted failure that is retried.
+
 ## 2026-09-21 — fix(review-receipt): a blocked review retires the other lane's approval
 
 - **A failed newer review can no longer be bypassed by an older competing

@@ -12,12 +12,21 @@
 #
 # Usage:
 #   jules-dispatch.sh [--dry-run] [--routine NAME] [--repo OWNER/NAME]
+#   jules-dispatch.sh --reconcile [--routine NAME] [--repo OWNER/NAME] [--dry-run]
 #   jules-dispatch.sh --report [--days N] [--post]
 #
 # Flags:
 #   --dry-run          resolve and print what would be dispatched; write nothing
 #   --routine NAME     only this routine (the catalog file's basename)
 #   --repo OWNER/NAME  only this repository
+#   --reconcile        settle each ledger session against GET /sessions: close a
+#                      pull request the session opened with zero changed files,
+#                      label and normalise the title of one that changed
+#                      something, and record the outcome. The title is what a
+#                      squash merge lands; a pull request whose own commit
+#                      subjects the format check rejects is reported, not fixed.
+#                      Runs on its own and at the end of every dispatch; needs
+#                      gh. Not with --report
 #   --report           tally routine PRs per week from GitHub instead of dispatching
 #   --days N           report window in days (default 28)
 #   --post             with --report, comment the table on the tracker issue
@@ -34,6 +43,8 @@
 #   JULES_TRACKER       owner/name#issue for --post (default jckeen/dotfiles#446)
 #   JULES_FLOCK         flock(1) to use (default flock); a test seam for the
 #                       branch taken when flock is unavailable
+#   JULES_GH            gh(1) to use (default gh); a test seam for the branch
+#                       taken when the GitHub CLI is unavailable
 #   JULES_REPORT_LIMIT  --report pull-request fetch bound (default 1000); the
 #                       report says so when a repository hits it
 #   JULES_DAY_EDGE_MARGIN  seconds of the UTC day that must remain before a
@@ -42,12 +53,16 @@
 #                       dispatch is recorded against, so do not set it in anger)
 #
 # State (all under JULES_STATE_DIR):
-#   dispatch.jsonl   one line per created session — the idempotency ledger
-#   status.json      last run's outcome, for hooks and the status line
+#   dispatch.jsonl   the ledger: dispatch records (one line per attempt and one
+#                    per created session) plus `"kind":"reconcile"` records, one
+#                    per settled session. Every dispatch query filters on the
+#                    kind, so a reconcile record never counts as spend
+#   status.json      last run's outcome, for hooks and the status line; a
+#                    standalone --reconcile rewrites it too, with its own counts
 #   dispatch.log     appended run log
 #   dispatch.lock    flock'd for the duration of a dispatch (not a dry run)
 #
-# Requires: bash, curl, jq. --report additionally requires gh.
+# Requires: bash, curl, jq. --report and --reconcile additionally require gh.
 
 set -euo pipefail
 
@@ -66,6 +81,16 @@ readonly JULES_AUTOMATION_MODE="AUTO_CREATE_PR"
 # header this script injects, where it is the first thing the session reads.
 # jules-dispatch.test.sh asserts this list still matches the checker's TYPES.
 readonly COMMIT_TYPES='feat|fix|refactor|chore|docs|test|style|perf|build|ci|revert'
+# The same subject shape check-commit-format.sh applies, derived from the one
+# copy of the type list above so the two cannot drift apart. --reconcile uses it
+# to decide whether a routine pull request's title already passes.
+readonly CONVENTIONAL_SUBJECT_RE="^(${COMMIT_TYPES})(\\([a-z0-9._/-]+\\))?!?: .+"
+# The line --reconcile leaves when it closes a pull request that changed nothing.
+readonly RECONCILE_EMPTY_COMMENT='Closed by jules-dispatch --reconcile: the session produced no changes (0 files changed). An empty run is a good run (#479).'
+# The routine label is created on demand: the platform applies none, and
+# jules-routine:* does not exist in a repository until a routine PR lands there.
+readonly RECONCILE_LABEL_COLOR='5319e7'
+readonly RECONCILE_LABEL_DESC='Opened by a Jules routine session (ADR-0009)'
 # A bound on paging, so a server that keeps handing back a token cannot spin
 # here forever. 100 sources per page, so this is 5000 repositories.
 readonly SOURCES_PAGE_LIMIT=50
@@ -87,6 +112,9 @@ ROUTINE_DIR="${JULES_ROUTINE_DIR:-$REPO_ROOT/agents/routines}"
 STARTING_BRANCH="${JULES_STARTING_BRANCH:-}"
 TRACKER="${JULES_TRACKER:-jckeen/dotfiles#446}"
 REPORT_LIMIT="${JULES_REPORT_LIMIT:-1000}"
+# gh, not the REST API, for everything on the GitHub side: a pull request
+# belongs to GitHub, and the Jules key must never reach github.com.
+GH_BIN="${JULES_GH:-gh}"
 # How much of the UTC day must remain before a dispatch may start. A request can
 # take REQUEST_TIMEOUT seconds, so one begun closer to midnight than that could
 # create its session on the next day while both ledger records carry this day —
@@ -100,6 +128,8 @@ ONLY_REPO=""
 MODE="dispatch"
 REPORT_DAYS=28
 POST=0
+WANT_RECONCILE=0
+WANT_REPORT=0
 
 # Dropped before it is assigned, not just emptied: if the caller's environment
 # already exported a variable of this name, a plain assignment KEEPS the export
@@ -131,6 +161,14 @@ TODAY="$(epoch_to "$NOW_EPOCH" '%Y-%m-%d')"
 NOW_ISO="$(epoch_to "$NOW_EPOCH" '%Y-%m-%dT%H:%M:%SZ')"
 CREATED=0
 FAILURES=0
+# Reconcile counters, reported in status.json so a pass that failed is visible
+# to the hooks and the status line and not only in the exit code.
+RECON_CHECKED=0
+RECON_CLOSED=0
+RECON_LABELED=0
+RECON_RETITLED=0
+RECON_BLOCKED_SUBJECTS=0
+RECON_FAILURES=0
 SPENT=0
 DEFERRED=0
 ATTEMPT_SEQ=0
@@ -159,7 +197,8 @@ log() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
-    --report) MODE="report" ;;
+    --report) MODE="report"; WANT_REPORT=1 ;;
+    --reconcile) MODE="reconcile"; WANT_RECONCILE=1 ;;
     --post) POST=1 ;;
     --routine)
       [[ $# -ge 2 ]] || die "--routine needs a routine name"
@@ -176,6 +215,11 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Checked before every other flag rule, so the message names the real mistake
+# rather than a consequence of it. --report tallies and --reconcile acts; asking
+# for both is a mistake, not a composition.
+[[ "$WANT_RECONCILE" -eq 1 && "$WANT_REPORT" -eq 1 ]] \
+  && die "--reconcile cannot be combined with --report"
 [[ "$REPORT_DAYS" =~ ^[1-9][0-9]*$ ]] \
   || die "--days must be a positive integer with no leading zeros, got: $REPORT_DAYS"
 [[ -n "$ONLY_REPO" && ! "$ONLY_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] \
@@ -209,7 +253,8 @@ command -v jq >/dev/null 2>&1 || die "jq is required (setup.sh installs it)"
 
 # One spelling for a repository everywhere (see lc() below).
 ONLY_REPO="$(printf '%s' "$ONLY_REPO" | tr '[:upper:]' '[:lower:]')"
-[[ "$MODE" == "dispatch" ]] && { command -v curl >/dev/null 2>&1 || die "curl is required"; }
+# --reconcile talks to GET /sessions, so it needs curl exactly as a dispatch does.
+[[ "$MODE" != "report" ]] && { command -v curl >/dev/null 2>&1 || die "curl is required"; }
 
 # ── Routine frontmatter ──────────────────────────────────────────────
 # A strict reader: unknown key, missing key, duplicate key, or a value that
@@ -441,12 +486,29 @@ sources_repos() {
 # no attempt id, so the key falls back to the session or the timestamp.
 readonly LEDGER_KEY='(if ((.attempt // "") == "") then ((.session // "") + (.dispatched_at // "")) else .attempt end)'
 
+# The ledger holds two kinds of record. Every query below that decides SPEND —
+# the daily cap, same-day idempotency, the weekly cadence window, the fairness
+# order, the report's scope — must see dispatch records only: a reconcile record
+# carries the same .date, .routine and .repo, so without this filter a pass that
+# merely closed an empty pull request would read as a dispatch and suppress the
+# very routine it belongs to on the next run. Records written before reconcile
+# existed carry no .kind, hence the default.
+readonly LEDGER_IS_DISPATCH='((.kind // "dispatch") == "dispatch")'
+
 # Built in memory, then appended with ONE printf. A single write of less than
 # PIPE_BUF bytes to a file opened O_APPEND (which `>>` does) is atomic, so a
 # concurrent reader — a --report run, or a dispatch that is about to stand down on
 # the lock — never sees half a line. Letting jq write straight into the file would
 # give no such guarantee, and a reader rejecting a torn line would turn an intended
 # clean no-op into a failed run. The length is checked rather than assumed.
+ledger_write_line() { # one complete JSON line
+  [[ "${#1}" -lt 4000 ]] || {
+    printf 'jules-dispatch: ledger record too long to append atomically\n' >&2
+    return 1
+  }
+  printf '%s\n' "$1" >> "$LEDGER"
+}
+
 ledger_append() { # status attempt repo source session url
   local line
   line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
@@ -455,11 +517,7 @@ ledger_append() { # status attempt repo source session url
     '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
       source: $source, status: $status, attempt: $attempt,
       session: $session, url: $url}')" || return 1
-  [[ "${#line}" -lt 4000 ]] || {
-    printf 'jules-dispatch: ledger record too long to append atomically\n' >&2
-    return 1
-  }
-  printf '%s\n' "$line" >> "$LEDGER"
+  ledger_write_line "$line"
 }
 
 # Validated ONCE, here, from the main shell. Every later query runs inside a
@@ -482,7 +540,7 @@ ledger_query() { # jq-filter -> value
 
 dispatched_today() {
   ledger_query --arg d "$TODAY" \
-    "[.[] | select(.date == \$d) | $LEDGER_KEY] | unique | length"
+    "[.[] | select($LEDGER_IS_DISPATCH and .date == \$d) | $LEDGER_KEY] | unique | length"
 }
 
 # Attempts today with no matching "created" record: a session may or may not
@@ -490,7 +548,7 @@ dispatched_today() {
 # session is the one outcome this script must never produce on its own.
 unresolved_attempts() {
   ledger_query --arg d "$TODAY" \
-    "[.[] | select(.date == \$d)] as \$t
+    "[.[] | select($LEDGER_IS_DISPATCH and .date == \$d)] as \$t
      | (\$t | map(select((.status // \"created\") == \"attempted\") | $LEDGER_KEY) | unique) as \$a
      | (\$t | map(select((.status // \"created\") == \"created\") | $LEDGER_KEY) | unique) as \$c
      | (\$a - \$c) | length"
@@ -499,7 +557,7 @@ unresolved_attempts() {
 already_dispatched() { # routine repo
   local n
   n="$(ledger_query --arg d "$TODAY" --arg r "$1" --arg p "$2" \
-        "[.[] | select(.date == \$d and .routine == \$r and .repo == \$p) | $LEDGER_KEY] | unique | length")"
+        "[.[] | select($LEDGER_IS_DISPATCH and .date == \$d and .routine == \$r and .repo == \$p) | $LEDGER_KEY] | unique | length")"
   [[ "$n" -gt 0 ]]
 }
 
@@ -517,8 +575,8 @@ dispatched_within() { # routine repo seconds
   [[ -s "$LEDGER" ]] || return 1
   local n cutoff=$((NOW_EPOCH - $3))
   n="$(ledger_query --arg r "$1" --arg p "$2" --argjson cutoff "$cutoff" \
-        '[.[] | select(.routine == $r and .repo == $p
-           and ((.dispatched_at // "") | (try fromdateiso8601 catch 0)) > $cutoff)] | length')"
+        "[.[] | select($LEDGER_IS_DISPATCH and .routine == \$r and .repo == \$p
+           and ((.dispatched_at // \"\") | (try fromdateiso8601 catch 0)) > \$cutoff)] | length")"
   [[ "$n" -gt 0 ]]
 }
 
@@ -533,7 +591,7 @@ schedule_interval() {
 ledger_repos() { # distinct repos a routine was ever dispatched to ("" = any)
   [[ -s "$LEDGER" ]] || return 0
   jq -sr --arg r "${1:-}" \
-    '[.[] | select($r == "" or .routine == $r) | .repo // empty] | unique | .[]' "$LEDGER" 2>/dev/null \
+    "[.[] | select($LEDGER_IS_DISPATCH and (\$r == \"\" or .routine == \$r)) | .repo // empty] | unique | .[]" "$LEDGER" 2>/dev/null \
     || die "dispatch ledger is not valid JSON lines: $LEDGER"
 }
 
@@ -606,10 +664,18 @@ write_status() {
     --argjson dispatched_today "$(dispatched_today)" --argjson failures "$FAILURES" \
     --argjson serialized "$([[ "$LOCK_HELD" -eq 1 ]] && printf 'true' || printf 'false')" \
     --argjson deferred "$DEFERRED" \
+    --argjson recon_checked "$RECON_CHECKED" --argjson recon_closed "$RECON_CLOSED" \
+    --argjson recon_labeled "$RECON_LABELED" --argjson recon_retitled "$RECON_RETITLED" \
+    --argjson recon_blocked "$RECON_BLOCKED_SUBJECTS" \
+    --argjson recon_failures "$RECON_FAILURES" \
     '{checked_at: $checked_at, date: $date, daily_cap: $cap,
       created_this_run: $created, dispatched_today: $dispatched_today,
       deferred_to_a_later_day: $deferred, serialized: $serialized,
-      failures: $failures, events: $events}' > "$tmp"
+      failures: $failures,
+      reconcile: {checked: $recon_checked, closed_empty: $recon_closed,
+                  labeled: $recon_labeled, retitled: $recon_retitled,
+                  blocked_subjects: $recon_blocked, failures: $recon_failures},
+      events: $events}' > "$tmp"
   mv "$tmp" "$STATUS_FILE"
 }
 
@@ -627,9 +693,9 @@ write_status() {
 last_dispatch_epoch() { # routine repo -> epoch seconds, 0 if never
   [[ -s "$LEDGER" ]] || { printf '0'; return 0; }
   ledger_query --arg r "$1" --arg p "$2" \
-    '[.[] | select(.routine == $r and .repo == $p)
-          | ((.dispatched_at // "") | (try fromdateiso8601 catch 0))]
-     | max // 0'
+    "[.[] | select($LEDGER_IS_DISPATCH and .routine == \$r and .repo == \$p)
+          | ((.dispatched_at // \"\") | (try fromdateiso8601 catch 0))]
+     | max // 0"
 }
 
 # Callers read this through a process substitution, whose subshell cannot fail
@@ -964,8 +1030,481 @@ do_dispatch() {
   done < "$sorted"
   rm -f "$sorted"
 
+  # Every dispatch ends by settling what earlier ones created, including a run
+  # that created nothing: the pull requests a routine leaves behind are the
+  # reason the lane exists, and a tidy-up nobody remembers to run is not one.
+  reconcile_pass || true
+
   write_status
   log "═══ jules-dispatch done: created=$CREATED deferred=$DEFERRED failures=$FAILURES ═══"
+  [[ "$FAILURES" -eq 0 ]] || exit 1
+}
+
+# ── Reconcile ────────────────────────────────────────────────────────
+# What the platform actually leaves behind, observed on the first two live
+# sessions (#479): a COMPLETED session opens a pull request even when its change
+# set is empty, the `pullRequest` output carries a `url` and NO number, the title
+# is not a conventional subject, no `jules-routine:*` label is applied, and a
+# session can complete with `outputs` null — no change set and no pull request at
+# all. None of that is fixable from the dispatch side, so it is settled after the
+# fact: this pass is the only place a routine pull request's provenance is
+# API-confirmed, which is what the custodian's classifier keys off.
+#
+# One (repo, label) pair is created at most once per run.
+RECON_LABELS_ENSURED=" "
+# Records for one session, held until the whole session is settled. A retryable
+# failure part-way through must leave NO record, or the next run would see the
+# session as reconciled and skip the repair. Every action this pass takes is
+# idempotent, so re-processing a session it already half-handled is safe.
+RECON_PENDING=()
+
+recon_fail() { # message routine repo
+  log "  !! $1"
+  record error "${2:-}" "${3:-}" "$1"
+  FAILURES=$((FAILURES + 1))
+  RECON_FAILURES=$((RECON_FAILURES + 1))
+}
+
+# gh's stderr is folded into the message rather than dropped, on one line so a
+# multi-line git error cannot fake a log record. gh never sees the API key.
+one_line() { printf '%s' "$1" | tr '\n\r' '  ' | cut -c1-300; }
+
+# One ledger record per session, built once the whole session is settled. Not
+# one per pull request: a record IS the "this session is done" marker, so two
+# appends could leave a session marked settled with half its provenance missing
+# and every later run skipping the gap. One line is the same unit every other
+# ledger append already writes.
+RECON_PR_JSON=""
+RECON_PR_ACTIONS=""
+RECON_FIRST_URL=""
+RECON_FIRST_NUM=0
+RECON_SUBJECTS_OK=true
+
+recon_reset_session() {
+  RECON_PR_JSON=""; RECON_PR_ACTIONS=""; RECON_FIRST_URL=""; RECON_FIRST_NUM=0
+  RECON_SUBJECTS_OK=true; RECON_PENDING=()
+}
+
+recon_pr_entry() { # url pr-number action
+  local entry
+  entry="$(jq -nc --arg url "$1" --argjson pr "$2" --arg action "$3" \
+    '{url: $url, pr: $pr, action: $action}')" || return 1
+  RECON_PR_JSON="${RECON_PR_JSON:+$RECON_PR_JSON,}$entry"
+  # Distinct action names in first-seen order: a one-pull-request session, which
+  # is what `max_prs_per_run` makes the norm, reads exactly as that request's
+  # outcome.
+  case " $RECON_PR_ACTIONS " in
+    *" $3 "*) ;;
+    *) RECON_PR_ACTIONS="${RECON_PR_ACTIONS:+$RECON_PR_ACTIONS }$3" ;;
+  esac
+  [[ -z "$RECON_FIRST_URL" ]] && { RECON_FIRST_URL="$1"; RECON_FIRST_NUM="$2"; }
+  return 0
+}
+
+# commit_subjects_ok is true for a session whose pull requests this pass read
+# the commits of and found nothing the required check would reject; it is also
+# true where there was no pull request to read.
+recon_pend() { # session routine repo action detail
+  local line action="$4"
+  [[ -n "$RECON_PR_ACTIONS" ]] && action="${RECON_PR_ACTIONS// /+}"
+  line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg session "$1" \
+    --arg routine "$2" --arg repo "$3" --arg url "$RECON_FIRST_URL" \
+    --argjson pr "$RECON_FIRST_NUM" --arg action "$action" \
+    --argjson prs "[$RECON_PR_JSON]" \
+    --argjson subjects_ok "$RECON_SUBJECTS_OK" \
+    --arg detail "$(printf '%s' "$5" | cut -c1-200)" \
+    '{kind: "reconcile", reconciled_at: $at, date: $date, session: $session,
+      routine: $routine, repo: $repo, pr_url: $url, pr: $pr,
+      action: $action, prs: $prs, commit_subjects_ok: $subjects_ok,
+      detail: $detail}')" || return 1
+  RECON_PENDING=("$line")
+}
+
+# The bound is checked rather than assumed, and a record past it is refused
+# outright: half a session's provenance is worse than none, because every later
+# run skips a session that already has a record.
+recon_flush() {
+  [[ "${#RECON_PENDING[@]}" -eq 0 ]] && return 0
+  local line="${RECON_PENDING[0]}"
+  RECON_PENDING=()
+  if [[ "$DRY_RUN" -eq 1 ]]; then return 0; fi
+  if ! ledger_write_line "$line"; then
+    recon_fail "could not append this session's reconcile record to $LEDGER" "" ""
+    return 1
+  fi
+}
+
+# Every `created` session the ledger knows about that has no reconcile record
+# yet. The already-reconciled set is computed in the SAME jq pass, so a settled
+# session costs no API call at all — that is the idempotency proof. Emitted with
+# `-` sentinels because the fields are read back through a tab IFS, where an
+# empty field before the last one silently shifts every field after it.
+reconcile_candidates() {
+  [[ -s "$LEDGER" ]] || return 0
+  jq -sr --arg p "$ONLY_REPO" --arg r "$ONLY_ROUTINE" "
+    ([.[] | select(.kind == \"reconcile\") | (.session // \"\")] | unique) as \$done
+    | [ .[]
+        | select($LEDGER_IS_DISPATCH
+                 and ((.status // \"created\") == \"created\")
+                 and ((.session // \"\") != \"\")
+                 and ((\$p == \"\") or (((.repo // \"\") | ascii_downcase) == \$p))
+                 and ((\$r == \"\") or ((.routine // \"\") == \$r))
+                 and (((.session // \"\") as \$s | \$done | index(\$s)) == null)) ]
+    | unique_by(.session)
+    | .[]
+    | [ .session,
+        (if ((.routine // \"\") == \"\") then \"-\" else .routine end),
+        (if ((.repo // \"\") == \"\") then \"-\" else .repo end) ]
+    | @tsv" "$LEDGER" 2>/dev/null \
+    || die "dispatch ledger is not valid JSON lines: $LEDGER"
+}
+
+# The label does not exist in a repository until a routine pull request lands
+# there, so it is created on demand. --force makes a repeat call a no-op update
+# rather than an error, and the colour and description are constants so the
+# update is byte-identical every time.
+ensure_label() { # owner/name label
+  local key=" $1|$2 " out
+  [[ "$RECON_LABELS_ENSURED" == *"$key"* ]] && return 0
+  if ! out="$("$GH_BIN" label create "$2" --repo "$1" --force \
+        --color "$RECONCILE_LABEL_COLOR" --description "$RECONCILE_LABEL_DESC" 2>&1)"; then
+    log "     gh label create $2 failed on $1: $(one_line "$out")"
+    return 1
+  fi
+  RECON_LABELS_ENSURED="$RECON_LABELS_ENSURED$key"
+  return 0
+}
+
+# "Routine: <name> - subject" / "Routine: <name>: subject" / "<name>: subject"
+# are the shapes the platform has produced; the prefix is dropped so the
+# conventional subject carries the routine once, in the scope.
+strip_routine_prefix() { # routine title
+  local routine="$1" t="$2"
+  case "$t" in
+    "Routine: $routine - "*) t="${t#"Routine: $routine - "}" ;;
+    "Routine: $routine -"*)  t="${t#"Routine: $routine -"}" ;;
+    "Routine: $routine: "*)  t="${t#"Routine: $routine: "}" ;;
+    "Routine: $routine:"*)   t="${t#"Routine: $routine:"}" ;;
+    "$routine: "*)           t="${t#"$routine: "}" ;;
+    "$routine:"*)            t="${t#"$routine:"}" ;;
+  esac
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  [[ -n "$t" ]] || t="$routine changes"
+  printf '%s' "$t"
+}
+
+# 0 = settled, 1 = retryable failure; settle nothing on a 1.
+reconcile_pr() { # session routine repo url
+  local session="$1" routine="$2" repo="$3" url="$4"
+  local owner name num out out2 commits pr_state changed title label newtitle action
+  local bad_subjects
+  local -a actions=()
+
+  # Strict, anchored, https-only, github.com only, and matched against the
+  # WHOLE field — a value carrying a newline fails `$` and is refused rather
+  # than becoming two actionable URLs. Anything else is recorded and acted on by
+  # nothing: the URL comes from a remote service, and a dispatcher that closes
+  # or relabels whatever it is handed is a write primitive pointed at someone
+  # else's repository.
+  if [[ ! "$url" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]]; then
+    recon_fail "$routine / $repo — $session reported a pull request URL this dispatcher will not act on: $(one_line "$url")" "$routine" "$repo"
+    recon_pr_entry "$(one_line "$url")" 0 error || return 1
+    return 0
+  fi
+  owner="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"; num="${BASH_REMATCH[3]}"
+  # The session was dispatched to one repository; a pull request anywhere else
+  # is not this run's to touch, however the API came to report it.
+  if [[ "$(lc "$owner/$name")" != "$(lc "$repo")" ]]; then
+    recon_fail "$routine / $repo — $session reported a pull request in $owner/$name, which is not the repository it was dispatched to" "$routine" "$repo"
+    recon_pr_entry "$url" "$num" error || return 1
+    return 0
+  fi
+
+  if ! out="$("$GH_BIN" pr view "$num" --repo "$owner/$name" \
+        --json state,changedFiles,title,labels 2>&1)"; then
+    recon_fail "$routine / $repo — gh pr view $num failed: $(one_line "$out")" "$routine" "$repo"
+    return 1
+  fi
+  pr_state="$(jq -r '.state // ""' <<<"$out" 2>/dev/null || true)"
+  changed="$(jq -r '.changedFiles // "x"' <<<"$out" 2>/dev/null || true)"
+  title="$(jq -r '.title // ""' <<<"$out" 2>/dev/null || true)"
+  if [[ -z "$pr_state" || ! "$changed" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    recon_fail "$routine / $repo — gh pr view $num returned no usable state or changedFiles" "$routine" "$repo"
+    return 1
+  fi
+
+  if [[ "$pr_state" != "OPEN" ]]; then
+    log "  -- $routine / $repo — $owner/$name#$num is $pr_state; nothing to do"
+    record reconciled "$routine" "$repo" "PR #$num $pr_state"
+    recon_pr_entry "$url" "$num" noop || return 1
+    return 0
+  fi
+
+  # An empty run is a good run — but an empty pull request is still an open pull
+  # request asking for a review, so it is closed with the reason in one line.
+  if [[ "$changed" -eq 0 ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [DRY] would close $owner/$name#$num — the session produced no changes"
+      recon_pr_entry "$url" "$num" closed-empty || return 1
+      return 0
+    fi
+    if ! out="$("$GH_BIN" pr close "$num" --repo "$owner/$name" \
+          --comment "$RECONCILE_EMPTY_COMMENT" 2>&1)"; then
+      recon_fail "$routine / $repo — gh pr close failed for #$num: $(one_line "$out")" "$routine" "$repo"
+      return 1
+    fi
+    RECON_CLOSED=$((RECON_CLOSED + 1))
+    log "  -> $routine / $repo — closed $owner/$name#$num (0 files changed)"
+    record reconciled "$routine" "$repo" "closed empty PR #$num"
+    recon_pr_entry "$url" "$num" closed-empty || return 1
+    return 0
+  fi
+
+  label="jules-routine:$routine"
+  if ! jq -e --arg l "$label" '[(.labels // [])[] | (.name // "")] | index($l) != null' \
+        >/dev/null 2>&1 <<<"$out"; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [DRY] would label $owner/$name#$num $label"
+    else
+      if ! ensure_label "$owner/$name" "$label"; then
+        recon_fail "$routine / $repo — could not ensure the $label label on $owner/$name" "$routine" "$repo"
+        return 1
+      fi
+      if ! out2="$("$GH_BIN" pr edit "$num" --repo "$owner/$name" --add-label "$label" 2>&1)"; then
+        recon_fail "$routine / $repo — gh pr edit --add-label failed for #$num: $(one_line "$out2")" "$routine" "$repo"
+        return 1
+      fi
+      RECON_LABELED=$((RECON_LABELED + 1))
+    fi
+    actions+=(labeled)
+  fi
+
+  # chore, because the routine's real change type is not knowable from the API.
+  # The squash merger can still edit it; an unmergeable subject cannot be edited
+  # by anyone who is not looking at the pull request, which is the failure #479
+  # actually hit.
+  if [[ ! "$title" =~ $CONVENTIONAL_SUBJECT_RE ]]; then
+    newtitle="chore($routine): $(strip_routine_prefix "$routine" "$title")"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "  [DRY] would retitle $owner/$name#$num to: $newtitle"
+    else
+      if ! out2="$("$GH_BIN" pr edit "$num" --repo "$owner/$name" --title "$newtitle" 2>&1)"; then
+        recon_fail "$routine / $repo — gh pr edit --title failed for #$num: $(one_line "$out2")" "$routine" "$repo"
+        return 1
+      fi
+      RECON_RETITLED=$((RECON_RETITLED + 1))
+    fi
+    actions+=(retitled)
+  fi
+
+  # check-commit-format.sh lints the SUBJECTS of the commits a pull request
+  # adds, not its title, so retitling does not unblock the required check — it
+  # fixes what a squash merge lands on main and nothing more. Rewriting the
+  # session's branch is not this dispatcher's to do, so a pull request left
+  # unmergeable by its own commit subjects is named and recorded rather than
+  # settled in silence. That is what the conventional-subject line the
+  # dispatcher injects into every prompt is there to prevent up front (#479).
+  #
+  # The commits endpoint, not `gh pr view --json commits`: the checker runs
+  # `git rev-list --no-merges` and skips the revert auto-message, and only this
+  # payload carries each commit's parents. Reporting a merge commit as blocking
+  # would be a false alarm on a pull request CI is perfectly happy with.
+  # --paginate, because the endpoint stops at 100 per page and a rejected
+  # subject on page two would otherwise be missed under a terminal record that
+  # stops anything looking again. gh emits one JSON document per page, so the
+  # pages are slurped and concatenated here rather than relying on --slurp,
+  # which not every gh on the floor has.
+  if ! commits="$("$GH_BIN" api --paginate "repos/$owner/$name/pulls/$num/commits?per_page=100" 2>&1)"; then
+    recon_fail "$routine / $repo — gh api pulls/$num/commits failed: $(one_line "$commits")" "$routine" "$repo"
+    return 1
+  fi
+  if ! bad_subjects="$(jq -sr --arg re "$CONVENTIONAL_SUBJECT_RE" '
+        (reduce .[] as $page ([]; if ($page | type) == "array" then . + $page
+                                  else error("commits page is not an array") end)) as $all
+        | [ $all[]
+          | select(((.parents // []) | length) < 2)
+          | ((.commit.message // "") | split("\n")[0])
+          | select((startswith("Revert ")) | not)
+          | select((test($re)) | not) ]
+        | length' <<<"$commits" 2>/dev/null)"; then
+    recon_fail "$routine / $repo — pulls/$num/commits returned a payload this run cannot read" "$routine" "$repo"
+    return 1
+  fi
+  if [[ "$bad_subjects" =~ ^[1-9][0-9]*$ ]]; then
+    RECON_SUBJECTS_OK=false
+    RECON_BLOCKED_SUBJECTS=$((RECON_BLOCKED_SUBJECTS + 1))
+    log "  -- $routine / $repo — $owner/$name#$num carries $bad_subjects commit subject(s)"
+    log "     the required commit-format check rejects; its title is fixed, that check is not."
+  fi
+
+  action="unchanged"
+  [[ "${#actions[@]}" -gt 0 ]] && action="$(IFS='+'; printf '%s' "${actions[*]}")"
+  log "  -> $routine / $repo — $owner/$name#$num $action"
+  record reconciled "$routine" "$repo" "PR #$num $action"
+  recon_pr_entry "$url" "$num" "$action" || return 1
+  return 0
+}
+
+reconcile_session() { # session routine repo
+  local session="$1" routine="$2" repo="$3"
+  local id resp state n i url failed_any=0
+
+  recon_reset_session
+  RECON_CHECKED=$((RECON_CHECKED + 1))
+
+  id="${session#sessions/}"
+  if [[ "$id" == "$session" || ! "$id" =~ ^[0-9]+$ ]]; then
+    recon_fail "$routine / $repo — ledger session '$(one_line "$session")' is not sessions/<digits>; nothing of it reaches a URL" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "malformed session name" && recon_flush
+    return 1
+  fi
+  if [[ "$routine" == "-" || "$repo" == "-" ]]; then
+    recon_fail "$session — the ledger record names no routine or repository, so there is nothing to check its pull request against" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "ledger record missing routine or repo" && recon_flush
+    return 1
+  fi
+  # Revalidated on the way out of the ledger, which nothing has checked since
+  # the catalog parser read it: the name becomes a label and a commit scope, and
+  # a scope outside the checker's [a-z0-9._/-] would produce a title the
+  # commit-format check still rejects. A ledger is a file an operator can edit.
+  if [[ ! "$routine" =~ ^[a-z0-9-]+$ ]]; then
+    recon_fail "$session — ledger routine name '$(one_line "$routine")' is not [a-z0-9-]+; it would become a label and a commit scope" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "ledger routine name rejected" && recon_flush
+    return 1
+  fi
+  if [[ ! "$repo" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]]; then
+    recon_fail "$session — ledger repository '$(one_line "$repo")' is not OWNER/NAME; no pull request URL can be checked against it" "$routine" "$repo"
+    recon_pend "$session" "$routine" "$repo" error "ledger repository rejected" && recon_flush
+    return 1
+  fi
+
+  if ! resp="$(curl_api GET "/sessions/$id")"; then
+    recon_fail "$routine / $repo — GET /sessions/$id failed; retried on a later run" "$routine" "$repo"
+    return 1
+  fi
+  state="$(jq -r '.state // ""' <<<"$resp" 2>/dev/null || true)"
+  if [[ -z "$state" ]]; then
+    recon_fail "$routine / $repo — GET /sessions/$id returned no state" "$routine" "$repo"
+    return 1
+  fi
+  # QUEUED, PLANNING, AWAITING_*, IN_PROGRESS, PAUSED — not a result yet. No
+  # record, so the next run looks again; recording one here would freeze the
+  # session's outcome at "we looked too early".
+  if [[ "$state" != "COMPLETED" && "$state" != "FAILED" ]]; then
+    log "  -- $routine / $repo — $session is $state; reconciled once it reaches a terminal state"
+    return 0
+  fi
+
+  if [[ "$state" == "FAILED" ]]; then
+    log "  -- $routine / $repo — $session FAILED; recorded, no pull request to settle"
+    record reconciled "$routine" "$repo" "session FAILED"
+    recon_pend "$session" "$routine" "$repo" failed "session state FAILED" || return 1
+    recon_flush
+    return 0
+  fi
+
+  # A response whose outputs cannot be read is NOT a session without a pull
+  # request: recording no-pr would be terminal and the real outcome would never
+  # be looked at again. Counted as a failure and retried instead.
+  if ! n="$(jq -r 'if ((has("outputs") | not) or (.outputs == null)) then 0
+                   elif (.outputs | type) == "array"
+                   then ([.outputs[] | select((type == "object") and has("pullRequest"))] | length)
+                   else error("outputs is not an array") end' <<<"$resp" 2>/dev/null)" \
+     || [[ ! "$n" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    recon_fail "$routine / $repo — GET /sessions/$id returned unreadable outputs; retried on a later run" "$routine" "$repo"
+    return 1
+  fi
+
+  if [[ "$n" -eq 0 ]]; then
+    # Observed live: a COMPLETED session with `outputs` null — no change set, no
+    # branch, no pull request. That is a real outcome, not an error.
+    log "  -- $routine / $repo — $session COMPLETED with no pull request"
+    record reconciled "$routine" "$repo" "completed with no pull request"
+    recon_pend "$session" "$routine" "$repo" no-pr "session produced no pull request" || return 1
+    recon_flush
+    return 0
+  fi
+
+  # Read one JSON value at a time rather than a newline-delimited list: a url
+  # field carrying an embedded newline would otherwise be split into two URLs,
+  # each passing the anchored pattern the whole field must fail.
+  for ((i = 0; i < n; i++)); do
+    if ! url="$(jq -r --argjson i "$i" \
+          '[.outputs[] | select((type == "object") and has("pullRequest"))]
+           | .[$i] | (.pullRequest.url // "")' <<<"$resp" 2>/dev/null)"; then
+      recon_fail "$routine / $repo — could not read output $i of $session" "$routine" "$repo"
+      failed_any=1
+      continue
+    fi
+    reconcile_pr "$session" "$routine" "$repo" "$url" || failed_any=1
+  done
+
+  if [[ "$failed_any" -eq 1 ]]; then
+    recon_reset_session
+    return 1
+  fi
+  recon_pend "$session" "$routine" "$repo" unchanged "state $state" || return 1
+  recon_flush
+}
+
+reconcile_pass() {
+  local candidates count session routine repo
+  if ! candidates="$(reconcile_candidates)"; then
+    recon_fail "could not read $LEDGER while collecting the sessions to settle" "" ""
+    return 1
+  fi
+  if [[ -z "$candidates" ]]; then
+    log "reconcile: no session is waiting to be settled"
+    return 0
+  fi
+  count="$(printf '%s\n' "$candidates" | wc -l | tr -d ' ')"
+
+  # Standalone runs already died on a missing gh. Inside a dispatch it must not
+  # be fatal — the sessions were created and their ledger records are what
+  # bounds the spend — but it is still one failure, so the exit code says the
+  # run was not clean.
+  if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    log "  !! reconcile skipped: the GitHub CLI (gh) is not on PATH, so $count routine"
+    log "     session(s) cannot have their pull requests closed or labeled. The"
+    log "     dispatch itself stands; install gh or run --reconcile once it is there."
+    record error "" "" "reconcile skipped: gh not on PATH"
+    FAILURES=$((FAILURES + 1))
+    RECON_FAILURES=$((RECON_FAILURES + 1))
+    return 1
+  fi
+
+  log "reconcile: settling $count session(s)$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
+  while IFS="$(printf '\t')" read -r session routine repo; do
+    [[ -n "$session" ]] || continue
+    reconcile_session "$session" "$routine" "$repo" || true
+  done <<<"$candidates"
+  return 0
+}
+
+do_reconcile() {
+  # gh is the whole point of a standalone pass, so its absence is fatal here
+  # rather than a clean-looking no-op.
+  command -v "$GH_BIN" >/dev/null 2>&1 \
+    || die "--reconcile needs the GitHub CLI (gh) on PATH"
+  read_api_key
+
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR" 2>/dev/null || true
+    # A standalone pass writes the ledger, so it takes the same lock a dispatch
+    # does. A dry run writes nothing and must leave the state dir byte-identical.
+    if ! acquire_lock; then
+      log "another dispatch already holds $STATE_DIR/dispatch.lock — nothing to do"
+      exit 0
+    fi
+  fi
+  validate_ledger
+
+  log "═══ jules-dispatch --reconcile $NOW_ISO ═══"
+  reconcile_pass || true
+  write_status
+  log "═══ jules-dispatch reconcile done: checked=$RECON_CHECKED closed=$RECON_CLOSED labeled=$RECON_LABELED retitled=$RECON_RETITLED blocked=$RECON_BLOCKED_SUBJECTS failures=$RECON_FAILURES ═══"
   [[ "$FAILURES" -eq 0 ]] || exit 1
 }
 
@@ -973,7 +1512,7 @@ do_dispatch() {
 # Buckets by whole weeks back from now rather than by calendar week: no
 # dependence on strftime %G/%V, which not every jq build supports.
 do_report() {
-  command -v gh >/dev/null 2>&1 || die "--report needs the GitHub CLI (gh) on PATH"
+  command -v "$GH_BIN" >/dev/null 2>&1 || die "--report needs the GitHub CLI (gh) on PATH"
   validate_ledger
   local file repo scope label rows="" prs cutoff
   local truncated="" failed_queries="" rejected_routines="" ledger_scope=""
@@ -1005,7 +1544,7 @@ do_report() {
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue
       [[ -n "$ONLY_REPO" && "$repo" != "$ONLY_REPO" ]] && continue
-      if ! prs="$(gh pr list --repo "$repo" --state all --limit "$REPORT_LIMIT" \
+      if ! prs="$("$GH_BIN" pr list --repo "$repo" --state all --limit "$REPORT_LIMIT" \
             --search "label:$label" --json state,createdAt,mergedAt 2>/dev/null)"; then
         printf 'jules-dispatch: gh pr list failed for %s (label %s)\n' "$repo" "$label" >&2
         # A non-zero exit at the end is no help to someone reading the posted
@@ -1079,7 +1618,7 @@ do_report() {
     fi
     printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n%s' \
       "$REPORT_DAYS" "$NOW_ISO" "$table" "$caveat" \
-      | gh issue comment "${BASH_REMATCH[2]}" --repo "${BASH_REMATCH[1]}" --body-file -
+      | "$GH_BIN" issue comment "${BASH_REMATCH[2]}" --repo "${BASH_REMATCH[1]}" --body-file -
   fi
 
   [[ "$FAILURES" -eq 0 ]] || exit 1
@@ -1087,5 +1626,6 @@ do_report() {
 
 case "$MODE" in
   report) do_report ;;
+  reconcile) do_reconcile ;;
   *) do_dispatch ;;
 esac
