@@ -1310,12 +1310,19 @@ reconcile_pr() { # session routine repo url
   # `git rev-list --no-merges` and skips the revert auto-message, and only this
   # payload carries each commit's parents. Reporting a merge commit as blocking
   # would be a false alarm on a pull request CI is perfectly happy with.
-  if ! commits="$("$GH_BIN" api "repos/$owner/$name/pulls/$num/commits?per_page=100" 2>&1)"; then
+  # --paginate, because the endpoint stops at 100 per page and a rejected
+  # subject on page two would otherwise be missed under a terminal record that
+  # stops anything looking again. gh emits one JSON document per page, so the
+  # pages are slurped and concatenated here rather than relying on --slurp,
+  # which not every gh on the floor has.
+  if ! commits="$("$GH_BIN" api --paginate "repos/$owner/$name/pulls/$num/commits?per_page=100" 2>&1)"; then
     recon_fail "$routine / $repo — gh api pulls/$num/commits failed: $(one_line "$commits")" "$routine" "$repo"
     return 1
   fi
-  if ! bad_subjects="$(jq -r --arg re "$CONVENTIONAL_SUBJECT_RE" '
-        [ .[]
+  if ! bad_subjects="$(jq -sr --arg re "$CONVENTIONAL_SUBJECT_RE" '
+        (reduce .[] as $page ([]; if ($page | type) == "array" then . + $page
+                                  else error("commits page is not an array") end)) as $all
+        | [ $all[]
           | select(((.parents // []) | length) < 2)
           | ((.commit.message // "") | split("\n")[0])
           | select((startswith("Revert ")) | not)
@@ -1400,7 +1407,7 @@ reconcile_session() { # session routine repo
   # A response whose outputs cannot be read is NOT a session without a pull
   # request: recording no-pr would be terminal and the real outcome would never
   # be looked at again. Counted as a failure and retried instead.
-  if ! n="$(jq -r 'if ((.outputs // null) == null) then 0
+  if ! n="$(jq -r 'if ((has("outputs") | not) or (.outputs == null)) then 0
                    elif (.outputs | type) == "array"
                    then ([.outputs[] | select((type == "object") and has("pullRequest"))] | length)
                    else error("outputs is not an array") end' <<<"$resp" 2>/dev/null)" \

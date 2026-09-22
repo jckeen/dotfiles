@@ -73,6 +73,14 @@
   carries each commit's parents, so merge commits and the revert auto-message
   are skipped exactly as `check-commit-format.sh` skips them — otherwise a pull
   request CI is perfectly happy with would have been reported as blocked.
+- **Two more ways a malformed or long response could mislead the pass** (Codex
+  gate, medium). The commits endpoint pages at 100, so a rejected subject on
+  page two was missed under a terminal record that stopped anything looking
+  again; the fetch now paginates and the pages are concatenated locally. And
+  jq's `//` replaces `false` as well as `null`, so an `outputs: false` response
+  counted as zero pull requests and earned a permanent `no-pr` record — outputs
+  are now tested by type, and anything that is neither absent, null, nor an
+  array is a counted failure that is retried.
 
 ## 2026-09-21 — fix(review-receipt): a blocked review retires the other lane's approval
 

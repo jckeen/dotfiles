@@ -142,9 +142,17 @@ case "$sub" in
   # repos/OWNER/NAME/pulls/<n>/commits?per_page=100 — the exact source the
   # commit-subject check needs, because it carries each commit's parents.
   "api")
-    p="${2%%\?*}"; p="${p%/commits}"
-    f="${FAKE_GH_DIR:-}/commits-${p##*/}.json"
-    if [[ -f "$f" ]]; then cat "$f"; else printf '[]\n'; fi ;;
+    # The endpoint path is whichever argument starts with repos/, since flags
+    # such as --paginate may sit in front of it.
+    p=""
+    for a in "$@"; do case "$a" in repos/*) p="$a"; break ;; esac; done
+    p="${p%%\?*}"; p="${p%/commits}"; p="${p##*/}"
+    f="${FAKE_GH_DIR:-}/commits-$p.json"
+    if [[ -f "$f" ]]; then cat "$f"; else printf '[]\n'; fi
+    # gh --paginate emits one JSON document per page, concatenated.
+    if [[ "$*" == *--paginate* && -f "${FAKE_GH_DIR:-}/commits2-$p.json" ]]; then
+      cat "${FAKE_GH_DIR}/commits2-$p.json"
+    fi ;;
   "pr view")
     f="${FAKE_GH_DIR:-}/pr-$3.json"
     [[ -f "$f" ]] || { printf 'fake gh: no fixture for PR %s\n' "$3" >&2; exit 1; }
@@ -1859,6 +1867,9 @@ pr_fixture() { # number json
 commits_fixture() { # number json-array
   printf '%s\n' "$2" > "$CASE_DIR/commits-$1.json"
 }
+commits_page2() { # number json-array
+  printf '%s\n' "$2" > "$CASE_DIR/commits2-$1.json"
+}
 ghgrep() { grep -Fq -- "$1" "$FAKE_GH_ARGV"; }
 
 # An empty run is a good run, but an empty PR is still an open PR asking for a
@@ -2234,6 +2245,38 @@ if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "atomically"
   ok "a session whose record will not fit one atomic append is refused, not truncated"
 else
   fail "an oversized session was half-recorded (rc=$rc records=$(reconcile_count))"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: the commits endpoint pages at 100. A rejected subject
+# on page two was missed, and the terminal record meant nothing looked again.
+new_case
+routine alpha false 'repos: all'
+session_line 952 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+completed_with_pr 952 https://github.com/jckeen/dotfiles/pull/952
+pr_fixture 952 '{"state":"OPEN","changedFiles":2,"title":"fix(docs): one","labels":[{"name":"jules-routine:alpha"}]}'
+commits_fixture 952 '[{"parents":[{"sha":"a"}],"commit":{"message":"docs: page one is fine"}}]'
+commits_page2 952 '[{"parents":[{"sha":"a"}],"commit":{"message":"No changes needed: page two is not"}}]'
+if recon_run && outgrep "the required commit-format check rejects" \
+  && [[ "$(reconcile_jq '[.[] | select(.commit_subjects_ok == false)] | length')" -eq 1 ]]; then
+  ok "a rejected commit subject on the second page of commits is still found"
+else
+  fail "commit-subject checking stopped after the first page"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# Codex gate, [medium]: jq's // replaces false as well as null, so an
+# `outputs: false` response counted as zero pull requests and was recorded
+# terminally as no-pr instead of being retried.
+new_case
+routine alpha false 'repos: all'
+session_line 953 alpha jckeen/dotfiles 1 > "$STATE/dispatch.jsonl"
+session_state 953 '{"name":"sessions/953","state":"COMPLETED","outputs":false}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_count)" -eq 0 ]] && outgrep "unreadable outputs"; then
+  ok "an outputs value of false is unreadable, not an absence of pull requests"
+else
+  fail "outputs: false was recorded as 'no pull request' (rc=$rc)"
   sed 's/^/      | /' "$CASE_DIR/out"
 fi
 
