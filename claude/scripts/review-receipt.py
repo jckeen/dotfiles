@@ -174,12 +174,22 @@ def worktree_gitdir(directory):
 
 
 def boundary_listing(directory):
-    """Every path a foreign repository boundary lists, tracked and untracked alike.
+    """Every (mode, path) a foreign repository boundary lists, tracked and untracked.
 
     `git ls-files` stops at any directory that merely LOOKS like a repository — a
     `.git` holding HEAD, objects and refs is enough, no `git init` required — so
     "git stopped here" is no evidence that anything ever looked inside (#496).
     This is that look.
+
+    Two calls, because the formats differ and each is then unambiguous: the index
+    with `--stage` (`<mode> <object> <stage>\\t<path>`, so a gitlink's mode 160000
+    is visible) and the untracked files as bare paths. `mode` is None for an
+    untracked entry.
+
+    The index half matters because a populated tracked submodule is printed as ONE
+    bare path with no trailing slash and its contents are never enumerated, so a
+    listing alone cannot tell it from an ordinary file — the caller refuses on the
+    mode instead.
 
     Deliberately WITHOUT `--exclude-standard`: the boundary's own `.gitignore`
     must not decide what this repository's instruction sweep is allowed to see,
@@ -187,11 +197,27 @@ def boundary_listing(directory):
     file is listed. Returns None when the directory is not a usable repository,
     which the caller treats as a refusal rather than as an empty listing.
     """
+    entries = []
     try:
-        listing = git(directory, "ls-files", "--cached", "--others", "-z")
+        staged = git(directory, "ls-files", "-z", "--cached", "--stage")
+        others = git(directory, "ls-files", "-z", "--others")
     except (subprocess.SubprocessError, OSError):
         return None
-    return [os.fsdecode(p) for p in listing.split(b"\0") if p]
+    for record in staged.split(b"\0"):
+        if not record:
+            continue
+        # Everything after the FIRST tab is the path, which may itself hold tabs.
+        metadata, separator, path = record.partition(b"\t")
+        if not separator:
+            return None
+        fields = metadata.split()
+        if len(fields) != 3:
+            return None
+        entries.append((fields[0].decode(), os.fsdecode(path)))
+    for path in others.split(b"\0"):
+        if path:
+            entries.append((None, os.fsdecode(path)))
+    return entries
 
 
 def named_instruction(path):
@@ -709,10 +735,27 @@ def capture(repo, base, scope):
         listing = boundary_listing(repo / prefix)
         if listing is None:
             raise ValueError("cannot inspect repository boundary: " + entry)
-        for name in listing:
+        for mode, name in listing:
             path = prefix + "/" + name
             if name.endswith("/"):
                 raise ValueError("repository boundary nested behind a boundary: " + path)
+            # A gitlink is a whole tree behind one bare path: `ls-files` neither
+            # marks it with a trailing slash nor enumerates what it holds, so an
+            # ordinary submodule name passed every other check while an instruction
+            # file sat underneath it. Refuse whether or not it is populated —
+            # unenumerable is unenumerable.
+            if mode == "160000":
+                raise ValueError("submodule behind repository boundary is uninspectable: " + path)
+            # Backstop for any listing that disagrees with the working tree: a path
+            # listed as a file while the disk holds a directory was not enumerated
+            # either.
+            try:
+                if stat.S_ISDIR((repo / prefix / name).lstat().st_mode):
+                    raise ValueError(
+                        "listed path behind repository boundary is a directory: " + path
+                    )
+            except (FileNotFoundError, NotADirectoryError):
+                pass
             if instruction(path):
                 raise ValueError("instruction surface hidden behind repository boundary: " + path)
 

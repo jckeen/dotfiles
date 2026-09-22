@@ -1590,6 +1590,110 @@ class ReceiptTests(unittest.TestCase):
                 shutil.rmtree(evil)
                 self.git("worktree", "prune")
 
+    def test_gitlink_behind_a_boundary_cannot_hide_an_instruction_file(self):
+        """A submodule inside a foreign ignored repository hides its whole tree.
+
+        `ls-files` prints a populated tracked submodule as ONE bare path — no
+        trailing slash — and never enumerates what is inside it, so inspecting a
+        boundary by its listing alone accepted `vendor/nested/dependency` (not an
+        instruction name, not a nested boundary) while `dependency/CLAUDE.md` sat
+        underneath, unchecked. Found by the Codex gate on the #496 change.
+
+        The gitlink is planted with `update-index --cacheinfo` rather than
+        `submodule add`: same index entry and same working tree, with no transport
+        and no `protocol.file.allow` dance.
+        """
+
+        def git_in(directory, *args):
+            return (
+                subprocess.check_output(
+                    ["git", "-C", str(directory), *args], stderr=subprocess.PIPE
+                )
+                .decode()
+                .strip()
+            )
+
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+        for hidden, populated in (("CLAUDE.md", True), ("SKILL.md", True), ("CLAUDE.md", False)):
+            with self.subTest(hidden=hidden, populated=populated):
+                boundary.mkdir(parents=True)
+                git_in(boundary, "init", "-q", "-b", "main")
+                git_in(boundary, "config", "user.name", "fixture")
+                git_in(boundary, "config", "user.email", "fixture@example.test")
+                (boundary / "index.js").write_text("library code\n")
+                git_in(boundary, "add", "index.js")
+                git_in(boundary, "commit", "-qm", "base")
+                head = git_in(boundary, "rev-parse", "HEAD")
+                submodule = boundary / "dependency"
+                submodule.mkdir()
+                if populated:
+                    (submodule / hidden).write_text("EVIL\n")
+                git_in(
+                    boundary,
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    "160000," + head + ",dependency",
+                )
+                # The listing the inspection reads: one bare path, mode 160000,
+                # and nothing at all about what the directory holds.
+                self.assertIn(
+                    "160000 " + head + " 0\tdependency", git_in(boundary, "ls-files", "-s")
+                )
+                self.assertIn("dependency", git_in(boundary, "ls-files", "--cached", "--others"))
+                self.assertNotIn(hidden, git_in(boundary, "ls-files", "--cached", "--others"))
+                # A gitlink is unenumerable either way, so an empty one is refused
+                # too: the boundary is only accepted when every path behind it was
+                # actually inspected.
+                for command in ("begin", "lane"):
+                    args = ["--repo", str(self.repo), "--base", "main", "--scope", "committed"]
+                    if command == "begin":
+                        args += ["--reviewer", "codex"]
+                    refusal = subprocess.run(
+                        [sys.executable, str(HELPER), command, *args],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(refusal.returncode, 2, refusal.stdout + refusal.stderr)
+                    self.assertIn("boundary", refusal.stderr)
+                shutil.rmtree(boundary)
+
+    def test_a_listed_boundary_path_that_is_a_directory_is_refused(self):
+        """The index says blob, the disk says directory: refuse either way.
+
+        Here git itself descends and lists `payload/CLAUDE.md`, so the instruction
+        check already refuses; the disk-directory backstop in the inspection covers
+        the same shape from the other side, for any listing that disagrees with the
+        working tree. This pins the OUTCOME — such a boundary never passes — rather
+        than which of the two checks caught it.
+        """
+
+        def git_in(directory, *args):
+            return (
+                subprocess.check_output(
+                    ["git", "-C", str(directory), *args], stderr=subprocess.PIPE
+                )
+                .decode()
+                .strip()
+            )
+
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+        boundary.mkdir(parents=True)
+        git_in(boundary, "init", "-q", "-b", "main")
+        git_in(boundary, "config", "user.name", "fixture")
+        git_in(boundary, "config", "user.email", "fixture@example.test")
+        (boundary / "payload").write_text("a blob, as far as the index knows\n")
+        git_in(boundary, "add", "payload")
+        git_in(boundary, "commit", "-qm", "base")
+        (boundary / "payload").unlink()
+        (boundary / "payload").mkdir()
+        (boundary / "payload/CLAUDE.md").write_text("EVIL\n")
+        listing = git_in(boundary, "ls-files", "--cached", "--others")
+        self.assertIn("payload", listing)
+        self.expect_begin_refused()
+
     def expect_begin_refused(self):
         self.run_helper(
             "begin",

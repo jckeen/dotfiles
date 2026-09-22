@@ -39,8 +39,15 @@
   registered worktrees (the #474 allowlist, `.git`-pointer check included) or a
   real repository whose listing — tracked and untracked, deliberately without
   `--exclude-standard`, so its own `.gitignore` cannot hide a file from us —
-  holds no instruction path and no further boundary. Anything else refuses.
-  Benign vendored repositories still capture normally. Refs #496.
+  holds no instruction path, no further boundary and no gitlink. Anything else
+  refuses. The gitlink half came from the Codex gate on this very change: a
+  populated tracked submodule inside such a repository is printed as one bare path
+  with no trailing slash and its contents are never enumerated, so
+  `vendor/nested/dependency` passed every check while `dependency/CLAUDE.md` sat
+  underneath it. The listing is now read with `--stage`, mode `160000` refuses
+  whether or not the submodule is populated, and a path listed as a file where the
+  disk holds a directory refuses too. Benign vendored repositories still capture
+  normally. Refs #496.
 - **The tier-1 size ceiling is policy now, not one gate's prompt cap.** Whether a
   docs-only diff could take the exemption depended on which gate you asked: the
   Antigravity gate refused one above its 500-line or measured 185,000-byte

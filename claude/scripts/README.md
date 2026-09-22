@@ -176,8 +176,13 @@ and a hand-made `.git` earns that treatment, so every such boundary in the
 ignored sweep is inspected rather than judged by its own name (#496): one of this
 repository's own registered worktrees is dropped, a real repository is allowed
 only when its own listing — tracked and untracked, without honouring its
-`.gitignore` — holds no instruction path and no further boundary, and anything
-else refuses. A visible (non-ignored) boundary keeps failing closed in the
+`.gitignore` — holds no instruction path, no further boundary and **no gitlink**,
+and anything else refuses. The gitlink case is why that listing is read with
+`--stage`: a populated tracked submodule inside such a repository is printed as
+one bare path with no trailing slash and its contents are never enumerated, so
+only its mode `160000` distinguishes a whole unchecked tree from an ordinary
+file. A path listed as a file where the working tree holds a directory is refused
+on the same grounds. A visible (non-ignored) boundary keeps failing closed in the
 snapshot itself.
 Recognized runtime artifacts explicitly included in the review target block
 review before their contents can reach a reviewer. These filename and directory
