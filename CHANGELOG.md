@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-22 — fix(tests): the test runner and the wrapper refuse a selection that names nothing
+
+- **`run-tests.sh` refuses two files that derive one suite name.** Beside
+  `foo.test.sh`, a `foo.test.py` also derived `foo`, and the first-match lookup
+  meant `run-tests.sh foo` or a `--changed` diff touching the second file ran
+  the first one and reported green. Discovery now exits non-zero naming both
+  files, in every mode, so the extension-free names `--list`, subset selection,
+  `--changed` and `.review-test` use stay unchanged. The new cases in
+  `run-tests.test.sh` pin it. Closes #518.
+- **`review-and-push.sh` refuses a whitespace-only `REVIEW_TEST_CMD`.** It was
+  treated as a declared command; `bash -c` ran nothing, exited 0, and step 2
+  printed `tests: passed (REVIEW_TEST_CMD)`. It now fails closed before any gate
+  runs, the same as a `.review-test` that declares no command; an empty value
+  still means unset. The new cases in `review-and-push.test.sh` pin it.
+  Closes #519.
 ## 2026-09-22 — fix(jules-dispatch): the harvested review findings on --reconcile
 
 - **Every reconcile `gh` call names `github.com`.** The pull-request URL was
