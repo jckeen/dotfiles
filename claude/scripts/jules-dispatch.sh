@@ -24,9 +24,13 @@
 #                      label and normalise the title of one that changed
 #                      something, and record the outcome. The title is what a
 #                      squash merge lands; a pull request whose own commit
-#                      subjects the format check rejects is reported, not fixed.
-#                      Runs on its own and at the end of every dispatch; needs
-#                      gh. Not with --report
+#                      subjects the format check rejects is reported, not fixed,
+#                      and one over the max_files its dispatch record carries is
+#                      recorded blocked-oversized and left unlabeled. Every gh
+#                      call names github.com, so GH_HOST cannot redirect it.
+#                      Sessions come from the ledger, so the catalog need not
+#                      exist. Runs on its own and at the end of every dispatch;
+#                      needs gh. Not with --report
 #   --report           tally routine PRs per week from GitHub instead of dispatching
 #   --days N           report window in days (default 28)
 #   --post             with --report, comment the table on the tracker issue
@@ -62,7 +66,10 @@
 #                    requests' commits and found nothing rejected, false where it
 #                    listed them and one is rejected, null where any of them went
 #                    unread (a pull request already closed or merged, an empty one
-#                    it closed, a refused URL, a FAILED session, no pull request)
+#                    it closed, a refused URL, a FAILED session, no pull request).
+#                    A dispatch record carries the routine's max_files; a
+#                    reconcile record's max_files is that limit, or null where
+#                    the dispatch record predates it and the size was not checked
 #   status.json      last run's outcome, for hooks and the status line; a
 #                    standalone --reconcile rewrites it too, with its own counts
 #   dispatch.log     appended run log
@@ -180,6 +187,7 @@ RECON_CLOSED=0
 RECON_LABELED=0
 RECON_RETITLED=0
 RECON_BLOCKED_SUBJECTS=0
+RECON_OVERSIZED=0
 RECON_FAILURES=0
 SPENT=0
 DEFERRED=0
@@ -247,18 +255,24 @@ done
   || die "JULES_REPORT_LIMIT must be a positive integer with no leading zeros, got: $REPORT_LIMIT"
 [[ "$DAILY_CAP" =~ ^(0|[1-9][0-9]*)$ ]] \
   || die "JULES_DAILY_CAP must be a non-negative integer with no leading zeros, got: $DAILY_CAP"
-[[ -d "$ROUTINE_DIR" ]] || die "routine catalog not found: $ROUTINE_DIR"
+[[ -n "$ONLY_ROUTINE" && ! "$ONLY_ROUTINE" =~ ^[a-z0-9-]+$ ]] \
+  && die "--routine must match [a-z0-9-]+, got: $ONLY_ROUTINE"
 
 # An empty selection must not look like a successful run that found no work.
 # Checked here, in the main shell: routine_files() is consumed through a process
 # substitution, and a die() inside that subshell would not stop the caller.
-if [[ -n "$ONLY_ROUTINE" ]]; then
-  [[ "$ONLY_ROUTINE" =~ ^[a-z0-9-]+$ ]] || die "--routine must match [a-z0-9-]+, got: $ONLY_ROUTINE"
-  [[ -f "$ROUTINE_DIR/$ONLY_ROUTINE.md" ]] \
-    || die "no routine matched --routine $ONLY_ROUTINE in $ROUTINE_DIR"
-else
-  compgen -G "$ROUTINE_DIR/*.md" >/dev/null \
-    || die "no routine matched: the catalog $ROUTINE_DIR holds no *.md file"
+# Only for the modes that read the catalog: --reconcile takes its sessions from
+# the ledger, and a session outlives its routine file — a routine removed from
+# the catalog, or an emptied catalog, must not strand the sessions it left (#531).
+if [[ "$MODE" != "reconcile" ]]; then
+  [[ -d "$ROUTINE_DIR" ]] || die "routine catalog not found: $ROUTINE_DIR"
+  if [[ -n "$ONLY_ROUTINE" ]]; then
+    [[ -f "$ROUTINE_DIR/$ONLY_ROUTINE.md" ]] \
+      || die "no routine matched --routine $ONLY_ROUTINE in $ROUTINE_DIR"
+  else
+    compgen -G "$ROUTINE_DIR/*.md" >/dev/null \
+      || die "no routine matched: the catalog $ROUTINE_DIR holds no *.md file"
+  fi
 fi
 
 command -v jq >/dev/null 2>&1 || die "jq is required (setup.sh installs it)"
@@ -521,14 +535,17 @@ ledger_write_line() { # one complete JSON line
   printf '%s\n' "$1" >> "$LEDGER"
 }
 
+# max_files is the per-pull-request limit the session was told, carried so that
+# --reconcile compares against THAT rather than whatever the catalog says by the
+# time the session finishes (#530). Records written before it existed lack it.
 ledger_append() { # status attempt repo source session url
   local line
   line="$(jq -nc --arg at "$NOW_ISO" --arg date "$TODAY" --arg routine "$FM_NAME" \
     --arg repo "$3" --arg source "$4" --arg status "$1" --arg attempt "$2" \
-    --arg session "$5" --arg url "$6" \
+    --arg session "$5" --arg url "$6" --argjson max_files "$FM_MAX_FILES" \
     '{dispatched_at: $at, date: $date, routine: $routine, repo: $repo,
       source: $source, status: $status, attempt: $attempt,
-      session: $session, url: $url}')" || return 1
+      session: $session, url: $url, max_files: $max_files}')" || return 1
   ledger_write_line "$line"
 }
 
@@ -679,6 +696,7 @@ write_status() {
     --argjson recon_checked "$RECON_CHECKED" --argjson recon_closed "$RECON_CLOSED" \
     --argjson recon_labeled "$RECON_LABELED" --argjson recon_retitled "$RECON_RETITLED" \
     --argjson recon_blocked "$RECON_BLOCKED_SUBJECTS" \
+    --argjson recon_oversized "$RECON_OVERSIZED" \
     --argjson recon_failures "$RECON_FAILURES" \
     '{checked_at: $checked_at, date: $date, daily_cap: $cap,
       created_this_run: $created, dispatched_today: $dispatched_today,
@@ -686,7 +704,8 @@ write_status() {
       failures: $failures,
       reconcile: {checked: $recon_checked, closed_empty: $recon_closed,
                   labeled: $recon_labeled, retitled: $recon_retitled,
-                  blocked_subjects: $recon_blocked, failures: $recon_failures},
+                  blocked_subjects: $recon_blocked, oversized: $recon_oversized,
+                  failures: $recon_failures},
       events: $events}' > "$tmp"
   mv "$tmp" "$STATUS_FILE"
 }
@@ -1096,16 +1115,22 @@ RECON_FIRST_NUM=0
 # being read at all. The recorded flag is resolved from both in recon_pend.
 RECON_SUBJECTS_OK=null
 RECON_SUBJECTS_UNREAD=0
+# The max_files limit the session's dispatch record carries, or "null" for a
+# record written before the limit was persisted — the check is then skipped and
+# the reconcile record says so with a null (#530).
+RECON_MAX_FILES=null
 
 recon_reset_session() {
   RECON_PR_JSON=""; RECON_PR_ACTIONS=""; RECON_FIRST_URL=""; RECON_FIRST_NUM=0
-  RECON_SUBJECTS_OK=null; RECON_SUBJECTS_UNREAD=0; RECON_PENDING=()
+  RECON_SUBJECTS_OK=null; RECON_SUBJECTS_UNREAD=0; RECON_PENDING=(); RECON_MAX_FILES=null
 }
 
-recon_pr_entry() { # url pr-number action
+recon_pr_entry() { # url pr-number action [detail]
   local entry
   entry="$(jq -nc --arg url "$1" --argjson pr "$2" --arg action "$3" \
-    '{url: $url, pr: $pr, action: $action}')" || return 1
+    --arg detail "${4:-}" \
+    '{url: $url, pr: $pr, action: $action}
+     + (if $detail == "" then {} else {detail: $detail} end)')" || return 1
   RECON_PR_JSON="${RECON_PR_JSON:+$RECON_PR_JSON,}$entry"
   # Distinct action names in first-seen order: a one-pull-request session, which
   # is what `max_prs_per_run` makes the norm, reads exactly as that request's
@@ -1145,12 +1170,12 @@ recon_pend() { # session routine repo action detail
     --arg routine "$2" --arg repo "$3" --arg url "$RECON_FIRST_URL" \
     --argjson pr "$RECON_FIRST_NUM" --arg action "$action" \
     --argjson prs "[$RECON_PR_JSON]" \
-    --argjson subjects_ok "$subjects_ok" \
+    --argjson subjects_ok "$subjects_ok" --argjson max_files "$RECON_MAX_FILES" \
     --arg detail "$(printf '%s' "$5" | cut -c1-200)" \
     '{kind: "reconcile", reconciled_at: $at, date: $date, session: $session,
       routine: $routine, repo: $repo, pr_url: $url, pr: $pr,
       action: $action, prs: $prs, commit_subjects_ok: $subjects_ok,
-      detail: $detail}')" || return 1
+      max_files: $max_files, detail: $detail}')" || return 1
   RECON_PENDING=("$line")
 }
 
@@ -1188,7 +1213,8 @@ reconcile_candidates() {
     | .[]
     | [ .session,
         (if ((.routine // \"\") == \"\") then \"-\" else .routine end),
-        (if ((.repo // \"\") == \"\") then \"-\" else .repo end) ]
+        (if ((.repo // \"\") == \"\") then \"-\" else .repo end),
+        (if (.max_files == null) then \"-\" else (.max_files | tostring) end) ]
     | @tsv" "$LEDGER" 2>/dev/null \
     || die "dispatch ledger is not valid JSON lines: $LEDGER"
 }
@@ -1200,7 +1226,7 @@ reconcile_candidates() {
 ensure_label() { # owner/name label
   local key=" $1|$2 " out
   [[ "$RECON_LABELS_ENSURED" == *"$key"* ]] && return 0
-  if ! out="$("$GH_BIN" label create "$2" --repo "$1" --force \
+  if ! out="$("$GH_BIN" label create "$2" --repo "github.com/$1" --force \
         --color "$RECONCILE_LABEL_COLOR" --description "$RECONCILE_LABEL_DESC" 2>&1)"; then
     log "     gh label create $2 failed on $1: $(one_line "$out")"
     return 1
@@ -1257,7 +1283,11 @@ reconcile_pr() { # session routine repo url
     return 0
   fi
 
-  if ! out="$("$GH_BIN" pr view "$num" --repo "$owner/$name" \
+  # Every gh call below names github.com itself: the URL was validated as
+  # github.com, and a hostless --repo would take its host from GH_HOST — so an
+  # operator's Enterprise default would redirect the close, label and title
+  # writes to a same-named repository there (#527).
+  if ! out="$("$GH_BIN" pr view "$num" --repo "github.com/$owner/$name" \
         --json state,changedFiles,title,labels 2>&1)"; then
     recon_fail "$routine / $repo — gh pr view $num failed: $(one_line "$out")" "$routine" "$repo"
     return 1
@@ -1290,7 +1320,7 @@ reconcile_pr() { # session routine repo url
       recon_pr_entry "$url" "$num" closed-empty || return 1
       return 0
     fi
-    if ! out="$("$GH_BIN" pr close "$num" --repo "$owner/$name" \
+    if ! out="$("$GH_BIN" pr close "$num" --repo "github.com/$owner/$name" \
           --comment "$RECONCILE_EMPTY_COMMENT" 2>&1)"; then
       recon_fail "$routine / $repo — gh pr close failed for #$num: $(one_line "$out")" "$routine" "$repo"
       return 1
@@ -1299,6 +1329,23 @@ reconcile_pr() { # session routine repo url
     log "  -> $routine / $repo — closed $owner/$name#$num (0 files changed)"
     record reconciled "$routine" "$repo" "closed empty PR #$num"
     recon_pr_entry "$url" "$num" closed-empty || return 1
+    return 0
+  fi
+
+  # max_files is a hard per-pull-request limit. A pull request over it is left
+  # open for a person, unlabeled and unretitled — labeling it would present it
+  # as a compliant routine result — and recorded as terminal, so the ledger and
+  # status.json say why. Its commits are not read (#530).
+  if [[ "$RECON_MAX_FILES" == null ]]; then
+    log "  -- $routine / $repo — the dispatch record carries no max_files; the limit is not checked"
+  elif [[ "$changed" -gt "$RECON_MAX_FILES" ]]; then
+    RECON_SUBJECTS_UNREAD=1
+    RECON_OVERSIZED=$((RECON_OVERSIZED + 1))
+    log "  !! $routine / $repo — $owner/$name#$num changes $changed files, over the routine's max_files of $RECON_MAX_FILES;"
+    log "     left open and unlabeled for a person to decide."
+    record blocked "$routine" "$repo" "PR #$num $changed files changed, max_files $RECON_MAX_FILES"
+    recon_pr_entry "$url" "$num" blocked-oversized \
+      "$changed files changed, over max_files $RECON_MAX_FILES" || return 1
     return 0
   fi
 
@@ -1312,7 +1359,7 @@ reconcile_pr() { # session routine repo url
         recon_fail "$routine / $repo — could not ensure the $label label on $owner/$name" "$routine" "$repo"
         return 1
       fi
-      if ! out2="$("$GH_BIN" pr edit "$num" --repo "$owner/$name" --add-label "$label" 2>&1)"; then
+      if ! out2="$("$GH_BIN" pr edit "$num" --repo "github.com/$owner/$name" --add-label "$label" 2>&1)"; then
         recon_fail "$routine / $repo — gh pr edit --add-label failed for #$num: $(one_line "$out2")" "$routine" "$repo"
         return 1
       fi
@@ -1330,7 +1377,7 @@ reconcile_pr() { # session routine repo url
     if [[ "$DRY_RUN" -eq 1 ]]; then
       log "  [DRY] would retitle $owner/$name#$num to: $newtitle"
     else
-      if ! out2="$("$GH_BIN" pr edit "$num" --repo "$owner/$name" --title "$newtitle" 2>&1)"; then
+      if ! out2="$("$GH_BIN" pr edit "$num" --repo "github.com/$owner/$name" --title "$newtitle" 2>&1)"; then
         recon_fail "$routine / $repo — gh pr edit --title failed for #$num: $(one_line "$out2")" "$routine" "$repo"
         return 1
       fi
@@ -1356,7 +1403,8 @@ reconcile_pr() { # session routine repo url
   # stops anything looking again. gh emits one JSON document per page, so the
   # pages are slurped and concatenated here rather than relying on --slurp,
   # which not every gh on the floor has.
-  if ! commits="$("$GH_BIN" api --paginate "repos/$owner/$name/pulls/$num/commits?per_page=100" 2>&1)"; then
+  if ! commits="$("$GH_BIN" api --hostname github.com --paginate \
+        "repos/$owner/$name/pulls/$num/commits?per_page=100" 2>&1)"; then
     recon_fail "$routine / $repo — gh api pulls/$num/commits failed: $(one_line "$commits")" "$routine" "$repo"
     return 1
   fi
@@ -1374,7 +1422,7 @@ reconcile_pr() { # session routine repo url
   fi
   if [[ "$bad_subjects" =~ ^[1-9][0-9]*$ ]]; then
     RECON_SUBJECTS_OK=false
-    RECON_BLOCKED_SUBJECTS=$((RECON_BLOCKED_SUBJECTS + 1))
+    RECON_BLOCKED_SUBJECTS=$((RECON_BLOCKED_SUBJECTS + bad_subjects))
     log "  -- $routine / $repo — $owner/$name#$num carries $bad_subjects commit subject(s)"
     log "     the required commit-format check rejects; its title is fixed, that check is not."
   elif [[ "$bad_subjects" == "0" && "$RECON_SUBJECTS_OK" == "null" ]]; then
@@ -1392,8 +1440,8 @@ reconcile_pr() { # session routine repo url
   return 0
 }
 
-reconcile_session() { # session routine repo
-  local session="$1" routine="$2" repo="$3"
+reconcile_session() { # session routine repo max_files
+  local session="$1" routine="$2" repo="$3" max_files="${4:--}"
   local id resp state n i raw url failed_any=0
 
   recon_reset_session
@@ -1423,6 +1471,16 @@ reconcile_session() { # session routine repo
     recon_fail "$session — ledger repository '$(one_line "$repo")' is not OWNER/NAME; no pull request URL can be checked against it" "$routine" "$repo"
     recon_pend "$session" "$routine" "$repo" error "ledger repository rejected" && recon_flush
     return 1
+  fi
+  # The limit, too, comes out of an editable file: a value that is not a
+  # positive integer is refused rather than read as "no limit".
+  if [[ "$max_files" != "-" ]]; then
+    if [[ ! "$max_files" =~ ^[1-9][0-9]*$ ]]; then
+      recon_fail "$routine / $repo — ledger max_files '$(one_line "$max_files")' for $session is not a positive integer" "$routine" "$repo"
+      recon_pend "$session" "$routine" "$repo" error "ledger max_files rejected" && recon_flush
+      return 1
+    fi
+    RECON_MAX_FILES="$max_files"
   fi
 
   if ! resp="$(curl_api GET "/sessions/$id")"; then
@@ -1541,9 +1599,9 @@ reconcile_pass() {
   fi
 
   log "reconcile: settling $count session(s)$([[ "$DRY_RUN" -eq 1 ]] && printf ' (DRY-RUN)')"
-  while IFS="$(printf '\t')" read -r session routine repo; do
+  while IFS="$(printf '\t')" read -r session routine repo max_files; do
     [[ -n "$session" ]] || continue
-    reconcile_session "$session" "$routine" "$repo" || true
+    reconcile_session "$session" "$routine" "$repo" "$max_files" || true
   done <<<"$candidates"
   return 0
 }
@@ -1570,7 +1628,7 @@ do_reconcile() {
   log "═══ jules-dispatch --reconcile $NOW_ISO ═══"
   reconcile_pass || true
   write_status
-  log "═══ jules-dispatch reconcile done: checked=$RECON_CHECKED closed=$RECON_CLOSED labeled=$RECON_LABELED retitled=$RECON_RETITLED blocked=$RECON_BLOCKED_SUBJECTS failures=$RECON_FAILURES ═══"
+  log "═══ jules-dispatch reconcile done: checked=$RECON_CHECKED closed=$RECON_CLOSED labeled=$RECON_LABELED retitled=$RECON_RETITLED blocked=$RECON_BLOCKED_SUBJECTS oversized=$RECON_OVERSIZED failures=$RECON_FAILURES ═══"
   [[ "$FAILURES" -eq 0 ]] || exit 1
 }
 
