@@ -33,6 +33,7 @@ Then print the script's output verbatim to the user, and lead with the gate resu
 
 ## Notes
 
+- Starting this review retires any other lane's receipt for the same artifact (#480): one artifact holds at most one receipt, and the newest started review owns it. On a Codex-required diff, run this advisory opinion **before** the Codex gate, or expect to re-run the Codex gate afterwards.
 - The gate runs local `tsc --noEmit` / lint first, filters lockfiles and assets out of the diff, and skips diffs over 500 lines to conserve plan quota (degrades open).
 - Size limits, both of which degrade rather than review part of a change: `ANTIGRAVITY_GATE_MAX_LINES` (default 500) and `ANTIGRAVITY_GATE_MAX_BYTES` (default 185000, `0` disables). The byte cap is the measured `agy` print-mode input window: only about 185 KB of a single user message reaches the model, and the rest is dropped with no truncation notice, so a bigger prompt would certify a slice of the diff as a review of the whole. Split the change instead of raising the cap.
 - `ANTIGRAVITY_GATE_TIMEOUT` (default 360) is a whole number of seconds; it sets `agy --print-timeout` and an outer ceiling 30s above it. `0` disables both, matching what GNU `timeout` documents for a zero duration.

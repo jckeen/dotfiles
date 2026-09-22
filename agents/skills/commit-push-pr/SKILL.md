@@ -64,7 +64,10 @@ make a pull request.
    supplies context independence only. Use a suitable separate-family reviewer
    and verify its actual identity; an Antigravity dispatch label alone does
    not prove the model used. For other relevant runtime/frontend changes,
-   `~/.claude/scripts/antigravity-review-gate.sh` can add an advisory opinion.
+   `~/.claude/scripts/antigravity-review-gate.sh` can add an advisory opinion;
+   run it before step 6, never after. Starting a review in either lane
+   retires the other lane's receipt for the same artifact (#480), so an
+   advisory run after the required gate voids the receipt about to be pushed.
    A text-diff review is not runtime/browser verification.
 8. Immediately before pushing, validate the artifact evidence:
 
