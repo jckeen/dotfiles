@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Receipt fixtures exercise real Git objects without invoking a reviewer."""
 
+import argparse
+import contextlib
 import fcntl
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -74,6 +78,25 @@ class ReceiptTests(unittest.TestCase):
             )
             / "snapshot.json"
         )
+
+    def capture(self, reviewer="codex", scope="committed", base="main", ok=True):
+        """`capture` alone: opens this lane's attempt and touches no other lane (#499)."""
+        out = self.run_helper(
+            "capture",
+            "--repo",
+            str(self.repo),
+            "--base",
+            base,
+            "--scope",
+            scope,
+            "--reviewer",
+            reviewer,
+            ok=ok,
+        )
+        return Path(out) / "snapshot.json" if ok else None
+
+    def claim(self, snapshot, ok=True):
+        return self.run_helper("claim", "--snapshot", str(snapshot), ok=ok)
 
     def complete(self, snapshot, outcome="passed", ok=True):
         return self.run_helper(
@@ -2707,8 +2730,9 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             )
         # Blocked before the transition, so it retired nothing on the way in.
         self.assertTrue((self.receipts_dir() / "antigravity.json").is_file())
-        self.check()
         fcntl.flock(descriptor, fcntl.LOCK_UN)
+        # After the release: `check` takes the lock for its deciding assertion (#533).
+        self.check()
         self.begin(reviewer="codex")
         self.check(False)
 
@@ -2742,9 +2766,11 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         """Two gates beginning at once leave one live attempt, not two.
 
         Both runs are queued behind a held lock so they contend for real rather
-        than by luck of scheduling. Afterwards exactly one snapshot's token is
-        live, the loser cannot record, and the approval the two of them retired
-        cannot ship in its place.
+        than by luck of scheduling. `begin` is capture then claim (#499), so the
+        run whose claim lands second either finds its attempt already superseded
+        and refuses, or supersedes the first. Either way exactly one snapshot's
+        token is live, the loser cannot record, and the approval the two of them
+        retired cannot ship in its place.
         """
         self.complete(self.begin(reviewer="antigravity"))
         receipts = self.receipts_dir()
@@ -2775,21 +2801,282 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         snapshots = {}
         for lane_name, process in zip(lanes, running):
             out, err = process.communicate(timeout=60)
-            self.assertEqual(process.returncode, 0, out + err)
-            snapshots[lane_name] = Path(out.strip()) / "snapshot.json"
+            if process.returncode == 0:
+                snapshots[lane_name] = Path(out.strip()) / "snapshot.json"
+            else:
+                self.assertIn("superseded", err)
+        self.assertTrue(snapshots)
         live = [
             lane_name
-            for lane_name in lanes
+            for lane_name in snapshots
             if json.loads((receipts / (lane_name + ".attempt.json")).read_bytes())["attempt"]
             == json.loads(snapshots[lane_name].read_bytes())["attempt"]
         ]
         self.assertEqual(len(live), 1, live)
         self.assertFalse((receipts / "antigravity.json").exists())
-        loser = next(lane_name for lane_name in lanes if lane_name != live[0])
-        self.complete(snapshots[loser], ok=False)
+        for loser in (lane_name for lane_name in snapshots if lane_name != live[0]):
+            self.complete(snapshots[loser], ok=False)
         self.check(False)
         self.complete(snapshots[live[0]])
         self.check()
+
+    # ─── #499: capture touches only its own lane; claim retires the rest ───
+
+    def test_capture_leaves_the_other_lane_approval_until_claim(self):
+        """A lane that captures and then degrades (exit 3) is not a verdict.
+
+        Capture opens only this lane's attempt; the other lane's approval stays
+        valid until this lane claims the artifact, which a gate does only once it
+        can reach a verdict. The claim retires it exactly as `begin` used to.
+        """
+        for approved, other in (("antigravity", "codex"), ("codex", "antigravity")):
+            with self.subTest(approved=approved, other=other):
+                self.complete(self.begin(reviewer=approved))
+                snapshot = self.capture(reviewer=other)
+                # Degraded after capture: nothing claimed, the approval ships.
+                self.check()
+                self.check(True, "--reviewer", approved)
+                # Reached a verdict and blocked: the claim is the retirement.
+                self.claim(snapshot)
+                self.check(False)
+                self.check(False, "--reviewer", approved)
+                self.complete(snapshot)
+                self.check(True, "--reviewer", other)
+
+    def test_capture_still_retires_its_own_lane(self):
+        self.complete(self.begin(reviewer="codex"))
+        self.capture(reviewer="codex")
+        self.check(False)
+
+    def test_complete_refuses_an_unclaimed_capture(self):
+        """A gate that skipped `claim` cannot record a receipt beside another lane's."""
+        snapshot = self.capture()
+        self.complete(snapshot, ok=False)
+        self.assertFalse((self.receipts_dir() / "codex.json").exists())
+        self.claim(snapshot)
+        self.claim(snapshot)  # idempotent: a gate may claim before recording
+        self.complete(snapshot)
+        self.check()
+
+    def test_claim_refuses_a_superseded_capture(self):
+        first = self.capture(reviewer="codex")
+        second = self.capture(reviewer="codex")
+        self.claim(first, ok=False)
+        self.claim(second)
+        # Another lane's claim supersedes an unclaimed capture here too.
+        mine = self.capture(reviewer="antigravity")
+        theirs = self.capture(reviewer="codex")
+        self.claim(theirs)
+        self.claim(mine, ok=False)
+        self.complete(mine, ok=False)
+        self.complete(theirs)
+        self.check()
+
+    def test_claim_waits_for_a_concurrent_attempt_transition(self):
+        self.complete(self.begin(reviewer="antigravity"))
+        snapshot = self.capture(reviewer="codex")
+        descriptor = self.hold_attempt_lock()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            subprocess.run(
+                [sys.executable, str(HELPER), "claim", "--snapshot", str(snapshot)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        self.assertTrue((self.receipts_dir() / "antigravity.json").is_file())
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        self.claim(snapshot)
+        self.check(False)
+
+    def test_interleaved_claims_admit_exactly_one(self):
+        """Two captured lanes claiming at once: the later claim finds itself superseded."""
+        self.complete(self.begin(reviewer="antigravity"))
+        snapshots = {lane: self.capture(reviewer=lane) for lane in ("antigravity", "codex")}
+        descriptor = self.hold_attempt_lock()
+        running = {
+            lane: subprocess.Popen(
+                [sys.executable, str(HELPER), "claim", "--snapshot", str(snapshot)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for lane, snapshot in snapshots.items()
+        }
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        winners = []
+        for lane, process in running.items():
+            process.communicate(timeout=60)
+            if process.returncode == 0:
+                winners.append(lane)
+        self.assertEqual(len(winners), 1, winners)
+        loser = next(lane for lane in snapshots if lane not in winners)
+        self.complete(snapshots[loser], ok=False)
+        self.check(False)
+        self.complete(snapshots[winners[0]])
+        self.check()
+
+    # ─── #533: check's deciding validation is synchronized with claim ───
+
+    def test_check_refuses_when_a_claim_lands_after_its_validation(self):
+        """A claim landing between check's validation and its return must refuse.
+
+        In-process, so the seam can run a real `claim` (a separate process, under
+        the real lock) after the lock-free validation and before the decision.
+        """
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.complete(self.begin(reviewer="codex"))
+        rival = self.capture(reviewer="antigravity")
+        real = module.classify_tier
+        calls = []
+
+        def classify_then_claim(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if not calls:
+                calls.append(True)
+                self.claim(rival)
+            return result
+
+        args = argparse.Namespace(
+            repo=str(self.repo), head=self.git("rev-parse", "HEAD"), base="main", reviewer=None
+        )
+        printed = io.StringIO()
+        with mock.patch.object(module, "classify_tier", classify_then_claim):
+            with self.assertRaises(ValueError) as refused, contextlib.redirect_stdout(printed):
+                module.check(args)
+        self.assertTrue(calls)
+        self.assertIn("superseded", str(refused.exception))
+        self.assertNotIn("Valid", printed.getvalue())
+
+    # ─── #541 / #540: own-worktree boundaries in unusual layouts ───
+
+    def test_common_git_directory_trailing_whitespace_keeps_worktrees_owned(self):
+        """Only Git's terminating newline is stripped from the common directory (#541)."""
+        store = Path(self.tmp.name) / "store "
+        self.git("init", "-q", "--separate-git-dir", str(store))
+        self.git("worktree", "add", "-q", "visible/agent-y", "-b", "agent-y")
+        (self.repo / "visible/agent-y/AGENTS.md").write_text("instructions over there\n")
+        snapshot = self.begin("committed")
+        self.assertEqual(
+            json.loads(snapshot.read_text())["artifact"]["changed_paths"], ["code.txt"]
+        )
+        self.complete(snapshot)
+        self.check()
+
+    def test_primary_checkout_nested_under_a_linked_worktree_is_owned(self):
+        """A registered primary checkout has a `.git` directory, not a pointer (#540)."""
+        linked = Path(self.tmp.name) / "linked"
+        self.git("worktree", "add", "-q", str(linked), "-b", "linked")
+        (linked / "code.txt").write_text("linked work\n")
+        subprocess.check_call(["git", "-C", str(linked), "commit", "-qam", "linked work"])
+        primary = linked / "main"
+        self.repo.rename(primary)
+        # repair reports the pointer it fixes on stderr; keep the suite quiet.
+        subprocess.check_output(
+            ["git", "-C", str(primary), "worktree", "repair"], stderr=subprocess.STDOUT
+        )
+        (primary / "AGENTS.md").write_text("instructions over there\n")
+        self.repo = linked
+        for ignored in (False, True):
+            with self.subTest(ignored=ignored):
+                if ignored:
+                    (primary / ".git/info/exclude").write_text("main/\n")
+                snapshot = self.begin("committed")
+                self.assertEqual(
+                    json.loads(snapshot.read_text())["artifact"]["changed_paths"], ["code.txt"]
+                )
+                self.complete(snapshot)
+                self.check()
+
+    def test_a_foreign_repository_with_a_git_directory_is_still_refused(self):
+        """The #540 allowance is the registered primary only, not any `.git` directory."""
+        foreign = self.repo / "vendor/foreign"
+        foreign.mkdir(parents=True)
+        subprocess.check_call(["git", "-C", str(foreign), "init", "-q"])
+        (foreign / "AGENTS.md").write_text("hidden\n")
+        self.run_helper(
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+            ok=False,
+        )
+
+    # ─── #514: vendored dependencies under skills/ and scripts/ ───
+
+    def vendored_fixture(self, ignored=True, lockfiles=True):
+        paths = []
+        if ignored:
+            (self.repo / ".gitignore").write_text("node_modules/\n")
+            paths.append(".gitignore")
+        if lockfiles:
+            for lockfile in ("claude/skills/demo/bun.lock", "claude/scripts/package-lock.json"):
+                target = self.repo / lockfile
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("{}\n")
+                paths.append(lockfile)
+        if paths:
+            self.git("add", "--", *paths)
+            self.git("commit", "-qm", "vendoring fixture")
+        for vendored in (
+            "claude/skills/demo/node_modules/dep/SKILL.md",
+            "claude/scripts/node_modules/dep/CLAUDE.md",
+        ):
+            target = self.repo / vendored
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("a dependency's own instructions\n")
+
+    def begin_output(self):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(HELPER),
+                "begin",
+                "--repo",
+                str(self.repo),
+                "--base",
+                "main",
+                "--scope",
+                "committed",
+                "--reviewer",
+                "codex",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_ignored_locked_node_modules_under_skills_and_scripts_are_vendored(self):
+        self.vendored_fixture()
+        snapshot = self.begin("committed")
+        self.complete(snapshot)
+        self.check()
+
+    def test_node_modules_without_a_lockfile_or_not_ignored_still_refuses(self):
+        start = self.git("rev-parse", "HEAD")
+        for ignored, lockfiles in ((True, False), (False, True), (False, False)):
+            with self.subTest(ignored=ignored, lockfiles=lockfiles):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.vendored_fixture(ignored=ignored, lockfiles=lockfiles)
+                refused = self.begin_output()
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("instruction", refused.stderr)
+
+    def test_vendored_exemption_is_limited_to_skills_and_scripts(self):
+        self.vendored_fixture()
+        elsewhere = self.repo / "claude/agents/node_modules/dep/AGENTS.md"
+        elsewhere.parent.mkdir(parents=True)
+        elsewhere.write_text("not exempt\n")
+        (self.repo / "claude/agents/bun.lock").write_text("{}\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("claude/agents/node_modules/dep/AGENTS.md", refused.stderr)
 
     # ─── ADR-0008: lane routing ────────────────────────────────────
     # `lane` is the read-only classifier both bash gates and review-and-push.sh

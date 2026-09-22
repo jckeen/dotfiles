@@ -567,6 +567,13 @@ if [[ ! -s "$OUT_FILE" ]]; then
   degrade "Codex produced no review output (rc=$CODEX_RC)."
 fi
 
+# ─── Claim the artifact (#499) ─────────────────────────────────
+# The review ran and produced output: every exit from here is a verdict, so
+# this is where the other lane's receipt is retired (gate_claim, gate-lib.sh).
+# Every exit ABOVE — CLI missing, the line cap, a failed or empty run — is a
+# degraded lane, not a verdict, and leaves that approval standing.
+gate_claim
+
 # ─── Parse the structured result ───────────────────────────────
 # Enforce codex-review-schema.json locally before rendering or recording a
 # receipt; the CLI's schema request alone does not establish valid output.

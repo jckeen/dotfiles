@@ -207,6 +207,9 @@ printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],
                     self.assertLess(time.monotonic(), deadline, transcript.read_text())
                     time.sleep(0.01)
                 self.assertTrue((receipts / "codex.json").is_file())
+                # The wrapper's Codex review reached a verdict, so its claim
+                # already retired the alternate lane's older receipt (#480).
+                self.assertFalse((receipts / "antigravity.json").exists())
                 failure_flag.touch()
                 retry = t.command(
                     "bash",
@@ -220,15 +223,13 @@ printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],
                 self.assertEqual(retry.returncode, 3, retry.stdout + retry.stderr)
                 self.assertIn("rc=42", retry.stdout + retry.stderr)
                 self.assertFalse((receipts / "codex.json").exists())
-                # The retry's `begin` retires the alternate lane's receipt too
-                # (#480): a failed newer review must leave nothing behind for the
-                # lane-blind `check` githooks/pre-push runs to accept. The stub
-                # exits 42, so this is the DEGRADED case (gate exit 3, not a
-                # verdict) and the refusal is the documented conservative
-                # behaviour: at the push boundary nothing distinguishes "could not
-                # run" from "ran and blocked" without trusting the gate that
-                # failed. Recovery is re-running the required gate, below. #499
-                # tracks a retraction design that would not cost the approval.
+                # The stub exits 42: the DEGRADED case (gate exit 3, not a
+                # verdict). The retry captured, which retires only its own lane,
+                # and never claimed, so it retired nothing else (#499) — but the
+                # alternate receipt was already gone, retired by the wrapper's
+                # Codex verdict above, so nothing older can come back for the
+                # lane-blind `check` githooks/pre-push runs. Recovery is re-running
+                # the required gate, below.
                 self.assertFalse((receipts / "antigravity.json").exists())
                 alternate_check = t.command(
                     "python3",
@@ -254,8 +255,8 @@ printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],
             self.git("--git-dir", str(t.remote), "rev-parse", "refs/heads/feature"), t.base
         )
         self.assertNotIn("scan", t.events())
-        # A direct push cannot fall back to the alternate receipt the failed
-        # retry retired (#480): the hook's lane-blind `check` finds none, and it
+        # A direct push cannot fall back to the alternate receipt the Codex
+        # verdict retired (#480): the hook's lane-blind `check` finds none, and it
         # refuses before the secret scan it would otherwise run.
         blocked = t.command("git", ["push", str(t.remote), t.head + ":refs/heads/feature"])
         self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)

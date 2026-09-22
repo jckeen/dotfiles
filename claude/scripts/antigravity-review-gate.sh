@@ -184,6 +184,8 @@ LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
 verdict_in_partial_output() {
   [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 0
   grep -qE "$BLOCK_RE" "$SUMMARY_FILE" || return 0
+  # A verdict retires the other lane's approval like any other (#499).
+  gate_claim
   red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
   red "  A verdict, not a degraded lane: address the findings before any fallback (ADR-0008)."
@@ -520,6 +522,16 @@ if [[ -n "$MODEL" ]]; then
   gate_verify_agy_model "$MODEL" || yellow "  (DB spot-check is best-effort; the log-line check above is authoritative.)"
 fi
 
+# ─── Claim the artifact (#499) ─────────────────────────────────
+# Every exit from here is a verdict, so this is where the other lane's receipt
+# is retired (gate_claim, gate-lib.sh). Every exit ABOVE — agy missing, a size
+# cap, a failed or partial run, an unverifiable pin under --require — is a
+# degraded lane and leaves that approval standing; partial output that already
+# carries blocking findings claims in verdict_in_partial_output. A verifiably
+# WRONG model (exit 2 above) claims nothing: its review is not evidence. Nor
+# does a CLEAN run whose pin was unverifiable, which records no receipt either;
+# its blocking exits below still claim, failing closed.
+[[ "${GATE_RECEIPT_ELIGIBLE:-1}" != 1 ]] || gate_claim
 gate_assert_unchanged
 
 # ─── Step 5: parse findings + gate ─────────────────────────────
@@ -552,6 +564,7 @@ if [[ "$N_TOTAL" -eq 0 ]]; then
   red "✖ Antigravity output not recognized as findings or a whole-verdict LGTB:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (format drift or injected text)."
+  gate_claim
   exit 2
 fi
 
@@ -567,6 +580,7 @@ if [[ "$N_BLOCK" -gt 0 ]]; then
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
   echo ""
   red "Push blocked by antigravity-review-gate ($N_BLOCK P0–P2 finding(s))."
+  gate_claim
   exit 2
 fi
 
@@ -578,6 +592,7 @@ if sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/
   red "✖ Stray [P#] token outside recognized finding lines:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (possible format drift)."
+  gate_claim
   exit 2
 fi
 

@@ -121,22 +121,20 @@ allowed (`REVIEW_LANE=codex`); **downgrade never is** — `REVIEW_LANE=antigravi
 on a codex-required diff is refused rather than honoured. On such a diff the
 Antigravity gate still runs and still mints its receipt, announcing itself as a
 **supplementary** lane: an independent-lineage second opinion, not the shipping
-gate. Run that second opinion **before** the shipping review: starting a review
-in either lane retires the other lane's receipt for the same artifact, so that a
-blocking verdict cannot be bypassed by an older approval (#480) — which also
-means a supplementary run afterwards retires the receipt you were going to push
-on.
+gate. Run that second opinion **before** the shipping review: a review that
+reaches a verdict in either lane retires the other lane's receipt for the same
+artifact, so that a blocking verdict cannot be bypassed by an older approval
+(#480) — which also means a supplementary run afterwards retires the receipt you
+were going to push on.
 
 A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
 model pin, a diff above the byte cap) means the lane could not run, so
 `review-and-push.sh` falls back to Codex and records the degradation in the lane
 ledger; `REVIEW_LANE_FALLBACK=block` refuses the push instead. Exit 2 — blocking
-findings, or a verifiably wrong model — never falls back. It still costs the other
-lane's approval, though: the gate ran `begin` before it degraded, which retires
-every lane's receipt for that artifact, so re-run the required gate. The refusal
-is the conservative behaviour — at the push boundary nothing distinguishes "could
-not run" from "ran and blocked" without trusting the gate that failed — and #499
-tracks a retraction design that would avoid the cost.
+findings, or a verifiably wrong model — never falls back. A degraded run costs
+nothing else: each gate captures the artifact touching only its own lane and
+claims it — retiring the other lane's receipt — only once it can reach a verdict,
+so an exit 3 leaves the other lane's approval valid (#499).
 
 `review-and-push.sh` checks the receipt naming the lane it dispatched, which also
 requires the review that run performed to still be approved. Checking by hand,

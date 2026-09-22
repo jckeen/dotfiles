@@ -313,6 +313,35 @@ def instruction(path):
     )
 
 
+def vendored_dependency(repo, path):
+    """An ignored path inside an installed dependency tree of a skill or scripts dir.
+
+    The #439 hook-tree exemption, extended to `claude/skills/<name>/node_modules`
+    and `claude/scripts/node_modules` (#514), and deliberately narrower: a
+    dependency tree is exactly where a planted instruction file would hide, so
+    the exemption holds only where installation is the evident explanation. The
+    caller passes only entries `ls-files --ignored` reported, which is the
+    "git-ignored" half; the other half is a lockfile in the directory that owns
+    the `node_modules`, checked on disk as a regular file (never a symlink).
+    Everything else — another layout, no lockfile, a tree that is not ignored —
+    stays an instruction surface and fails closed.
+    """
+    parts = Path(path).parts
+    if parts[:2] == ("claude", "skills") and len(parts) > 4 and parts[3] == "node_modules":
+        owner = parts[:3]
+    elif parts[:2] == ("claude", "scripts") and len(parts) > 3 and parts[2] == "node_modules":
+        owner = parts[:2]
+    else:
+        return False
+    for lockfile in ("bun.lock", "package-lock.json"):
+        try:
+            if stat.S_ISREG((repo / Path(*owner) / lockfile).lstat().st_mode):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def private_agent_data(path):
     parts = Path(path).parts
     name = parts[-1]
@@ -653,14 +682,14 @@ def capture(repo, base, scope):
         path for path, (mode, _) in staged.items() if mode in ("100644", "100755", "120000")
     }
     worktrees = own_worktrees(repo)
-    store = os.path.realpath(
-        os.path.join(
-            os.fsdecode(
-                git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
-            ),
-            "worktrees",
-        )
+    # Remove only Git's output delimiter, as layout() does: a trailing whitespace
+    # byte belongs to the path, and stripping it named a different store that no
+    # real worktree's pointer could match (#541).
+    common = os.fsdecode(
+        git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").removesuffix(b"\n")
     )
+    store = os.path.realpath(os.path.join(common, "worktrees"))
+    common = os.path.realpath(common)
 
     def own_boundary(path):
         # Git stops at any directory that looks like a repository, so an entry is
@@ -677,6 +706,16 @@ def capture(repo, base, scope):
         directory = repo / path.rstrip("/")
         if os.path.realpath(directory) not in worktrees:
             return False
+        # The primary checkout is registered too, and can sit beneath a linked
+        # worktree, but it holds the common Git directory itself rather than a
+        # pointer file (#540). A real directory (never a symlink to one) whose
+        # realpath IS this repository's common directory is that checkout.
+        try:
+            primary = stat.S_ISDIR((directory / ".git").lstat().st_mode)
+        except OSError:
+            primary = False
+        if primary:
+            return os.path.realpath(directory / ".git") == common
         gitdir = worktree_gitdir(directory)
         if gitdir is None or os.path.dirname(gitdir) != store:
             return False
@@ -773,7 +812,7 @@ def capture(repo, base, scope):
         # dropped from the sweep rather than blocking a review, as it has been
         # since that data stopped being sent for review — including when it is
         # itself a boundary, whose contents this never captures either way.
-        if own_boundary(entry) or private_agent_data(entry):
+        if own_boundary(entry) or private_agent_data(entry) or vendored_dependency(repo, entry):
             continue
         if entry.endswith("/"):
             inspect_boundary(entry)
@@ -953,21 +992,21 @@ def invalidate(receipts, lane):
 def attempt_lock(receipts):
     """Hold the receipt directory's exclusive lock for one attempt transition.
 
-    `supersede` is several file operations, and two gates beginning at once could
-    interleave them: each retired the OTHER lane before either wrote its own
-    attempt token, so both tokens ended up live and a blocking verdict in one lane
-    was again bypassable by the other lane's approval. Every writer of the shared
+    `supersede` is several file operations, and two gates claiming at once could
+    interleave them: each retired the OTHER lane before either marked its own
+    attempt, so both tokens ended up live and a blocking verdict in one lane was
+    again bypassable by the other lane's approval. Every writer of the shared
     attempt and receipt state runs inside this lock, so no run ever observes a
     half-finished transition.
 
     flock, not a lock directory, for the reason jules-dispatch.sh gives: the
     kernel releases it when the holder dies, so a killed or cancelled gate cannot
-    wedge the next one. Acquired only by the outermost writers (`begin`,
-    `complete`, the `invalidate` subcommand) — an flock is held per open file
-    description, so a nested acquisition in the same process would deadlock.
-    `check` deliberately stays lock-free: it re-asserts the attempt token on both
-    sides of the artifact capture, so a transition landing mid-check can only make
-    it refuse, and a long check must not block a gate.
+    wedge the next one. Acquired only by the outermost callers (`capture`,
+    `claim`, `complete`, `check`'s final assertion, the `invalidate` subcommand)
+    — an flock is held per open file description, so a nested acquisition in the
+    same process would deadlock. `check` holds it only for its deciding
+    assertion, never across its artifact capture: a long check must not block a
+    gate (#533).
     """
     # O_NOFOLLOW for the reason read_json refuses a symlink: nothing in the
     # receipt directory may redirect writes outside it. The file holds no data.
@@ -983,35 +1022,50 @@ def attempt_lock(receipts):
         os.close(descriptor)
 
 
-def supersede(receipts, lane):
-    """Retire EVERY lane's evidence for this artifact, then open `lane`'s attempt.
+def supersede(receipts, record):
+    """Retire every OTHER lane's evidence for this artifact and mark `record` claimed.
 
-    A review starting in one lane must not leave another lane's older approval
-    standing: both gates exit 2 on blocking findings WITHOUT recording a receipt,
-    so the only trace of a blocked review is the attempt its `begin` opened.
-    githooks/pre-push calls `check` with no `--reviewer`, which accepts either
-    lane's receipt, so a surviving competing approval would ship the diff the
-    newest verdict rejected. Bumping the competing attempt token as well
+    A review that reaches a verdict in one lane must not leave another lane's
+    older approval standing: both gates exit 2 on blocking findings WITHOUT
+    recording a receipt, so the only trace of a blocked review is the claim it
+    made. githooks/pre-push calls `check` with no `--reviewer`, which accepts
+    either lane's receipt, so a surviving competing approval would ship the diff
+    the newest verdict rejected. Bumping the competing attempt token as well
     supersedes a review already in flight there, so the only receipt that can
     exist is the one this attempt records. Re-running a lane and approving ships
     as before — this closes a bypass, not a lane.
 
+    This runs at `claim`, not at capture (#499): a gate claims only once its
+    feasibility checks have passed, so a lane that degrades (exit 3) — reviewer
+    missing, a size cap, an unverifiable model pin — retires nothing but its own
+    lane, and a degraded lane stays what MULTI-AGENT.md says it is: not a verdict.
+
+    The attempt must still be live: a claim racing another lane's claim, or a
+    newer capture in its own lane, refuses rather than reviving a superseded run.
     The competing lanes go first: an interruption must never leave a lane OTHER
     than this one holding evidence the new review is overriding. Callers hold
     `attempt_lock`, which is what makes the whole transition atomic against a
     concurrent gate rather than merely ordered.
     """
+    lane = record["reviewer"]["name"]
+    if lane not in LANES:
+        raise ValueError("unknown review lane: " + str(lane))
+    assert_attempt(record)
     for other in LANES:
         if other != lane:
             invalidate(receipts, other)
-    return invalidate(receipts, lane)
+    atomic_json(
+        receipts / (lane + ".attempt.json"), {"attempt": record["attempt"], "claimed": True}
+    )
 
 
-def assert_attempt(record):
+def assert_attempt(record, claimed=False):
     _, _, receipts = layout(record["repository"])
     marker = read_json(receipts / (record["reviewer"]["name"] + ".attempt.json"))
     if marker["attempt"] != record["attempt"]:
         raise ValueError("review attempt was superseded; rerun the gate")
+    if claimed and marker.get("claimed") is not True:
+        raise ValueError("review attempt never claimed the artifact; rerun the gate")
 
 
 def validate_artifact(record):
@@ -1225,16 +1279,16 @@ def resolve_base(repo, requested=None):
     raise ValueError("base could not be resolved: " + requested)
 
 
-def begin(args):
+def capture_attempt(args):
+    """Open this lane's attempt and snapshot the artifact; return the run directory.
+
+    Own-lane only, like the `invalidate` subcommand: the other lane's receipt and
+    attempt are untouched until this run CLAIMS the artifact (#499), so a gate
+    that degrades after capturing costs no other lane's approval.
+    """
     repo, directory, receipts = layout(args.repo)
-    # Cross-lane, unlike the own-lane `invalidate` subcommand. That scope matters
-    # only for a cancellation trap firing BEFORE this line: cancelling a review
-    # that never started then costs no other lane's approval. Once this returns,
-    # the other lane's receipt is already gone and the trap's scope changes
-    # nothing — including when this run goes on to degrade (exit 3) rather than
-    # reach a verdict. See #499.
     with attempt_lock(receipts):
-        attempt = supersede(receipts, args.reviewer)
+        attempt = invalidate(receipts, args.reviewer)
     scope = args.scope
     if scope == "auto":
         scope = (
@@ -1267,6 +1321,29 @@ def begin(args):
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     atomic_json(run / "snapshot.json", record)
+    return run
+
+
+def claim_snapshot(snapshot):
+    record = read_json(Path(snapshot))
+    _, _, receipts = layout(record["repository"])
+    with attempt_lock(receipts):
+        supersede(receipts, record)
+
+
+def capture_command(args):
+    print(capture_attempt(args))
+
+
+def claim_command(args):
+    claim_snapshot(args.snapshot)
+
+
+def begin(args):
+    # Backward-compatible capture + claim, for callers that decide nothing between
+    # the two. Both gates call `capture` and `claim` separately (#499).
+    run = capture_attempt(args)
+    claim_snapshot(run / "snapshot.json")
     print(run)
 
 
@@ -1298,9 +1375,12 @@ def complete(args):
     # The authoritative attempt check and the write it authorizes are one
     # transition: a `supersede` interleaving between them would otherwise file a
     # receipt the newer review had already retired. The earlier checks above are
-    # fail-fast; this one decides.
+    # fail-fast; this one decides. A receipt also requires that this attempt
+    # CLAIMED the artifact (#499): an unclaimed attempt never retired the other
+    # lane, so recording beside it would leave two lanes' evidence standing.
     with attempt_lock(receipts):
         validate_artifact(record)
+        assert_attempt(record, claimed=True)
         atomic_json(receipts / (record["reviewer"]["name"] + ".json"), record)
     # The ledger records what the artifact actually is, not what the snapshot
     # claims: a tampered stored classification stays in the receipt for `check`
@@ -1379,6 +1459,17 @@ def check(args):
                     + current["reason"]
                     + ")"
                 )
+            # The deciding assertion, synchronized with `claim` (#533). Everything
+            # above runs lock-free so a long capture never blocks a gate, which
+            # left a window: a claim landing after validate_artifact()'s last token
+            # read retired this receipt, and the checker still said yes. Under the
+            # lock the attempt is still live and the receipt still the one
+            # validated, so a claim either precedes this (and refuses it) or
+            # follows the decision.
+            with attempt_lock(receipts):
+                assert_attempt(record)
+                if read_json(receipts / (lane_name + ".json")) != record:
+                    raise ValueError("receipt changed during check; rerun the gate")
             print(
                 "Valid "
                 + lane_name
@@ -1404,20 +1495,20 @@ def check(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("begin", "invalidate", "check"):
+    for name in ("capture", "begin", "invalidate", "check"):
         sub = commands.add_parser(name)
         sub.add_argument("--repo", default=".")
         sub.add_argument("--reviewer", choices=LANES, required=name != "check")
         if name != "invalidate":
             sub.add_argument("--base")
-        if name == "begin":
+        if name in ("capture", "begin"):
             sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), required=True)
             sub.add_argument("--executable")
             sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
             sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
         if name == "check":
             sub.add_argument("--head", required=True)
-    for name in ("verify", "classify"):
+    for name in ("claim", "verify", "classify"):
         sub = commands.add_parser(name)
         sub.add_argument("--snapshot", required=True)
     sub = commands.add_parser("lane")
@@ -1447,6 +1538,9 @@ def main():
                 invalidate(receipts, args.reviewer)
         elif args.command == "verify":
             validate_artifact(read_json(Path(args.snapshot)))
+        elif args.command in ("capture", "claim"):
+            # Suffixed: `capture` already names the artifact-capture function.
+            globals()[args.command + "_command"](args)
         else:
             globals()[args.command](args)
     except (

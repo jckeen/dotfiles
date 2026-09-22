@@ -1754,6 +1754,42 @@ python3 -c 'import sys; open(sys.argv[1],"w").write("x/*\n"*201)' "$IGN"
 assert "an over-long ignore file is rejected" "(source '$SCRIPT_DIR/../gate-lib.sh'; ! gate_read_ignore_file '$IGN' 2>/dev/null)"
 rm -f "$IGN"
 
+# ── #499: a degraded lane is not a verdict; a verdict still retires ────
+# The gate captures without touching the Antigravity lane and claims the
+# artifact only once Codex produced output. A run that degrades (exit 3) after
+# capture must leave an Antigravity approval of the same ordinary commit
+# shippable; a run that reaches a verdict and blocks must retire it (#480).
+seed_antigravity_receipt() {
+  local run
+  run="$(python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$R" --base main \
+    --scope committed --reviewer antigravity)" || return 1
+  printf 'LGTB\n' > "$CODEX_FAKE_DIR/agy-approval"
+  python3 "$SCRIPT_DIR/../review-receipt.py" complete --snapshot "$run/snapshot.json" \
+    --outcome passed --output "$CODEX_FAKE_DIR/agy-approval" >/dev/null
+}
+antigravity_receipt_ships() {
+  python3 "$SCRIPT_DIR/../review-receipt.py" check --repo "$R" \
+    --head "$(git -C "$R" rev-parse HEAD)" >/dev/null 2>&1
+}
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+seed_antigravity_receipt
+assert "fixture Antigravity approval ships" "antigravity_receipt_ships"
+CODEX_GATE_MAX_LINES=1 \
+  check "diff over the line cap degrades after capture" 3 "hard failure" --committed --require --no-issues
+assert "a degraded Codex run leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+approve_clean
+echo 1 > "$CODEX_FAKE_DIR/rc"
+check "failed Codex run degrades after capture" 3 "not trusting the result" --committed --require --no-issues
+assert "a failed Codex run leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+echo 0 > "$CODEX_FAKE_DIR/rc"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a blocking Codex verdict blocks" 2 "" --committed --require --no-issues
+assert "a blocking Codex verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -rf "$R" "$CODEX_FAKE_DIR"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

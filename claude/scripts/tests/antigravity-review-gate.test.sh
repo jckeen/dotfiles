@@ -1204,6 +1204,60 @@ assert "small custom cap invokes Antigravity" "[ -e '$AGY_FAKE_DIR/invoked' ]"
 unset GATE_TIER1_MAX_LINES
 rm -rf "$R"
 
+# ── #499: a degraded lane is not a verdict; a verdict still retires ────
+# The gate captures without touching the Codex lane and claims the artifact only
+# once it can reach a verdict. A run that degrades (exit 3) after capture must
+# leave a Codex approval of the same commit shippable; a run that reaches a
+# verdict and blocks must retire it, exactly as #480 requires.
+seed_codex_receipt() {
+  local run
+  run="$(python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$R" --base main \
+    --scope committed --reviewer codex)" || return 1
+  printf 'codex approval\n' > "$AGY_FAKE_DIR/codex-approval"
+  python3 "$SCRIPT_DIR/../review-receipt.py" complete --snapshot "$run/snapshot.json" \
+    --outcome passed --output "$AGY_FAKE_DIR/codex-approval" >/dev/null
+}
+codex_receipt_ships() {
+  python3 "$SCRIPT_DIR/../review-receipt.py" check --repo "$R" \
+    --head "$(git -C "$R" rev-parse HEAD)" >/dev/null 2>&1
+}
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+seed_codex_receipt
+assert "fixture Codex approval ships" "codex_receipt_ships"
+ANTIGRAVITY_GATE_MAX_BYTES=10 \
+  check "prompt over the byte cap degrades after capture" 3 "treating as a hard failure" --committed --require
+assert "a degraded Antigravity run leaves the Codex approval shippable" "codex_receipt_ships"
+printf '1\n' > "$AGY_FAKE_DIR/exit"
+check "failed agy session degrades after capture" 3 "treating as a hard failure" --committed --require
+assert "a failed agy run leaves the Codex approval shippable" "codex_receipt_ships"
+rm -f "$AGY_FAKE_DIR/exit"
+# A clean run whose model pin cannot be verified records no receipt, so it is
+# no verdict either; a blocking one still claims (fail closed).
+unset ANTIGRAVITY_GATE_MODEL
+rm -f "$AGY_FAKE_DIR/log"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "a clean run with an unverifiable pin records nothing" 0 "No shipping receipt" --committed
+assert "an unattributable clean run leaves the Codex approval shippable" "codex_receipt_ships"
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+check "a blocking run with an unverifiable pin still blocks" 2 "BLOCKING findings" --committed
+assert "that blocking run retires the Codex approval" "! codex_receipt_ships"
+seed_codex_receipt
+export ANTIGRAVITY_GATE_MODEL=""
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr"
+check "a blocking partial verdict still blocks" 2 "verdict, not a degraded lane" --committed --require
+assert "a blocking partial verdict retires the Codex approval" "! codex_receipt_ships && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+rm -f "$AGY_FAKE_DIR/stderr"
+seed_codex_receipt
+check "a blocking verdict blocks" 2 "BLOCKING findings" --committed --require
+assert "a blocking verdict retires the Codex approval" "! codex_receipt_ships && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require
