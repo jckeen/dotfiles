@@ -87,8 +87,9 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   split: `review-receipt.py capture` opens only this lane's attempt, and `claim`
   — refusing a superseded attempt, then retiring every other lane — runs only
   once a gate can reach a verdict: the Codex gate after its reviewer produced
-  output, the Antigravity gate after its model-pin check, and in
-  `verdict_in_partial_output` before a partial blocking verdict. `gate_record_pass`
+  output, the Antigravity gate after its model-pin check, before a failed local
+  compile/lint check, and in `verdict_in_partial_output` before a partial
+  blocking verdict. `gate_record_pass`
   claims too, so no-diff and tier-1 receipts behave as before. `complete` refuses
   an unclaimed attempt. `begin` stays as capture-then-claim for other callers;
   receipt format is unchanged. The competing-receipt warning now prints at the
@@ -113,7 +114,8 @@ The new cases in `claude/scripts/tests/jules-dispatch.test.sh` pin each of these
   other repository still fails closed (#540).
 - **Installed dependencies under a skill or `claude/scripts` no longer block every
   gate run.** The #439 hook-tree exemption extends to `claude/skills/<name>/node_modules`
-  and `claude/scripts/node_modules`, only when git ignores the tree and the
+  and `claude/scripts/node_modules`, only when git ignores the `node_modules`
+  directory itself (not merely the file inside it) and the
   directory that owns it carries `bun.lock` or `package-lock.json` (a regular
   file). Without the lockfile, when not ignored, or anywhere else, those paths
   stay instruction surfaces and fail closed (#514).

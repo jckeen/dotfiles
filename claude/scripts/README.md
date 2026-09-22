@@ -303,7 +303,8 @@ A gate that degrades (exit 3) after capture — agy missing, a diff above a size
 cap, a failed or partial run, an unverifiable model pin under `--require` — never
 claimed, so the other lane's approval stays valid: a degraded lane is not a
 verdict (#499). Partial output that already carries blocking findings is a
-verdict and claims. A verifiably wrong model (exit 2) claims nothing, since its
+verdict and claims, and so is a failed local compile/lint check in the
+Antigravity gate. A verifiably wrong model (exit 2) claims nothing, since its
 review is not evidence, and neither does a clean run whose pin could not be
 verified, which records no receipt either; its blocking exits still claim. Two consequences remain: a review already in flight in
 the other lane can no longer record its outcome once a newer one claims, and a

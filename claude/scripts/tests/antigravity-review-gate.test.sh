@@ -1257,6 +1257,19 @@ check "a blocking verdict blocks" 2 "BLOCKING findings" --committed --require
 assert "a blocking verdict retires the Codex approval" "! codex_receipt_ships && [ ! -e '$R/.git/review-receipts/codex.json' ]"
 unset ANTIGRAVITY_GATE_MODEL
 rm -rf "$R"
+# Failed local validation is a blocking verdict too, reached before dispatch.
+new_repo
+git -C "$R" checkout -qb feature
+printf '[package]\nname = "fixture"\n' > "$R/Cargo.toml"
+git -C "$R" add Cargo.toml
+git -C "$R" commit -qm "cargo fixture"
+seed_codex_receipt
+printf '#!/usr/bin/env bash\nexit 1\n' > "$SHIM_DIR/cargo"
+chmod +x "$SHIM_DIR/cargo"
+check "failed local validation blocks" 2 "cargo check failed" --committed --require
+assert "failed local validation retires the Codex approval" "! codex_receipt_ships && [ ! -e '$AGY_FAKE_DIR/invoked' ]"
+rm -f "$SHIM_DIR/cargo"
+rm -rf "$R"
 
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"

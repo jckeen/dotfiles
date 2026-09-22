@@ -320,11 +320,14 @@ def vendored_dependency(repo, path):
     and `claude/scripts/node_modules` (#514), and deliberately narrower: a
     dependency tree is exactly where a planted instruction file would hide, so
     the exemption holds only where installation is the evident explanation. The
-    caller passes only entries `ls-files --ignored` reported, which is the
-    "git-ignored" half; the other half is a lockfile in the directory that owns
-    the `node_modules`, checked on disk as a regular file (never a symlink).
-    Everything else — another layout, no lockfile, a tree that is not ignored —
-    stays an instruction surface and fails closed.
+    caller passes only entries `ls-files --ignored` reported, but that proves only
+    the ENTRY is ignored: excluding one planted `AGENTS.md` by name would pass as
+    a vendored tree. So the `node_modules` directory itself must be ignored too
+    (`check-ignore` on it, with the trailing slash that makes a directory-only
+    pattern match), and the directory that owns it must hold a lockfile, checked
+    on disk as a regular file (never a symlink). Everything else — another
+    layout, no lockfile, a tree that is not ignored — stays an instruction
+    surface and fails closed.
     """
     parts = Path(path).parts
     if parts[:2] == ("claude", "skills") and len(parts) > 4 and parts[3] == "node_modules":
@@ -333,13 +336,21 @@ def vendored_dependency(repo, path):
         owner = parts[:2]
     else:
         return False
+    locked = False
     for lockfile in ("bun.lock", "package-lock.json"):
         try:
-            if stat.S_ISREG((repo / Path(*owner) / lockfile).lstat().st_mode):
-                return True
+            locked = locked or stat.S_ISREG((repo / Path(*owner) / lockfile).lstat().st_mode)
         except OSError:
             continue
-    return False
+    if not locked:
+        return False
+    try:
+        git(repo, "check-ignore", "-q", "--", str(Path(*owner, "node_modules")) + "/")
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1:
+            return False
+        raise
+    return True
 
 
 def private_agent_data(path):

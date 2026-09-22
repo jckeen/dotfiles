@@ -347,27 +347,29 @@ fi
 
 # ─── Step 3: local validation before dispatch ────────────────────────────
 # Cheap, deterministic checks before spending plan quota. Fail HARD (exit 2) —
-# broken code should never reach the review step.
+# broken code should never reach the review step. A failure here is a blocking
+# verdict on the artifact, so it claims first (#499): an older approval from the
+# other lane must not ship code this lane found broken.
 echo "Running local compile/lint checks first..."
 if [[ -f package.json ]]; then
   if [[ -f tsconfig.json ]] && grep -q '"typescript"' package.json 2>/dev/null; then
     echo "  → tsc --noEmit"
-    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; exit 2; }
+    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_claim; exit 2; }
   fi
   if grep -q '"lint"' package.json 2>/dev/null; then
     echo "  → lint"
-    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; exit 2; }
-    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; exit 2; }
-    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; exit 2; }
-    else                                npm run lint   || { red "  Linter failed."; exit 2; }
+    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; gate_claim; exit 2; }
+    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; gate_claim; exit 2; }
+    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; gate_claim; exit 2; }
+    else                                npm run lint   || { red "  Linter failed."; gate_claim; exit 2; }
     fi
   fi
 elif [[ -f Cargo.toml ]]; then
   echo "  → cargo check"
-  cargo check || { red "  cargo check failed."; exit 2; }
+  cargo check || { red "  cargo check failed."; gate_claim; exit 2; }
 elif [[ -f go.mod ]]; then
   echo "  → go vet"
-  go vet ./... || { red "  go vet failed."; exit 2; }
+  go vet ./... || { red "  go vet failed."; gate_claim; exit 2; }
 fi
 
 # ─── Step 4: run agy print mode, non-interactively and tool-locked ─
