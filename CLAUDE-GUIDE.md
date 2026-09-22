@@ -84,6 +84,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/orchestrate` | Full-lifecycle max-effort mode — roll-call skills, fan out parallel agents, close the loop |
 | `/branch-hygiene` | Audit and clean up stale git branches |
 | `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
+| `/review-gates` | Multi-agent review-gate mechanics: lane selection, handoff payload, verdict persistence |
 | `/session-retro` | Retro that proposes improvements to your skills (fires on "thanks", or run it) |
 | `/drift-sweep` | Bootstrap a repo's doc contract; audit doc drift vs issues/PRs/worktrees |
 

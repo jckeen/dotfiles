@@ -4,16 +4,10 @@
 
 # Global Claude Code Instructions
 
-Portable global guidance for all projects — the public, anyone-can-use layer.
-A project's own `CLAUDE.md` always takes precedence over this file.
-
 ## Personal context
 
-Identity, org context, and private preferences are **not** kept here — this repo
-is public. They live in a separate, private `claude-memory` repo and are pulled
-in via the import below. If you cloned these dotfiles, point this at your own
-`claude-memory` or delete the line; everything below works without it. See the
-README's "The private memory repos" section for how to set up `claude-memory`.
+Identity and private preferences live in the private `claude-memory` repo,
+imported here (see the README's "The private memory repos" section).
 
 @~/dev/claude-memory/CLAUDE.md
 
@@ -144,43 +138,19 @@ to invoke a skill before any response is overridden by this file.
 ## Multi-agent teamwork
 
 When Codex (`cx`) and Antigravity share this repo, we're one team coordinating
-through artifacts — instructions + skills (loaded identically via the AgentPack),
-GitHub issues, `handoff` notes, and git — not a shared chat. Full role table and
-rationale: `MULTI-AGENT.md`. The operative rules:
+through artifacts — instructions + skills, GitHub issues, `handoff` notes, and
+git — not a shared chat. Full role table and rationale: `MULTI-AGENT.md`; gate
+selection, handoff payload, and verdict-persistence mechanics: the
+`review-gates` skill. The non-negotiables:
 
-- **Assign roles explicitly:** the active session is the conductor and owns
-  planning, integration, verification, delivery, and handoffs. Assign bounded
-  implementation, independent review, or runtime/browser verification to
-  agents with the needed capabilities. Any runtime can conduct or implement;
-  personal defaults belong in private preferences. Refute, don't rubber-stamp.
-- **One owner of the working tree at a time** — the Parallel agents rule applies
-  across tools too. Each agent gets its own worktree, or edits are sequenced.
-- **Verification is adversarial, not an echo chamber** — three agents agreeing
-  can be one blind spot voted thrice. Assign the refuter role explicitly; route
-  disagreement to a fix, not a tie-break.
-- **Review independence:** a fresh context reduces inherited assumptions;
-  high-risk changes also require a reviewer from a different model family.
-  Record the actual reviewer evidence; a requested model label alone does not
-  establish the model used, and a text-diff review is not browser evidence.
-- **Ask which lane before running a gate** (ADR-0008):
-  `review-receipt.py lane --repo . --scope committed` names the required lane.
-  Ordinary tier-2 work goes to `antigravity-review-gate.sh`; a risk surface (or
-  a classification the helper could not read) requires `codex-review-gate.sh`
-  and is never downgradable; a tier-1 docs diff takes either gate's tier valve.
-  `review-receipt.py check` refuses a receipt whose lane ranks below the
-  requirement, so run the *named* gate rather than the familiar one — and check
-  the receipt with no `--reviewer`. An Antigravity gate that exits 3 could not
-  run and falls back to Codex; exit 2 is a verdict and never falls back.
-  `review-and-push.sh` performs the whole selection itself.
-- **Handoff payload:** when I hand work to another agent, the note carries the
-  *claim to disprove* and the *exact repro command*, not just "please review."
-  For gate-mediated refutation, pass them directly:
-  `codex-review-gate.sh --claim "<claim>" --repro "<cmd>"`.
-- **Verdicts are artifacts:** a rescue diagnosis or verification verdict from
-  another agent must be persisted (handoff note or issue comment) before the
-  team acts on it — output that only reached one terminal is lost work. Notes
-  carry a "Session continuity" section (codex session id / agy conversation
-  id) so the next hand-back resumes instead of cold-starting.
+- **One owner of the working tree at a time** — each agent gets its own
+  worktree, or edits are sequenced.
+- **Verification is adversarial, not an echo chamber** — assign the refuter
+  role explicitly; route disagreement to a fix, not a tie-break.
+- **A handoff carries the claim to disprove and the exact repro command**, not
+  just "please review".
+- **Verdicts are artifacts** — persist a rescue diagnosis or verification
+  verdict (handoff note or issue comment) before the team acts on it.
 
 ## Git
 

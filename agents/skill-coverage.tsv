@@ -17,3 +17,4 @@ repo-health	agent-only	Claude uses its repo-scout agent for the equivalent read-
 review	shared
 session-retro	shared
 simplify	shared
+review-gates	claude-only	On-demand detail for the Claude conductor (which lane a change needs, receipt check, exit-code fallback). Codex and Antigravity keep their own multi-agent teamwork rules in codex/AGENTS.md and antigravity/GEMINI.md and run the gate scripts directly.

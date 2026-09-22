@@ -205,6 +205,16 @@
       "skill_format": "agent-skills"
     },
     {
+      "id": "skill:review-gates",
+      "type": "skill",
+      "name": "review-gates",
+      "description": "Multi-agent review-gate mechanics for repos shared with Codex and Antigravity — which gate lane a change requires, how to run and check a receipt, the handoff payload (claim to disprove + exact repro), review independence, and persisting verdicts. Use before running any review gate, before handing work to another agent, before merging, or when a gate refuses a receipt.",
+      "path": "skills/review-gates",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
       "id": "skill:session-retro",
       "type": "skill",
       "name": "session-retro",
