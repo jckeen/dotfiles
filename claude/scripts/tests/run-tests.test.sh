@@ -144,6 +144,28 @@ run
 want "no suites found fails closed" 1 'no test suites found'
 rm -rf "$R"
 
+# Two files deriving one name (#518): foo.test.sh and foo.test.py both name
+# `foo`, and a first-match lookup would silently run the wrong one for `foo` or
+# for a --changed diff touching the second. Discovery refuses, naming both
+# files, in every mode — before anything runs.
+new_repo
+suite foo 0
+pysuite foo 0
+suite alpha 0
+commit_all
+run --list
+want "a duplicate suite name fails discovery" 1 'duplicate test suite name: foo' \
+  'foo\.test\.sh' 'foo\.test\.py'
+want_absent "a duplicate suite name lists nothing" '^alpha$'
+run foo
+want "selecting a duplicated name fails closed" 1 'duplicate test suite name: foo'
+want_absent "selecting a duplicated name runs neither file" 'ran foo'
+echo '# touched' >> "$R/claude/scripts/tests/foo.test.py"
+run --changed --base main
+want "--changed on the second duplicate fails closed" 1 'duplicate test suite name: foo'
+want_absent "--changed on a duplicate runs nothing" 'ran '
+rm -rf "$R"
+
 # ── Running everything ────────────────────────────────────────────────
 new_repo
 suite alpha 0
