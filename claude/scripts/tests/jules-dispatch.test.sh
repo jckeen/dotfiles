@@ -2586,8 +2586,9 @@ fi
 
 # The ledger is operator-editable: a limit that is not a positive integer is
 # refused, not coerced — and neither "-" nor "" may pass for an absent limit,
-# which would switch the check off (Codex gate, [medium]).
-for bad_mf in '"two"' '"-"' '""' '0' '2.5'; do
+# which would switch the check off; nor may an explicit null, since only a
+# record that predates the field skips the check (Codex gate, [medium]).
+for bad_mf in '"two"' '"-"' '""' '0' '2.5' 'null'; do
   new_case
   routine alpha false 'repos: all'
   session_line 967 alpha jckeen/dotfiles 1 "$bad_mf" > "$STATE/dispatch.jsonl"

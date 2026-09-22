@@ -1214,7 +1214,7 @@ reconcile_candidates() {
     | [ .session,
         (if ((.routine // \"\") == \"\") then \"-\" else .routine end),
         (if ((.repo // \"\") == \"\") then \"-\" else .repo end),
-        (if (.max_files == null) then \"-\" else (\"=\" + (.max_files | tojson)) end) ]
+        (if (has(\"max_files\") | not) then \"-\" else (\"=\" + (.max_files | tojson)) end) ]
     | @tsv" "$LEDGER" 2>/dev/null \
     || die "dispatch ledger is not valid JSON lines: $LEDGER"
 }
@@ -1440,9 +1440,10 @@ reconcile_pr() { # session routine repo url
   return 0
 }
 
-# max_files arrives as "-" when the dispatch record has none, or as "=" and the
-# field's JSON otherwise — so no value the ledger can hold, not even the string
-# "-" or an empty one, can pass for the absent case and switch the check off.
+# max_files arrives as "-" when the dispatch record has no such field (it
+# predates the limit), or as "=" and the field's JSON otherwise — so no value
+# the ledger can hold, not the string "-", an empty one or an explicit null, can
+# pass for the absent case and switch the check off.
 reconcile_session() { # session routine repo max_files
   local session="$1" routine="$2" repo="$3" max_files="${4-}"
   local id resp state n i raw url failed_any=0
