@@ -1,0 +1,69 @@
+name: harvest-codex-comments
+
+# Close-time capture of the GitHub Codex bot's inline review comments (#555).
+# The in-session PreMergeCodexHarvest hook fires when `gh pr merge --auto` arms
+# auto-merge, which is before the bot has reviewed, so it harvests nothing; the
+# merge itself lands after CI, by which time the bot has normally commented.
+# This runs claude/scripts/harvest-codex-comments.sh for the merged PR, which
+# files (or appends to) one consolidated issue per PR. The nightly routine runs
+# the same script as a backstop for comments that land later; the script's
+# per-PR and per-comment markers make the two runs idempotent.
+#
+# Its own workflow rather than a job in delete-branch-on-close.yml: that one
+# holds contents: write for ref deletion, and this needs issues: write instead —
+# one file each keeps both token scopes minimal.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read # check out the merged commit for the script and gate-lib.sh
+  issues: write # file or append to the consolidated issue, apply its labels
+  pull-requests: read # list the PR's review comments and read its title
+
+# One harvest at a time per PR: two runs appending to the same issue body could
+# drop each other's items until the next run restores them. Keyed by PR, not
+# repository — different PRs write different issues, and a repository-wide
+# group would let a newer pending run replace an older one and lose its harvest.
+concurrency:
+  group: harvest-codex-comments-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    name: harvest Codex-bot comments of the merged PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Same-repo PRs only: a fork PR's GITHUB_TOKEN is read-only whatever the
+    # permissions block says, so its harvest could not write. The nightly
+    # routine (a user token) still covers fork PRs.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      # The merge commit is on the default branch, so the script that runs is
+      # the reviewed one, never the PR head's copy.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
+
+      # gh and jq ship on the ubuntu runner image. The script exits 0 on every
+      # path so it never blocks an in-session caller; here a write it could not
+      # make ("could not ..." on stderr) fails the run instead, so a lost
+      # harvest is visible on the Actions tab.
+      - name: Harvest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          err="$RUNNER_TEMP/harvest.err"
+          bash claude/scripts/harvest-codex-comments.sh --repo "$REPO" --pr "$PR_NUMBER" 2>"$err"
+          cat "$err" >&2
+          if grep -q 'could not' "$err"; then
+            echo "::error::harvest-codex-comments reported a failed read or write (see above)."
+            exit 1
+          fi

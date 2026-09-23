@@ -9,8 +9,15 @@
 # BEHAVIOR:
 #   Runs harvest-codex-comments.sh for the PR being merged (explicit number in the
 #   command if present, else the current branch's PR). That script files one deduped
-#   issue per Codex-bot comment. Output goes to stderr → visible in the Bash tool
-#   output right before the merge proceeds.
+#   consolidated issue per PR, one checklist item per Codex-bot comment. Output goes
+#   to stderr → visible in the Bash tool output right before the merge proceeds.
+#
+#   With `--auto` the command only arms auto-merge, usually within a minute of
+#   `gh pr create` — before the bot has reviewed — so this early pass normally finds
+#   nothing. The hook still runs it, then prints a one-line note that the
+#   close-time harvest (.github/workflows/harvest-codex-comments.yml, on the PR's
+#   merge) will file whatever the bot posts. The two passes share the harvester's
+#   per-PR dedup, so running both never files twice (#555).
 #
 # SAFETY:
 #   - WARN-ONLY: always exit 0. Never blocks the merge (matches PrePushStaleSHACheck).
@@ -58,6 +65,10 @@ if [[ -n "$prnum" ]]; then
   tmo 30 "$script" --pr "$prnum" --quiet >&2 2>&1 || true
 else
   tmo 30 "$script" --quiet >&2 2>&1 || true
+fi
+
+if [[ "$cmd" =~ (^|[[:space:]])--auto([[:space:]=]|$) ]]; then
+  echo "PreMergeCodexHarvest: --auto arms the merge before the Codex bot has reviewed; the close-time harvest (harvest-codex-comments.yml) will file anything it finds." >&2
 fi
 
 exit 0

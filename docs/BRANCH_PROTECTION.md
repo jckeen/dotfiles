@@ -131,7 +131,10 @@ any differences before changing the live rule.
   Since #472 those suites run in the `checks-shards` matrix job
   (`checks (receipts)`, `checks (gates)`, `checks (runtime)`,
   `checks (checkers)`), and `checks` is a tiny aggregator that `needs` them and
-  fails unless every shard succeeded. A matrix job produces one status context
+  fails unless every shard succeeded. It runs under `always()`, because branch
+  protection reads a skipped required job as success: a run cancelled after a
+  shard went red must leave this context red, not absent (#520). A matrix job
+  produces one status context
   per leg rather than one for the set, so the aggregator is what keeps a single
   required name. Do **not** require the individual shard contexts: their names
   change whenever the grouping is rebalanced.
