@@ -13,10 +13,16 @@
 #
 # State file: $HOME/.local/state/hygiene/status.json
 #   (written by claude/scripts/hygiene-cron.sh, fired by git-hygiene.timer)
+# Retired-worktree summary: $HOME/.local/state/hygiene/retired-worktrees.json
+#   (the timer's report-mode `worktree-lifecycle.py expire` run). --status always
+#   adds `retired worktrees: N (oldest Xd, M expirable)`; the other modes add it
+#   only while M > 0. The timer never deletes them: expiry is the operator's
+#   `--apply` run (claude/scripts/README.md, Worktree lifecycle).
 
 set -uo pipefail
 
 STATE_FILE="$HOME/.local/state/hygiene/status.json"
+RETIRED_FILE="$HOME/.local/state/hygiene/retired-worktrees.json"
 STALE_HOURS=48
 MODE="${1:-text}"
 
@@ -73,6 +79,24 @@ is_stale=0
 is_drifted=0
 [[ "$drift_count" -gt 0 ]] && is_drifted=1
 
+# Retired-worktree summary; absent or malformed means no line at all.
+retired_line=""
+expirable=0
+if [[ -f "$RETIRED_FILE" ]]; then
+  retired=$(jq -r '.retired // empty' "$RETIRED_FILE" 2>/dev/null || true)
+  oldest=$(jq -r '.oldest_days // empty' "$RETIRED_FILE" 2>/dev/null || true)
+  expirable=$(jq -r '.expirable // 0' "$RETIRED_FILE" 2>/dev/null || echo 0)
+  [[ "$expirable" =~ ^[0-9]+$ ]] || expirable=0
+  if [[ "$retired" =~ ^[0-9]+$ ]]; then
+    if [[ "$retired" -eq 0 ]]; then
+      retired_line="retired worktrees: 0"
+    elif [[ "$oldest" =~ ^-?[0-9]+$ ]]; then
+      retired_line="retired worktrees: $retired (oldest ${oldest}d, $expirable expirable)"
+    fi
+  fi
+fi
+[[ -n "$retired_line" ]] || expirable=0
+
 # JSON / status modes always emit, regardless of cleanliness
 case "$MODE" in
   json)
@@ -86,11 +110,12 @@ case "$MODE" in
     else
       echo "settings clean (checked ${stale_hours}h ago)"
     fi
+    [[ -n "$retired_line" ]] && echo "$retired_line"
     exit 0 ;;
 esac
 
-# Quiet path for text/reminder/cli — silent when clean and fresh
-if [[ "$is_drifted" -eq 0 && "$is_stale" -eq 0 ]]; then
+# Quiet path for text/reminder/cli — silent when clean, fresh and nothing expirable
+if [[ "$is_drifted" -eq 0 && "$is_stale" -eq 0 && "$expirable" -eq 0 ]]; then
   exit 0
 fi
 
@@ -103,6 +128,10 @@ if [[ "$is_drifted" -eq 1 ]]; then
 fi
 if [[ "$is_stale" -eq 1 ]]; then
   body+=("Hygiene check is stale (${stale_hours}h old, threshold ${STALE_HOURS}h). Daily timer may be down — check: systemctl --user status git-hygiene.timer")
+fi
+if [[ "$expirable" -gt 0 ]]; then
+  body+=("$retired_line")
+  body+=("Expiry deletes only on the operator's authorization; the command is in claude/scripts/README.md (Worktree lifecycle)")
 fi
 
 case "$MODE" in

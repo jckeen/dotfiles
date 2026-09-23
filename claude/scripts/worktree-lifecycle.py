@@ -8,12 +8,21 @@ last step, after the recovery bundle and record are written, so the record still
 names the branch while the merged branch ref becomes deletable; --delete-branch
 deletes it only when it still names the verified merged PR head, restores it if
 a worktree attached it during the delete, and removes its branch.<name> config.
+
+Expiry (#562) reports retired archive entries by default. --apply removes the
+quarantined checkout and its Git worktree registration once the entry was
+retired longer ago than --older-than, and only while the checkout is still
+clean at the recorded head and its Git metadata holds nothing retirement did
+not archive. It never deletes the recovery files (repository.bundle,
+worktree-metadata.tar, recovery.json): they stay in the archive entry
+permanently as the recovery path.
 """
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -25,6 +34,14 @@ import tarfile
 import tempfile
 
 MARKER = "worktree-release.json"
+# Retirement locks each quarantine with this reason plus its archive path, and
+# expiry removes only a registration whose lock still names its own archive.
+QUARANTINE_LOCK = "retained quarantine: "
+# The recovery files applied retirement writes beside the quarantined
+# `worktree`. Expiry never deletes, rewrites or moves any of them (#562).
+ARCHIVE_FILES = ("recovery.json", "repository.bundle", "worktree-metadata.tar")
+# Where expiry moves a quarantine for its final inspection before removal.
+STAGING = "worktree-expiring"
 # Repository-local overrides reported by `git rev-parse --local-env-vars`,
 # plus namespace and attribute-source routing. GIT_NO_REPLACE_OBJECTS is safe
 # because run() explicitly forces it; configuration overrides are matched as
@@ -82,6 +99,28 @@ def text(data):
     return os.fsdecode(data.removesuffix(b"\n"))
 
 
+def open_regular(path):
+    """Open a regular file for reading, never blocking on or following a special one.
+
+    Expiry reads archive entries and worktree metadata from the hygiene timer's
+    report run, which no subprocess timeout covers: a FIFO in place of any of
+    these files would otherwise hang it. A missing file raises
+    FileNotFoundError, as a plain open does.
+    """
+    if not stat.S_ISREG(Path(path).lstat().st_mode):
+        raise ValueError(f"not a regular file, retain for inspection: {path}")
+    stream = os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb")
+    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        stream.close()
+        raise ValueError(f"not a regular file, retain for inspection: {path}")
+    return stream
+
+
+def read_regular(path):
+    with open_regular(path) as stream:
+        return stream.read()
+
+
 def worktrees(repo):
     items = []
     for block in git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0\0"):
@@ -115,8 +154,13 @@ def marker(admin):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError("release record is not a private regular file")
-    data = json.loads(path.read_text())
-    if data.get("schema") != 1 or not isinstance(data.get("owner"), str) or not data["owner"]:
+    data = json.loads(read_regular(path))
+    if (
+        not isinstance(data, dict)
+        or data.get("schema") != 1
+        or not isinstance(data.get("owner"), str)
+        or not data["owner"]
+    ):
         raise ValueError("invalid release record")
     return data
 
@@ -852,12 +896,17 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False, delete_b
     # sample. Retain the actual directory instead: rename preserves late
     # entries and writes through open descriptors. Never copy/delete it.
     quarantine = archive / "worktree"
-    record.update(quarantine=str(quarantine), git_metadata=str(admin))
+    # `expire` dates the entry from this timestamp (#562).
+    record.update(
+        quarantine=str(quarantine),
+        git_metadata=str(admin),
+        retired_at=datetime.now(timezone.utc).isoformat(),
+    )
     (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
     # Lock BEFORE renaming so interruption cannot leave now-missing worktree
     # metadata eligible for pruning. Repair reconnects Git to the new path;
     # failure retains both bytes and the lock for explicit recovery.
-    git(repo, "worktree", "lock", "--reason", "retained quarantine: " + str(archive), str(path))
+    git(repo, "worktree", "lock", "--reason", QUARANTINE_LOCK + str(archive), str(path))
     try:
         os.rename(path, quarantine)
         git(repo, "worktree", "repair", str(quarantine))
@@ -916,6 +965,360 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False, delete_b
     return result
 
 
+def window_days(value):
+    match = re.fullmatch(r"([0-9]{1,5})d", value or "")
+    if not match:
+        raise ValueError("--older-than takes a whole number of days, such as 30d")
+    return int(match.group(1))
+
+
+def recovery_record(archive):
+    """The recovery record an applied retirement wrote, and its lstat."""
+    path = archive / "recovery.json"
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError("not a regular file of the current user")
+        record = json.loads(read_regular(path))
+    except (OSError, ValueError) as error:
+        raise ValueError("missing or unparseable recovery.json; retain for inspection") from error
+    if not isinstance(record, dict) or not all(
+        isinstance(record.get(key), kind)
+        for key, kind in (("head", str), ("path", str), ("github_repo", str), ("pr", int))
+    ):
+        raise ValueError("recovery.json lacks its head, path or PR; retain for inspection")
+    return record, info
+
+
+def retired_time(record, info):
+    value = record.get("retired_at")
+    if value is None:
+        # Records written before `retired_at` existed: retirement's last write
+        # of recovery.json is the quarantine step, so its mtime dates the entry.
+        return datetime.fromtimestamp(info.st_mtime, timezone.utc)
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("unparseable retired_at in recovery.json; retain") from error
+    if moment.tzinfo is None:
+        raise ValueError("retired_at in recovery.json has no timezone; retain")
+    return moment
+
+
+def age_days(moment, now):
+    return int((now - moment).total_seconds() // 86400)
+
+
+def check_window(moment, now, days):
+    if now - moment < timedelta(days=days):
+        raise ValueError(f"retired {age_days(moment, now)}d ago, inside the {days}d window")
+
+
+def check_recovery_files(archive, record):
+    """Require the bundle and metadata tar to be the bytes retirement wrote.
+
+    Removing the checkout relies on them as the recovery path, and the metadata
+    comparison below reads the tar, so each must still hash to what
+    recovery.json recorded.
+    """
+    recorded = record.get("files")
+    for name in ("repository.bundle", "worktree-metadata.tar"):
+        # Streamed: a bundle holds every ref and reflog of the repository.
+        digest = hashlib.sha256()
+        try:
+            with open_regular(archive / name) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"cannot read {name} ({error}); retain for inspection") from error
+        if not isinstance(recorded, dict) or recorded.get(name) != digest.hexdigest():
+            raise ValueError(f"{name} differs from what retirement recorded; retain for inspection")
+
+
+def check_metadata_archived(admin, archive, head):
+    """Refuse live Git metadata that holds anything worktree-metadata.tar does not.
+
+    `git worktree remove` deletes this directory. Everything it held at
+    retirement is in the archived tar, which expiry keeps, so removal can lose
+    only what was written since. Retirement's own later writes are allowed: the
+    lock, the repaired `gitdir` pointer, HEAD detached at the recorded head and
+    reflog lines from the recorded head to itself; neither the lock reason nor
+    the gitdir path holds work. Every other file, the index included, must be
+    byte-identical to its archived copy, and no other name may appear.
+    """
+    try:
+        with tarfile.open(
+            fileobj=io.BytesIO(read_regular(archive / "worktree-metadata.tar"))
+        ) as tar:
+            saved = {}
+            for member in tar.getmembers():
+                relative = member.name.removeprefix("worktree-metadata/")
+                content = None
+                if member.isfile():
+                    with tar.extractfile(member) as stream:
+                        content = stream.read()
+                saved[relative] = (member, content)
+    except (OSError, tarfile.TarError) as error:
+        raise ValueError("cannot read worktree-metadata.tar; retain for inspection") from error
+
+    def refuse(relative, why):
+        raise ValueError(f"Git metadata {relative} {why} since retirement; retain for inspection")
+
+    def scan_error(error):
+        raise error
+
+    for directory, dirs, files in os.walk(admin, followlinks=False, onerror=scan_error):
+        for name in dirs + files:
+            path = Path(directory) / name
+            relative = path.relative_to(admin).as_posix()
+            info = path.lstat()
+            member, content = saved.get(relative, (None, None))
+            if stat.S_ISDIR(info.st_mode):
+                # A directory holds nothing itself; its entries are walked.
+                if member is not None and not member.isdir():
+                    refuse(relative, "changed type")
+                continue
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                refuse(relative, "is a special file created or changed")
+            if relative in ("locked", "gitdir"):
+                if not stat.S_ISREG(info.st_mode):
+                    refuse(relative, "changed type")
+                continue
+            if relative == "HEAD":
+                if read_regular(path).strip() != head.encode():
+                    refuse(relative, "moved")
+                continue
+            if relative == "logs/HEAD":
+                live, old = read_regular(path), content or b""
+                if not live.startswith(old):
+                    refuse(relative, "was rewritten")
+                # Retirement's detach logs head -> head. A line naming any
+                # other commit on either side may be its last reference.
+                for line in live[len(old) :].splitlines():
+                    if line.split(b" ")[:2] != [head.encode(), head.encode()]:
+                        refuse(relative, "recorded a commit other than the recorded head")
+                continue
+            if member is None:
+                refuse(relative, "was written")
+            if stat.S_IMODE(info.st_mode) != member.mode:
+                refuse(relative, "changed mode")
+            if stat.S_ISLNK(info.st_mode):
+                if not member.issym() or os.readlink(path) != member.linkname:
+                    refuse(relative, "changed")
+            elif not member.isfile() or read_regular(path) != content:
+                refuse(relative, "changed")
+
+
+def still_registered(repo, path, head, lock):
+    """Re-read the registration right before removal; any change retains it."""
+    current = next((entry for entry in worktrees(repo) if Path(entry["path"]) == path), None)
+    if (
+        current is None
+        or "branch" in current
+        or current.get("HEAD") != head
+        or current.get("locked") != lock
+    ):
+        raise ValueError("the worktree changed after inspection; retained")
+
+
+def outside(path):
+    cwd = Path.cwd().resolve()
+    if cwd == path or path in cwd.parents:
+        raise ValueError("run expire from outside the archived worktree; retained")
+
+
+def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
+    """Check a quarantine and return the function that removes it.
+
+    Removal deletes the checkout and its Git metadata directory only; the
+    recovery files stay in the entry permanently (#562).
+    """
+    quarantine = archive / "worktree"
+    if record.get("quarantine") != str(quarantine):
+        raise ValueError("recovery.json names a different quarantine; retain for inspection")
+    extra = sorted(set(os.listdir(archive)) - {*ARCHIVE_FILES, "worktree"})
+    if extra:
+        raise ValueError("unexpected archive content, retain for inspection: " + ", ".join(extra))
+    lock = QUARANTINE_LOCK + str(archive)
+    if item.get("locked") != lock:
+        raise ValueError("the worktree lock does not name this archive; retain for inspection")
+    if "branch" in item:
+        raise ValueError(f"still attached to {item['branch']}; retain worktree")
+    head = record["head"]
+    if item.get("HEAD") != head:
+        raise ValueError("HEAD moved since retirement; retain worktree")
+    check_window(moment, now, days)
+    check_recovery_files(archive, record)
+    admin = Path(text(git(quarantine, "rev-parse", "--absolute-git-dir")))
+    if str(admin) != record.get("git_metadata"):
+        raise ValueError("Git metadata moved since retirement; retain worktree")
+    release = marker(admin)
+    if (release.get("head"), release.get("pr"), release.get("github_repo")) != (
+        head,
+        record["pr"],
+        record["github_repo"],
+    ):
+        raise ValueError("release record disagrees with recovery.json; retain for inspection")
+
+    def inspect(checkout):
+        clean(checkout)
+        active_processes(checkout, trust_process_manager=trust)
+        active_processes(admin, trust_process_manager=trust)
+        # Last: a commit made through the Git metadata while the checkout was
+        # inspected leaves it clean, but moves HEAD or adds a reflog line.
+        still_registered(repo, checkout, head, lock)
+        check_metadata_archived(admin, archive, head)
+
+    inspect(quarantine)
+
+    def remove():
+        outside(quarantine)
+        # Mirror retirement: move the checkout out of its known path first, so
+        # a path-based writer can no longer land in what is about to be
+        # deleted, then inspect the moved directory itself. The lock (which
+        # names this archive) stays in place across the move and repair.
+        staging = archive / STAGING
+        if os.path.lexists(staging):
+            raise ValueError("an earlier expiry left a staging checkout; retain for inspection")
+        os.rename(quarantine, staging)
+        try:
+            git(repo, "worktree", "repair", str(staging))
+            inspect(staging)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            try:
+                os.rename(staging, quarantine)
+                git(repo, "worktree", "repair", str(quarantine))
+            except (OSError, ValueError, subprocess.SubprocessError) as restore:
+                raise ValueError(
+                    f"changed after inspection ({error}); the checkout is retained at {staging} "
+                    f"because moving it back failed: {restore}"
+                ) from error
+            raise ValueError(f"changed after inspection; retained: {error}") from error
+        # --force twice overrides the lock this function verified names this
+        # archive; clean() above already refused ignored or local bytes. What
+        # remains is Git's own window between the last read and this removal,
+        # the same one #522 records for branch deletion.
+        git(repo, "worktree", "remove", "--force", "--force", str(staging))
+
+    return remove
+
+
+def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=None):
+    """Remove retired checkouts past the window; never their recovery files.
+
+    Report mode (apply false) runs every check and changes nothing: it never
+    creates the archive directory and issues only reading Git commands.
+    """
+    now = now or datetime.now(timezone.utc)
+    archive_dir = archive_dir.resolve()
+    registrations, errors = {}, []
+    for repo in repos:
+        try:
+            for item in worktrees(repo):
+                path = Path(item["path"])
+                if archive_dir in path.parents:
+                    registrations[path] = (repo, item)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            errors.append(dict(repo=str(repo), reason=str(error)))
+    children = []
+    try:
+        info = archive_dir.lstat()
+    except FileNotFoundError:
+        info = None
+    if info is not None:
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("archive directory must be a private directory of the current user")
+        children = sorted(archive_dir.iterdir())
+    entries = []
+    for child in children:
+        entry = dict(archive=str(child), kind="orphan-directory", path=None, pr=None, age_days=None)
+        registration = registrations.pop(child / "worktree", None)
+        try:
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError("not an archive directory; retain for inspection")
+            if registration is not None:
+                entry["kind"] = "quarantine"
+            elif not any(os.path.lexists(child / name) for name in ("worktree", STAGING)):
+                # An expired entry, or a retirement stopped before its
+                # quarantine: only recovery files, which expiry never deletes.
+                entry.update(
+                    kind="recovery-files",
+                    disposition="kept",
+                    reason="recovery files only; expire never deletes them",
+                )
+            record, record_info = recovery_record(child)
+            entry.update(path=record["path"], pr=record["pr"])
+            moment = retired_time(record, record_info)
+            entry["age_days"] = age_days(moment, now)
+            if entry["kind"] == "recovery-files":
+                entries.append(entry)
+                continue
+            if entry["kind"] == "orphan-directory":
+                raise ValueError(
+                    "the quarantined checkout is not a registered worktree of a scanned "
+                    "repository; inspect and remove it by hand"
+                )
+            remove = expirable_quarantine(
+                registration[0],
+                child,
+                registration[1],
+                record,
+                moment,
+                now,
+                days,
+                trust_process_manager,
+            )
+            entry.update(
+                disposition="expirable",
+                reason=f"retired {entry['age_days']}d ago, past the {days}d window; the "
+                "checkout is clean and its Git metadata is archived",
+            )
+            if apply:
+                remove()
+                entry.update(
+                    disposition="expired",
+                    reason="removed the checkout and registration, kept the recovery files; "
+                    + entry["reason"],
+                )
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            if entry["kind"] != "recovery-files":
+                entry.update(disposition="retained", reason=str(error))
+            else:
+                entry["reason"] += f" ({error})"
+        entries.append(entry)
+    # What remains is registered under the archive without its entry: never
+    # removed here, since the recovery files that would back it are gone.
+    for path in sorted(registrations):
+        entries.append(
+            dict(
+                archive=str(path.parent),
+                kind="orphan-registration",
+                path=None,
+                pr=None,
+                age_days=None,
+                disposition="retained",
+                reason="registered under the archive without a matching archive entry; "
+                "inspect and remove it by hand",
+            )
+        )
+    # Kept recovery files are not retired worktrees any more.
+    live = [entry for entry in entries if entry["kind"] != "recovery-files"]
+    ages = [entry["age_days"] for entry in live if entry["age_days"] is not None]
+    return dict(
+        archive_dir=str(archive_dir),
+        older_than_days=days,
+        applied=apply,
+        entries=entries,
+        retired=len(live),
+        kept=len(entries) - len(live),
+        expirable=sum(entry["disposition"] == "expirable" for entry in entries),
+        expired=sum(entry["disposition"] == "expired" for entry in entries),
+        retained=sum(entry["disposition"] == "retained" for entry in entries),
+        oldest_days=max(ages, default=None),
+        errors=errors,
+    )
+
+
 def inventory(repo):
     output = []
     for item in worktrees(repo):
@@ -949,8 +1352,9 @@ def inventory(repo):
     )
 
 
-def inventory_root(root):
-    output, errors = [], []
+def primary_repositories(root):
+    """Primary repositories directly under root, and the children it could not read."""
+    repos, errors = [], []
     seen = set()
     for repo in sorted(root.resolve(strict=True).iterdir()):
         if repo.is_symlink():
@@ -974,6 +1378,17 @@ def inventory_root(root):
             if admin != common or common in seen:
                 continue
             seen.add(common)
+            repos.append(repo)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            errors.append(dict(repo=str(repo), reason=str(error)))
+    return repos, errors
+
+
+def inventory_root(root):
+    output = []
+    repos, errors = primary_repositories(root)
+    for repo in repos:
+        try:
             output.extend(inventory(repo)["worktrees"])
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             errors.append(dict(repo=str(repo), reason=str(error)))
@@ -987,10 +1402,16 @@ def inventory_root(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("inventory", "release", "retire"))
+    parser.add_argument("action", choices=("inventory", "release", "retire", "expire"))
     parser.add_argument("--repo", type=Path)
     parser.add_argument(
-        "--root", type=Path, help="inventory primary repositories directly under this directory"
+        "--root",
+        type=Path,
+        help="inventory or expire across primary repositories directly under this directory",
+    )
+    parser.add_argument(
+        "--older-than",
+        help="expire: only entries retired at least this many days ago, such as 30d",
     )
     parser.add_argument("--worktree", type=Path)
     parser.add_argument("--head")
@@ -1014,14 +1435,26 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        if args.action == "inventory" and args.root is not None:
+        if args.action == "expire":
+            if (args.repo is None) == (args.root is None):
+                raise ValueError("expire requires exactly one of --repo or --root")
+            if args.archive_dir is None or args.older_than is None:
+                raise ValueError("expire requires --archive-dir and --older-than")
+            days = window_days(args.older_than)
+            if args.root is not None:
+                repos, errors = primary_repositories(args.root)
+            else:
+                repos, errors = [args.repo], []
+            result = expire(repos, args.archive_dir, days, args.apply, args.trust_process_manager)
+            result["errors"] = errors + result["errors"]
+        elif args.action == "inventory" and args.root is not None:
             if args.repo is not None:
                 raise ValueError("choose --repo or --root")
             result = inventory_root(args.root)
         elif args.repo is None:
             raise ValueError("--repo is required")
         elif args.root is not None:
-            raise ValueError("--root is only supported for inventory")
+            raise ValueError("--root is only supported for inventory and expire")
         elif args.action == "inventory":
             result = inventory(args.repo)
         elif args.worktree is None:

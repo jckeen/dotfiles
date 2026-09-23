@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-09-23 — feat(worktree-lifecycle): expire retired worktrees, keep recovery files
+
+- **`worktree-lifecycle.py expire` removes retired quarantines from
+  `git worktree list`.** With `--apply` it removes the quarantined checkout and
+  its Git registration for entries retired longer ago than `--older-than`.
+  Without `--apply` it only reports, offline, one entry per archive entry with
+  a reason. Closes #562.
+- **The recovery files are permanent.** `repository.bundle`,
+  `worktree-metadata.tar` and `recovery.json` are never deleted, rewritten or
+  moved; a test pins them byte-identical across `--apply`. Nine gate rounds on
+  the first design each found another way the archive could be the only record
+  of something, so expire no longer has to prove that negative. If the archive
+  ever grows, a later command can prune recovery files from an explicit
+  operator list.
+- **Checkout-side guards.** A checkout is removed only when it is clean down to
+  raw bytes, its HEAD, lock and release record match the entry, its bundle and
+  metadata tar still hash to what retirement recorded, and its live Git
+  metadata holds nothing written since retirement (every file byte-identical
+  to the archived tar, index included, apart from retirement's own lock,
+  gitdir and head-to-head detach). It is renamed to `worktree-expiring` and
+  inspected again before `git worktree remove`. Entries without a registered
+  checkout, and registrations without an entry, are reported and left alone.
+- The daily hygiene timer runs the report only and saves it to
+  `retired-worktrees.json`; `hygiene-status.sh --status` adds a
+  `retired worktrees: N (oldest Xd, M expirable)` line, and the quiet modes
+  speak up while M > 0. Retirement now records `retired_at`.
+
 ## 2026-09-22 — fix(hooks): operator-queue reminder shows the session project in full
 
 - **`OperatorQueueReminder.hook.sh` no longer prints the whole queue into every

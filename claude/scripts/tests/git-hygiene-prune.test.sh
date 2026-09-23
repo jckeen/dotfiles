@@ -766,6 +766,32 @@ assert "HYGIENE_DELETE=0: every branch survives" "[ \"\$(branches)\" = \"$ALL\" 
 assert "HYGIENE_DELETE=0: no ntfy" "[ ! -e '$CURL_FAKE_DIR/calls' ]"
 rm -rf "$FIX" "$GH_FAKE_DIR" "$H" "$CURL_FAKE_DIR" "$SHIM_DIR"
 
+# ── hygiene-cron: retired-worktree expiry runs in report mode only (#562) ──
+# A fake worktree-lifecycle.py records each invocation's argv; the timer must
+# never pass --apply, and the report lands where hygiene-status reads it.
+build_fixture "$(mktemp -d)"
+H="$(mktemp -d)"
+mkdir -p "$H/stub/claude/scripts"
+printf '#!/usr/bin/env bash\necho "  repo — clean"\n' > "$H/stub/gh-bootstrap.sh"
+chmod +x "$H/stub/gh-bootstrap.sh"
+ln -s "$(cd -P "$(dirname "$HYGIENE")" && pwd)/git-hygiene.sh" "$H/stub/git-hygiene.sh"
+cat > "$H/stub/claude/scripts/worktree-lifecycle.py" <<'PY'
+import json, os, sys
+with open(os.path.join(os.environ["HOME"], "helper-argv"), "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+print(json.dumps({"retired": 2, "expirable": 1, "oldest_days": 40, "entries": []}))
+PY
+CURL_FAKE_DIR="$(mktemp -d)"
+HOME="$H" HYGIENE_DELETE=0 HYGIENE_DEV_DIR="$FIX/dev" HYGIENE_SCRIPT_DIR="$H/stub" "$CRON"
+argv_log="$H/helper-argv"
+assert "expire: timer runs the expire report" "grep -q '^expire ' '$argv_log'"
+assert "expire: timer never passes --apply" "! grep -q -- '--apply' '$argv_log'"
+assert "expire: report names the archive and window" \
+  "grep -q -- \"--archive-dir $H/.local/state/hygiene/worktree-archive --older-than 30d\" '$argv_log'"
+assert "expire: report saved for hygiene-status" \
+  "grep -q '\"expirable\": 1' '$H/.local/state/hygiene/retired-worktrees.json'"
+rm -rf "$FIX" "$GH_FAKE_DIR" "$H" "$CURL_FAKE_DIR"
+
 echo ""
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]
