@@ -681,8 +681,10 @@ the entry was retired at least the window ago (`retired_at` in the record, or
 for records written before that field, the record's last write); the worktree's
 own reflog, per-worktree refs (`refs/worktree`, `refs/bisect`,
 `refs/rewritten`) and any interrupted rebase, bisect, merge or cherry-pick
-state name no commit outside the merged head, nor does the Claude Code
-harness's `CLAUDE_BASE` pointer; the worktree's Git metadata, live and in
+state name no commit outside the merged head, and every loose ref file there
+is a plain object id in one of those namespaces; `ORIG_HEAD`, `FETCH_HEAD` and
+the Claude Code harness's `CLAUDE_BASE`, live or archived, name only commits
+the merged head contains or a local or remote ref reaches; the worktree's Git metadata, live and in
 `worktree-metadata.tar`, holds only Git's own per-worktree files, the release
 record, the HEAD reflog, ref directories and `review-receipts/` (evidence for
 a PR expiry has just re-verified as merged, deleted with it) — any other name

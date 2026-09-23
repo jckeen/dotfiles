@@ -2568,6 +2568,43 @@ if kind == 'writer':
         (admin / "review-receipts/receipt.json").write_text("{}\n")
         self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
 
+    def test_expire_retains_metadata_pointers_to_otherwise_unkept_commits(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        admin = self.repo / ".git/worktrees/task"
+        orphan = self.run_git(
+            self.repo,
+            "-c",
+            "user.name=F",
+            "-c",
+            "user.email=f@example.invalid",
+            "commit-tree",
+            "-m",
+            "fetched only",
+            self.head + "^{tree}",
+        ).strip()
+        for name, content in (
+            ("ORIG_HEAD", orphan + "\n"),
+            ("FETCH_HEAD", f"{orphan}\t\tbranch 'x' of elsewhere\n"),
+            ("CLAUDE_BASE", orphan + "\n"),
+            ("refs/other/stash", orphan + "\n"),
+            ("refs/worktree/note", "not an object id\n"),
+        ):
+            with self.subTest(name=name):
+                path = admin / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                previous = path.read_bytes() if path.exists() else None
+                path.write_text(content)
+                item = self.entry(self.expire("--apply"), archive)
+                self.assertEqual(item["disposition"], "retained", item)
+                if previous is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(previous)
+        # A pointer to a commit a ref keeps is ordinary.
+        (admin / "ORIG_HEAD").write_text(self.run_git(self.repo, "rev-parse", "main"))
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
     def test_expire_rechecks_an_orphan_checkout_is_still_absent(self):
         from functools import partial
         from unittest.mock import patch

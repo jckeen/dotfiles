@@ -1046,16 +1046,24 @@ def check_held_metadata(repo, admin, head):
         "refs/rewritten",
     )
     oids.update(text(refs).split())
-    # The harness's base pointer is metadata expiry deletes, so what it names
-    # must be contained too.
-    try:
-        base = (admin / "CLAUDE_BASE").read_text().strip()
-    except FileNotFoundError:
-        base = None
-    if base is not None:
-        if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", base):
-            raise ValueError("unparseable CLAUDE_BASE in worktree metadata; retain worktree")
-        oids.add(base)
+
+    # Git ignores a malformed or out-of-namespace ref file with a warning, so
+    # read every loose ref file directly as well: each must be one object id
+    # in a per-worktree namespace.
+    def scan_error(error):
+        raise error
+
+    walk = os.walk(admin / "refs", followlinks=False, onerror=scan_error)
+    for directory, _, files in walk if (admin / "refs").is_dir() else ():
+        for name in files:
+            path = Path(directory) / name
+            relative = path.relative_to(admin).as_posix()
+            if not relative.startswith(("refs/worktree/", "refs/bisect/", "refs/rewritten/")):
+                raise ValueError(f"unexpected ref in worktree metadata ({relative}); retain")
+            content = path.read_bytes().strip()
+            if not re.fullmatch(rb"[a-f0-9]{40}|[a-f0-9]{64}", content):
+                raise ValueError(f"unparseable ref in worktree metadata ({relative}); retain")
+            oids.add(content.decode())
     for oid in sorted(oids):
         try:
             git(repo, "merge-base", "--is-ancestor", oid, head)
@@ -1137,7 +1145,6 @@ METADATA_FILES = {
     "HEAD",
     "ORIG_HEAD",
     "FETCH_HEAD",
-    "AUTO_MERGE",
     "COMMIT_EDITMSG",
     "commondir",
     "gitdir",
@@ -1177,26 +1184,32 @@ def check_metadata_names(admin=None, archive=None):
             for name in dirs + files:
                 path = Path(directory) / name
                 relative = path.relative_to(admin).as_posix()
-                if relative.startswith("refs/") and not path.is_dir():
-                    continue  # checked by check_held_metadata
-                if not metadata_name_allowed(relative, stat.S_ISDIR(path.lstat().st_mode)):
+                mode = path.lstat().st_mode
+                if relative.startswith("refs/") and stat.S_ISREG(mode):
+                    continue  # each is read and validated by check_held_metadata
+                if not metadata_name_allowed(relative, stat.S_ISDIR(mode)):
                     refuse(relative)
+    pointers = []
     if archive is not None:
         try:
             with tarfile.open(archive / "worktree-metadata.tar") as saved:
-                members = saved.getmembers()
+                for member in saved.getmembers():
+                    if member.name == "worktree-metadata":
+                        continue
+                    relative = member.name.removeprefix("worktree-metadata/")
+                    if (
+                        relative == member.name
+                        or not (member.isdir() or member.isfile())
+                        or not metadata_name_allowed(relative, member.isdir())
+                    ):
+                        refuse(relative)
+                    if relative in POINTER_FILES:
+                        with saved.extractfile(member) as stream:
+                            pointers.extend(pointer_oids(relative, stream.read()))
         except (OSError, tarfile.TarError) as error:
             raise ValueError("cannot read worktree-metadata.tar; retain for inspection") from error
-        for member in members:
-            if member.name == "worktree-metadata":
-                continue
-            relative = member.name.removeprefix("worktree-metadata/")
-            if (
-                relative == member.name
-                or not (member.isdir() or member.isfile())
-                or not metadata_name_allowed(relative, member.isdir())
-            ):
-                refuse(relative)
+    # The archived pointers, for check_pointers once the remote is proven.
+    return pointers
 
 
 def decide_bundles(candidates, sources, tips):
@@ -1253,6 +1266,65 @@ def still_registered(repo, path, head, lock):
         raise ValueError("the worktree changed after inspection; retained")
 
 
+# Metadata files that name commits. Expiry deletes them with the worktree, so
+# what they name must survive elsewhere (see check_pointers).
+POINTER_FILES = ("ORIG_HEAD", "FETCH_HEAD", "CLAUDE_BASE")
+
+
+def pointer_oids(name, data):
+    """Object ids a pointer file names: the first field of each line."""
+    oids = []
+    for line in data.decode(errors="replace").splitlines():
+        field = line.split("\t", 1)[0].strip()
+        if not field:
+            continue
+        if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", field):
+            raise ValueError(f"unparseable {name} in worktree metadata; retain")
+        oids.append((name, field))
+    return oids
+
+
+def live_pointers(admin):
+    pointers = []
+    for name in POINTER_FILES:
+        try:
+            data = (admin / name).read_bytes()
+        except FileNotFoundError:
+            continue
+        pointers.extend(pointer_oids(name, data))
+    return pointers
+
+
+def check_pointers(repo, pointers, head, tips):
+    """Retain an entry whose metadata names a commit nothing else keeps.
+
+    A pointer is ordinary when its commit is contained in the merged head or
+    reachable from a local or remote ref; a missing object cannot be proven
+    kept and retains too.
+    """
+    known = None
+    for name, oid in sorted(set(pointers)):
+        try:
+            git(repo, "merge-base", "--is-ancestor", oid, head)
+            continue
+        except ValueError:
+            pass
+        if known is None:
+            query = "".join(tip + "\n" for tip in sorted(tips)).encode()
+            rows = text(git(repo, "cat-file", "--batch-check=%(objectname)", stdin=query))
+            known = [row for row in rows.splitlines() if " " not in row]
+        try:
+            revs = "".join(line + "\n" for line in [oid, "--not", *known]).encode()
+            unkept = text(git(repo, "rev-list", "--stdin", stdin=revs)).strip()
+        except ValueError:
+            unkept = oid
+        if unkept:
+            raise ValueError(
+                f"{name} names commit {oid}, which no ref, remote ref or the merged head "
+                "keeps; retain for inspection"
+            )
+
+
 def registered_admin(repo, path):
     """The metadata directory of a registration whose checkout is gone."""
     common = Path(text(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")))
@@ -1283,7 +1355,7 @@ def remove_archive(archive):
     archive.rmdir()
 
 
-def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
+def expirable_quarantine(repo, archive, item, record, moment, now, days, trust, tips):
     quarantine = archive / "worktree"
     if record.get("quarantine") != str(quarantine):
         raise ValueError("recovery.json names a different quarantine; retain for inspection")
@@ -1311,10 +1383,11 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
     check_held_metadata(repo, admin, head)
     clean(quarantine)
     check_admin_metadata(admin)
-    check_metadata_names(admin=admin, archive=archive)
+    pointers = live_pointers(admin) + check_metadata_names(admin=admin, archive=archive)
     active_processes(quarantine, trust_process_manager=trust)
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, record, head)
+    check_pointers(repo, pointers, head, tips(repo))
     lock = QUARANTINE_LOCK + str(archive)
 
     def remove():
@@ -1325,6 +1398,7 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
         still_registered(repo, quarantine, head, lock)
         check_held_metadata(repo, admin, head)
         check_metadata_names(admin=admin)
+        check_pointers(repo, live_pointers(admin), head, tips(repo))
         clean(quarantine)
         active_processes(quarantine, trust_process_manager=trust)
         active_processes(admin, trust_process_manager=trust)
@@ -1336,7 +1410,7 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
     return remove
 
 
-def expirable_partial(archive, record, repo, moment, now, days):
+def expirable_partial(archive, record, repo, moment, now, days, tips):
     extra = sorted(set(os.listdir(archive)) - set(ARCHIVE_FILES))
     if extra:
         raise ValueError("unexpected archive content, retain for inspection: " + ", ".join(extra))
@@ -1346,12 +1420,13 @@ def expirable_partial(archive, record, repo, moment, now, days):
             "and head in a scanned repository; retain for inspection"
         )
     check_window(moment, now, days)
-    check_metadata_names(archive=archive)
+    pointers = check_metadata_names(archive=archive)
     verify_integration(repo, record, record["head"])
+    check_pointers(repo, pointers, record["head"], tips(repo))
     return lambda: remove_archive(archive)
 
 
-def expirable_registration(repo, archive_dir, item, now, days, trust):
+def expirable_registration(repo, archive_dir, item, now, days, trust, tips):
     path = Path(item["path"])
     archive = path.parent
     if path.name != "worktree" or archive.parent != archive_dir or os.path.lexists(archive):
@@ -1374,6 +1449,7 @@ def expirable_registration(repo, archive_dir, item, now, days, trust):
     check_metadata_names(admin=admin)
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, release, head)
+    check_pointers(repo, live_pointers(admin), head, tips(repo))
 
     lock = QUARANTINE_LOCK + str(archive)
 
@@ -1385,6 +1461,7 @@ def expirable_registration(repo, archive_dir, item, now, days, trust):
         still_registered(repo, path, head, lock)
         check_held_metadata(repo, admin, head)
         check_metadata_names(admin=admin)
+        check_pointers(repo, live_pointers(admin), head, tips(repo))
         active_processes(admin, trust_process_manager=trust)
         git(repo, "worktree", "remove", "--force", "--force", str(path))
 
@@ -1477,6 +1554,7 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
                     now,
                     days,
                     trust_process_manager,
+                    tips,
                 )
             elif entry["kind"] == "orphan-directory":
                 repo = commons.get(metadata.parent.parent.resolve())
@@ -1496,7 +1574,7 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
                 superseding = repo
                 if repo is None:
                     repo = commons.get(metadata.parent.parent.resolve())
-                remove = expirable_partial(child, record, superseding, moment, now, days)
+                remove = expirable_partial(child, record, superseding, moment, now, days, tips)
             entry.update(
                 disposition="expirable",
                 reason=f"PR #{record['pr']} merged and retired {entry['age_days']}d ago, "
@@ -1527,7 +1605,7 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
         )
         try:
             release, moment, remove = expirable_registration(
-                repo, archive_dir, item, now, days, trust_process_manager
+                repo, archive_dir, item, now, days, trust_process_manager, tips
             )
             entry.update(
                 path=release.get("path"),
