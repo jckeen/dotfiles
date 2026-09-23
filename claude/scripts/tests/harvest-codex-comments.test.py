@@ -95,6 +95,9 @@ elif endpoint == base + "issues" and method == "POST":
     status = config.get("status", 201) if labeled else 201
     body = config.get("body") if labeled else None
     exit_code = config.get("exit", 0 if status == 201 else 1) if labeled else 0
+    if config.get("reject_label") in labels:
+        status, exit_code = 422, 1
+        body = {"errors": [{"resource": "Label", "field": "name", "code": "invalid"}]}
     if status == 201 and exit_code == 0:
         num = state["next"]
         state["next"] += 1
@@ -310,7 +313,7 @@ class HarvestTests(unittest.TestCase):
             {
                 "number": 55,
                 "state": "closed",
-                "labels": [],
+                "labels": ["codex-finding"],
                 "body": "- [x] handled\n<!-- codex-comment-id:example/repo#1:123 -->\n" + PR_MARKER,
             }
         )
@@ -323,14 +326,14 @@ class HarvestTests(unittest.TestCase):
 
     def test_unreadable_existing_body_writes_nothing(self):
         h = self.harness()
-        h.seed({"number": 55, "state": "open", "labels": [], "body": PR_MARKER})
+        h.seed({"number": 55, "state": "open", "labels": ["codex-finding"], "body": PR_MARKER})
         calls, result = h.run(comments=[comment(456)], get_body_fail=True)
         self.assertEqual(calls, [])
         self.assertIn("could not read", result.stderr)
 
     def test_dry_run_append_writes_nothing(self):
         h = self.harness()
-        h.seed({"number": 55, "state": "open", "labels": [], "body": PR_MARKER})
+        h.seed({"number": 55, "state": "open", "labels": ["codex-finding"], "body": PR_MARKER})
         calls, result = h.run("--dry-run", comments=[comment(456)])
         self.assertEqual(calls, [])
         self.assertIn("would append 1 item(s) to #55", result.stdout)
@@ -341,7 +344,7 @@ class HarvestTests(unittest.TestCase):
             {
                 "number": 9,
                 "state": "open",
-                "labels": [],
+                "labels": ["codex-finding"],
                 "body": "<!-- codex-comment-id:example/repo#1:1234 -->\n"
                 "<!-- codex-review-pr:example/repo#12 -->",
             }
@@ -360,7 +363,7 @@ class HarvestTests(unittest.TestCase):
     def test_append_rechecks_markers_in_the_live_body(self):
         """A concurrent harvest appended after this run's prefetch: add nothing twice."""
         h = self.harness()
-        h.seed({"number": 55, "state": "open", "labels": [], "body": PR_MARKER})
+        h.seed({"number": 55, "state": "open", "labels": ["codex-finding"], "body": PR_MARKER})
         live = PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:456 -->"
         calls, _ = h.run(comments=[comment(456)], live_body=live)
         self.assertEqual(calls, [])
@@ -389,7 +392,14 @@ class HarvestTests(unittest.TestCase):
 
     def test_full_existing_issue_gets_a_continuation(self):
         h = self.harness()
-        h.seed({"number": 55, "state": "open", "labels": [], "body": "z" * 2900 + PR_MARKER})
+        h.seed(
+            {
+                "number": 55,
+                "state": "open",
+                "labels": ["codex-finding"],
+                "body": "z" * 2900 + PR_MARKER,
+            }
+        )
         calls, _ = h.run(comments=[comment(456)], budget=3000)
         self.assertEqual([c["kind"] for c in calls], ["create"])
         self.assertTrue(calls[0]["title"].startswith("Codex review of #1 (continued): "))
@@ -402,7 +412,14 @@ class HarvestTests(unittest.TestCase):
         self.assertLessEqual(len(calls[0]["title"]), 256)
         self.assertTrue(calls[0]["title"].startswith("Codex review of #1: ttt"))
         self.assertTrue(calls[0]["title"].endswith("…"))
-        h.seed({"number": 55, "state": "open", "labels": [], "body": "z" * 2950 + PR_MARKER})
+        h.seed(
+            {
+                "number": 55,
+                "state": "open",
+                "labels": ["codex-finding"],
+                "body": "z" * 2950 + PR_MARKER,
+            }
+        )
         calls, _ = h.run(comments=[comment(456)], title="t" * 300, budget=3000)
         self.assertLessEqual(len(calls[0]["title"]), 256)
         self.assertIn("(continued)", calls[0]["title"])
@@ -429,7 +446,9 @@ class HarvestTests(unittest.TestCase):
         h.run(comments=[comment(123)])
         before = h.issues()[0]["body"]
         h.run(comments=[comment(123), comment(456)])
-        h.seed({"number": 100, "state": "open", "labels": [], "body": before})  # overwritten
+        h.seed(
+            {"number": 100, "state": "open", "labels": ["codex-finding"], "body": before}
+        )  # overwritten
         calls, _ = h.run(comments=[comment(123), comment(456)])
         self.assertEqual([c["kind"] for c in calls], ["patch"])
         self.assertEqual(h.issues()[0]["body"].count("codex-comment-id:example/repo#1:456 "), 1)
@@ -457,7 +476,7 @@ class HarvestTests(unittest.TestCase):
 
     def test_instruction_surface_label_added_on_append(self):
         h = self.harness()
-        h.seed({"number": 55, "state": "open", "labels": [], "body": PR_MARKER})
+        h.seed({"number": 55, "state": "open", "labels": ["codex-finding"], "body": PR_MARKER})
         calls, _ = h.run(comments=[comment(456, path="AGENTS.md")])
         self.assertEqual([c["kind"] for c in calls], ["patch", "label"])
         self.assertEqual(calls[1]["labels"], ["instruction-surface"])
@@ -468,7 +487,7 @@ class HarvestTests(unittest.TestCase):
             {
                 "number": 55,
                 "state": "open",
-                "labels": [],
+                "labels": ["codex-finding"],
                 "body": PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:456 -->",
             }
         )
@@ -476,6 +495,44 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual([c["kind"] for c in calls], ["label"])
         calls, _ = h.run(comments=[comment(456, path="AGENTS.md")])
         self.assertEqual(calls, [])
+
+    def test_rejected_surface_label_keeps_codex_finding(self):
+        h = self.harness()
+        calls, _ = h.run(
+            comments=[comment(123, path="AGENTS.md")], reject_label="instruction-surface"
+        )
+        self.assertEqual(
+            [c["labels"] for c in calls],
+            [["codex-finding", "instruction-surface"], ["codex-finding"]],
+        )
+        self.assertEqual(h.issues()[0]["labels"], ["codex-finding"])
+        calls, _ = h.run(comments=[comment(123, path="AGENTS.md")])
+        self.assertEqual(
+            [(c["kind"], c["labels"]) for c in calls], [("label", ["instruction-surface"])]
+        )
+
+    def test_labels_are_repaired_on_every_issue_of_the_pr(self):
+        h = self.harness()
+        h.seed(
+            {
+                "number": 55,
+                "state": "open",
+                "labels": [],
+                "body": PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:456 -->",
+            },
+            {
+                "number": 56,
+                "state": "open",
+                "labels": ["codex-finding"],
+                "body": PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:789 -->",
+            },
+        )
+        calls, _ = h.run(comments=[comment(456, path="AGENTS.md"), comment(789)])
+        got = sorted((c["number"], sorted(c["labels"])) for c in calls if c["kind"] == "label")
+        self.assertEqual(
+            got, [(55, ["codex-finding", "instruction-surface"]), (56, ["instruction-surface"])]
+        )
+        self.assertEqual([c for c in calls if c["kind"] != "label"], [])
 
     def test_instruction_surface_regex_matches_gate(self):
         gate = re.search(r"grep -qE '([^']+)' <<<\"\$CHANGED_PATHS\"", GATE.read_text())

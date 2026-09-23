@@ -183,11 +183,13 @@ existing_bodies="$GATE_ISSUE_INDEX"
 # Markers include the closing ` -->`, so `#1` never matches `#12` and comment
 # 123 never matches 1234.
 pr_marker="<!-- codex-review-pr:${REPO}#${PR} -->"
-existing_num="" existing_state=""
+# The index is newest-first, so the first match is the issue appends go to;
+# PR_ISSUES keeps every match (continuations included) for label repair.
+existing_num="" existing_state="" PR_ISSUES=()
 while IFS=$'\t' read -r num state _reason ibody_row; do
   if [[ "$ibody_row" == *"$pr_marker"* ]]; then
-    existing_num="$num" existing_state="$state"
-    break
+    PR_ISSUES+=("$num")
+    [[ -z "$existing_num" ]] && existing_num="$num" existing_state="$state"
   fi
 done <<<"$existing_bodies"
 
@@ -227,7 +229,7 @@ for rec in "${COMMENTS[@]}"; do
   fi
 
   # Computed over tracked comments too, so a label that failed to apply on an
-  # earlier run is repaired on the next one (ensure_surface_label below).
+  # earlier run is repaired on the next one (ensure_labels below).
   if grep -qE "$INSTRUCTION_SURFACE_RE" <<<"$path"; then
     surface_any=true
   fi
@@ -299,24 +301,32 @@ pack_items() {
 }
 consume_packed() { pending=("${pending[@]:PACKED_N}"); }
 
-# ensure_surface_label <issue> — add `instruction-surface` when this PR has a
-# comment on the gate's instruction surface and the issue lacks the label.
-# Checked every run (a read; the write only when missing), because the label
-# is a separate call after the body edit and a failed one would otherwise
-# never be retried: the comments it belongs to are already tracked.
-ensure_surface_label() {
-  [[ "$surface_any" == "true" && "$DRY_RUN" != "true" ]] || return 0
-  local have
-  if ! have="$(gh api "repos/$REPO/issues/$1" --jq '.labels[].name' 2>/dev/null)"; then
-    warn "  ⚠ could not read the labels of #$1"
-    return 0
-  fi
-  grep -qxF instruction-surface <<<"$have" && return 0
-  if gh api "repos/$REPO/issues/$1/labels" -f 'labels[]=instruction-surface' >/dev/null 2>&1; then
-    echo "  ✓ labelled #$1 instruction-surface"
-  else
-    warn "  ⚠ could not add label instruction-surface to #$1"
-  fi
+# ensure_labels — give every issue carrying this PR's marker (continuations
+# included) each label in `labels` it lacks: `codex-finding` always, and
+# `instruction-surface` when any of the PR's comments is on the gate's
+# instruction surface. Checked every run (a read per issue; a write only when
+# something is missing), because a label that failed at create time or in a
+# separate add would otherwise never be retried: the comments it belongs to
+# are already tracked, so no later run has anything new to file.
+ensure_labels() {
+  [[ "$DRY_RUN" != "true" ]] || return 0
+  local n have l missing
+  for n in "${PR_ISSUES[@]}"; do
+    if ! have="$(gh api "repos/$REPO/issues/$n" --jq '.labels[].name' 2>/dev/null)"; then
+      warn "  ⚠ could not read the labels of #$n"
+      continue
+    fi
+    missing=()
+    for l in "${labels[@]}"; do
+      grep -qxF "$l" <<<"$have" || missing+=(-f "labels[]=$l")
+    done
+    [[ "${#missing[@]}" -eq 0 ]] && continue
+    if gh api "repos/$REPO/issues/$n/labels" "${missing[@]}" >/dev/null 2>&1; then
+      echo "  ✓ repaired labels on #$n"
+    else
+      warn "  ⚠ could not add labels to #$n"
+    fi
+  done
 }
 
 summary() {
@@ -357,7 +367,17 @@ create_issue() {
          (.resource == "Label" and .field == "name")) and
         (.code == "invalid" or .code == "missing" or .code == "missing_field"))
     ' <<<"$response_body" >/dev/null 2>&1; then
-    url="$(jq -c 'del(.labels)' <<<"$payload" | gh api "repos/$REPO/issues" --input - --jq '.html_url' 2>/dev/null)" || url=""
+    # Retry with `codex-finding` alone first when more was asked for, so a
+    # rejected `instruction-surface` never costs the janitor's label; drop
+    # labels entirely only if that is rejected too. ensure_labels restores
+    # what is missing on a later run.
+    url=""
+    if [[ "${#labels[@]}" -gt 1 ]]; then
+      url="$(jq -c '.labels = ["codex-finding"]' <<<"$payload" | gh api "repos/$REPO/issues" --input - --jq '.html_url' 2>/dev/null)" || url=""
+    fi
+    if [[ -z "$url" ]]; then
+      url="$(jq -c 'del(.labels)' <<<"$payload" | gh api "repos/$REPO/issues" --input - --jq '.html_url' 2>/dev/null)" || url=""
+    fi
   else
     url=""
   fi
@@ -400,7 +420,7 @@ preamble="Filed by harvest-codex-comments — the GitHub Codex bot's inline revi
 "
 
 if [[ "$new_count" -eq 0 ]]; then
-  [[ -n "$existing_num" ]] && ensure_surface_label "$existing_num"
+  ensure_labels
   summary "nothing new"
   exit 0
 fi
@@ -460,7 +480,7 @@ if [[ -n "$existing_num" ]]; then
   done
   pending=("${fresh_pending[@]}")
   if [[ "${#pending[@]}" -eq 0 ]]; then
-    ensure_surface_label "$existing_num"
+    ensure_labels
     summary "nothing new after re-reading #$existing_num"
     exit 0
   fi
@@ -481,7 +501,7 @@ if [[ -n "$existing_num" ]]; then
     [[ "$existing_state" == "closed" ]] && reopened=" (reopened)"
     echo "  ✓ appended $PACKED_N item(s) to #$existing_num$reopened"
   fi
-  ensure_surface_label "$existing_num"
+  ensure_labels
 fi
 
 # ── File consolidated issues for whatever is still pending ─────────────
