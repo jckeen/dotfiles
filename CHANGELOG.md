@@ -18,8 +18,8 @@
   raw bytes, its HEAD, lock and release record match the entry, its bundle and
   metadata tar still hash to what retirement recorded, and its live Git
   metadata holds nothing written since retirement (every file byte-identical
-  to the archived tar, apart from retirement's own lock, gitdir, detach and
-  the index clean() checks). It is renamed to `worktree-expiring` and
+  to the archived tar, index included, apart from retirement's own lock,
+  gitdir and head-to-head detach). It is renamed to `worktree-expiring` and
   inspected again before `git worktree remove`. Entries without a registered
   checkout, and registrations without an entry, are reported and left alone.
 - The daily hygiene timer runs the report only and saves it to

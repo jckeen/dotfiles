@@ -2567,11 +2567,15 @@ if kind == 'writer':
         # recorded head, as retirement's own detach does.
         log = admin / "logs/HEAD"
         previous = log.read_bytes()
-        with log.open("ab") as stream:
-            stream.write(f"{self.head} {orphan} F <f@example.invalid> 0 +0000\tx\n".encode())
-        item = self.entry(self.expire("--apply"), archive)
-        self.assertIn("logs/HEAD recorded a commit other than the recorded head", item["reason"])
-        log.write_bytes(previous)
+        for old, new in ((self.head, orphan), (orphan, self.head)):
+            with self.subTest(reflog=f"{old[:7]} -> {new[:7]}"):
+                with log.open("ab") as stream:
+                    stream.write(f"{old} {new} F <f@example.invalid> 0 +0000\tx\n".encode())
+                item = self.entry(self.expire("--apply"), archive)
+                self.assertIn(
+                    "logs/HEAD recorded a commit other than the recorded head", item["reason"]
+                )
+                log.write_bytes(previous)
         with log.open("ab") as stream:
             stream.write(f"{self.head} {self.head} F <f@example.invalid> 0 +0000\tx\n".encode())
         # Empty directories hold nothing; with every file restored the entry

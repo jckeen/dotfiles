@@ -701,9 +701,11 @@ A quarantine is expirable only when all of these hold:
 - The worktree's Git metadata holds nothing written since retirement. Every
   file must be byte-identical to its copy in `worktree-metadata.tar`, with
   exceptions only for retirement's own later writes: the lock, the repaired
-  `gitdir`, HEAD at the recorded head and reflog lines that move it there, and
-  the index checked above. A later commit, `ORIG_HEAD`, per-worktree ref,
-  interrupted rebase, Git lock file or any new name retains the entry.
+  `gitdir`, HEAD at the recorded head and reflog lines from that head to
+  itself (retirement's detach). The index must match its archived copy too,
+  so even an index refresh retains the entry, as do a later commit,
+  `ORIG_HEAD`, a per-worktree ref, an interrupted rebase, a Git lock file or
+  any new name.
 - No same-user process holds the checkout or its metadata.
 
 The PR's merge is not re-verified. Retirement proved it, and the bundle that

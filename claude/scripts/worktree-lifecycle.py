@@ -1027,9 +1027,9 @@ def check_metadata_archived(admin, archive, head):
     retirement is in the archived tar, which expiry keeps, so removal can lose
     only what was written since. Retirement's own later writes are allowed: the
     lock, the repaired `gitdir` pointer, HEAD detached at the recorded head and
-    the reflog lines that moved it there. The index is allowed to differ
-    because clean() requires it to match HEAD's tree exactly. Every other file
-    must be byte-identical to its archived copy, and no other name may appear.
+    reflog lines from the recorded head to itself; neither the lock reason nor
+    the gitdir path holds work. Every other file, the index included, must be
+    byte-identical to its archived copy, and no other name may appear.
     """
     try:
         with tarfile.open(
@@ -1065,7 +1065,7 @@ def check_metadata_archived(admin, archive, head):
                 continue
             if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
                 refuse(relative, "is a special file created or changed")
-            if relative in ("locked", "gitdir", "index"):
+            if relative in ("locked", "gitdir"):
                 if not stat.S_ISREG(info.st_mode):
                     refuse(relative, "changed type")
                 continue
@@ -1077,9 +1077,10 @@ def check_metadata_archived(admin, archive, head):
                 live, old = read_regular(path), content or b""
                 if not live.startswith(old):
                     refuse(relative, "was rewritten")
+                # Retirement's detach logs head -> head. A line naming any
+                # other commit on either side may be its last reference.
                 for line in live[len(old) :].splitlines():
-                    fields = line.split(b" ")
-                    if len(fields) < 2 or fields[1] != head.encode():
+                    if line.split(b" ")[:2] != [head.encode(), head.encode()]:
                         refuse(relative, "recorded a commit other than the recorded head")
                 continue
             if member is None:
