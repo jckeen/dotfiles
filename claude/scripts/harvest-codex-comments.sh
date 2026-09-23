@@ -361,10 +361,19 @@ title_for() {  # title_for <continued:true|false>
     pr_title="${pr_title//$'\n'/ }"
     pr_title="${pr_title:-(title unavailable)}"
   fi
+  local prefix room
   if [[ "$1" == "true" ]]; then
-    printf 'Codex review of #%s (continued): %s' "$PR" "$pr_title"
+    prefix="Codex review of #${PR} (continued): "
   else
-    printf 'Codex review of #%s: %s' "$PR" "$pr_title"
+    prefix="Codex review of #${PR}: "
+  fi
+  # GitHub caps an issue title at 256 characters and rejects a longer one, which
+  # would fail every later run the same way; a PR title can already be 256.
+  room=$((256 - ${#prefix}))
+  if [[ "${#pr_title}" -gt "$room" ]]; then
+    printf '%s%s…' "$prefix" "${pr_title:0:room-1}"
+  else
+    printf '%s%s' "$prefix" "$pr_title"
   fi
 }
 
@@ -406,9 +415,9 @@ if [[ -n "$existing_num" ]]; then
   # between this read and the PATCH below can still drop an item or an
   # operator's tick. The design converges anyway: dedup reads markers from the
   # bodies, so a dropped item is simply absent and the next run appends it
-  # again (the tests pin this). The close-time workflow serializes its own
-  # runs with a concurrency group; only a nightly run landing in the same
-  # second can race it.
+  # again (the tests pin this). The close-time workflow serializes its runs
+  # for one PR with a concurrency group; only a nightly run landing in the
+  # same second can race it.
   if ! current="$(gh api "repos/$REPO/issues/$existing_num" --jq '.body // ""' 2>/dev/null)"; then
     warn "  ⚠ could not read #$existing_num to append $new_count item(s) — nothing written."
     exit 0

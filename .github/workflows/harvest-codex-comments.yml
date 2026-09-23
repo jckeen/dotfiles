@@ -22,11 +22,12 @@ permissions:
   issues: write # file or append to the consolidated issue, apply its labels
   pull-requests: read # list the PR's review comments and read its title
 
-# One harvest at a time per repository: two runs appending to the same issue
-# body could otherwise drop each other's items until the next run restores
-# them. Queued, never cancelled — every merged PR needs its own harvest.
+# One harvest at a time per PR: two runs appending to the same issue body could
+# drop each other's items until the next run restores them. Keyed by PR, not
+# repository — different PRs write different issues, and a repository-wide
+# group would let a newer pending run replace an older one and lose its harvest.
 concurrency:
-  group: harvest-codex-comments-${{ github.repository }}
+  group: harvest-codex-comments-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:

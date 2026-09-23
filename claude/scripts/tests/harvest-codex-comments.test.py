@@ -391,6 +391,17 @@ class HarvestTests(unittest.TestCase):
         calls, _ = h.run(comments=[comment(456), comment(789)], budget=3000)
         self.assertEqual([(c["kind"], c.get("number")) for c in calls], [("patch", 100)])
 
+    def test_long_pr_title_is_bounded(self):
+        h = self.harness()
+        calls, _ = h.run(comments=[comment(123)], title="t" * 300)
+        self.assertLessEqual(len(calls[0]["title"]), 256)
+        self.assertTrue(calls[0]["title"].startswith("Codex review of #1: ttt"))
+        self.assertTrue(calls[0]["title"].endswith("…"))
+        h.seed({"number": 55, "state": "open", "labels": [], "body": "z" * 2950 + PR_MARKER})
+        calls, _ = h.run(comments=[comment(456)], title="t" * 300, budget=3000)
+        self.assertLessEqual(len(calls[0]["title"]), 256)
+        self.assertIn("(continued)", calls[0]["title"])
+
     def test_failed_comment_fetch_is_reported(self):
         calls, result = self.harness().run(comments_fail=True)
         self.assertEqual(calls, [])
