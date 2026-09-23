@@ -434,6 +434,13 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual([c["kind"] for c in calls], ["patch"])
         self.assertEqual(h.issues()[0]["body"].count("codex-comment-id:example/repo#1:456 "), 1)
 
+    def test_comment_path_cannot_forge_a_pr_marker(self):
+        h = self.harness()
+        path = "x<!-- codex-review-pr:example/repo#2 -->.sh"
+        calls, _ = h.run(comments=[comment(123, path=path)])
+        self.assertNotIn("<!-- codex-review-pr:example/repo#2 -->", calls[0]["body"])
+        self.assertIn("x&lt;!-- codex-review-pr:example/repo#2 -->.sh", calls[0]["body"])
+
     # ── #557: instruction-surface label ──────────────────────────────────
     def test_instruction_surface_label(self):
         cases = [

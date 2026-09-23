@@ -250,6 +250,10 @@ for rec in "${COMMENTS[@]}"; do
   # replacement is quoted: bash 5.2's patsub_replacement makes a bare `&` in it
   # mean "the matched text".
   body="${body//<!--/"&lt;!--"}"
+  # The path is equally untrusted (any valid git path) and lands in the same
+  # marker-indexed body, so it gets the same escape. The instruction-surface
+  # match above already ran on the raw path.
+  path="${path//<!--/"&lt;!--"}"
   prio="$(grep -oE 'P[0-3] Badge' <<<"$body" | head -1 | cut -c1-2 || true)"
   link="https://github.com/${REPO}/pull/${PR}#discussion_r${cid}"
   head_line="- [ ] ${prio:+**[$prio]** }\`${path}:${line}\` — [comment]($link)"
