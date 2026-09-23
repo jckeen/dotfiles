@@ -2693,6 +2693,39 @@ if kind == 'writer':
         self.assertEqual(item["disposition"], "retained", item)
         self.assertIn("bundle", item["reason"])
 
+    def test_expire_never_blocks_on_a_special_file_it_reads(self):
+        # Report mode runs from the timer; every file expire reads from an
+        # archive entry or worktree metadata must refuse a FIFO, not hang.
+        archive = self.retired()
+        self.age(archive, 40)
+        admin = self.repo / ".git/worktrees/task"
+        (admin / "refs/worktree").mkdir(parents=True, exist_ok=True)
+        for path in (
+            archive / "worktree-metadata.tar",
+            archive / "recovery.json",
+            admin / "logs/HEAD",
+            admin / "refs/worktree/note",
+            admin / "ORIG_HEAD",
+            admin / "FETCH_HEAD",
+            admin / "CLAUDE_BASE",
+            admin / "worktree-release.json",
+        ):
+            with self.subTest(path=path.name):
+                saved = path.read_bytes() if path.exists() else None
+                mode = path.stat().st_mode if path.exists() else None
+                path.unlink(missing_ok=True)
+                os.mkfifo(path, 0o600)
+                try:
+                    item = self.entry(self.expire(), archive)
+                    self.assertEqual(item["disposition"], "retained", item)
+                    self.assertTrue(item["reason"], item)
+                finally:
+                    path.unlink()
+                    if saved is not None:
+                        path.write_bytes(saved)
+                        os.chmod(path, stat.S_IMODE(mode))
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
     def test_expire_renames_a_dirty_staging_checkout_back(self):
         archive = self.retired()
         self.age(archive, 40)

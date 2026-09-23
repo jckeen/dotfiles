@@ -717,8 +717,13 @@ once more, since a commit made through the unchanged Git metadata during that
 inspection leaves the checkout clean; anything found moves it back to
 `worktree` and retains the entry. The window left between that last read and
 the removal is Git's own, the same one #522 records for branch deletion.
-Bundles are opened non-blocking after an `lstat` regular-file check, so a
-FIFO in an archive cannot hang the timer's report run.
+Every file expire reads from an archive entry or from worktree metadata (the
+bundle, the metadata tar, `recovery.json`, the release record, the HEAD reflog,
+loose refs, pointer files and `gitdir`) goes through one reader that requires a
+regular file by `lstat`, opens it non-blocking without following links, and
+checks it again by `fstat`. Loose refs are read this way before Git is allowed
+to open them. A FIFO or other special file therefore retains the entry with a
+reason; it cannot hang the timer's report run.
 Only then does it run `git worktree remove --force --force` on it from the
 primary checkout (refusing when the current directory is inside it), unlinks
 exactly `recovery.json`, `repository.bundle` and `worktree-metadata.tar`, and

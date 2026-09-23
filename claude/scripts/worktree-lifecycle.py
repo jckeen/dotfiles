@@ -25,6 +25,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -102,6 +103,23 @@ def text(data):
     return os.fsdecode(data.removesuffix(b"\n"))
 
 
+def read_regular(path, single_link=False):
+    """The bytes of a regular file, never blocking on or following a special one.
+
+    Archive entries and worktree metadata are read from the hygiene timer's
+    report run, which no subprocess timeout covers: a FIFO in place of any of
+    these files would otherwise hang it. A missing file raises
+    FileNotFoundError, as a plain read does.
+    """
+    if not stat.S_ISREG(Path(path).lstat().st_mode):
+        raise ValueError(f"not a regular file, retain for inspection: {path}")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or (single_link and info.st_nlink != 1):
+            raise ValueError(f"not a singly linked regular file, retain for inspection: {path}")
+        return stream.read()
+
+
 def worktrees(repo):
     items = []
     for block in git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0\0"):
@@ -135,7 +153,7 @@ def marker(admin):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError("release record is not a private regular file")
-    data = json.loads(path.read_text())
+    data = json.loads(read_regular(path))
     if data.get("schema") != 1 or not isinstance(data.get("owner"), str) or not data["owner"]:
         raise ValueError("invalid release record")
     return data
@@ -251,7 +269,7 @@ def archived_metadata_matches(admin, archive):
         for name in dirs + files:
             path = Path(directory) / name
             paths["worktree-metadata/" + path.relative_to(admin).as_posix()] = path
-    with tarfile.open(archive) as saved:
+    with tarfile.open(fileobj=io.BytesIO(read_regular(archive))) as saved:
         members = saved.getmembers()
         if {member.name for member in members} != paths.keys():
             return False
@@ -715,7 +733,7 @@ def branch_holders(repo, branch):
         admin = Path(text(git(entry["path"], "rev-parse", "--absolute-git-dir")))
         for state in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
             try:
-                held = (admin / state).read_text().strip()
+                held = read_regular(admin / state).decode(errors="replace").strip()
             except FileNotFoundError:
                 continue
             if held in names:
@@ -850,7 +868,7 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False, delete_b
     with tarfile.open(archive / "worktree-metadata.tar", "w") as stream:
         stream.add(admin, arcname="worktree-metadata", recursive=True)
     record["files"] = {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in archive.iterdir()
+        p.name: hashlib.sha256(read_regular(p)).hexdigest() for p in archive.iterdir()
     }
     (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
     # Recheck after archival. Released ownership is still required, but even
@@ -971,7 +989,7 @@ def recovery_record(archive):
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
             raise ValueError("not a regular file of the current user")
-        record = json.loads(path.read_text())
+        record = json.loads(read_regular(path))
     except (OSError, ValueError) as error:
         raise ValueError("missing or unparseable recovery.json; retain for inspection") from error
     if not isinstance(record, dict) or not all(
@@ -1028,7 +1046,7 @@ def check_held_metadata(repo, admin, head):
             raise ValueError(f"an interrupted Git operation ({state}) holds this worktree; retain")
     oids = set()
     try:
-        log = (admin / "logs" / "HEAD").read_bytes()
+        log = read_regular(admin / "logs" / "HEAD")
     except FileNotFoundError:
         log = b""
     for line in log.splitlines():
@@ -1038,18 +1056,6 @@ def check_held_metadata(repo, admin, head):
                 raise ValueError("unparseable worktree reflog; retain worktree")
             if oid.strip("0"):
                 oids.add(oid)
-    refs = git(
-        repo,
-        "--git-dir=" + str(admin),
-        "for-each-ref",
-        "--format=%(objectname)",
-        # Every per-worktree ref namespace: a rewritten ref can outlive the
-        # rebase directory that created it.
-        "refs/worktree",
-        "refs/bisect",
-        "refs/rewritten",
-    )
-    oids.update(text(refs).split())
 
     # Git ignores a malformed or out-of-namespace ref file with a warning, so
     # read every loose ref file directly as well: each must be one object id
@@ -1064,10 +1070,23 @@ def check_held_metadata(repo, admin, head):
             relative = path.relative_to(admin).as_posix()
             if not relative.startswith(("refs/worktree/", "refs/bisect/", "refs/rewritten/")):
                 raise ValueError(f"unexpected ref in worktree metadata ({relative}); retain")
-            content = path.read_bytes().strip()
+            content = read_regular(path).strip()
             if not re.fullmatch(rb"[a-f0-9]{40}|[a-f0-9]{64}", content):
                 raise ValueError(f"unparseable ref in worktree metadata ({relative}); retain")
             oids.add(content.decode())
+    # Only now let Git read the refs: every loose one is a regular file.
+    refs = git(
+        repo,
+        "--git-dir=" + str(admin),
+        "for-each-ref",
+        "--format=%(objectname)",
+        # Every per-worktree ref namespace: a rewritten ref can outlive the
+        # rebase directory that created it.
+        "refs/worktree",
+        "refs/bisect",
+        "refs/rewritten",
+    )
+    oids.update(text(refs).split())
     for oid in sorted(oids):
         try:
             git(repo, "merge-base", "--is-ancestor", oid, head)
@@ -1105,20 +1124,10 @@ def bundle_objects(repo, archive, head, tips):
     never followed through a symlink -- so a retained entry that merely links
     to another's bundle never counts as an independent survivor.
     """
-    bundle = archive / "repository.bundle"
     try:
-        # Never block: a FIFO in place of the bundle would hang the timer's
-        # report run, and the subprocess timeout does not cover this open.
-        if not stat.S_ISREG(bundle.lstat().st_mode):
-            raise ValueError("the recovery bundle is not a regular file; retain")
-        descriptor = os.open(bundle, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError as error:
+        data = read_regular(archive / "repository.bundle", single_link=True)
+    except (OSError, ValueError) as error:
         raise ValueError(f"cannot read the recovery bundle ({error}); retain") from error
-    with os.fdopen(descriptor, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ValueError("the recovery bundle is not a singly linked regular file; retain")
-        data = stream.read()
     header, separator, pack = data.partition(b"\n\n")
     if not separator or not header.startswith((b"# v2 git bundle\n", b"# v3 git bundle\n")):
         raise ValueError("cannot read the recovery bundle; retain for inspection")
@@ -1216,7 +1225,8 @@ def check_metadata_names(admin=None, archive=None):
     pointers = []
     if archive is not None:
         try:
-            with tarfile.open(archive / "worktree-metadata.tar") as saved:
+            tar = io.BytesIO(read_regular(archive / "worktree-metadata.tar"))
+            with tarfile.open(fileobj=tar) as saved:
                 for member in saved.getmembers():
                     if member.name == "worktree-metadata":
                         continue
@@ -1347,7 +1357,7 @@ def live_pointers(admin):
     pointers = []
     for name in POINTER_FILES:
         try:
-            data = (admin / name).read_bytes()
+            data = read_regular(admin / name)
         except FileNotFoundError:
             continue
         pointers.extend(pointer_oids(name, data))
@@ -1390,7 +1400,7 @@ def registered_admin(repo, path):
     matches = []
     for admin in sorted((common / "worktrees").iterdir()):
         try:
-            gitdir = (admin / "gitdir").read_text().strip()
+            gitdir = read_regular(admin / "gitdir").decode(errors="replace").strip()
         except FileNotFoundError:
             continue
         if Path(gitdir) == path / ".git":
