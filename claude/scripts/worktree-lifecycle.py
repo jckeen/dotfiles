@@ -149,7 +149,12 @@ def marker(admin):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError("release record is not a private regular file")
     data = json.loads(read_regular(path))
-    if data.get("schema") != 1 or not isinstance(data.get("owner"), str) or not data["owner"]:
+    if (
+        not isinstance(data, dict)
+        or data.get("schema") != 1
+        or not isinstance(data.get("owner"), str)
+        or not data["owner"]
+    ):
         raise ValueError("invalid release record")
     return data
 

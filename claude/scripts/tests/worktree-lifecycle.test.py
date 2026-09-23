@@ -2550,6 +2550,8 @@ if kind == 'writer':
             ("refs/rewritten/onto", orphan + "\n"),
             ("rebase-merge/head-name", "refs/heads/topic\n"),
             ("worktree-release.json", "{}\n"),
+            ("worktree-release.json", "[]\n"),
+            ("worktree-release.json", "null\n"),
         ):
             with self.subTest(name=name):
                 path = admin / name
