@@ -99,19 +99,25 @@ def text(data):
     return os.fsdecode(data.removesuffix(b"\n"))
 
 
-def read_regular(path):
-    """The bytes of a regular file, never blocking on or following a special one.
+def open_regular(path):
+    """Open a regular file for reading, never blocking on or following a special one.
 
     Expiry reads archive entries and worktree metadata from the hygiene timer's
     report run, which no subprocess timeout covers: a FIFO in place of any of
     these files would otherwise hang it. A missing file raises
-    FileNotFoundError, as a plain read does.
+    FileNotFoundError, as a plain open does.
     """
     if not stat.S_ISREG(Path(path).lstat().st_mode):
         raise ValueError(f"not a regular file, retain for inspection: {path}")
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise ValueError(f"not a regular file, retain for inspection: {path}")
+    stream = os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb")
+    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        stream.close()
+        raise ValueError(f"not a regular file, retain for inspection: {path}")
+    return stream
+
+
+def read_regular(path):
+    with open_regular(path) as stream:
         return stream.read()
 
 
@@ -1017,11 +1023,15 @@ def check_recovery_files(archive, record):
     """
     recorded = record.get("files")
     for name in ("repository.bundle", "worktree-metadata.tar"):
+        # Streamed: a bundle holds every ref and reflog of the repository.
+        digest = hashlib.sha256()
         try:
-            digest = hashlib.sha256(read_regular(archive / name)).hexdigest()
+            with open_regular(archive / name) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
         except (OSError, ValueError) as error:
             raise ValueError(f"cannot read {name} ({error}); retain for inspection") from error
-        if not isinstance(recorded, dict) or recorded.get(name) != digest:
+        if not isinstance(recorded, dict) or recorded.get(name) != digest.hexdigest():
             raise ValueError(f"{name} differs from what retirement recorded; retain for inspection")
 
 

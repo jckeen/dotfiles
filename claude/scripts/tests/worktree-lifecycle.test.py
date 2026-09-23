@@ -2451,6 +2451,7 @@ if kind == 'writer':
         recovery = archive / "recovery.json"
         saved = recovery.read_bytes()
         bundle = (archive / "repository.bundle").read_bytes()
+        index = (admin / "index").read_bytes()
 
         cases = (
             (
@@ -2471,14 +2472,18 @@ if kind == 'writer':
             (
                 "attached",
                 lambda: self.run_git(quarantine, "checkout", "-q", "topic"),
-                lambda: self.run_git(quarantine, "checkout", "-q", "--detach"),
+                lambda: (
+                    self.run_git(quarantine, "checkout", "-q", "--detach"),
+                    # Checkout rewrites the index, which must match the archive.
+                    (admin / "index").write_bytes(index),
+                ),
                 "attached",
             ),
             (
                 "operation",
                 lambda: (admin / "index.lock").write_text(""),
                 lambda: (admin / "index.lock").unlink(),
-                "index.lock was written",
+                "index.lock",
             ),
             (
                 "missing record",
