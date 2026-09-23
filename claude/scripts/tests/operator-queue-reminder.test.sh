@@ -313,6 +313,31 @@ run_in "$FX/dotfiles" "## dot-cjk
 assert "utf-8 truncation keeps complete characters" "line_for dot-cjk | grep -qF 'a確認確認' && line_for dot-cjk | grep -qF '… [truncated'"
 assert "utf-8 truncation leaves valid UTF-8" "line_for dot-cjk | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1"
 
+# Summary lines are capped like item lines (Codex gate): many distinct
+# projects collapse to a bounded list plus one "…and N more" line.
+many=""
+for i in $(seq 1 40); do many="$many
+## many-$i
+- added: $D5
+- project: proj$(printf '%02d' "$i")
+- action: x"; done
+run_in "$FX/dotfiles" "$many"
+assert "summary: capped at the item cap" "[ \"\$(summary_order | tr ',' '\n' | grep -c .)\" -eq 20 ]"
+assert "summary: overflow line counts the rest" "outgrep '  …and 20 more projects'"
+
+# Every line is bounded, not only the action: a huge slug or project name.
+long_word="$(printf 'y%.0s' $(seq 1 3000))"
+run_in "$FX/dotfiles" "## dot-$long_word
+- added: $D5
+- project: dotfiles
+- action: short
+
+## other
+- added: $D5
+- project: $long_word
+- action: short"
+assert "line cap: no output line over the cap" "[ \"\$(printf '%s\n' \"\$out\" | awk '{ if (length(\$0) > m) m = length(\$0) } END { print m + 0 }')\" -lt 1200 ]"
+
 # A parse that fails outright degrades to one warning line, still exit 0.
 mkdir -p "$FX/brokenawk"
 printf '#!/bin/sh\nexit 2\n' > "$FX/brokenawk/awk"

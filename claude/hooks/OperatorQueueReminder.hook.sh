@@ -43,9 +43,10 @@
 #   parseable item blocks; one warning line if the parse itself fails. This
 #   hook only reads, never writes, the queue.
 # BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits;
-#   at most MAX_ITEMS items are rendered ("…and N more" for the rest) and each
-#   action is cut at MAX_ACTION_CHARS bytes, so a grown queue can never flood
-#   session context or stall SessionStart.
+#   at most MAX_ITEMS items and MAX_ITEMS project summaries are rendered
+#   ("…and N more" for the rest), each action is cut at MAX_ACTION_CHARS
+#   bytes, each item line at MAX_LINE_CHARS and each summary label at 80, so
+#   a grown queue can never flood session context or stall SessionStart.
 # SELF-TEST: claude/scripts/tests/operator-queue-reminder.test.sh
 
 set -uo pipefail
@@ -62,6 +63,7 @@ fi
 MAX_QUEUE_BYTES=65536
 MAX_ITEMS=20
 MAX_ACTION_CHARS=600
+MAX_LINE_CHARS=1000
 STALE_DAYS=30
 STALE_MARK="[stale — re-verify]"
 SHOW_ALL=0
@@ -97,7 +99,7 @@ today="$(date +%Y-%m-%d)"
 # Deadline items key "0|<deadline>" (soonest first), the rest "1|<added>"
 # (oldest first). ISO dates sort lexically, so `sort` finishes the ordering.
 records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_mark="$STALE_MARK" \
-  -v repo="$repo" -v show_all="$SHOW_ALL" -v max_action="$MAX_ACTION_CHARS" '
+  -v repo="$repo" -v show_all="$SHOW_ALL" -v max_action="$MAX_ACTION_CHARS" -v max_line="$MAX_LINE_CHARS" '
   # days_from_civil — days since 1970-01-01 (Howard Hinnant era algorithm).
   function days_from_civil(y, m, d,    era, yoe, doy, doe) {
     y -= (m <= 2)
@@ -169,12 +171,14 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     detail = (project != "") ? "project: " project : ""
     if (age != "") detail = (detail != "") ? detail ", " age : age
     line = "  " flag slug " — " action ((detail != "") ? " (" detail ")" : "")
+    # Backstop for the other fields (slug, project): no line exceeds the cap.
+    if (length(line) > max_line) line = utf8_trim(substr(line, 1, max_line)) "… [truncated]"
     full = (show_all == 1 || project_matches(project) || (dd != "" && dd <= today_days)) ? 1 : 0
     age_days = (d != "") ? today_days - d : "-"
     next_dl = (dd != "" && dd >= today_days) ? substr(deadline, 1, 10) : "-"
     # Summary groups by the first word of the value ("dotfiles / Codex Remote" and
     # "dotfiles" are one project), so the summary stays one line per project.
-    group = (match(project, /[A-Za-z0-9._-]+/)) ? substr(project, RSTART, RLENGTH) : "(no project)"
+    group = (match(project, /[A-Za-z0-9._-]+/)) ? substr(project, RSTART, (RLENGTH < 80) ? RLENGTH : 80) : "(no project)"
     print key "\t" full "\t" group "\t" age_days "\t" next_dl "\t" line
     slug = added = project = deadline = verified = action = ""
   }
@@ -230,7 +234,12 @@ if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -lt "$total" ]; then
         if (p in next_dl) extra = ((extra != "") ? extra ", " : "") "next deadline " next_dl[p]
         print "  " p ": " n[p] " item" ((n[p] == 1) ? "" : "s") ((extra != "") ? " (" extra ")" : "")
       }
-    }' | LC_ALL=C sort
+    }' | LC_ALL=C sort | awk -v max="$MAX_ITEMS" '
+      # The summary is bounded like the item list: many distinct projects must
+      # not flood session context either.
+      NR <= max { print; next }
+      { extra++ }
+      END { if (extra) print "  …and " extra " more projects — see the queue file" }'
   echo "Full queue: $QUEUE_SHOWN — read it, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
 fi
 echo "These need the operator, not the agent. When a session touches an item's subject, re-check it against live state and set/bump its \`verified:\` date; remove an item only when it is done."
