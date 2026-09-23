@@ -13,8 +13,9 @@ Expiry (#562) reports retired archive entries by default; --apply removes an
 entry retired longer ago than --older-than only when its PR re-verifies as
 merged against the remote and the quarantine holds nothing unique (dirty,
 ignored or special files, commits outside the merged head in its reflog or
-per-worktree refs, an attached branch, a Git lock or a live process). Removal
-runs `git worktree remove --force --force` from the primary checkout and then
+per-worktree refs, bundle commits no ref, remote ref or retained bundle keeps, an attached
+branch, a Git lock or a live process). Removal re-reads HEAD and the reflog,
+runs `git worktree remove --force --force` from the primary checkout, then
 unlinks only the files retirement wrote; anything else is retained with a reason.
 """
 
@@ -60,10 +61,11 @@ GIT_EVIDENCE_ENV = {
 }
 
 
-def run(argv, cwd=None):
+def run(argv, cwd=None, stdin=None):
     result = subprocess.run(
         argv,
         cwd=cwd,
+        input=stdin,
         capture_output=True,
         timeout=30,
         env=dict(
@@ -75,7 +77,7 @@ def run(argv, cwd=None):
     return result.stdout
 
 
-def git(repo, *args):
+def git(repo, *args, stdin=None):
     # -C does not override inherited index/repository routing. Refuse before
     # any Git invocation so direct API callers and CLI actions inspect the
     # selected checkout's actual evidence. Keep SSH and credential transport.
@@ -89,7 +91,7 @@ def git(repo, *args):
             "Git environment overrides prevent verifying the selected worktree; unset: "
             + ", ".join(overrides)
         )
-    return run(["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args])
+    return run(["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args], stdin=stdin)
 
 
 def text(data):
@@ -605,6 +607,17 @@ def assess(repo, path, trust_process_manager=False):
     )
 
 
+def cookie_flags(repo):
+    """Keep ls-remote from persisting HTTP cookies, including per-URL settings."""
+    flags = ["-c", "http.saveCookies=false"]
+    keys = git(repo, "config", "--null", "--name-only", "--list").split(b"\0")
+    for key in keys:
+        name = os.fsdecode(key)
+        if name.lower().startswith("http.") and name.lower().endswith(".savecookies"):
+            flags.extend(["-c", name + "=false"])
+    return flags
+
+
 def verify_integration(repo, record, head):
     """Prove the recorded PR merged this exact head into the current remote default.
 
@@ -622,14 +635,8 @@ def verify_integration(repo, record, head):
     git(repo, "check-ref-format", "refs/heads/" + default)
     # Verify the local evidence is still the current remote default. No fetch
     # occurs during preview; callers can refresh explicitly and retry.
-    cookie_flags = ["-c", "http.saveCookies=false"]
-    keys = git(repo, "config", "--null", "--name-only", "--list").split(b"\0")
-    for key in keys:
-        name = os.fsdecode(key)
-        if name.lower().startswith("http.") and name.lower().endswith(".savecookies"):
-            cookie_flags.extend(["-c", name + "=false"])
     remote = git(
-        repo, *cookie_flags, "ls-remote", "--exit-code", "origin", "refs/heads/" + default
+        repo, *cookie_flags(repo), "ls-remote", "--exit-code", "origin", "refs/heads/" + default
     ).split()
     base = text(git(repo, "rev-parse", "--verify", "refs/remotes/origin/" + default))
     if len(remote) != 2 or os.fsdecode(remote[0]) != base:
@@ -1032,8 +1039,11 @@ def check_held_metadata(repo, admin, head):
         "--git-dir=" + str(admin),
         "for-each-ref",
         "--format=%(objectname)",
+        # Every per-worktree ref namespace: a rewritten ref can outlive the
+        # rebase directory that created it.
         "refs/worktree",
         "refs/bisect",
+        "refs/rewritten",
     )
     oids.update(text(refs).split())
     for oid in sorted(oids):
@@ -1044,6 +1054,121 @@ def check_held_metadata(repo, admin, head):
                 f"commit {oid} from this worktree's reflog or refs is not contained in the "
                 "merged head; retain worktree"
             ) from error
+
+
+def durable_tips(repo):
+    """Commit tips whose history outlives an archive: local refs and remote refs.
+
+    Remote refs include GitHub's `refs/pull/*/head`, which keeps a merged PR's
+    commits after its branch is deleted.
+    """
+    tips = set(text(git(repo, "for-each-ref", "--format=%(objectname)")).split())
+    for line in text(git(repo, *cookie_flags(repo), "ls-remote", "origin")).splitlines():
+        oid = line.partition("\t")[0]
+        if re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", oid):
+            tips.add(oid)
+    return tips
+
+
+def bundle_commits(repo, archive, head, tips):
+    """Every commit in an archive's recovery bundle, and those no durable tip reaches.
+
+    Retirement bundles every ref and reflog-reachable commit, and after reflog
+    expiry and gc the bundle can be the only copy of reflog-only or since-deleted
+    work. Index its pack in a private scratch repository (never in the archive
+    or the source repository), then list its commits that no local ref, remote
+    ref or the merged head reaches, with the source objects as an alternate.
+    """
+    data = (archive / "repository.bundle").read_bytes()
+    header, separator, pack = data.partition(b"\n\n")
+    if not separator or not header.startswith((b"# v2 git bundle\n", b"# v3 git bundle\n")):
+        raise ValueError("cannot read the recovery bundle; retain for inspection")
+    algorithm = text(git(repo, "rev-parse", "--show-object-format"))
+    common = Path(text(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")))
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            store = Path(scratch) / "bundle.git"
+            git(scratch, "init", "-q", "--bare", "--object-format=" + algorithm, str(store))
+            packfile = store / "objects" / "pack" / "pack-bundle.pack"
+            packfile.write_bytes(pack)
+            git(store, "index-pack", str(packfile))
+            rows = git(
+                store,
+                "cat-file",
+                "--batch-all-objects",
+                "--batch-check=%(objecttype) %(objectname)",
+            )
+            commits = [
+                row.split()[1] for row in text(rows).splitlines() if row.startswith("commit ")
+            ]
+            (store / "objects" / "info" / "alternates").write_text(str(common / "objects") + "\n")
+            query = "".join(tip + "\n" for tip in sorted(tips | {head})).encode()
+            known = [
+                line
+                for line in text(
+                    git(store, "cat-file", "--batch-check=%(objectname)", stdin=query)
+                ).splitlines()
+                if " " not in line
+            ]
+            revs = "".join(line + "\n" for line in [*commits, "--not", *known]).encode()
+            unique = text(git(store, "rev-list", "--stdin", stdin=revs)).split()
+    except (OSError, ValueError) as error:
+        raise ValueError(f"cannot verify the recovery bundle ({error}); retain") from error
+    return set(commits), set(unique)
+
+
+def decide_bundles(candidates, sources, tips):
+    """Retain each candidate whose bundle holds a commit nothing that stays keeps.
+
+    Every bundle is `--all --reflog`, so each one also carries every other
+    worktree's reflog-only commits at the time it was written. A commit no
+    ref reaches is still safe to drop from one bundle while a bundle that stays
+    on disk holds it: every retained entry's bundle counts, and when several
+    candidates share an otherwise-unique commit the newest is kept, since it
+    holds the latest state, and its commits cover the rest. Coverage only
+    grows, so an entry once covered stays expirable.
+    """
+    covered = set()
+    for archive, repo, head in sources:
+        try:
+            covered |= bundle_commits(repo, archive, head, tips(repo))[0]
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # An unreadable retained bundle covers nothing; that only retains more.
+            continue
+    pending = []
+    for entry, archive, repo, head, moment, _ in candidates:
+        try:
+            commits, unique = bundle_commits(repo, archive, head, tips(repo))
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            entry.update(disposition="retained", reason=str(error))
+            continue
+        if unique:
+            pending.append((moment, entry, commits, unique))
+    pending.sort(key=lambda item: item[0], reverse=True)
+    while True:
+        pending = [item for item in pending if not item[3] <= covered]
+        if not pending:
+            return
+        _, entry, commits, unique = pending.pop(0)
+        example = sorted(unique - covered)[0]
+        entry.update(
+            disposition="retained",
+            reason=f"its recovery bundle holds {len(unique - covered)} commit(s) no ref, remote "
+            f"ref or retained archive keeps, such as {example}; retain for inspection",
+        )
+        covered |= commits
+
+
+def still_registered(repo, path, head, lock):
+    """Re-read the registration right before removal; any change retains it."""
+    current = next((entry for entry in worktrees(repo) if Path(entry["path"]) == path), None)
+    if (
+        current is None
+        or "branch" in current
+        or current.get("HEAD") != head
+        or current.get("locked") != lock
+    ):
+        raise ValueError("the worktree changed after inspection; retained")
 
 
 def registered_admin(repo, path):
@@ -1107,11 +1232,15 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
     active_processes(quarantine, trust_process_manager=trust)
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, record, head)
+    lock = QUARANTINE_LOCK + str(archive)
 
     def remove():
         outside(quarantine)
         # Sample the local evidence once more right before the irreversible
-        # step; the remote proof above does not change with local activity.
+        # step: a process can commit and exit during the network proof above,
+        # leaving a clean checkout at an unverified HEAD.
+        still_registered(repo, quarantine, head, lock)
+        check_held_metadata(repo, admin, head)
         clean(quarantine)
         active_processes(quarantine, trust_process_manager=trust)
         active_processes(admin, trust_process_manager=trust)
@@ -1160,7 +1289,11 @@ def expirable_registration(repo, archive_dir, item, now, days, trust):
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, release, head)
 
+    lock = QUARANTINE_LOCK + str(archive)
+
     def remove():
+        still_registered(repo, path, head, lock)
+        check_held_metadata(repo, admin, head)
         active_processes(admin, trust_process_manager=trust)
         git(repo, "worktree", "remove", "--force", "--force", str(path))
 
@@ -1176,6 +1309,15 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
     now = now or datetime.now(timezone.utc)
     archive_dir = archive_dir.resolve()
     registrations, commons, errors = {}, {}, []
+    # Removing a worktree or an archive never moves a ref, so one listing of
+    # each repository's durable tips serves the whole run.
+    durable = {}
+
+    def tips(repo):
+        if repo not in durable:
+            durable[repo] = durable_tips(repo)
+        return durable[repo]
+
     for repo in repos:
         try:
             common = Path(
@@ -1211,9 +1353,13 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
             key = (value[0]["path"], value[0]["head"])
             completed.setdefault(key, registrations[child / "worktree"][0])
     entries = []
+    # Archive entries that passed every other check, and every retained
+    # archive whose bundle stays on disk, for the bundle decision below.
+    candidates, sources = [], []
     for child in children:
         entry = dict(archive=str(child), kind="orphan-directory", path=None, pr=None, age_days=None)
         registration = registrations.pop(child / "worktree", None)
+        repo = head = moment = None
         try:
             if child.is_symlink() or not child.is_dir():
                 raise ValueError("not an archive directory; retain for inspection")
@@ -1224,12 +1370,15 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
             if isinstance(parsed[child], Exception):
                 raise parsed[child]
             record, record_info = parsed[child]
+            head = record["head"]
             entry.update(path=record["path"], pr=record["pr"])
             moment = retired_time(record, record_info)
             entry["age_days"] = age_days(moment, now)
+            metadata = Path(record.get("git_metadata") or "/")
             if entry["kind"] == "quarantine":
+                repo = registration[0]
                 remove = expirable_quarantine(
-                    registration[0],
+                    repo,
                     child,
                     registration[1],
                     record,
@@ -1239,6 +1388,7 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
                     trust_process_manager,
                 )
             elif entry["kind"] == "orphan-directory":
+                repo = commons.get(metadata.parent.parent.resolve())
                 raise ValueError(
                     "the quarantined checkout is not a registered worktree of a scanned "
                     "repository; inspect and remove it by hand"
@@ -1246,25 +1396,35 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
             else:
                 # Its own quarantine is gone too (an interrupted expiry), or a
                 # later retry of the same worktree and head completed.
-                repo = completed.get((record["path"], record["head"]))
-                metadata = Path(record.get("git_metadata") or "/")
+                repo = completed.get((record["path"], head))
                 # A failed quarantine rename also leaves no `worktree` here, but
                 # its checkout and metadata still exist; only a removed
                 # registration makes the archive a leftover copy.
                 if repo is None and "quarantine" in record and not os.path.lexists(metadata):
                     repo = commons.get(metadata.parent.parent.resolve())
-                remove = expirable_partial(child, record, repo, moment, now, days)
+                superseding = repo
+                if repo is None:
+                    repo = commons.get(metadata.parent.parent.resolve())
+                remove = expirable_partial(child, record, superseding, moment, now, days)
             entry.update(
                 disposition="expirable",
                 reason=f"PR #{record['pr']} merged and retired {entry['age_days']}d ago, "
                 f"past the {days}d window",
             )
-            if apply:
-                remove()
-                entry.update(disposition="expired", reason="removed; " + entry["reason"])
+            candidates.append((entry, child, repo, head, moment, remove))
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             entry.update(disposition="retained", reason=str(error))
+            if repo is not None and head is not None:
+                sources.append((child, repo, head))
         entries.append(entry)
+    decide_bundles(candidates, sources, tips)
+    for entry, _, _, _, _, remove in candidates:
+        if apply and entry["disposition"] == "expirable":
+            try:
+                remove()
+                entry.update(disposition="expired", reason="removed; " + entry["reason"])
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                entry.update(disposition="retained", reason=str(error))
     # What remains is registered under the archive without an entry directory.
     for path, (repo, item) in sorted(registrations.items()):
         entry = dict(

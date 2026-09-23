@@ -679,13 +679,24 @@ the archive holds nothing but what retirement wrote; the Git lock still names
 this archive; HEAD is detached at the recorded head; the release record agrees;
 the entry was retired at least the window ago (`retired_at` in the record, or
 for records written before that field, the record's last write); the worktree's
-own reflog, per-worktree refs and any interrupted rebase, bisect, merge or
-cherry-pick state name no commit outside the merged head; the checkout is
-clean down to raw bytes with no untracked, ignored or special files; no Git
-lock file or same-user process holds it; and the recorded PR is re-verified as
-merged into the current remote default exactly as retirement verifies it,
-never by branch name. `--apply` samples the checkout and processes once more,
-then runs `git worktree remove --force --force` on the quarantine from the
+own reflog, per-worktree refs (`refs/worktree`, `refs/bisect`,
+`refs/rewritten`) and any interrupted rebase, bisect, merge or cherry-pick
+state name no commit outside the merged head; the checkout is clean down to
+raw bytes with no untracked, ignored or special files; no Git lock file or
+same-user process holds it; the recorded PR is re-verified as merged into the
+current remote default exactly as retirement verifies it, never by branch
+name; and the recovery bundle holds no commit that a local ref, a remote ref
+(including GitHub's `refs/pull/*/head`), the merged head or a bundle that stays
+on disk does not already keep — after reflog expiry and gc a bundle can be the
+only copy of since-deleted or reflog-only work. Every bundle is
+`--all --reflog`, so each also carries the other worktrees' reflog-only
+commits; every retained entry's bundle therefore counts as a keeper, and when
+several expirable entries share an otherwise-unique commit the newest is kept
+and covers the rest. Bundle packs are indexed in a private temporary
+repository, never in the archive or the source repository. `--apply`
+re-reads the registration (HEAD, detached state and lock) and the worktree's
+reflog and refs, samples the checkout and processes once more — a process can
+commit and exit during the network proof — then runs `git worktree remove --force --force` on the quarantine from the
 primary checkout (refusing when the current directory is inside it), unlinks
 exactly `recovery.json`, `repository.bundle` and `worktree-metadata.tar`, and
 removes the now-empty directory, so anything that appeared in between makes
@@ -703,7 +714,8 @@ is a `partial-archive` when it holds only those three files — left by a
 retirement retained after archival, or by an expiry interrupted after the
 removal — and is deleted only when a completed retirement of the same path and
 head supersedes it, or its record names a quarantine whose Git metadata no
-longer exists, past the window and with the PR re-verified. One that still
+longer exists, past the window, with the PR re-verified and its bundle holding
+nothing unique. One that still
 holds a `worktree` directory Git no longer registers is always retained for
 inspection by hand.
 
