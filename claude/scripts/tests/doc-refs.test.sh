@@ -89,6 +89,11 @@ new_repo
 w CHANGELOG.md '# Changelog' '' '- Removed Ghost.hook.ts in the PAI decommission.'
 check "changelog allowlisted broken ref passes" 0 "doc-refs: OK"
 
+# --- Case 5b: ALLOWLIST — the quarterly archives inherit the exemption (#561) --
+new_repo
+w docs/changelog/CHANGELOG-2026-Q1.md '# Changelog — 2026 Q1' '' '- Removed Ghost.hook.ts.'
+check "changelog archive allowlisted broken ref passes" 0 "doc-refs: OK"
+
 # --- Case 6: fenced code — a link inside a ``` fence is not a live ref (#138) --
 # Before the fix this false-positived here while check-doc-truth.sh (which
 # strips code) passed it. The fenced link points nowhere; it must be ignored.
@@ -119,4 +124,12 @@ check "link inside inline code span is ignored" 0 "doc-refs: OK"
 
 echo "---"
 echo "$pass passed, $failed failed"
-[ "$failed" -eq 0 ]
+
+# The CHANGELOG conflict resolver's suite rides on this one (#561): CI runs this
+# file, and check-tests-wired.sh counts one level of transitivity, so no
+# separate workflow step is needed. The path is spelled repo-relative because
+# that string is what the wiring check searches for.
+resolver_rc=0
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$SCRIPT_DIR/../../../claude/scripts/tests/resolve-changelog.test.py" || resolver_rc=$?
+[ "$failed" -eq 0 ] && [ "$resolver_rc" -eq 0 ]
