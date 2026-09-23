@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-09-22 — fix(hooks): operator-queue reminder shows the session project in full
+
+- **`OperatorQueueReminder.hook.sh` no longer prints the whole queue into every
+  session.** The full queue overflowed into the tool-results file, so the agent
+  saw only a preview. Now the hook prints in full only the items whose
+  `project:` matches the session's project (any word, case-insensitive), plus
+  every item that is due today or overdue. Every other project collapses to one
+  line with its item count, oldest age and next deadline. The session project
+  is the basename of the repo's main checkout, found through
+  `git rev-parse --git-common-dir`, so agent worktrees still count as the repo.
+- Output is bounded at every level and a cut never splits a UTF-8 character. A
+  tab inside a field no longer hides an item. A failed parse prints one warning
+  line, and the hook always exits 0. `OPERATOR_QUEUE_SHOW_ALL=1` restores the
+  full list. `operator-queue-reminder.test.sh` pins it. Closes #558. (#566)
+
+## 2026-09-22 — fix(harvest): one consolidated issue per PR, harvested at PR close
+
+- **One issue per PR, not per comment.** `harvest-codex-comments.sh` files
+  `Codex review of #<n>: <title>` with one checklist item per bot comment:
+  priority, `path:line`, link and the full comment quoted. A per-PR marker and
+  a per-comment id marker (both exact, and not forgeable from comment text)
+  prevent duplicates, including comments tracked by the old one-per-comment
+  issues. New comments are appended to a body re-read just before each edit,
+  so ticked boxes survive, and a closed issue is reopened. A body that would
+  exceed GitHub's size limit spills into a `(continued)` issue. Items that fail
+  to post are retried on the next run. Closes #556.
+- **Labels.** `codex-finding` always, plus `instruction-surface` when a
+  comment's path matches the Codex gate's self-review pattern; a test fails if
+  the harvester's copy of that pattern drifts. When GitHub rejects a label, the
+  harvester retries with fewer labels. Refs #557.
+- **Harvested at PR close.** The new `harvest-codex-comments.yml` workflow runs
+  on merged same-repo PRs with least-privilege `GITHUB_TOKEN` permissions and
+  one harvest at a time per PR. The nightly routine stays as a backstop.
+  `PreMergeCodexHarvest.hook.sh` notes on `--auto` merges that the close-time
+  harvest will file anything the bot finds later. Closes #555. (#565)
+
+## 2026-09-22 — docs(changelog): quarterly archives and `resolve-changelog.py`
+
+- **`CHANGELOG.md` holds the current quarter.** Older quarters moved verbatim
+  into HISTORICAL files under `docs/changelog/`, linked at the bottom of this
+  file, declared in `.doc-contract` and allowlisted in `check-doc-refs.sh`.
+- **`claude/scripts/resolve-changelog.py` is the standard fix for a DIRTY
+  changelog head.** Run it after `git merge origin/main` stops on this file. It
+  keeps both sides' new dated sections with origin's on top and edits no entry
+  text. It resolves only a prepend it can prove against the merge base (git's
+  index stages, or diff3 markers), refuses anything else without touching the
+  file, and `--check` is a dry run. Its suite runs in CI through
+  `doc-refs.test.sh`. Closes #561. (#564)
+
+## 2026-09-22 — fix(jules-dispatch): `--report` and `--post` pinned to github.com
+
+- The per-repository `gh pr list` reads and the `--post` tracker comment passed
+  a hostless `--repo owner/name`, which `gh` resolves through `GH_HOST`. An
+  Enterprise default could have built the weekly table from another host's PRs
+  and posted it there. Both now pass `--repo github.com/<owner>/<name>`, as
+  `--reconcile` already did, and gh rejects a ledger repo that carries its own
+  host as malformed. A test with `GH_HOST=ghe.example` requires every `--repo`
+  to name github.com. Closes #554. (#563)
+
 ## 2026-09-22 — fix(tests): the test runner and the wrapper refuse a selection that names nothing
 
 - **`run-tests.sh` refuses two files that derive one suite name.** Beside
