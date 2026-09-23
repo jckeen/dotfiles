@@ -238,7 +238,13 @@ for rec in "${COMMENTS[@]}"; do
     continue
   fi
 
-  body="$(jq -rn --arg b "$b64" '$b | @base64d' 2>/dev/null || true)"
+  # Decoded through stdin, never argv: Linux caps one argument at 128 KiB and a
+  # long multibyte comment's base64 exceeds it. A failed decode leaves the
+  # comment untracked (no marker written), so the next run retries it.
+  if ! body="$(printf '"%s"' "$b64" | jq -r '@base64d' 2>/dev/null)"; then
+    warn "  ⚠ could not decode comment $cid — left for the next run"
+    continue
+  fi
   # A comment body must not be able to forge a marker (or open an HTML comment
   # that swallows the real one after it), so its `<!--` is escaped. The
   # replacement is quoted: bash 5.2's patsub_replacement makes a bare `&` in it
@@ -316,7 +322,7 @@ summary() {
 # create_issue <title> — file one consolidated issue holding as many pending
 # items as fit. Returns 1 when nothing was filed.
 create_issue() {
-  local title="$1" label_args=() l create_status=0 response response_body url
+  local title="$1" labels_json payload create_status=0 response response_body url
   pack_items "$preamble" "$pr_marker"
   if [[ "$PACKED_N" -eq 0 ]]; then
     warn "  ⚠ an item does not fit an empty issue body (budget $BODY_BUDGET) — nothing filed."
@@ -328,8 +334,14 @@ create_issue() {
   # may reject an unavailable label. Retry only a confirmed label validation
   # response: a transport failure may follow a successful creation, and the
   # body marker does not enforce server-side uniqueness.
-  for l in "${labels[@]}"; do label_args+=(-f "labels[]=$l"); done
-  response="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$PACKED_BODY" "${label_args[@]}" --include 2>/dev/null)" || create_status=$?
+  #
+  # The request travels as JSON on stdin (`--input -`), never as `-f body=`:
+  # a body near the budget in multibyte text exceeds Linux's 128 KiB cap on a
+  # single argument.
+  labels_json="$(printf '%s\n' "${labels[@]}" | jq -R . | jq -sc .)"
+  payload="$(body_json --arg title "$title" --argjson labels "$labels_json" \
+    '{title: $title, body: $body, labels: $labels}')" || { warn "  ⚠ could not build the issue request"; return 1; }
+  response="$(gh api "repos/$REPO/issues" --input - --include <<<"$payload" 2>/dev/null)" || create_status=$?
   response_body="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
   if [[ "$create_status" -eq 0 ]]; then
     url="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$response_body" 2>/dev/null)" || url=""
@@ -341,7 +353,7 @@ create_issue() {
          (.resource == "Label" and .field == "name")) and
         (.code == "invalid" or .code == "missing" or .code == "missing_field"))
     ' <<<"$response_body" >/dev/null 2>&1; then
-    url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$PACKED_BODY" --jq '.html_url' 2>/dev/null)" || url=""
+    url="$(jq -c 'del(.labels)' <<<"$payload" | gh api "repos/$REPO/issues" --input - --jq '.html_url' 2>/dev/null)" || url=""
   else
     url=""
   fi
@@ -401,6 +413,18 @@ if [[ "$DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
+# body_json <jq args...> — run jq with PACKED_BODY bound to $body. The body goes
+# through a temp file and --rawfile: never argv (Linux's 128 KiB per-argument
+# cap), and never `jq -R`/`-Rs`, which in jq 1.7 splits a multibyte character
+# at its 4 KiB read-buffer boundary into U+FFFD replacement characters.
+body_tmp="$(mktemp "${TMPDIR:-/tmp}/harvest-codex-body.XXXXXX")" \
+  || { warn "harvest-codex-comments: could not create a temp file — nothing written."; exit 0; }
+trap 'rm -f "$body_tmp"' EXIT
+body_json() {
+  printf '%s' "$PACKED_BODY" >"$body_tmp" || return 1
+  jq -nc --rawfile body "$body_tmp" "$@"
+}
+
 continued=false
 # ── Append to the PR's newest consolidated issue ───────────────────────
 if [[ -n "$existing_num" ]]; then
@@ -440,9 +464,11 @@ if [[ -n "$existing_num" ]]; then
 
 " ""
   if [[ "$PACKED_N" -gt 0 ]]; then
-    patch_args=(-f body="$PACKED_BODY")
-    [[ "$existing_state" == "closed" ]] && patch_args+=(-f state=open)
-    if ! gh api -X PATCH "repos/$REPO/issues/$existing_num" "${patch_args[@]}" --jq '.html_url' >/dev/null 2>&1; then
+    new_state=""
+    [[ "$existing_state" == "closed" ]] && new_state=open
+    # JSON on stdin for the same argv-size reason as create_issue.
+    if ! body_json --arg state "$new_state" '{body: $body} + (if $state == "" then {} else {state: $state} end)' \
+      | gh api -X PATCH "repos/$REPO/issues/$existing_num" --input - --jq '.html_url' >/dev/null 2>&1; then
       warn "  ⚠ could not append to #$existing_num — nothing more written this run."
       exit 0
     fi

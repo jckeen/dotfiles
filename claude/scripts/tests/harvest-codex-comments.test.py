@@ -28,8 +28,9 @@ args = sys.argv[1:]
 config = json.loads(pathlib.Path(os.environ["HARVEST_FIXTURE"]).read_text())
 state_path = pathlib.Path(os.environ["HARVEST_STATE"])
 state = json.loads(state_path.read_text()) if state_path.exists() else {"issues": [], "next": 100}
-VALUED = {"-X", "--method", "-f", "-F", "--jq", "-H"}
+VALUED = {"-X", "--method", "-f", "-F", "--jq", "-H", "--input"}
 method, fields, jq, endpoint, i = "GET", [], None, None, 1
+payload = None
 while i < len(args):
     a = args[i]
     if a in VALUED:
@@ -40,17 +41,21 @@ while i < len(args):
             fields.append(v)
         elif a == "--jq":
             jq = v
+        elif a == "--input" and v == "-":
+            payload = json.load(sys.stdin)
         i += 2
         continue
     if not a.startswith("-") and endpoint is None:
         endpoint = a
     i += 1
-if fields and method == "GET" and endpoint != "graphql":
+if (fields or payload is not None) and method == "GET" and endpoint != "graphql":
     method = "POST"
 kv = {}
 for f in fields:
     k, _, v = f.partition("=")
     kv.setdefault(k, []).append(v)
+for k, v in (payload or {}).items():
+    kv["labels[]" if k == "labels" else k] = v if isinstance(v, list) else [v]
 
 def log(kind, **extra):
     with open(os.environ["HARVEST_POSTS"], "a") as fh:
@@ -401,6 +406,16 @@ class HarvestTests(unittest.TestCase):
         calls, _ = h.run(comments=[comment(456)], title="t" * 300, budget=3000)
         self.assertLessEqual(len(calls[0]["title"]), 256)
         self.assertIn("(continued)", calls[0]["title"])
+
+    def test_large_multibyte_bodies_travel_on_stdin(self):
+        """Linux caps one argv string at 128 KiB; a big comment must survive whole."""
+        big = "é" * 70000  # 140,000 UTF-8 bytes, 186,668 as base64
+        h = self.harness()
+        calls, result = h.run(comments=[comment(123, body=big)], budget=200000)
+        self.assertEqual([c["kind"] for c in calls], ["create"], result.stderr)
+        self.assertIn(big, calls[0]["body"])
+        for arg in calls[0]["args"]:
+            self.assertLess(len(arg.encode()), 131072)
 
     def test_failed_comment_fetch_is_reported(self):
         calls, result = self.harness().run(comments_fail=True)
