@@ -295,6 +295,24 @@ assert "malformed: exits 0" "[ $rc -eq 0 ]"
 assert "malformed: good item still rendered" "line_for dot-ok | grep -qF 'still rendered'"
 assert "malformed: bad item summarized without an age" "outgrep '  (no project): 1 item' && ! outgrep '(no project): 1 item (oldest'"
 
+# A tab inside a field value must not shift the record columns (Codex gate).
+run_in "$FX/dotfiles" "## tab-annotated
+- added: $D5	(checked)
+- project: atlas
+- deadline: $F10	(soft)
+- action: tab	separated" OPERATOR_QUEUE_SHOW_ALL=1
+assert "tab in a field: item still rendered" "line_for tab-annotated | grep -qF 'tab separated'"
+
+# Truncation keeps whole multi-byte characters: "a" + 3-byte characters puts
+# the byte cut mid-character, and only that partial character may go.
+cjk_action="a$(printf '確認%.0s' $(seq 1 200))"
+run_in "$FX/dotfiles" "## dot-cjk
+- added: $D5
+- project: dotfiles
+- action: $cjk_action"
+assert "utf-8 truncation keeps complete characters" "line_for dot-cjk | grep -qF 'a確認確認' && line_for dot-cjk | grep -qF '… [truncated'"
+assert "utf-8 truncation leaves valid UTF-8" "line_for dot-cjk | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1"
+
 # A parse that fails outright degrades to one warning line, still exit 0.
 mkdir -p "$FX/brokenawk"
 printf '#!/bin/sh\nexit 2\n' > "$FX/brokenawk/awk"

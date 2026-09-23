@@ -121,6 +121,19 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     if (d > last_day) return ""
     return days_from_civil(y, m, d)
   }
+  # utf8_trim — drop the incomplete UTF-8 sequence a byte cut left at the end
+  # of s, if any; complete characters stay. Byte-wise under LC_ALL=C.
+  function utf8_trim(s,    n, k, c, need) {
+    n = length(s); k = 0
+    while (k < 3 && k < n && substr(s, n - k, 1) ~ /[\200-\277]/) k++
+    if (k == n) return s
+    c = substr(s, n - k, 1)
+    if (c ~ /[\300-\337]/)      need = 2
+    else if (c ~ /[\340-\357]/) need = 3
+    else if (c ~ /[\360-\367]/) need = 4
+    else return s
+    return (k + 1 < need) ? substr(s, 1, n - k - 1) : s
+  }
   # project_matches — any word of the project value equals the session repo.
   function project_matches(p,    n, w, i) {
     if (repo == "") return 0
@@ -150,11 +163,8 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     }
     if (is_stale) flag = flag stale_mark " "
     if (action == "") action = "(no action line)"
-    # Byte cut; drop any trailing partial UTF-8 sequence it may have split.
     if (length(action) > max_action) {
-      action = substr(action, 1, max_action)
-      sub(/[\200-\377]+$/, "", action)
-      action = action "… [truncated; full text in the queue file]"
+      action = utf8_trim(substr(action, 1, max_action)) "… [truncated; full text in the queue file]"
     }
     detail = (project != "") ? "project: " project : ""
     if (age != "") detail = (detail != "") ? detail ", " age : age
@@ -162,7 +172,6 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     full = (show_all == 1 || project_matches(project) || (dd != "" && dd <= today_days)) ? 1 : 0
     age_days = (d != "") ? today_days - d : "-"
     next_dl = (dd != "" && dd >= today_days) ? substr(deadline, 1, 10) : "-"
-    gsub(/\t/, " ", line)
     # Summary groups by the first word of the value ("dotfiles / Codex Remote" and
     # "dotfiles" are one project), so the summary stays one line per project.
     group = (match(project, /[A-Za-z0-9._-]+/)) ? substr(project, RSTART, RLENGTH) : "(no project)"
@@ -170,7 +179,9 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     slug = added = project = deadline = verified = action = ""
   }
   BEGIN { today_days = iso_days(today) }
-  { sub(/\r$/, "") }                       # tolerate CRLF queue files
+  # Tolerate CRLF queue files; a tab in any value would shift the TAB-separated
+  # record columns (hiding the item), so tabs become spaces on input.
+  { sub(/\r$/, ""); gsub(/\t/, " ") }
   /^## /                       { flush(); slug = substr($0, 4) }
   slug != "" && /^- added:/    { added = $0;    sub(/^- added:[ \t]*/, "", added) }
   slug != "" && /^- project:/  { project = $0;  sub(/^- project:[ \t]*/, "", project) }
