@@ -14,16 +14,22 @@ edited.
 
 Git's conflict hunks are not trusted to fall on section boundaries: a shared
 body line can sit outside the block, or the new entries can split into several
-blocks. So the resolver rebuilds each side's whole file from the markers,
-splits both into `## ` sections, and takes the longest identical run of
-trailing sections as the shared history. What each side has above that run is
-its new sections. It refuses (exit 1, file untouched) unless that is purely a
-prepend:
-  - both sides have the same text above their first `## ` heading;
+blocks. So the resolver works on each side's whole file: the index stages git
+records for an unmerged path (:1: base, :2: ours, :3: theirs), or, outside a
+merge, a file rebuilt from diff3 markers. It splits the three versions into
+`## ` sections and takes the longest identical run of trailing sections of
+ours and theirs as the shared history; what each side has above that run is
+its new sections. It refuses (exit 1, file untouched) unless that is provably
+a prepend:
+  - a merge base is available (index stage 1, or diff3 base parts), and it is
+    exactly the shared history, with the same text above the first `## `;
   - no heading appears in both sides' new sections, or in a new section and
-    the shared history (an edit to an existing section shows up this way);
-  - with diff3 markers, the base is exactly the shared history.
-Anything else is a real conflict to resolve by hand.
+    the shared history.
+Plain two-way markers outside a merge carry no base, so they are refused:
+without one, disjoint new headings could be two renames of one old section.
+Anything else is a real conflict to resolve by hand. When the index stages are
+used, the working file is rebuilt from them, so hand edits made to the
+conflicted file before running this are discarded.
 
 The sides assume a merge (ours = HEAD = your branch). In a rebase git swaps
 them, so merge rather than rebase when using this.
@@ -34,6 +40,7 @@ Exit status: 0 resolved (or nothing to resolve — re-running is a no-op),
 
 import argparse
 from pathlib import Path
+import subprocess
 import sys
 
 START, BASE, MID, END = "<<<<<<<", "|||||||", "=======", ">>>>>>>"
@@ -102,12 +109,45 @@ def heading(section):
     return section[0].rstrip("\r\n")
 
 
-def resolve(text):
-    """Return the resolved text, or None when there is no conflict."""
+def index_stages(path):
+    """(ours, base, theirs) line lists from git's index for an unmerged path,
+    in the same order sides() returns.
+
+    None when the path is not unmerged in a git repository (not in a merge, or
+    no git). A missing stage (e.g. no common ancestor) comes back as None.
+    """
+    path = path.resolve()
+
+    def show(stage):
+        r = subprocess.run(
+            ["git", "-C", str(path.parent), "show", f":{stage}:./{path.name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return r.stdout.splitlines(keepends=True) if r.returncode == 0 else None
+
+    ours, theirs = show(2), show(3)
+    if ours is None or theirs is None:
+        return None
+    return ours, show(1), theirs
+
+
+def resolve(text, stages=None):
+    """Return the resolved text, or None when there is no conflict.
+
+    stages: (ours, base, theirs) from index_stages(), preferred over markers.
+    """
     rebuilt = sides(text.splitlines(keepends=True))
     if rebuilt is None:
         return None
-    ours_lines, base_lines, theirs_lines = rebuilt
+    ours_lines, base_lines, theirs_lines = stages if stages is not None else rebuilt
+    if base_lines is None:
+        raise Refused(
+            "no merge base: run it on a path git reports unmerged, or with diff3 "
+            "markers (git config merge.conflictStyle diff3); two-way markers "
+            "cannot prove a prepend"
+        )
     ours_pre, ours = split(ours_lines)
     theirs_pre, theirs = split(theirs_lines)
     if ours_pre != theirs_pre:
@@ -132,8 +172,8 @@ def resolve(text):
             f"section {sorted(clash)[0]!r} differs between the sides: an existing "
             "section was edited, not just prepended to"
         )
-    if base_lines is not None and split(base_lines) != (ours_pre, history):
-        raise Refused("the diff3 base is not the shared history: a side edited existing text")
+    if split(base_lines) != (ours_pre, history):
+        raise Refused("the merge base is not the shared history: a side edited existing text")
 
     out = list(ours_pre)
     new = theirs_new + ours_new
@@ -162,7 +202,7 @@ def main(argv=None):
         print(f"resolve-changelog: {path}: no such file", file=sys.stderr)
         return 2
     try:
-        resolved = resolve(path.read_text())
+        resolved = resolve(path.read_text(), index_stages(path))
     except Refused as err:
         print(f"resolve-changelog: refusing: {path}: {err}", file=sys.stderr)
         return 1
