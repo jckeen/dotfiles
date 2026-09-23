@@ -98,6 +98,8 @@ elif endpoint == base + "issues" and method == "POST":
     if config.get("reject_label") in labels:
         status, exit_code = 422, 1
         body = {"errors": [{"resource": "Label", "field": "name", "code": "invalid"}]}
+    elif config.get("lose_codex_only") and labels == ["codex-finding"]:
+        sys.exit(1)  # transport failure after the request: outcome unknown
     if status == 201 and exit_code == 0:
         num = state["next"]
         state["next"] += 1
@@ -510,6 +512,15 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(
             [(c["kind"], c["labels"]) for c in calls], [("label", ["instruction-surface"])]
         )
+
+    def test_ambiguous_codex_finding_retry_never_creates_again(self):
+        calls, result = self.harness().run(
+            comments=[comment(123, path="AGENTS.md")],
+            reject_label="instruction-surface",
+            lose_codex_only=True,
+        )
+        self.assertEqual(len([c for c in calls if c["kind"] == "create"]), 2)
+        self.assertIn("could not file", result.stderr)
 
     def test_labels_are_repaired_on_every_issue_of_the_pr(self):
         h = self.harness()

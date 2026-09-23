@@ -333,10 +333,37 @@ summary() {
   note "harvest-codex-comments: $1, skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
 }
 
+# create_attempt <json> — POST one issue-create request. Returns 0 and sets
+# ATTEMPT_URL on success. On failure sets ATTEMPT_LABEL_REJECTED=true only for a
+# confirmed HTTP 422 whose every error is a label validation error — the one
+# outcome that proves no issue was created and makes a retry safe.
+create_attempt() {
+  local status=0 response response_body
+  ATTEMPT_URL="" ATTEMPT_LABEL_REJECTED=false
+  response="$(gh api "repos/$REPO/issues" --input - --include <<<"$1" 2>/dev/null)" || status=$?
+  response_body="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
+  if [[ "$status" -eq 0 ]]; then
+    ATTEMPT_URL="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$response_body" 2>/dev/null)" || ATTEMPT_URL=""
+    [[ -n "$ATTEMPT_URL" ]]
+    return
+  fi
+  if [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
+    && jq -e '
+      (.errors | type == "array" and length > 0) and
+      all(.errors[];
+        ((.resource == "Issue" and .field == "labels") or
+         (.resource == "Label" and .field == "name")) and
+        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
+    ' <<<"$response_body" >/dev/null 2>&1; then
+    ATTEMPT_LABEL_REJECTED=true
+  fi
+  return 1
+}
+
 # create_issue <title> — file one consolidated issue holding as many pending
 # items as fit. Returns 1 when nothing was filed.
 create_issue() {
-  local title="$1" labels_json payload create_status=0 response response_body url
+  local title="$1" labels_json payload url
   pack_items "$preamble" "$pr_marker"
   if [[ "$PACKED_N" -eq 0 ]]; then
     warn "  ⚠ an item does not fit an empty issue body (budget $BODY_BUDGET) — nothing filed."
@@ -355,31 +382,24 @@ create_issue() {
   labels_json="$(printf '%s\n' "${labels[@]}" | jq -R . | jq -sc .)"
   payload="$(body_json --arg title "$title" --argjson labels "$labels_json" \
     '{title: $title, body: $body, labels: $labels}')" || { warn "  ⚠ could not build the issue request"; return 1; }
-  response="$(gh api "repos/$REPO/issues" --input - --include <<<"$payload" 2>/dev/null)" || create_status=$?
-  response_body="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
-  if [[ "$create_status" -eq 0 ]]; then
-    url="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$response_body" 2>/dev/null)" || url=""
-  elif [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
-    && jq -e '
-      (.errors | type == "array" and length > 0) and
-      all(.errors[];
-        ((.resource == "Issue" and .field == "labels") or
-         (.resource == "Label" and .field == "name")) and
-        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
-    ' <<<"$response_body" >/dev/null 2>&1; then
-    # Retry with `codex-finding` alone first when more was asked for, so a
-    # rejected `instruction-surface` never costs the janitor's label; drop
-    # labels entirely only if that is rejected too. ensure_labels restores
-    # what is missing on a later run.
-    url=""
+  #
+  # The chain is: all labels → `codex-finding` alone (only when more was asked
+  # for, so a rejected `instruction-surface` never costs the janitor's label)
+  # → no labels. Each step runs only after the previous one returned a
+  # confirmed label-validation 422; any other failure stops the chain, since
+  # the issue may already exist. ensure_labels restores missing labels later.
+  url=""
+  if create_attempt "$payload"; then
+    url="$ATTEMPT_URL"
+  elif [[ "$ATTEMPT_LABEL_REJECTED" == "true" ]]; then
     if [[ "${#labels[@]}" -gt 1 ]]; then
-      url="$(jq -c '.labels = ["codex-finding"]' <<<"$payload" | gh api "repos/$REPO/issues" --input - --jq '.html_url' 2>/dev/null)" || url=""
+      if create_attempt "$(jq -c '.labels = ["codex-finding"]' <<<"$payload")"; then
+        url="$ATTEMPT_URL"
+      fi
     fi
-    if [[ -z "$url" ]]; then
+    if [[ -z "$url" && "$ATTEMPT_LABEL_REJECTED" == "true" ]]; then
       url="$(jq -c 'del(.labels)' <<<"$payload" | gh api "repos/$REPO/issues" --input - --jq '.html_url' 2>/dev/null)" || url=""
     fi
-  else
-    url=""
   fi
   if [[ -z "$url" ]]; then
     warn "  ⚠ could not file the consolidated issue for $REPO#$PR ($PACKED_N item(s))"
