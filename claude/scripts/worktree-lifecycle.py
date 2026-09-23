@@ -1281,6 +1281,41 @@ def still_registered(repo, path, head, lock):
         raise ValueError("the worktree changed after inspection; retained")
 
 
+def check_orphan_index(repo, admin, head):
+    """Retain a registration whose surviving index differs from its HEAD.
+
+    With the checkout gone, the index is the last record of staged paths and
+    blob identities. Read it against an empty scratch work tree, so nothing
+    outside the metadata is consulted, and require it to match HEAD's tree
+    exactly with no index flags, as clean() does for a live checkout.
+    """
+    if not (admin / "index").exists():
+        return
+    with tempfile.TemporaryDirectory() as scratch:
+        base = ("--git-dir=" + str(admin), "--work-tree=" + scratch)
+        flags = git(repo, *base, "ls-files", "-v", "-z").split(b"\0")
+        if any(entry and (entry[:1].islower() or entry[:1] == b"S") for entry in flags):
+            raise ValueError("index flags in the orphan registration's index; retain")
+        staged = {}
+        for row in git(repo, *base, "ls-files", "--stage", "-z").split(b"\0"):
+            if not row:
+                continue
+            metadata, name = row.split(b"\t", 1)
+            mode, oid, stage = metadata.split()
+            if stage != b"0":
+                raise ValueError("unmerged index in the orphan registration; retain")
+            staged[name] = (mode, oid)
+    committed = {}
+    for row in git(repo, "ls-tree", "-r", "-z", head).split(b"\0"):
+        if not row:
+            continue
+        metadata, name = row.split(b"\t", 1)
+        mode, _, oid = metadata.split()
+        committed[name] = (mode, oid)
+    if staged != committed:
+        raise ValueError("the orphan registration's index holds staged changes; retain")
+
+
 # Metadata files that name commits. Expiry deletes them with the worktree, so
 # what they name must survive elsewhere (see check_pointers).
 POINTER_FILES = ("ORIG_HEAD", "FETCH_HEAD", "CLAUDE_BASE")
@@ -1462,6 +1497,7 @@ def expirable_registration(repo, archive_dir, item, now, days, trust, tips):
     check_held_metadata(repo, admin, head)
     check_admin_metadata(admin)
     check_metadata_names(admin=admin)
+    check_orphan_index(repo, admin, head)
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, release, head)
     check_pointers(repo, live_pointers(admin), head, tips(repo))
@@ -1476,6 +1512,7 @@ def expirable_registration(repo, archive_dir, item, now, days, trust, tips):
         still_registered(repo, path, head, lock)
         check_held_metadata(repo, admin, head)
         check_metadata_names(admin=admin)
+        check_orphan_index(repo, admin, head)
         check_pointers(repo, live_pointers(admin), head, tips(repo))
         active_processes(admin, trust_process_manager=trust)
         git(repo, "worktree", "remove", "--force", "--force", str(path))

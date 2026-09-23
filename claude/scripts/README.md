@@ -719,7 +719,9 @@ holding pre-rebase or amended commits is the common one; inspect it with
 Two orphan shapes are decided explicitly. A registration under the archive
 whose entry directory is gone is pruned with the same `git worktree remove`
 when its lock names that missing entry, its release record still matches the
-detached HEAD, its reflog holds nothing unique, the lock file is older than
+detached HEAD, its reflog holds nothing unique, its surviving index matches
+HEAD's tree exactly (the index is the last record of staged work once the
+checkout is gone), the lock file is older than
 the window and the PR re-verifies; the entry's absence is re-checked after the
 network proof, so a checkout restored meanwhile is never force-removed unseen.
 An archive directory with no registration

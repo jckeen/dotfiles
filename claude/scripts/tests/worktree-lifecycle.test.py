@@ -2605,6 +2605,21 @@ if kind == 'writer':
         (admin / "ORIG_HEAD").write_text(self.run_git(self.repo, "rev-parse", "main"))
         self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
 
+    def test_expire_retains_an_orphan_registration_with_staged_work(self):
+        archive = self.retired()
+        quarantine = archive / "worktree"
+        admin = self.repo / ".git/worktrees/task"
+        (quarantine / "staged").write_text("only in the index\n")
+        self.run_git(quarantine, "add", "staged")
+        shutil.rmtree(archive)
+        old = time.time() - 40 * 86400
+        os.utime(admin / "locked", (old, old))
+        item = self.entry(self.expire("--apply"), archive)
+        self.assertEqual(item["kind"], "orphan-registration")
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertIn("index", item["reason"])
+        self.assertTrue((admin / "index").exists())
+
     def test_expire_rechecks_an_orphan_checkout_is_still_absent(self):
         from functools import partial
         from unittest.mock import patch
