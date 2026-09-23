@@ -1426,7 +1426,7 @@ fi
 
 # repos: all in a report means the repos actually dispatched to, read from the
 # ledger — so --report needs no API key and no network.
-if grep -Fq -- '--repo jckeen/dotfiles' "$GH_ARGV" \
+if grep -Fq -- '--repo github.com/jckeen/dotfiles' "$GH_ARGV" \
    && grep -Fq -- '--search label:jules-routine:alpha' "$GH_ARGV"; then
   ok "--report queries the ledger's repositories by the routine's label"
 else
@@ -1484,7 +1484,7 @@ export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
 if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
      JULES_TRACKER="jckeen/dotfiles#446" \
      "$DISPATCH" --report --days 14 --post > "$CASE_DIR/out" 2>&1 \
-   && grep -Fq -- 'issue comment 446 --repo jckeen/dotfiles' "$GH_ARGV" \
+   && grep -Fq -- 'issue comment 446 --repo github.com/jckeen/dotfiles' "$GH_ARGV" \
    && grep -Fq '| alpha |' "$GH_COMMENT_BODY"; then
   ok "--post comments the table on the tracker issue"
 else
@@ -1529,6 +1529,31 @@ if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
 else
   fail "--dry-run still commented on the tracker issue"
   sed 's/^/      | /' "$CASE_DIR/out"
+fi
+
+# #554: the #527 pin, applied to --report. GH_HOST supplies the hostname to any
+# gh call that names none, and the timer runs outside a repository that could
+# supply one — so a hostless --repo would read another host's pull requests and,
+# worse, post the --post comment to a same-named repository there. The ledger
+# adds a second repository so both scope sources are covered.
+new_case
+routine alpha false 'repos:
+  - jckeen/dotfiles'
+printf '{"dispatched_at":"2026-09-17T00:00:00Z","date":"2026-09-17","routine":"alpha","repo":"jckeen/tender","source":"s","session":"x","url":""}\n' \
+  > "$STATE/dispatch.jsonl"
+export GH_ARGV="$CASE_DIR/gh-argv"
+export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
+if PATH="$GHBIN:$PATH" GH_HOST=ghe.example JULES_STATE_DIR="$STATE" \
+     JULES_ROUTINE_DIR="$ROUTINES" JULES_TRACKER="jckeen/dotfiles#446" \
+     "$DISPATCH" --report --days 14 --post > "$CASE_DIR/out" 2>&1 \
+   && grep -Fq -- 'pr list --repo github.com/jckeen/dotfiles ' "$GH_ARGV" \
+   && grep -Fq -- 'pr list --repo github.com/jckeen/tender ' "$GH_ARGV" \
+   && grep -Fq -- 'issue comment 446 --repo github.com/jckeen/dotfiles ' "$GH_ARGV" \
+   && [[ "$(grep -c -- '--repo ' "$GH_ARGV")" -eq "$(grep -c -- '--repo github\.com/' "$GH_ARGV")" ]]; then
+  ok "with GH_HOST set, every --report and --post gh call is pinned to github.com"
+else
+  fail "a --report or --post gh call left its host to GH_HOST"
+  sed 's/^/      | /' "$GH_ARGV" "$CASE_DIR/out"
 fi
 unset GH_ARGV GH_COMMENT_BODY
 
@@ -1722,8 +1747,8 @@ export GH_ARGV="$CASE_DIR/gh-argv"
 export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
 if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
      "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
-   && grep -Fq -- '--repo jckeen/atlas' "$GH_ARGV" \
-   && grep -Fq -- '--repo jckeen/dotfiles' "$GH_ARGV"; then
+   && grep -Fq -- '--repo github.com/jckeen/atlas' "$GH_ARGV" \
+   && grep -Fq -- '--repo github.com/jckeen/dotfiles' "$GH_ARGV"; then
   ok "the report covers a repository the routine no longer lists but was dispatched to"
 else
   fail "the report dropped a removed repository's history"
@@ -1739,7 +1764,7 @@ export GH_ARGV="$CASE_DIR/gh-argv"
 export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
 if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
      "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
-   && [[ "$(grep -c -- '--repo jckeen/dotfiles' "$GH_ARGV")" -eq 1 ]]; then
+   && [[ "$(grep -c -- '--repo github.com/jckeen/dotfiles' "$GH_ARGV")" -eq 1 ]]; then
   ok "a repository in both the list and the ledger is queried once"
 else
   fail "the report double-counted a repository"
@@ -1755,8 +1780,8 @@ export GH_ARGV="$CASE_DIR/gh-argv"
 export GH_COMMENT_BODY="$CASE_DIR/gh-comment"
 if PATH="$GHBIN:$PATH" JULES_STATE_DIR="$STATE" JULES_ROUTINE_DIR="$ROUTINES" \
      "$DISPATCH" --report --days 14 > "$CASE_DIR/out" 2>&1 \
-   && grep -Fq -- '--repo jckeen/atlas' "$GH_ARGV" \
-   && ! grep -Fq -- '--repo jckeen/dotfiles' "$GH_ARGV"; then
+   && grep -Fq -- '--repo github.com/jckeen/atlas' "$GH_ARGV" \
+   && ! grep -Fq -- '--repo github.com/jckeen/dotfiles' "$GH_ARGV"; then
   ok "a repos: all report covers that routine's own dispatches only"
 else
   fail "the report pulled in another routine's repositories"
