@@ -2656,6 +2656,43 @@ if kind == 'writer':
         if outcome["wrote"]:
             self.assertTrue((quarantine / "late.secret").exists())
 
+    def test_expire_rechecks_metadata_after_the_staged_inspection(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+
+        def committer(count, path):
+            # A detached commit made through the unchanged Git metadata while
+            # the staged checkout is inspected leaves the checkout clean.
+            if count == 2:
+                self.run_git(
+                    path,
+                    "-c",
+                    "user.name=F",
+                    "-c",
+                    "user.email=f@example.invalid",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "during staging",
+                )
+
+        report = self.expire_with_clean_hook(committer)
+        item = self.entry(report, archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertTrue(self.registered(quarantine))
+        self.assertNotEqual(self.run_git(quarantine, "rev-parse", "HEAD").strip(), self.head)
+
+    def test_expire_does_not_block_on_a_fifo_bundle(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        (archive / "repository.bundle").unlink()
+        os.mkfifo(archive / "repository.bundle", 0o600)
+        item = self.entry(self.expire(), archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertIn("bundle", item["reason"])
+
     def test_expire_renames_a_dirty_staging_checkout_back(self):
         archive = self.retired()
         self.age(archive, 40)

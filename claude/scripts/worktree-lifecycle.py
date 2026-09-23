@@ -1105,8 +1105,13 @@ def bundle_objects(repo, archive, head, tips):
     never followed through a symlink -- so a retained entry that merely links
     to another's bundle never counts as an independent survivor.
     """
+    bundle = archive / "repository.bundle"
     try:
-        descriptor = os.open(archive / "repository.bundle", os.O_RDONLY | os.O_NOFOLLOW)
+        # Never block: a FIFO in place of the bundle would hang the timer's
+        # report run, and the subprocess timeout does not cover this open.
+        if not stat.S_ISREG(bundle.lstat().st_mode):
+            raise ValueError("the recovery bundle is not a regular file; retain")
+        descriptor = os.open(bundle, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
         raise ValueError(f"cannot read the recovery bundle ({error}); retain") from error
     with os.fdopen(descriptor, "rb") as stream:
@@ -1468,6 +1473,14 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust, 
             clean(staging)
             active_processes(staging, trust_process_manager=trust)
             active_processes(admin, trust_process_manager=trust)
+            # Last: a commit made through the unchanged Git metadata during the
+            # staged inspection leaves the checkout clean, so re-read HEAD, the
+            # reflog, refs and pointers after it. What remains is Git's own
+            # window between this read and the remove below (#522).
+            still_registered(repo, staging, head, lock)
+            check_held_metadata(repo, admin, head)
+            check_metadata_names(admin=admin)
+            check_pointers(repo, live_pointers(admin), head, tips(repo))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             try:
                 os.rename(staging, quarantine)

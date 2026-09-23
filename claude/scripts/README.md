@@ -712,7 +712,13 @@ commit and exit during the network proof. Then, mirroring retirement, it
 renames the quarantine to `worktree-expiring` inside the same entry (so a
 path-based writer can no longer land in what is about to be deleted), repairs
 Git's link, and runs the clean and process checks on the moved directory
-itself; anything found there moves it back to `worktree` and retains the entry.
+itself, then re-reads the registration, HEAD, reflog, refs and pointer files
+once more, since a commit made through the unchanged Git metadata during that
+inspection leaves the checkout clean; anything found moves it back to
+`worktree` and retains the entry. The window left between that last read and
+the removal is Git's own, the same one #522 records for branch deletion.
+Bundles are opened non-blocking after an `lstat` regular-file check, so a
+FIFO in an archive cannot hang the timer's report run.
 Only then does it run `git worktree remove --force --force` on it from the
 primary checkout (refusing when the current directory is inside it), unlinks
 exactly `recovery.json`, `repository.bundle` and `worktree-metadata.tar`, and
