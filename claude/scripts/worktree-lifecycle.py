@@ -1088,16 +1088,28 @@ def durable_tips(repo):
     return tips
 
 
-def bundle_commits(repo, archive, head, tips):
-    """Every commit in an archive's recovery bundle, and those no durable tip reaches.
+def bundle_objects(repo, archive, head, tips):
+    """Every object in an archive's recovery bundle, and those no durable tip reaches.
 
     Retirement bundles every ref and reflog-reachable commit, and after reflog
     expiry and gc the bundle can be the only copy of reflog-only or since-deleted
     work. Index its pack in a private scratch repository (never in the archive
     or the source repository), then list its commits that no local ref, remote
     ref or the merged head reaches, with the source objects as an alternate.
+    Objects of every type count: a ref or tag can name a tree or blob directly.
+    The bundle must be this entry's own copy -- a regular file with one link,
+    never followed through a symlink -- so a retained entry that merely links
+    to another's bundle never counts as an independent survivor.
     """
-    data = (archive / "repository.bundle").read_bytes()
+    try:
+        descriptor = os.open(archive / "repository.bundle", os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ValueError(f"cannot read the recovery bundle ({error}); retain") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("the recovery bundle is not a singly linked regular file; retain")
+        data = stream.read()
     header, separator, pack = data.partition(b"\n\n")
     if not separator or not header.startswith((b"# v2 git bundle\n", b"# v3 git bundle\n")):
         raise ValueError("cannot read the recovery bundle; retain for inspection")
@@ -1116,9 +1128,7 @@ def bundle_commits(repo, archive, head, tips):
                 "--batch-all-objects",
                 "--batch-check=%(objecttype) %(objectname)",
             )
-            commits = [
-                row.split()[1] for row in text(rows).splitlines() if row.startswith("commit ")
-            ]
+            objects = [row.split()[1] for row in text(rows).splitlines() if row.strip()]
             (store / "objects" / "info" / "alternates").write_text(str(common / "objects") + "\n")
             query = "".join(tip + "\n" for tip in sorted(tips | {head})).encode()
             known = [
@@ -1128,11 +1138,16 @@ def bundle_commits(repo, archive, head, tips):
                 ).splitlines()
                 if " " not in line
             ]
-            revs = "".join(line + "\n" for line in [*commits, "--not", *known]).encode()
-            unique = text(git(store, "rev-list", "--stdin", stdin=revs)).split()
+            # `rev-list --objects A --not B` does not exclude everything B
+            # reaches when A holds bare trees or blobs, so take the full object
+            # closure of the durable tips and subtract it explicitly.
+            revs = "".join(line + "\n" for line in known).encode()
+            listed = text(git(store, "rev-list", "--objects", "--stdin", stdin=revs))
+            reachable = {row.split()[0] for row in listed.splitlines() if row.strip()}
+            unique = [oid for oid in objects if oid not in reachable]
     except (OSError, ValueError) as error:
         raise ValueError(f"cannot verify the recovery bundle ({error}); retain") from error
-    return set(commits), set(unique)
+    return set(objects), set(unique)
 
 
 # What a retired worktree's own Git metadata may hold for expiry to delete it:
@@ -1226,14 +1241,14 @@ def decide_bundles(candidates, sources, tips):
     covered = set()
     for archive, repo, head in sources:
         try:
-            covered |= bundle_commits(repo, archive, head, tips(repo))[0]
+            covered |= bundle_objects(repo, archive, head, tips(repo))[0]
         except (OSError, ValueError, subprocess.SubprocessError):
             # An unreadable retained bundle covers nothing; that only retains more.
             continue
     pending = []
     for entry, archive, repo, head, moment, _ in candidates:
         try:
-            commits, unique = bundle_commits(repo, archive, head, tips(repo))
+            commits, unique = bundle_objects(repo, archive, head, tips(repo))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             entry.update(disposition="retained", reason=str(error))
             continue
@@ -1248,7 +1263,7 @@ def decide_bundles(candidates, sources, tips):
         example = sorted(unique - covered)[0]
         entry.update(
             disposition="retained",
-            reason=f"its recovery bundle holds {len(unique - covered)} commit(s) no ref, remote "
+            reason=f"its recovery bundle holds {len(unique - covered)} object(s) no ref, remote "
             f"ref or retained archive keeps, such as {example}; retain for inspection",
         )
         covered |= commits

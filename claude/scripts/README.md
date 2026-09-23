@@ -692,15 +692,18 @@ may be the only copy of something and retains the entry; the checkout is clean d
 raw bytes with no untracked, ignored or special files; no Git lock file or
 same-user process holds it; the recorded PR is re-verified as merged into the
 current remote default exactly as retirement verifies it, never by branch
-name; and the recovery bundle holds no commit that a local ref, a remote ref
+name; and the recovery bundle holds no object (commit, tree, blob or tag) that a local ref, a remote ref
 (including GitHub's `refs/pull/*/head`), the merged head or a bundle that stays
 on disk does not already keep — after reflog expiry and gc a bundle can be the
 only copy of since-deleted or reflog-only work. Every bundle is
 `--all --reflog`, so each also carries the other worktrees' reflog-only
 commits; every retained entry's bundle therefore counts as a keeper, and when
 several expirable entries share an otherwise-unique commit the newest is kept
-and covers the rest. Bundle packs are indexed in a private temporary
-repository, never in the archive or the source repository. `--apply`
+and covers the rest. Only an entry's own bundle counts — a regular file with
+a single link, never read through a symlink — so a retained entry that merely
+links to another's bundle is not an independent copy. Bundle packs are indexed
+in a private temporary repository, never in the archive or the source
+repository. `--apply`
 re-reads the registration (HEAD, detached state and lock) and the worktree's
 reflog and refs, samples the checkout and processes once more — a process can
 commit and exit during the network proof — then runs `git worktree remove --force --force` on the quarantine from the

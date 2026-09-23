@@ -2634,6 +2634,38 @@ if kind == 'writer':
         self.assertTrue((archive / "worktree/file").exists())
         self.assertTrue(self.registered(archive / "worktree"))
 
+    def test_expire_retains_a_bundle_only_blob_and_ignores_linked_bundles(self):
+        (self.root / "blob").write_text("only copy\n")
+        blob = self.run_git(self.repo, "hash-object", "-w", str(self.root / "blob"))
+        self.run_git(self.repo, "update-ref", "refs/keep/blob", blob.strip())
+        archive = self.retired()
+        self.age(archive, 40)
+        self.run_git(self.repo, "update-ref", "-d", "refs/keep/blob")
+        item = self.entry(self.expire(), archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertIn("recovery bundle", item["reason"])
+        # A retained entry whose bundle is only a link to this one is not an
+        # independent copy and must not cover it.
+        linked = self.root / "archive/retired-linked"
+        (linked / "worktree").mkdir(parents=True, mode=0o700)
+        (linked / "recovery.json").write_text(
+            json.dumps(
+                dict(
+                    json.loads((archive / "recovery.json").read_text()),
+                    quarantine=str(linked / "worktree"),
+                )
+            )
+        )
+        for link in ("symlink", "hardlink"):
+            with self.subTest(link=link):
+                if link == "symlink":
+                    (linked / "repository.bundle").symlink_to(archive / "repository.bundle")
+                else:
+                    os.link(archive / "repository.bundle", linked / "repository.bundle")
+                item = self.entry(self.expire("--apply"), archive)
+                self.assertEqual(item["disposition"], "retained", item)
+                (linked / "repository.bundle").unlink()
+
     def test_expire_retains_a_rewritten_ref_outside_the_merged_head(self):
         archive = self.retired()
         self.age(archive, 40)
