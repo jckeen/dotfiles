@@ -75,7 +75,8 @@ elif endpoint == base + "pulls/1":
     print(config.get("title", "Fix the thing"))
 elif "issues?" in endpoint:
     lines = [config["existing"]] if config.get("existing") else []
-    for x in state["issues"]:
+    # The REST list is newest-first (sort=created, direction=desc by default).
+    for x in reversed(state["issues"]):
         lines.append("\t".join([str(x["number"]), x["state"], "-", tsv(x["body"])]))
     print("\n".join(lines))
 elif endpoint == "graphql":
@@ -124,7 +125,11 @@ elif endpoint.startswith(base + "issues/") and method == "PATCH":
 elif endpoint.startswith(base + "issues/") and method == "GET":
     if config.get("get_body_fail"):
         sys.exit(1)
-    print(find(int(endpoint.split("/")[-1]))["body"])
+    issue = find(int(endpoint.split("/")[-1]))
+    if jq and "labels" in jq:
+        print("\n".join(issue["labels"]))
+    else:
+        print(config.get("live_body", issue["body"]))
 else:
     raise SystemExit("Unexpected gh call: " + repr(args))
 """
@@ -154,6 +159,7 @@ class Harness:
 
     def run(self, *extra, **config):
         """Run the script once; return (write calls made by THIS run, result)."""
+        budget = config.pop("budget", 60000)
         self.fixture.write_text(json.dumps(config))
         if self.posts.exists():
             self.posts.unlink()
@@ -163,6 +169,7 @@ class Harness:
             "HARVEST_FIXTURE": str(self.fixture),
             "HARVEST_STATE": str(self.state),
             "HARVEST_POSTS": str(self.posts),
+            "HARVEST_BODY_BUDGET": str(budget),
         }
         result = subprocess.run(
             ["bash", str(SCRIPT), "--repo", "example/repo", "--pr", "1", *extra],
@@ -342,6 +349,45 @@ class HarvestTests(unittest.TestCase):
         calls, _ = h.run(comments=[comment(123, body=forged), comment(999)])
         self.assertEqual([c["kind"] for c in calls], ["patch"])
 
+    def test_append_rechecks_markers_in_the_live_body(self):
+        """A concurrent harvest appended after this run's prefetch: add nothing twice."""
+        h = self.harness()
+        h.seed({"number": 55, "state": "open", "labels": [], "body": PR_MARKER})
+        live = PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:456 -->"
+        calls, _ = h.run(comments=[comment(456)], live_body=live)
+        self.assertEqual(calls, [])
+        calls, _ = h.run(comments=[comment(456), comment(789)], live_body=live)
+        self.assertEqual([c["kind"] for c in calls], ["patch"])
+        body = calls[0]["fields"]["body"][0]
+        self.assertEqual(body.count("codex-comment-id:example/repo#1:456 "), 1)
+        self.assertEqual(body.count("codex-comment-id:example/repo#1:789 "), 1)
+
+    def test_bodies_never_exceed_the_budget_and_overflow_continues(self):
+        budget = 3000
+        comments = [comment(1000 + n, body="y" * 300) for n in range(40)]
+        h = self.harness()
+        for _ in range(10):
+            h.run(comments=comments, budget=budget)
+        issues = h.issues()
+        self.assertGreater(len(issues), 1)
+        for issue in issues:
+            self.assertLessEqual(len(issue["body"]), budget)
+            self.assertIn(PR_MARKER, issue["body"])
+        joined = "".join(i["body"] for i in issues)
+        for n in range(40):
+            self.assertEqual(joined.count(f"codex-comment-id:example/repo#1:{1000 + n} "), 1)
+        calls, _ = h.run(comments=comments, budget=budget)
+        self.assertEqual(calls, [])
+
+    def test_full_existing_issue_gets_a_continuation(self):
+        h = self.harness()
+        h.seed({"number": 55, "state": "open", "labels": [], "body": "z" * 2900 + PR_MARKER})
+        calls, _ = h.run(comments=[comment(456)], budget=3000)
+        self.assertEqual([c["kind"] for c in calls], ["create"])
+        self.assertTrue(calls[0]["title"].startswith("Codex review of #1 (continued): "))
+        calls, _ = h.run(comments=[comment(456), comment(789)], budget=3000)
+        self.assertEqual([(c["kind"], c.get("number")) for c in calls], [("patch", 100)])
+
     # ── #557: instruction-surface label ──────────────────────────────────
     def test_instruction_surface_label(self):
         cases = [
@@ -362,6 +408,21 @@ class HarvestTests(unittest.TestCase):
         calls, _ = h.run(comments=[comment(456, path="AGENTS.md")])
         self.assertEqual([c["kind"] for c in calls], ["patch", "label"])
         self.assertEqual(calls[1]["labels"], ["instruction-surface"])
+
+    def test_failed_label_is_repaired_on_a_later_run(self):
+        h = self.harness()
+        h.seed(
+            {
+                "number": 55,
+                "state": "open",
+                "labels": [],
+                "body": PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:456 -->",
+            }
+        )
+        calls, _ = h.run(comments=[comment(456, path="AGENTS.md")])
+        self.assertEqual([c["kind"] for c in calls], ["label"])
+        calls, _ = h.run(comments=[comment(456, path="AGENTS.md")])
+        self.assertEqual(calls, [])
 
     def test_instruction_surface_regex_matches_gate(self):
         gate = re.search(r"grep -qE '([^']+)' <<<\"\$CHANGED_PATHS\"", GATE.read_text())

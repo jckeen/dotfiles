@@ -15,10 +15,12 @@
 #
 # Dedup is two-level, both against one REST prefetch of every issue body:
 #   - outer, by PR: the `codex-review-pr:<repo>#<n>` marker finds the PR's
-#     consolidated issue in any state. When it exists, NEW comments are appended
-#     to its body (a closed one is reopened, since the new items are unread);
-#     ticked boxes and other edits are kept, because the body is re-read right
-#     before the edit.
+#     newest consolidated issue in any state. When it exists, NEW comments are
+#     appended to its body (a closed one is reopened, since the new items are
+#     unread). The body is re-read right before the edit, so ticked boxes are
+#     kept and a comment a concurrent run appended meanwhile is not added
+#     twice. Items that would push a body past GitHub's size limit go to a
+#     `(continued)` issue carrying the same PR marker.
 #   - inner, by comment: each item carries `codex-comment-id:<repo>#<n>:<id>`, so
 #     a comment already tracked — in the consolidated issue or in a legacy
 #     one-issue-per-comment issue — is never added twice.
@@ -84,10 +86,14 @@ QUIET=false
 # two strings, so an edit to one without the other fails CI.
 INSTRUCTION_SURFACE_RE='(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$|(^|/)\.codex-review-ignore$'
 
-# GitHub rejects an issue body over 65536 characters. Past this budget the
-# items drop their quoted comment text and keep badge, location, link and
-# marker, so dedup stays exact and the full text is one click away.
-BODY_BUDGET=60000
+# GitHub rejects an issue body over 65536 characters, so no body this script
+# writes exceeds this budget (an append counts the existing body too). An item
+# that does not fit whole drops its quoted text and keeps badge, location, link
+# and marker, so dedup stays exact and the full text is one click away; items
+# that fit in neither form go to a continuation issue with the same PR marker.
+# HARVEST_BODY_BUDGET overrides it for the tests only.
+BODY_BUDGET="${HARVEST_BODY_BUDGET:-60000}"
+[[ "$BODY_BUDGET" =~ ^[0-9]+$ ]] || BODY_BUDGET=60000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -196,7 +202,7 @@ resolved_ids="$(gh api graphql \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
         | select(.isResolved) | .comments.nodes[].databaseId' 2>/dev/null || true)"
 
-items_full="" items_compact="" new_count=0 surface=false
+IT_FULL=() IT_COMPACT=() IT_MARKER=() new_count=0 surface_any=false
 for rec in "${COMMENTS[@]}"; do
   IFS=$'\t' read -r cid path line fresh b64 <<<"$rec"
   [[ -z "${cid:-}" ]] && continue
@@ -215,6 +221,12 @@ for rec in "${COMMENTS[@]}"; do
     continue
   fi
 
+  # Computed over tracked comments too, so a label that failed to apply on an
+  # earlier run is repaired on the next one (ensure_surface_label below).
+  if grep -qE "$INSTRUCTION_SURFACE_RE" <<<"$path"; then
+    surface_any=true
+  fi
+
   marker="<!-- codex-comment-id:${REPO}#${PR}:${cid} -->"
   if [[ "$existing_bodies" == *"$marker"* ]]; then
     skipped=$((skipped+1))
@@ -228,127 +240,203 @@ for rec in "${COMMENTS[@]}"; do
   # mean "the matched text".
   body="${body//<!--/"&lt;!--"}"
   prio="$(grep -oE 'P[0-3] Badge' <<<"$body" | head -1 | cut -c1-2 || true)"
-  if grep -qE "$INSTRUCTION_SURFACE_RE" <<<"$path"; then
-    surface=true
-  fi
   link="https://github.com/${REPO}/pull/${PR}#discussion_r${cid}"
   head_line="- [ ] ${prio:+**[$prio]** }\`${path}:${line}\` — [comment]($link)"
   quoted="$(sed 's/^/  > /; s/[[:space:]]*$//' <<<"$body")"
-  items_full+="${head_line}
+  IT_FULL+=("${head_line}
 
 ${quoted}
 
   ${marker}
 
-"
-  items_compact+="${head_line} (text omitted: issue body size limit)
+")
+  IT_COMPACT+=("${head_line} (text omitted: issue body size limit)
   ${marker}
 
-"
+")
+  IT_MARKER+=("$marker")
   new_count=$((new_count+1))
 done
 
-if [[ "$new_count" -eq 0 ]]; then
-  note "harvest-codex-comments: nothing new — skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
-  exit 0
-fi
-
 labels=(codex-finding)
-[[ "$surface" == "true" ]] && labels+=(instruction-surface)
+[[ "$surface_any" == "true" ]] && labels+=(instruction-surface)
+pending=()
+for ((i = 0; i < new_count; i++)); do pending+=("$i"); done
 
-# ── Append to the PR's existing consolidated issue ─────────────────────
-if [[ -n "$existing_num" ]]; then
-  if [[ "$DRY_RUN" == "true" ]]; then
-    extra=""
-    [[ "$surface" == "true" ]] && extra+=" (+ label instruction-surface)"
-    [[ "$existing_state" == "closed" ]] && extra+=" and reopen it"
-    echo "  [dry-run] would append $new_count item(s) to #$existing_num$extra"
-    note "harvest-codex-comments: dry run — $new_count new, skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
-    exit 0
-  fi
-  # Re-read the live body (not the prefetched copy) so an operator's ticks and
-  # edits since the prefetch survive the rewrite. A failed read writes nothing.
-  if ! current="$(gh api "repos/$REPO/issues/$existing_num" --jq '.body // ""' 2>/dev/null)"; then
-    warn "  ⚠ could not read #$existing_num to append $new_count item(s) — nothing written."
-    exit 0
-  fi
-  new_body="${current}
-
-${items_full}"
-  if [[ "${#new_body}" -gt "$BODY_BUDGET" ]]; then
-    new_body="${current}
-
-${items_compact}"
-  fi
-  patch_args=(-f body="$new_body")
-  [[ "$existing_state" == "closed" ]] && patch_args+=(-f state=open)
-  if gh api -X PATCH "repos/$REPO/issues/$existing_num" "${patch_args[@]}" --jq '.html_url' >/dev/null 2>&1; then
-    reopened=""
-    [[ "$existing_state" == "closed" ]] && reopened=" (reopened)"
-    echo "  ✓ appended $new_count item(s) to #$existing_num$reopened"
-    if [[ "$surface" == "true" ]]; then
-      gh api "repos/$REPO/issues/$existing_num/labels" -f 'labels[]=instruction-surface' >/dev/null 2>&1 \
-        || warn "  ⚠ could not add label instruction-surface to #$existing_num"
+# pack_items <prefix> <suffix> — move pending items, in order, into
+# prefix+suffix while the total stays within BODY_BUDGET: the full item if it
+# fits, else its compact form, else stop. Sets PACKED_BODY and PACKED_N; the
+# items that did not fit stay pending.
+pack_items() {
+  local prefix="$1" suffix="$2" acc="" i item
+  PACKED_N=0
+  for i in "${pending[@]}"; do
+    item="${IT_FULL[$i]}"
+    if (( ${#prefix} + ${#acc} + ${#item} + ${#suffix} > BODY_BUDGET )); then
+      item="${IT_COMPACT[$i]}"
+      (( ${#prefix} + ${#acc} + ${#item} + ${#suffix} > BODY_BUDGET )) && break
     fi
-  else
-    warn "  ⚠ could not append to #$existing_num"
-  fi
-  note "harvest-codex-comments: appended $new_count, skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
-  exit 0
-fi
+    acc+="$item"
+    PACKED_N=$((PACKED_N+1))
+  done
+  PACKED_BODY="${prefix}${acc}${suffix}"
+  pending=("${pending[@]:PACKED_N}")
+}
 
-# ── File a new consolidated issue for this PR ──────────────────────────
-pr_title="$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null || true)"
-pr_title="${pr_title//$'\n'/ }"
-title="Codex review of #${PR}: ${pr_title:-(title unavailable)}"
-preamble="Filed by harvest-codex-comments — the GitHub Codex bot's inline review comments on ${REPO}#${PR}, one checklist item each, so they are not lost after merge. Tick an item once it is handled or moot; promote one to its own issue only when it needs separate tracking. Later bot comments on the same PR are appended here.
+# ensure_surface_label <issue> — add `instruction-surface` when this PR has a
+# comment on the gate's instruction surface and the issue lacks the label.
+# Checked every run (a read; the write only when missing), because the label
+# is a separate call after the body edit and a failed one would otherwise
+# never be retried: the comments it belongs to are already tracked.
+ensure_surface_label() {
+  [[ "$surface_any" == "true" && "$DRY_RUN" != "true" ]] || return 0
+  local have
+  if ! have="$(gh api "repos/$REPO/issues/$1" --jq '.labels[].name' 2>/dev/null)"; then
+    warn "  ⚠ could not read the labels of #$1"
+    return 0
+  fi
+  grep -qxF instruction-surface <<<"$have" && return 0
+  if gh api "repos/$REPO/issues/$1/labels" -f 'labels[]=instruction-surface' >/dev/null 2>&1; then
+    echo "  ✓ labelled #$1 instruction-surface"
+  else
+    warn "  ⚠ could not add label instruction-surface to #$1"
+  fi
+}
+
+summary() {
+  note "harvest-codex-comments: $1, skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
+}
+
+# create_issue <title> — file one consolidated issue holding as many pending
+# items as fit. Returns 1 when nothing was filed.
+create_issue() {
+  local title="$1" label_args=() l create_status=0 response response_body url
+  pack_items "$preamble" "$pr_marker"
+  if [[ "$PACKED_N" -eq 0 ]]; then
+    warn "  ⚠ an item does not fit an empty issue body (budget $BODY_BUDGET) — nothing filed."
+    return 1
+  fi
+  # File via REST (POST /repos/{owner}/{repo}/issues), not `gh issue create`
+  # (GraphQL). The `codex-finding` label is what the weekly janitor's issue-
+  # custodian phase keys on to re-verify and close fixed findings; a REST create
+  # may reject an unavailable label. Retry only a confirmed label validation
+  # response: a transport failure may follow a successful creation, and the
+  # body marker does not enforce server-side uniqueness.
+  for l in "${labels[@]}"; do label_args+=(-f "labels[]=$l"); done
+  response="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$PACKED_BODY" "${label_args[@]}" --include 2>/dev/null)" || create_status=$?
+  response_body="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
+  if [[ "$create_status" -eq 0 ]]; then
+    url="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$response_body" 2>/dev/null)" || url=""
+  elif [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
+    && jq -e '
+      (.errors | type == "array" and length > 0) and
+      all(.errors[];
+        ((.resource == "Issue" and .field == "labels") or
+         (.resource == "Label" and .field == "name")) and
+        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
+    ' <<<"$response_body" >/dev/null 2>&1; then
+    url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$PACKED_BODY" --jq '.html_url' 2>/dev/null)" || url=""
+  else
+    url=""
+  fi
+  if [[ -z "$url" ]]; then
+    warn "  ⚠ could not file the consolidated issue for $REPO#$PR ($PACKED_N item(s))"
+    return 1
+  fi
+  echo "  ✓ filed: $url ($PACKED_N item(s))"
+  return 0
+}
+
+pr_title=""
+title_for() {  # title_for <continued:true|false>
+  if [[ -z "$pr_title" ]]; then
+    pr_title="$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null || true)"
+    pr_title="${pr_title//$'\n'/ }"
+    pr_title="${pr_title:-(title unavailable)}"
+  fi
+  if [[ "$1" == "true" ]]; then
+    printf 'Codex review of #%s (continued): %s' "$PR" "$pr_title"
+  else
+    printf 'Codex review of #%s: %s' "$PR" "$pr_title"
+  fi
+}
+
+preamble="Filed by harvest-codex-comments — the GitHub Codex bot's inline review comments on ${REPO}#${PR}, one checklist item each, so they are not lost after merge. Tick an item once it is handled or moot; promote one to its own issue only when it needs separate tracking. Later bot comments on the same PR are appended here (or, once this body is full, to a continuation issue).
 
 **PR:** https://github.com/${REPO}/pull/${PR}
 
 "
-ibody="${preamble}${items_full}${pr_marker}"
-if [[ "${#ibody}" -gt "$BODY_BUDGET" ]]; then
-  ibody="${preamble}${items_compact}${pr_marker}"
-fi
 
-if [[ "$DRY_RUN" == "true" ]]; then
-  echo "  [dry-run] would file: $title ($new_count item(s); labels: ${labels[*]})"
-  note "harvest-codex-comments: dry run — $new_count new, skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
+if [[ "$new_count" -eq 0 ]]; then
+  [[ -n "$existing_num" ]] && ensure_surface_label "$existing_num"
+  summary "nothing new"
   exit 0
 fi
 
-# File via REST (POST /repos/{owner}/{repo}/issues), not `gh issue create`
-# (GraphQL). The `codex-finding` label is what the weekly janitor's issue-
-# custodian phase keys on to re-verify and close fixed findings; a REST create
-# may reject an unavailable label. Retry only a confirmed label validation
-# response: a transport failure may follow a successful creation, and the
-# body marker does not enforce server-side uniqueness.
-label_args=()
-for l in "${labels[@]}"; do label_args+=(-f "labels[]=$l"); done
-create_status=0
-response="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" "${label_args[@]}" --include 2>/dev/null)" || create_status=$?
-response_body="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
-created=false
-if [[ "$create_status" -eq 0 ]]; then
-  if url="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$response_body" 2>/dev/null)"; then
-    created=true
+if [[ "$DRY_RUN" == "true" ]]; then
+  if [[ -n "$existing_num" ]]; then
+    extra=""
+    [[ "$existing_state" == "closed" ]] && extra=" and reopen it"
+    echo "  [dry-run] would append $new_count item(s) to #$existing_num$extra (labels: ${labels[*]})"
+  else
+    echo "  [dry-run] would file: $(title_for false) ($new_count item(s); labels: ${labels[*]})"
   fi
-elif [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
-  && jq -e '
-    (.errors | type == "array" and length > 0) and
-    all(.errors[];
-      ((.resource == "Issue" and .field == "labels") or
-       (.resource == "Label" and .field == "name")) and
-      (.code == "invalid" or .code == "missing" or .code == "missing_field"))
-  ' <<<"$response_body" >/dev/null 2>&1; then
-  if url="$(gh api "repos/$REPO/issues" -f title="$title" -f body="$ibody" --jq '.html_url' 2>/dev/null)"; then
-    created=true
+  summary "dry run — $new_count new"
+  exit 0
+fi
+
+continued=false
+# ── Append to the PR's newest consolidated issue ───────────────────────
+if [[ -n "$existing_num" ]]; then
+  continued=true
+  # Re-read the live body (not the prefetched copy) so an operator's ticks and
+  # edits since the prefetch survive the rewrite, and re-check every marker
+  # against it: a concurrent harvest (the close-time workflow racing the
+  # nightly routine) may have appended the same comments since the prefetch.
+  # A failed read writes nothing.
+  if ! current="$(gh api "repos/$REPO/issues/$existing_num" --jq '.body // ""' 2>/dev/null)"; then
+    warn "  ⚠ could not read #$existing_num to append $new_count item(s) — nothing written."
+    exit 0
   fi
+  fresh_pending=()
+  for i in "${pending[@]}"; do
+    if [[ "$current" == *"${IT_MARKER[$i]}"* ]]; then
+      skipped=$((skipped+1))
+    else
+      fresh_pending+=("$i")
+    fi
+  done
+  pending=("${fresh_pending[@]}")
+  if [[ "${#pending[@]}" -eq 0 ]]; then
+    ensure_surface_label "$existing_num"
+    summary "nothing new after re-reading #$existing_num"
+    exit 0
+  fi
+  pack_items "${current}
+
+" ""
+  if [[ "$PACKED_N" -gt 0 ]]; then
+    patch_args=(-f body="$PACKED_BODY")
+    [[ "$existing_state" == "closed" ]] && patch_args+=(-f state=open)
+    if ! gh api -X PATCH "repos/$REPO/issues/$existing_num" "${patch_args[@]}" --jq '.html_url' >/dev/null 2>&1; then
+      warn "  ⚠ could not append to #$existing_num — nothing more written this run."
+      exit 0
+    fi
+    reopened=""
+    [[ "$existing_state" == "closed" ]] && reopened=" (reopened)"
+    echo "  ✓ appended $PACKED_N item(s) to #$existing_num$reopened"
+  fi
+  ensure_surface_label "$existing_num"
 fi
-if [[ "$created" == "true" ]]; then
-  echo "  ✓ filed: $url ($new_count item(s))"
-  note "harvest-codex-comments: filed 1 issue with $new_count item(s), skipped $skipped (already tracked), $obsolete obsolete (outdated/resolved)."
-else
-  warn "  ⚠ could not file the consolidated issue for $REPO#$PR ($new_count item(s))"
-fi
+
+# ── File consolidated issues for whatever is still pending ─────────────
+# Normally one; more only when the items overflow one issue body, in which
+# case each further issue is a continuation carrying the same PR marker.
+while [[ "${#pending[@]}" -gt 0 ]]; do
+  create_issue "$(title_for "$continued")" || break
+  continued=true
+done
+left=""
+[[ "${#pending[@]}" -gt 0 ]] && left=", ${#pending[@]} left for the next run"
+summary "$((new_count - ${#pending[@]})) new item(s) tracked$left"
 exit 0

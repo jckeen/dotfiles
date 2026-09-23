@@ -27,7 +27,12 @@ jobs:
     name: harvest Codex-bot comments of the merged PR
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.pull_request.merged == true
+    # Same-repo PRs only: a fork PR's GITHUB_TOKEN is read-only whatever the
+    # permissions block says, so its harvest could not write. The nightly
+    # routine (a user token) still covers fork PRs.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       # The merge commit is on the default branch, so the script that runs is
       # the reviewed one, never the PR head's copy.
@@ -37,10 +42,20 @@ jobs:
           persist-credentials: false
 
       # gh and jq ship on the ubuntu runner image. The script exits 0 on every
-      # path, so a harvest problem shows in the log without failing the run.
+      # path so it never blocks an in-session caller; here a write it could not
+      # make ("could not ..." on stderr) fails the run instead, so a lost
+      # harvest is visible on the Actions tab.
       - name: Harvest
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: bash claude/scripts/harvest-codex-comments.sh --repo "$REPO" --pr "$PR_NUMBER"
+        run: |
+          set -euo pipefail
+          err="$RUNNER_TEMP/harvest.err"
+          bash claude/scripts/harvest-codex-comments.sh --repo "$REPO" --pr "$PR_NUMBER" 2>"$err"
+          cat "$err" >&2
+          if grep -q 'could not' "$err"; then
+            echo "::error::harvest-codex-comments reported a failed read or write (see above)."
+            exit 1
+          fi
