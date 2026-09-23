@@ -7,13 +7,13 @@
 #      The summary carries counts only — ntfy topics are effectively public,
 #      so repo and branch names stay in the local log.
 #   3. Runs `worktree-lifecycle.py expire` in REPORT MODE ONLY over the
-#      retired-worktree archive, after the prune has refreshed origin refs, and
+#      retired-worktree archive, after the prune, and
 #      writes retired-worktrees.json for `hygiene-status.sh`. The timer never
-#      passes --apply: deleting a retired worktree needs the operator's cleanup
+#      passes --apply: removing a retired checkout needs the operator's cleanup
 #      authorization. The report asserts --trust-process-manager so its
 #      expirable count matches the operator's run; report mode deletes nothing.
-#      The operator expires entries with (fetch first, so the merge proof is fresh):
-#        git -C ~/dev/<repo> fetch origin
+#      --apply removes checkouts and registrations only; the recovery files
+#      (bundle, metadata tar, recovery.json) stay. The operator runs:
 #        python3 ~/dev/dotfiles/claude/scripts/worktree-lifecycle.py expire \
 #          --root ~/dev --archive-dir ~/.local/state/hygiene/worktree-archive \
 #          --older-than 30d --trust-process-manager --apply

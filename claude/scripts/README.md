@@ -652,103 +652,94 @@ the retained checkout and recorded metadata; repair alone does not migrate
 custom working-directory overrides. The lock remains in place across interruption
 and successful repair. Keep it until an authorized owner has inspected the
 retained files and decided their disposition, or until `expire` below removes
-an entry that passes every check.
+a checkout that passes every check (its recovery files always stay).
 
 ### Expiring retired worktrees
 
-Retirement keeps every quarantine registered, locked and detached, so the
-archive and `git worktree list` only grow. `expire` removes old entries that
-provably hold nothing unique:
+Retirement keeps every quarantine registered, locked and detached, so
+`git worktree list` and the archive's checkouts only grow. `expire` removes the
+old quarantined checkouts and their Git registrations. It never deletes the
+recovery files:
 
 ```sh
-git -C /path/to/repo fetch origin
 python3 claude/scripts/worktree-lifecycle.py expire --root /path/to/dev \
   --archive-dir /path/to/private/archive --older-than 30d --trust-process-manager
 ```
 
-Without `--apply` it is a report: it runs every check, prints one JSON entry
-per archive entry with its `kind`, `age_days`, `disposition` (`expirable` or
-`retained`) and a one-line `reason`, and changes nothing — it does not even
-create a missing archive directory. `--repo` scans one repository instead of
-`--root`. Add `--apply` only under the operator's cleanup authorization; the
-daily timer runs the report form only and saves it to
-`~/.local/state/hygiene/retired-worktrees.json` for `hygiene-status.sh`, with
-the exact operator command in the header of `hygiene-cron.sh`.
+Without `--apply` it is a report. It runs every check, prints one JSON entry
+per archive entry with its `kind`, `age_days`, `disposition` (`expirable`,
+`retained` or `kept`) and a one-line `reason`, and changes nothing. It does
+not even create a missing archive directory, and it makes no network calls.
+`--repo` scans one repository instead of `--root`. Add `--apply` only under
+the operator's cleanup authorization. The daily timer runs the report form
+only and saves it to `~/.local/state/hygiene/retired-worktrees.json` for
+`hygiene-status.sh`, with the exact operator command in the header of
+`hygiene-cron.sh`.
 
-A quarantine is expirable only when all of these hold, the same rules
-retirement applies: its `recovery.json` is readable and names this quarantine;
-the archive holds nothing but what retirement wrote; the Git lock still names
-this archive; HEAD is detached at the recorded head; the release record agrees;
-the entry was retired at least the window ago (`retired_at` in the record, or
-for records written before that field, the record's last write); the worktree's
-own reflog, per-worktree refs (`refs/worktree`, `refs/bisect`,
-`refs/rewritten`) and any interrupted rebase, bisect, merge or cherry-pick
-state name no commit outside the merged head, and every loose ref file there
-is a plain object id in one of those namespaces; `ORIG_HEAD`, `FETCH_HEAD` and
-the Claude Code harness's `CLAUDE_BASE`, live or archived, name only commits
-the merged head contains or a local or remote ref reaches; the worktree's Git metadata, live and in
-`worktree-metadata.tar`, holds only Git's own per-worktree files, the release
-record, the HEAD reflog, ref directories and `review-receipts/` (evidence for
-a PR expiry has just re-verified as merged, deleted with it) — any other name
-may be the only copy of something and retains the entry; the checkout is clean down to
-raw bytes with no untracked, ignored or special files; no Git lock file or
-same-user process holds it; the recorded PR is re-verified as merged into the
-current remote default exactly as retirement verifies it, never by branch
-name; and the recovery bundle holds no object (commit, tree, blob or tag) that a local ref, a remote ref
-(including GitHub's `refs/pull/*/head`), the merged head or a bundle that stays
-on disk does not already keep — after reflog expiry and gc a bundle can be the
-only copy of since-deleted or reflog-only work. Every bundle is
-`--all --reflog`, so each also carries the other worktrees' reflog-only
-commits; every retained entry's bundle therefore counts as a keeper, and when
-several expirable entries share an otherwise-unique commit the newest is kept
-and covers the rest. Only an entry's own bundle counts — a regular file with
-a single link, never read through a symlink — so a retained entry that merely
-links to another's bundle is not an independent copy. Bundle packs are indexed
-in a private temporary repository, never in the archive or the source
-repository. `--apply`
-re-reads the registration (HEAD, detached state and lock) and the worktree's
-reflog and refs, samples the checkout and processes once more — a process can
-commit and exit during the network proof. Then, mirroring retirement, it
-renames the quarantine to `worktree-expiring` inside the same entry (so a
-path-based writer can no longer land in what is about to be deleted), repairs
-Git's link, and runs the clean and process checks on the moved directory
-itself, then re-reads the registration, HEAD, reflog, refs and pointer files
-once more, since a commit made through the unchanged Git metadata during that
-inspection leaves the checkout clean; anything found moves it back to
-`worktree` and retains the entry. The window left between that last read and
-the removal is Git's own, the same one #522 records for branch deletion.
-Every file expire reads from an archive entry or from worktree metadata (the
-bundle, the metadata tar, `recovery.json`, the release record, the HEAD reflog,
-loose refs, pointer files and `gitdir`) goes through one reader that requires a
-regular file by `lstat`, opens it non-blocking without following links, and
-checks it again by `fstat`. Loose refs are read this way before Git is allowed
-to open them. A FIFO or other special file therefore retains the entry with a
-reason; it cannot hang the timer's report run.
-Only then does it run `git worktree remove --force --force` on it from the
-primary checkout (refusing when the current directory is inside it), unlinks
-exactly `recovery.json`, `repository.bundle` and `worktree-metadata.tar`, and
-removes the now-empty directory, so anything that appeared in between makes
-the removal fail rather than vanish. The merged branch ref and stashes are
-untouched. Anything else is retained with its reason — a worktree reflog
-holding pre-rebase or amended commits is the common one; inspect it with
+**What `--apply` removes and what it keeps.** It removes the quarantined
+checkout (`<entry>/worktree`) and the worktree's Git metadata directory, which
+takes it out of `git worktree list`. `repository.bundle`,
+`worktree-metadata.tar` and `recovery.json` stay in the archive entry
+permanently, byte for byte. They are the recovery path by construction, and
+they are small (the checkouts are what grows). Because they stay, expire never
+has to prove that the archive holds nothing unique. If the archive itself ever
+grows too large, a later command can prune recovery files from an explicit list
+the operator gives it. Nothing prunes them automatically.
+
+A quarantine is expirable only when all of these hold:
+
+- `recovery.json` is readable and names this quarantine, and the entry holds
+  nothing but the recovery files and `worktree`.
+- `repository.bundle` and `worktree-metadata.tar` still hash to what retirement
+  recorded in `recovery.json`, since removal relies on them.
+- The Git lock still names this archive, HEAD is detached at the recorded head,
+  and the release record agrees with `recovery.json`.
+- The entry was retired at least the window ago: `retired_at` in the record,
+  or the record's last write for records written before that field.
+- The checkout is clean down to raw bytes, with no untracked, ignored or
+  special files and an index that matches HEAD's tree exactly.
+- The worktree's Git metadata holds nothing written since retirement. Every
+  file must be byte-identical to its copy in `worktree-metadata.tar`, with
+  exceptions only for retirement's own later writes: the lock, the repaired
+  `gitdir`, HEAD at the recorded head and reflog lines that move it there, and
+  the index checked above. A later commit, `ORIG_HEAD`, per-worktree ref,
+  interrupted rebase, Git lock file or any new name retains the entry.
+- No same-user process holds the checkout or its metadata.
+
+The PR's merge is not re-verified. Retirement proved it, and the bundle that
+holds the head stays on disk.
+
+`--apply` then mirrors retirement. It renames the checkout to
+`worktree-expiring` inside the same entry, so a path-based writer can no longer
+land in what is about to be deleted, and repairs Git's link. It then runs the
+clean, process, registration and metadata checks again on the moved directory.
+The metadata check runs last, because a commit made through the Git metadata
+during that inspection leaves the checkout clean. Anything found moves the
+checkout back to `worktree` and retains the entry. Only then does it run
+`git worktree remove --force --force` on it from the primary checkout,
+refusing when the current directory is inside it. The window left between that
+last read and the removal is Git's own, the same one #522 records for branch
+deletion. The merged branch ref and stashes are untouched. Every file expire
+reads from an archive entry or worktree metadata goes through one reader that
+requires a regular file by `lstat`, opens it non-blocking without following
+links, and checks it again by `fstat`. A FIFO therefore retains the entry with
+a reason and cannot hang the timer's report run.
+
+Every other shape is reported and left alone:
+
+- `recovery-files`: an entry with no checkout, left by an earlier expiry or by
+  a retirement that stopped before its quarantine step. It is always `kept`
+  and is not counted as a retired worktree.
+- `orphan-directory`: an entry whose `worktree` (or a leftover
+  `worktree-expiring`) Git no longer registers. Always retained; inspect and
+  remove it by hand.
+- `orphan-registration`: a worktree registered under the archive whose entry
+  directory is gone. Always retained, since the recovery files that would back
+  its removal are gone too.
+
+A retained entry's reason names what blocked it. A worktree reflog holding a
+commit made after retirement is the usual one: inspect it with
 `git -C /path/to/quarantine reflog` and remove it by hand if nothing matters.
-
-Two orphan shapes are decided explicitly. A registration under the archive
-whose entry directory is gone is pruned with the same `git worktree remove`
-when its lock names that missing entry, its release record still matches the
-detached HEAD, its reflog holds nothing unique, its surviving index matches
-HEAD's tree exactly (the index is the last record of staged work once the
-checkout is gone), the lock file is older than
-the window and the PR re-verifies; the entry's absence is re-checked after the
-network proof, so a checkout restored meanwhile is never force-removed unseen.
-An archive directory with no registration and no `worktree` is a
-`partial-archive` — left by a retirement retained after archival, a failed
-quarantine rename, or an expiry interrupted after the removal. Expiry never
-deletes one: its saved index and reflog can be the only record of staged or
-reflog-only work that no bundle or ref keeps. It is always retained with that
-reason (its bundle still counts as a keeper for the other entries); inspect it
-and remove it by hand. One that still holds a `worktree` directory Git no
-longer registers is likewise always retained for inspection by hand.
 
 The timer never releases or deletes worktrees; the next session owns follow-up
 for pending releases. User authorization and release ownership remain
