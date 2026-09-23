@@ -15,8 +15,10 @@ merged against the remote and the quarantine holds nothing unique (dirty,
 ignored or special files, commits outside the merged head in its reflog or
 per-worktree refs, bundle commits no ref, remote ref or retained bundle keeps, an attached
 branch, a Git lock or a live process). Removal re-reads HEAD and the reflog,
-runs `git worktree remove --force --force` from the primary checkout, then
-unlinks only the files retirement wrote; anything else is retained with a reason.
+moves the checkout to a staging name and inspects it there (as retirement
+does), runs `git worktree remove --force --force` from the primary checkout,
+then unlinks only the files retirement wrote; anything else is retained with a
+reason. Partial archives are never deleted.
 """
 
 import argparse
@@ -40,6 +42,8 @@ QUARANTINE_LOCK = "retained quarantine: "
 # Everything applied retirement writes into an archive entry besides the
 # quarantined `worktree` itself; expiry deletes exactly these and no other name.
 ARCHIVE_FILES = ("recovery.json", "repository.bundle", "worktree-metadata.tar")
+# Where expiry moves a quarantine for its final inspection before removal.
+STAGING = "worktree-expiring"
 # Repository-local overrides reported by `git rev-parse --local-env-vars`,
 # plus namespace and attribute-source routing. GIT_NO_REPLACE_OBJECTS is safe
 # because run() explicitly forces it; configuration overrides are matched as
@@ -1449,31 +1453,37 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust, 
         check_held_metadata(repo, admin, head)
         check_metadata_names(admin=admin)
         check_pointers(repo, live_pointers(admin), head, tips(repo))
-        clean(quarantine)
         active_processes(quarantine, trust_process_manager=trust)
         active_processes(admin, trust_process_manager=trust)
-        # --force twice overrides the lock this function just verified names
-        # this archive; clean() above already refused ignored or local bytes.
-        git(repo, "worktree", "remove", "--force", "--force", str(quarantine))
+        # Mirror retirement: move the checkout out of its known path first, so
+        # a path-based writer can no longer land in what is about to be
+        # deleted, then inspect the moved directory itself. The lock (which
+        # names this archive) stays in place across the move and repair.
+        staging = archive / STAGING
+        if os.path.lexists(staging):
+            raise ValueError("an earlier expiry left a staging checkout; retain for inspection")
+        os.rename(quarantine, staging)
+        try:
+            git(repo, "worktree", "repair", str(staging))
+            clean(staging)
+            active_processes(staging, trust_process_manager=trust)
+            active_processes(admin, trust_process_manager=trust)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            try:
+                os.rename(staging, quarantine)
+                git(repo, "worktree", "repair", str(quarantine))
+            except (OSError, ValueError, subprocess.SubprocessError) as restore:
+                raise ValueError(
+                    f"changed after inspection ({error}); the checkout is retained at {staging} "
+                    f"because moving it back failed: {restore}"
+                ) from error
+            raise ValueError(f"changed after inspection; retained: {error}") from error
+        # --force twice overrides the lock this function verified names this
+        # archive; clean() above already refused ignored or local bytes.
+        git(repo, "worktree", "remove", "--force", "--force", str(staging))
         remove_archive(archive)
 
     return remove
-
-
-def expirable_partial(archive, record, repo, moment, now, days, tips):
-    extra = sorted(set(os.listdir(archive)) - set(ARCHIVE_FILES))
-    if extra:
-        raise ValueError("unexpected archive content, retain for inspection: " + ", ".join(extra))
-    if repo is None:
-        raise ValueError(
-            "partial archive is not superseded by a completed retirement of the same worktree "
-            "and head in a scanned repository; retain for inspection"
-        )
-    check_window(moment, now, days)
-    pointers = check_metadata_names(archive=archive)
-    verify_integration(repo, record, record["head"])
-    check_pointers(repo, pointers, record["head"], tips(repo))
-    return lambda: remove_archive(archive)
 
 
 def expirable_registration(repo, archive_dir, item, now, days, trust, tips):
@@ -1565,8 +1575,8 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
             parsed[child] = recovery_record(child)
         except ValueError as error:
             parsed[child] = error
-    # A retirement retained after archival leaves a partial entry; a retry of
-    # the same worktree and head that completed makes it a redundant copy.
+    # A partial archive's bundle still counts as a keeper for the others; find
+    # its repository through a completed retirement of the same worktree.
     completed = {}
     for child, value in parsed.items():
         if not isinstance(value, Exception) and child / "worktree" in registrations:
@@ -1615,18 +1625,18 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
                     "repository; inspect and remove it by hand"
                 )
             else:
-                # Its own quarantine is gone too (an interrupted expiry), or a
-                # later retry of the same worktree and head completed.
-                repo = completed.get((record["path"], head))
-                # A failed quarantine rename also leaves no `worktree` here, but
-                # its checkout and metadata still exist; only a removed
-                # registration makes the archive a leftover copy.
-                if repo is None and "quarantine" in record and not os.path.lexists(metadata):
-                    repo = commons.get(metadata.parent.parent.resolve())
-                superseding = repo
-                if repo is None:
-                    repo = commons.get(metadata.parent.parent.resolve())
-                remove = expirable_partial(child, record, superseding, moment, now, days, tips)
+                # Left by a retirement retained after archival, a failed
+                # quarantine rename, or an interrupted expiry. Its metadata tar
+                # can hold the only record of staged or reflog-only work that no
+                # bundle or ref keeps, so expiry never deletes one (#562).
+                repo = completed.get((record["path"], head)) or commons.get(
+                    metadata.parent.parent.resolve()
+                )
+                raise ValueError(
+                    "partial archive: its saved index and reflog may be the only record of "
+                    "staged or reflog-only work; expiry never deletes one, inspect and remove "
+                    "it by hand"
+                )
             entry.update(
                 disposition="expirable",
                 reason=f"PR #{record['pr']} merged and retired {entry['age_days']}d ago, "

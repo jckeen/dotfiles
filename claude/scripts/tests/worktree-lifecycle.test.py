@@ -19,6 +19,7 @@ import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "worktree-lifecycle.py"
+ARCHIVE_NAMES = ("recovery.json", "repository.bundle", "worktree-metadata.tar")
 
 
 def host_git_marker(root):
@@ -2516,7 +2517,7 @@ if kind == 'writer':
         self.assertIn("recovery bundle", item["reason"])
         self.assertTrue((archive / "repository.bundle").exists())
 
-    def test_expire_keeps_one_newest_archive_for_a_commit_only_archives_hold(self):
+    def test_expire_counts_a_retained_partial_bundle_as_a_keeper(self):
         self.run_git(self.repo, "branch", "spare", "main")
         spare = self.root / "spare"
         self.run_git(self.repo, "worktree", "add", "-q", str(spare), "spare")
@@ -2535,13 +2536,11 @@ if kind == 'writer':
         self.age(older, 50)
         self.run_git(self.repo, "branch", "-D", "spare")
         report = self.expire("--apply")
-        # The newest holder stays; the older copy is covered by it.
-        kept = self.entry(report, archive)
-        self.assertEqual(kept["disposition"], "retained", kept)
-        self.assertIn("recovery bundle", kept["reason"])
-        self.assertEqual(self.entry(report, older)["disposition"], "expired")
-        self.assertTrue((archive / "repository.bundle").exists())
-        self.assertFalse(os.path.lexists(older))
+        # The partial archive is always retained, and its bundle keeps the
+        # commit the quarantine's bundle alone would otherwise hold.
+        self.assertEqual(self.entry(report, older)["disposition"], "retained")
+        self.assertEqual(self.entry(report, archive)["disposition"], "expired")
+        self.assertTrue((older / "repository.bundle").exists())
 
     def test_expire_retains_unrecognized_git_metadata(self):
         archive = self.retired()
@@ -2619,6 +2618,59 @@ if kind == 'writer':
         self.assertEqual(item["disposition"], "retained", item)
         self.assertIn("index", item["reason"])
         self.assertTrue((admin / "index").exists())
+
+    def expire_with_clean_hook(self, hook):
+        from functools import partial
+        from unittest.mock import patch
+
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.clean
+        calls = []
+
+        def counted(path):
+            original(path)
+            calls.append(Path(path))
+            hook(len(calls), Path(path))
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle, "clean", counted):
+            return lifecycle.expire([self.repo], self.root / "archive", 30, True)
+
+    def test_expire_never_silently_loses_a_write_after_the_final_check(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+        outcome = {}
+
+        def writer(count, _):
+            # A path-based writer after the last clean check: its write must
+            # either survive or fail visibly, never succeed and be deleted.
+            if count == 2:
+                try:
+                    (quarantine / "late.secret").write_text("late\n")
+                    outcome["wrote"] = True
+                except FileNotFoundError:
+                    outcome["wrote"] = False
+
+        self.expire_with_clean_hook(writer)
+        if outcome["wrote"]:
+            self.assertTrue((quarantine / "late.secret").exists())
+
+    def test_expire_renames_a_dirty_staging_checkout_back(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+
+        def writer(count, path):
+            if count == 1:
+                (path / "late.secret").write_text("late\n")
+
+        report = self.expire_with_clean_hook(writer)
+        item = self.entry(report, archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertEqual((quarantine / "late.secret").read_text(), "late\n")
+        self.assertTrue(self.registered(quarantine))
+        self.assertEqual(sorted(os.listdir(archive)), sorted([*ARCHIVE_NAMES, "worktree"]))
 
     def test_expire_rechecks_an_orphan_checkout_is_still_absent(self):
         from functools import partial
@@ -2784,22 +2836,24 @@ if kind == 'writer':
             json.dumps(dict(record, quarantine=str(stray / "worktree")))
         )
         report = self.expire()
-        self.assertEqual(self.entry(report, partial)["kind"], "partial-archive")
-        self.assertEqual(self.entry(report, partial)["disposition"], "expirable")
-        self.assertEqual(self.entry(report, lone)["disposition"], "retained")
-        self.assertIn("superseded", self.entry(report, lone)["reason"])
+        # A partial archive's metadata tar can hold the only record of staged
+        # or reflog-only work, so expiry never deletes one, superseded or not.
+        for kept in (partial, lone):
+            self.assertEqual(self.entry(report, kept)["kind"], "partial-archive")
+            self.assertEqual(self.entry(report, kept)["disposition"], "retained")
+            self.assertIn("partial archive", self.entry(report, kept)["reason"])
         self.assertEqual(self.entry(report, stray)["kind"], "orphan-directory")
         self.assertEqual(self.entry(report, stray)["disposition"], "retained")
         self.assertIn("not a registered worktree", self.entry(report, stray)["reason"])
         self.assertEqual(report["retired"], 4)
         report = self.expire("--apply")
-        self.assertEqual(self.entry(report, partial)["disposition"], "expired")
-        self.assertFalse(os.path.lexists(partial))
+        self.assertEqual(self.entry(report, partial)["disposition"], "retained")
+        self.assertTrue((partial / "worktree-metadata.tar").exists())
         self.assertFalse(os.path.lexists(archive))
         self.assertTrue((lone / "recovery.json").exists())
         self.assertEqual((stray / "worktree/notes").read_text(), "unregistered\n")
 
-    def test_expire_finishes_an_interrupted_expiry_but_not_a_failed_rename(self):
+    def test_expire_keeps_the_leftovers_of_an_interrupted_expiry(self):
         archive = self.retired()
         self.age(archive, 40)
         record = json.loads((archive / "recovery.json").read_text())
@@ -2816,10 +2870,10 @@ if kind == 'writer':
         )
         report = self.expire()
         item = self.entry(report, archive)
-        self.assertEqual((item["kind"], item["disposition"]), ("partial-archive", "expirable"))
+        self.assertEqual((item["kind"], item["disposition"]), ("partial-archive", "retained"))
         self.assertEqual(self.entry(report, failed)["disposition"], "retained")
         self.expire("--apply")
-        self.assertFalse(os.path.lexists(archive))
+        self.assertTrue((archive / "worktree-metadata.tar").exists())
         self.assertTrue((failed / "recovery.json").exists())
 
     def test_expire_report_never_creates_the_archive(self):

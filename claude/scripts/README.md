@@ -707,7 +707,12 @@ in a private temporary repository, never in the archive or the source
 repository. `--apply`
 re-reads the registration (HEAD, detached state and lock) and the worktree's
 reflog and refs, samples the checkout and processes once more — a process can
-commit and exit during the network proof — then runs `git worktree remove --force --force` on the quarantine from the
+commit and exit during the network proof. Then, mirroring retirement, it
+renames the quarantine to `worktree-expiring` inside the same entry (so a
+path-based writer can no longer land in what is about to be deleted), repairs
+Git's link, and runs the clean and process checks on the moved directory
+itself; anything found there moves it back to `worktree` and retains the entry.
+Only then does it run `git worktree remove --force --force` on it from the
 primary checkout (refusing when the current directory is inside it), unlinks
 exactly `recovery.json`, `repository.bundle` and `worktree-metadata.tar`, and
 removes the now-empty directory, so anything that appeared in between makes
@@ -724,15 +729,14 @@ HEAD's tree exactly (the index is the last record of staged work once the
 checkout is gone), the lock file is older than
 the window and the PR re-verifies; the entry's absence is re-checked after the
 network proof, so a checkout restored meanwhile is never force-removed unseen.
-An archive directory with no registration
-is a `partial-archive` when it holds only those three files — left by a
-retirement retained after archival, or by an expiry interrupted after the
-removal — and is deleted only when a completed retirement of the same path and
-head supersedes it, or its record names a quarantine whose Git metadata no
-longer exists, past the window, with the PR re-verified and its bundle holding
-nothing unique. One that still
-holds a `worktree` directory Git no longer registers is always retained for
-inspection by hand.
+An archive directory with no registration and no `worktree` is a
+`partial-archive` — left by a retirement retained after archival, a failed
+quarantine rename, or an expiry interrupted after the removal. Expiry never
+deletes one: its saved index and reflog can be the only record of staged or
+reflog-only work that no bundle or ref keeps. It is always retained with that
+reason (its bundle still counts as a keeper for the other entries); inspect it
+and remove it by hand. One that still holds a `worktree` directory Git no
+longer registers is likewise always retained for inspection by hand.
 
 The timer never releases or deletes worktrees; the next session owns follow-up
 for pending releases. User authorization and release ownership remain
