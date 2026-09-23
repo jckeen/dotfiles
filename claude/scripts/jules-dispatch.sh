@@ -33,7 +33,10 @@
 #                      needs gh. Not with --report
 #   --report           tally routine PRs per week from GitHub instead of dispatching
 #   --days N           report window in days (default 28)
-#   --post             with --report, comment the table on the tracker issue
+#   --post             with --report, comment the table on the tracker issue.
+#                      Like reconcile's, every --report and --post gh call names
+#                      github.com, so GH_HOST cannot redirect the read or the
+#                      comment
 #
 # Env:
 #   JULES_API_KEY_FILE  key file (default ~/.config/jules/api-key); must be a
@@ -1672,7 +1675,10 @@ do_report() {
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue
       [[ -n "$ONLY_REPO" && "$repo" != "$ONLY_REPO" ]] && continue
-      if ! prs="$("$GH_BIN" pr list --repo "$repo" --state all --limit "$REPORT_LIMIT" \
+      # github.com is named, not left to GH_HOST, for the reason reconcile's
+      # calls name it (#527, #554). It also means a ledger repo carrying a host
+      # of its own is rejected by gh as malformed rather than honoured.
+      if ! prs="$("$GH_BIN" pr list --repo "github.com/$repo" --state all --limit "$REPORT_LIMIT" \
             --search "label:$label" --json state,createdAt,mergedAt 2>/dev/null)"; then
         printf 'jules-dispatch: gh pr list failed for %s (label %s)\n' "$repo" "$label" >&2
         # A non-zero exit at the end is no help to someone reading the posted
@@ -1746,7 +1752,7 @@ do_report() {
     fi
     printf 'Jules routine lane — last %s days (generated %s)\n\n%s\n%s' \
       "$REPORT_DAYS" "$NOW_ISO" "$table" "$caveat" \
-      | "$GH_BIN" issue comment "${BASH_REMATCH[2]}" --repo "${BASH_REMATCH[1]}" --body-file -
+      | "$GH_BIN" issue comment "${BASH_REMATCH[2]}" --repo "github.com/${BASH_REMATCH[1]}" --body-file -
   fi
 
   [[ "$FAILURES" -eq 0 ]] || exit 1
