@@ -81,7 +81,7 @@ class ResolveChangelog(unittest.TestCase):
         self.assertIn("refusing", r.stderr)
         self.assertEqual(self.path.read_text(), original)
 
-    def test_refuses_second_conflict_block(self):
+    def test_refuses_second_block_inside_an_existing_section(self):
         second = "<<<<<<< HEAD\n- a\n=======\n- b\n>>>>>>> origin/main\n"
         self.write(conflicted(after=OLD + second))
         original = self.path.read_text()
@@ -96,6 +96,46 @@ class ResolveChangelog(unittest.TestCase):
     def test_refuses_side_that_is_not_whole_sections(self):
         self.write(conflicted(ours="- a stray bullet\n"))
         self.assertEqual(run(self.path).returncode, 1)
+
+    def test_shared_body_outside_the_conflict_stays_with_both_entries(self):
+        # Git can leave only the differing headings inside the block when the
+        # two new entries share a body; each entry must keep its own copy.
+        body = "\n- Same body.\n"
+        self.write(
+            f"{HEAD}<<<<<<< HEAD\n## 2026-09-22 — ours\n=======\n## 2026-09-22 — theirs\n"
+            f">>>>>>> origin/main\n{body}\n{OLD}"
+        )
+        r = run(self.path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            self.path.read_text(),
+            f"{HEAD}## 2026-09-22 — theirs\n{body}\n## 2026-09-22 — ours\n{body}\n{OLD}",
+        )
+
+    def test_several_blocks_inside_the_new_entries_are_resolved(self):
+        self.write(
+            f"{HEAD}<<<<<<< HEAD\n## 2026-09-22 — ours\n=======\n## 2026-09-22 — theirs\n"
+            ">>>>>>> origin/main\n\n- Same line.\n<<<<<<< HEAD\n- ours tail.\n=======\n"
+            f"- theirs tail.\n>>>>>>> origin/main\n\n{OLD}"
+        )
+        r = run(self.path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            self.path.read_text(),
+            f"{HEAD}## 2026-09-22 — theirs\n\n- Same line.\n- theirs tail.\n\n"
+            f"## 2026-09-22 — ours\n\n- Same line.\n- ours tail.\n\n{OLD}",
+        )
+
+    def test_refuses_edit_to_an_existing_section_without_diff3(self):
+        # Ours prepends and also edits OLD's body; theirs only prepends. The
+        # first lines of both sides are headings, but OLD would be duplicated.
+        self.write(
+            f"{HEAD}<<<<<<< HEAD\n{OURS}\n## 2026-09-20 — fix: an older entry\n\n- Edited.\n"
+            f"=======\n{THEIRS}\n{OLD}>>>>>>> origin/main\n"
+        )
+        original = self.path.read_text()
+        self.assertEqual(run(self.path).returncode, 1)
+        self.assertEqual(self.path.read_text(), original)
 
     def test_check_mode_does_not_write(self):
         self.write(conflicted())

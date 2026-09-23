@@ -8,14 +8,21 @@ that DIRTY state: after `git merge origin/main` stops on CHANGELOG.md, run
     python3 claude/scripts/resolve-changelog.py            # resolve in place
     python3 claude/scripts/resolve-changelog.py --check    # dry run, no write
 
-and it keeps BOTH sides' sections, "theirs" (origin/main, merged first) on top
-of "ours" (this branch), separated by a blank line. Entry text is never edited.
+and it keeps BOTH sides' new sections, "theirs" (origin/main, merged first) on
+top of "ours" (this branch), separated by a blank line. Entry text is never
+edited.
 
-It refuses (exit 1, file untouched) unless the conflict is exactly the shape
-two prepends produce:
-  - one conflict block, and no `## ` section heading above it (top of file);
-  - each side is empty or whole sections — its first non-blank line is `## `;
-  - a diff3 base part, if present, is blank (neither side edited shared text).
+Git's conflict hunks are not trusted to fall on section boundaries: a shared
+body line can sit outside the block, or the new entries can split into several
+blocks. So the resolver rebuilds each side's whole file from the markers,
+splits both into `## ` sections, and takes the longest identical run of
+trailing sections as the shared history. What each side has above that run is
+its new sections. It refuses (exit 1, file untouched) unless that is purely a
+prepend:
+  - both sides have the same text above their first `## ` heading;
+  - no heading appears in both sides' new sections, or in a new section and
+    the shared history (an edit to an existing section shows up this way);
+  - with diff3 markers, the base is exactly the shared history.
 Anything else is a real conflict to resolve by hand.
 
 The sides assume a merge (ours = HEAD = your branch). In a rebase git swaps
@@ -41,57 +48,103 @@ def is_marker(line, marker):
     return line == marker or line.startswith(marker + " ")
 
 
-def whole_sections(side):
-    """True when a side is empty or starts (after blank lines) with a heading."""
-    content = [line for line in side if line.strip()]
-    return not content or content[0].startswith("## ")
+def sides(lines):
+    """Rebuild (ours, base, theirs) whole-file line lists from conflict markers.
+
+    base is None unless every block carries a diff3 base part. Returns None
+    when the text has no conflict block.
+    """
+    ours, base, theirs = [], [], []
+    has_base, blocks = True, 0
+    state = None  # None outside a block, else "ours" / "base" / "theirs"
+    for n, line in enumerate(lines, 1):
+        bare = line.rstrip("\r\n")
+        if state is None:
+            if is_marker(bare, START):
+                state, blocks, seen_base = "ours", blocks + 1, False
+            elif any(is_marker(bare, m) for m in (BASE, MID, END)):
+                raise Refused(f"stray conflict marker at line {n}")
+            else:
+                ours.append(line)
+                base.append(line)
+                theirs.append(line)
+        elif state == "ours" and is_marker(bare, BASE):
+            state, seen_base = "base", True
+        elif state in ("ours", "base") and is_marker(bare, MID):
+            state, has_base = "theirs", has_base and seen_base
+        elif state == "theirs" and is_marker(bare, END):
+            state = None
+        elif is_marker(bare, START) or is_marker(bare, END):
+            raise Refused(f"unexpected conflict marker at line {n}")
+        else:
+            {"ours": ours, "base": base, "theirs": theirs}[state].append(line)
+    if state is not None:
+        raise Refused("unterminated conflict block")
+    if not blocks:
+        return None
+    return ours, (base if has_base else None), theirs
+
+
+def split(lines):
+    """(preamble, [section, ...]); each section is the lines from one `## ` heading."""
+    preamble, sections = [], []
+    for line in lines:
+        if line.startswith("## "):
+            sections.append([line])
+        elif sections:
+            sections[-1].append(line)
+        else:
+            preamble.append(line)
+    return preamble, sections
+
+
+def heading(section):
+    return section[0].rstrip("\r\n")
 
 
 def resolve(text):
     """Return the resolved text, or None when there is no conflict."""
-    lines = text.splitlines(keepends=True)
-    bare = [line.rstrip("\r\n") for line in lines]
-    starts = [i for i, line in enumerate(bare) if is_marker(line, START)]
-    if not starts:
-        leftovers = [i + 1 for i, line in enumerate(bare) if is_marker(line, END)]
-        if leftovers:
-            raise Refused(f"stray conflict marker at line {leftovers[0]}")
+    rebuilt = sides(text.splitlines(keepends=True))
+    if rebuilt is None:
         return None
-    if len(starts) > 1:
-        raise Refused(f"{len(starts)} conflict blocks; only one at the head is handled")
-    start = starts[0]
-    above = [i + 1 for i in range(start) if bare[i].startswith("## ")]
-    if above:
+    ours_lines, base_lines, theirs_lines = rebuilt
+    ours_pre, ours = split(ours_lines)
+    theirs_pre, theirs = split(theirs_lines)
+    if ours_pre != theirs_pre:
+        raise Refused("the sides differ above the first `## ` section (not a prepend)")
+
+    shared = 0
+    while (
+        shared < min(len(ours), len(theirs))
+        and ours[len(ours) - 1 - shared] == theirs[len(theirs) - 1 - shared]
+    ):
+        shared += 1
+    history = ours[len(ours) - shared :]
+    ours_new = ours[: len(ours) - shared]
+    theirs_new = theirs[: len(theirs) - shared]
+
+    history_heads = {heading(s) for s in history}
+    ours_heads = {heading(s) for s in ours_new}
+    theirs_heads = {heading(s) for s in theirs_new}
+    clash = (ours_heads & theirs_heads) | ((ours_heads | theirs_heads) & history_heads)
+    if clash:
         raise Refused(
-            f"conflict at line {start + 1} is below the section at line {above[0]} "
-            "(not the top-of-file prepend region)"
+            f"section {sorted(clash)[0]!r} differs between the sides: an existing "
+            "section was edited, not just prepended to"
         )
+    if base_lines is not None and split(base_lines) != (ours_pre, history):
+        raise Refused("the diff3 base is not the shared history: a side edited existing text")
 
-    base = mid = end = None
-    for i in range(start + 1, len(bare)):
-        if is_marker(bare[i], BASE) and base is None and mid is None:
-            base = i
-        elif is_marker(bare[i], MID) and mid is None:
-            mid = i
-        elif is_marker(bare[i], END):
-            end = i
-            break
-    if mid is None or end is None:
-        raise Refused(f"unterminated conflict block starting at line {start + 1}")
-
-    ours = lines[start + 1 : base if base is not None else mid]
-    shared = lines[base + 1 : mid] if base is not None else []
-    theirs = lines[mid + 1 : end]
-    if any(line.strip() for line in shared):
-        raise Refused("the diff3 base is not empty: a side edited existing text")
-    for name, side in (("ours", ours), ("theirs", theirs)):
-        if not whole_sections(side):
-            raise Refused(f"{name} side does not start with a `## ` section heading")
-
-    top = list(theirs)
-    if top and ours and top[-1].strip():
-        top.append("\n")
-    resolved = "".join(lines[:start] + top + ours + lines[end + 1 :])
+    out = list(ours_pre)
+    new = theirs_new + ours_new
+    for i, section in enumerate(new):
+        out.extend(section)
+        followed = i + 1 < len(new) or history
+        if followed and section[-1].strip():
+            out.append("\n")
+    for section in history:
+        out.extend(section)
+    resolved = "".join(out)
     for line in resolved.splitlines():
         if any(is_marker(line, m) for m in (START, BASE, END)):
             raise Refused("conflict markers remain after resolution")
