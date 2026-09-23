@@ -178,6 +178,9 @@ Adopt Jules as the routine lane.
    github.com`): the URL was validated as github.com, but a hostless `--repo`
    takes its host from `GH_HOST`, so an Enterprise default would have sent the
    close, label and title writes to a same-named repository there (#527).
+   `--report` makes the same promise: its per-repository `gh pr list` reads
+   and the `--post` comment on the tracker issue name `github.com` too, so the
+   weekly table can neither be tallied from nor posted to another host (#554).
    `max_files` is a hard per-PR limit, so every dispatch record now carries the
    limit the session was given, and a pull request over it is recorded
    `blocked-oversized` — left open, unlabeled and unretitled, because labeling
