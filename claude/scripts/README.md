@@ -681,7 +681,12 @@ the entry was retired at least the window ago (`retired_at` in the record, or
 for records written before that field, the record's last write); the worktree's
 own reflog, per-worktree refs (`refs/worktree`, `refs/bisect`,
 `refs/rewritten`) and any interrupted rebase, bisect, merge or cherry-pick
-state name no commit outside the merged head; the checkout is clean down to
+state name no commit outside the merged head, nor does the Claude Code
+harness's `CLAUDE_BASE` pointer; the worktree's Git metadata, live and in
+`worktree-metadata.tar`, holds only Git's own per-worktree files, the release
+record, the HEAD reflog, ref directories and `review-receipts/` (evidence for
+a PR expiry has just re-verified as merged, deleted with it) — any other name
+may be the only copy of something and retains the entry; the checkout is clean down to
 raw bytes with no untracked, ignored or special files; no Git lock file or
 same-user process holds it; the recorded PR is re-verified as merged into the
 current remote default exactly as retirement verifies it, never by branch
@@ -709,7 +714,9 @@ Two orphan shapes are decided explicitly. A registration under the archive
 whose entry directory is gone is pruned with the same `git worktree remove`
 when its lock names that missing entry, its release record still matches the
 detached HEAD, its reflog holds nothing unique, the lock file is older than
-the window and the PR re-verifies. An archive directory with no registration
+the window and the PR re-verifies; the entry's absence is re-checked after the
+network proof, so a checkout restored meanwhile is never force-removed unseen.
+An archive directory with no registration
 is a `partial-archive` when it holds only those three files — left by a
 retirement retained after archival, or by an expiry interrupted after the
 removal — and is deleted only when a completed retirement of the same path and

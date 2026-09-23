@@ -2543,6 +2543,60 @@ if kind == 'writer':
         self.assertTrue((archive / "repository.bundle").exists())
         self.assertFalse(os.path.lexists(older))
 
+    def test_expire_retains_unrecognized_git_metadata(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        admin = self.repo / ".git/worktrees/task"
+        with self.subTest(where="live metadata"):
+            (admin / "notes").write_text("only copy\n")
+            item = self.entry(self.expire("--apply"), archive)
+            self.assertEqual(item["disposition"], "retained", item)
+            self.assertIn("notes", item["reason"])
+            (admin / "notes").unlink()
+        with self.subTest(where="archived metadata"):
+            saved = (archive / "worktree-metadata.tar").read_bytes()
+            extra = self.root / "extra"
+            extra.write_text("only copy\n")
+            with tarfile.open(archive / "worktree-metadata.tar", "a") as stream:
+                stream.add(extra, arcname="worktree-metadata/backup")
+            item = self.entry(self.expire("--apply"), archive)
+            self.assertEqual(item["disposition"], "retained", item)
+            self.assertIn("backup", item["reason"])
+            (archive / "worktree-metadata.tar").write_bytes(saved)
+        # Review receipts and Git's own files are what retirement expects.
+        (admin / "review-receipts").mkdir(exist_ok=True)
+        (admin / "review-receipts/receipt.json").write_text("{}\n")
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
+    def test_expire_rechecks_an_orphan_checkout_is_still_absent(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        archive = self.retired()
+        admin = self.repo / ".git/worktrees/task"
+        saved = archive.parent / "saved-entry"
+        os.rename(archive, saved)
+        old = time.time() - 40 * 86400
+        os.utime(admin / "locked", (old, old))
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.verify_integration
+
+        def restore(*args, **kwargs):
+            proof = original(*args, **kwargs)
+            os.rename(saved, archive)
+            return proof
+
+        with (
+            patch.dict(os.environ, self.env),
+            patch.object(lifecycle, "verify_integration", restore),
+        ):
+            report = lifecycle.expire([self.repo], self.root / "archive", 30, True)
+        item = next(e for e in report["entries"] if e["kind"] == "orphan-registration")
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertTrue((archive / "worktree/file").exists())
+        self.assertTrue(self.registered(archive / "worktree"))
+
     def test_expire_retains_a_rewritten_ref_outside_the_merged_head(self):
         archive = self.retired()
         self.age(archive, 40)

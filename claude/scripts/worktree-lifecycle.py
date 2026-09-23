@@ -1046,6 +1046,16 @@ def check_held_metadata(repo, admin, head):
         "refs/rewritten",
     )
     oids.update(text(refs).split())
+    # The harness's base pointer is metadata expiry deletes, so what it names
+    # must be contained too.
+    try:
+        base = (admin / "CLAUDE_BASE").read_text().strip()
+    except FileNotFoundError:
+        base = None
+    if base is not None:
+        if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", base):
+            raise ValueError("unparseable CLAUDE_BASE in worktree metadata; retain worktree")
+        oids.add(base)
     for oid in sorted(oids):
         try:
             git(repo, "merge-base", "--is-ancestor", oid, head)
@@ -1115,6 +1125,78 @@ def bundle_commits(repo, archive, head, tips):
     except (OSError, ValueError) as error:
         raise ValueError(f"cannot verify the recovery bundle ({error}); retain") from error
     return set(commits), set(unique)
+
+
+# What a retired worktree's own Git metadata may hold for expiry to delete it:
+# Git's per-worktree files, the release record (mirrored in recovery.json), the
+# Claude Code harness's CLAUDE_BASE pointer, the per-worktree HEAD reflog and
+# ref directories (their commits are checked separately), and review receipts,
+# which certify a review of a PR expiry has just re-verified as merged. Any
+# other name may be the only copy of something and retains the entry.
+METADATA_FILES = {
+    "HEAD",
+    "ORIG_HEAD",
+    "FETCH_HEAD",
+    "AUTO_MERGE",
+    "COMMIT_EDITMSG",
+    "commondir",
+    "gitdir",
+    "index",
+    "locked",
+    "config.worktree",
+    "CLAUDE_BASE",
+    MARKER,
+}
+
+
+def metadata_name_allowed(relative, is_dir):
+    parts = relative.split("/")
+    if parts[0] == "review-receipts":
+        return True
+    if len(parts) == 1:
+        return parts[0] in ("logs", "refs") if is_dir else parts[0] in METADATA_FILES
+    if parts[0] == "logs":
+        return relative == "logs/HEAD" and not is_dir
+    # Per-worktree ref directories only; ref files are checked as commits
+    # in the live metadata, and an archived one is retained outright.
+    return parts[0] == "refs" and is_dir
+
+
+def check_metadata_names(admin=None, archive=None):
+    """Retain an entry whose live or archived Git metadata holds an unknown name."""
+
+    def refuse(name):
+        raise ValueError(f"unrecognized Git metadata may be unique, retain for inspection: {name}")
+
+    if admin is not None:
+
+        def scan_error(error):
+            raise error
+
+        for directory, dirs, files in os.walk(admin, followlinks=False, onerror=scan_error):
+            for name in dirs + files:
+                path = Path(directory) / name
+                relative = path.relative_to(admin).as_posix()
+                if relative.startswith("refs/") and not path.is_dir():
+                    continue  # checked by check_held_metadata
+                if not metadata_name_allowed(relative, stat.S_ISDIR(path.lstat().st_mode)):
+                    refuse(relative)
+    if archive is not None:
+        try:
+            with tarfile.open(archive / "worktree-metadata.tar") as saved:
+                members = saved.getmembers()
+        except (OSError, tarfile.TarError) as error:
+            raise ValueError("cannot read worktree-metadata.tar; retain for inspection") from error
+        for member in members:
+            if member.name == "worktree-metadata":
+                continue
+            relative = member.name.removeprefix("worktree-metadata/")
+            if (
+                relative == member.name
+                or not (member.isdir() or member.isfile())
+                or not metadata_name_allowed(relative, member.isdir())
+            ):
+                refuse(relative)
 
 
 def decide_bundles(candidates, sources, tips):
@@ -1229,6 +1311,7 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
     check_held_metadata(repo, admin, head)
     clean(quarantine)
     check_admin_metadata(admin)
+    check_metadata_names(admin=admin, archive=archive)
     active_processes(quarantine, trust_process_manager=trust)
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, record, head)
@@ -1241,6 +1324,7 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
         # leaving a clean checkout at an unverified HEAD.
         still_registered(repo, quarantine, head, lock)
         check_held_metadata(repo, admin, head)
+        check_metadata_names(admin=admin)
         clean(quarantine)
         active_processes(quarantine, trust_process_manager=trust)
         active_processes(admin, trust_process_manager=trust)
@@ -1262,6 +1346,7 @@ def expirable_partial(archive, record, repo, moment, now, days):
             "and head in a scanned repository; retain for inspection"
         )
     check_window(moment, now, days)
+    check_metadata_names(archive=archive)
     verify_integration(repo, record, record["head"])
     return lambda: remove_archive(archive)
 
@@ -1286,14 +1371,20 @@ def expirable_registration(repo, archive_dir, item, now, days, trust):
     check_window(moment, now, days)
     check_held_metadata(repo, admin, head)
     check_admin_metadata(admin)
+    check_metadata_names(admin=admin)
     active_processes(admin, trust_process_manager=trust)
     verify_integration(repo, release, head)
 
     lock = QUARANTINE_LOCK + str(archive)
 
     def remove():
+        # A restored checkout would be deleted unseen by the forced removal,
+        # so its absence is re-established after the network proof.
+        if os.path.lexists(archive) or os.path.lexists(path):
+            raise ValueError("the archived checkout reappeared after inspection; retained")
         still_registered(repo, path, head, lock)
         check_held_metadata(repo, admin, head)
+        check_metadata_names(admin=admin)
         active_processes(admin, trust_process_manager=trust)
         git(repo, "worktree", "remove", "--force", "--force", str(path))
 
