@@ -529,7 +529,8 @@ separately from GitHub repository-settings drift. Use `--root /path/to/dev`
 to inventory primary repositories under a shared directory. The daily hygiene
 timer saves this read-only inventory to `~/.local/state/hygiene/worktrees.json`.
 Read it with `hygiene-status.sh --worktrees`; `--status` describes repository
-settings only.
+settings plus one `retired worktrees: N (oldest Xd, M expirable)` line from
+the timer's expiry report (see Expiring retired worktrees below).
 Unreleased worktrees have unknown or active ownership and remain retained.
 
 The task owner stops its processes, leaves the target directory, and releases
@@ -648,7 +649,63 @@ after inspecting those paths. Before other recovery commands, verify that
 the retained checkout and recorded metadata; repair alone does not migrate
 custom working-directory overrides. The lock remains in place across interruption
 and successful repair. Keep it until an authorized owner has inspected the
-retained files and decided their disposition; no automatic purge is provided.
+retained files and decided their disposition, or until `expire` below removes
+an entry that passes every check.
+
+### Expiring retired worktrees
+
+Retirement keeps every quarantine registered, locked and detached, so the
+archive and `git worktree list` only grow. `expire` removes old entries that
+provably hold nothing unique:
+
+```sh
+git -C /path/to/repo fetch origin
+python3 claude/scripts/worktree-lifecycle.py expire --root /path/to/dev \
+  --archive-dir /path/to/private/archive --older-than 30d --trust-process-manager
+```
+
+Without `--apply` it is a report: it runs every check, prints one JSON entry
+per archive entry with its `kind`, `age_days`, `disposition` (`expirable` or
+`retained`) and a one-line `reason`, and changes nothing — it does not even
+create a missing archive directory. `--repo` scans one repository instead of
+`--root`. Add `--apply` only under the operator's cleanup authorization; the
+daily timer runs the report form only and saves it to
+`~/.local/state/hygiene/retired-worktrees.json` for `hygiene-status.sh`, with
+the exact operator command in the header of `hygiene-cron.sh`.
+
+A quarantine is expirable only when all of these hold, the same rules
+retirement applies: its `recovery.json` is readable and names this quarantine;
+the archive holds nothing but what retirement wrote; the Git lock still names
+this archive; HEAD is detached at the recorded head; the release record agrees;
+the entry was retired at least the window ago (`retired_at` in the record, or
+for records written before that field, the record's last write); the worktree's
+own reflog, per-worktree refs and any interrupted rebase, bisect, merge or
+cherry-pick state name no commit outside the merged head; the checkout is
+clean down to raw bytes with no untracked, ignored or special files; no Git
+lock file or same-user process holds it; and the recorded PR is re-verified as
+merged into the current remote default exactly as retirement verifies it,
+never by branch name. `--apply` samples the checkout and processes once more,
+then runs `git worktree remove --force --force` on the quarantine from the
+primary checkout (refusing when the current directory is inside it), unlinks
+exactly `recovery.json`, `repository.bundle` and `worktree-metadata.tar`, and
+removes the now-empty directory, so anything that appeared in between makes
+the removal fail rather than vanish. The merged branch ref and stashes are
+untouched. Anything else is retained with its reason — a worktree reflog
+holding pre-rebase or amended commits is the common one; inspect it with
+`git -C /path/to/quarantine reflog` and remove it by hand if nothing matters.
+
+Two orphan shapes are decided explicitly. A registration under the archive
+whose entry directory is gone is pruned with the same `git worktree remove`
+when its lock names that missing entry, its release record still matches the
+detached HEAD, its reflog holds nothing unique, the lock file is older than
+the window and the PR re-verifies. An archive directory with no registration
+is a `partial-archive` when it holds only those three files — left by a
+retirement retained after archival, or by an expiry interrupted after the
+removal — and is deleted only when a completed retirement of the same path and
+head supersedes it, or its record names a quarantine whose Git metadata no
+longer exists, past the window and with the PR re-verified. One that still
+holds a `worktree` directory Git no longer registers is always retained for
+inspection by hand.
 
 The timer never releases or deletes worktrees; the next session owns follow-up
 for pending releases. User authorization and release ownership remain
