@@ -68,6 +68,8 @@ def find(num):
 
 base = "repos/example/repo/"
 if endpoint.endswith("/comments") and "/pulls/" in endpoint:
+    if config.get("comments_fail"):
+        sys.exit(1)
     default = [{"id": 123, "path": "file.sh", "line": 1, "position": 1,
                 "user": {"login": "chatgpt-codex-connector[bot]"}, "body": "Review finding"}]
     print(json.dumps(config.get("comments", default)))
@@ -235,6 +237,7 @@ class HarvestTests(unittest.TestCase):
                 calls, result = self.run_case(status, body, **config)
                 self.assertEqual([c["labeled"] for c in calls], [True])
                 self.assertIn("could not file", result.stderr)
+                self.assertIn("0 new item(s) tracked, 1 left for the next run", result.stdout)
 
     def test_dry_run_and_existing_marker_never_post(self):
         for config in [
@@ -387,6 +390,23 @@ class HarvestTests(unittest.TestCase):
         self.assertTrue(calls[0]["title"].startswith("Codex review of #1 (continued): "))
         calls, _ = h.run(comments=[comment(456), comment(789)], budget=3000)
         self.assertEqual([(c["kind"], c.get("number")) for c in calls], [("patch", 100)])
+
+    def test_failed_comment_fetch_is_reported(self):
+        calls, result = self.harness().run(comments_fail=True)
+        self.assertEqual(calls, [])
+        self.assertIn("could not fetch", result.stderr)
+
+    def test_an_append_lost_to_a_racing_write_is_restored_next_run(self):
+        """No conditional PATCH exists for issues, so a racing writer can drop an
+        appended item; its marker then is absent and the next run appends it again."""
+        h = self.harness()
+        h.run(comments=[comment(123)])
+        before = h.issues()[0]["body"]
+        h.run(comments=[comment(123), comment(456)])
+        h.seed({"number": 100, "state": "open", "labels": [], "body": before})  # overwritten
+        calls, _ = h.run(comments=[comment(123), comment(456)])
+        self.assertEqual([c["kind"] for c in calls], ["patch"])
+        self.assertEqual(h.issues()[0]["body"].count("codex-comment-id:example/repo#1:456 "), 1)
 
     # ── #557: instruction-surface label ──────────────────────────────────
     def test_instruction_surface_label(self):

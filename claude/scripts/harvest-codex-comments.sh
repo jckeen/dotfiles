@@ -136,9 +136,14 @@ fi
 # to the new head and null out `line` (keeping `original_line`), so we treat
 # either as outdated. `position` and `line` are legitimately null on file-level
 # comments (subject_type "file"), so those are exempt from both signals.
+# A failed fetch is reported, never mistaken for "no comments": the close-time
+# workflow fails its run on the "could not" wording.
+if ! raw_comments="$(gh api "repos/$REPO/pulls/$PR/comments" --paginate 2>/dev/null)"; then
+  warn "harvest-codex-comments: could not fetch the review comments of $REPO#$PR — nothing harvested."
+  exit 0
+fi
 mapfile -t COMMENTS < <(
-  gh api "repos/$REPO/pulls/$PR/comments" --paginate 2>/dev/null \
-    | jq -r --arg bot "$BOT" '
+  jq -r --arg bot "$BOT" '
         .[] | select(.user.login == $bot)
         | [ (.id|tostring),
             ((.path // "?") | gsub("[\t\r\n]"; " ")),
@@ -147,7 +152,7 @@ mapfile -t COMMENTS < <(
              elif (.position == null) or (.line == null) then "outdated"
              else "current" end),
             ((.body // "") | @base64)
-          ] | @tsv' 2>/dev/null
+          ] | @tsv' <<<"$raw_comments" 2>/dev/null
 )
 
 if [[ "${#COMMENTS[@]}" -eq 0 ]]; then
@@ -265,8 +270,9 @@ for ((i = 0; i < new_count; i++)); do pending+=("$i"); done
 
 # pack_items <prefix> <suffix> — move pending items, in order, into
 # prefix+suffix while the total stays within BODY_BUDGET: the full item if it
-# fits, else its compact form, else stop. Sets PACKED_BODY and PACKED_N; the
-# items that did not fit stay pending.
+# fits, else its compact form, else stop. Sets PACKED_BODY and PACKED_N and
+# leaves `pending` alone: only a caller whose write succeeded consumes the
+# packed items (consume_packed), so a failed write leaves them pending.
 pack_items() {
   local prefix="$1" suffix="$2" acc="" i item
   PACKED_N=0
@@ -280,8 +286,8 @@ pack_items() {
     PACKED_N=$((PACKED_N+1))
   done
   PACKED_BODY="${prefix}${acc}${suffix}"
-  pending=("${pending[@]:PACKED_N}")
 }
+consume_packed() { pending=("${pending[@]:PACKED_N}"); }
 
 # ensure_surface_label <issue> — add `instruction-surface` when this PR has a
 # comment on the gate's instruction surface and the issue lacks the label.
@@ -343,6 +349,7 @@ create_issue() {
     warn "  ⚠ could not file the consolidated issue for $REPO#$PR ($PACKED_N item(s))"
     return 1
   fi
+  consume_packed
   echo "  ✓ filed: $url ($PACKED_N item(s))"
   return 0
 }
@@ -394,6 +401,14 @@ if [[ -n "$existing_num" ]]; then
   # against it: a concurrent harvest (the close-time workflow racing the
   # nightly routine) may have appended the same comments since the prefetch.
   # A failed read writes nothing.
+  #
+  # Issues have no conditional (If-Match) PATCH, so a writer racing the window
+  # between this read and the PATCH below can still drop an item or an
+  # operator's tick. The design converges anyway: dedup reads markers from the
+  # bodies, so a dropped item is simply absent and the next run appends it
+  # again (the tests pin this). The close-time workflow serializes its own
+  # runs with a concurrency group; only a nightly run landing in the same
+  # second can race it.
   if ! current="$(gh api "repos/$REPO/issues/$existing_num" --jq '.body // ""' 2>/dev/null)"; then
     warn "  ⚠ could not read #$existing_num to append $new_count item(s) — nothing written."
     exit 0
@@ -422,6 +437,7 @@ if [[ -n "$existing_num" ]]; then
       warn "  ⚠ could not append to #$existing_num — nothing more written this run."
       exit 0
     fi
+    consume_packed
     reopened=""
     [[ "$existing_state" == "closed" ]] && reopened=" (reopened)"
     echo "  ✓ appended $PACKED_N item(s) to #$existing_num$reopened"
