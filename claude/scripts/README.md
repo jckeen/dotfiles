@@ -545,7 +545,8 @@ to inventory primary repositories under a shared directory. The daily hygiene
 timer saves this read-only inventory to `~/.local/state/hygiene/worktrees.json`.
 Read it with `hygiene-status.sh --worktrees`; `--status` describes repository
 settings plus one `retired worktrees: N (oldest Xd, M expirable)` line from
-the timer's expiry report (see Expiring retired worktrees below).
+the timer's expiry report (see Expiring retired worktrees below); it reads
+`oldest unknown` when no retired entry has a readable age.
 Unreleased worktrees have unknown or active ownership and remain retained.
 
 The task owner stops its processes, leaves the target directory, and releases
