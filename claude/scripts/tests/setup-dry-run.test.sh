@@ -29,6 +29,9 @@ SETUP="$REPO_ROOT/setup.sh"
 # byte-identical before/after snapshot, so nothing links to this checkout.
 # The refusal itself stays covered by setup-worktree-guard.test.sh.
 export DOTFILES_ALLOW_LINKED_WORKTREE=1
+# The assertions below expect the all-services migration default; a
+# developer's own service selection (issue #425) must not leak in.
+unset XDG_CONFIG_HOME DOTFILES_SERVICES
 
 pass=0
 failed=0
@@ -379,6 +382,14 @@ else
   ok "pinned-Node ordering test skipped (non-Linux or unsupported arch) # SKIP"
 fi
 rm -rf "$NODEHOME" "$NODESTUBS" "$NODEFIX" "$NODEOUT"
+
+# Agent-service selection (issue #425) exercises the same dry-run contract per
+# selection; it runs from here so the existing CI step covers it.
+if "$REPO_ROOT/claude/scripts/tests/setup-services.test.sh"; then
+  ok "setup-services suite passed"
+else
+  fail "setup-services suite failed (output above)"
+fi
 
 echo ""
 echo "setup-dry-run: $pass passed, $failed failed"
