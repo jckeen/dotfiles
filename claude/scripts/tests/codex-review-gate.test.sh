@@ -121,8 +121,15 @@ else:
     assert hashlib.sha256(data.encode()).hexdigest() == packet, "incomplete request"
     if (fake / "mp-mutate-request").exists():
         # The gate's request file is the whole packet: find it by its digest.
-        hits = [path for path in glob.glob("/tmp/codex-review-request.*")
-                if hashlib.sha256(Path(path).read_bytes()).hexdigest() == packet]
+        # /tmp is shared, so skip another user's file and one removed mid-scan.
+        hits = []
+        for path in glob.glob("/tmp/codex-review-request.*"):
+            try:
+                if (os.lstat(path).st_uid == os.getuid()
+                        and hashlib.sha256(Path(path).read_bytes()).hexdigest() == packet):
+                    hits.append(path)
+            except OSError:
+                continue
         assert len(hits) == 1, "request file not found"
         with open(hits[0], "a") as request:
             request.write("mutated mid-run\n")
