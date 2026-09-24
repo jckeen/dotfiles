@@ -1821,6 +1821,19 @@ echo 0 > "$CODEX_FAKE_DIR/rc"
 printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "a blocking Codex verdict blocks" 2 "" --committed --require --no-issues
 assert "a blocking Codex verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+# Both lanes capture; Antigravity claims and approves while Codex reviews, which
+# supersedes the Codex attempt; Codex then returns blocking findings. The gate
+# must reach the fail-closed claim, not exit at the verify with that approval
+# still shippable.
+helper="$SCRIPT_DIR/../review-receipt.py"
+cat > "$CODEX_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer antigravity)"
+printf 'LGTB\n' > '$CODEX_FAKE_DIR/agy-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$CODEX_FAKE_DIR/agy-approval' >/dev/null
+EOF
+check "a superseded blocking Codex verdict blocks" 2 "" --committed --require --no-issues
+assert "a superseded blocking Codex verdict retires the approval that raced it" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -f "$CODEX_FAKE_DIR/mutate"
 rm -rf "$R" "$CODEX_FAKE_DIR"
 
 R="$(mktemp -d)"

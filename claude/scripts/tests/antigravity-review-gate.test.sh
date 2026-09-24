@@ -1245,6 +1245,18 @@ assert "an unattributable clean run leaves the Codex approval shippable" "codex_
 printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
 check "a blocking run with an unverifiable pin still blocks" 2 "BLOCKING findings" --committed
 assert "that blocking run retires the Codex approval" "! codex_receipt_ships"
+# Codex claims and approves while this unattributable run reviews, superseding
+# it; its blocking exit must still reach the fail-closed claim rather than exit
+# at a verify with the approval that raced it still shippable.
+helper="$SCRIPT_DIR/../review-receipt.py"
+cat > "$AGY_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer codex)"
+printf 'codex approval\n' > '$AGY_FAKE_DIR/codex-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$AGY_FAKE_DIR/codex-approval' >/dev/null
+EOF
+check "a superseded blocking run with an unverifiable pin still blocks" 2 "" --committed
+assert "that superseded blocking run retires the approval that raced it" "! codex_receipt_ships && [ ! -e '$R/.git/review-receipts/codex.json' ]"
+rm -f "$AGY_FAKE_DIR/mutate"
 seed_codex_receipt
 export ANTIGRAVITY_GATE_MODEL=""
 printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"

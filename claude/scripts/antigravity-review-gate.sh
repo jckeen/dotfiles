@@ -559,9 +559,13 @@ fi
 # carries blocking findings claims in verdict_in_partial_output. A verifiably
 # WRONG model (exit 2 above) claims nothing: its review is not evidence. Nor
 # does a CLEAN run whose pin was unverifiable, which records no receipt either;
-# its blocking exits below still claim, failing closed.
-[[ "${GATE_RECEIPT_ELIGIBLE:-1}" != 1 ]] || gate_claim
-gate_assert_unchanged
+# its blocking exits below still claim, failing closed. That run verifies only
+# in gate_record_pass: a verify here would exit a superseded attempt before its
+# blocking exit could claim and retire the approval that raced it.
+if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" == 1 ]]; then
+  gate_claim
+  gate_assert_unchanged
+fi
 
 # ─── Step 5: parse findings + gate ─────────────────────────────
 # BLOCK_RE / LOW_RE are defined above the model-pin check, which also needs them.

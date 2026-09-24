@@ -606,7 +606,6 @@ if [[ "$CODEX_RC" -ne 0 ]]; then
   fi
   exit 3
 fi
-gate_assert_unchanged
 if [[ -n "$REQUEST_FILE" ]]; then
   if ! CURRENT_REQUEST_SHA="$(request_digest 2>/dev/null)" || [[ "$CURRENT_REQUEST_SHA" != "$REQUEST_SHA" ]]; then
     red "✖ Complete review request became unreadable or changed; refusing the result."
@@ -627,8 +626,12 @@ fi
 # The review ran and produced output: every exit from here is a verdict, so
 # this is where the other lane's receipt is retired (gate_claim, gate-lib.sh).
 # Every exit ABOVE — CLI missing, the line cap, a failed or empty run — is a
-# degraded lane, not a verdict, and leaves that approval standing.
+# degraded lane, not a verdict, and leaves that approval standing. The claim
+# precedes gate_assert_unchanged: a superseded attempt must reach the helper's
+# fail-closed claim, which retires the approval that raced it, instead of
+# exiting at the verify with a blocking verdict unrecorded.
 gate_claim
+gate_assert_unchanged
 
 # ─── Parse the structured result ───────────────────────────────
 # Enforce codex-review-schema.json locally before rendering or recording a

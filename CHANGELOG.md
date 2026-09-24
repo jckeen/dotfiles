@@ -33,7 +33,8 @@
   split: `review-receipt.py capture` opens only this lane's attempt, and `claim`
   — retiring every other lane, then refusing if its own attempt was
   superseded (a superseded verdict still retires the approval that raced it,
-  so two racing lanes both lose and one reruns) — runs only
+  so two racing lanes both lose and one reruns; both gates claim before their
+  post-verdict verify so a superseded verdict reaches that claim) — runs only
   once a gate can reach a verdict: the Codex gate after its reviewer produced
   output (and on a failed or cancelled run whose output is not verifiably free
   of blocking findings, which now exits 2 rather than 3), the Antigravity gate after its model-pin check, before a failed local
