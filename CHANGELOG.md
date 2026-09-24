@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-09-23 — docs(instructions): one operator pass for the queued instruction-surface changes
+
+- **Cloud-agent conventions say whom they bind (#552).** The per-tool
+  fragments and the Jules fragment state that the one-PR-per-finding and
+  out-of-bounds rules bind cloud-agent PRs, and the "never hardcode a count"
+  rule spares dated records such as changelogs and handoffs.
+- **`commit-push-pr`: the advisory review moves ahead of the required gate
+  (#534).** Both copies now put the optional Antigravity opinion at step 6,
+  before the required gate, and say that a review which *reaches a verdict*
+  retires the other lane's receipt (the `capture`/`claim` split above, #499).
+  A degraded run no longer does.
+- **`claude/MULTI-AGENT.md` names the instruction-surface lane (#557).** Changes
+  to instruction surfaces and gate machinery are agent-proof by design. Agents
+  file an `instruction-surface` issue with a patch that passes `git apply
+  --check`, and the operator drains the label in one gated pass. This entry is
+  the first such pass.
+- **The superpowers plugin is dropped (#559).** Its session-start block told
+  every session to invoke a skill before any response, and the global
+  instructions overrode it each time. Over 14 days its skills ran 6 times. The
+  discipline it carried (failing test first, root cause before fix) already
+  lives in the Verification rules. It is removed from `claude/plugins.txt`, the
+  override paragraph is gone from the Claude fragment, and `orchestrate` and
+  `decompose` no longer cite its skills by name.
+
+## 2026-09-23 — fix(receipts): claim at the verdict, a synchronized check, and three capture fixes
+
+- **A degraded gate no longer costs the other lane's approval.** `begin` retired
+  every lane's receipt before the gate knew it could run, so an Antigravity run
+  that exited 3 (agy missing, a size cap, an unverifiable pin) voided a Codex
+  approval of the same commit, and recovery was a paid re-run (#499). The step is
+  split: `review-receipt.py capture` opens only this lane's attempt, and `claim`
+  — retiring every other lane, or, if its own attempt was superseded,
+  retiring every lane including its own and refusing (a superseded verdict
+  still retires any approval that raced it, in either lane, so racing attempts
+  all lose and one reruns; both gates claim before their
+  post-verdict verify, and every Codex exit after the review runs goes through
+  `verdict_in_output`, which a static test enforces) — runs only
+  once a gate can reach a verdict: the Codex gate after its reviewer produced
+  output (and on a failed or cancelled run whose output is not verifiably free
+  of blocking findings, which now exits 2 rather than 3), the Antigravity gate after its model-pin check, before a failed local
+  compile/lint check, in `verdict_in_partial_output` before a partial
+  blocking verdict, and in a new cancellation handler when agy had already
+  written blocking findings (exit 2; otherwise the signal is re-raised as
+  before). `gate_record_pass`
+  claims too, so no-diff and tier-1 receipts behave as before. `complete` refuses
+  an unclaimed attempt. `begin` stays as capture-then-claim for other callers;
+  receipt format is unchanged. The competing-receipt warning now prints at the
+  claim. Tests in `review-receipt.test.py` pin capture/claim ordering, the
+  serialized claim race and the unclaimed refusal; both gate suites pin that a
+  degraded run leaves the other approval shippable and a blocking verdict
+  retires it. Closes #499.
+- **`check`'s decision is synchronized with `claim`.** Its validation stays
+  lock-free, but the deciding assertion — attempt token still live, receipt still
+  the one validated — now runs under the transition lock, so a claim landing
+  after the last lock-free token read makes it refuse instead of approving a
+  retired receipt (#533). An in-process test runs a real `claim` in that window.
+- **The common Git directory keeps a trailing whitespace byte.** Capture stripped
+  all whitespace from `rev-parse --git-common-dir`, so a store path ending in a
+  space named a directory no worktree pointer matched and capture aborted with
+  `cannot snapshot non-file`. Only Git's terminating newline is removed now, as
+  the other path helpers do (#541).
+- **A primary checkout nested under a linked worktree is recognized as this
+  repository's own.** It is registered, but holds the common Git directory rather
+  than a `.git` pointer file, so it was treated as a foreign boundary. A real
+  `.git` directory whose realpath is the common Git directory now qualifies; any
+  other repository still fails closed (#540).
+- **Installed dependencies under a skill or `claude/scripts` no longer block every
+  gate run.** The #439 hook-tree exemption extends to `claude/skills/<name>/node_modules`
+  and `claude/scripts/node_modules`, only when git ignores the `node_modules`
+  directory itself (not merely the file inside it) and the
+  directory that owns it carries `bun.lock` or `package-lock.json` (a regular
+  file). Without the lockfile, when not ignored, or anywhere else, those paths
+  stay instruction surfaces and fail closed (#514). Each tree is checked once
+  per capture, not once per file inside it.
+
 ## 2026-09-23 — feat(worktree-lifecycle): expire retired worktrees, keep recovery files
 
 - **`worktree-lifecycle.py expire` removes retired quarantines from

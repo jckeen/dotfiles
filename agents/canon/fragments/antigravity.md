@@ -17,8 +17,10 @@ context, tokens, and machine paths stay out of here — they live in
   `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
   and asserted in CI by `check-doc-truth.sh`. Keep LIVING small — a wrong doc
   is worse than no doc; delete or mark HISTORICAL rather than let it freeze.
-- Never hardcode a count, version, SHA, or hostname in prose that CI can't
-  assert — point at the canonical source instead. GitHub issues are the only
+- Never hardcode a count, version, SHA, or hostname in guidance prose that CI
+  can't assert — point at the canonical source instead. A dated record (a
+  CHANGELOG entry, a handoff note) is a point-in-time statement and may state
+  the figure it measured. GitHub issues are the only
   open-work tracker: docs may link issues, never duplicate their state
   (no TODO.md / checklist files).
 

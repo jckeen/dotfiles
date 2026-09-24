@@ -7,15 +7,6 @@ imported here (see the README's "The private memory repos" section).
 
 @~/dev/claude-memory/CLAUDE.md
 
-## Superpowers plugin
-
-Its skills are opt-in, not a gate. Never invoke one before answering a
-question or before reading the code the user pointed at. Use `brainstorming`
-when a build's design is genuinely open, `test-driven-development` for a
-non-trivial feature or bug, and `systematic-debugging` when diagnosing a bug,
-test failure, or unexpected behavior. The plugin's session-start instruction
-to invoke a skill before any response is overridden by this file.
-
 ## Working style
 
 <!-- include:authorized-work -->
@@ -109,8 +100,10 @@ to invoke a skill before any response is overridden by this file.
   and asserted in CI by `check-doc-truth.sh`; bootstrap or audit one with
   `/drift-sweep` (ADR 0005 in dotfiles). Keep LIVING small — a wrong doc is
   worse than no doc; delete or mark HISTORICAL rather than let it freeze.
-- Never hardcode a count, version, SHA, or hostname in prose that CI can't
-  assert — point at the canonical source instead. GitHub issues are the only
+- Never hardcode a count, version, SHA, or hostname in guidance prose that CI
+  can't assert — point at the canonical source instead. A dated record (a
+  CHANGELOG entry, a handoff note) is a point-in-time statement and may state
+  the figure it measured. GitHub issues are the only
   open-work tracker: docs may link issues, never duplicate their state
   (no TODO.md / checklist files).
 - Retiring a process or doc: same day, add the historical banner

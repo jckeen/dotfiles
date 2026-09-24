@@ -121,22 +121,20 @@ allowed (`REVIEW_LANE=codex`); **downgrade never is** — `REVIEW_LANE=antigravi
 on a codex-required diff is refused rather than honoured. On such a diff the
 Antigravity gate still runs and still mints its receipt, announcing itself as a
 **supplementary** lane: an independent-lineage second opinion, not the shipping
-gate. Run that second opinion **before** the shipping review: starting a review
-in either lane retires the other lane's receipt for the same artifact, so that a
-blocking verdict cannot be bypassed by an older approval (#480) — which also
-means a supplementary run afterwards retires the receipt you were going to push
-on.
+gate. Run that second opinion **before** the shipping review: a review that
+reaches a verdict in either lane retires the other lane's receipt for the same
+artifact, so that a blocking verdict cannot be bypassed by an older approval
+(#480) — which also means a supplementary run afterwards retires the receipt you
+were going to push on.
 
 A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
 model pin, a diff above the byte cap) means the lane could not run, so
 `review-and-push.sh` falls back to Codex and records the degradation in the lane
 ledger; `REVIEW_LANE_FALLBACK=block` refuses the push instead. Exit 2 — blocking
-findings, or a verifiably wrong model — never falls back. It still costs the other
-lane's approval, though: the gate ran `begin` before it degraded, which retires
-every lane's receipt for that artifact, so re-run the required gate. The refusal
-is the conservative behaviour — at the push boundary nothing distinguishes "could
-not run" from "ran and blocked" without trusting the gate that failed — and #499
-tracks a retraction design that would avoid the cost.
+findings, or a verifiably wrong model — never falls back. A degraded run costs
+nothing else: each gate captures the artifact touching only its own lane and
+claims it — retiring the other lane's receipt — only once it can reach a verdict,
+so an exit 3 leaves the other lane's approval valid (#499).
 
 `review-and-push.sh` checks the receipt naming the lane it dispatched, which also
 requires the review that run performed to still be approved. Checking by hand,
@@ -145,6 +143,33 @@ without needing to know which lane ran. Read the ledger with
 `review-receipt.py stats --since-days 7` before drawing conclusions about lane
 cost; the dotfiles risk list is deliberately unnarrowed, so most diffs *in this
 repository* stay on Codex.
+
+### The instruction-surface lane (#557)
+
+Some changes are agent-proof three independent ways, by design: the root
+`AGENTS.md` out-of-bounds rule, the gates' self-review guard (the path regex in
+`codex-review-gate.sh`; its override flag is denied to agents by the permission
+classifier), and the classifier's own refusal of the edit as self-modification.
+That covers the instruction surfaces (`agents/canon/`, `claude/skills/`,
+`agents/skills/`, `antigravity/skills/`, `AGENTS*.md`, `CLAUDE.md`, `GEMINI.md`,
+`.codex-review-ignore`) and the gate machinery (`gate-lib.sh`,
+`review-receipt.py`, `review-multipart.py`, the review schema, both
+`*-review-gate.sh`). The same boundary denies agents a few adjacent shapes on
+first sight: a gate override flag, a `systemd-run` sandbox probe, and a batched
+or read-then-write `gh` call. None of these is a retry-until-it-passes
+situation — the denial *is* the answer, and the work routes to the operator.
+
+An agent that finds such a change necessary does not prepare a branch it cannot
+push. It files (or updates) an issue labelled `instruction-surface` carrying the
+exact wording or a patch beside the handoff note that passes `git apply --check`
+against `main`, plus the verification commands, and moves on. The harvester
+applies the label itself when a bot finding's path matches the guard regex.
+
+The operator drains that label in one pass — weekly, or when reading the next
+handoff: apply the queued patches on one branch, run the required gate once with
+the override flag (independent review already recorded on each issue), open one
+PR, and let its `Closes` lines retire the issues. One gated commit for the whole
+inbox, instead of one human command per item.
 
 ## Handoff payload
 

@@ -26,7 +26,14 @@ make a pull request.
    - `refactor: ...`
    - `test: ...`
    - `chore: ...`
-6. Ask which lane the diff requires, then run **that** gate with `--require
+6. For other relevant runtime/frontend changes,
+   `~/.claude/scripts/antigravity-review-gate.sh` can add an advisory opinion.
+   Run it now, before the required gate in the next step, never after:
+   a review in either lane that reaches a verdict retires the other lane's
+   receipt for the same artifact (#480, #499), so an advisory run after the
+   required gate voids the receipt about to be pushed. Fix actionable
+   findings and repeat affected verification before continuing.
+7. Ask which lane the diff requires, then run **that** gate with `--require
    --committed` **after the last commit, before the push**. Supply `--base <ref>`
    when needed to identify the PR base. The gate reviews the committed delta and
    records private evidence bound to that artifact.
@@ -58,18 +65,14 @@ make a pull request.
      independent review; record the reason and evidence. Alternatively use
      the Antigravity gate with `--require` and its receipt when it provides the
      independent review. Never bypass hooks to evade the guard.
-7. Require a review from a different model family than the implementer for
+8. Require a review from a different model family than the implementer for
    authentication, authorization, secrets, payments, destructive operations,
    schemas, or public trust boundaries. A fresh Codex reviewer of Codex work
    supplies context independence only. Use a suitable separate-family reviewer
    and verify its actual identity; an Antigravity dispatch label alone does
-   not prove the model used. For other relevant runtime/frontend changes,
-   `~/.claude/scripts/antigravity-review-gate.sh` can add an advisory opinion;
-   run it before step 6, never after. Starting a review in either lane
-   retires the other lane's receipt for the same artifact (#480), so an
-   advisory run after the required gate voids the receipt about to be pushed.
-   A text-diff review is not runtime/browser verification.
-8. Immediately before pushing, validate the artifact evidence:
+   not prove the model used. A text-diff review is not runtime/browser
+   verification.
+9. Immediately before pushing, validate the artifact evidence:
 
    ```bash
    python3 ~/.claude/scripts/review-receipt.py check --repo . \
@@ -89,14 +92,14 @@ make a pull request.
    push with `REVIEW_RECEIPT_BASE=<ref> git push ...` so the hook checks the
    intended receipt. Without this one-push setting the hook requires the
    repository's default base; never select a narrower base just to pass it.
-9. Create a PR with `gh pr create`:
+10. Create a PR with `gh pr create`:
    - title under 70 characters
    - body covering what changed, why, and how it was tested
    - issue links such as `Fixes #123` when applicable
-10. Inspect `gh pr checks` and report pending or failed checks. Require the
+11. Inspect `gh pr checks` and report pending or failed checks. Require the
     applicable artifact review evidence and required CI checks to be green
     before enabling auto-merge (see ADR-0003).
-11. Enable auto-merge only when an applicable standing order explicitly grants
+12. Enable auto-merge only when an applicable standing order explicitly grants
     that authority and the required review/CI conditions are satisfied.
     Otherwise return the PR URL and verification state without merging.
 

@@ -184,6 +184,8 @@ LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
 verdict_in_partial_output() {
   [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 0
   grep -qE "$BLOCK_RE" "$SUMMARY_FILE" || return 0
+  # A verdict retires the other lane's approval like any other (#499).
+  gate_claim
   red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
   red "  A verdict, not a degraded lane: address the findings before any fallback (ADR-0008)."
@@ -345,27 +347,29 @@ fi
 
 # ─── Step 3: local validation before dispatch ────────────────────────────
 # Cheap, deterministic checks before spending plan quota. Fail HARD (exit 2) —
-# broken code should never reach the review step.
+# broken code should never reach the review step. A failure here is a blocking
+# verdict on the artifact, so it claims first (#499): an older approval from the
+# other lane must not ship code this lane found broken.
 echo "Running local compile/lint checks first..."
 if [[ -f package.json ]]; then
   if [[ -f tsconfig.json ]] && grep -q '"typescript"' package.json 2>/dev/null; then
     echo "  → tsc --noEmit"
-    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; exit 2; }
+    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_claim; exit 2; }
   fi
   if grep -q '"lint"' package.json 2>/dev/null; then
     echo "  → lint"
-    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; exit 2; }
-    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; exit 2; }
-    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; exit 2; }
-    else                                npm run lint   || { red "  Linter failed."; exit 2; }
+    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; gate_claim; exit 2; }
+    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; gate_claim; exit 2; }
+    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; gate_claim; exit 2; }
+    else                                npm run lint   || { red "  Linter failed."; gate_claim; exit 2; }
     fi
   fi
 elif [[ -f Cargo.toml ]]; then
   echo "  → cargo check"
-  cargo check || { red "  cargo check failed."; exit 2; }
+  cargo check || { red "  cargo check failed."; gate_claim; exit 2; }
 elif [[ -f go.mod ]]; then
   echo "  → go vet"
-  go vet ./... || { red "  go vet failed."; exit 2; }
+  go vet ./... || { red "  go vet failed."; gate_claim; exit 2; }
 fi
 
 # ─── Step 4: run agy print mode, non-interactively and tool-locked ─
@@ -398,6 +402,33 @@ gate_finish() {
   return "$rc"
 }
 trap gate_finish EXIT
+# Bash defers a signal's trap until the foreground reviewer exits, so a
+# cancelled run may already hold agy's output. Blocking finding lines in it are
+# a verdict (#499): claim and exit 2, as verdict_in_partial_output does. With
+# none, re-raise the signal with its default action, exactly as before this
+# handler existed — never a degraded exit 3, which review-and-push.sh would
+# answer with a Codex fallback. The trap runs inside the redirected `_tmo`
+# call, so it writes to the gate's own stdout/stderr, saved here as fds 8/9.
+exec 8>&1 9>&2
+cancel_agy_review() {
+  trap '' INT TERM HUP QUIT
+  local findings=""
+  [[ ! -s "$SUMMARY_FILE" ]] || findings="$(grep -E "$BLOCK_RE" "$SUMMARY_FILE" || true)"
+  if [[ -n "$findings" ]]; then
+    {
+      red "✖ Antigravity review cancelled after it reported blocking findings:"
+      sed 's/^/  /' <<<"$findings"
+      gate_claim
+    } >&8 2>&9
+    exit 2
+  fi
+  trap - "$1"
+  kill -s "$1" "$$"
+}
+for gate_signal in INT TERM HUP QUIT; do
+  # shellcheck disable=SC2064  # Bind each signal name now, deliberately.
+  trap "cancel_agy_review $gate_signal" "$gate_signal"
+done
 
 # Portable timeout: _tmo (gate-lib.sh) — GNU `timeout` (Linux), `gtimeout`
 # (macOS coreutils), else run without a ceiling rather than hard-fail on macOS
@@ -520,7 +551,21 @@ if [[ -n "$MODEL" ]]; then
   gate_verify_agy_model "$MODEL" || yellow "  (DB spot-check is best-effort; the log-line check above is authoritative.)"
 fi
 
-gate_assert_unchanged
+# ─── Claim the artifact (#499) ─────────────────────────────────
+# Every exit from here is a verdict, so this is where the other lane's receipt
+# is retired (gate_claim, gate-lib.sh). Every exit ABOVE — agy missing, a size
+# cap, a failed or partial run, an unverifiable pin under --require — is a
+# degraded lane and leaves that approval standing; partial output that already
+# carries blocking findings claims in verdict_in_partial_output. A verifiably
+# WRONG model (exit 2 above) claims nothing: its review is not evidence. Nor
+# does a CLEAN run whose pin was unverifiable, which records no receipt either;
+# its blocking exits below still claim, failing closed. That run verifies only
+# in gate_record_pass: a verify here would exit a superseded attempt before its
+# blocking exit could claim and retire the approval that raced it.
+if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" == 1 ]]; then
+  gate_claim
+  gate_assert_unchanged
+fi
 
 # ─── Step 5: parse findings + gate ─────────────────────────────
 # BLOCK_RE / LOW_RE are defined above the model-pin check, which also needs them.
@@ -552,6 +597,7 @@ if [[ "$N_TOTAL" -eq 0 ]]; then
   red "✖ Antigravity output not recognized as findings or a whole-verdict LGTB:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (format drift or injected text)."
+  gate_claim
   exit 2
 fi
 
@@ -567,6 +613,7 @@ if [[ "$N_BLOCK" -gt 0 ]]; then
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
   echo ""
   red "Push blocked by antigravity-review-gate ($N_BLOCK P0–P2 finding(s))."
+  gate_claim
   exit 2
 fi
 
@@ -578,6 +625,7 @@ if sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/
   red "✖ Stray [P#] token outside recognized finding lines:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (possible format drift)."
+  gate_claim
   exit 2
 fi
 

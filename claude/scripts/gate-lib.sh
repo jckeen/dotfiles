@@ -16,19 +16,20 @@ bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 # ─── Artifact capture and receipts ─────────────────────────────
 # All content extraction belongs to the helper: even a normal worktree diff
 # can execute a configured clean filter before --no-textconv takes effect.
-# Starting a review retires EVERY lane's receipt for this artifact, not only this
-# lane's: a blocking verdict must not be bypassable by the other lane's older
-# approval (#480). Warn BEFORE anything is retired — the Antigravity gate's
-# supplementary-lane banner prints long after `begin` has already done it, so it
-# is too late to be a warning. Presence only: whether that receipt was valid is
-# `review-receipt.py check`'s business, not this line's.
+# A review that CLAIMS the artifact retires EVERY lane's receipt for it, not only
+# this lane's: a blocking verdict must not be bypassable by the other lane's older
+# approval (#480). Capture (gate_extract_diff) touches only this lane; each gate
+# calls gate_claim once its feasibility checks have passed and it is about to
+# reach a verdict, so a lane that degrades (exit 3) leaves the other lane's
+# approval valid (#499). Warn just BEFORE the claim retires anything. Presence
+# only: whether that receipt was valid is `review-receipt.py check`'s business.
 gate_warn_competing_receipt() {
   local receipts other
   receipts="$(git rev-parse --git-path review-receipts 2>/dev/null)" || return 0
   for other in codex antigravity; do
     [[ "$other" != "$GATE_REVIEWER" ]] || continue
     [[ -f "$receipts/$other.json" ]] || continue
-    yellow "⚠ The $other lane already holds a receipt for this artifact; starting this review retires it (#480)."
+    yellow "⚠ The $other lane already holds a receipt for this artifact; this review's verdict retires it (#480)."
     yellow "  A review that then blocks must not leave an older approval able to ship."
     yellow "  If $other was the required lane and already approved, re-run its gate before pushing."
   done
@@ -38,7 +39,6 @@ gate_init_receipt() {
   RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
   command -v python3 >/dev/null 2>&1 || { red "Python 3 is required for artifact receipts."; exit 2; }
   [[ -f "$RECEIPT_HELPER" ]] || { red "Review receipt helper missing: $RECEIPT_HELPER"; exit 2; }
-  gate_warn_competing_receipt
   python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer "$GATE_REVIEWER" || exit 2
 }
 
@@ -71,7 +71,8 @@ gate_cleanup() {
 }
 
 gate_extract_diff() {
-  local args=(begin --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
+  local args=(capture --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
+  GATE_CLAIMED=0
   [[ -z "$BASE_REF" ]] || args+=(--base "$BASE_REF")
   local executable
   executable="$(command -v "$GATE_CLI" && printf .)" || executable=""
@@ -103,13 +104,29 @@ gate_assert_unchanged() {
   python3 "$RECEIPT_HELPER" verify --snapshot "$GATE_RUN_DIR/snapshot.json" || exit 2
 }
 
+# Claim the captured artifact for this lane (#499): retires the other lane's
+# receipt and supersedes a review in flight there. Call it once the gate can
+# reach a verdict — after the tier valve, size caps, reviewer presence and the
+# reviewer's own run — and before ANY exit that is a verdict, blocking ones
+# included. Idempotent per run. A refusal means another review claimed this
+# artifact first, so this attempt is superseded: exit 2, never a degraded 3.
+gate_claim() {
+  [[ "${GATE_CLAIMED:-0}" != 1 ]] || return 0
+  gate_warn_competing_receipt
+  python3 "$RECEIPT_HELPER" claim --snapshot "$GATE_RUN_DIR/snapshot.json" || exit 2
+  GATE_CLAIMED=1
+}
+
 gate_record_pass() {
   local outcome="$1" output="${2:-}" args
   gate_assert_unchanged
   if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" != 1 ]]; then
+    # No receipt, so no claim either: a clean run nobody can attribute is not a
+    # verdict and must not cost the other lane's approval (#499).
     yellow "⚠ No shipping receipt: reviewer dispatch identity was not verified."
     return 0
   fi
+  gate_claim
   args=(complete --snapshot "$GATE_RUN_DIR/snapshot.json" --outcome "$outcome")
   [[ -z "$output" ]] || args+=(--output "$output")
   [[ -z "${GATE_REQUESTED_MODEL:-}" ]] || args+=(--requested-model "$GATE_REQUESTED_MODEL")

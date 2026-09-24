@@ -54,7 +54,9 @@
 #
 # Exit codes:
 #   0  clean, or only low findings (filed as issues)
-#   2  blocking findings present (critical/high/medium), or output unreadable
+#   2  blocking findings present (critical/high/medium) — even in the output of
+#      a failed or cancelled run, where output not verifiably free of them
+#      counts — or output unreadable
 #   3  failed reviewer execution, or unavailable tool in required mode
 
 set -euo pipefail
@@ -70,10 +72,49 @@ case "${BASH_SOURCE[0]}" in
   */*) RECEIPT_HELPER="${BASH_SOURCE[0]%/*}/review-receipt.py" ;;
   *)   RECEIPT_HELPER="./review-receipt.py" ;;
 esac
+# True unless the reviewer's output is absent or VERIFIABLY clean: exactly one
+# JSON object, no duplicate keys (the main parser's rule — a later duplicate
+# must not shadow a blocker), a findings array of low-severity objects only,
+# and a verdict the main path would pass with those findings. Anything else fails closed — a failed or cancelled
+# run must not hide a verdict it already wrote (#499).
+output_may_block() {
+  [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" ]] || return 1
+  ! python3 - "$OUT_FILE" >/dev/null 2>&1 <<'PYCLEAN'
+import json
+import sys
+
+def unique_object(pairs):
+    if len(dict(pairs)) != len(pairs):
+        raise ValueError("duplicate JSON key")
+    return dict(pairs)
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    result = json.load(source, object_pairs_hook=unique_object)
+findings = result.get("findings") if type(result) is dict else None
+# The main path's rule: low findings never block, and a non-approve verdict
+# blocks only when it lists no findings at all.
+clean = (
+    type(result) is dict
+    and type(findings) is list
+    and all(type(item) is dict and item.get("severity") == "low" for item in findings)
+    and (result.get("verdict") == "approve"
+         or (result.get("verdict") == "needs-attention" and len(findings) > 0))
+)
+sys.exit(0 if clean else 1)
+PYCLEAN
+}
 cancel_review() {
   # Repeated signals must not interrupt receipt invalidation or cleanup. The
   # existing receipt API invalidates the whole lane.
   trap '' INT TERM HUP QUIT TSTP
+  # Bash defers this trap until the foreground reviewer exits, so its output
+  # may already hold blocking findings. Those are a verdict: claim while this
+  # attempt is still live, and exit 2 below rather than a degraded 3 (#499).
+  local verdict=3
+  if output_may_block && declare -F gate_claim >/dev/null && [[ -n "${GATE_RUN_DIR:-}" ]]; then
+    verdict=2
+    gate_claim
+  fi
   if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
     [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
   fi
@@ -88,7 +129,12 @@ cancel_review() {
   else
     printf '%s\n' "✖ Codex review cancelled; no approval from this attempt may be used."
   fi
-  exit 3
+  [[ "$verdict" != 2 ]] || red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
+  # Otherwise still 3, even after an earlier claim (#499): the claim retired the
+  # other lane's approval, which fails closed, and the only consumer that falls
+  # back on an exit 3 (review-and-push.sh) does so for the Antigravity lane
+  # alone, never this one.
+  exit "$verdict"
 }
 trap cancel_review INT TERM HUP QUIT TSTP
 
@@ -141,9 +187,24 @@ if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
   exit 2
 fi
 
+# Every non-approving exit once the reviewer may have written output passes
+# through here (#499): output that carries, or may carry, blocking findings is a
+# verdict, so claim and exit 2; only output verifiably free of them keeps the
+# caller's degraded exit. One rule at every exit, not a check per exit site —
+# the Antigravity gate's degrade() does the same via verdict_in_partial_output.
+# The static test in codex-review-gate.test.sh holds every post-review exit to it.
+verdict_in_output() {
+  output_may_block || return 0
+  [[ -n "${GATE_RUN_DIR:-}" ]] || return 0
+  gate_claim
+  red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
+  exit 2
+}
+
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 degrade() {
   yellow "⚠ codex-review-gate: $1"
+  verdict_in_output
   if [[ "$REQUIRED" == "1" ]]; then
     red "  CODEX_GATE_REQUIRED is set — treating as a hard failure."
     exit 3
@@ -534,7 +595,9 @@ if [[ -n "$REQUEST_FILE" ]]; then
       red "✖ Native session coverage, context or transport validation failed; no approval."
       break
     fi
-    gate_assert_unchanged
+    # gate_assert_unchanged, except that a refusal after the final part (which
+    # wrote the verdict) must still claim a blocking one.
+    python3 "$RECEIPT_HELPER" verify --snapshot "$GATE_RUN_DIR/snapshot.json" || { verdict_in_output; exit 2; }
   done
 else
   "$GATE_CLI" exec - \
@@ -548,12 +611,18 @@ set -e
 if [[ "$CODEX_RC" -ne 0 ]]; then
   report_diagnostic
   red "✖ Codex exited rc=$CODEX_RC — not trusting the result, even when findings were written."
+  # A failed run is never an approval, but blocking findings it did write are
+  # still a verdict against the artifact — the ADR-0008 rule the Antigravity
+  # gate applies to partial output. They claim (#499) and exit 2, which never
+  # falls back; only output that is verifiably free of them stays a degraded
+  # lane (verdict_in_output).
+  verdict_in_output
   exit 3
 fi
-gate_assert_unchanged
 if [[ -n "$REQUEST_FILE" ]]; then
   if ! CURRENT_REQUEST_SHA="$(request_digest 2>/dev/null)" || [[ "$CURRENT_REQUEST_SHA" != "$REQUEST_SHA" ]]; then
     red "✖ Complete review request became unreadable or changed; refusing the result."
+    verdict_in_output
     exit 3
   fi
 fi
@@ -562,10 +631,22 @@ if [[ ! -s "$OUT_FILE" ]]; then
   report_diagnostic
   if [[ -n "$REQUEST_FILE" ]]; then
     red "✖ Complete multipart review produced no result; refusing approval."
+    verdict_in_output
     exit 3
   fi
   degrade "Codex produced no review output (rc=$CODEX_RC)."
 fi
+
+# ─── Claim the artifact (#499) ─────────────────────────────────
+# The review ran and produced output: every exit from here is a verdict, so
+# this is where the other lane's receipt is retired (gate_claim, gate-lib.sh).
+# Every exit ABOVE — CLI missing, the line cap, a failed or empty run — is a
+# degraded lane, not a verdict, and leaves that approval standing. The claim
+# precedes gate_assert_unchanged: a superseded attempt must reach the helper's
+# fail-closed claim, which retires the approval that raced it, instead of
+# exiting at the verify with a blocking verdict unrecorded.
+gate_claim
+gate_assert_unchanged
 
 # ─── Parse the structured result ───────────────────────────────
 # Enforce codex-review-schema.json locally before rendering or recording a

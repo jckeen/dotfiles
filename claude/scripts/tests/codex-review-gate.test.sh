@@ -1754,6 +1754,109 @@ python3 -c 'import sys; open(sys.argv[1],"w").write("x/*\n"*201)' "$IGN"
 assert "an over-long ignore file is rejected" "(source '$SCRIPT_DIR/../gate-lib.sh'; ! gate_read_ignore_file '$IGN' 2>/dev/null)"
 rm -f "$IGN"
 
+# ── #499: a degraded lane is not a verdict; a verdict still retires ────
+# The gate captures without touching the Antigravity lane and claims the
+# artifact only once Codex produced output. A run that degrades (exit 3) after
+# capture must leave an Antigravity approval of the same ordinary commit
+# shippable; a run that reaches a verdict and blocks must retire it (#480).
+seed_antigravity_receipt() {
+  local run
+  run="$(python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$R" --base main \
+    --scope committed --reviewer antigravity)" || return 1
+  printf 'LGTB\n' > "$CODEX_FAKE_DIR/agy-approval"
+  python3 "$SCRIPT_DIR/../review-receipt.py" complete --snapshot "$run/snapshot.json" \
+    --outcome passed --output "$CODEX_FAKE_DIR/agy-approval" >/dev/null
+}
+antigravity_receipt_ships() {
+  python3 "$SCRIPT_DIR/../review-receipt.py" check --repo "$R" \
+    --head "$(git -C "$R" rev-parse HEAD)" >/dev/null 2>&1
+}
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+seed_antigravity_receipt
+assert "fixture Antigravity approval ships" "antigravity_receipt_ships"
+CODEX_GATE_MAX_LINES=1 \
+  check "diff over the line cap degrades after capture" 3 "hard failure" --committed --require --no-issues
+assert "a degraded Codex run leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+approve_clean
+echo 1 > "$CODEX_FAKE_DIR/rc"
+check "failed Codex run degrades after capture" 3 "not trusting the result" --committed --require --no-issues
+assert "a failed Codex run leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+# A failed run whose output already carries blocking findings is a verdict.
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a failed run carrying blocking findings is a verdict" 2 "a verdict, not a degraded lane" --committed --require --no-issues
+assert "that verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+seed_antigravity_receipt
+# Output that is not verifiably free of blockers fails closed: a trailing
+# scalar must not erase the high finding before it.
+printf '%s' '{"findings":[{"severity":"high"},"partial"]}' > "$CODEX_FAKE_DIR/output"
+check "a failed run with malformed output that may block is a verdict" 2 "may carry, blocking findings" --committed --require --no-issues
+assert "malformed failed output retires the Antigravity approval" "! antigravity_receipt_ships"
+seed_antigravity_receipt
+printf '%s' '{"verdict":"approve","summary":"x","findings":[{"severity":"high"}],"findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a duplicate key cannot shadow a blocker in failed output" 2 "may carry, blocking findings" --committed --require --no-issues
+assert "duplicate-key failed output retires the Antigravity approval" "! antigravity_receipt_ships"
+seed_antigravity_receipt
+printf '%s' '{"verdict":"needs-attention","summary":"wrong","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a needs-attention verdict in failed output is a verdict" 2 "may carry, blocking findings" --committed --require --no-issues
+assert "needs-attention failed output retires the Antigravity approval" "! antigravity_receipt_ships"
+seed_antigravity_receipt
+# A cancellation Bash defers until the reviewer exits must not discard the
+# blocking findings that reviewer already wrote.
+echo 0 > "$CODEX_FAKE_DIR/rc"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s\n' 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"' > "$CODEX_FAKE_DIR/mutate"
+check "a cancellation after blocking output is a verdict" 2 "Codex review cancelled" --committed --require --no-issues
+assert "that cancellation retires the Antigravity approval" "! antigravity_receipt_ships"
+rm -f "$CODEX_FAKE_DIR/mutate"
+seed_antigravity_receipt
+approve_clean
+printf '%s\n' 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"' > "$CODEX_FAKE_DIR/mutate"
+check "a cancellation after clean output stays degraded" 3 "Codex review cancelled" --committed --require --no-issues
+assert "that cancellation leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+rm -f "$CODEX_FAKE_DIR/mutate"
+echo 0 > "$CODEX_FAKE_DIR/rc"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a blocking Codex verdict blocks" 2 "" --committed --require --no-issues
+assert "a blocking Codex verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+# Both lanes capture; Antigravity claims and approves while Codex reviews, which
+# supersedes the Codex attempt; Codex then returns blocking findings. The gate
+# must reach the fail-closed claim, not exit at the verify with that approval
+# still shippable.
+helper="$SCRIPT_DIR/../review-receipt.py"
+cat > "$CODEX_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer antigravity)"
+printf 'LGTB\n' > '$CODEX_FAKE_DIR/agy-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$CODEX_FAKE_DIR/agy-approval' >/dev/null
+EOF
+check "a superseded blocking Codex verdict blocks" 2 "" --committed --require --no-issues
+assert "a superseded blocking Codex verdict retires the approval that raced it" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -f "$CODEX_FAKE_DIR/mutate"
+rm -rf "$R" "$CODEX_FAKE_DIR"
+
+# ── #499: every exit after the review runs passes verdict_in_output (static) ──
+# Three gate rounds each found one more post-review exit that skipped the claim.
+# Hold the whole stretch to the rule instead of testing sites one by one: from
+# the reviewer's run to the claim, an exit must go through verdict_in_output (on
+# its line or the one before), and the attempt verify must not exit bare.
+gate_src="$SCRIPT_DIR/../codex-review-gate.sh"
+post_review_region() {
+  awk '/# Leave terminal handling and tool-process cleanup/{on=1}
+       /^# ─── Claim the artifact \(#499\)/{on=0}
+       on' "$gate_src"
+}
+post_review_exits_unguarded() {
+  post_review_region | awk '
+    /^[[:space:]]*#/ {next}
+    /(^|[^_])gate_assert_unchanged/ {print}
+    /exit [23]/ && $0 !~ /verdict_in_output/ && prev !~ /verdict_in_output/ {print}
+    {prev=$0}'
+}
+assert "the post-review region is found" "[ \"\$(post_review_region | wc -l)\" -gt 40 ]"
+assert "every post-review exit claims blocking output first" "[ -z \"\$(post_review_exits_unguarded)\" ]"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require
