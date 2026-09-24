@@ -2734,6 +2734,31 @@ if kind == 'writer':
         self.assertTrue(self.registered(archive / "worktree"))
         self.assertTrue((self.repo / ".git/worktrees/task").exists())
 
+    def test_expire_reports_an_interrupted_expiry_once(self):
+        # #569: an expiry interrupted after it moved the checkout to the
+        # staging path and repaired the registration there. The registration
+        # belongs to this entry: one retained result, not an orphan directory
+        # plus an orphan registration.
+        archive = self.retired()
+        self.age(archive, 40)
+        staging = archive / "worktree-expiring"
+        os.rename(archive / "worktree", staging)
+        self.run_git(self.repo, "worktree", "repair", str(staging))
+        self.assertTrue(self.registered(staging))
+        before = self.snapshot(archive)
+        for args in ((), ("--apply",)):
+            with self.subTest(args=args):
+                report = self.expire(*args)
+                self.assertEqual(len(report["entries"]), 1, report)
+                item = self.entry(report, archive)
+                self.assertEqual(item["kind"], "interrupted-expiry", item)
+                self.assertEqual(item["disposition"], "retained", item)
+                self.assertIn("interrupted expiry", item["reason"])
+                self.assertEqual(item["age_days"], 40)
+                self.assertEqual((report["retired"], report["retained"]), (1, 1))
+        self.assertEqual(self.snapshot(archive), before)
+        self.assertTrue(self.registered(staging))
+
     def test_expire_report_never_creates_the_archive(self):
         report = self.expire()
         self.assertEqual((report["retired"], report["expirable"]), (0, 0))
@@ -2768,6 +2793,17 @@ if kind == 'writer':
         self.assertEqual(status("--text", quiet), "")
         empty = {"retired": 0, "expirable": 0, "oldest_days": None, "entries": []}
         self.assertIn("retired worktrees: 0", status("--status", empty))
+        # Orphan registrations and unreadable recovery records count as retired
+        # but carry no age; the line must still surface them (#568).
+        unknown = {"retired": 2, "expirable": 0, "oldest_days": None, "entries": []}
+        self.assertIn(
+            "retired worktrees: 2 (oldest unknown, 0 expirable)", status("--status", unknown)
+        )
+        self.assertEqual(status("--text", unknown), "")
+        unknown_due = dict(unknown, expirable=1)
+        self.assertIn(
+            "retired worktrees: 2 (oldest unknown, 1 expirable)", status("--text", unknown_due)
+        )
 
 
 if __name__ == "__main__":
