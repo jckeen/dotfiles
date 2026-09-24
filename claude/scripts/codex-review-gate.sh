@@ -72,36 +72,82 @@ case "${BASH_SOURCE[0]}" in
   */*) RECEIPT_HELPER="${BASH_SOURCE[0]%/*}/review-receipt.py" ;;
   *)   RECEIPT_HELPER="./review-receipt.py" ;;
 esac
-# True unless the reviewer's output is absent or VERIFIABLY clean: exactly one
-# JSON object, no duplicate keys (the main parser's rule — a later duplicate
-# must not shadow a blocker), a findings array of low-severity objects only,
-# and a verdict the main path would pass with those findings. Anything else fails closed — a failed or cancelled
-# run must not hide a verdict it already wrote (#499).
-output_may_block() {
-  [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" ]] || return 1
-  ! python3 - "$OUT_FILE" >/dev/null 2>&1 <<'PYCLEAN'
+# review_output_check <schema|clean> <file> — the ONE validator for the
+# reviewer's structured output. `schema` enforces codex-review-schema.json
+# locally (the CLI's schema request alone does not establish valid output),
+# decoding decimal literals exactly so rounding cannot turn a fractional line
+# number or out-of-range confidence into a valid approval. `clean` also applies
+# the main path's pass rule. Nonzero on anything else, unreadable input included.
+review_output_check() {
+  python3 - "$1" "$2" >/dev/null 2>&1 <<'PYCHECK'
+from decimal import Decimal
 import json
 import sys
 
-def unique_object(pairs):
-    if len(dict(pairs)) != len(pairs):
-        raise ValueError("duplicate JSON key")
-    return dict(pairs)
+mode, path = sys.argv[1], sys.argv[2]
 
-with open(sys.argv[1], encoding="utf-8") as source:
-    result = json.load(source, object_pairs_hook=unique_object)
-findings = result.get("findings") if type(result) is dict else None
-# The main path's rule: low findings never block, and a non-approve verdict
-# blocks only when it lists no findings at all.
-clean = (
+def unique_object(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("duplicate JSON key")
+    return value
+
+def reject_constant(value):
+    raise ValueError("invalid JSON constant: " + value)
+
+def nonempty_string(value):
+    return type(value) is str and len(value) >= 1
+
+def positive_integer(value):
+    if type(value) is int:
+        return value >= 1
+    return (type(value) is Decimal and value.is_finite() and value >= 1
+            and value == value.to_integral_value())
+
+def valid_finding(value):
+    return (
+        type(value) is dict
+        and set(value) == {"body", "confidence", "file", "line_end", "line_start",
+                           "recommendation", "severity", "title"}
+        and value["severity"] in ("critical", "high", "medium", "low")
+        and all(nonempty_string(value[key]) for key in ("title", "body", "file"))
+        and positive_integer(value["line_start"])
+        and positive_integer(value["line_end"])
+        and type(value["confidence"]) in (int, Decimal)
+        and 0 <= value["confidence"] <= 1
+        and type(value["recommendation"]) is str
+    )
+
+with open(path, encoding="utf-8") as source:
+    result = json.load(source, object_pairs_hook=unique_object,
+                       parse_constant=reject_constant, parse_float=Decimal)
+if not (
     type(result) is dict
-    and type(findings) is list
-    and all(type(item) is dict and item.get("severity") == "low" for item in findings)
-    and (result.get("verdict") == "approve"
-         or (result.get("verdict") == "needs-attention" and len(findings) > 0))
-)
-sys.exit(0 if clean else 1)
-PYCLEAN
+    and set(result) == {"findings", "next_steps", "summary", "verdict"}
+    and result["verdict"] in ("approve", "needs-attention")
+    and nonempty_string(result["summary"])
+    and type(result["next_steps"]) is list
+    and all(nonempty_string(step) for step in result["next_steps"])
+    and type(result["findings"]) is list
+    and all(valid_finding(finding) for finding in result["findings"])
+):
+    raise ValueError("review does not match codex-review-schema.json")
+# "clean" is the main path's pass rule on top of the schema: low findings never
+# block, and a needs-attention verdict passes only when it lists findings.
+if mode == "clean" and not (
+    all(finding["severity"] == "low" for finding in result["findings"])
+    and (result["verdict"] == "approve" or len(result["findings"]) > 0)
+):
+    raise ValueError("review carries, or may carry, blocking findings")
+PYCHECK
+}
+# True unless the reviewer's output is absent or VERIFIABLY clean — schema-valid
+# by the same check the main path applies, and passing by its rule. Anything
+# else fails closed: a failed, cancelled or superseded run must not hide a
+# verdict it already wrote (#499), nor escape its block marker (#573).
+output_may_block() {
+  [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" ]] || return 1
+  ! review_output_check clean "$OUT_FILE"
 }
 cancel_review() {
   # Repeated signals must not interrupt receipt invalidation or cleanup. The
@@ -113,6 +159,7 @@ cancel_review() {
   local verdict=3
   if output_may_block && declare -F gate_claim >/dev/null && [[ -n "${GATE_RUN_DIR:-}" ]]; then
     verdict=2
+    gate_block
     gate_claim
   fi
   if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
@@ -196,6 +243,7 @@ fi
 verdict_in_output() {
   output_may_block || return 0
   [[ -n "${GATE_RUN_DIR:-}" ]] || return 0
+  gate_block
   gate_claim
   red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
   exit 2
@@ -325,10 +373,14 @@ fi
 # .codex-review-ignore tells the reviewer which paths not to report
 # instruction-like text in, so a diff that widens it could hide the very
 # finding its own review should raise: it is guarded like the other inputs.
+# claude/skills and antigravity/skills are the same kind of input for the other
+# runtimes (#557); harvest-codex-comments.sh mirrors this pattern, and a test
+# fails if the two drift.
 CHANGED_PATHS="$(gate_changed_paths)"
-if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$|(^|/)\.codex-review-ignore$' <<<"$CHANGED_PATHS"; then
+if grep -qE '(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$|(^|/)\.codex-review-ignore$|(^|/)(claude|antigravity)/skills(/|$)' <<<"$CHANGED_PATHS"; then
   if [[ "${CODEX_GATE_ALLOW_INSTRUCTION_DIFF:-0}" != "1" ]]; then
-    red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/ / agents/skills/ / .agents/skills/ / .codex-review-ignore)"
+    red "✖ Diff touches the Codex reviewer's own instruction surface (AGENTS*.md / codex/ / agents/skills/ / .agents/skills/ /"
+    red "  claude/skills/ / antigravity/skills/ / .codex-review-ignore)"
     red "  or gate machinery (helpers / output schema / *-review-gate.sh) and its ancestors."
     red "  A self-review under possibly-modified instructions or gate code is not trustworthy."
     echo "  Obtain independent review of these changes first. For shared skills or gate"
@@ -645,70 +697,23 @@ fi
 # precedes gate_assert_unchanged: a superseded attempt must reach the helper's
 # fail-closed claim, which retires the approval that raced it, instead of
 # exiting at the verify with a blocking verdict unrecorded.
+# Output that is not verifiably clean ends in exit 2 below, so it is a blocking
+# verdict now: record its marker (#573) first, since a claim refused as
+# superseded exits here.
+if output_may_block; then
+  gate_block
+fi
 gate_claim
 gate_assert_unchanged
 
 # ─── Parse the structured result ───────────────────────────────
 # Enforce codex-review-schema.json locally before rendering or recording a
-# receipt; the CLI's schema request alone does not establish valid output.
-# Decode decimal literals exactly: rounding must not turn a fractional line
-# number or out-of-range confidence into a valid approval.
-if ! python3 - "$OUT_FILE" >/dev/null 2>&1 <<'PY'
-from decimal import Decimal
-import json
-import sys
-
-def unique_object(pairs):
-    value = dict(pairs)
-    if len(value) != len(pairs):
-        raise ValueError("duplicate JSON key")
-    return value
-
-def reject_constant(value):
-    raise ValueError("invalid JSON constant: " + value)
-
-def nonempty_string(value):
-    return type(value) is str and len(value) >= 1
-
-def positive_integer(value):
-    if type(value) is int:
-        return value >= 1
-    return (type(value) is Decimal and value.is_finite() and value >= 1
-            and value == value.to_integral_value())
-
-def valid_finding(value):
-    return (
-        type(value) is dict
-        and set(value) == {"body", "confidence", "file", "line_end", "line_start",
-                           "recommendation", "severity", "title"}
-        and value["severity"] in ("critical", "high", "medium", "low")
-        and all(nonempty_string(value[key]) for key in ("title", "body", "file"))
-        and positive_integer(value["line_start"])
-        and positive_integer(value["line_end"])
-        and type(value["confidence"]) in (int, Decimal)
-        and 0 <= value["confidence"] <= 1
-        and type(value["recommendation"]) is str
-    )
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    result = json.load(source, object_pairs_hook=unique_object,
-                       parse_constant=reject_constant, parse_float=Decimal)
-if not (
-    type(result) is dict
-    and set(result) == {"findings", "next_steps", "summary", "verdict"}
-    and result["verdict"] in ("approve", "needs-attention")
-    and nonempty_string(result["summary"])
-    and type(result["next_steps"]) is list
-    and all(nonempty_string(step) for step in result["next_steps"])
-    and type(result["findings"]) is list
-    and all(valid_finding(finding) for finding in result["findings"])
-):
-    raise ValueError("review does not match codex-review-schema.json")
-PY
-then
+# receipt (review_output_check, above).
+if ! review_output_check schema "$OUT_FILE"; then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
   sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
   red "Push blocked: cannot confirm review is clean."
+  gate_block
   exit 2
 fi
 
@@ -812,6 +817,7 @@ if [[ "$N_BLOCK" -gt 0 ]]; then
   jq -r '.findings[] | select(.severity != "low") | "  [\(.severity)] \(.title) — \(.file):\(.line_start)\n    \(.body)"' "$OUT_FILE"
   echo ""
   red "Push blocked by codex-review-gate ($N_BLOCK blocking finding(s))."
+  gate_block
   exit 2
 fi
 
@@ -824,6 +830,7 @@ if [[ "$VERDICT" != "approve" && "$N_TOTAL" -eq 0 ]]; then
   echo "  Summary: $SUMMARY"
   jq -r '.next_steps[]? | "  next: \(.)"' "$OUT_FILE"
   red "Push blocked: reviewer flagged the change (fail closed)."
+  gate_block
   exit 2
 fi
 

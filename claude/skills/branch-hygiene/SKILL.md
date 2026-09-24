@@ -81,7 +81,8 @@ $ ~/dev/dotfiles/hygiene-status.sh --status
 settings clean (checked 4h ago)
 ```
 
-This reports repository settings only; read `--worktrees` for retained or
+This reports repository settings, plus a `retired worktrees: N (oldest Xd, M expirable)`
+line when the timer's expiry report exists; read `--worktrees` for retained or
 released task worktrees. If settings drift exists, the same command emits a summary and the user can run
 `gh-bootstrap.sh --all ~/dev` to fix it. Be specific about which repos
 drifted — they're listed in `drifted_repos` of the JSON.

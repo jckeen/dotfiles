@@ -184,7 +184,9 @@ LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
 verdict_in_partial_output() {
   [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 0
   grep -qE "$BLOCK_RE" "$SUMMARY_FILE" || return 0
-  # A verdict retires the other lane's approval like any other (#499).
+  # A verdict retires the other lane's approval like any other (#499), and
+  # records its per-artifact marker first (#573).
+  gate_block
   gate_claim
   red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
@@ -354,22 +356,22 @@ echo "Running local compile/lint checks first..."
 if [[ -f package.json ]]; then
   if [[ -f tsconfig.json ]] && grep -q '"typescript"' package.json 2>/dev/null; then
     echo "  → tsc --noEmit"
-    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_claim; exit 2; }
+    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_block; gate_claim; exit 2; }
   fi
   if grep -q '"lint"' package.json 2>/dev/null; then
     echo "  → lint"
-    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; gate_claim; exit 2; }
-    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; gate_claim; exit 2; }
-    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; gate_claim; exit 2; }
-    else                                npm run lint   || { red "  Linter failed."; gate_claim; exit 2; }
+    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+    else                                npm run lint   || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
     fi
   fi
 elif [[ -f Cargo.toml ]]; then
   echo "  → cargo check"
-  cargo check || { red "  cargo check failed."; gate_claim; exit 2; }
+  cargo check || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
 elif [[ -f go.mod ]]; then
   echo "  → go vet"
-  go vet ./... || { red "  go vet failed."; gate_claim; exit 2; }
+  go vet ./... || { red "  go vet failed."; gate_block; gate_claim; exit 2; }
 fi
 
 # ─── Step 4: run agy print mode, non-interactively and tool-locked ─
@@ -418,6 +420,7 @@ cancel_agy_review() {
     {
       red "✖ Antigravity review cancelled after it reported blocking findings:"
       sed 's/^/  /' <<<"$findings"
+      gate_block
       gate_claim
     } >&8 2>&9
     exit 2
@@ -562,7 +565,27 @@ fi
 # its blocking exits below still claim, failing closed. That run verifies only
 # in gate_record_pass: a verify here would exit a superseded attempt before its
 # blocking exit could claim and retire the approval that raced it.
+# Output that is not certifiably clean exits 2 below, so it is a blocking
+# verdict now: record its marker (#573) before a claim refused as superseded
+# can exit here. The predicate is the parse below, stated once more.
+agy_output_may_block() {
+  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" && return 0
+  if ! grep -qE "$LOW_RE" "$SUMMARY_FILE"; then
+    local whole last
+    whole="$(tr -d '[:space:]' < "$SUMMARY_FILE")"
+    last="$(grep -vE '^[[:space:]]*$' "$SUMMARY_FILE" | tail -n 1 | tr -d '[:space:]' || true)"
+    [[ "$whole" == "LGTB" ]] && return 1
+    [[ "$last" == "LGTB" ]] && ! grep -qE '\[P[0-9]\]' "$SUMMARY_FILE" && return 1
+    return 0
+  fi
+  # Draining grep, not -q: under pipefail an early match would SIGPIPE sed and
+  # turn "may block" into false (Codex round 3).
+  sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/dev/null
+}
 if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" == 1 ]]; then
+  if agy_output_may_block; then
+    gate_block
+  fi
   gate_claim
   gate_assert_unchanged
 fi
@@ -597,6 +620,7 @@ if [[ "$N_TOTAL" -eq 0 ]]; then
   red "✖ Antigravity output not recognized as findings or a whole-verdict LGTB:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (format drift or injected text)."
+  gate_block
   gate_claim
   exit 2
 fi
@@ -613,6 +637,7 @@ if [[ "$N_BLOCK" -gt 0 ]]; then
   grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
   echo ""
   red "Push blocked by antigravity-review-gate ($N_BLOCK P0–P2 finding(s))."
+  gate_block
   gate_claim
   exit 2
 fi
@@ -625,6 +650,7 @@ if sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/
   red "✖ Stray [P#] token outside recognized finding lines:"
   sed 's/^/  /' "$SUMMARY_FILE"
   red "Push blocked: cannot confirm the review is clean (possible format drift)."
+  gate_block
   gate_claim
   exit 2
 fi

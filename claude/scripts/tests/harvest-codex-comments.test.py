@@ -467,6 +467,9 @@ class HarvestTests(unittest.TestCase):
         cases = [
             ("AGENTS.md", True),
             ("agents/skills/x/SKILL.md", True),
+            ("claude/skills/x/SKILL.md", True),
+            ("antigravity/skills/y/SKILL.md", True),
+            ("claude/skillset/notes.md", False),
             ("claude/scripts/foo.sh", False),
         ]
         for path, expected in cases:

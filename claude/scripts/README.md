@@ -258,6 +258,7 @@ someone chose to run.
 | `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499) |
 | `review-receipt.py claim --snapshot <run>/snapshot.json` | The gates' commitment step, called once a gate can reach a verdict. Retires every other lane's receipt and attempt, then marks this attempt claimed, which `complete` requires. A superseded attempt still retires every lane, its own included, before it refuses (fail closed), since its verdict may be blocking |
 | `review-receipt.py begin …` | Backward-compatible `capture` then `claim`, same arguments as `capture` |
+| `review-receipt.py block --snapshot <run>/snapshot.json` | The gates' blocking-verdict step (#573). Records a durable marker for the snapshot's artifact (base, head, scope, patch digest), stamped with the verdict time. Needs no live, claimed or unsuperseded attempt |
 
 `required_lane` is one of `any` (tier-1 docs diff — an exemption receipt from
 either lane ships it, whether a gate's tier valve or `review-and-push.sh`
@@ -328,6 +329,21 @@ lanes both lose and one reruns. `check` captures lock-free, so a slow check neve
 takes the lock only for its deciding assertion — the attempt still live and the
 receipt still the one it validated — so a claim landing after its validation
 makes it refuse instead of approving a retired receipt (#533).
+
+**A blocking verdict is a durable marker, not only a token race (#573).** Every
+blocking exit of both gates first runs `block`, which writes
+`<git-dir>/review-receipts/blocks/<artifact>.json` keyed by base, head, scope
+and patch digest. It needs no live attempt, so a verdict whose claim was refused
+as superseded still leaves it. `check`, in its locked deciding assertion, and
+`complete`, before writing, refuse any record captured before a marker for the
+same artifact, whichever lane recorded it. A review captured after the marker
+ships normally, so rerunning after a fix (or after a false positive) works as
+before. Capture and verdict are ordered by a counter in `sequence.json`, bumped
+under the lock, not by wall time: the marker's `blocked_at` is for audit only,
+since a clock stepped backward must not let a pre-verdict approval look newer. A
+receipt with no capture sequence (from before #573) is refused whenever a marker
+for its artifact exists. The token race now decides only which approval is
+current.
 
 The ledger is written by `complete` (0600, append-only) and is **never read by
 `check`**: a forged ledger cannot approve a push and an unwritable one cannot

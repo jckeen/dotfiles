@@ -72,4 +72,14 @@ Claude Code carries the same ownership and verification rules in its fragment.
   establish the model used, and a text-diff review is not browser evidence.
 - **Handoff payload:** a handoff to me should carry the *claim to disprove* and
   the *exact repro command*. If it doesn't, ask for them before "reviewing."
+- **Selected services are authoritative.** The operator's agent-service
+  selection (`setup.sh --show-services`; machine-local at
+  `$XDG_CONFIG_HOME/dotfiles/services`, all three when unset) bounds which
+  runtimes you assign roles, handoffs, and review lanes to. When a step needs a
+  capability that only an unselected runtime provides, report it as unavailable
+  and stop for the operator. Do not install, sign in to, or launch that runtime
+  to fill the gap, and do not downgrade the required lane. Ownership,
+  verification, and independent-review rules still apply: with one selected
+  runtime, independent review is a fresh-context session or subagent of that
+  runtime, and the verdict says so.
 <!-- /canon:team-hard-rules -->

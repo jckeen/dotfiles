@@ -1201,7 +1201,8 @@ assert "codex invoked for the rename-laundered diff" "[ -e '$CODEX_FAKE_DIR/invo
 rm -rf "$R"
 
 echo ""
-for instruction in .codex/config.toml nested/codex/config.toml; do
+# claude/skills and antigravity/skills are instruction surfaces too (#557).
+for instruction in .codex/config.toml nested/codex/config.toml claude/skills/x/SKILL.md antigravity/skills/y/SKILL.md; do
   new_repo
   mkdir -p "$R/$(dirname "$instruction")"
   echo steer > "$R/$instruction"
@@ -1311,10 +1312,14 @@ done
 
 new_repo
 echo change >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1}]}' > "$CODEX_FAKE_DIR/output"
+low_finding nit code.txt
 echo 42 > "$CODEX_FAKE_DIR/rc"
 check "failed CLI with low findings blocks" 3 "not trusting the result" --uncommitted --no-issues --require
 check "failed CLI cannot degrade to success" 3 "not trusting the result" --uncommitted --no-issues
+# Output that fails the schema is not verifiably low-only: one validator decides
+# "clean" everywhere, so it is a verdict (exit 2), never a degraded lane (#573).
+printf '%s' '{"verdict":"needs-attention","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1}]}' > "$CODEX_FAKE_DIR/output"
+check "failed CLI with schema-invalid low findings is a verdict" 2 "may carry, blocking findings" --uncommitted --no-issues --require
 rm -rf "$R"
 
 for asset in image.svg bundle.min.js; do
@@ -1531,7 +1536,8 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
   git -C "$R" add "$source_instruction"
   git -C "$R" commit -qm 'source instruction'
   approve_clean
-  if [[ "$source_instruction" == agents/skills/* ]]; then
+  # claude/skills joined the self-review guard with agents/skills (#557).
+  if [[ "$source_instruction" == agents/skills/* || "$source_instruction" == claude/skills/* ]]; then
     check "$source_instruction blocks shared-skill self-review" 2 "instruction surface" --committed --no-issues --require
     CODEX_GATE_ALLOW_INSTRUCTION_DIFF=1 check "$source_instruction permits independently reviewed override" 0 "Codex review passed" --committed --no-issues --require
   else
@@ -1775,9 +1781,12 @@ unset CLASSIFY_OUTPUT CLASSIFY_RC
 # ─── gate_select_lane (ADR-0008) ───────────────────────────────
 # lane_of <REVIEW_LANE value, empty for unset> <required lane> — print
 # gate_select_lane's answer (or its refusal text) and return its exit status.
+SERVICES_HOME="$(mktemp -d)"
 lane_of() {
   local value="$1" required="$2"
   (
+    # A pinned, empty selection home: the runner's own selection never leaks in.
+    export XDG_CONFIG_HOME="$SERVICES_HOME"
     # shellcheck source=claude/scripts/gate-lib.sh
     . "$SCRIPT_DIR/../gate-lib.sh"
     if [[ -n "$value" ]]; then export REVIEW_LANE="$value"; else unset REVIEW_LANE; fi
@@ -1800,6 +1809,39 @@ assert "the refusal names the required lane" "grep -qF 'requires the Codex lane'
 assert "an unknown REVIEW_LANE value is refused" "! lane_of gemini antigravity >/dev/null"
 assert "an unknown required lane is refused" "! lane_of '' nonsense >/dev/null"
 assert "a missing required lane is refused" "! (. '$SCRIPT_DIR/../gate-lib.sh'; gate_select_lane >/dev/null 2>&1)"
+
+# ── #425: a lane whose runtime is not a selected service is unavailable ──
+select_services() {
+  mkdir -p "$SERVICES_HOME/dotfiles"
+  printf '%s\n' "$1" > "$SERVICES_HOME/dotfiles/services"
+}
+assert "no saved selection keeps every lane (the migration default)" \
+  "[[ \"\$(lane_of '' codex)\" == codex && \"\$(lane_of '' antigravity)\" == antigravity ]]"
+select_services 'services=claude,codex'
+assert "an unselected Antigravity lane is refused" "! lane_of '' antigravity >/dev/null"
+assert "the refusal names the service and the opt-in" \
+  "grep -qF 'Antigravity is not a selected agent service' <<<\"\$(lane_of '' antigravity)\" && grep -qF 'setup.sh --select-services' <<<\"\$(lane_of '' antigravity)\""
+assert "a selected Codex lane still dispatches" "[[ \"\$(lane_of '' codex)\" == codex ]]"
+assert "REVIEW_LANE=antigravity cannot reach an unselected lane" "! lane_of antigravity any >/dev/null"
+select_services 'services=claude,antigravity'
+assert "an unselected Codex lane is refused" "! lane_of '' codex >/dev/null"
+assert "REVIEW_LANE=codex cannot escalate to an unselected lane" "! lane_of codex antigravity >/dev/null"
+assert "the Codex refusal names the service" "grep -qF 'Codex is not a selected agent service' <<<\"\$(lane_of '' codex)\""
+select_services 'services=claude'
+assert "a tier-1 diff needs no reviewer, selected or not" "[[ \"\$(lane_of '' any)\" == skip ]]"
+select_services 'no assignment here'
+assert "an unreadable selection refuses the lane (fail closed)" "! lane_of '' codex >/dev/null"
+assert "that refusal says the selection is unreadable" "grep -qF 'selection is unreadable' <<<\"\$(lane_of '' codex)\""
+# A selection that exists but cannot be reached is unreadable, not absent: only
+# a genuinely missing file means "all services" (Codex round 1). Root ignores
+# directory permissions, so the case only means something as a normal user.
+if [[ "$(id -u)" -ne 0 ]]; then
+  select_services 'services=claude'
+  chmod 000 "$SERVICES_HOME/dotfiles"
+  assert "an unreachable selection refuses the lane (fail closed)" "! lane_of '' codex >/dev/null"
+  chmod 700 "$SERVICES_HOME/dotfiles"
+fi
+rm -rf "$SERVICES_HOME"
 
 assert "explicit committed scope selects immutable objects" "(source '$SCRIPT_DIR/../gate-lib.sh'; FORCE_UNCOMMITTED=false; FORCE_COMMITTED=true; gate_select_diff_target; [[ \$GATE_SCOPE == committed ]])"
 
@@ -1990,6 +2032,109 @@ CODEX_HOME="$CODEX_FAKE_DIR/codex-home" \
 assert "multipart: that run delivered every part" "went_multipart"
 assert "multipart: an empty final part leaves the Antigravity approval shippable" "antigravity_receipt_ships"
 assert "multipart: an empty final part mints no Codex receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+rm -rf "$R" "$CODEX_FAKE_DIR"
+
+# ── #573: a blocking verdict records a durable per-artifact marker ─────
+# The token race decides which approval is current; the marker carries the
+# safety property. Restoring the Antigravity lane's receipt AND attempt token
+# after a blocking Codex verdict simulates any path that loses the race: the
+# marker alone must still refuse that approval.
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+block_markers() { find "$R/.git/review-receipts/blocks" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
+save_antigravity_lane() {
+  cp "$R/.git/review-receipts/antigravity.json" "$R/.git/review-receipts/antigravity.attempt.json" "$CODEX_FAKE_DIR/"
+}
+restore_antigravity_lane() {
+  cp "$CODEX_FAKE_DIR/antigravity.json" "$CODEX_FAKE_DIR/antigravity.attempt.json" "$R/.git/review-receipts/"
+}
+blocking_verdict() {
+  printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+}
+seed_antigravity_receipt
+save_antigravity_lane
+approve_clean
+check "#573: an approving Codex run passes" 0 "Codex review passed" --committed --require --no-issues
+assert "#573: an approval records no block marker" "[ \"\$(block_markers)\" = 0 ]"
+seed_antigravity_receipt
+save_antigravity_lane
+echo 1 > "$CODEX_FAKE_DIR/rc"
+check "#573: a failed run with clean output degrades" 3 "not trusting the result" --committed --require --no-issues
+assert "#573: a degraded run records no block marker" "[ \"\$(block_markers)\" = 0 ]"
+echo 0 > "$CODEX_FAKE_DIR/rc"
+blocking_verdict
+check "#573: a blocking Codex verdict blocks" 2 "BLOCKING findings" --committed --require --no-issues
+assert "#573: the blocking verdict records one marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_antigravity_lane
+assert "#573: the marker refuses an approval restored past the token race" "! antigravity_receipt_ships"
+# A cancellation after blocking output, and a failed run carrying it, are verdicts too.
+rm -rf "$R/.git/review-receipts/blocks"
+seed_antigravity_receipt
+save_antigravity_lane
+printf '%s\n' 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"' > "$CODEX_FAKE_DIR/mutate"
+check "#573: a cancellation after blocking output is a verdict" 2 "Codex review cancelled" --committed --require --no-issues
+rm -f "$CODEX_FAKE_DIR/mutate"
+assert "#573: that cancellation records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_antigravity_lane
+assert "#573: the cancellation's marker refuses the restored approval" "! antigravity_receipt_ships"
+rm -rf "$R/.git/review-receipts/blocks"
+seed_antigravity_receipt
+save_antigravity_lane
+echo 1 > "$CODEX_FAKE_DIR/rc"
+check "#573: a failed run carrying blocking output is a verdict" 2 "a verdict, not a degraded lane" --committed --require --no-issues
+echo 0 > "$CODEX_FAKE_DIR/rc"
+assert "#573: that failed run records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_antigravity_lane
+assert "#573: the failed run's marker refuses the restored approval" "! antigravity_receipt_ships"
+# Superseded: Antigravity claims and approves while Codex reviews. The claim
+# refusal exits 2, and the marker must already be on disk by then.
+rm -rf "$R/.git/review-receipts/blocks"
+cat > "$CODEX_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer antigravity)"
+printf 'LGTB\n' > '$CODEX_FAKE_DIR/agy-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$CODEX_FAKE_DIR/agy-approval' >/dev/null
+cp '$R/.git/review-receipts/antigravity.json' '$R/.git/review-receipts/antigravity.attempt.json' '$CODEX_FAKE_DIR/'
+EOF
+check "#573: a superseded blocking Codex verdict blocks" 2 "" --committed --require --no-issues
+rm -f "$CODEX_FAKE_DIR/mutate"
+assert "#573: the superseded verdict records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_antigravity_lane
+assert "#573: that marker refuses the approval that raced it, even restored" "! antigravity_receipt_ships"
+# Output that looks clean but fails the schema is not certifiably clean: a
+# superseded run exits at the claim, before the main path's schema check, so
+# the pre-claim predicate must apply that same check (Codex round 1).
+rm -rf "$R/.git/review-receipts/blocks"
+printf '%s' '{"verdict":"approve","findings":[]}' > "$CODEX_FAKE_DIR/output"
+cat > "$CODEX_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer antigravity)"
+printf 'LGTB\n' > '$CODEX_FAKE_DIR/agy-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$CODEX_FAKE_DIR/agy-approval' >/dev/null
+cp '$R/.git/review-receipts/antigravity.json' '$R/.git/review-receipts/antigravity.attempt.json' '$CODEX_FAKE_DIR/'
+EOF
+check "#573: a superseded run with schema-invalid output blocks" 2 "" --committed --require --no-issues
+rm -f "$CODEX_FAKE_DIR/mutate"
+assert "#573: schema-invalid superseded output records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_antigravity_lane
+assert "#573: that marker refuses the restored approval" "! antigravity_receipt_ships"
+# Unparseable output is a verdict against the artifact as well.
+rm -rf "$R/.git/review-receipts/blocks"
+seed_antigravity_receipt
+save_antigravity_lane
+printf '%s' '{"verdict":"approve","summary":"x","findings":[],"next_steps":[],"extra":1}' > "$CODEX_FAKE_DIR/output"
+check "#573: schema-invalid output blocks" 2 "not the expected JSON shape" --committed --require --no-issues
+assert "#573: schema-invalid output records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_antigravity_lane
+assert "#573: that marker refuses the restored approval" "! antigravity_receipt_ships"
+printf '%s' '{"verdict":"needs-attention","summary":"look","findings":[],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+rm -rf "$R/.git/review-receipts/blocks"
+check "#573: needs-attention with no findings blocks" 2 "reviewer flagged the change" --committed --require --no-issues
+assert "#573: needs-attention with no findings records a marker" "[ \"\$(block_markers)\" = 1 ]"
+# A review captured after the verdict ships: rerunning works as before.
+approve_clean
+check "#573: a later approving run passes" 0 "Codex review passed" --committed --require --no-issues
+assert "#573: the later approval ships over the earlier marker" "antigravity_receipt_ships"
 rm -rf "$R" "$CODEX_FAKE_DIR"
 
 # ── #499: every exit after the review runs passes verdict_in_output (static) ──

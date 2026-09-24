@@ -117,6 +117,23 @@ gate_claim() {
   GATE_CLAIMED=1
 }
 
+# Record a blocking verdict against the captured artifact (#573): a durable
+# marker that `review-receipt.py check` holds every receipt captured before it
+# to, whichever lane recorded it. Needs no live attempt, so it runs BEFORE
+# gate_claim at every blocking exit: a claim refused as superseded exits 2 and
+# must not take the marker with it. Idempotent per run. A failed write is
+# reported and the exit still blocks; the claim that follows still retires the
+# other lanes as before.
+gate_block() {
+  [[ "${GATE_BLOCKED:-0}" != 1 ]] || return 0
+  [[ -n "${GATE_RUN_DIR:-}" && -f "$GATE_RUN_DIR/snapshot.json" ]] || return 0
+  if python3 "$RECEIPT_HELPER" block --snapshot "$GATE_RUN_DIR/snapshot.json" >/dev/null; then
+    GATE_BLOCKED=1
+  else
+    red "  Could not record the blocking-verdict marker; the claim below still retires the other lanes."
+  fi
+}
+
 gate_record_pass() {
   local outcome="$1" output="${2:-}" args
   gate_assert_unchanged
@@ -217,35 +234,105 @@ gate_classify_tier() {
 # REFUSED rather than honoured, because that request is exactly the downgrade
 # the required lane exists to prevent. Escalation (REVIEW_LANE=codex on an
 # ordinary diff) is always allowed.
+#
+# A lane whose runtime is not a selected agent service (#425) is unavailable,
+# not skipped: gate_select_lane refuses it, naming the service and the opt-in
+# command, rather than dispatching it or quietly picking another lane.
+
+# gate_service_selected <service> — 0 when <service> is one of the operator's
+# selected agent services, 1 when it is not, 2 when the saved selection cannot
+# be read (reason on stderr). The selection is machine-local state parsed by
+# lib-services.sh at the dotfiles root; this file is reached through per-file
+# symlinks in ~/.claude/scripts, so the root is found from its REAL path. No
+# saved selection means all services, the rule setup.sh migrates by; so does an
+# install that predates lib-services.sh.
+gate_service_selected() {
+  local service="$1" self lib selection rc=0
+  self="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")" || return 2
+  lib="${self%/*}/../../lib-services.sh"
+  [[ -f "$lib" ]] || return 0
+  # A subshell keeps the library's names out of the gate's namespace.
+  selection="$(
+    # shellcheck source=../../lib-services.sh
+    . "$lib" || exit 2
+    path="$(services_config_path)"
+    services_load_saved "$path" && exit 0
+    rc=$?
+    # lib-services.sh reports "absent" when the file cannot even be stat'ed;
+    # only a genuine ENOENT means no selection was ever saved.
+    [[ "$rc" -eq 1 ]] || exit "$rc"
+    python3 -c '
+import os, sys
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(1)
+except OSError:
+    sys.exit(2)
+sys.exit(2)' "$path"
+  )" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) return 0 ;;
+    *) echo "The saved agent-service selection cannot be read; run ./setup.sh --show-services." >&2
+       return 2 ;;
+  esac
+  case ",$selection," in
+    *",$service,"*) return 0 ;;
+  esac
+  return 1
+}
+
+# gate_require_service <lane> — refuse (return 1, reason on stderr) a lane
+# whose runtime is not selected, or when the selection is unreadable.
+gate_require_service() {
+  local lane="$1" label rc=0
+  case "$lane" in
+    codex) label=Codex ;;
+    antigravity) label=Antigravity ;;
+    *) return 0 ;;
+  esac
+  gate_service_selected "$lane" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) red "✖ The $label lane is unavailable: $label is not a selected agent service." >&2
+       red "  Opt in with ./setup.sh --select-services, or have the operator review this diff." >&2 ;;
+    *) red "✖ The $label lane is unavailable: the agent-service selection is unreadable." >&2 ;;
+  esac
+  return 1
+}
+
 gate_select_lane() {
-  local required="${1:-}" requested="${REVIEW_LANE:-auto}"
+  local required="${1:-}" requested="${REVIEW_LANE:-auto}" lane
   # Refusals go to stderr: callers read the chosen lane from stdout.
   case "$required" in
     any|antigravity|codex) ;;
     *) red "✖ gate_select_lane: unknown required lane '$required'." >&2; return 1 ;;
   esac
   case "$requested" in
-    auto) ;;
-    codex) printf 'codex\n'; return 0 ;;
+    auto)
+      case "$required" in
+        any)         lane=skip ;;
+        antigravity) lane=antigravity ;;
+        codex)       lane=codex ;;
+      esac
+      ;;
+    codex) lane=codex ;;
     antigravity)
       if [[ "$required" == codex ]]; then
         red "✖ REVIEW_LANE=antigravity refused: this diff requires the Codex lane." >&2
         red "  A risk-surface diff is never downgradable (ADR-0008); unset REVIEW_LANE." >&2
         return 1
       fi
-      printf 'antigravity\n'
-      return 0
+      lane=antigravity
       ;;
     *)
       red "✖ REVIEW_LANE must be auto, codex, or antigravity (got '$requested')." >&2
       return 1
       ;;
   esac
-  case "$required" in
-    any)         printf 'skip\n' ;;
-    antigravity) printf 'antigravity\n' ;;
-    codex)       printf 'codex\n' ;;
-  esac
+  gate_require_service "$lane" || return 1
+  printf '%s\n' "$lane"
   return 0
 }
 
