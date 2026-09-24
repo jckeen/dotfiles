@@ -748,6 +748,10 @@ Every other shape is reported and left alone:
 - `orphan-directory`: an entry whose `worktree` (or a leftover
   `worktree-expiring`) Git no longer registers. Always retained; inspect and
   remove it by hand.
+- `interrupted-expiry`: an entry whose checkout an interrupted expiry left
+  registered at `worktree-expiring`. Reported once, as that entry, and always
+  retained; inspect it, then remove it or move it back to `worktree` and run
+  `git worktree repair`.
 - `orphan-registration`: a worktree registered under the archive whose entry
   directory is gone. Always retained, since the recovery files that would back
   its removal are gone too.
