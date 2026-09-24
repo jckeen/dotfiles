@@ -2862,6 +2862,9 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         first = self.capture(reviewer="codex")
         second = self.capture(reviewer="codex")
         self.claim(first, ok=False)
+        # The refused claim retired its own lane too (fail closed): rerun.
+        self.claim(second, ok=False)
+        second = self.capture(reviewer="codex")
         self.claim(second)
         # Another lane's claim supersedes an unclaimed capture here too.
         mine = self.capture(reviewer="antigravity")
@@ -2889,6 +2892,19 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                 self.claim(blocking, ok=False)
                 self.check(False)
                 self.check(False, "--reviewer", first)
+
+    def test_superseded_blocking_verdict_retires_a_newer_same_lane_approval(self):
+        """Two runs in ONE lane: the newer approves, then the older one blocks."""
+        for lane in ("codex", "antigravity"):
+            with self.subTest(lane=lane):
+                older = self.capture(reviewer=lane)
+                newer = self.capture(reviewer=lane)
+                self.claim(newer)
+                self.complete(newer)
+                self.check()
+                self.claim(older, ok=False)
+                self.check(False)
+                self.check(False, "--reviewer", lane)
 
     def test_claim_waits_for_a_concurrent_attempt_transition(self):
         self.complete(self.begin(reviewer="antigravity"))

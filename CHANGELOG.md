@@ -31,9 +31,10 @@
   that exited 3 (agy missing, a size cap, an unverifiable pin) voided a Codex
   approval of the same commit, and recovery was a paid re-run (#499). The step is
   split: `review-receipt.py capture` opens only this lane's attempt, and `claim`
-  — retiring every other lane, then refusing if its own attempt was
-  superseded (a superseded verdict still retires the approval that raced it,
-  so two racing lanes both lose and one reruns; both gates claim before their
+  — retiring every other lane, or, if its own attempt was superseded,
+  retiring every lane including its own and refusing (a superseded verdict
+  still retires any approval that raced it, in either lane, so racing attempts
+  all lose and one reruns; both gates claim before their
   post-verdict verify, and every Codex exit after the review runs goes through
   `verdict_in_output`, which a static test enforces) — runs only
   once a gate can reach a verdict: the Codex gate after its reviewer produced
