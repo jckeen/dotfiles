@@ -6,6 +6,17 @@
 #      deletion with its SHA, and pushes an ntfy summary when ≥1 was deleted.
 #      The summary carries counts only — ntfy topics are effectively public,
 #      so repo and branch names stay in the local log.
+#   3. Runs `worktree-lifecycle.py expire` in REPORT MODE ONLY over the
+#      retired-worktree archive, after the prune, and
+#      writes retired-worktrees.json for `hygiene-status.sh`. The timer never
+#      passes --apply: removing a retired checkout needs the operator's cleanup
+#      authorization. The report asserts --trust-process-manager so its
+#      expirable count matches the operator's run; report mode deletes nothing.
+#      --apply removes checkouts and registrations only; the recovery files
+#      (bundle, metadata tar, recovery.json) stay. The operator runs:
+#        python3 ~/dev/dotfiles/claude/scripts/worktree-lifecycle.py expire \
+#          --root ~/dev --archive-dir ~/.local/state/hygiene/worktree-archive \
+#          --older-than 30d --trust-process-manager --apply
 #
 # Triggered by git-hygiene.timer. Logs to ~/.local/state/hygiene/cron.log;
 # the last run's deletions land in last-prune.tsv, all of them in deletions.tsv
@@ -15,6 +26,7 @@
 #   HYGIENE_DELETE=0      audit + status only; skip the prune (default: on)
 #   HYGIENE_GH_CHECK=0    prune without the GitHub merged-PR check (default: on)
 #   HYGIENE_DEV_DIR       root scanned (default: ~/dev)
+#   HYGIENE_EXPIRE_WINDOW retired-worktree report window (default: 30d)
 #   HYGIENE_SCRIPT_DIR    where gh-bootstrap.sh / git-hygiene.sh live
 #                         (default: $HYGIENE_DEV_DIR/dotfiles; tests point it at
 #                         a stub directory)
@@ -126,6 +138,21 @@ else
       | notify_ntfy "git-hygiene: pruned $deleted_count branch(es)"
   else
     echo "pruned 0 branches — no notification"
+  fi
+fi
+
+# Layer C — retired-worktree expiry REPORT (never --apply; see header)
+if [[ -f "$worktree_helper" ]] && command -v python3 >/dev/null 2>&1; then
+  archive_dir="$LOG_DIR/worktree-archive"
+  window="${HYGIENE_EXPIRE_WINDOW:-30d}"
+  echo "── worktree-lifecycle expire --older-than $window (report only) ──"
+  if python3 "$worktree_helper" expire --root "$DEV_DIR" --archive-dir "$archive_dir" \
+      --older-than "$window" --trust-process-manager > "$LOG_DIR/retired-worktrees.json.tmp"; then
+    mv "$LOG_DIR/retired-worktrees.json.tmp" "$LOG_DIR/retired-worktrees.json"
+    echo "wrote $LOG_DIR/retired-worktrees.json (report only; nothing deleted)"
+  else
+    rm -f "$LOG_DIR/retired-worktrees.json.tmp"
+    echo "retired-worktree report unavailable; previous snapshot retained"
   fi
 fi
 

@@ -2,6 +2,7 @@
 """Exercise lifecycle decisions on real disposable Git worktrees."""
 
 from contextlib import contextmanager, nullcontext
+from datetime import datetime, timedelta, timezone
 import errno
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import select
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -17,6 +19,7 @@ import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "worktree-lifecycle.py"
+ARCHIVE_NAMES = ("recovery.json", "repository.bundle", "worktree-metadata.tar")
 
 
 def host_git_marker(root):
@@ -2306,6 +2309,465 @@ if kind == 'writer':
         result = self.retire("--apply", "--archive-dir", str(self.root / "archive"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.run_git(self.repo, "rev-parse", "refs/stash").strip(), stash)
+
+    # -- expire (#562) -----------------------------------------------------
+
+    def retired(self):
+        """Retire the fixture task into the archive and return its entry."""
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        result = self.retire("--apply", "--archive-dir", str(self.root / "archive"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return Path(json.loads(result.stdout)["archive"])
+
+    def age(self, archive, days):
+        path = archive / "recovery.json"
+        record = json.loads(path.read_text())
+        record["retired_at"] = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        path.write_text(json.dumps(record, indent=2) + "\n")
+
+    def expire(self, *args, window="30d"):
+        result = self.cli(
+            "expire", "--archive-dir", str(self.root / "archive"), "--older-than", window, *args
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def entry(self, report, archive):
+        matches = [item for item in report["entries"] if item["archive"] == str(archive)]
+        self.assertEqual(len(matches), 1, report)
+        return matches[0]
+
+    def snapshot(self, *directories):
+        """Every path, mode, mtime and byte under the given trees."""
+        state = {}
+        for directory in directories:
+            for folder, dirs, files in os.walk(directory):
+                for name in dirs + files:
+                    path = Path(folder) / name
+                    info = path.lstat()
+                    if stat.S_ISLNK(info.st_mode):
+                        data = os.readlink(path)
+                    elif stat.S_ISREG(info.st_mode):
+                        data = path.read_bytes()
+                    else:
+                        data = None
+                    state[str(path)] = (info.st_mode, info.st_mtime_ns, data)
+        return state
+
+    def registered(self, path):
+        listing = self.run_git(self.repo, "worktree", "list", "--porcelain")
+        return f"worktree {path}\n" in listing + "\n"
+
+    def commit(self, checkout, message):
+        self.run_git(
+            checkout,
+            "-c",
+            "user.name=F",
+            "-c",
+            "user.email=f@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        )
+
+    def test_expire_report_mode_touches_nothing(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        admin = self.repo / ".git/worktrees/task"
+        before = self.snapshot(self.root / "archive", admin)
+        listing = self.run_git(self.repo, "worktree", "list", "--porcelain")
+        report = self.expire()
+        item = self.entry(report, archive)
+        self.assertEqual(item["disposition"], "expirable", item)
+        self.assertEqual(item["kind"], "quarantine")
+        self.assertEqual((report["retired"], report["expirable"], report["expired"]), (1, 1, 0))
+        self.assertEqual(report["oldest_days"], 40)
+        self.assertIs(report["applied"], False)
+        self.assertEqual(self.snapshot(self.root / "archive", admin), before)
+        self.assertEqual(self.run_git(self.repo, "worktree", "list", "--porcelain"), listing)
+
+    def test_expire_apply_keeps_the_recovery_files_byte_identical(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        kept = {name: (archive / name).read_bytes() for name in ARCHIVE_NAMES}
+        modes = {name: (archive / name).stat().st_mode for name in ARCHIVE_NAMES}
+        report = self.expire("--apply")
+        item = self.entry(report, archive)
+        self.assertEqual(item["disposition"], "expired", item)
+        self.assertEqual((report["expirable"], report["expired"]), (0, 1))
+        # The checkout and its registration are gone; the recovery files are
+        # untouched and nothing else is left in the entry.
+        self.assertEqual(sorted(os.listdir(archive)), sorted(ARCHIVE_NAMES))
+        for name in ARCHIVE_NAMES:
+            self.assertEqual((archive / name).read_bytes(), kept[name], name)
+            self.assertEqual((archive / name).stat().st_mode, modes[name], name)
+        self.assertFalse(self.registered(archive / "worktree"))
+        self.assertFalse(self.registered(archive / "worktree-expiring"))
+        self.assertFalse((self.repo / ".git/worktrees/task").exists())
+        # The bundle still restores the retired head.
+        self.run_git(self.repo, "bundle", "verify", str(archive / "repository.bundle"))
+        # The merged branch ref is not the archive's to delete.
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "topic").strip(), self.head)
+        # The next run reports the entry as kept recovery files, not a retired
+        # worktree, and a second --apply changes nothing.
+        before = self.snapshot(archive)
+        report = self.expire("--apply")
+        item = self.entry(report, archive)
+        self.assertEqual((item["kind"], item["disposition"]), ("recovery-files", "kept"))
+        self.assertEqual((report["retired"], report["kept"]), (0, 1))
+        self.assertEqual(self.snapshot(archive), before)
+
+    def test_expire_window_boundary(self):
+        archive = self.retired()
+        for days, expected in ((29.99, "retained"), (30.01, "expirable")):
+            with self.subTest(days=days):
+                self.age(archive, days)
+                item = self.entry(self.expire(), archive)
+                self.assertEqual(item["disposition"], expected, item)
+                if expected == "retained":
+                    self.assertIn("window", item["reason"])
+        self.assertTrue((archive / "worktree").is_dir())
+
+    def test_expire_dates_a_legacy_record_by_its_final_write(self):
+        archive = self.retired()
+        path = archive / "recovery.json"
+        record = json.loads(path.read_text())
+        self.assertIn("retired_at", record)
+        del record["retired_at"]
+        path.write_text(json.dumps(record))
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "retained")
+        old = time.time() - 40 * 86400
+        os.utime(path, (old, old))
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
+    def test_expire_retains_every_unsafe_entry_with_a_reason(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+        admin = self.repo / ".git/worktrees/task"
+        recovery = archive / "recovery.json"
+        saved = recovery.read_bytes()
+        bundle = (archive / "repository.bundle").read_bytes()
+        index = (admin / "index").read_bytes()
+
+        cases = (
+            (
+                "dirty",
+                lambda: (quarantine / "file").write_text("private\n"),
+                lambda: (quarantine / "file").write_text("feature\n"),
+                "raw local content",
+            ),
+            (
+                "ignored",
+                lambda: (
+                    (self.repo / ".git/info/exclude").write_text("late.secret\n"),
+                    (quarantine / "late.secret").write_text("late\n"),
+                ),
+                lambda: (quarantine / "late.secret").unlink(),
+                "ignored",
+            ),
+            (
+                "attached",
+                lambda: self.run_git(quarantine, "checkout", "-q", "topic"),
+                lambda: (
+                    self.run_git(quarantine, "checkout", "-q", "--detach"),
+                    # Checkout rewrites the index, which must match the archive.
+                    (admin / "index").write_bytes(index),
+                ),
+                "attached",
+            ),
+            (
+                "operation",
+                lambda: (admin / "index.lock").write_text(""),
+                lambda: (admin / "index.lock").unlink(),
+                "index.lock",
+            ),
+            (
+                "missing record",
+                lambda: recovery.unlink(),
+                lambda: recovery.write_bytes(saved),
+                "recovery.json",
+            ),
+            (
+                "unparseable record",
+                lambda: recovery.write_text("{"),
+                lambda: recovery.write_bytes(saved),
+                "recovery.json",
+            ),
+            (
+                "altered bundle",
+                lambda: (archive / "repository.bundle").write_bytes(bundle + b"x"),
+                lambda: (archive / "repository.bundle").write_bytes(bundle),
+                "repository.bundle differs",
+            ),
+            (
+                "missing bundle",
+                lambda: (archive / "repository.bundle").unlink(),
+                lambda: (archive / "repository.bundle").write_bytes(bundle),
+                "repository.bundle",
+            ),
+            (
+                "moved",
+                lambda: self.commit(quarantine, "moved"),
+                lambda: self.run_git(quarantine, "reset", "-q", "--hard", self.head),
+                "HEAD",
+            ),
+        )
+        for name, mutate, undo, reason in cases:
+            with self.subTest(case=name):
+                mutate()
+                before = self.snapshot(archive)
+                item = self.entry(self.expire("--apply"), archive)
+                self.assertEqual(item["disposition"], "retained", item)
+                self.assertIn(reason, item["reason"])
+                self.assertEqual(self.snapshot(archive), before)
+                self.assertTrue(self.registered(quarantine))
+                undo()
+        # The moved commit stays in the live metadata (reflog, ORIG_HEAD,
+        # COMMIT_EDITMSG) after HEAD is reset, so the entry is retained for good.
+        item = self.entry(self.expire(), archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertIn("since retirement", item["reason"])
+
+    def test_expire_retains_git_metadata_written_after_retirement(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        admin = self.repo / ".git/worktrees/task"
+        orphan = self.run_git(
+            self.repo,
+            "-c",
+            "user.name=F",
+            "-c",
+            "user.email=f@example.invalid",
+            "commit-tree",
+            "-m",
+            "only here",
+            self.head + "^{tree}",
+        ).strip()
+        for name, content in (
+            ("notes", "only copy\n"),
+            ("ORIG_HEAD", orphan + "\n"),
+            ("CLAUDE_BASE", orphan + "\n"),
+            ("refs/worktree/note", orphan + "\n"),
+            ("refs/rewritten/onto", orphan + "\n"),
+            ("rebase-merge/head-name", "refs/heads/topic\n"),
+            ("worktree-release.json", "{}\n"),
+            ("worktree-release.json", "[]\n"),
+            ("worktree-release.json", "null\n"),
+        ):
+            with self.subTest(name=name):
+                path = admin / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                previous = path.read_bytes() if path.exists() else None
+                path.write_text(content)
+                item = self.entry(self.expire("--apply"), archive)
+                self.assertEqual(item["disposition"], "retained", item)
+                self.assertTrue(self.registered(archive / "worktree"))
+                if previous is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(previous)
+        # A reflog line appended after retirement must move HEAD to the
+        # recorded head, as retirement's own detach does.
+        log = admin / "logs/HEAD"
+        previous = log.read_bytes()
+        for old, new in ((self.head, orphan), (orphan, self.head)):
+            with self.subTest(reflog=f"{old[:7]} -> {new[:7]}"):
+                with log.open("ab") as stream:
+                    stream.write(f"{old} {new} F <f@example.invalid> 0 +0000\tx\n".encode())
+                item = self.entry(self.expire("--apply"), archive)
+                self.assertIn(
+                    "logs/HEAD recorded a commit other than the recorded head", item["reason"]
+                )
+                log.write_bytes(previous)
+        with log.open("ab") as stream:
+            stream.write(f"{self.head} {self.head} F <f@example.invalid> 0 +0000\tx\n".encode())
+        # Empty directories hold nothing; with every file restored the entry
+        # is expirable again.
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
+    def expire_with_clean_hook(self, hook):
+        from functools import partial
+        from unittest.mock import patch
+
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original = lifecycle.clean
+        calls = []
+
+        def counted(path):
+            original(path)
+            calls.append(Path(path))
+            hook(len(calls), Path(path))
+
+        with patch.dict(os.environ, self.env), patch.object(lifecycle, "clean", counted):
+            return lifecycle.expire([self.repo], self.root / "archive", 30, True)
+
+    def test_expire_never_silently_loses_a_write_after_the_final_check(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+        outcome = {}
+
+        def writer(count, _):
+            # A path-based writer after the last clean check: its write must
+            # either survive or fail visibly, never succeed and be deleted.
+            if count == 2:
+                try:
+                    (quarantine / "late.secret").write_text("late\n")
+                    outcome["wrote"] = True
+                except FileNotFoundError:
+                    outcome["wrote"] = False
+
+        self.expire_with_clean_hook(writer)
+        if outcome["wrote"]:
+            self.assertTrue((quarantine / "late.secret").exists())
+
+    def test_expire_rechecks_metadata_after_the_staged_inspection(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+
+        def committer(count, path):
+            # A detached commit made through the unchanged Git metadata while
+            # the staged checkout is inspected leaves the checkout clean.
+            if count == 2:
+                self.commit(path, "during staging")
+
+        report = self.expire_with_clean_hook(committer)
+        item = self.entry(report, archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertTrue(self.registered(quarantine))
+        self.assertNotEqual(self.run_git(quarantine, "rev-parse", "HEAD").strip(), self.head)
+        self.assertEqual(sorted(os.listdir(archive)), sorted([*ARCHIVE_NAMES, "worktree"]))
+
+    def test_expire_renames_a_dirty_staging_checkout_back(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        quarantine = archive / "worktree"
+
+        def writer(count, path):
+            if count == 1:
+                (path / "late.secret").write_text("late\n")
+
+        report = self.expire_with_clean_hook(writer)
+        item = self.entry(report, archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertEqual((quarantine / "late.secret").read_text(), "late\n")
+        self.assertTrue(self.registered(quarantine))
+        self.assertEqual(sorted(os.listdir(archive)), sorted([*ARCHIVE_NAMES, "worktree"]))
+
+    def test_expire_never_blocks_on_a_special_file_it_reads(self):
+        # Report mode runs from the timer; every file expire reads from an
+        # archive entry or worktree metadata must refuse a FIFO, not hang.
+        archive = self.retired()
+        self.age(archive, 40)
+        admin = self.repo / ".git/worktrees/task"
+        for path in (
+            archive / "repository.bundle",
+            archive / "worktree-metadata.tar",
+            archive / "recovery.json",
+            admin / "logs/HEAD",
+            admin / "worktree-release.json",
+        ):
+            with self.subTest(path=path.name):
+                saved = path.read_bytes()
+                mode = path.stat().st_mode
+                path.unlink()
+                os.mkfifo(path, 0o600)
+                try:
+                    item = self.entry(self.expire(), archive)
+                    self.assertEqual(item["disposition"], "retained", item)
+                    self.assertTrue(item["reason"], item)
+                finally:
+                    path.unlink()
+                    path.write_bytes(saved)
+                    os.chmod(path, stat.S_IMODE(mode))
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
+    def test_expire_classifies_entries_without_a_registered_checkout(self):
+        archive = self.retired()
+        self.age(archive, 40)
+        record = json.loads((archive / "recovery.json").read_text())
+        # A retirement retained after archival leaves the recovery files and a
+        # record without a quarantine: kept, never deleted.
+        partial = self.root / "archive/retired-partial"
+        partial.mkdir(mode=0o700)
+        shutil.copy2(archive / "repository.bundle", partial)
+        shutil.copy2(archive / "worktree-metadata.tar", partial)
+        superseded = {k: v for k, v in record.items() if k not in ("quarantine", "git_metadata")}
+        (partial / "recovery.json").write_text(json.dumps(superseded))
+        # An unreadable record in the same shape is kept too.
+        broken = self.root / "archive/retired-broken"
+        broken.mkdir(mode=0o700)
+        (broken / "recovery.json").write_text("{")
+        # A quarantined checkout Git no longer registers.
+        stray = self.root / "archive/retired-stray"
+        (stray / "worktree").mkdir(parents=True, mode=0o700)
+        (stray / "worktree/notes").write_text("unregistered\n")
+        (stray / "recovery.json").write_text(
+            json.dumps(dict(record, quarantine=str(stray / "worktree")))
+        )
+        report = self.expire()
+        for kept in (partial, broken):
+            self.assertEqual(self.entry(report, kept)["kind"], "recovery-files")
+            self.assertEqual(self.entry(report, kept)["disposition"], "kept")
+        self.assertEqual(self.entry(report, stray)["kind"], "orphan-directory")
+        self.assertEqual(self.entry(report, stray)["disposition"], "retained")
+        self.assertIn("not a registered worktree", self.entry(report, stray)["reason"])
+        self.assertEqual((report["retired"], report["kept"]), (2, 2))
+        before = self.snapshot(partial, broken, stray)
+        report = self.expire("--apply")
+        self.assertEqual(self.entry(report, archive)["disposition"], "expired")
+        self.assertEqual(self.snapshot(partial, broken, stray), before)
+
+    def test_expire_never_removes_a_registration_without_its_archive(self):
+        archive = self.retired()
+        saved = archive.parent / "saved-entry"
+        os.rename(archive, saved)
+        item = self.entry(self.expire("--apply"), archive)
+        self.assertEqual(item["kind"], "orphan-registration")
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertTrue(self.registered(archive / "worktree"))
+        self.assertTrue((self.repo / ".git/worktrees/task").exists())
+
+    def test_expire_report_never_creates_the_archive(self):
+        report = self.expire()
+        self.assertEqual((report["retired"], report["expirable"]), (0, 0))
+        self.assertIsNone(report["oldest_days"])
+        self.assertFalse((self.root / "archive").exists())
+
+    def test_hygiene_status_summarizes_retired_worktrees(self):
+        home = self.root / "home"
+        folder = home / ".local/state/hygiene"
+        folder.mkdir(parents=True)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        (folder / "status.json").write_text(
+            json.dumps({"checked_at": now, "drift_count": 0, "drifted_repos": []})
+        )
+
+        def status(mode, summary):
+            (folder / "retired-worktrees.json").write_text(json.dumps(summary))
+            result = subprocess.run(
+                ["bash", str(SCRIPT.parents[2] / "hygiene-status.sh"), mode],
+                env=dict(self.env, HOME=str(home)),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+        summary = {"retired": 3, "expirable": 1, "oldest_days": 41, "entries": []}
+        self.assertIn("retired worktrees: 3 (oldest 41d, 1 expirable)", status("--status", summary))
+        self.assertIn("retired worktrees: 3 (oldest 41d, 1 expirable)", status("--text", summary))
+        quiet = dict(summary, expirable=0)
+        self.assertIn("retired worktrees: 3 (oldest 41d, 0 expirable)", status("--status", quiet))
+        self.assertEqual(status("--text", quiet), "")
+        empty = {"retired": 0, "expirable": 0, "oldest_days": None, "entries": []}
+        self.assertIn("retired worktrees: 0", status("--status", empty))
 
 
 if __name__ == "__main__":
