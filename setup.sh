@@ -458,8 +458,10 @@ _saved_rc=0
 SERVICES_SAVED="$(services_load_saved "$SERVICES_FILE")" || _saved_rc=$?
 if [ "$_saved_rc" -eq 2 ]; then
   echo "ERROR: fix or delete $SERVICES_FILE (expected a line like: services=claude,codex)," >&2
-  echo "       or pass --services <list> to replace it." >&2
-  [ "$SERVICES_FLAG_SET" = "1" ] || exit 1
+  echo "       or pass --services <list> (or set DOTFILES_SERVICES) to replace it." >&2
+  # An explicit selection outranks the saved file, so it also overrides a
+  # damaged one; with neither, refuse rather than guess.
+  [ "$SERVICES_FLAG_SET" = "1" ] || [ -n "${DOTFILES_SERVICES:-}" ] || exit 1
   SERVICES_SAVED=""
 fi
 if [ "$SERVICES_FLAG_SET" = "1" ]; then

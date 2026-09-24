@@ -76,6 +76,8 @@ check "setup.sh refuses to guess past a malformed selection file" \
   '! HOME="$H" "$SETUP" --show-services >/dev/null 2>&1'
 check "--services replaces a malformed selection file" \
   'grep -qx "services=codex" <<< "$(HOME="$H" "$SETUP" --show-services --services codex 2>/dev/null)"'
+check "DOTFILES_SERVICES also overrides a malformed selection file" \
+  'grep -qx "services=claude" <<< "$(DOTFILES_SERVICES=claude HOME="$H" "$SETUP" --show-services 2>/dev/null)"'
 
 # ── Migration default: no saved selection keeps all three services ──
 H="$(new_home)"
