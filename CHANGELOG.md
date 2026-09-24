@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-09-24 — issue sweep: worktree reporting, multipart gate tests, service selection
+
+- **`hygiene-status.sh` shows retired worktrees whose age is unknown (#568,
+  #575).** A report with retired entries but no readable age (only orphan
+  registrations or unreadable recovery records) printed nothing; it now prints
+  `retired worktrees: N (oldest unknown, M expirable)`.
+- **`worktree-lifecycle.py expire` reports an interrupted expiry once (#569,
+  #576).** A registration left at the `worktree-expiring` staging path is
+  matched to its archive entry and reported as one `interrupted-expiry` result,
+  not as an orphan directory plus an orphan registration. The script header
+  records the accepted #522 limit: an attach that resolved the branch before
+  the ref delete but writes `HEAD` after the holder re-check can still land on a
+  missing branch, the same window `git branch -D` has.
+- **Onboarding asks which agent services setup manages (#425, #577).**
+  `setup.sh` asks once and saves the choice to
+  `$XDG_CONFIG_HOME/dotfiles/services`; `--services LIST` or
+  `DOTFILES_SERVICES` set it without prompting, `--select-services` asks again,
+  `--show-services` prints it. With no saved choice setup manages all three
+  services as before. Unselected services are skipped in installers, links,
+  sign-in prompts, `--check`/`--repair` and completion hints; deselecting never
+  deletes config or credentials. The review-routing half is queued in the
+  operator gate pass.
+- **The Codex gate's multipart transport has end-to-end tests (#572, #578).**
+  The fake Codex CLI serves `debug models --bundled` and `--json` part runs, so
+  a request over the multipart threshold is split and driven through the gate:
+  a blocking final part with a changed request, a superseding claim during the
+  final part, and an empty final part.
+- **Jules sandbox verified for `gh` writes (#507).** A `gh label create` under
+  every hardening directive of `jules-dispatch.service` succeeded, so the unit
+  needs no extra `ReadWritePaths`.
+
 ## 2026-09-23 — docs(instructions): one operator pass for the queued instruction-surface changes
 
 - **Cloud-agent conventions say whom they bind (#552).** The per-tool
