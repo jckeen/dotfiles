@@ -36,6 +36,15 @@ SHIM_DIR="$(mktemp -d)"
 SHIM_DIR="$(cd -P "$SHIM_DIR" && pwd)"
 cat > "$SHIM_DIR/codex" <<'EOF'
 #!/usr/bin/env bash
+# The native multipart transport (#572): the model catalog, and every
+# `--json` part run, are served by the session-aware fake beside this shim.
+if [ "$*" = "debug models --bundled" ]; then
+  printf '%s\n' '{"models":[{"slug":"fixture-model","context_window":272000,"max_context_window":872000,"effective_context_window_percent":95}]}'
+  exit 0
+fi
+for a in "$@"; do
+  [ "$a" != --json ] || exec python3 "${0%/*}/codex-multipart.py" "$@"
+done
 printf '%s\n' "$@" > "$CODEX_FAKE_DIR/argv"
 cat > "$CODEX_FAKE_DIR/stdin"
 touch "$CODEX_FAKE_DIR/invoked"
@@ -53,6 +62,79 @@ rc=0
 exit "$rc"
 EOF
 chmod +x "$SHIM_DIR/codex"
+
+# The `--json` half of the shim: one native review session split over parts
+# (#572). It checks each part's envelope, acknowledges the non-final parts,
+# and records the native rollout + thread index that `review-multipart.py
+# check` audits, under $CODEX_HOME (pinned per case, never the runner's own).
+# Final-part behaviour is driven by files in $CODEX_FAKE_DIR:
+#   output          the verdict written after `-o` (empty file: no result)
+#   mp-final-hook   a bash script run while the final part is in flight
+#   mp-mutate-request  rewrite the gate's complete request file mid-run
+# It appends each part index to mp-parts, so a case can prove it went multipart.
+cat > "$SHIM_DIR/codex-multipart.py" <<'EOF'
+import glob, hashlib, json, os, re, sqlite3, subprocess, sys
+from pathlib import Path
+
+fake = Path(os.environ["CODEX_FAKE_DIR"])
+home = Path(os.environ["CODEX_HOME"])  # KeyError: an unpinned home fails loud
+argv = sys.argv[1:]
+prompt = sys.stdin.read()
+m = re.search(r"^Review transport part: ([0-9]+)/([0-9]+)\nPart SHA-256: ([a-f0-9]{64})\n"
+              r"Packet SHA-256: ([a-f0-9]{64})\nFragment fence: (REVIEW_PART_[a-f0-9]+_*)$",
+              prompt, re.M)
+assert m, "multipart envelope required"
+index, total, packet = int(m[1]), int(m[2]), m[4]
+fragment = prompt.split("\n" + m[5] + "\n")[1]
+assert hashlib.sha256(fragment.encode()).hexdigest() == m[3]
+assert argv[argv.index("-s") + 1] == "read-only"
+parts = fake / "mp-fragments"
+parts.mkdir(exist_ok=True)
+(parts / str(index)).write_text(fragment)
+with open(fake / "mp-parts", "a") as seen:
+    seen.write(f"{index}/{total}\n")
+thread = "11111111-1111-4111-8111-111111111111"
+if index > 1:
+    assert "model_context_window=872000" in argv
+    assert argv[argv.index("resume") + 1] == thread
+rollout = fake / "mp-rollout.jsonl"
+records = ([{"type": "session_meta", "payload": {"id": thread}}] if index == 1
+           else [json.loads(line) for line in rollout.read_text().splitlines()])
+records += [
+    {"type": "response_item", "payload": {"type": "message", "role": "user",
+     "content": [{"type": "input_text", "text": prompt}]}},
+    {"type": "turn_context", "payload": {"model": "fixture-model",
+     "sandbox_policy": {"type": "read-only"}}},
+    {"type": "event_msg", "payload": {"type": "token_count",
+     "info": {"model_context_window": 258400 if index == 1 else 828400}}},
+]
+rollout.write_text("".join(json.dumps(record) + "\n" for record in records))
+home.mkdir(parents=True, exist_ok=True)
+with sqlite3.connect(home / "state_5.sqlite") as db:
+    db.execute("create table if not exists threads(id text primary key,rollout_path text)")
+    db.execute("insert or replace into threads values(?,?)", (thread, str(rollout)))
+out = Path(argv[argv.index("-o") + 1])
+if index < total:
+    out.write_text(json.dumps({"part": index, "sha256": m[3]}))
+else:
+    data = "".join((parts / str(i)).read_text() for i in range(1, total + 1))
+    assert hashlib.sha256(data.encode()).hexdigest() == packet, "incomplete request"
+    if (fake / "mp-mutate-request").exists():
+        # The gate's request file is the whole packet: find it by its digest.
+        hits = [path for path in glob.glob("/tmp/codex-review-request.*")
+                if hashlib.sha256(Path(path).read_bytes()).hexdigest() == packet]
+        assert len(hits) == 1, "request file not found"
+        with open(hits[0], "a") as request:
+            request.write("mutated mid-run\n")
+        (fake / "mp-request-mutated").touch()
+    if (fake / "mp-final-hook").exists():
+        subprocess.run(["bash", str(fake / "mp-final-hook")], check=True)
+    verdict = (fake / "output").read_text()
+    if verdict:
+        out.write_text(verdict)
+print(json.dumps({"type": "thread.started", "thread_id": thread}))
+print(json.dumps({"type": "turn.completed", "usage": {}}))
+EOF
 
 # A disposable `gh` for the low-finding issue feed: never contacts GitHub.
 # It honors `--jq` by running jq over $CODEX_FAKE_DIR/issues.json (the fixture
@@ -1834,6 +1916,73 @@ EOF
 check "a superseded blocking Codex verdict blocks" 2 "" --committed --require --no-issues
 assert "a superseded blocking Codex verdict retires the approval that raced it" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 rm -f "$CODEX_FAKE_DIR/mutate"
+rm -rf "$R" "$CODEX_FAKE_DIR"
+
+# ── #572: the multipart transport's post-review exits, end to end ───────
+# A request over the single-turn limit goes out as parts in one native
+# session. Its exits after the final part (request changed, attempt verify, no
+# result) are held to verdict_in_output only statically above; these drive
+# them through a real multipart run against a seeded Antigravity approval.
+new_repo
+git -C "$R" checkout -qb feature
+python3 - "$R/code.txt" <<'PY'
+import sys
+# About 1.7 MB in 1000 lines: over the gate's 1,000,000-byte single-turn
+# limit, under its default line cap, and split by review-multipart.py.
+open(sys.argv[1], "a").write(("multipart😀" * 160 + "\n") * 1000)
+PY
+git -C "$R" commit -qam "large ahead"
+blocking_output() {
+  printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+}
+reset_multipart() {
+  rm -rf -- "$CODEX_FAKE_DIR"/mp-* "$CODEX_FAKE_DIR/codex-home"
+}
+went_multipart() {
+  local total
+  total="$(sed -n '1s@^1/@@p' "$CODEX_FAKE_DIR/mp-parts" 2>/dev/null)"
+  [[ "$total" =~ ^[0-9]+$ && "$total" -ge 2 ]] \
+    && [[ "$(wc -l < "$CODEX_FAKE_DIR/mp-parts")" -eq "$total" ]] \
+    && [[ "$(tail -n 1 "$CODEX_FAKE_DIR/mp-parts")" == "$total/$total" ]]
+}
+seed_antigravity_receipt
+assert "multipart fixture Antigravity approval ships" "antigravity_receipt_ships"
+
+blocking_output
+touch "$CODEX_FAKE_DIR/mp-mutate-request"
+CODEX_HOME="$CODEX_FAKE_DIR/codex-home" \
+  check "multipart: a blocking final part with its request changed mid-run is a verdict" 2 "became unreadable or changed" --committed --require --no-issues
+assert "multipart: that run delivered every part, the request mutated during the last" \
+  "went_multipart && [ -e '$CODEX_FAKE_DIR/mp-request-mutated' ]"
+assert "multipart: that verdict retires the Antigravity approval" \
+  "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "multipart: that verdict mints no Codex receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+
+reset_multipart
+seed_antigravity_receipt
+blocking_output
+# Antigravity captures, claims and approves while the final part is in flight,
+# superseding this Codex attempt; the verify after that part must still claim.
+cat > "$CODEX_FAKE_DIR/mp-final-hook" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer antigravity)"
+printf 'LGTB\n' > '$CODEX_FAKE_DIR/agy-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$CODEX_FAKE_DIR/agy-approval' >/dev/null
+EOF
+CODEX_HOME="$CODEX_FAKE_DIR/codex-home" \
+  check "multipart: a superseded blocking final part is a verdict" 2 "" --committed --require --no-issues
+assert "multipart: that run delivered every part" "went_multipart"
+assert "multipart: the superseded verdict retires the approval that raced it" \
+  "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "multipart: the superseded verdict mints no Codex receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+
+reset_multipart
+seed_antigravity_receipt
+: > "$CODEX_FAKE_DIR/output"
+CODEX_HOME="$CODEX_FAKE_DIR/codex-home" \
+  check "multipart: an empty final part is a degraded lane" 3 "multipart review produced no result" --committed --require --no-issues
+assert "multipart: that run delivered every part" "went_multipart"
+assert "multipart: an empty final part leaves the Antigravity approval shippable" "antigravity_receipt_ships"
+assert "multipart: an empty final part mints no Codex receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
 rm -rf "$R" "$CODEX_FAKE_DIR"
 
 # ── #499: every exit after the review runs passes verdict_in_output (static) ──
