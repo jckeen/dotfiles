@@ -1836,6 +1836,27 @@ assert "a superseded blocking Codex verdict retires the approval that raced it" 
 rm -f "$CODEX_FAKE_DIR/mutate"
 rm -rf "$R" "$CODEX_FAKE_DIR"
 
+# ── #499: every exit after the review runs passes verdict_in_output (static) ──
+# Three gate rounds each found one more post-review exit that skipped the claim.
+# Hold the whole stretch to the rule instead of testing sites one by one: from
+# the reviewer's run to the claim, an exit must go through verdict_in_output (on
+# its line or the one before), and the attempt verify must not exit bare.
+gate_src="$SCRIPT_DIR/../codex-review-gate.sh"
+post_review_region() {
+  awk '/# Leave terminal handling and tool-process cleanup/{on=1}
+       /^# ─── Claim the artifact \(#499\)/{on=0}
+       on' "$gate_src"
+}
+post_review_exits_unguarded() {
+  post_review_region | awk '
+    /^[[:space:]]*#/ {next}
+    /(^|[^_])gate_assert_unchanged/ {print}
+    /exit [23]/ && $0 !~ /verdict_in_output/ && prev !~ /verdict_in_output/ {print}
+    {prev=$0}'
+}
+assert "the post-review region is found" "[ \"\$(post_review_region | wc -l)\" -gt 40 ]"
+assert "every post-review exit claims blocking output first" "[ -z \"\$(post_review_exits_unguarded)\" ]"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

@@ -187,9 +187,24 @@ if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
   exit 2
 fi
 
+# Every non-approving exit once the reviewer may have written output passes
+# through here (#499): output that carries, or may carry, blocking findings is a
+# verdict, so claim and exit 2; only output verifiably free of them keeps the
+# caller's degraded exit. One rule at every exit, not a check per exit site —
+# the Antigravity gate's degrade() does the same via verdict_in_partial_output.
+# The static test in codex-review-gate.test.sh holds every post-review exit to it.
+verdict_in_output() {
+  output_may_block || return 0
+  [[ -n "${GATE_RUN_DIR:-}" ]] || return 0
+  gate_claim
+  red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
+  exit 2
+}
+
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 degrade() {
   yellow "⚠ codex-review-gate: $1"
+  verdict_in_output
   if [[ "$REQUIRED" == "1" ]]; then
     red "  CODEX_GATE_REQUIRED is set — treating as a hard failure."
     exit 3
@@ -580,7 +595,9 @@ if [[ -n "$REQUEST_FILE" ]]; then
       red "✖ Native session coverage, context or transport validation failed; no approval."
       break
     fi
-    gate_assert_unchanged
+    # gate_assert_unchanged, except that a refusal after the final part (which
+    # wrote the verdict) must still claim a blocking one.
+    python3 "$RECEIPT_HELPER" verify --snapshot "$GATE_RUN_DIR/snapshot.json" || { verdict_in_output; exit 2; }
   done
 else
   "$GATE_CLI" exec - \
@@ -598,17 +615,14 @@ if [[ "$CODEX_RC" -ne 0 ]]; then
   # still a verdict against the artifact — the ADR-0008 rule the Antigravity
   # gate applies to partial output. They claim (#499) and exit 2, which never
   # falls back; only output that is verifiably free of them stays a degraded
-  # lane (output_may_block).
-  if output_may_block; then
-    gate_claim
-    red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
-    exit 2
-  fi
+  # lane (verdict_in_output).
+  verdict_in_output
   exit 3
 fi
 if [[ -n "$REQUEST_FILE" ]]; then
   if ! CURRENT_REQUEST_SHA="$(request_digest 2>/dev/null)" || [[ "$CURRENT_REQUEST_SHA" != "$REQUEST_SHA" ]]; then
     red "✖ Complete review request became unreadable or changed; refusing the result."
+    verdict_in_output
     exit 3
   fi
 fi
@@ -617,6 +631,7 @@ if [[ ! -s "$OUT_FILE" ]]; then
   report_diagnostic
   if [[ -n "$REQUEST_FILE" ]]; then
     red "✖ Complete multipart review produced no result; refusing approval."
+    verdict_in_output
     exit 3
   fi
   degrade "Codex produced no review output (rc=$CODEX_RC)."

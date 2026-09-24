@@ -256,7 +256,7 @@ someone chose to run.
 | `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
 | `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
 | `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499) |
-| `review-receipt.py claim --snapshot <run>/snapshot.json` | The gates' commitment step, called once a gate can reach a verdict. Refuses a superseded attempt; otherwise retires every other lane's receipt and attempt and marks this attempt claimed, which `complete` requires |
+| `review-receipt.py claim --snapshot <run>/snapshot.json` | The gates' commitment step, called once a gate can reach a verdict. Retires every other lane's receipt and attempt, then marks this attempt claimed, which `complete` requires. A superseded attempt still retires the other lanes before it refuses (fail closed), since its verdict may be blocking |
 | `review-receipt.py begin …` | Backward-compatible `capture` then `claim`, same arguments as `capture` |
 
 `required_lane` is one of `any` (tier-1 docs diff — an exemption receipt from
