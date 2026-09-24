@@ -2793,6 +2793,17 @@ if kind == 'writer':
         self.assertEqual(status("--text", quiet), "")
         empty = {"retired": 0, "expirable": 0, "oldest_days": None, "entries": []}
         self.assertIn("retired worktrees: 0", status("--status", empty))
+        # Orphan registrations and unreadable recovery records count as retired
+        # but carry no age; the line must still surface them (#568).
+        unknown = {"retired": 2, "expirable": 0, "oldest_days": None, "entries": []}
+        self.assertIn(
+            "retired worktrees: 2 (oldest unknown, 0 expirable)", status("--status", unknown)
+        )
+        self.assertEqual(status("--text", unknown), "")
+        unknown_due = dict(unknown, expirable=1)
+        self.assertIn(
+            "retired worktrees: 2 (oldest unknown, 1 expirable)", status("--text", unknown_due)
+        )
 
 
 if __name__ == "__main__":

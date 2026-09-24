@@ -15,8 +15,8 @@
 #   (written by claude/scripts/hygiene-cron.sh, fired by git-hygiene.timer)
 # Retired-worktree summary: $HOME/.local/state/hygiene/retired-worktrees.json
 #   (the timer's report-mode `worktree-lifecycle.py expire` run). --status always
-#   adds `retired worktrees: N (oldest Xd, M expirable)`; the other modes add it
-#   only while M > 0. The timer never deletes them: expiry is the operator's
+#   adds `retired worktrees: N (oldest Xd, M expirable)` (`oldest unknown` when
+#   no entry has a readable age); the other modes add it only while M > 0. The timer never deletes them: expiry is the operator's
 #   `--apply` run (claude/scripts/README.md, Worktree lifecycle).
 
 set -uo pipefail
@@ -92,6 +92,10 @@ if [[ -f "$RETIRED_FILE" ]]; then
       retired_line="retired worktrees: 0"
     elif [[ "$oldest" =~ ^-?[0-9]+$ ]]; then
       retired_line="retired worktrees: $retired (oldest ${oldest}d, $expirable expirable)"
+    else
+      # expire reports a null age when every entry is an orphan registration
+      # or an unreadable recovery record; those still need inspection.
+      retired_line="retired worktrees: $retired (oldest unknown, $expirable expirable)"
     fi
   fi
 fi
