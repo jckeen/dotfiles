@@ -38,7 +38,7 @@ After setup, you don't have to remember much. Open a terminal and:
 
 ## Quick Start
 
-Pick your platform. Each path leaves you with the same end state: Claude Code, Codex, and Antigravity installed, shared workflows wired, runtime-specific hooks and integrations checked, and multi-session helpers ready.
+Pick your platform. Each path leaves you with the same end state: the agent services you choose (Claude Code, Codex, and/or Antigravity — all three by default) installed, shared workflows wired, runtime-specific hooks and integrations checked, and multi-session helpers ready. See [Choosing agent services](#choosing-agent-services).
 
 <details>
 <summary><strong>🪟 Windows (WSL2 — recommended)</strong></summary>
@@ -147,11 +147,47 @@ jules login            # Optional
 ### Setup-script flags (all platforms)
 
 ```bash
-./setup.sh             # default: install everything, prompting only where it matters
+./setup.sh             # default: install the selected services (asks on first run), prompting only where it matters
 ./setup.sh --check     # read-only audit of all symlinks; exits non-zero if broken
 ./setup.sh --repair    # audit + recreate any broken/missing symlinks
 ./setup.sh --dry-run   # show what would change without writing anything
+./setup.sh --services claude,codex   # manage only these agent services (saved for reruns)
+./setup.sh --select-services         # re-ask which services to manage (e.g. to add one later)
+./setup.sh --show-services           # print the effective selection and where it came from
 ```
+
+#### Choosing agent services
+
+`setup.sh` manages up to three agent services: Claude Code (`claude`), Codex
+(`codex`), and Antigravity (`antigravity`, alias `agy`). Each is an independent
+choice.
+
+- **First interactive run:** setup asks about each service (default yes), then
+  asks you to confirm the selection.
+- **Noninteractive:** pass `--services claude,codex` (or `all`), or set
+  `DOTFILES_SERVICES=claude,codex`. The flag wins when both are set. `--yes`
+  with neither keeps the saved selection, or all three when none is saved.
+- **Where it is saved:** `$XDG_CONFIG_HOME/dotfiles/services` (default
+  `~/.config/dotfiles/services`), a machine-local file outside the repo holding
+  one line like `services=claude,codex`. A real run writes it; `--dry-run`
+  only says it would.
+- **Reruns** (including `dotfiles-update`) reuse the saved selection without
+  asking. To add a service later, rerun with `--select-services` or a longer
+  `--services` list.
+- **Existing installs (migration):** with no saved selection, setup manages all
+  three services, which is what it did before selection existed. The first real
+  run records that as the saved selection, so nothing changes unless you opt
+  out.
+
+A service you don't select is skipped everywhere setup acts: its installer,
+sign-in prompt, links, hooks, integrations (for Codex, also the `codex`
+Claude plugin), the post-setup audit and `--check`/`--repair`, and the
+completion hints. Deselecting never deletes anything: existing config,
+sessions, and credentials for that service stay where they are, and setup
+just stops managing them. The `~/.claude/scripts` tooling and `~/.claude/dev-dir`
+are shared by every launcher and review gate, so they are linked whichever
+services you pick. The `cc`/`cx`/`agy` launchers are unchanged: running one
+still checks and heals its own runtime's links.
 
 `setup.sh` refuses to run from a linked `git worktree` (agents create these for
 review branches): every managed link resolves against the checkout that runs
@@ -213,7 +249,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 
 ## What this installs and configures
 
-`setup.sh` installs CLI tools, wires the public and private layers for all three runtimes, and configures platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
+`setup.sh` installs CLI tools, wires the public and private layers for each selected runtime (all three unless you [choose fewer](#choosing-agent-services)), and configures platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
 
 <details>
 <summary><strong>📦 Tools installed</strong> (gh, git, node, jq, tmux, claude, codex, agy, jules, bun)</summary>

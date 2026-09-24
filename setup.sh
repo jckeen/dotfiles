@@ -83,12 +83,32 @@ fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
 
+# Agent-service selection (issue #425): which of Claude Code, Codex, and
+# Antigravity this machine installs, links, and health-checks. Parsing,
+# persistence, and the migration rule live in lib-services.sh.
+if [ ! -f "$DOTFILES_DIR/lib-services.sh" ]; then
+  echo "FATAL: $DOTFILES_DIR/lib-services.sh is missing (broken checkout — restore it with 'git checkout lib-services.sh')" >&2
+  exit 1
+fi
+# shellcheck source=lib-services.sh
+source "$DOTFILES_DIR/lib-services.sh"
+
 # Counters for summary
 LINKS_CREATED=0
 LINKS_VERIFIED=0
 LINKS_BROKEN=0
 DRY_PREPARED_DIRS=""
 DRY_REPLACED_DIRS=""
+
+# claude_link_managed <label> — 0 when a claude/ tree entry (label from
+# symlink_enumerate) is managed under the current service selection. The
+# scripts/ links are shared infrastructure every runtime uses, so they stay
+# managed even when Claude Code itself is not selected.
+claude_link_managed() {
+  service_selected claude && return 0
+  case "$1" in scripts/*) return 0 ;; esac
+  return 1
+}
 
 path_list_contains() {
   local needle="$1" list="$2" item
@@ -118,10 +138,17 @@ run_health_audit() {
   local repaired=0
 
   echo "=== Symlink Health Audit (mode: $mode) ==="
+  echo "  Services: $DOTFILES_SELECTED_SERVICES ($SERVICES_SOURCE)"
   echo ""
 
   # ── Dotfiles symlinks ──
   echo "--- Dotfiles symlinks ---"
+  # ~/.claude/scripts is shared tooling (the cx/agy launchers, review gates,
+  # and the Antigravity handoff hook run from it), so it is audited whatever
+  # the selection. The rest of the claude/ tree is Claude Code's own config.
+  if ! service_selected claude; then
+    echo "  (Claude Code not selected: auditing only the shared ~/.claude/scripts links)"
+  fi
   local CLAUDE_SRC="$DOTFILES_DIR/claude"
   local CLAUDE_DST="$HOME_DIR/.claude"
   # The claude/ tree (top-level → hooks → skills → agents → scripts → chrome,
@@ -137,6 +164,7 @@ run_health_audit() {
     local _src _dst _label _flags
     while IFS=$'\t' read -r _src _dst _label _flags; do
       [ -n "$_src" ] || continue
+      claude_link_managed "$_label" || continue
       alink "$_src" "$_dst" "$_label" "$mode"
     done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
   fi
@@ -158,7 +186,9 @@ run_health_audit() {
 
   # ── Claude-memory symlinks (via bootstrap.sh --check) ──
   echo "--- Claude-memory symlinks ---"
-  if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+  if ! service_selected claude; then
+    echo "  (Claude Code not selected — skipping claude-memory checks)"
+  elif [ -f "$BOOTSTRAP_SCRIPT" ]; then
     if bash "$BOOTSTRAP_SCRIPT" --check; then
       echo "  All claude-memory symlinks OK"
     else
@@ -178,7 +208,9 @@ run_health_audit() {
 
   echo ""
   echo "--- Codex symlinks and local-state boundary ---"
-  if [ -x "$DOTFILES_DIR/check-codex.sh" ]; then
+  if ! service_selected codex; then
+    echo "  (Codex not selected — skipping; existing ~/.codex state is left as-is, unmanaged)"
+  elif [ -x "$DOTFILES_DIR/check-codex.sh" ]; then
     if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
       "$DOTFILES_DIR/check-codex.sh" --fix || errors=$((errors + 1))
     else
@@ -191,7 +223,9 @@ run_health_audit() {
 
   echo ""
   echo "--- Antigravity symlinks and local-state boundary ---"
-  if [ -x "$DOTFILES_DIR/check-antigravity.sh" ]; then
+  if ! service_selected antigravity; then
+    echo "  (Antigravity not selected — skipping; existing ~/.gemini state is left as-is, unmanaged)"
+  elif [ -x "$DOTFILES_DIR/check-antigravity.sh" ]; then
     if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
       "$DOTFILES_DIR/check-antigravity.sh" --fix || errors=$((errors + 1))
     else
@@ -384,12 +418,65 @@ alink() {
 #   --check            Run symlink health audit and exit
 #   --repair           Run symlink audit + repair and exit
 #   --help / -h        Print this help and exit
+#   --services LIST    Manage only these agent services (comma-separated)
+#   --select-services  Re-ask the interactive service selection
+#   --show-services    Print the effective service selection and exit
+SERVICES_FLAG=""
+SERVICES_FLAG_SET=0
+SELECT_SERVICES=0
+_prev_arg=""
 for arg in "$@"; do
+  if [ "$_prev_arg" = "--services" ]; then
+    SERVICES_FLAG="$arg"
+    SERVICES_FLAG_SET=1
+    _prev_arg=""
+    continue
+  fi
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --yes|-y)  ASSUME_YES=1 ;;
+    --services) _prev_arg="--services" ;;
+    --services=*) SERVICES_FLAG="${arg#--services=}"; SERVICES_FLAG_SET=1 ;;
+    --select-services) SELECT_SERVICES=1 ;;
+    --show-services) ;;  # dispatched with --help/--check below
   esac
 done
+if [ "$_prev_arg" = "--services" ]; then
+  echo "ERROR: --services needs a list, e.g. --services claude,codex" >&2
+  exit 1
+fi
+
+# Resolve the service selection before any mode runs, so --check/--repair
+# audit the same services an install manages. Precedence: --services, then
+# the DOTFILES_SERVICES env var, then the saved machine-local file, then the
+# migration default (all three — the pre-selection behavior). Nothing is
+# written here; the install path below persists the choice.
+SERVICES_FILE="$(services_config_path)"
+SERVICES_SOURCE=""
+SERVICES_SAVED=""
+_saved_rc=0
+SERVICES_SAVED="$(services_load_saved "$SERVICES_FILE")" || _saved_rc=$?
+if [ "$_saved_rc" -eq 2 ]; then
+  echo "ERROR: fix or delete $SERVICES_FILE (expected a line like: services=claude,codex)," >&2
+  echo "       or pass --services <list> (or set DOTFILES_SERVICES) to replace it." >&2
+  # An explicit selection outranks the saved file, so it also overrides a
+  # damaged one; with neither, refuse rather than guess.
+  [ "$SERVICES_FLAG_SET" = "1" ] || [ -n "${DOTFILES_SERVICES:-}" ] || exit 1
+  SERVICES_SAVED=""
+fi
+if [ "$SERVICES_FLAG_SET" = "1" ]; then
+  DOTFILES_SELECTED_SERVICES="$(services_normalize "$SERVICES_FLAG")" || exit 1
+  SERVICES_SOURCE="--services flag"
+elif [ -n "${DOTFILES_SERVICES:-}" ]; then
+  DOTFILES_SELECTED_SERVICES="$(services_normalize "$DOTFILES_SERVICES")" || exit 1
+  SERVICES_SOURCE="DOTFILES_SERVICES env"
+elif [ -n "$SERVICES_SAVED" ]; then
+  DOTFILES_SELECTED_SERVICES="$SERVICES_SAVED"
+  SERVICES_SOURCE="saved in $SERVICES_FILE"
+else
+  DOTFILES_SELECTED_SERVICES="$DOTFILES_ALL_SERVICES"
+  SERVICES_SOURCE="default: no saved selection, managing all services"
+fi
 
 # Refuse to publish $HOME links from a linked git worktree. Agents routinely
 # run setup.sh from a temporary `git worktree`; every managed link resolves
@@ -398,7 +485,7 @@ done
 # this way). --help and --check are read-only and stay usable anywhere.
 _setup_readonly=0
 for arg in "$@"; do
-  case "$arg" in --help|-h|--check) _setup_readonly=1 ;; esac
+  case "$arg" in --help|-h|--check|--show-services) _setup_readonly=1 ;; esac
 done
 if [ "$_setup_readonly" = "0" ] && [ "${DOTFILES_ALLOW_LINKED_WORKTREE:-0}" != "1" ]; then
   _setup_git_dir="$(git -C "$DOTFILES_DIR" rev-parse --git-dir 2>/dev/null || true)"
@@ -427,12 +514,35 @@ Flags:
   --check        Run symlink health audit and exit
   --repair       Audit symlinks and recreate broken ones, then exit
                  (combine with --dry-run to preview fixes without applying)
+  --services LIST
+                 Manage only these agent services: a comma-separated subset of
+                 claude, codex, antigravity (or "all"). Saved machine-locally,
+                 so later reruns keep it. Add a service later by rerunning with
+                 the longer list. Deselecting stops setup.sh managing that
+                 service; it never deletes its existing config or credentials.
+  --select-services
+                 Re-ask the interactive service selection (e.g. to opt in to a
+                 service you skipped)
+  --show-services
+                 Print the effective service selection and where it came from
   --help, -h     Show this help
 
 Environment:
-  GIT_NAME       Pre-populate git user.name
-  GIT_EMAIL      Pre-populate git user.email
+  GIT_NAME           Pre-populate git user.name
+  GIT_EMAIL          Pre-populate git user.email
+  DOTFILES_SERVICES  Same as --services (the flag wins when both are set)
+
+Service selection is saved in $XDG_CONFIG_HOME/dotfiles/services (default
+~/.config/dotfiles/services). With no saved selection, setup.sh manages all
+three services (the behavior before selection existed); an interactive first
+run asks, and --yes keeps all three.
 HELP
+      exit 0
+      ;;
+    --show-services)
+      echo "services=$DOTFILES_SELECTED_SERVICES"
+      echo "source=$SERVICES_SOURCE"
+      echo "file=$SERVICES_FILE"
       exit 0
       ;;
     --check)  _rc=0; run_health_audit "check"  || _rc=$?; exit "$_rc" ;;
@@ -565,6 +675,67 @@ prepare_directory() {
 detect_platform
 
 echo "=== Dotfiles setup from $DOTFILES_DIR ==="
+
+# ─── 0. Agent services (issue #425) ──────────────────────────────────
+# Ask which agent runtimes to manage when there is no explicit or saved
+# choice yet (the first run) or when --select-services asks again. Each
+# service is an independent yes/no, then the whole selection is confirmed.
+# Under --yes (or on EOF) every answer takes its default, Y, which keeps
+# today's all-services behavior. A saved choice is reused silently so a
+# `dotfiles-update` rerun never re-prompts.
+echo ""
+echo "--- Agent services ---"
+if [ "$ASSUME_YES" != "1" ] && [ "$SERVICES_FLAG_SET" != "1" ] && [ -z "${DOTFILES_SERVICES:-}" ] \
+  && { [ -z "$SERVICES_SAVED" ] || [ "$SELECT_SERVICES" = "1" ]; }; then
+  echo "  Choose the agent services this machine should set up. Each is independent;"
+  echo "  you can add one later with: ./setup.sh --select-services"
+  _svc_attempt=0
+  while :; do
+    _svc_attempt=$((_svc_attempt + 1))
+    _svc_pick=""
+    for _svc in $DOTFILES_KNOWN_SERVICES; do
+      if service_selected "$_svc"; then _svc_def="Y"; _svc_hint="[Y/n]"; else _svc_def="N"; _svc_hint="[y/N]"; fi
+      ask_yn "$_svc_def" "  Set up $(services_label "$_svc")? $_svc_hint "
+      case "${yn:-}" in
+        [Yy]*) _svc_pick="${_svc_pick:+$_svc_pick,}$_svc" ;;
+        [Nn]*) ;;
+        *) [ "$_svc_def" = "Y" ] && _svc_pick="${_svc_pick:+$_svc_pick,}$_svc" ;;
+      esac
+    done
+    if [ -z "$_svc_pick" ]; then
+      echo "  !! Select at least one service."
+      [ "$_svc_attempt" -lt 3 ] || { echo "ERROR: no agent service selected" >&2; exit 1; }
+      continue
+    fi
+    ask_yn "Y" "  Use services: $_svc_pick? [Y/n] "
+    if [[ ! "${yn:-}" =~ ^[Nn] ]]; then
+      DOTFILES_SELECTED_SERVICES="$_svc_pick"
+      SERVICES_SOURCE="chosen interactively"
+      break
+    fi
+    [ "$_svc_attempt" -lt 3 ] || { echo "ERROR: service selection not confirmed" >&2; exit 1; }
+  done
+fi
+echo "  Services: $DOTFILES_SELECTED_SERVICES ($SERVICES_SOURCE)"
+_svc_off="$(services_unselected "$DOTFILES_SELECTED_SERVICES")"
+if [ -n "$_svc_off" ]; then
+  echo "  Not selected: $_svc_off — setup.sh will not install, link, or health-check these."
+  echo "  Existing config and credentials for them are left in place, no longer managed."
+  echo "  Add one later with: ./setup.sh --services $DOTFILES_ALL_SERVICES (or --select-services)"
+fi
+# Persist the effective selection (including the migration default, so the
+# rule is recorded rather than implied). Only a real install writes it:
+# --dry-run previews, and the read-only modes exited above.
+if [ "$DOTFILES_SELECTED_SERVICES" != "$SERVICES_SAVED" ]; then
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would save service selection ($DOTFILES_SELECTED_SERVICES) to $SERVICES_FILE"
+  elif services_save "$SERVICES_FILE" "$DOTFILES_SELECTED_SERVICES"; then
+    echo "  -> Saved service selection to $SERVICES_FILE"
+  else
+    echo "ERROR: could not save service selection to $SERVICES_FILE" >&2
+    exit 1
+  fi
+fi
 
 # ─── 1. System packages ───────────────────────────────────────────────
 echo ""
@@ -1213,7 +1384,10 @@ install_claude_native() {
   bash "$tmpdir/install.sh"
 }
 
-if ! command -v claude &>/dev/null; then
+if ! service_selected claude; then
+  echo ""
+  echo "Claude Code not selected: skipping its install, sign-in, and plugins."
+elif ! command -v claude &>/dev/null; then
   echo ""
   echo "--- Installing Claude Code CLI (native installer) ---"
   install_claude_native \
@@ -1235,7 +1409,7 @@ CLAUDE_AUTHED=0
 # (spaced). Brittle: this parses the human-readable status output. Switch to
 # `claude auth status --json` + jq once/if that flag is supported upstream.
 _loggedin_re='"loggedIn"[[:space:]]*:[[:space:]]*true'
-if command -v claude &>/dev/null; then
+if service_selected claude && command -v claude &>/dev/null; then
   echo ""
   echo "--- Checking Claude Code authentication ---"
   if [ "${DRY_RUN:-0}" = "1" ]; then
@@ -1271,7 +1445,7 @@ fi
 # Idempotent: marketplace registration and each plugin install are skipped
 # when already present. Requires Claude authentication (§3a).
 PLUGIN_LIST="$DOTFILES_DIR/claude/plugins.txt"
-if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" -eq 1 ]; then
+if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" -eq 1 ]; then
   echo ""
   echo "--- Installing Claude Code plugins ---"
 
@@ -1285,6 +1459,13 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
   # Register each marketplace if not already known
   MARKETPLACE_LIST="$(claude plugin marketplace list 2>/dev/null || true)"
   for mp in $MARKETPLACES; do
+    # The openai-codex marketplace carries the Codex plugin, which drives the
+    # Codex CLI: skip it when Codex is not a selected service rather than
+    # wiring a runtime the operator opted out of.
+    if [ "$mp" = "openai-codex" ] && ! service_selected codex; then
+      echo "  -> Marketplace $mp skipped (Codex not selected)"
+      continue
+    fi
     # Match header lines like "  ❯ <marketplace-name>" (anchor on word boundaries)
     if echo "$MARKETPLACE_LIST" | grep -Eq "❯[[:space:]]+${mp}([[:space:]]|$)"; then
       echo "  -> Marketplace $mp already registered"
@@ -1333,6 +1514,14 @@ if [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/null && [ "$CLAUDE_AUTHED" 
     plugin="${line%%#*}"
     plugin="$(echo "$plugin" | tr -d '[:space:]')"
     [ -z "$plugin" ] && continue
+    case "$plugin" in
+      *@openai-codex)
+        if ! service_selected codex; then
+          echo "  -> $plugin skipped (Codex not selected; an existing install is left as-is)"
+          continue
+        fi
+        ;;
+    esac
 
     # Whole-line match against the extracted ids, so e.g. "code-review@x"
     # cannot false-match "code-review-2@x".
@@ -1347,7 +1536,7 @@ fi
 
 # The typescript-lsp plugin (plugins.txt) shells out to this binary; without
 # it the plugin errors with "Executable not found in $PATH" every session.
-if ! command -v typescript-language-server &>/dev/null; then
+if service_selected claude && ! command -v typescript-language-server &>/dev/null; then
   echo "  -> Installing typescript-language-server (required by typescript-lsp plugin)"
   run bun add -g typescript-language-server typescript || echo "     (install failed — continuing)"
 fi
@@ -1357,7 +1546,10 @@ fi
 # import live ~/.codex state wholesale: auth, sessions, sqlite files, logs,
 # caches, and project trust entries are private/generated.
 CODEX_AUTHED=0
-if ! command -v codex &>/dev/null; then
+if ! service_selected codex; then
+  echo ""
+  echo "Codex not selected: skipping its install and sign-in."
+elif ! command -v codex &>/dev/null; then
   echo ""
   echo "--- Installing Codex CLI ---"
   run npm install -g @openai/codex || echo "  -> Codex install failed (continuing; install manually and re-run setup.sh)"
@@ -1365,7 +1557,7 @@ else
   echo "Codex CLI already installed: $(codex --version 2>/dev/null || echo 'installed')"
 fi
 
-if command -v codex &>/dev/null; then
+if service_selected codex && command -v codex &>/dev/null; then
   echo ""
   echo "--- Checking Codex authentication ---"
   # Same state-writing-probe class as `claude auth status` / `gh auth status`
@@ -1487,7 +1679,10 @@ install_antigravity_native() {
   bash "$tmpdir/install.sh"
 }
 
-if ! command -v agy &>/dev/null; then
+if ! service_selected antigravity; then
+  echo ""
+  echo "Antigravity not selected: skipping its install."
+elif ! command -v agy &>/dev/null; then
   echo ""
   echo "--- Installing Antigravity CLI ---"
   install_antigravity_native \
@@ -1647,8 +1842,14 @@ echo "  -> .gitconfig linked"
 # ─── 5. Claude Code config ───────────────────────────────────────────
 echo ""
 echo "--- Setting up Claude Code config ---"
-run mkdir -p "$HOME_DIR/.claude/skills"
-run mkdir -p "$HOME_DIR/.claude/agents"
+if service_selected claude; then
+  run mkdir -p "$HOME_DIR/.claude/skills"
+  run mkdir -p "$HOME_DIR/.claude/agents"
+else
+  # claude_link_managed keeps the shared scripts/ links (see its comment).
+  echo "  -> Claude Code not selected: linking only the shared ~/.claude/scripts tooling."
+  echo "     Existing Claude config (CLAUDE.md, hooks, skills, agents, settings) is left in place, no longer managed."
+fi
 
 # Link the whole claude/ tree from the shared enumerator (lib-symlinks.sh,
 # issue #135): one walk, shared with the health audit and check-claude.sh. Each
@@ -1663,6 +1864,7 @@ fi
 _tree_links=0
 while IFS=$'\t' read -r _src _dst _label _flags; do
   [ -n "$_src" ] || continue
+  claude_link_managed "$_label" || continue
   # mkdir/chmod are silently skipped under --dry-run (link_file prints the
   # per-entry preview; a [DRY] line per mkdir would just triple the noise).
   if [ "${DRY_RUN:-0}" != "1" ]; then
@@ -1674,7 +1876,11 @@ while IFS=$'\t' read -r _src _dst _label _flags; do
   fi
   _tree_links=$((_tree_links + 1))
 done < <(symlink_enumerate "$DOTFILES_DIR/claude" "$HOME_DIR/.claude")
-echo "  -> Claude tree linked ($_tree_links entries: config, hooks, skills, agents, scripts, chrome)"
+if service_selected claude; then
+  echo "  -> Claude tree linked ($_tree_links entries: config, hooks, skills, agents, scripts, chrome)"
+else
+  echo "  -> Shared scripts linked ($_tree_links entries)"
+fi
 
 # Dev dir already derived at top of script (C1) — write it out so all scripts
 # have a single source of truth.
@@ -1697,7 +1903,9 @@ fi
 # controlled and synced. The source of truth lives in the repo; the symlink
 # points Claude at it.
 MEMORY_REPO="$DEV_DIR/claude-memory"
-if [ -d "$MEMORY_REPO" ]; then
+if ! service_selected claude; then
+  echo "  -> Claude Code not selected: skipping Claude memory links (existing links left as-is)"
+elif [ -d "$MEMORY_REPO" ]; then
   # Link one project's memory dir. $1 = claude-memory subdir (project basename),
   # $2 = the dash-munged project key Claude uses under ~/.claude/projects/.
   link_project_memory() {
@@ -1742,116 +1950,121 @@ fi
 # ─── 5b. Codex config ────────────────────────────────────────────────
 echo ""
 echo "--- Setting up Codex config ---"
-# A symlinked ~/.codex must never route through prepare_directory: it would
-# back up the symlink and create a fresh empty dir, silently disconnecting
-# live Codex state (auth.json, config.toml, sessions) from the path Codex
-# uses (issue #273). check-codex.sh likewise refuses a symlinked root.
-if [ -L "$HOME_DIR/.codex" ]; then
-  echo "ERROR: $HOME_DIR/.codex is a symlink; refusing to replace the Codex runtime root." >&2
-  echo "       Make ~/.codex a real directory (move the target back, or remove the link) and re-run setup.sh." >&2
-  exit 1
-fi
-prepare_directory "$HOME_DIR" "$HOME_DIR/.codex"
+if service_selected codex; then
+  # A symlinked ~/.codex must never route through prepare_directory: it would
+  # back up the symlink and create a fresh empty dir, silently disconnecting
+  # live Codex state (auth.json, config.toml, sessions) from the path Codex
+  # uses (issue #273). check-codex.sh likewise refuses a symlinked root.
+  if [ -L "$HOME_DIR/.codex" ]; then
+    echo "ERROR: $HOME_DIR/.codex is a symlink; refusing to replace the Codex runtime root." >&2
+    echo "       Make ~/.codex a real directory (move the target back, or remove the link) and re-run setup.sh." >&2
+    exit 1
+  fi
+  prepare_directory "$HOME_DIR" "$HOME_DIR/.codex"
 
-if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
-  link_file "$DOTFILES_DIR/codex/AGENTS.md" "$HOME_DIR/.codex/AGENTS.md"
-  echo "  -> Codex AGENTS.md linked"
-fi
+  if [ -f "$DOTFILES_DIR/codex/AGENTS.md" ]; then
+    link_file "$DOTFILES_DIR/codex/AGENTS.md" "$HOME_DIR/.codex/AGENTS.md"
+    echo "  -> Codex AGENTS.md linked"
+  fi
 
-if [ -L "$DOTFILES_DIR/agents/skills" ]; then
-  echo "ERROR: shared Codex skill root cannot be a directory symlink: $DOTFILES_DIR/agents/skills" >&2
-  exit 1
-elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
-  prepare_directory "$HOME_DIR" "$HOME_DIR/.agents/skills"
-  for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
-    if [ -L "${skill_dir%/}" ]; then
-      echo "ERROR: Codex skill root cannot be a directory symlink: ${skill_dir%/}" >&2
-      exit 1
-    fi
-    [ -d "$skill_dir" ] || continue
-    skill_name="$(basename "$skill_dir")"
-    skill_file_list="$(mktemp)" || {
-      echo "ERROR: unable to allocate Codex skill traversal manifest" >&2
-      exit 1
-    }
-    if ! find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
-      rm -f "$skill_file_list"
-      echo "ERROR: unable to traverse complete Codex skill bundle: $skill_dir" >&2
-      exit 1
-    fi
-    invalid_skill_symlink=""
-    skill_root_real="$(realpath "${skill_dir%/}")"
-    while IFS= read -r -d '' skill_file; do
-      if [ -L "$skill_file" ]; then
-        skill_target_real="$(realpath "$skill_file" 2>/dev/null || true)"
-        case "$skill_target_real" in
-          "$skill_root_real"/*)
-            # In-bundle is not enough: a symlink resolving to a DIRECTORY
-            # inside the bundle would install a directory symlink under
-            # ~/.codex/skills, which check-codex.sh immediately flags
-            # UNSAFE (issue #274). Require a regular file.
-            if [ ! -f "$skill_target_real" ]; then
+  if [ -L "$DOTFILES_DIR/agents/skills" ]; then
+    echo "ERROR: shared Codex skill root cannot be a directory symlink: $DOTFILES_DIR/agents/skills" >&2
+    exit 1
+  elif [ -d "$DOTFILES_DIR/agents/skills" ]; then
+    prepare_directory "$HOME_DIR" "$HOME_DIR/.agents/skills"
+    for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
+      if [ -L "${skill_dir%/}" ]; then
+        echo "ERROR: Codex skill root cannot be a directory symlink: ${skill_dir%/}" >&2
+        exit 1
+      fi
+      [ -d "$skill_dir" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      skill_file_list="$(mktemp)" || {
+        echo "ERROR: unable to allocate Codex skill traversal manifest" >&2
+        exit 1
+      }
+      if ! find "$skill_dir" -name '.*' -prune -o \( -type f -o -type l \) -print0 > "$skill_file_list"; then
+        rm -f "$skill_file_list"
+        echo "ERROR: unable to traverse complete Codex skill bundle: $skill_dir" >&2
+        exit 1
+      fi
+      invalid_skill_symlink=""
+      skill_root_real="$(realpath "${skill_dir%/}")"
+      while IFS= read -r -d '' skill_file; do
+        if [ -L "$skill_file" ]; then
+          skill_target_real="$(realpath "$skill_file" 2>/dev/null || true)"
+          case "$skill_target_real" in
+            "$skill_root_real"/*)
+              # In-bundle is not enough: a symlink resolving to a DIRECTORY
+              # inside the bundle would install a directory symlink under
+              # ~/.codex/skills, which check-codex.sh immediately flags
+              # UNSAFE (issue #274). Require a regular file.
+              if [ ! -f "$skill_target_real" ]; then
+                invalid_skill_symlink="$skill_file"
+                break
+              fi
+              ;;
+            *)
               invalid_skill_symlink="$skill_file"
               break
-            fi
-            ;;
-          *)
-            invalid_skill_symlink="$skill_file"
-            break
-            ;;
-        esac
+              ;;
+          esac
+        fi
+      done < "$skill_file_list"
+      if [ -n "$invalid_skill_symlink" ]; then
+        rm -f "$skill_file_list"
+        echo "ERROR: Codex skill symlink escapes its bundle, is broken, or targets a non-file: $invalid_skill_symlink" >&2
+        exit 1
       fi
-    done < "$skill_file_list"
-    if [ -n "$invalid_skill_symlink" ]; then
-      rm -f "$skill_file_list"
-      echo "ERROR: Codex skill symlink escapes its bundle, is broken, or targets a non-file: $invalid_skill_symlink" >&2
-      exit 1
-    fi
-    while IFS= read -r -d '' skill_file; do
-      skill_rel="${skill_file#"$skill_dir"}"
-      skill_dst="$HOME_DIR/.codex/skills/$skill_name/$skill_rel"
-      prepare_directory "$HOME_DIR" "$(dirname "$skill_dst")"
-      link_file "$skill_file" "$skill_dst"
-    done < "$skill_file_list"
-    rm "$skill_file_list"
-    link_file "${skill_dir%/}" "$HOME_DIR/.agents/skills/$skill_name"
-  done
-  echo "  -> Codex skills linked into ~/.agents/skills (legacy ~/.codex links retained for compatibility)"
-fi
-
-CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}"
-if [ -d "$CODEX_MEMORY_REPO" ]; then
-  echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
-  if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
-    if [ "${DRY_RUN:-0}" = "1" ]; then
-      run bash "$CODEX_MEMORY_REPO/bootstrap.sh"
-      echo "  [DRY] Codex portable private defaults would be applied"
-    elif run bash "$CODEX_MEMORY_REPO/bootstrap.sh"; then
-      echo "  -> Codex portable private defaults applied"
-    else
-      echo "  -> WARNING: Codex portable private defaults could not be applied"
-    fi
+      while IFS= read -r -d '' skill_file; do
+        skill_rel="${skill_file#"$skill_dir"}"
+        skill_dst="$HOME_DIR/.codex/skills/$skill_name/$skill_rel"
+        prepare_directory "$HOME_DIR" "$(dirname "$skill_dst")"
+        link_file "$skill_file" "$skill_dst"
+      done < "$skill_file_list"
+      rm "$skill_file_list"
+      link_file "${skill_dir%/}" "$HOME_DIR/.agents/skills/$skill_name"
+    done
+    echo "  -> Codex skills linked into ~/.agents/skills (legacy ~/.codex links retained for compatibility)"
   fi
-  for f in AGENTS.local.md MEMORY.md; do
-    if [ -f "$CODEX_MEMORY_REPO/$f" ]; then
-      link_file "$CODEX_MEMORY_REPO/$f" "$HOME_DIR/.codex/$f"
-      echo "  -> Codex private $f linked"
-    fi
-  done
-  echo "     Keep personal Codex memory there, not in public dotfiles."
-else
-  echo "  -> Optional private Codex memory repo not found at $CODEX_MEMORY_REPO"
-  echo "     Create it only if you want portable private Codex memory."
-fi
 
-if [ -L "$HOME_DIR/.codex/config.toml" ]; then
-  echo "  -> WARNING: ~/.codex/config.toml is a symlink."
-  echo "     Codex writes machine-specific project trust there; replace it with a local file before committing changes."
-elif [ -f "$HOME_DIR/.codex/config.toml" ]; then
-  echo "  -> Codex config.toml left local (public-safe)"
-elif [ -f "$DOTFILES_DIR/codex/config.toml.example" ]; then
-  echo "  -> No local Codex config.toml found."
-  echo "     Review $DOTFILES_DIR/codex/config.toml.example before creating one."
+  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}"
+  if [ -d "$CODEX_MEMORY_REPO" ]; then
+    echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
+    if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        run bash "$CODEX_MEMORY_REPO/bootstrap.sh"
+        echo "  [DRY] Codex portable private defaults would be applied"
+      elif run bash "$CODEX_MEMORY_REPO/bootstrap.sh"; then
+        echo "  -> Codex portable private defaults applied"
+      else
+        echo "  -> WARNING: Codex portable private defaults could not be applied"
+      fi
+    fi
+    for f in AGENTS.local.md MEMORY.md; do
+      if [ -f "$CODEX_MEMORY_REPO/$f" ]; then
+        link_file "$CODEX_MEMORY_REPO/$f" "$HOME_DIR/.codex/$f"
+        echo "  -> Codex private $f linked"
+      fi
+    done
+    echo "     Keep personal Codex memory there, not in public dotfiles."
+  else
+    echo "  -> Optional private Codex memory repo not found at $CODEX_MEMORY_REPO"
+    echo "     Create it only if you want portable private Codex memory."
+  fi
+
+  if [ -L "$HOME_DIR/.codex/config.toml" ]; then
+    echo "  -> WARNING: ~/.codex/config.toml is a symlink."
+    echo "     Codex writes machine-specific project trust there; replace it with a local file before committing changes."
+  elif [ -f "$HOME_DIR/.codex/config.toml" ]; then
+    echo "  -> Codex config.toml left local (public-safe)"
+  elif [ -f "$DOTFILES_DIR/codex/config.toml.example" ]; then
+    echo "  -> No local Codex config.toml found."
+    echo "     Review $DOTFILES_DIR/codex/config.toml.example before creating one."
+  fi
+else
+  echo "  -> Codex not selected: skipping ~/.codex and ~/.agents/skills links. Existing Codex config, auth, and"
+  echo "     sessions are left in place, no longer managed by setup.sh."
 fi
 
 # ─── 5c. Antigravity (agy) config ────────────────────────────────────
@@ -1860,94 +2073,99 @@ fi
 # ~/.gemini/antigravity-cli/.
 echo ""
 echo "--- Setting up Antigravity config ---"
-AGY_CONFIG_DIR="$HOME_DIR/.gemini/config"
-prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR"
+if service_selected antigravity; then
+  AGY_CONFIG_DIR="$HOME_DIR/.gemini/config"
+  prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR"
 
-if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
-  link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
-  echo "  -> Antigravity global GEMINI.md linked"
-fi
-
-# Shared workflow skills: the agent-neutral set in agents/skills is the single
-# source for both Codex and Antigravity. Antigravity discovers per-skill dirs
-# under ~/.gemini/config/skills/; symlink each one (dir-level, unlike the
-# per-file Codex links, since agy resolves rule/skill paths through the link).
-if [ -d "$DOTFILES_DIR/agents/skills" ]; then
-  prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR/skills"
-  for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
-    [ -d "$skill_dir" ] || continue
-    skill_name="$(basename "$skill_dir")"
-    if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
-      echo "  -> WARNING: $AGY_CONFIG_DIR/skills/$skill_name is a real directory; not replacing it"
-      continue
-    fi
-    link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
-  done
-  echo "  -> Antigravity shared skills linked (source: agents/skills)"
-fi
-
-# Antigravity-only skills (e.g. browser-verify) live in antigravity/skills;
-# same dir-level symlink treatment as the shared set.
-if [ -d "$DOTFILES_DIR/antigravity/skills" ]; then
-  prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR/skills"
-  for skill_dir in "$DOTFILES_DIR/antigravity/skills/"*/; do
-    [ -d "$skill_dir" ] || continue
-    skill_name="$(basename "$skill_dir")"
-    if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
-      echo "  -> WARNING: $AGY_CONFIG_DIR/skills/$skill_name is a real directory; not replacing it"
-      continue
-    fi
-    link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
-  done
-  echo "  -> Antigravity-only skills linked"
-fi
-
-# Lifecycle hooks: hooks.json is small and public-safe — symlink it. The hook
-# script itself ships in claude/scripts (already linked into ~/.claude/scripts).
-if [ -f "$DOTFILES_DIR/antigravity/hooks.json" ]; then
-  link_file "$DOTFILES_DIR/antigravity/hooks.json" "$AGY_CONFIG_DIR/hooks.json"
-  echo "  -> Antigravity hooks.json linked"
-fi
-
-# Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
-# mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
-# (never symlinked — it also holds trustedWorkspaces and prompt-saved grants).
-# Merge keeps user-added rules; `agy-apply-permissions.py prune` resets them.
-if [ -f "$DOTFILES_DIR/antigravity/permissions.json" ]; then
-  if run python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-      --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json" \
-      --rules "$DOTFILES_DIR/antigravity/permissions.json"; then
-    echo "  -> Antigravity permission baseline applied (proceed-in-sandbox)"
-  else
-    echo "  -> WARNING: Antigravity permission baseline not applied (see above)"
+  if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
+    link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
+    echo "  -> Antigravity global GEMINI.md linked"
   fi
-fi
 
-# MCP servers: the live mcp_config.json stays LOCAL (machines add private
-# servers), so seed it from the template only when absent or empty — never
-# overwrite an existing non-empty config.
-if [ -f "$DOTFILES_DIR/antigravity/mcp_config.json.example" ]; then
-  if [ ! -s "$AGY_CONFIG_DIR/mcp_config.json" ]; then
-    run cp "$DOTFILES_DIR/antigravity/mcp_config.json.example" "$AGY_CONFIG_DIR/mcp_config.json"
-    echo "  -> Antigravity mcp_config.json seeded from template (playwright + github)"
-  else
-    echo "  -> Antigravity mcp_config.json exists; left untouched (compare with antigravity/mcp_config.json.example)"
+  # Shared workflow skills: the agent-neutral set in agents/skills is the single
+  # source for both Codex and Antigravity. Antigravity discovers per-skill dirs
+  # under ~/.gemini/config/skills/; symlink each one (dir-level, unlike the
+  # per-file Codex links, since agy resolves rule/skill paths through the link).
+  if [ -d "$DOTFILES_DIR/agents/skills" ]; then
+    prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR/skills"
+    for skill_dir in "$DOTFILES_DIR/agents/skills/"*/; do
+      [ -d "$skill_dir" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
+        echo "  -> WARNING: $AGY_CONFIG_DIR/skills/$skill_name is a real directory; not replacing it"
+        continue
+      fi
+      link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
+    done
+    echo "  -> Antigravity shared skills linked (source: agents/skills)"
   fi
-fi
 
-AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
-if [ -d "$AGY_MEMORY_REPO" ]; then
-  echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
-  for f in GEMINI.local.md MEMORY.md; do
-    if [ -f "$AGY_MEMORY_REPO/$f" ]; then
-      link_file "$AGY_MEMORY_REPO/$f" "$AGY_CONFIG_DIR/$f"
-      echo "  -> Antigravity private $f linked"
+  # Antigravity-only skills (e.g. browser-verify) live in antigravity/skills;
+  # same dir-level symlink treatment as the shared set.
+  if [ -d "$DOTFILES_DIR/antigravity/skills" ]; then
+    prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR/skills"
+    for skill_dir in "$DOTFILES_DIR/antigravity/skills/"*/; do
+      [ -d "$skill_dir" ] || continue
+      skill_name="$(basename "$skill_dir")"
+      if [ -d "$AGY_CONFIG_DIR/skills/$skill_name" ] && [ ! -L "$AGY_CONFIG_DIR/skills/$skill_name" ]; then
+        echo "  -> WARNING: $AGY_CONFIG_DIR/skills/$skill_name is a real directory; not replacing it"
+        continue
+      fi
+      link_file "${skill_dir%/}" "$AGY_CONFIG_DIR/skills/$skill_name"
+    done
+    echo "  -> Antigravity-only skills linked"
+  fi
+
+  # Lifecycle hooks: hooks.json is small and public-safe — symlink it. The hook
+  # script itself ships in claude/scripts (already linked into ~/.claude/scripts).
+  if [ -f "$DOTFILES_DIR/antigravity/hooks.json" ]; then
+    link_file "$DOTFILES_DIR/antigravity/hooks.json" "$AGY_CONFIG_DIR/hooks.json"
+    echo "  -> Antigravity hooks.json linked"
+  fi
+
+  # Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
+  # mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
+  # (never symlinked — it also holds trustedWorkspaces and prompt-saved grants).
+  # Merge keeps user-added rules; `agy-apply-permissions.py prune` resets them.
+  if [ -f "$DOTFILES_DIR/antigravity/permissions.json" ]; then
+    if run python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
+        --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json" \
+        --rules "$DOTFILES_DIR/antigravity/permissions.json"; then
+      echo "  -> Antigravity permission baseline applied (proceed-in-sandbox)"
+    else
+      echo "  -> WARNING: Antigravity permission baseline not applied (see above)"
     fi
-  done
-  echo "     Keep personal Antigravity memory there, not in public dotfiles."
+  fi
+
+  # MCP servers: the live mcp_config.json stays LOCAL (machines add private
+  # servers), so seed it from the template only when absent or empty — never
+  # overwrite an existing non-empty config.
+  if [ -f "$DOTFILES_DIR/antigravity/mcp_config.json.example" ]; then
+    if [ ! -s "$AGY_CONFIG_DIR/mcp_config.json" ]; then
+      run cp "$DOTFILES_DIR/antigravity/mcp_config.json.example" "$AGY_CONFIG_DIR/mcp_config.json"
+      echo "  -> Antigravity mcp_config.json seeded from template (playwright + github)"
+    else
+      echo "  -> Antigravity mcp_config.json exists; left untouched (compare with antigravity/mcp_config.json.example)"
+    fi
+  fi
+
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
+  if [ -d "$AGY_MEMORY_REPO" ]; then
+    echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
+    for f in GEMINI.local.md MEMORY.md; do
+      if [ -f "$AGY_MEMORY_REPO/$f" ]; then
+        link_file "$AGY_MEMORY_REPO/$f" "$AGY_CONFIG_DIR/$f"
+        echo "  -> Antigravity private $f linked"
+      fi
+    done
+    echo "     Keep personal Antigravity memory there, not in public dotfiles."
+  else
+    echo "  -> Optional private Antigravity memory repo not found at $AGY_MEMORY_REPO"
+    echo "     Create it only if you want portable private Antigravity memory."
+  fi
 else
-  echo "  -> Optional private Antigravity memory repo not found at $AGY_MEMORY_REPO"
-  echo "     Create it only if you want portable private Antigravity memory."
+  echo "  -> Antigravity not selected: skipping ~/.gemini/config links, permission baseline, and MCP seed."
+  echo "     Existing Antigravity config and credentials are left in place, no longer managed by setup.sh."
 fi
 
 # ─── 6. GitHub CLI auth ──────────────────────────────────────────────
@@ -2189,7 +2407,8 @@ fi
 # Links the private settings.json (and any identity files) into ~/.claude.
 # The private memory layer is optional, so we never `exit 1` from here — the
 # primary dotfiles+Claude install must still succeed if it fails to wire up.
-if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+# It links Claude Code settings, so it runs only when Claude Code is selected.
+if service_selected claude && [ -f "$BOOTSTRAP_SCRIPT" ]; then
   echo ""
   echo "--- Running claude-memory bootstrap ---"
   # Gated: bootstrap.sh links private settings/identity into ~/.claude and has
@@ -2213,32 +2432,49 @@ echo "Running post-setup health audit..."
 echo ""
 run_health_audit "check" || true
 echo ""
-echo "Claude config files are symlinked — edits in ~/.claude/"
-echo "will automatically be reflected in your dotfiles repo."
-echo "Codex auth, sessions, logs, sqlite state, caches, and live config.toml stay local/private."
+if service_selected claude; then
+  echo "Claude config files are symlinked — edits in ~/.claude/"
+  echo "will automatically be reflected in your dotfiles repo."
+fi
+if service_selected codex; then
+  echo "Codex auth, sessions, logs, sqlite state, caches, and live config.toml stay local/private."
+fi
 echo ""
 echo "Manual steps remaining:"
 echo "  1. Run 'gh auth login' if not already authenticated"
-if [ "${CLAUDE_AUTHED:-0}" -eq 0 ]; then
-  echo "  2. Run 'claude auth login' to sign in to Claude (required for plugins)"
-  echo "  3. Re-run this setup.sh to install plugins"
-  _launch_step=4
-else
-  _launch_step=2
+if service_selected claude; then
+  if [ "${CLAUDE_AUTHED:-0}" -eq 0 ]; then
+    echo "  2. Run 'claude auth login' to sign in to Claude (required for plugins)"
+    echo "  3. Re-run this setup.sh to install plugins"
+    _launch_step=4
+  else
+    _launch_step=2
+  fi
+  echo "  ${_launch_step}. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
 fi
-echo "  ${_launch_step}. Run 'cc' to pull repos and start Claude (or 'claude' to skip repo sync)"
-if [ "${CODEX_AUTHED:-0}" -eq 0 ]; then
-  echo "  Next Codex step: run 'codex login', then use 'cx' to launch Codex"
-else
-  echo "  Codex: run 'cx' to pull repos and start Codex"
+if service_selected codex; then
+  if [ "${CODEX_AUTHED:-0}" -eq 0 ]; then
+    echo "  Next Codex step: run 'codex login', then use 'cx' to launch Codex"
+  else
+    echo "  Codex: run 'cx' to pull repos and start Codex"
+  fi
 fi
-echo "  Antigravity: run 'agy' to pull repos, check config, and sign in or launch"
+if service_selected antigravity; then
+  echo "  Antigravity: run 'agy' to pull repos, check config, and sign in or launch"
+fi
+_svc_off="$(services_unselected "$DOTFILES_SELECTED_SERVICES")"
+if [ -n "$_svc_off" ]; then
+  echo "  Not set up (not selected): $_svc_off. Existing config for them was left untouched."
+  echo "    Add later: ./setup.sh --select-services  (or --services <list>)"
+fi
 if [[ "$PLATFORM" == "wsl" ]]; then
   echo ""
-  echo "  WSL Chrome bridge:"
-  echo "    Run 'bash ~/.claude/chrome/setup-wsl-chrome-bridge.sh' to enable claude --chrome"
-  echo "    (bridges Windows Chrome to WSL2 Claude Code via native messaging)"
-  echo ""
+  if service_selected claude; then
+    echo "  WSL Chrome bridge:"
+    echo "    Run 'bash ~/.claude/chrome/setup-wsl-chrome-bridge.sh' to enable claude --chrome"
+    echo "    (bridges Windows Chrome to WSL2 Claude Code via native messaging)"
+    echo ""
+  fi
   echo "  WSL performance tip:"
   echo "    Keep your repos under ~/dev (Linux filesystem), NOT /mnt/c/ (Windows mount)."
   echo "    File I/O on the Linux filesystem is ~10x faster than the Windows mount."
@@ -2271,5 +2507,12 @@ fi
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "  Mode: DRY-RUN (no destructive ops were executed)"
 fi
-echo "  Try next: cc to launch Claude"
+echo "  Services: $DOTFILES_SELECTED_SERVICES  (change: ./setup.sh --select-services)"
+if service_selected claude; then
+  echo "  Try next: cc to launch Claude"
+elif service_selected codex; then
+  echo "  Try next: cx to launch Codex"
+else
+  echo "  Try next: agy to launch Antigravity"
+fi
 echo "─────────────────────────────────────────────"
