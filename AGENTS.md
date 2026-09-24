@@ -68,7 +68,8 @@ and anything under `agents/canon/`, `claude/skills/`, `agents/skills/` or
 raise an issue instead of opening a pull request.
 
 That is the cloud-agent rule. A local session under the operator's standing
-authorization changes these surfaces through the review gates'
-instruction-surface override, which only the operator can run — that run is
-the human review this section asks for, so a pull request carrying it is not
-out of bounds.
+authorization may prepare such a change, but it lands only after the operator
+has reviewed the diff. The gates' instruction-surface override, which only the
+operator can run, lifts the self-review guard; it is not the review itself. A
+pull request carrying an operator-reviewed change, with that review stated in
+its body, is not out of bounds.
