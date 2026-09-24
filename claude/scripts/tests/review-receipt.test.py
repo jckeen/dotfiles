@@ -2762,15 +2762,15 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.complete(snapshot)
         self.check()
 
-    def test_interleaved_begins_leave_exactly_one_live_attempt(self):
-        """Two gates beginning at once leave one live attempt, not two.
+    def test_interleaved_begins_never_leave_two_live_attempts(self):
+        """Two gates beginning at once leave at most one live attempt, never two.
 
         Both runs are queued behind a held lock so they contend for real rather
         than by luck of scheduling. `begin` is capture then claim (#499), so the
-        run whose claim lands second either finds its attempt already superseded
-        and refuses, or supersedes the first. Either way exactly one snapshot's
-        token is live, the loser cannot record, and the approval the two of them
-        retired cannot ship in its place.
+        run whose claim lands second either supersedes the first (it captured
+        after the first claimed) or finds its attempt already superseded, refuses,
+        and fails closed by retiring the first as well. No loser can record, and
+        the approval the two of them retired cannot ship in its place.
         """
         self.complete(self.begin(reviewer="antigravity"))
         receipts = self.receipts_dir()
@@ -2812,12 +2812,12 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             if json.loads((receipts / (lane_name + ".attempt.json")).read_bytes())["attempt"]
             == json.loads(snapshots[lane_name].read_bytes())["attempt"]
         ]
-        self.assertEqual(len(live), 1, live)
+        self.assertLessEqual(len(live), 1, live)
         self.assertFalse((receipts / "antigravity.json").exists())
-        for loser in (lane_name for lane_name in snapshots if lane_name != live[0]):
+        for loser in (lane_name for lane_name in snapshots if lane_name not in live):
             self.complete(snapshots[loser], ok=False)
         self.check(False)
-        self.complete(snapshots[live[0]])
+        self.complete(snapshots[live[0]] if live else self.begin(reviewer="codex"))
         self.check()
 
     # ─── #499: capture touches only its own lane; claim retires the rest ───
@@ -2869,8 +2869,26 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.claim(theirs)
         self.claim(mine, ok=False)
         self.complete(mine, ok=False)
-        self.complete(theirs)
-        self.check()
+        # The refused claim still retired the lane that superseded it (fail closed).
+        self.complete(theirs, ok=False)
+        self.check(False)
+
+    def test_superseded_blocking_verdict_retires_the_competing_approval(self):
+        """Both lanes capture; the first claims and approves; the second blocks.
+
+        The second claim finds itself superseded, but its verdict still has to
+        retire the approval, or the pre-push check ships what it rejected.
+        """
+        for first, second in (("codex", "antigravity"), ("antigravity", "codex")):
+            with self.subTest(first=first, second=second):
+                approving = self.capture(reviewer=first)
+                blocking = self.capture(reviewer=second)
+                self.claim(approving)
+                self.complete(approving)
+                self.check()
+                self.claim(blocking, ok=False)
+                self.check(False)
+                self.check(False, "--reviewer", first)
 
     def test_claim_waits_for_a_concurrent_attempt_transition(self):
         self.complete(self.begin(reviewer="antigravity"))
@@ -2889,7 +2907,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.check(False)
 
     def test_interleaved_claims_admit_exactly_one(self):
-        """Two captured lanes claiming at once: the later claim finds itself superseded."""
+        """Two captured lanes claiming at once: the later claim is superseded and retires both."""
         self.complete(self.begin(reviewer="antigravity"))
         snapshots = {lane: self.capture(reviewer=lane) for lane in ("antigravity", "codex")}
         descriptor = self.hold_attempt_lock()
@@ -2912,7 +2930,11 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         loser = next(lane for lane in snapshots if lane not in winners)
         self.complete(snapshots[loser], ok=False)
         self.check(False)
-        self.complete(snapshots[winners[0]])
+        # The loser's refused claim retired the winner too (fail closed): a rerun ships.
+        self.complete(snapshots[winners[0]], ok=False)
+        self.check(False)
+        rerun = self.begin(reviewer=winners[0])
+        self.complete(rerun)
         self.check()
 
     # ─── #533: check's deciding validation is synchronized with claim ───

@@ -1061,7 +1061,8 @@ def supersede(receipts, record):
     lane, and a degraded lane stays what MULTI-AGENT.md says it is: not a verdict.
 
     The attempt must still be live: a claim racing another lane's claim, or a
-    newer capture in its own lane, refuses rather than reviving a superseded run.
+    newer capture in its own lane, refuses rather than reviving a superseded run,
+    and it retires the competing lanes before refusing (fail closed).
     The competing lanes go first: an interruption must never leave a lane OTHER
     than this one holding evidence the new review is overriding. Callers hold
     `attempt_lock`, which is what makes the whole transition atomic against a
@@ -1070,7 +1071,18 @@ def supersede(receipts, record):
     lane = record["reviewer"]["name"]
     if lane not in LANES:
         raise ValueError("unknown review lane: " + str(lane))
-    assert_attempt(record)
+    try:
+        assert_attempt(record)
+    except ValueError:
+        # A superseded attempt still reached a verdict, and `claim` cannot tell
+        # whether it was blocking. Fail closed: retire the competing lanes before
+        # refusing, so an approval recorded by the claim that superseded this one
+        # cannot outlive a blocking verdict on the same artifact. Two lanes racing
+        # both lose and one reruns.
+        for other in LANES:
+            if other != lane:
+                invalidate(receipts, other)
+        raise
     for other in LANES:
         if other != lane:
             invalidate(receipts, other)

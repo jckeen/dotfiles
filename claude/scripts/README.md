@@ -321,8 +321,10 @@ The transitions are serialized by an exclusive `flock` on
 receipt state — `capture`'s own-lane invalidation, `claim`, `complete`'s deciding
 attempt check and receipt write, and `invalidate`. Two gates claiming at once
 would otherwise interleave their cross-lane invalidations and leave both lanes'
-attempt tokens live; serialized, the later claim finds its attempt superseded and
-refuses. `check` captures lock-free, so a slow check never blocks a gate, and
+attempt tokens live; serialized, the later claim finds its attempt superseded,
+retires the other lanes anyway, and refuses. It reached a verdict, possibly
+blocking, so the approval that superseded it must not outlive it; two racing
+lanes both lose and one reruns. `check` captures lock-free, so a slow check never blocks a gate, and
 takes the lock only for its deciding assertion — the attempt still live and the
 receipt still the one it validated — so a claim landing after its validation
 makes it refuse instead of approving a retired receipt (#533).
