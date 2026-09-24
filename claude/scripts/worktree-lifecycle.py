@@ -9,6 +9,12 @@ names the branch while the merged branch ref becomes deletable; --delete-branch
 deletes it only when it still names the verified merged PR head, restores it if
 a worktree attached it during the delete, and removes its branch.<name> config.
 
+Accepted limitation (#522): the post-delete holder re-check and create-only
+restore catch every attach that completed before the re-check. An attach that
+resolved the branch before the delete but writes its HEAD after the re-check
+can still land on a missing branch. Git offers no lock that orders `worktree
+add` against a ref delete, so this is the same window `git branch -D` has.
+
 Expiry (#562) reports retired archive entries by default. --apply removes the
 quarantined checkout and its Git worktree registration once the entry was
 retired longer ago than --older-than, and only while the checkout is still
@@ -1233,10 +1239,15 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
     for child in children:
         entry = dict(archive=str(child), kind="orphan-directory", path=None, pr=None, age_days=None)
         registration = registrations.pop(child / "worktree", None)
+        # An expiry interrupted after its repair leaves the registration at the
+        # staging path; it belongs to this entry, not to an orphan (#569).
+        staged = registrations.pop(child / STAGING, None)
         try:
             if child.is_symlink() or not child.is_dir():
                 raise ValueError("not an archive directory; retain for inspection")
-            if registration is not None:
+            if staged is not None:
+                entry["kind"] = "interrupted-expiry"
+            elif registration is not None:
                 entry["kind"] = "quarantine"
             elif not any(os.path.lexists(child / name) for name in ("worktree", STAGING)):
                 # An expired entry, or a retirement stopped before its
@@ -1253,6 +1264,12 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
             if entry["kind"] == "recovery-files":
                 entries.append(entry)
                 continue
+            if entry["kind"] == "interrupted-expiry":
+                raise ValueError(
+                    f"an interrupted expiry left the checkout registered at {child / STAGING}; "
+                    "inspect it, then remove it or move it back to worktree and run "
+                    "`git worktree repair` by hand"
+                )
             if entry["kind"] == "orphan-directory":
                 raise ValueError(
                     "the quarantined checkout is not a registered worktree of a scanned "
