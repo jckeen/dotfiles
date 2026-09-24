@@ -72,7 +72,8 @@
   directory itself (not merely the file inside it) and the
   directory that owns it carries `bun.lock` or `package-lock.json` (a regular
   file). Without the lockfile, when not ignored, or anywhere else, those paths
-  stay instruction surfaces and fail closed (#514).
+  stay instruction surfaces and fail closed (#514). Each tree is checked once
+  per capture, not once per file inside it.
 
 ## 2026-09-23 — feat(worktree-lifecycle): expire retired worktrees, keep recovery files
 

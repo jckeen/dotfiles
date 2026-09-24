@@ -3089,6 +3089,28 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             text=True,
         )
 
+    def test_capture_checks_each_vendored_tree_once(self):
+        """A dependency tree's files must not each spawn their own `check-ignore`."""
+        self.vendored_fixture()
+        for index in range(40):
+            target = self.repo / "claude/scripts/node_modules/dep" / f"file{index}.js"
+            target.write_text("module.exports = 1\n")
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real = module.git
+        calls = []
+
+        def counting_git(repo, *args):
+            if args[:1] == ("check-ignore",):
+                calls.append(args)
+            return real(repo, *args)
+
+        module.git = counting_git
+        module.capture(self.repo, "main", "committed")
+        # One per qualifying tree (skills/demo and scripts), not one per file.
+        self.assertLessEqual(len(calls), 2, calls)
+
     def test_ignored_locked_node_modules_under_skills_and_scripts_are_vendored(self):
         self.vendored_fixture()
         snapshot = self.begin("committed")

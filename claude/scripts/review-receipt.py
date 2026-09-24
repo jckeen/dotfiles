@@ -313,7 +313,7 @@ def instruction(path):
     )
 
 
-def vendored_dependency(repo, path):
+def vendored_dependency(repo, path, trees=None):
     """An ignored path inside an installed dependency tree of a skill or scripts dir.
 
     The #439 hook-tree exemption, extended to `claude/skills/<name>/node_modules`
@@ -327,6 +327,12 @@ def vendored_dependency(repo, path):
     hold a lockfile, checked on disk as a regular file (never a symlink). Everything else — another
     layout, no lockfile, a tree that is not ignored — stays an instruction
     surface and fails closed.
+
+    `trees` memoizes the per-tree verdict for one capture: every file under a
+    qualifying tree would otherwise repeat the same lstat and `check-ignore`
+    subprocess, tens of thousands of times for a real dependency tree, some of
+    them under the receipt transition lock. The verdict depends only on the
+    owner directory, so one capture checks each tree once.
     """
     parts = Path(path).parts
     if parts[:2] == ("claude", "skills") and len(parts) > 4 and parts[3] == "node_modules":
@@ -335,6 +341,14 @@ def vendored_dependency(repo, path):
         owner = parts[:2]
     else:
         return False
+    if trees is None:
+        return vendored_tree(repo, owner)
+    if owner not in trees:
+        trees[owner] = vendored_tree(repo, owner)
+    return trees[owner]
+
+
+def vendored_tree(repo, owner):
     locked = False
     for lockfile in ("bun.lock", "package-lock.json"):
         try:
@@ -819,6 +833,7 @@ def capture(repo, base, scope):
                 raise ValueError("instruction surface hidden behind repository boundary: " + path)
 
     ignored_instructions = set()
+    vendored_trees = {}
     for raw in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
         b"\0"
     ):
@@ -832,7 +847,11 @@ def capture(repo, base, scope):
         # dropped from the sweep rather than blocking a review, as it has been
         # since that data stopped being sent for review — including when it is
         # itself a boundary, whose contents this never captures either way.
-        if own_boundary(entry) or private_agent_data(entry) or vendored_dependency(repo, entry):
+        if (
+            own_boundary(entry)
+            or private_agent_data(entry)
+            or vendored_dependency(repo, entry, vendored_trees)
+        ):
             continue
         if entry.endswith("/"):
             inspect_boundary(entry)
