@@ -75,12 +75,12 @@ check "a malformed file is rejected (rc 2) and never executed" '[ "$rc" -eq 2 ] 
 check "setup.sh refuses to guess past a malformed selection file" \
   '! HOME="$H" "$SETUP" --show-services >/dev/null 2>&1'
 check "--services replaces a malformed selection file" \
-  'HOME="$H" "$SETUP" --show-services --services codex 2>/dev/null | grep -qx "services=codex"'
+  'grep -qx "services=codex" <<< "$(HOME="$H" "$SETUP" --show-services --services codex 2>/dev/null)"'
 
 # ── Migration default: no saved selection keeps all three services ──
 H="$(new_home)"
 check "no saved selection resolves to all services" \
-  'HOME="$H" "$SETUP" --show-services | grep -qx "services=claude,codex,antigravity"'
+  'grep -qx "services=claude,codex,antigravity" <<< "$(HOME="$H" "$SETUP" --show-services)"'
 
 # ── Claude + Codex, Antigravity absent (the issue's concrete case) ──
 H="$(new_home)"
@@ -123,9 +123,9 @@ check "antigravity-only: Codex links skipped, Antigravity planned" \
 # ── Noninteractive env var, and flag precedence ─────────────────────
 H="$(new_home)"
 check "DOTFILES_SERVICES selects noninteractively" \
-  'DOTFILES_SERVICES=claude HOME="$H" "$SETUP" --show-services | grep -qx "services=claude"'
+  'grep -qx "services=claude" <<< "$(DOTFILES_SERVICES=claude HOME="$H" "$SETUP" --show-services)"'
 check "--services wins over DOTFILES_SERVICES" \
-  'DOTFILES_SERVICES=claude HOME="$H" "$SETUP" --show-services --services=codex | grep -qx "services=codex"'
+  'grep -qx "services=codex" <<< "$(DOTFILES_SERVICES=claude HOME="$H" "$SETUP" --show-services --services=codex)"'
 check "an unknown service fails closed" '! HOME="$H" "$SETUP" --show-services --services bogus >/dev/null 2>&1'
 
 # ── Interactive selection (piped answers) ───────────────────────────
