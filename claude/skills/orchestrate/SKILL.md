@@ -29,8 +29,7 @@ Use ALL applicable parallelization patterns:
 
 - **Worktree isolation** — For any task touching 2+ independent areas of code,
   spawn agents with `isolation: "worktree"` so they work on isolated copies. Each
-  agent gets its own branch. Merge results after. See
-  `superpowers:dispatching-parallel-agents`.
+  agent gets its own branch. Merge results after.
 - **Background agents** — For research, exploration, or investigation that doesn't
   block other work, use `run_in_background: true`. Don't wait when you don't need to.
 - **Named teammates** — For 3+ independent workstreams, spawn named teammates
@@ -60,7 +59,7 @@ Select capabilities aggressively from the available skills and platform features
 - **Multiple perspectives** — For design or architecture decisions, spin up
   several subagents with different viewpoints and synthesize.
 - **Competing hypotheses** — For debugging, spawn N agents each testing a
-  different theory simultaneously (see `superpowers:systematic-debugging`).
+  different theory simultaneously.
 - **Writer/reviewer split** — For code quality, have one agent write and a
   separate fresh-context agent review independently.
 - **First-principles decomposition** — For complex design work, break the problem
@@ -92,8 +91,7 @@ Select capabilities aggressively from the available skills and platform features
   `--dry-run` against a throwaway HOME and diff the target"), not just "verify it
   works." A subagent verifies what you name; unnamed side-effects slip through to
   integration.
-- **TDD for bugs** — Reproduce with a failing test first, then fix
-  (`superpowers:test-driven-development`).
+- **TDD for bugs** — Reproduce with a failing test first, then fix.
 - **Context compaction** — At phase boundaries, self-summarize to prevent context
   rot in long runs.
 

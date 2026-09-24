@@ -101,8 +101,7 @@ Then ask: **"Ready to execute?"**
 
 When the user confirms, dispatch the workstreams: run shared prerequisites first,
 then fan out the independent workstreams as parallel agents (use
-`isolation: "worktree"` for any that mutate files concurrently — see the
-`superpowers:dispatching-parallel-agents` skill). Merge results and verify each
+`isolation: "worktree"` for any that mutate files concurrently). Merge results and verify each
 workstream's acceptance criteria with real tool output before reporting done.
 
 ## Integration with /orchestrate

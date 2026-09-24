@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-09-23 — docs(instructions): one operator pass for the queued instruction-surface changes
+
+- **Cloud-agent conventions say whom they bind (#552).** The per-tool
+  fragments and the Jules fragment state that the one-PR-per-finding and
+  out-of-bounds rules bind cloud-agent PRs, and the "never hardcode a count"
+  rule spares dated records such as changelogs and handoffs.
+- **`commit-push-pr`: the advisory review moves ahead of the required gate
+  (#534).** Both copies now put the optional Antigravity opinion at step 6,
+  before the required gate, and say that a review which *reaches a verdict*
+  retires the other lane's receipt (the `capture`/`claim` split above, #499).
+  A degraded run no longer does.
+- **`claude/MULTI-AGENT.md` names the instruction-surface lane (#557).** Changes
+  to instruction surfaces and gate machinery are agent-proof by design. Agents
+  file an `instruction-surface` issue with a patch that passes `git apply
+  --check`, and the operator drains the label in one gated pass. This entry is
+  the first such pass.
+- **The superpowers plugin is dropped (#559).** Its session-start block told
+  every session to invoke a skill before any response, and the global
+  instructions overrode it each time. Over 14 days its skills ran 6 times. The
+  discipline it carried (failing test first, root cause before fix) already
+  lives in the Verification rules. It is removed from `claude/plugins.txt`, the
+  override paragraph is gone from the Claude fragment, and `orchestrate` and
+  `decompose` no longer cite its skills by name.
+
 ## 2026-09-23 — fix(receipts): claim at the verdict, a synchronized check, and three capture fixes
 
 - **A degraded gate no longer costs the other lane's approval.** `begin` retired

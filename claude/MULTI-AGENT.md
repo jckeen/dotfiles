@@ -144,6 +144,33 @@ without needing to know which lane ran. Read the ledger with
 cost; the dotfiles risk list is deliberately unnarrowed, so most diffs *in this
 repository* stay on Codex.
 
+### The instruction-surface lane (#557)
+
+Some changes are agent-proof three independent ways, by design: the root
+`AGENTS.md` out-of-bounds rule, the gates' self-review guard (the path regex in
+`codex-review-gate.sh`; its override flag is denied to agents by the permission
+classifier), and the classifier's own refusal of the edit as self-modification.
+That covers the instruction surfaces (`agents/canon/`, `claude/skills/`,
+`agents/skills/`, `antigravity/skills/`, `AGENTS*.md`, `CLAUDE.md`, `GEMINI.md`,
+`.codex-review-ignore`) and the gate machinery (`gate-lib.sh`,
+`review-receipt.py`, `review-multipart.py`, the review schema, both
+`*-review-gate.sh`). The same boundary denies agents a few adjacent shapes on
+first sight: a gate override flag, a `systemd-run` sandbox probe, and a batched
+or read-then-write `gh` call. None of these is a retry-until-it-passes
+situation — the denial *is* the answer, and the work routes to the operator.
+
+An agent that finds such a change necessary does not prepare a branch it cannot
+push. It files (or updates) an issue labelled `instruction-surface` carrying the
+exact wording or a patch beside the handoff note that passes `git apply --check`
+against `main`, plus the verification commands, and moves on. The harvester
+applies the label itself when a bot finding's path matches the guard regex.
+
+The operator drains that label in one pass — weekly, or when reading the next
+handoff: apply the queued patches on one branch, run the required gate once with
+the override flag (independent review already recorded on each issue), open one
+PR, and let its `Closes` lines retire the issues. One gated commit for the whole
+inbox, instead of one human command per item.
+
 ## Handoff payload
 
 When the conductor hands verification to another agent, the handoff (a `handoff`

@@ -15,7 +15,6 @@
 
 # [global] — enabled in ~/.claude/settings.json `enabledPlugins`
 typescript-lsp@claude-plugins-official
-superpowers@claude-plugins-official
 context7@claude-plugins-official
 codex@openai-codex
 security-guidance@claude-plugins-official
