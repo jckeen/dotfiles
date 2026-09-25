@@ -421,6 +421,10 @@ fi
 # A missing CLI was deferred from the resolution block above so that it cannot
 # deny a tier-1 exemption this machine needs no reviewer for (#494).
 [[ -z "$GATE_CLI_MISSING" ]] || degrade "$GATE_CLI_MISSING"
+# commit-push-pr runs this gate directly, not through review-and-push.sh's
+# gate_select_lane, so the gate itself must not launch a deselected runtime
+# (#425). gate_require_service prints the reason and the opt-in command.
+gate_require_service codex || degrade "the Codex lane is unavailable (agent-service selection)."
 N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
 if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
   degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — too large for a fenced review. Split the change, or review manually with 'codex review --base $BASE'."

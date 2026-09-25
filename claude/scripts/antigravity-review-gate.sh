@@ -285,6 +285,12 @@ if [[ "$GATE_TIER" -eq 1 ]]; then
   exit 0
 fi
 
+# commit-push-pr runs this gate directly, not through review-and-push.sh's
+# gate_select_lane, so the gate itself must not launch a deselected runtime
+# (#425). Checked before local validation and dispatch; a tier-1 exemption
+# above needs no runtime.
+gate_require_service antigravity || degrade "the Antigravity lane is unavailable (agent-service selection)."
+
 N_LINES="$(printf '%s\n' "$DIFF_CONTENT" | wc -l | tr -d ' ')"
 if [[ "$N_LINES" -gt "$MAX_DIFF_LINES" ]]; then
   degrade "diff is $N_LINES lines (> $MAX_DIFF_LINES) — skipping to conserve plan quota."

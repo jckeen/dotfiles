@@ -1696,6 +1696,30 @@ mv "$SHIM_DIR/codex-parked" "$SHIM_DIR/codex"
 export CODEX_GATE_BIN="$SAVED_BIN"
 rm -rf "$R"
 
+# ── #425: a direct gate run honours the service selection too ──
+# review-and-push.sh refuses an unselected lane in gate_select_lane, but the
+# commit-push-pr workflow calls this gate directly, so the gate must refuse to
+# launch a runtime the operator deselected. A tier-1 exemption needs no runtime
+# and still ships.
+DIRECT_SERVICES_HOME="$(mktemp -d)"
+mkdir -p "$DIRECT_SERVICES_HOME/dotfiles"
+printf 'services=claude,antigravity\n' > "$DIRECT_SERVICES_HOME/dotfiles/services"
+SAVED_XDG="${XDG_CONFIG_HOME-__unset__}"
+export XDG_CONFIG_HOME="$DIRECT_SERVICES_HOME"
+new_repo
+git -C "$R" checkout -qb feature
+seq 1 20 > "$R/notes.md"
+git -C "$R" add notes.md
+git -C "$R" commit -qm docs
+check "a tier-1 diff is exempt when Codex is unselected" 0 "tier-1 skip" --no-issues --require
+seq 1 400 > "$R/notes.md"
+git -C "$R" commit -qam "docs above the tier-1 line cap"
+check "a direct run refuses an unselected Codex lane" 3 "Codex is not a selected agent service" --no-issues --require
+assert "the unselected lane launched no Codex" "[ ! -e '$CODEX_FAKE_DIR/invoked' ]"
+assert "the refused run leaves nothing that ships HEAD" "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+if [[ "$SAVED_XDG" == __unset__ ]]; then unset XDG_CONFIG_HOME; else export XDG_CONFIG_HOME="$SAVED_XDG"; fi
+rm -rf "$R" "$DIRECT_SERVICES_HOME"
+
 # A docs-only diff of one 200,000-byte line clears the tier-1 line count, and
 # used to take the exemption here while the Antigravity lane refused to dispatch
 # it at all. The captured tier1_max_bytes policy makes it tier 2 in both lanes,

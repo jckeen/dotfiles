@@ -591,6 +591,29 @@ assert "the agy-free tier-1 receipt is a tier-1 exemption" \
   "jq -e '.completion.outcome == \"tier-1\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
 rm -rf "$NO_AGY_PATH" "$R"
 
+# ── #425: a direct gate run honours the service selection too ──
+# commit-push-pr calls this gate directly, bypassing review-and-push.sh's
+# gate_select_lane, so the gate itself refuses to launch an unselected agy.
+# A tier-1 exemption needs no runtime and still ships.
+DIRECT_SERVICES_HOME="$(mktemp -d)"
+mkdir -p "$DIRECT_SERVICES_HOME/dotfiles"
+printf 'services=claude,codex\n' > "$DIRECT_SERVICES_HOME/dotfiles/services"
+SAVED_XDG="${XDG_CONFIG_HOME-__unset__}"
+export XDG_CONFIG_HOME="$DIRECT_SERVICES_HOME"
+new_repo
+printf '# Title\n\nDocs only.\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "a tier-1 diff is exempt when Antigravity is unselected" 0 "tier-1 skip" --uncommitted --require
+rm -rf "$R"
+new_repo
+printf 'change\n' >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "a direct run refuses an unselected Antigravity lane" 3 "Antigravity is not a selected agent service" --uncommitted --require
+assert "the unselected lane launched no agy" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+assert "the refused run leaves no Antigravity receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+if [[ "$SAVED_XDG" == __unset__ ]]; then unset XDG_CONFIG_HOME; else export XDG_CONFIG_HOME="$SAVED_XDG"; fi
+rm -rf "$R" "$DIRECT_SERVICES_HOME"
+
 new_repo
 printf '# Title\n' > "$R/README.md"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
