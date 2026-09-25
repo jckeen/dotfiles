@@ -2987,6 +2987,233 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.assertIn("superseded", str(refused.exception))
         self.assertNotIn("Valid", printed.getvalue())
 
+    # ─── #573: a blocking verdict is a durable per-artifact marker ───
+
+    def block(self, snapshot, ok=True):
+        return self.run_helper("block", "--snapshot", str(snapshot), ok=ok)
+
+    def block_markers(self):
+        return sorted((self.receipts_dir() / "blocks").glob("*.json"))
+
+    def test_block_refuses_an_approval_captured_before_it(self):
+        """Any lane's blocking verdict retires every receipt captured before it."""
+        for approved, blocking in (("codex", "antigravity"), ("antigravity", "codex")):
+            with self.subTest(approved=approved, blocking=blocking):
+                self.complete(self.begin(reviewer=approved))
+                self.check()
+                # Captured but never claimed: the marker needs no claim.
+                self.block(self.capture(reviewer=blocking))
+                self.check(False)
+                self.check(False, "--reviewer", approved)
+                # A review captured after the verdict ships as before.
+                self.complete(self.begin(reviewer=approved))
+                self.check()
+
+    def test_block_needs_no_live_attempt(self):
+        """A superseded attempt's blocking verdict still records the marker."""
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        stale = self.capture(reviewer="antigravity")
+        self.capture(reviewer="antigravity")  # supersedes `stale` in its own lane
+        self.block(stale)
+        self.check(False)
+
+    def test_block_refuses_an_in_flight_approval_that_completes_after_it(self):
+        """A review captured before the verdict cannot record a receipt after it."""
+        approving = self.begin(reviewer="codex")
+        self.block(self.capture(reviewer="antigravity"))
+        self.complete(approving, ok=False)
+        self.assertFalse((self.receipts_dir() / "codex.json").exists())
+        self.check(False)
+
+    def test_block_is_per_artifact(self):
+        """A marker binds base, head, scope and patch; another artifact ships."""
+        self.block(self.capture(reviewer="codex"))
+        (self.repo / "code.txt").write_text("fixed\n")
+        self.git("commit", "-qam", "fix")
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        # The same head reviewed in another scope blocks nothing committed.
+        (self.repo / "code.txt").write_text("fixed, dirty\n")
+        self.block(self.capture(reviewer="codex", scope="uncommitted"))
+        self.git("checkout", "--", "code.txt")
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        self.assertEqual(len(self.block_markers()), 2)
+
+    def test_block_marker_is_stamped_with_the_verdict(self):
+        snapshot = self.capture(reviewer="antigravity")
+        self.block(snapshot)
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        artifact = json.loads(snapshot.read_text())["artifact"]
+        self.assertEqual(
+            record["artifact"],
+            {
+                "base": artifact["base"]["commit"],
+                "head": artifact["head"],
+                "scope": "committed",
+                "patch_sha256": artifact["review_diff_sha256"],
+            },
+        )
+        self.assertEqual(record["reviewer"], "antigravity")
+        self.assertIsInstance(record["sequence"], int)
+        self.assertIn("+00:00", record["blocked_at"])
+        self.assertEqual(stat.S_IMODE(marker.parent.stat().st_mode), 0o700)
+
+    def test_ordering_does_not_trust_the_wall_clock(self):
+        """A clock stepped backward cannot make a pre-verdict capture look newer."""
+        approving = self.begin(reviewer="codex")
+        self.complete(approving)
+        self.block(self.capture(reviewer="antigravity"))
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        record["blocked_at"] = "1970-01-01T00:00:00+00:00"
+        marker.write_text(json.dumps(record))
+        self.check(False)
+
+    def test_a_lost_counter_resumes_above_existing_evidence(self):
+        """Deleting sequence.json must not let a verdict sort before older captures."""
+        for _ in range(4):
+            self.capture(reviewer="codex")
+        self.complete(self.begin(reviewer="codex"))
+        (self.receipts_dir() / "sequence.json").unlink()
+        self.block(self.capture(reviewer="antigravity"))
+        self.check(False)
+
+    def test_a_lost_counter_still_orders_a_verdict_after_its_own_capture(self):
+        """Recovery counts in-flight snapshots too (Codex round 2)."""
+        for _ in range(4):
+            self.capture(reviewer="codex")
+        approval = self.begin(reviewer="codex")
+        self.complete(approval)
+        receipt = (self.receipts_dir() / "codex.json").read_bytes()
+        attempt = (self.receipts_dir() / "codex.attempt.json").read_bytes()
+        blocking = self.capture(reviewer="antigravity")
+        # Both lanes invalidated: no receipt or attempt carries a sequence now.
+        self.run_helper("invalidate", "--repo", str(self.repo), "--reviewer", "codex")
+        self.run_helper("invalidate", "--repo", str(self.repo), "--reviewer", "antigravity")
+        (self.receipts_dir() / "sequence.json").unlink()
+        self.block(blocking)
+        (self.receipts_dir() / "codex.json").write_bytes(receipt)
+        (self.receipts_dir() / "codex.attempt.json").write_bytes(attempt)
+        self.check(False)
+
+    def test_a_corrupt_or_rolled_back_counter_cannot_reorder_a_verdict(self):
+        for corrupt in ('{"sequence":"broken"}', '{"sequence":1}', "not json"):
+            with self.subTest(corrupt=corrupt):
+                for _ in range(3):
+                    self.capture(reviewer="codex")
+                self.complete(self.begin(reviewer="codex"))
+                blocking = self.capture(reviewer="antigravity")
+                (self.receipts_dir() / "sequence.json").write_text(corrupt)
+                self.block(blocking)
+                self.check(False)
+                shutil.rmtree(self.receipts_dir() / "blocks")
+
+    def test_a_marker_with_a_non_positive_sequence_fails_closed(self):
+        self.complete(self.begin(reviewer="codex"))
+        self.block(self.capture(reviewer="antigravity"))
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        for value in (-1, 0, True):
+            with self.subTest(value=value):
+                record["sequence"] = value
+                marker.write_text(json.dumps(record))
+                self.check(False)
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_an_unsearchable_marker_store_fails_closed(self):
+        """A marker that cannot be looked up is not an absent marker (Codex round 3)."""
+        approving = self.begin(reviewer="codex")
+        self.block(self.capture(reviewer="antigravity"))
+        blocks = self.receipts_dir() / "blocks"
+        blocks.chmod(0o600)
+        self.addCleanup(blocks.chmod, 0o700)
+        self.complete(approving, ok=False)
+        self.assertFalse((self.receipts_dir() / "codex.json").exists())
+
+    def test_a_non_directory_marker_store_fails_closed(self):
+        self.complete(self.begin(reviewer="codex"))
+        (self.receipts_dir() / "blocks").write_text("not a directory\n")
+        self.check(False)
+
+    def test_an_edited_capture_sequence_is_refused(self):
+        """The sequence is bound to the live attempt: raising it cannot outrank a marker."""
+        self.complete(self.begin(reviewer="codex"))
+        receipt = self.receipts_dir() / "codex.json"
+        record = json.loads(receipt.read_text())
+        record["captured_sequence"] += 1000
+        receipt.write_text(json.dumps(record))
+        self.check(False)
+
+    def test_malformed_block_marker_fails_closed(self):
+        self.complete(self.begin(reviewer="codex"))
+        self.block(self.capture(reviewer="antigravity"))
+        (marker,) = self.block_markers()
+        for content in ("not json", '{"sequence": "9"}', "[]"):
+            with self.subTest(content=content):
+                marker.write_text(content)
+                self.check(False)
+        marker.unlink()
+        marker.symlink_to(self.result)
+        self.check(False)
+
+    def test_receipt_without_a_capture_sequence_is_refused_under_a_marker(self):
+        """A receipt from before #573 carries no sequence; a marker outranks it."""
+        snapshot = self.begin(reviewer="codex")
+        self.complete(snapshot)
+        receipt = self.receipts_dir() / "codex.json"
+        record = json.loads(receipt.read_text())
+        del record["captured_sequence"]
+        receipt.write_text(json.dumps(record))
+        attempt = self.receipts_dir() / "codex.attempt.json"
+        marker = json.loads(attempt.read_text())
+        del marker["sequence"]
+        attempt.write_text(json.dumps(marker))
+        # With no marker, such a receipt still ships as before.
+        self.check()
+        self.block(self.capture(reviewer="antigravity"))
+        self.check(False)
+
+    def test_block_refuses_a_symlinked_marker_directory(self):
+        elsewhere = Path(self.tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        snapshot = self.capture(reviewer="codex")
+        (self.receipts_dir() / "blocks").symlink_to(elsewhere)
+        self.block(snapshot, ok=False)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_check_refuses_when_a_block_lands_after_its_validation(self):
+        """The marker is read under the lock, in check's deciding assertion."""
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.complete(self.begin(reviewer="codex"))
+        blocking = self.capture(reviewer="antigravity")
+        real = module.classify_tier
+        calls = []
+
+        def classify_then_block(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if not calls:
+                calls.append(True)
+                self.block(blocking)
+            return result
+
+        args = argparse.Namespace(
+            repo=str(self.repo), head=self.git("rev-parse", "HEAD"), base="main", reviewer=None
+        )
+        printed = io.StringIO()
+        with mock.patch.object(module, "classify_tier", classify_then_block):
+            with self.assertRaises(ValueError) as refused, contextlib.redirect_stdout(printed):
+                module.check(args)
+        self.assertTrue(calls)
+        self.assertIn("blocking verdict", str(refused.exception))
+        self.assertNotIn("Valid", printed.getvalue())
+
     # ─── #541 / #540: own-worktree boundaries in unusual layouts ───
 
     def test_common_git_directory_trailing_whitespace_keeps_worktrees_owned(self):

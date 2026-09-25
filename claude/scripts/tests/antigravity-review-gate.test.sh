@@ -591,6 +591,29 @@ assert "the agy-free tier-1 receipt is a tier-1 exemption" \
   "jq -e '.completion.outcome == \"tier-1\"' '$R/.git/review-receipts/antigravity.json' >/dev/null"
 rm -rf "$NO_AGY_PATH" "$R"
 
+# ── #425: a direct gate run honours the service selection too ──
+# commit-push-pr calls this gate directly, bypassing review-and-push.sh's
+# gate_select_lane, so the gate itself refuses to launch an unselected agy.
+# A tier-1 exemption needs no runtime and still ships.
+DIRECT_SERVICES_HOME="$(mktemp -d)"
+mkdir -p "$DIRECT_SERVICES_HOME/dotfiles"
+printf 'services=claude,codex\n' > "$DIRECT_SERVICES_HOME/dotfiles/services"
+SAVED_XDG="${XDG_CONFIG_HOME-__unset__}"
+export XDG_CONFIG_HOME="$DIRECT_SERVICES_HOME"
+new_repo
+printf '# Title\n\nDocs only.\n' > "$R/README.md"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "a tier-1 diff is exempt when Antigravity is unselected" 0 "tier-1 skip" --uncommitted --require
+rm -rf "$R"
+new_repo
+printf 'change\n' >> "$R/code.txt"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "a direct run refuses an unselected Antigravity lane" 3 "Antigravity is not a selected agent service" --uncommitted --require
+assert "the unselected lane launched no agy" "[ ! -e '$AGY_FAKE_DIR/invoked' ]"
+assert "the refused run leaves no Antigravity receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+if [[ "$SAVED_XDG" == __unset__ ]]; then unset XDG_CONFIG_HOME; else export XDG_CONFIG_HOME="$SAVED_XDG"; fi
+rm -rf "$R" "$DIRECT_SERVICES_HOME"
+
 new_repo
 printf '# Title\n' > "$R/README.md"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
@@ -1310,6 +1333,122 @@ check "a cancellation after clean agy output re-raises the signal" 143 "" --comm
 assert "that cancellation leaves the Codex approval shippable" "codex_receipt_ships"
 rm -f "$AGY_FAKE_DIR/mutate"
 unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R"
+
+# ── #573: a blocking verdict records a durable per-artifact marker ─────
+# Restoring the Codex lane's receipt AND attempt token after a blocking
+# Antigravity verdict simulates any path that loses the token race: the marker
+# alone must still refuse that approval. Degraded and clean runs record none.
+block_markers() { find "$R/.git/review-receipts/blocks" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
+save_codex_lane() {
+  cp "$R/.git/review-receipts/codex.json" "$R/.git/review-receipts/codex.attempt.json" "$AGY_FAKE_DIR/"
+}
+restore_codex_lane() {
+  cp "$AGY_FAKE_DIR/codex.json" "$AGY_FAKE_DIR/codex.attempt.json" "$R/.git/review-receipts/"
+}
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+seed_codex_receipt
+printf '1\n' > "$AGY_FAKE_DIR/exit"
+check "#573: a failed agy session degrades" 3 "treating as a hard failure" --committed --require
+rm -f "$AGY_FAKE_DIR/exit"
+assert "#573: a degraded run records no marker" "[ \"\$(block_markers)\" = 0 ]"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "#573: a clean run passes" 0 "LGTB verdict" --committed --require
+assert "#573: a clean run records no marker" "[ \"\$(block_markers)\" = 0 ]"
+for shape in findings unrecognized stray partial; do
+  rm -rf "$R/.git/review-receipts/blocks"
+  seed_codex_receipt
+  save_codex_lane
+  case "$shape" in
+    findings)     printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output" ;;
+    unrecognized) printf '%s\n' 'Looks mostly fine to me.' > "$AGY_FAKE_DIR/output" ;;
+    stray)        printf '%s\n' '- [P3] nit — code.txt:1' 'also a [P1] thing' > "$AGY_FAKE_DIR/output" ;;
+    partial)
+      printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+      printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr" ;;
+  esac
+  check "#573: a blocking verdict ($shape) blocks" 2 "" --committed --require
+  rm -f "$AGY_FAKE_DIR/stderr"
+  assert "#573: the $shape verdict records one marker" "[ \"\$(block_markers)\" = 1 ]"
+  restore_codex_lane
+  assert "#573: the $shape marker refuses an approval restored past the token race" "! codex_receipt_ships"
+done
+# Superseded: Codex claims and approves while agy reviews; the blocking exit
+# must leave its marker even though its claim is refused.
+rm -rf "$R/.git/review-receipts/blocks"
+cat > "$AGY_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer codex)"
+printf 'codex approval\n' > '$AGY_FAKE_DIR/codex-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$AGY_FAKE_DIR/codex-approval' >/dev/null
+cp '$R/.git/review-receipts/codex.json' '$R/.git/review-receipts/codex.attempt.json' '$AGY_FAKE_DIR/'
+EOF
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+check "#573: a superseded blocking verdict blocks" 2 "" --committed --require
+rm -f "$AGY_FAKE_DIR/mutate"
+assert "#573: the superseded verdict records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_codex_lane
+assert "#573: that marker refuses the approval that raced it, even restored" "! codex_receipt_ships"
+# The pre-claim predicate must not lose a stray blocker to SIGPIPE: an early
+# match followed by long output made `sed | grep -q` fail under pipefail, so a
+# superseded run skipped its marker (Codex round 3).
+rm -rf "$R/.git/review-receipts/blocks"
+seed_codex_receipt
+cat > "$AGY_FAKE_DIR/mutate" <<EOF
+run="\$(python3 '$helper' begin --repo '$R' --base main --scope committed --reviewer codex)"
+printf 'codex approval\n' > '$AGY_FAKE_DIR/codex-approval'
+python3 '$helper' complete --snapshot "\$run/snapshot.json" --outcome passed --output '$AGY_FAKE_DIR/codex-approval' >/dev/null
+cp '$R/.git/review-receipts/codex.json' '$R/.git/review-receipts/codex.attempt.json' '$AGY_FAKE_DIR/'
+EOF
+python3 -c 'import sys; open(sys.argv[1], "w").write("- [P3] nit with embedded [P2] blocker\n" + "trailing prose line\n" * 50000)' "$AGY_FAKE_DIR/output"
+check "#573: a superseded stray-blocker verdict with long output blocks" 2 "" --committed --require
+rm -f "$AGY_FAKE_DIR/mutate"
+assert "#573: the long stray-blocker verdict records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_codex_lane
+assert "#573: that marker refuses the restored approval" "! codex_receipt_ships"
+# A cancellation after blocking output is a verdict and records one too.
+rm -rf "$R/.git/review-receipts/blocks"
+seed_codex_receipt
+save_codex_lane
+cat > "$AGY_FAKE_DIR/mutate" <<'EOF'
+pid=$PPID
+for _ in 1 2 3 4; do
+  pid="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+  case "$(ps -o args= -p "$pid")" in
+    *antigravity-review-gate.sh*) kill -TERM "$pid"; break ;;
+  esac
+done
+EOF
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+check "#573: a cancellation after blocking output blocks" 2 "cancelled after it reported blocking findings" --committed --require
+rm -f "$AGY_FAKE_DIR/mutate"
+assert "#573: that cancellation records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_codex_lane
+assert "#573: the cancellation's marker refuses the restored approval" "! codex_receipt_ships"
+# A later review of the same artifact ships: rerunning after a verdict works.
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+check "#573: a later clean run passes" 0 "LGTB verdict" --committed --require
+assert "#573: the later approval ships over the earlier marker" "codex_receipt_ships"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R"
+# Failed local validation is a blocking verdict reached before dispatch.
+new_repo
+git -C "$R" checkout -qb feature
+printf '[package]\nname = "fixture"\n' > "$R/Cargo.toml"
+git -C "$R" add Cargo.toml
+git -C "$R" commit -qm "cargo fixture"
+seed_codex_receipt
+save_codex_lane
+printf '#!/usr/bin/env bash\nexit 1\n' > "$SHIM_DIR/cargo"
+chmod +x "$SHIM_DIR/cargo"
+check "#573: failed local validation blocks" 2 "cargo check failed" --committed --require
+rm -f "$SHIM_DIR/cargo"
+assert "#573: failed local validation records a marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_codex_lane
+assert "#573: that marker refuses the restored approval" "! codex_receipt_ships"
 rm -rf "$R"
 
 R="$(mktemp -d)"

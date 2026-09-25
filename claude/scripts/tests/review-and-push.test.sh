@@ -31,6 +31,8 @@ RC=0
 # A throwaway HOME keeps log_file and any Git config lookups off the real one.
 FAKE_HOME="$(mktemp -d)"
 export HOME="$FAKE_HOME"
+# Pinned so the runner's own agent-service selection (#425) never routes a case.
+export XDG_CONFIG_HOME="$FAKE_HOME/.config"
 export GIT_CONFIG_GLOBAL="$FAKE_HOME/gitconfig"
 export GIT_CONFIG_SYSTEM=/dev/null
 : > "$GIT_CONFIG_GLOBAL"
@@ -414,6 +416,34 @@ assert "an exit-2 verdict propagates" "[ \"\$RC\" -eq 2 ]"
 assert "an exit-2 verdict is not announced as a fallback" \
   "! grep -qF -- 'falling back' <<<\"\$OUT\""
 clean_lane_repo
+
+# ── #425: an unselected lane is unavailable, and so is its fallback ─────
+# The lane scripts are symlinks, as in ~/.claude/scripts: gate-lib.sh must find
+# lib-services.sh from its real path to see this selection at all.
+SERVICES_HOME="$(mktemp -d)"
+mkdir -p "$SERVICES_HOME/dotfiles"
+printf 'services=claude,antigravity\n' > "$SERVICES_HOME/dotfiles/services"
+new_lane_repo widget.ts
+run_lane XDG_CONFIG_HOME="$SERVICES_HOME" FAKE_AGY_RC=3
+want_gates "an unselected Codex makes REVIEW_LANE_FALLBACK=codex behave as block" "$AGY_GATE"
+want_refusal "that refusal says the Codex fallback is unavailable" "Codex fallback is unavailable"
+clean_lane_repo
+new_lane_repo claude/scripts/tool.sh
+run_lane XDG_CONFIG_HOME="$SERVICES_HOME"
+want_gates "a codex-required diff with Codex unselected dispatches no gate" ""
+want_refusal "that refusal names the unselected service" "Codex is not a selected agent service"
+clean_lane_repo
+printf 'services=claude,codex\n' > "$SERVICES_HOME/dotfiles/services"
+new_lane_repo widget.ts
+run_lane XDG_CONFIG_HOME="$SERVICES_HOME"
+want_gates "an ordinary diff with Antigravity unselected dispatches no gate" ""
+want_refusal "that refusal names the unselected service" "Antigravity is not a selected agent service"
+clean_lane_repo
+new_lane_repo notes.md
+run_lane XDG_CONFIG_HOME="$SERVICES_HOME"
+assert "a tier-1 diff still ships with Antigravity unselected" "[ \"\$RC\" -eq 0 ] && grep -qF -- 'Pushed.' <<<\"\$OUT\""
+clean_lane_repo
+rm -rf "$SERVICES_HOME"
 
 # A Codex-lane failure has no fallback of its own — there is no stronger lane.
 new_lane_repo claude/scripts/tool.sh

@@ -84,7 +84,7 @@ QUIET=false
 # path the gate refuses to self-review is a finding a human must look at, so the
 # issue carrying it is labelled for that queue. The harvester test compares the
 # two strings, so an edit to one without the other fails CI.
-INSTRUCTION_SURFACE_RE='(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$|(^|/)\.codex-review-ignore$'
+INSTRUCTION_SURFACE_RE='(^|/)AGENTS(\.local)?\.md$|(^|/)\.?codex(/|$)|(^|/)\.?agents(/skills(/|$)|$)|(^|/)\.?claude(/scripts)?$|(^|/)(gate-lib\.sh|review-receipt\.py|review-multipart\.py|codex-review-schema\.json)$|(^|/)(codex|antigravity)-review-gate\.sh$|(^|/)\.codex-review-ignore$|(^|/)(claude|antigravity)/skills(/|$)'
 
 # GitHub rejects an issue body over 65536 characters, so no body this script
 # writes exceeds this budget (an append counts the existing body too). An item

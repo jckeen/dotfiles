@@ -125,7 +125,9 @@ gate. Run that second opinion **before** the shipping review: a review that
 reaches a verdict in either lane retires the other lane's receipt for the same
 artifact, so that a blocking verdict cannot be bypassed by an older approval
 (#480) — which also means a supplementary run afterwards retires the receipt you
-were going to push on.
+were going to push on. A blocking verdict also records a durable per-artifact
+marker, and `check` refuses every receipt captured before it, whichever lane
+recorded it; a review captured after it ships as usual (#573).
 
 A degraded lane is not a verdict. Antigravity exit 3 (agy missing, unverifiable
 model pin, a diff above the byte cap) means the lane could not run, so
@@ -143,6 +145,11 @@ without needing to know which lane ran. Read the ledger with
 `review-receipt.py stats --since-days 7` before drawing conclusions about lane
 cost; the dotfiles risk list is deliberately unnarrowed, so most diffs *in this
 repository* stay on Codex.
+
+A lane whose runtime is not a selected service is *unavailable*, not skipped: a
+diff that requires it blocks with a message naming the unselected service and
+the opt-in command (`./setup.sh --select-services`). `REVIEW_LANE_FALLBACK=codex`
+does not fall back to Codex when Codex is unselected; it behaves as `block`.
 
 ### The instruction-surface lane (#557)
 

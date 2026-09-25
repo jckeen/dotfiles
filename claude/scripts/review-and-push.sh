@@ -33,6 +33,11 @@
 #     pin). Default `codex` re-runs the diff through the Codex gate and records
 #     the degradation in the lane ledger; `block` refuses the push instead.
 #     A blocking verdict (exit 2) never falls back — a refusal is not an outage.
+#     With Codex not a selected agent service (#425), `codex` behaves as `block`.
+#
+# A lane whose runtime is not a selected agent service (lib-services.sh, set
+# by `setup.sh --select-services`) is unavailable: a diff that requires it is
+# refused, naming the service, instead of dispatched (#425).
 #
 # Usage:
 #   review-and-push.sh /path/to/repo              # interactive (prompts before push)
@@ -561,6 +566,12 @@ else
   if [[ "$REVIEW_GATE_RC" -eq 3 && "$DISPATCH_LANE" == antigravity ]]; then
     if [[ "$REVIEW_LANE_FALLBACK" == block ]]; then
       echo "The Antigravity gate could not run (exit 3) and REVIEW_LANE_FALLBACK=block — not pushing." >&2
+      exit 1
+    fi
+    # An unselected Codex runtime is unavailable (#425): the fallback then
+    # behaves as `block` rather than dispatching a lane the operator opted out of.
+    if ! gate_require_service codex; then
+      echo "The Antigravity gate could not run (exit 3) and the Codex fallback is unavailable — not pushing." >&2
       exit 1
     fi
     echo "The Antigravity gate could not run (exit 3); falling back to the Codex lane."

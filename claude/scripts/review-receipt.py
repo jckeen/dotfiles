@@ -1020,9 +1020,14 @@ def read_json(path):
     return json.loads(path.read_bytes())
 
 
-def invalidate(receipts, lane):
+def invalidate(receipts, lane, sequence=None):
     attempt = uuid.uuid4().hex
-    atomic_json(receipts / (lane + ".attempt.json"), {"attempt": attempt})
+    marker = {"attempt": attempt}
+    if sequence is not None:
+        # Bound to the attempt, so a receipt whose captured_sequence was edited
+        # no longer matches its live attempt (#573).
+        marker["sequence"] = sequence
+    atomic_json(receipts / (lane + ".attempt.json"), marker)
     (receipts / (lane + ".json")).unlink(missing_ok=True)
     return attempt
 
@@ -1105,18 +1110,163 @@ def supersede(receipts, record):
     for other in LANES:
         if other != lane:
             invalidate(receipts, other)
-    atomic_json(
-        receipts / (lane + ".attempt.json"), {"attempt": record["attempt"], "claimed": True}
-    )
+    claimed = {"attempt": record["attempt"], "claimed": True}
+    if "captured_sequence" in record:
+        claimed["sequence"] = record["captured_sequence"]
+    atomic_json(receipts / (lane + ".attempt.json"), claimed)
 
 
 def assert_attempt(record, claimed=False):
     _, _, receipts = layout(record["repository"])
     marker = read_json(receipts / (record["reviewer"]["name"] + ".attempt.json"))
-    if marker["attempt"] != record["attempt"]:
+    if marker["attempt"] != record["attempt"] or marker.get("sequence") != record.get(
+        "captured_sequence"
+    ):
         raise ValueError("review attempt was superseded; rerun the gate")
     if claimed and marker.get("claimed") is not True:
         raise ValueError("review attempt never claimed the artifact; rerun the gate")
+
+
+def next_sequence(receipts):
+    """Bump and return the receipt directory's transition counter (#573).
+
+    Orders every capture against every blocking verdict. Wall time cannot: a
+    clock stepped backward between a capture and a verdict would make the
+    capture look newer and let its approval ship. Callers hold `attempt_lock`.
+    The counter is a cache, never the only record: the next value always sits
+    above every sequence the directory still holds (receipts, attempts, run
+    snapshots, markers), so a deleted, corrupted or rolled-back counter can
+    never sort a new verdict before an older capture.
+    """
+    path = receipts / "sequence.json"
+    current = sequence_floor(receipts)
+    if os.path.lexists(path):
+        try:
+            stored = read_json(path)["sequence"]
+        except (OSError, ValueError, KeyError, TypeError):
+            stored = None
+        if type(stored) is int and stored > current:
+            current = stored
+    atomic_json(path, {"sequence": current + 1})
+    return current + 1
+
+
+def sequence_floor(receipts):
+    """The highest sequence any evidence in the receipt directory carries.
+
+    Evidence that cannot be parsed is skipped: `check` and `complete` read the
+    same files strictly, so an unreadable receipt, attempt or snapshot can
+    never ship anything, and it must not stop a verdict from being recorded.
+    """
+    candidates = [
+        receipts / (lane + suffix) for lane in LANES for suffix in (".json", ".attempt.json")
+    ]
+    candidates += sorted(receipts.glob("run-*/snapshot.json"))
+    directory = receipts / "blocks"
+    if directory.is_dir() and not directory.is_symlink():
+        candidates += sorted(directory.glob("*.json"))
+    found = [0]
+    for path in candidates:
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if type(record) is not dict:
+            continue
+        for key in ("sequence", "captured_sequence"):
+            value = record.get(key)
+            if type(value) is int and value > 0:
+                found.append(value)
+    return max(found)
+
+
+def artifact_identity(artifact):
+    """The artifact a blocking verdict binds to: base, head, scope, patch (#573)."""
+    identity = {
+        "base": artifact["base"]["commit"],
+        "head": artifact["head"],
+        "scope": artifact["scope"],
+        "patch_sha256": artifact["review_diff_sha256"],
+    }
+    return identity, digest(encoded(identity))
+
+
+def blocks_dir(receipts):
+    directory = receipts / "blocks"
+    if directory.is_symlink():
+        raise ValueError("block marker directory must not be a symlink")
+    if os.path.lexists(directory) and not directory.is_dir():
+        raise ValueError("block marker store is not a directory")
+    return directory
+
+
+def assert_not_blocked(receipts, record):
+    """Refuse a record captured before a blocking verdict on the same artifact.
+
+    The marker, not the attempt-token race, carries the safety property: a
+    verdict that blocks retires every review of that artifact captured before
+    it, whichever lane recorded it and whether or not either claimed. Callers
+    hold `attempt_lock`, so a marker written concurrently is either seen here
+    or written after the decision. A receipt without a capture sequence
+    predates #573 and is refused whenever a marker exists.
+    """
+    identity, key = artifact_identity(record["artifact"])
+    path = blocks_dir(receipts) / (key + ".json")
+    # Only a genuine ENOENT is "no marker": os.path.lexists also answers False
+    # when the lookup itself fails (an unsearchable store), which must refuse.
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return
+    marker = read_json(path)
+    if (
+        type(marker) is not dict
+        or type(marker.get("sequence")) is not int
+        or marker["sequence"] < 1
+        or marker.get("artifact") != identity
+    ):
+        raise ValueError("malformed block marker: " + str(path))
+    captured = record.get("captured_sequence")
+    if type(captured) is not int or captured <= marker["sequence"]:
+        raise ValueError(
+            "a blocking verdict on this artifact ("
+            + str(marker.get("reviewer"))
+            + ", "
+            + str(marker.get("blocked_at"))
+            + ") postdates this review's capture; rerun the gate"
+        )
+
+
+def block(args):
+    """Record a blocking verdict against the snapshot's artifact (#573).
+
+    Needs no live, claimed or unsuperseded attempt: a verdict is a fact about
+    the artifact whatever happened to the token of the run that reached it.
+    The snapshot's artifact is what was reviewed, so it is not re-captured.
+    """
+    record = read_json(Path(args.snapshot))
+    lane = record["reviewer"]["name"]
+    if lane not in LANES:
+        raise ValueError("unknown review lane: " + str(lane))
+    identity, key = artifact_identity(record["artifact"])
+    _, _, receipts = layout(record["repository"])
+    with attempt_lock(receipts):
+        directory = blocks_dir(receipts)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("block marker directory must be a real directory")
+        os.chmod(directory, 0o700)
+        atomic_json(
+            directory / (key + ".json"),
+            {
+                "version": 1,
+                "artifact": identity,
+                "reviewer": lane,
+                "sequence": next_sequence(receipts),
+                "blocked_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    print("Blocking verdict recorded for " + identity["head"])
 
 
 def validate_artifact(record):
@@ -1339,7 +1489,10 @@ def capture_attempt(args):
     """
     repo, directory, receipts = layout(args.repo)
     with attempt_lock(receipts):
-        attempt = invalidate(receipts, args.reviewer)
+        # Taken in the same transition as the attempt: a verdict recorded after
+        # this point outranks this capture (#573).
+        sequence = next_sequence(receipts)
+        attempt = invalidate(receipts, args.reviewer, sequence)
     scope = args.scope
     if scope == "auto":
         scope = (
@@ -1363,6 +1516,7 @@ def capture_attempt(args):
         # receipt (which carries no lane requirement) can no longer ship.
         "version": 2,
         "attempt": attempt,
+        "captured_sequence": sequence,
         "repository": str(repo),
         "git_directory": str(directory),
         "artifact": artifact,
@@ -1432,6 +1586,7 @@ def complete(args):
     with attempt_lock(receipts):
         validate_artifact(record)
         assert_attempt(record, claimed=True)
+        assert_not_blocked(receipts, record)
         atomic_json(receipts / (record["reviewer"]["name"] + ".json"), record)
     # The ledger records what the artifact actually is, not what the snapshot
     # claims: a tampered stored classification stays in the receipt for `check`
@@ -1521,6 +1676,7 @@ def check(args):
                 assert_attempt(record)
                 if read_json(receipts / (lane_name + ".json")) != record:
                     raise ValueError("receipt changed during check; rerun the gate")
+                assert_not_blocked(receipts, record)
             print(
                 "Valid "
                 + lane_name
@@ -1559,7 +1715,7 @@ def main():
             sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
         if name == "check":
             sub.add_argument("--head", required=True)
-    for name in ("claim", "verify", "classify"):
+    for name in ("claim", "verify", "classify", "block"):
         sub = commands.add_parser(name)
         sub.add_argument("--snapshot", required=True)
     sub = commands.add_parser("lane")
