@@ -1696,6 +1696,17 @@ mv "$SHIM_DIR/codex-parked" "$SHIM_DIR/codex"
 export CODEX_GATE_BIN="$SAVED_BIN"
 rm -rf "$R"
 
+# bash 3.2 (the macOS system shell) mis-scans quote characters inside comments
+# in a multi-line command substitution, so one stray apostrophe there makes the
+# whole of gate-lib.sh fail to parse on macOS. Static, so Linux CI catches it.
+bash32_quoted_comments() {
+  awk '/\$\([[:space:]]*$/ {open=NR; next}
+       open && /^[[:space:]]*#/ && /[\047"]/ {print FILENAME":"NR": "$0}
+       open && /^[[:space:]]*\)/ {open=0}' "$@"
+}
+assert "no quote characters in comments inside a multi-line \$( (bash 3.2)" \
+  "[ -z \"\$(bash32_quoted_comments '$SCRIPT_DIR/../gate-lib.sh' '$SCRIPT_DIR/../codex-review-gate.sh' '$SCRIPT_DIR/../antigravity-review-gate.sh')\" ]"
+
 # ── #425: a direct gate run honours the service selection too ──
 # review-and-push.sh refuses an unselected lane in gate_select_lane, but the
 # commit-push-pr workflow calls this gate directly, so the gate must refuse to

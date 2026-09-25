@@ -246,22 +246,22 @@ gate_classify_tier() {
 # symlinks in ~/.claude/scripts, so the root is found from its REAL path. No
 # saved selection means all services, the rule setup.sh migrates by; so does an
 # install that predates lib-services.sh.
-gate_service_selected() {
-  local service="$1" self lib selection rc=0
-  self="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")" || return 2
-  lib="${self%/*}/../../lib-services.sh"
-  [[ -f "$lib" ]] || return 0
-  # A subshell keeps the library's names out of the gate's namespace.
-  selection="$(
-    # shellcheck source=../../lib-services.sh
-    . "$lib" || exit 2
-    path="$(services_config_path)"
-    services_load_saved "$path" && exit 0
-    rc=$?
-    # lib-services.sh reports "absent" when the file cannot even be stat'ed;
-    # only a genuine ENOENT means no selection was ever saved.
-    [[ "$rc" -eq 1 ]] || exit "$rc"
-    python3 -c '
+# _gate_services_read <lib> — print the saved selection; exit 1 when none was
+# ever saved, 2 when it cannot be read. Run it in a subshell so the library's
+# names stay out of the gate's namespace. It is a function, not an inline
+# command substitution, because bash 3.2 (macOS) mis-scans quote characters in
+# comments inside a multi-line command substitution.
+_gate_services_read() {
+  local lib="$1" path rc=0
+  # shellcheck source=../../lib-services.sh
+  . "$lib" || exit 2
+  path="$(services_config_path)"
+  services_load_saved "$path" && exit 0
+  rc=$?
+  # lib-services.sh reports absent when the file cannot even be statted; only
+  # a genuine ENOENT means no selection was ever saved.
+  [[ "$rc" -eq 1 ]] || exit "$rc"
+  python3 -c '
 import os, sys
 try:
     os.lstat(sys.argv[1])
@@ -270,7 +270,14 @@ except FileNotFoundError:
 except OSError:
     sys.exit(2)
 sys.exit(2)' "$path"
-  )" || rc=$?
+}
+
+gate_service_selected() {
+  local service="$1" self lib selection rc=0
+  self="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")" || return 2
+  lib="${self%/*}/../../lib-services.sh"
+  [[ -f "$lib" ]] || return 0
+  selection="$(_gate_services_read "$lib")" || rc=$?
   case "$rc" in
     0) ;;
     1) return 0 ;;
