@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-25 — docs(claude): push once per unit of work
+
+- **Global instructions tell agents to push once per unit of work.** Every push
+  to a PR re-runs the full CI suite in the repo's cloud Actions, which bills minutes
+  on private repos, and fix-after-fix pushes used up the account's Actions minutes.
+
 ## 2026-09-25 — fix(gates): durable block marker, selected-service lanes, skills guard (#585)
 
 - **A blocking verdict is a durable per-artifact marker (#573).**
