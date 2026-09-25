@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-09-25 — fix(gates): durable block marker, selected-service lanes, skills guard (#585)
+
+- **A blocking verdict is a durable per-artifact marker (#573).**
+  `review-receipt.py block` records it keyed by base, head, scope and patch
+  digest; `check` and `complete` refuse any receipt captured before it, in
+  either lane, ordered by a sequence counter rather than wall time. A review
+  captured after it ships as usual. Both gates write it before claiming at
+  every blocking exit. A failed Codex run whose output fails the schema is now
+  a verdict (exit 2), not a degraded lane.
+- **Review routing honours the selected agent services (#425).** An unselected
+  lane is unavailable: `review-and-push.sh` and both gates run directly (the
+  `commit-push-pr` path) refuse to launch it and name `./setup.sh
+  --select-services`; `REVIEW_LANE_FALLBACK=codex` behaves as `block` when
+  Codex is unselected. A tier-1 exemption needs no runtime and still ships.
+- **The self-review guard covers `claude/skills/` and `antigravity/skills/`
+  (#557).** The harvester's mirrored regex matches. The `branch-hygiene` skill
+  documents the `retired worktrees` status line.
+- **`gate-lib.sh` parses under bash 3.2 again.** A quote character in a comment
+  inside a multi-line command substitution made macOS bash fail to source the
+  file; the body is now a function, and a static test rejects that shape.
+- #515 stays open: a deterministic fixture shows neither proposed fix closes
+  the parse window. Follow-ups #579 and #581 are queued in the
+  instruction-surface lane.
+
 ## 2026-09-24 — issue sweep: worktree reporting, multipart gate tests, service selection
 
 - **`hygiene-status.sh` shows retired worktrees whose age is unknown (#568,
