@@ -596,6 +596,109 @@ for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP repeated bootstrap boo
   rm -rf "$R"
 done
 
+# ── #515: a cancellation bash cannot run the handler for is still exit 3 ──
+# Bash re-parses a command substitution each time it EXPANDS it. A trapped
+# signal that lands in that parse makes bash parse the trap command with the
+# substitution still open; that fails ("interrupt trap: … unexpected EOF"), the
+# handler never runs, and the shell exits 2 — the code that means "blocking
+# findings". The fixture is a copy of the gate whose gate-lib.sh ends in one
+# very large substitution, which holds the shell in that parse long enough to
+# signal into on demand. A signal that misses the window takes the ordinary
+# handler, which also exits 3, so the assertion holds on any shell or load.
+parse_window_gate() {
+  local copy="$SHIM_DIR/parse-window"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp "$SCRIPT_DIR"/../*.sh "$SCRIPT_DIR"/../*.py "$SCRIPT_DIR"/../*.json "$copy/"
+  # A function, so the file's own parse is over before the marker is written:
+  # the window that follows is the expansion-time parse alone.
+  awk 'BEGIN {
+    printf "gate_parse_window() {\n  local hold\n  hold=\"$(:"
+    for (i = 0; i < 3000000; i++) printf " x"
+    print "; printf x)\"\n}"
+    print ": > \"$PARSE_WINDOW_READY\""
+    print "gate_parse_window"
+  }' >> "$copy/gate-lib.sh"
+  printf '%s\n' "$copy"
+}
+cat > "$SHIM_DIR/check-parse-window-cancel.py" <<'PYWINDOW'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+gate, seed_gate, repo, home, signame = sys.argv[1:]
+fixture = Path(os.environ['CODEX_FAKE_DIR'])
+ready = fixture / 'parse-window-ready'
+environment = dict(os.environ, HOME=home, PARSE_WINDOW_READY=os.devnull)
+arguments = ['--committed', '--base', 'main', '--require', '--no-issues']
+seed = subprocess.run([seed_gate, *arguments], cwd=repo, env=environment,
+                      capture_output=True, text=True, timeout=30)
+assert seed.returncode == 0, seed.stdout + seed.stderr
+head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+checker = [sys.executable, str(Path(seed_gate).parent / 'review-receipt.py'), 'check',
+           '--repo', repo, '--head', head, '--base', 'main', '--reviewer', 'codex']
+assert subprocess.run(checker, capture_output=True, timeout=30).returncode == 0, 'seed approval must ship'
+(fixture / 'invoked').unlink()
+
+def default_signals():
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGTSTP):
+        signal.signal(signum, signal.SIG_DFL)
+
+environment['PARSE_WINDOW_READY'] = str(ready)
+process = subprocess.Popen([gate, *arguments], cwd=repo, env=environment,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           start_new_session=True, preexec_fn=default_signals)
+try:
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        assert process.poll() is None and time.monotonic() < deadline, 'gate never reached the parse window'
+        time.sleep(.005)
+    time.sleep(.1)
+    process.send_signal(getattr(signal, signame))
+    output, _ = process.communicate(timeout=60)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait(timeout=5)
+failures = []
+if process.returncode != 3:
+    failures.append(f'expected exit 3, got {process.returncode}')
+if (fixture / 'invoked').exists():
+    failures.append('cancelled startup dispatched a reviewer')
+if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
+    failures.append('cancelled gate left the previous receipt')
+if subprocess.run(checker, capture_output=True, timeout=30).returncode == 0:
+    failures.append('previous approval remains usable')
+assert not failures, '; '.join(failures) + '\n' + output
+PYWINDOW
+PARSE_WINDOW_GATE="$(parse_window_gate)/codex-review-gate.sh"
+for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo "change" >> "$R/code.txt"
+  git -C "$R" commit -qam 'reviewable committed change'
+  approve_clean
+  assert "#515: $cancellation during a command-substitution parse exits 3 and vetoes approval" "python3 '$SHIM_DIR/check-parse-window-cancel.py' '$PARSE_WINDOW_GATE' '$GATE' '$R' '$TEST_HOME' '$cancellation'"
+  rm -rf "$R"
+done
+# An exit 2 the gate chose is untouched by that normalisation, and an inherited
+# marker cannot switch it off.
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s' '{"verdict":"needs-attention","summary":"bad","findings":[{"severity":"high","title":"t","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"b","recommendation":"r"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "#515: a blocking verdict still exits 2" 2 "BLOCKING findings" --uncommitted --no-issues
+rm -rf "$R"
+new_repo
+git -C "$R" checkout -qb feature
+echo "change" >> "$R/code.txt"
+git -C "$R" commit -qam 'reviewable committed change'
+approve_clean
+GATE_EXIT_DECIDED=1 assert "#515: an inherited exit marker cannot disable the normalisation" "python3 '$SHIM_DIR/check-parse-window-cancel.py' '$PARSE_WINDOW_GATE' '$GATE' '$R' '$TEST_HOME' SIGINT"
+rm -rf "$R"
+
 # Early traps may remove only paths initialized by this invocation.
 new_repo
 sentinel="$SHIM_DIR/inherited-cleanup"

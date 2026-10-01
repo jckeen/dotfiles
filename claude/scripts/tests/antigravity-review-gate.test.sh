@@ -257,12 +257,19 @@ rm -rf "$R"
 # Same branch, reached with a non-zero exit and long stdout.
 new_repo
 echo "change" >> "$R/code.txt"
-awk 'BEGIN { for (i = 0; i < 5000; i++) printf "unparseable agy output %0200d\n", i }' > "$AGY_FAKE_DIR/output"
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "- [P3] agy nit %0200d\n", i }' > "$AGY_FAKE_DIR/output"
 printf '9\n' > "$AGY_FAKE_DIR/exit"
 check "long agy stdout on a failed run still degrades" 0 "agy review session failed (exit 9)" --uncommitted
 (cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
-shown="$(grep -c '^    unparseable agy output' "$AGY_FAKE_DIR/gate-out" || true)"
+shown="$(grep -c '^    - \[P3\] agy nit' "$AGY_FAKE_DIR/gate-out" || true)"
 assert "long agy stdout is shown truncated, not in full" "[ '$shown' = 20 ]"
+# Long output the completed-run parse would refuse is a verdict (#579), and its
+# report must survive the same pipe: exit 2, never 141.
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "unparseable agy output %0200d\n", i }' > "$AGY_FAKE_DIR/output"
+check "long unparseable agy stdout on a failed run is a verdict" 2 "verdict, not a degraded lane" --uncommitted
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+shown="$(grep -c '^  unparseable agy output' "$AGY_FAKE_DIR/gate-out" || true)"
+assert "long unparseable agy stdout is shown truncated in the verdict" "[ '$shown' = 20 ]"
 rm -f "$AGY_FAKE_DIR/exit"
 rm -rf "$R"
 
@@ -1434,6 +1441,163 @@ check "#573: a later clean run passes" 0 "LGTB verdict" --committed --require
 assert "#573: the later approval ships over the earlier marker" "codex_receipt_ships"
 unset ANTIGRAVITY_GATE_MODEL
 rm -rf "$R"
+# ── #579: a run that did not complete is held to the completed-run parse ──
+# Output from a failed, timed-out or cancelled run was searched for anchored
+# P0–P2 lines only, so a blocker the completed-run parse refuses — a stray
+# token on a P3 line, or text that is not findings at all — left as a degraded
+# exit 3 with no marker, and an older Codex approval of the same artifact stayed
+# shippable. Only absent output and output the completed-run parse would pass
+# (LGTB, P3-only) stay a degraded lane.
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+cat > "$AGY_FAKE_DIR/sigterm-gate" <<'EOF'
+pid=$PPID
+for _ in 1 2 3 4; do
+  pid="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+  case "$(ps -o args= -p "$pid")" in
+    *antigravity-review-gate.sh*) kill -TERM "$pid"; break ;;
+  esac
+done
+EOF
+for shape in stray unrecognized; do
+  case "$shape" in
+    stray)        printf '%s\n' '- [P3] Small nit; also [P1] authentication bypass' > "$AGY_FAKE_DIR/output" ;;
+    unrecognized) printf '%s\n' 'The change is risky because' > "$AGY_FAKE_DIR/output" ;;
+  esac
+  for run in failed timed-out expired cancelled unverifiable-pin; do
+    rm -rf "$R/.git/review-receipts/blocks"
+    rm -f "$AGY_FAKE_DIR/exit" "$AGY_FAKE_DIR/stderr" "$AGY_FAKE_DIR/mutate"
+    seed_codex_receipt
+    save_codex_lane
+    case "$run" in
+      failed)    printf '7\n' > "$AGY_FAKE_DIR/exit" ;;
+      timed-out) printf '124\n' > "$AGY_FAKE_DIR/exit" ;;
+      expired)   printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr" ;;
+      cancelled) cp "$AGY_FAKE_DIR/sigterm-gate" "$AGY_FAKE_DIR/mutate" ;;
+      # A requested label with no propagation line in the log: exit 3 under
+      # --require unless the output is a verdict.
+      unverifiable-pin) rm -f "$AGY_FAKE_DIR/log" ;;
+    esac
+    if [ "$run" = unverifiable-pin ]; then
+      ANTIGRAVITY_GATE_MODEL="Fixture Model" \
+        check "#579: a $run run with $shape output is a verdict" 2 "" --committed --require
+    else
+      check "#579: a $run run with $shape output is a verdict" 2 "" --committed --require
+    fi
+    assert "#579: the $run $shape verdict records one marker" "[ \"\$(block_markers)\" = 1 ]"
+    assert "#579: the $run $shape verdict mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    restore_codex_lane
+    assert "#579: the $run $shape marker refuses the older Codex approval" "! codex_receipt_ships"
+  done
+done
+# Output the completed-run parse would pass is not a verdict against the
+# artifact: those runs stay degraded (or re-raise), with no marker, and the
+# older approval still ships.
+for shape in clean low-only; do
+  case "$shape" in
+    clean)    printf 'LGTB\n' > "$AGY_FAKE_DIR/output" ;;
+    low-only) printf '%s\n' '- [P3] nit — code.txt:1' > "$AGY_FAKE_DIR/output" ;;
+  esac
+  for run in failed timed-out expired cancelled; do
+    rm -rf "$R/.git/review-receipts/blocks" "$R/.git/review-receipts/antigravity.json"
+    rm -f "$AGY_FAKE_DIR/exit" "$AGY_FAKE_DIR/stderr" "$AGY_FAKE_DIR/mutate"
+    seed_codex_receipt
+    want=3
+    case "$run" in
+      failed)    printf '7\n' > "$AGY_FAKE_DIR/exit" ;;
+      timed-out) printf '124\n' > "$AGY_FAKE_DIR/exit" ;;
+      expired)   printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr" ;;
+      cancelled) cp "$AGY_FAKE_DIR/sigterm-gate" "$AGY_FAKE_DIR/mutate"; want=143 ;;
+    esac
+    check "#579: a $run run with $shape output is not a verdict" "$want" "" --committed --require
+    assert "#579: the $run $shape run records no marker" "[ \"\$(block_markers)\" = 0 ]"
+    assert "#579: the $run $shape run mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    assert "#579: the $run $shape run leaves the Codex approval shippable" "codex_receipt_ships"
+  done
+done
+rm -f "$AGY_FAKE_DIR/exit" "$AGY_FAKE_DIR/stderr" "$AGY_FAKE_DIR/mutate"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R"
+# ── #515: a cancellation bash cannot run the handler for is not a verdict ──
+# Bash re-parses a command substitution each time it expands it; a trapped
+# signal landing in that parse makes the trap command fail to parse, the
+# handler never runs, and the shell exits 2 — this gate's verdict code — with
+# nothing claimed or recorded. The fixture is a copy of the gate whose
+# gate_claim first holds the shell in one very large substitution, after agy
+# has written its output. A signal that misses the window takes
+# cancel_agy_review instead, hence the two accepted codes for output that is no
+# verdict.
+parse_window="$SHIM_DIR/parse-window"
+mkdir -p "$parse_window"
+cp "$SCRIPT_DIR"/../*.sh "$SCRIPT_DIR"/../*.py "$SCRIPT_DIR"/../*.json "$parse_window/"
+awk 'BEGIN {
+  printf "gate_parse_window() {\n  local hold\n  hold=\"$(:"
+  for (i = 0; i < 3000000; i++) printf " x"
+  print "; printf x)\"\n}"
+  print "eval \"$(declare -f gate_claim | sed \"1s/gate_claim/gate_claim_real/\")\""
+  print "gate_claim() {"
+  print "  : > \"$PARSE_WINDOW_READY\""
+  print "  gate_parse_window"
+  print "  gate_claim_real"
+  print "}"
+}' >> "$parse_window/gate-lib.sh"
+cat > "$SHIM_DIR/cancel-in-parse-window.py" <<'PYWINDOW'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+gate, repo, accepted = sys.argv[1], sys.argv[2], [int(code) for code in sys.argv[3].split(',')]
+ready = Path(os.environ['AGY_FAKE_DIR'], 'parse-window-ready')
+ready.unlink(missing_ok=True)
+
+def default_signals():
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(signum, signal.SIG_DFL)
+
+process = subprocess.Popen([gate, '--committed', '--require'], cwd=repo,
+                           env=dict(os.environ, PARSE_WINDOW_READY=str(ready)),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           start_new_session=True, preexec_fn=default_signals)
+try:
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        assert process.poll() is None and time.monotonic() < deadline, 'gate never reached the parse window'
+        time.sleep(.005)
+    time.sleep(.1)
+    process.send_signal(signal.SIGTERM)
+    output, _ = process.communicate(timeout=60)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait(timeout=5)
+# A signal-terminated shell reports -N here; the gate's contract states 128+N.
+status = process.returncode if process.returncode >= 0 else 128 - process.returncode
+assert status in accepted, f'expected exit in {accepted}, got {status}\n{output}'
+PYWINDOW
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+seed_codex_receipt
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+assert "#515: a cancellation in the parse window after clean output is not exit 2" "python3 '$SHIM_DIR/cancel-in-parse-window.py' '$parse_window/antigravity-review-gate.sh' '$R' 1,143"
+assert "#515: that cancellation records no marker and no receipt" "[ \"\$(block_markers)\" = 0 ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "#515: that cancellation leaves the Codex approval shippable" "codex_receipt_ships"
+save_codex_lane
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+assert "#515: a cancellation in the parse window after blocking output is a verdict" "python3 '$SHIM_DIR/cancel-in-parse-window.py' '$parse_window/antigravity-review-gate.sh' '$R' 2"
+assert "#515: that verdict records one marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_codex_lane
+assert "#515: that marker refuses the older Codex approval" "! codex_receipt_ships"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R" "$parse_window"
 # Failed local validation is a blocking verdict reached before dispatch.
 new_repo
 git -C "$R" checkout -qb feature

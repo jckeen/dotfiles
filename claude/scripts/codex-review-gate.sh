@@ -57,7 +57,8 @@
 #   2  blocking findings present (critical/high/medium) — even in the output of
 #      a failed or cancelled run, where output not verifiably free of them
 #      counts — or output unreadable
-#   3  failed reviewer execution, or unavailable tool in required mode
+#   3  failed reviewer execution, a cancelled run, an exit the gate did not
+#      choose (#515), or unavailable tool in required mode
 
 set -euo pipefail
 GATE_RUN_DIR=""
@@ -66,6 +67,9 @@ ERR_FILE=""
 REQUEST_FILE=""
 REQUEST_SHA=""
 KEEP_DIAGNOSTIC=false
+# Set by the cancellation handler once it has chosen the exit status; never
+# inherited (finish_review, below).
+GATE_EXIT_DECIDED=0
 # Establish the helper without subprocesses so the first cancellation trap can
 # invalidate an earlier receipt even during script-directory discovery.
 case "${BASH_SOURCE[0]}" in
@@ -149,10 +153,16 @@ output_may_block() {
   [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" ]] || return 1
   ! review_output_check clean "$OUT_FILE"
 }
-cancel_review() {
+# abort_review <headline> — end an attempt that reached no verdict of its own:
+# a cancellation (cancel_review), or an exit the gate did not choose
+# (finish_review).
+abort_review() {
   # Repeated signals must not interrupt receipt invalidation or cleanup. The
   # existing receipt API invalidates the whole lane.
   trap '' INT TERM HUP QUIT TSTP
+  # The status chosen below is deliberate, including a 2: finish_review must
+  # not read it as an exit the gate did not choose.
+  GATE_EXIT_DECIDED=1
   # Bash defers this trap until the foreground reviewer exits, so its output
   # may already hold blocking findings. Those are a verdict: claim while this
   # attempt is still live, and exit 2 below rather than a degraded 3 (#499).
@@ -160,7 +170,10 @@ cancel_review() {
   if output_may_block && declare -F gate_claim >/dev/null && [[ -n "${GATE_RUN_DIR:-}" ]]; then
     verdict=2
     gate_block
-    gate_claim
+    # In a subshell: a refused claim exits 2, which is the status kept here,
+    # and the invalidation and cleanup below must still run — this may be
+    # running inside the EXIT handler, where nothing would follow it.
+    (gate_claim) || true
   fi
   if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
     [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
@@ -172,9 +185,9 @@ cancel_review() {
     gate_cleanup || true
   fi
   if declare -F red >/dev/null; then
-    red "✖ Codex review cancelled; no approval from this attempt may be used."
+    red "$1"
   else
-    printf '%s\n' "✖ Codex review cancelled; no approval from this attempt may be used."
+    printf '%s\n' "$1"
   fi
   [[ "$verdict" != 2 ]] || red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
   # Otherwise still 3, even after an earlier claim (#499): the claim retired the
@@ -183,6 +196,36 @@ cancel_review() {
   # alone, never this one.
   exit "$verdict"
 }
+cancel_review() {
+  abort_review "✖ Codex review cancelled; no approval from this attempt may be used."
+}
+# EXIT handler. Exit 2 is this gate's verdict code, so it must only ever be an
+# exit the gate chose (#515). Bash re-parses a command substitution each time
+# it expands it, and a signal that lands in that parse makes bash parse the
+# trap command with the substitution still open: that fails ("interrupt trap:
+# … unexpected EOF"), cancel_review never runs, and the shell exits 2. No trap
+# command parses in both states and the window opens at every substitution, so
+# the miscoded exit is caught here instead, where the parser is whole again. A
+# chosen exit is an `exit` command — BASH_COMMAND names it — or one made by
+# abort_review, where BASH_COMMAND still names the interrupted command. Any
+# other status 2 (that parse failure, or a command that failed with 2 under
+# `set -e`) ends the attempt as a cancellation does: exit 3, lane invalidated,
+# unless the reviewer's output already carries a verdict.
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+finish_review() {
+  local status=$? last_command=$BASH_COMMAND
+  if [[ "$status" -eq 2 && "$GATE_EXIT_DECIDED" != 1 ]]; then
+    case "$last_command" in
+      exit | exit\ *) ;;
+      *) abort_review "✖ Codex gate stopped without reaching a verdict (interrupted, or a command failed); no approval from this attempt may be used." ;;
+    esac
+  fi
+  if declare -F gate_cleanup >/dev/null; then
+    gate_cleanup || true
+  fi
+  exit "$status"
+}
+trap finish_review EXIT
 trap cancel_review INT TERM HUP QUIT TSTP
 
 # The schema and gate-lib.sh ship beside this script in BOTH install locations
@@ -267,7 +310,7 @@ GATE_REVIEWER=codex GATE_CLI=codex
 GATE_MODEL_EVIDENCE="Codex CLI configuration default; actual model unobserved"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git work tree."
 
-# The shared capture helper installs gate_cleanup as its EXIT trap, including
+# finish_review (the EXIT trap) runs gate_cleanup on every exit, including
 # exemption paths. Keep owned review files in that same cleanup contract.
 gate_cleanup() {
   [[ -z "${REQUEST_FILE:-}" ]] || rm -f -- "$REQUEST_FILE"
@@ -278,7 +321,7 @@ gate_cleanup() {
   [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
 }
 
-trap gate_cleanup EXIT
+trap finish_review EXIT
 gate_init_receipt
 if [[ "${CODEX_GATE_TIMEOUT+x}" == x ]]; then
   red "✖ CODEX_GATE_TIMEOUT is retired; unset it to use native foreground Codex execution."
@@ -340,6 +383,9 @@ gate_select_diff_target
 # SVG and minified JavaScript stay in coverage. Working-tree reviews include
 # untracked files. Both gates consume the same capture implementation.
 gate_extract_diff
+# The shared capture helper installs gate_cleanup as the EXIT trap; put this
+# gate's handler, which runs it, back.
+trap finish_review EXIT
 
 # Linear-time check; Bash pattern substitution becomes quadratic on large diffs.
 # A failed read/check must not mint a no-diff receipt.
@@ -587,7 +633,7 @@ PYERR
   KEEP_DIAGNOSTIC=true
   printf '  Private Codex diagnostic: %s\n' "$ERR_FILE"
 }
-trap gate_cleanup EXIT
+trap finish_review EXIT
 
 # Keep the complete request unchanged when a single user turn would exceed
 # the native input limit. Parts go directly into one pinned review session;

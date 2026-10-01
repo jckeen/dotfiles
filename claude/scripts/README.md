@@ -164,6 +164,9 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
+Python bytecode is not one (#581): a regular `*.pyc` directly inside an ignored
+`__pycache__` directory, beside the `.py` module it was compiled from, is left
+out of both. Anything else in that directory still counts.
 It covers both staged changes and later workspace edits.
 Text diffs preserve physical lines, including embedded control characters,
 and quote filenames in their headers.
@@ -241,6 +244,14 @@ result, and artifact receipt. Native Codex handles terminal cancellation and
 its tool processes. Send cancellation to the foreground job; a signal sent
 only to the Bash wrapper may wait until the current command returns. Observed
 cancellation invalidates approval, including during receipt creation.
+Exit 2 is only ever an exit a gate chose (#515). Bash 5.2 can fail to run a
+signal handler when the signal lands while it re-parses a command substitution
+(fixed in bash 5.3), and the shell then ends with status 2 by itself. Each gate's
+EXIT handler catches a status 2 that no `exit` command produced: the Codex gate
+ends it as a cancellation (exit 3, lane invalidated), the Antigravity gate exits
+1, and either still exits 2 when the reviewer's output already carries a
+verdict. Where bash is not checking command status (a condition, a `set +e`
+region) the same signal is dropped and the gate runs on to its verdict.
 
 The gate provides no hard execution deadline or detached-process containment.
 Unattended jobs that require those guarantees must obtain them from their
@@ -312,11 +323,13 @@ claimed, so a gate cannot record beside the other lane's receipt.
 A gate that degrades (exit 3) after capture — agy missing, a diff above a size
 cap, a failed or partial run, an unverifiable model pin under `--require` — never
 claimed, so the other lane's approval stays valid: a degraded lane is not a
-verdict (#499). Partial output that already carries blocking findings is a
-verdict and claims, and so is a failed local compile/lint check in the
-Antigravity gate, an Antigravity run cancelled after agy wrote blocking
-findings, and a failed or cancelled Codex run whose output is not verifiably
-free of blocking findings (exit 2, not 3). A verifiably wrong model (exit 2) claims nothing, since its
+verdict (#499). Output from a failed, timed-out or cancelled run is held to the
+same parse as a completed run's (#579): in either gate, output that is not
+verifiably free of blocking findings is a verdict and claims (exit 2, not 3).
+For Antigravity that is an anchored P0–P2 line, a stray priority token on
+another line, or text that is neither finding lines nor a whole-verdict `LGTB`;
+absent output, `LGTB` and P3-only output stay a degraded lane. A failed local
+compile/lint check in the Antigravity gate is a verdict too. A verifiably wrong model (exit 2) claims nothing, since its
 review is not evidence, and neither does a clean run whose pin could not be
 verified, which records no receipt either; its blocking exits still claim. Two consequences remain: a review already in flight in
 the other lane can no longer record its outcome once a newer one claims, and a

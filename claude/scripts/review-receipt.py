@@ -357,7 +357,11 @@ def vendored_tree(repo, owner):
             continue
     if not locked:
         return False
-    tree = Path(*owner, "node_modules")
+    return ignored_directory(repo, Path(*owner, "node_modules"))
+
+
+def ignored_directory(repo, tree):
+    """Whether `tree` is a real directory (not a symlink) that git itself ignores."""
     try:
         if not stat.S_ISDIR((repo / tree).lstat().st_mode):
             return False
@@ -374,6 +378,40 @@ def vendored_tree(repo, owner):
             return False
         raise
     return True
+
+
+def bytecode_cache(repo, path, trees=None):
+    """An ignored `__pycache__/<module>.*.pyc` beside the source that compiled it.
+
+    Importing a skill or agent script (a local test run does) writes bytecode
+    next to it, and that directory is ignored build output, not an instruction
+    surface (#581). Same shape as the vendored-tree rule and as narrow: the
+    caller proves only that the ENTRY is ignored, so the `__pycache__` directory
+    itself — a real directory, never a symlink — must be ignored too, the entry
+    must be a regular `*.pyc` file directly inside it, and the directory that
+    owns the cache must hold the `<module>.py` it was compiled from as a regular
+    file. Anything else in the cache — another file type, a nested directory, a
+    stray `.pyc` with no source — stays an instruction surface and fails closed.
+
+    `trees` memoizes the per-directory `check-ignore`, as for vendored trees.
+    """
+    parts = Path(path).parts
+    if len(parts) < 3 or parts[-2] != "__pycache__" or not parts[-1].endswith(".pyc"):
+        return False
+    owner = repo.joinpath(*parts[:-2])
+    try:
+        if not stat.S_ISREG((repo / path).lstat().st_mode):
+            return False
+        if not stat.S_ISREG((owner / (parts[-1].split(".", 1)[0] + ".py")).lstat().st_mode):
+            return False
+    except OSError:
+        return False
+    key = ("__pycache__", *parts[:-1])
+    if trees is None:
+        return ignored_directory(repo, Path(*parts[:-1]))
+    if key not in trees:
+        trees[key] = ignored_directory(repo, Path(*parts[:-1]))
+    return trees[key]
 
 
 def private_agent_data(path):
@@ -851,6 +889,7 @@ def capture(repo, base, scope):
             own_boundary(entry)
             or private_agent_data(entry)
             or vendored_dependency(repo, entry, vendored_trees)
+            or bytecode_cache(repo, entry, vendored_trees)
         ):
             continue
         if entry.endswith("/"):

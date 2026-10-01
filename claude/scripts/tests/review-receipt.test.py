@@ -3388,6 +3388,109 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
         self.assertIn("claude/agents/node_modules/dep/AGENTS.md", refused.stderr)
 
+    # ─── #581: ignored bytecode caches beside skill and agent sources ───
+
+    PYCACHE_SOURCES = (
+        "agents/skills/demo/scripts/tool.py",
+        "claude/skills/demo/scripts/tool.py",
+    )
+
+    def pycache_fixture(self, ignore="__pycache__/\n", source=True):
+        paths = []
+        if ignore:
+            (self.repo / ".gitignore").write_text(ignore)
+            paths.append(".gitignore")
+        for module in self.PYCACHE_SOURCES:
+            target = self.repo / module
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # The tracked placeholder keeps the scripts/ directory tracked when the
+            # fixture omits the module source.
+            (target.parent / "README.txt").write_text("support files\n")
+            paths.append(str(Path(module).parent / "README.txt"))
+            if source:
+                target.write_text("VALUE = 1\n")
+                paths.append(module)
+        self.git("add", "--", *paths)
+        self.git("commit", "-qm", "bytecode fixture")
+        caches = []
+        for module in self.PYCACHE_SOURCES:
+            cache = self.repo / Path(module).parent / "__pycache__"
+            cache.mkdir()
+            (cache / "tool.cpython-312.pyc").write_bytes(b"\x00bytecode")
+            caches.append(cache)
+        return caches
+
+    def test_ignored_bytecode_cache_beside_its_source_is_not_an_instruction_surface(self):
+        self.pycache_fixture()
+        snapshot = self.begin("committed")
+        changed = json.loads(snapshot.read_text())["artifact"]["changed_paths"]
+        self.assertEqual([p for p in changed if "__pycache__" in p], [])
+        self.complete(snapshot)
+        self.check()
+
+    def test_ignored_bytecode_cache_does_not_enter_an_uncommitted_review(self):
+        self.pycache_fixture()
+        (self.repo / "code.txt").write_text("dirty\n")
+        snapshot = self.begin("uncommitted")
+        changed = json.loads(snapshot.read_text())["artifact"]["changed_paths"]
+        self.assertEqual([p for p in changed if "__pycache__" in p], [])
+
+    def test_bytecode_cache_that_is_not_ignored_still_refuses(self):
+        self.pycache_fixture(ignore="")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("__pycache__", refused.stderr)
+
+    def test_ignoring_only_the_bytecode_file_is_not_a_cache_directory(self):
+        """The __pycache__ directory itself must be ignored, not just the entry."""
+        self.pycache_fixture(ignore="")
+        (self.repo / ".git/info/exclude").write_text("*.pyc\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("tool.cpython-312.pyc", refused.stderr)
+
+    def test_bytecode_without_its_source_module_still_refuses(self):
+        self.pycache_fixture(source=False)
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("tool.cpython-312.pyc", refused.stderr)
+
+    def test_other_files_in_an_ignored_bytecode_cache_still_refuse(self):
+        caches = self.pycache_fixture()
+        planted = (
+            ("SKILL.md", "planted instructions\n"),
+            ("notes.txt", "not bytecode\n"),
+            ("nested/tool.cpython-312.pyc", "one level too deep\n"),
+        )
+        for name, text in planted:
+            with self.subTest(name=name):
+                target = caches[0] / name
+                target.parent.mkdir(exist_ok=True)
+                target.write_text(text)
+                refused = self.begin_output()
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("agents/skills/demo/scripts/__pycache__/" + name, refused.stderr)
+                target.unlink()
+
+    def test_symlinked_bytecode_or_cache_directory_still_refuses(self):
+        caches = self.pycache_fixture()
+        entry = caches[0] / "tool.cpython-312.pyc"
+        entry.unlink()
+        entry.symlink_to("../tool.py")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("agents/skills/demo/scripts/__pycache__", refused.stderr)
+        entry.unlink()
+        caches[0].rmdir()
+        real = self.repo / "elsewhere"
+        real.mkdir()
+        (real / "tool.cpython-312.pyc").write_bytes(b"\x00bytecode")
+        (self.repo / ".git/info/exclude").write_text("/elsewhere/\n")
+        caches[0].symlink_to(real, target_is_directory=True)
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("agents/skills/demo/scripts/__pycache__", refused.stderr)
+
     # ─── ADR-0008: lane routing ────────────────────────────────────
     # `lane` is the read-only classifier both bash gates and review-and-push.sh
     # consult before choosing a reviewer, and the receipt's stored classification

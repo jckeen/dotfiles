@@ -39,8 +39,9 @@
 #   A pure diff review needs no tools at all; these leave it no way to run any.
 #
 # Degrade-open (exit 0 + loud warning) when the tool can't run — agy missing, not
-# authenticated, timeout, no parseable output, or a diff too large to review in
-# one pass. An Antigravity outage must not wedge every push. Set
+# authenticated, timeout, no output, or a diff too large to review in one pass.
+# A run that fails, times out or is cancelled AFTER writing output the
+# completed-run parse would refuse is a verdict instead (exit 2, #579). An Antigravity outage must not wedge every push. Set
 # ANTIGRAVITY_GATE_REQUIRED=1 (or --require) to turn those degraded cases into
 # hard failures (exit 3).
 #
@@ -76,8 +77,12 @@
 #
 # Exit codes:
 #   0  clean, or only P3+ nits
+#   1  the gate stopped without a verdict: a command failed, or a cancellation
+#      landed where bash 5.2 cannot run its handler (#515). A cancellation is
+#      otherwise re-raised (128 + signal) unless the output is a verdict.
 #   2  local validation failed, blocking findings present (P0/P1/P2),
-#      unresolvable base, unrecognizable review output, OR the model pin
+#      unresolvable base, unrecognizable review output — from a completed run
+#      or one that failed, timed out or was cancelled — OR the model pin
 #      verifiably failed (review ran on the wrong model)
 #   3  agy could not run — or the diff was above a size cap — AND the gate was
 #      REQUIRED, or the model pin was unverifiable in a REQUIRED run
@@ -172,30 +177,70 @@ fi
 BLOCK_RE='^[[:space:]]*-?[[:space:]]*\[P[012]\]'
 LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
 
+# True when agy's output is something the completed-run parse (Step 5) would
+# refuse: an anchored P0–P2 line, a stray [P#] token outside a recognized
+# marker, or text that is neither finding lines nor a whole-verdict LGTB. False
+# for absent or empty output and for what that parse would pass (LGTB, P3-only).
+# One predicate for every run — completed, failed, timed out or cancelled
+# (#579): the same bytes must not block from a completed run and degrade from
+# one that did not complete.
+agy_output_may_block() {
+  [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 1
+  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" && return 0
+  if ! grep -qE "$LOW_RE" "$SUMMARY_FILE"; then
+    local whole last
+    whole="$(tr -d '[:space:]' < "$SUMMARY_FILE")"
+    last="$(grep -vE '^[[:space:]]*$' "$SUMMARY_FILE" | tail -n 1 | tr -d '[:space:]' || true)"
+    [[ "$whole" == "LGTB" ]] && return 1
+    [[ "$last" == "LGTB" ]] && ! grep -qE '\[P[0-9]\]' "$SUMMARY_FILE" && return 1
+    return 0
+  fi
+  # Draining grep, not -q: under pipefail an early match would SIGPIPE sed and
+  # turn "may block" into false (Codex round 3).
+  sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/dev/null
+}
+
+# What a run that did not complete shows for its verdict: the anchored P0–P2
+# lines when there are any, else the head of the output that could not be
+# certified. head reads first, sed second (#422).
+show_blocking_output() {
+  if grep -qE "$BLOCK_RE" "$SUMMARY_FILE"; then
+    grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
+  else
+    head -n 20 "$SUMMARY_FILE" | sed 's/^/  /'
+  fi
+}
+
 # A verdict must never be hidden behind a degraded exit (ADR-0008). Exit 3 tells
 # review-and-push.sh "this lane could not run", and it answers by handing the
 # diff to Codex — whose approval must not be able to ship over findings this
 # lane already raised. So every exit-3 path that runs AFTER agy produced output
 # (print-timeout expiry, exit 124, a nonzero exit, an unverifiable model pin)
-# first looks at that output: blocking finding lines are a verdict and exit 2,
-# which never falls back. Before dispatch SUMMARY_FILE is unset or empty and this
-# is a no-op. Partial output is still never certified clean: a P3-only or empty
-# partial still degrades as before.
+# first looks at that output: anything the completed-run parse would refuse
+# (agy_output_may_block) is a verdict and exits 2, which never falls back.
+# Before dispatch SUMMARY_FILE is unset or empty and this is a no-op. Partial
+# output is still never certified clean: a P3-only, LGTB or empty partial still
+# degrades as before.
 verdict_in_partial_output() {
-  [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 0
-  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" || return 0
+  agy_output_may_block || return 0
   # A verdict retires the other lane's approval like any other (#499), and
   # records its per-artifact marker first (#573).
   gate_block
   gate_claim
-  red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
-  grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
+  if grep -qE "$BLOCK_RE" "$SUMMARY_FILE"; then
+    red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
+  else
+    red "✖ Antigravity output the gate could not certify complete carries, or may carry, blocking findings:"
+  fi
+  show_blocking_output
   red "  A verdict, not a degraded lane: address the findings before any fallback (ADR-0008)."
   exit 2
 }
 
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 GATE_KEEP_AGY_LOG=0
+# Set once a handler has chosen the exit status; never inherited (gate_finish).
+GATE_EXIT_DECIDED=0
 degrade() {
   # A degraded run is a diagnostic case even when it exits 0 (#409).
   GATE_KEEP_AGY_LOG=1
@@ -394,8 +439,38 @@ AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
 # or degraded run is exactly when the CLI-side log is needed (#409). The
 # review output itself is always removed — it can contain the diff.
 # shellcheck disable=SC2329  # invoked by the EXIT trap
+# Exit 2 is this gate's verdict code, so it must only ever be an exit the gate
+# chose (#515). Bash 5.2 re-parses a command substitution each time it expands
+# it, and a trapped signal landing in that parse makes the trap command fail to
+# parse: cancel_agy_review never runs and `set -e` ends the shell with status 2.
+# A chosen exit is an `exit` command — BASH_COMMAND names it — or one made by
+# cancel_agy_review, where BASH_COMMAND still names the interrupted command.
+# Any other status 2 is held to the cancellation rule: output the completed-run
+# parse would refuse is a verdict and claims; otherwise the gate reports that
+# it stopped and exits 1 — the signal is unknown here, so it cannot be
+# re-raised, and 3 would invite a Codex fallback nobody asked for.
 gate_finish() {
-  local rc=$?
+  local rc=$? last_command=$BASH_COMMAND
+  if [[ "$rc" -eq 2 && "$GATE_EXIT_DECIDED" != 1 ]]; then
+    case "$last_command" in
+      exit | exit\ *) ;;
+      *)
+        trap '' INT TERM HUP QUIT
+        GATE_EXIT_DECIDED=1
+        if agy_output_may_block; then
+          red "✖ Antigravity gate stopped after output that carries, or may carry, blocking findings:"
+          show_blocking_output
+          # In subshells: either may exit 2 itself, which is the status this
+          # branch keeps, and the cleanup below must still run.
+          (gate_block) || true
+          (gate_claim) || true
+        else
+          red "✖ Antigravity gate stopped without reaching a verdict (interrupted, or a command failed); no approval from this attempt."
+          rc=1
+        fi
+        ;;
+    esac
+  fi
   rm -f "$SUMMARY_FILE"
   # Retain only when agy actually produced something (log or stderr has
   # content) and the run did not pass cleanly: any non-zero exit, or a
@@ -407,25 +482,30 @@ gate_finish() {
   fi
   # Never let cleanup failure rewrite the gate's exit status under set -e.
   gate_cleanup || true
-  return "$rc"
+  exit "$rc"
 }
 trap gate_finish EXIT
 # Bash defers a signal's trap until the foreground reviewer exits, so a
-# cancelled run may already hold agy's output. Blocking finding lines in it are
-# a verdict (#499): claim and exit 2, as verdict_in_partial_output does. With
-# none, re-raise the signal with its default action, exactly as before this
+# cancelled run may already hold agy's output. Output the completed-run parse
+# would refuse is a verdict (#499, #579): claim and exit 2, as
+# verdict_in_partial_output does. Otherwise re-raise the signal with its
+# default action, exactly as before this
 # handler existed — never a degraded exit 3, which review-and-push.sh would
 # answer with a Codex fallback. The trap runs inside the redirected `_tmo`
 # call, so it writes to the gate's own stdout/stderr, saved here as fds 8/9.
 exec 8>&1 9>&2
 cancel_agy_review() {
   trap '' INT TERM HUP QUIT
-  local findings=""
-  [[ ! -s "$SUMMARY_FILE" ]] || findings="$(grep -E "$BLOCK_RE" "$SUMMARY_FILE" || true)"
-  if [[ -n "$findings" ]]; then
+  if agy_output_may_block; then
+    # A chosen exit 2; gate_finish must not read it as one the gate did not choose.
+    GATE_EXIT_DECIDED=1
     {
-      red "✖ Antigravity review cancelled after it reported blocking findings:"
-      sed 's/^/  /' <<<"$findings"
+      if grep -qE "$BLOCK_RE" "$SUMMARY_FILE"; then
+        red "✖ Antigravity review cancelled after it reported blocking findings:"
+      else
+        red "✖ Antigravity review cancelled after output that carries, or may carry, blocking findings:"
+      fi
+      show_blocking_output
       gate_block
       gate_claim
     } >&8 2>&9
@@ -573,21 +653,8 @@ fi
 # blocking exit could claim and retire the approval that raced it.
 # Output that is not certifiably clean exits 2 below, so it is a blocking
 # verdict now: record its marker (#573) before a claim refused as superseded
-# can exit here. The predicate is the parse below, stated once more.
-agy_output_may_block() {
-  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" && return 0
-  if ! grep -qE "$LOW_RE" "$SUMMARY_FILE"; then
-    local whole last
-    whole="$(tr -d '[:space:]' < "$SUMMARY_FILE")"
-    last="$(grep -vE '^[[:space:]]*$' "$SUMMARY_FILE" | tail -n 1 | tr -d '[:space:]' || true)"
-    [[ "$whole" == "LGTB" ]] && return 1
-    [[ "$last" == "LGTB" ]] && ! grep -qE '\[P[0-9]\]' "$SUMMARY_FILE" && return 1
-    return 0
-  fi
-  # Draining grep, not -q: under pipefail an early match would SIGPIPE sed and
-  # turn "may block" into false (Codex round 3).
-  sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/dev/null
-}
+# can exit here. The predicate (agy_output_may_block, above) is the parse
+# below, stated once more.
 if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" == 1 ]]; then
   if agy_output_may_block; then
     gate_block
