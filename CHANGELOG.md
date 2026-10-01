@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-01 — feat: `ccw` runs Claude on a second account
+
+- **`ccw` launches `cc` on a second (work) Claude account.** It sets
+  `CLAUDE_CONFIG_DIR` to `~/.claude-work` (`CLAUDE_WORK_CONFIG_DIR` overrides),
+  so that login and its subscription usage are separate from the default
+  account's. It takes `cc`'s arguments and refuses to launch on a profile that
+  is not fully wired.
+- **`link-claude-profile.sh` shares the setup between the two.** Settings,
+  instructions, skills, agents, plugins, `projects/` and `file-history/` in the
+  profile are links to `~/.claude`, so memory is unified and a session resumes
+  on either account. User-scope MCP servers are copied from `~/.claude.json`.
+  Nothing existing is overwritten; `--check` reports only.
+- **The status line shows `◆ <profile>`** on a session running off a
+  non-default config directory.
+
 ## 2026-09-25 — fix(gates): durable block marker, selected-service lanes, skills guard (#585)
 
 - **A blocking verdict is a durable per-artifact marker (#573).**

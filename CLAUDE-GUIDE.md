@@ -28,12 +28,33 @@ claude --continue        # Resume most recent
 claude --resume          # Pick from recent sessions
 claude-server            # Isolated worktree + remote access
 cct [project]            # cc inside a named tmux session — survives a closed terminal
+ccw [project]            # cc on a second (work) Claude account — separate usage, same setup
 ```
 
 Remote access is always on. Connect from anywhere at `claude.ai/code`.
 It only stays online while the local `claude` process is running, so for a
 session you want reachable after closing the terminal, start it with `cct`
 and detach (`Ctrl-b d`); `cct <project>` again reattaches.
+
+### A second account (`ccw`)
+
+`ccw` runs `cc` signed in to a second Claude account, so a work subscription
+and a personal one each carry their own usage. Claude Code keeps one login per
+config directory; `ccw` points `CLAUDE_CONFIG_DIR` at `~/.claude-work`
+(override with `CLAUDE_WORK_CONFIG_DIR`) and the first run asks you to sign in.
+
+`claude/scripts/link-claude-profile.sh` links the profile's settings, global
+instructions, skills, agents, plugins, transcripts and memory back to
+`~/.claude`, and copies the user-scope MCP servers across. A session started
+under `cc` can be resumed under `ccw` and the other way round, which is the
+way to carry on when one account reaches its limit. The status line shows
+`◆ work` on a `ccw` session.
+
+What stays with each account: the login, MCP and connector sign-ins, folder
+trust prompts, prompt history, and everything hosted on claude.ai — Remote
+Control sessions, connectors, routines and artifacts appear under whichever
+account the session runs on. Work run through `ccw` is subject to that
+organization's admin and retention settings.
 
 ---
 
@@ -127,6 +148,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
 | `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
+| `ccw [cc args]` | `cc` on a second (work) Claude account: separate login and usage, shared settings, skills, plugins, memory and transcripts. See [A second account](#a-second-account-ccw) |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
 | `projects` | List projects in the dev dir |
 | `sessions` | Show active Claude sessions and their working dirs |

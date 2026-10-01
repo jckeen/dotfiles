@@ -449,6 +449,10 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/memory-sync.test.sh
 
+      - name: Second-account profile wiring (ccw)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: bash claude/scripts/tests/claude-profile.test.sh
+
       - name: operator-queue reminder (self-test)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh

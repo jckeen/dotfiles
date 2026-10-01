@@ -804,6 +804,23 @@ cct() {
   tmux attach-session -t "=$name"
 }
 
+# cc on a second Claude account (work), so its subscription usage is separate
+# from the default login's. CLAUDE_CONFIG_DIR is Claude Code's own per-account
+# switch; link-claude-profile.sh links everything that is not account-bound
+# back to ~/.claude, so both accounts share settings, skills, plugins, memory
+# and transcripts (a session started under cc resumes under ccw and back).
+# Usage: ccw [cc args]   — the first run prompts for the second account's login
+# The profile lives in ~/.claude-work; CLAUDE_WORK_CONFIG_DIR overrides it.
+# An unwired profile would start without settings or hooks, so that refuses.
+ccw() {
+  local profile="${CLAUDE_WORK_CONFIG_DIR:-$HOME/.claude-work}"
+  if ! "$(_dev_dir)/dotfiles/claude/scripts/link-claude-profile.sh" "$profile"; then
+    echo "ccw: $profile is not fully shared with ~/.claude — fix the entries above and re-run." >&2
+    return 1
+  fi
+  CLAUDE_CONFIG_DIR="$profile" cc "$@"
+}
+
 # Launch Codex with the same project-selection ergonomics as cc, but without
 # touching Claude memory or ~/.claude health checks.
 # Usage: cx                 — launch from current dir (defaults to ~/dev outside git)
