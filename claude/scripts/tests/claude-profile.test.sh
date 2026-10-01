@@ -56,6 +56,33 @@ after="$(ls -la "$PROFILE"; cat "$PROFILE/.claude.json")"
 "$LINK" --check "$PROFILE" >/dev/null 2>&1 && ok "--check passes a wired profile" \
   || fail "--check passes a wired profile"
 
+# ── state dirs the default profile has not created yet ───────────────────
+new_home unborn
+rmdir "$BASE/plugins"
+rm -rf "$BASE/projects"
+"$LINK" "$PROFILE" >/dev/null 2>&1
+shared=1
+for name in plugins projects file-history; do
+  [ -d "$BASE/$name" ] && [ "$(readlink "$PROFILE/$name" 2>/dev/null)" = "$BASE/$name" ] || shared=0
+done
+[ "$shared" -eq 1 ] && ok "state dirs are created in ~/.claude and linked" \
+  || fail "state dirs are created in ~/.claude and linked"
+new_home unborn-check
+rm -rf "$BASE/projects"
+"$LINK" --check "$PROFILE" >/dev/null 2>&1
+[ ! -e "$BASE/projects" ] && [ ! -e "$BASE/file-history" ] && ok "--check does not create state dirs" \
+  || fail "--check does not create state dirs"
+
+# ── without jq the MCP servers cannot be compared, so it is not "wired" ──
+new_home nojq
+NOJQ="$ROOT/nojq-bin"
+mkdir -p "$NOJQ"
+for tool in bash sh mkdir chmod rmdir ln readlink mktemp mv rm env; do
+  ln -s "$(command -v "$tool")" "$NOJQ/$tool"
+done
+if PATH="$NOJQ" "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "missing jq is drift"; else ok "missing jq is drift"; fi
+[ -L "$PROFILE/settings.json" ] && ok "links are still made without jq" || fail "links are still made without jq"
+
 # ── MCP sync preserves the profile's own account state ───────────────────
 echo '{"oauthAccount":{"emailAddress":"work"},"mcpServers":{}}' > "$PROFILE/.claude.json"
 "$LINK" "$PROFILE" >/dev/null 2>&1

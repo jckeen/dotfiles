@@ -22,12 +22,17 @@
 # Usage: link-claude-profile.sh [--check] <profile-dir>
 #   --check   report drift without changing anything
 # Exit: 0 wired, 1 drift it will not repair (a real file or foreign link in
-# the way — nothing is ever overwritten), 2 usage.
+# the way — nothing is ever overwritten — or MCP servers it could not
+# compare), 2 usage.
 # Tests: tests/claude-profile.test.sh
 
 set -uo pipefail
 
 SHARED="settings.json CLAUDE.md keybindings.json skills agents commands rules output-styles plugins projects file-history"
+# State directories Claude creates by itself on first use. They are linked even
+# when the default profile has not made them yet: skipping one would let a
+# session on this profile create a private copy that then blocks the link.
+ENSURED=" plugins projects file-history "
 
 CHECK=0
 PROFILE=""
@@ -70,8 +75,13 @@ fi
 for name in $SHARED; do
   src="$BASE/$name"
   dst="$PROFILE/$name"
-  # Nothing to share until the default profile has it.
-  [ -e "$src" ] || [ -L "$src" ] || continue
+  if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+    # Nothing to share until the default profile has it.
+    case "$ENSURED" in *" $name "*) ;; *) continue ;; esac
+    if [ "$CHECK" -eq 0 ]; then
+      mkdir -p "$src" || { drift "cannot create $src"; continue; }
+    fi
+  fi
   if [ -L "$dst" ]; then
     [ "$(readlink "$dst")" = "$src" ] || drift "WRONG  $dst -> $(readlink "$dst") (expected $src)"
     continue
@@ -98,7 +108,7 @@ BASE_STATE="$HOME/.claude.json"
 PROFILE_STATE="$PROFILE/.claude.json"
 if [ -f "$BASE_STATE" ]; then
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  link-claude-profile: jq not found — MCP servers not synced to $PROFILE" >&2
+    drift "jq not found — cannot compare MCP servers in $PROFILE_STATE with $BASE_STATE"
   else
     want="$(jq -cS '.mcpServers // {}' "$BASE_STATE" 2>/dev/null)" || want=""
     have="{}"
