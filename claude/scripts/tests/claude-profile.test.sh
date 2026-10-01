@@ -171,6 +171,7 @@ unset CLAUDE_CONFIG_DIR CLAUDE_WORK_CONFIG_DIR _DEV_DIR_CACHE
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"
 export PATH="$REAL_PATH"
+# shellcheck disable=SC2120  # called by ccw with its args, not directly from this file
 cc() { echo "dir=${CLAUDE_CONFIG_DIR:-unset} child=$(sh -c 'echo "${CLAUDE_CONFIG_DIR:-unset}"') args=$*"; }
 
 out="$(ccw dotfiles -c 2>&1)"
@@ -190,6 +191,39 @@ echo '{"own":true}' > "$PROFILE/settings.json"
 out="$(ccw 2>&1)"; ccw_rc=$?
 [ "$ccw_rc" -eq 1 ] && [[ "$out" != *"dir="* ]] && ok "ccw refuses an unwired profile" \
   || fail "ccw refuses an unwired profile ($out)"
+
+# ── cc re-wires after its preflight repaired ~/.claude ───────────────────
+new_home repaired
+mkdir -p "$ROOT/dev" "$ROOT/shim"
+echo "$ROOT/dev" > "$BASE/dev-dir"
+rm "$BASE/settings.json"
+printf '%s\n' '#!/usr/bin/env bash' \
+  '[ -L "$CLAUDE_CONFIG_DIR/settings.json" ] && echo launched-wired || echo launched-unwired' \
+  > "$ROOT/shim/claude"
+chmod +x "$ROOT/shim/claude"
+unset _DEV_DIR_CACHE
+unset -f cc
+# shellcheck source=../../../.bash_aliases
+source "$REPO_ROOT/.bash_aliases"
+export PATH="$ROOT/shim:$REAL_PATH"
+_launcher_reloaded() { return 1; }
+_check_critical_symlinks() { :; }
+# Stands in for the preflight's repair of a missing default settings file.
+_agent_preflight() { _agent_shifted=0; _agent_resuming=1; echo '{}' > "$HOME/.claude/settings.json"; }
+out="$(cd "$ROOT" && ccw 2>&1)"
+[[ "$out" == *"launched-wired"* ]] && ok "an entry repaired by the preflight is linked before launch" \
+  || fail "an entry repaired by the preflight is linked before launch ($out)"
+_agent_preflight() {
+  _agent_shifted=0; _agent_resuming=1
+  mkdir -p "$HOME/.claude-work/rules"; echo x > "$HOME/.claude-work/rules/own.md"
+}
+out="$(cd "$ROOT" && ccw 2>&1)"; ccw_rc=$?
+[ "$ccw_rc" -eq 1 ] && [[ "$out" != *"launched"* ]] && ok "drift found at launch time refuses" \
+  || fail "drift found at launch time refuses ($out)"
+_agent_preflight() { _agent_shifted=0; _agent_resuming=1; }
+out="$(cd "$ROOT" && cc 2>&1)"
+[[ "$out" == *"launched-unwired"* ]] && ok "plain cc does not touch profiles" || fail "plain cc does not touch profiles ($out)"
+export PATH="$REAL_PATH"
 
 # ── statusline badge ─────────────────────────────────────────────────────
 json='{"model":{"display_name":"M"},"cwd":"/"}'
