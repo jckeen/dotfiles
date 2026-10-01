@@ -734,6 +734,13 @@ cc() {
     fi
   fi
 
+  # ccw: wire the profile again now that the preflight may have repaired
+  # ~/.claude — an entry it restored was not there to link the first time.
+  if [ -n "${_cc_profile:-}" ] && ! _link_claude_profile "$_cc_profile"; then
+    printf '\033]9;9;\033\\' 2>/dev/null
+    return 1
+  fi
+
   claude --remote-control --chrome "${diagram_args[@]}" "$@"
 
   # Reset tab color on exit
@@ -802,6 +809,28 @@ cct() {
   tmux send-keys -t "=$name:" \
     'if cd -- "$1"; then shift; cc "$@"; fi; set --' Enter || return 1
   tmux attach-session -t "=$name"
+}
+
+# cc on a second Claude account (work), so its subscription usage is separate
+# from the default login's. CLAUDE_CONFIG_DIR is Claude Code's own per-account
+# switch; link-claude-profile.sh links everything that is not account-bound
+# back to ~/.claude, so both accounts share settings, skills, plugins, memory
+# and transcripts (a session started under cc resumes under ccw and back).
+# Usage: ccw [cc args]   — the first run prompts for the second account's login
+# The profile lives in ~/.claude-work; CLAUDE_WORK_CONFIG_DIR overrides it.
+# An unwired profile would start without settings or hooks, so that refuses.
+_link_claude_profile() {
+  "$(_dev_dir)/dotfiles/claude/scripts/link-claude-profile.sh" "$1" && return 0
+  echo "ccw: $1 is not fully shared with ~/.claude — fix the entries above and re-run." >&2
+  return 1
+}
+
+ccw() {
+  # cc reads _cc_profile through dynamic scope and re-wires before launching.
+  local _cc_profile="${CLAUDE_WORK_CONFIG_DIR:-$HOME/.claude-work}"
+  # Up front as well: cc's plugin sync already runs against the profile.
+  _link_claude_profile "$_cc_profile" || return 1
+  CLAUDE_CONFIG_DIR="$_cc_profile" cc "$@"
 }
 
 # Launch Codex with the same project-selection ergonomics as cc, but without

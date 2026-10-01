@@ -229,6 +229,14 @@ L1=""
 # Vim mode
 [ -n "${VIM_MODE:-}" ] && L1="${L1}${BOLD}${VIM_MODE}${RESET} "
 
+# Account profile — only when running on a non-default config dir (ccw), so
+# it is visible which account's usage this session draws on.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "${CLAUDE_CONFIG_DIR%/}" != "$HOME/.claude" ]; then
+  PROFILE_NAME="$(basename "${CLAUDE_CONFIG_DIR%/}")"
+  PROFILE_NAME="${PROFILE_NAME#.claude-}"
+  L1="${L1}${YELLOW}${BOLD}◆ ${PROFILE_NAME}${RESET} "
+fi
+
 # Model (dimmed)
 L1="${L1}${DIM}${MODEL}${RESET}"
 

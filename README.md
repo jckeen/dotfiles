@@ -77,6 +77,7 @@ cd dotfiles
 # Authenticate (do these once)
 gh auth login          # GitHub CLI — choose HTTPS + browser
 claude                 # Sign in to Claude (or 'claude auth login' if it doesn't prompt)
+ccw                    # Optional: sign in a second (work) Claude account — see CLAUDE-GUIDE
 codex login            # Optional: sign in for Codex CLI
 jules login            # Optional: sign in for the Jules CLI (cloud routine lane)
 ```
