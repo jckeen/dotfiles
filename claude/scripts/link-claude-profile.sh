@@ -49,9 +49,18 @@ case "$PROFILE" in
   /*) ;;
   *) echo "Usage: link-claude-profile.sh [--check] <absolute-profile-dir>" >&2; exit 2 ;;
 esac
-PROFILE="${PROFILE%/}"
+# Compare physical paths: "$HOME/./.claude" or a symlinked parent would pass a
+# lexical test and then have the loop below link ~/.claude onto itself.
+leaf="$(basename "$PROFILE")"
+parent="$(cd -P "$(dirname "$PROFILE")" 2>/dev/null && pwd -P)" || parent=""
+if [ -z "$parent" ] || [ "$leaf" = "." ] || [ "$leaf" = ".." ]; then
+  echo "link-claude-profile: $PROFILE must name a directory under an existing parent" >&2
+  exit 2
+fi
+PROFILE="${parent%/}/$leaf"
+BASE_REAL="$(cd -P "$BASE" 2>/dev/null && pwd -P)" || BASE_REAL="$BASE"
 case "$PROFILE/" in
-  "$BASE/"*)
+  "$BASE/"*|"$BASE_REAL/"*)
     echo "link-claude-profile: $PROFILE is the default config dir (or inside it)" >&2
     exit 2
     ;;
@@ -76,11 +85,25 @@ for name in $SHARED; do
   src="$BASE/$name"
   dst="$PROFILE/$name"
   if [ ! -e "$src" ] && [ ! -L "$src" ]; then
-    # Nothing to share until the default profile has it.
-    case "$ENSURED" in *" $name "*) ;; *) continue ;; esac
-    if [ "$CHECK" -eq 0 ]; then
-      mkdir -p "$src" || { drift "cannot create $src"; continue; }
-    fi
+    case "$ENSURED" in
+      *" $name "*)
+        if [ "$CHECK" -eq 0 ]; then
+          mkdir -p "$src" || { drift "cannot create $src"; continue; }
+        fi
+        ;;
+      *)
+        # Nothing to share until the default profile has it — but a copy that
+        # exists only here would make the two accounts behave differently.
+        if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then continue; fi
+        if [ -d "$dst" ] && [ ! -L "$dst" ] && [ "$CHECK" -eq 0 ]; then
+          rmdir "$dst" 2>/dev/null || true
+        fi
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+          drift "PRIVATE  $dst exists only in this profile — move it to $src or remove it, re-run"
+        fi
+        continue
+        ;;
+    esac
   fi
   if [ -L "$dst" ]; then
     [ "$(readlink "$dst")" = "$src" ] || drift "WRONG  $dst -> $(readlink "$dst") (expected $src)"

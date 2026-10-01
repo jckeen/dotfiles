@@ -77,7 +77,7 @@ rm -rf "$BASE/projects"
 new_home nojq
 NOJQ="$ROOT/nojq-bin"
 mkdir -p "$NOJQ"
-for tool in bash sh mkdir chmod rmdir ln readlink mktemp mv rm env; do
+for tool in bash sh mkdir chmod rmdir ln readlink mktemp mv rm env basename dirname; do
   ln -s "$(command -v "$tool")" "$NOJQ/$tool"
 done
 if PATH="$NOJQ" "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "missing jq is drift"; else ok "missing jq is drift"; fi
@@ -124,6 +124,39 @@ for target in "$BASE" "$BASE/sub" "relative/dir" ""; do
   "$LINK" "$target" >/dev/null 2>&1
   [ $? -eq 2 ] && ok "refuses target '${target:-<empty>}'" || fail "refuses target '${target:-<empty>}'"
 done
+# Aliases of the default directory must not reach the linking loop.
+mkdir -p "$BASE/file-history"
+ln -s "$HOME" "$HOME/alias"
+for target in "$HOME/./.claude" "$HOME/alias/.claude" "$HOME/alias/.claude/sub" "$HOME/x/../.claude" "$HOME/." "$HOME/nope/.claude-work"; do
+  "$LINK" "$target" >/dev/null 2>&1
+  [ $? -eq 2 ] && ok "refuses target '${target#"$HOME"/}'" || fail "refuses target '${target#"$HOME"/}'"
+done
+[ -d "$BASE/skills" ] && [ ! -L "$BASE/skills" ] && [ -d "$BASE/file-history" ] && [ ! -L "$BASE/file-history" ] \
+  && [ ! -L "$BASE/settings.json" ] && ok "refused targets leave ~/.claude untouched" \
+  || fail "refused targets leave ~/.claude untouched"
+"$LINK" "$HOME/alias/.claude-work" >/dev/null 2>&1
+[ "$(readlink "$HOME/.claude-work/skills" 2>/dev/null)" = "$BASE/skills" ] \
+  && ok "a profile reached through a symlinked parent wires the real directory" \
+  || fail "a profile reached through a symlinked parent wires the real directory"
+
+# ── an entry only this profile has ───────────────────────────────────────
+new_home private
+mkdir -p "$PROFILE/rules" "$PROFILE/commands"
+echo 'private' > "$PROFILE/rules/own.md"
+if "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "a profile-only entry is drift"; else ok "a profile-only entry is drift"; fi
+[ "$(cat "$PROFILE/rules/own.md")" = "private" ] && ok "a profile-only entry is kept" || fail "a profile-only entry is kept"
+[ ! -e "$PROFILE/commands" ] && ok "an empty profile-only directory is removed" \
+  || fail "an empty profile-only directory is removed"
+if "$LINK" --check "$PROFILE" >/dev/null 2>&1; then fail "--check reports a profile-only entry"; else ok "--check reports a profile-only entry"; fi
+mkdir -p "$BASE/rules"
+mv "$PROFILE/rules/own.md" "$BASE/rules/"
+"$LINK" "$PROFILE" >/dev/null 2>&1 && [ -f "$PROFILE/rules/own.md" ] && [ -L "$PROFILE/rules" ] \
+  && ok "moving it to ~/.claude resolves the drift" || fail "moving it to ~/.claude resolves the drift"
+rm -rf "$BASE/rules"
+"$LINK" "$PROFILE" >/dev/null 2>&1 && ok "a link whose shared entry was later removed is not drift" \
+  || fail "a link whose shared entry was later removed is not drift"
+
+new_home guard2
 mkdir -p "$HOME/real"
 ln -s "$HOME/real" "$HOME/.claude-link"
 "$LINK" "$HOME/.claude-link" >/dev/null 2>&1
