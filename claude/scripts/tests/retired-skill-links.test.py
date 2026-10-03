@@ -485,8 +485,16 @@ class RetirementTests(unittest.TestCase):
                 else:
                     source.mkdir(parents=True)
                 run("--heal", "--strict")
-                for dest, _ in LINKS[runtime]:
-                    self.assertTrue((home / dest).is_symlink())
+                # Claude skills are directory links since #592: --heal converts
+                # the per-file fable-mode dir, so the file resolves through the
+                # bundle link instead of being a link itself. Either way the
+                # restored source stays reachable.
+                for dest, src in LINKS[runtime]:
+                    path = home / dest
+                    self.assertTrue(
+                        path.is_symlink() or path.resolve() == (repo / src).resolve(),
+                        dest,
+                    )
 
     def test_real_files_at_historical_destinations_survive(self):
         for runtime in LINKS:

@@ -186,7 +186,7 @@ is present but not registered — the drift that once left every hook inert.
 
 | Hook | Trigger | Wired | What it does |
 |------|---------|:-----:|-------------|
-| `SymlinkRepair.hook.ts` | SessionStart (FIRST) | ✅ | Re-links missing dotfiles→`~/.claude/` symlinks (hooks/scripts/agents/skills) every session — incl. **resume** — when new files land and `setup.sh` hasn't re-run; advisory, never clobbers |
+| `SymlinkRepair.hook.ts` | SessionStart (FIRST) | ✅ | Re-links missing dotfiles→`~/.claude/` symlinks (hooks/scripts/agents per file; each skill as one directory link, converting the old per-file layout) every session — incl. **resume** — when new files land and `setup.sh` hasn't re-run; advisory, never clobbers |
 | `StripProjectPermissions.hook.ts` | SessionStart | ✅ | Strips project-level permission overrides that fight global settings |
 | `HygieneStatus.hook.sh` | SessionStart | ✅ | Surfaces branch-hygiene drift from the daily systemd timer |
 | `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule. Also names every installed plugin (cache, claude.ai synced, `~/.claude/skills`) that ships a **mod** — a `"modules"` key in its `hooks/hooks.json` — unless a `# mods-ok: <id>` line in `plugins.txt` allowlists it |

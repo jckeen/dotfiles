@@ -293,7 +293,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Permission guard** | `claude/hooks/StripProjectPermissions.hook.ts` | Strips project-level permission overrides on SessionStart |
 | **Other hooks** | `claude/hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
 | **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line) at **user scope**; a `--scope project` or `--scope local` install belongs to that checkout and never satisfies a manifest entry; deliberately not symlinked (listed in `claude/nolink.txt`) |
-| **Skills** | `claude/skills/*/SKILL.md` | Claude slash commands (see below) |
+| **Skills** | `claude/skills/*/` | Claude slash commands (see below); each skill directory is one symlink at `~/.claude/skills/<name>`, so supporting files (`references/`, `scripts/`, `assets/`, `.claude-plugin/`) deploy with it |
 | **Subagents** | `claude/agents/*.md` | 24 specialized agents (reviewers, utilities, subject-matter experts) |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts; launchers re-source this file when it changed since the shell started |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |

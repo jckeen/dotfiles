@@ -45,6 +45,34 @@
   the `PreMergeHookTests` in `harvest-codex-comments.test.py` now assert the
   same shape and the silent case.
 
+## 2026-10-02 — fix: link each Claude skill as one directory symlink (#592)
+
+- **A skill's supporting files now deploy.** `symlink_enumerate()` and
+  `SymlinkRepair.hook.ts` linked only the top-level regular files of each
+  `claude/skills/<name>/`, so `references/`, `scripts/`, `assets/` and
+  `.claude-plugin/` never reached `~/.claude/skills/<name>/`. Each skill is
+  now one directory link, `~/.claude/skills/<name>` → `claude/skills/<name>`,
+  the shape the Codex `~/.agents/skills` and Antigravity skill links already
+  use. Recursing per file was the rejected alternative: it still breaks a mod
+  shipped as a skill directory, because Claude Code refuses a plugin module
+  whose symlink resolves outside the plugin directory.
+- **Existing installs convert in place.** A real `~/.claude/skills/<name>/`
+  holding only our own per-file links (live or dangling) is removed and
+  replaced by the directory link: by `setup.sh`, `setup.sh --repair`,
+  `check-claude.sh --heal` (so `cc` launch), and the SessionStart hook. Backing
+  it up instead would leave `<name>.backup/` with a resolvable `SKILL.md`,
+  which would load as a duplicate skill. Without a repair flag the checkers
+  report it as `LEGACY`.
+- **A skill directory with any other content is never deleted.** `setup.sh`
+  backs it up to `<name>.backup` before linking; the hook leaves it and
+  reports it. `check-claude.sh` reports a backed-up directory as `STALE`, and
+  `--fix` no longer tries to delete it (it removed only regular files before).
+- `symlink-enumerate.test.sh` covers the one-record-per-bundle shape, the
+  legacy-layout predicate, and the hook producing the same links.
+  `retired-skill-links.test.py` now accepts a restored `fable-mode` source
+  reached through the bundle link, since `--heal` converts its per-file dir.
+  The hook crashing when a category dir is missing is #598.
+
 ## 2026-10-02 — feat(agents): six subject-matter-expert agents; model and effort pins
 
 - **Six `sme-*` subagents: `sme-context`, `sme-evals`, `sme-models`,
