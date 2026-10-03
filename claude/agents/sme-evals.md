@@ -239,6 +239,7 @@ missing rule), big enough to clear noise — not a rewording; re-run:
 | Train up, test flat | Suspect overfitting — revert |
 | Either split regresses | Revert |
 | Both up | Keep |
+| Cost goal: cost down, both splits hold within noise | Keep — parity at lower cost is the intended win [E] |
 
 Stall rule: after two or three flat rounds — or earlier if no single fix could
 beat noise — make no edit. Sort every remaining train failure by cause; this
@@ -348,8 +349,10 @@ Treating 5–6 as general rules rather than this team's practice is inference.
 
 - **In two-arm runs `tool_used: Skill` is not scored.** It, plugin-mock
   graders, and `arm: with-only` graders show as a "plugin-fired indicator"
-  (`scored: false`), so a suite of pure trigger cases can pass with nothing
-  scored. Use `--ablation none` for trigger-rate suites, `arm: both` for
+  (`scored: false`) — except when every grader in a case would be excluded,
+  in which case they are scored normally. So a trigger grader beside other
+  graders silently drops out of the score, while a pure trigger case still
+  scores. Use `--ablation none` for trigger-rate suites, `arm: both` for
   must-not-fire checks [D].
 - **`history_file` cases on a path target run one arm** (`single-arm (no Δ)`
   on stderr); pass `--ablation with-without` to compare [D].
