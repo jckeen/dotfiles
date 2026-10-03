@@ -44,7 +44,7 @@ symlink_load_nolink() {
 # scripts, chrome. Repo paths here contain no tabs/newlines, so TAB-splitting is safe.
 symlink_enumerate() {
   local claude_src="$1" claude_dst="$2"
-  local nolink name f skill_dir skill_name skill_file fname
+  local nolink name f skill_dir skill_name
   nolink="$(symlink_load_nolink "$claude_src")" || return 1
 
   # 1. Top-level files (nolink-filtered). *.sh sources (e.g. statusline.sh) +x.
@@ -65,15 +65,17 @@ symlink_enumerate() {
     printf '%s\t%s\t%s\texecutable\n' "$f" "$claude_dst/hooks/$name" "hooks/$name"
   done
 
-  # 3. Skills — every file, preserving each skill's subdirectory.
+  # 3. Skills — ONE directory link per bundle (issue #592), so references/,
+  # scripts/, assets/ and dot-dirs like .claude-plugin/ all reach the
+  # destination. Per-file links dropped every subfolder, and a plugin loaded
+  # from a skill dir rejects module symlinks that resolve outside it ("Path
+  # escapes plugin directory"); a directory link keeps the whole bundle inside
+  # one resolved root. src carries no trailing slash so readlink compares equal.
   for skill_dir in "$claude_src/skills/"*/; do
     [ -d "$skill_dir" ] || continue
+    skill_dir="${skill_dir%/}"
     skill_name="$(basename "$skill_dir")"
-    for skill_file in "$skill_dir"*; do
-      [ -f "$skill_file" ] || continue
-      fname="$(basename "$skill_file")"
-      printf '%s\t%s\t%s\t\n' "$skill_file" "$claude_dst/skills/$skill_name/$fname" "skills/$skill_name/$fname"
-    done
+    printf '%s\t%s\t%s\t\n' "$skill_dir" "$claude_dst/skills/$skill_name" "skills/$skill_name"
   done
 
   # 4. Agents (*.md).
@@ -108,4 +110,38 @@ symlink_enumerate() {
       *)    printf '%s\t%s\t%s\t\n'           "$f" "$claude_dst/chrome/$name" "chrome/$name" ;;
     esac
   done
+}
+
+# symlink_is_legacy_skill_dir <src_dir> <dst> — 0 when <dst> is a real
+# directory in the pre-#592 per-file layout: every entry (dotfiles included) is
+# a symlink whose target is exactly <src_dir>/<same name>, live or dangling. An
+# empty directory also qualifies. Anything else — a regular file, a
+# subdirectory, a foreign link — means someone put content there, so it is NOT
+# legacy and the caller must back it up (setup.sh) or report it (checkers).
+symlink_is_legacy_skill_dir() {
+  local src="$1" dst="$2" entry
+  [ -d "$dst" ] && [ ! -L "$dst" ] || return 1
+  for entry in "$dst"/* "$dst"/.*; do
+    case "${entry##*/}" in .|..) continue ;; esac
+    [ -e "$entry" ] || [ -L "$entry" ] || continue  # unmatched glob
+    [ -L "$entry" ] || return 1
+    [ "$(readlink "$entry")" = "$src/${entry##*/}" ] || return 1
+  done
+  return 0
+}
+
+# symlink_migrate_legacy_skill_dir <src_dir> <dst> — remove a legacy per-file
+# skill directory (only our own links, re-checked here) so a directory link can
+# replace it. Removes nothing and returns 1 if <dst> is not legacy. The links
+# carry no data: each points into the dotfiles bundle that the directory link
+# restores, so this is a conversion, not a deletion.
+symlink_migrate_legacy_skill_dir() {
+  local src="$1" dst="$2" entry
+  symlink_is_legacy_skill_dir "$src" "$dst" || return 1
+  for entry in "$dst"/* "$dst"/.*; do
+    case "${entry##*/}" in .|..) continue ;; esac
+    [ -L "$entry" ] || continue
+    rm "$entry" || return 1
+  done
+  rmdir "$dst"
 }

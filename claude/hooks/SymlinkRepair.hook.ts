@@ -5,7 +5,8 @@
  * Mirrors setup.sh's link logic for runnable assets (hooks, scripts, agents,
  * chrome, skills, top-level files). If a new file lands in the dotfiles repo
  * (e.g. via `git pull`) and the user hasn't re-run setup.sh, this hook installs
- * the missing symlink so the next session sees it.
+ * the missing symlink so the next session sees it. Skills are linked as whole
+ * directories (one link per bundle, issue #592); everything else per file.
  *
  * Safe-by-default: only acts on missing entries or broken symlinks. Existing
  * regular files and symlinks pointing elsewhere are left alone (and reported)
@@ -17,10 +18,12 @@
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
+  rmdirSync,
   symlinkSync,
   unlinkSync,
 } from 'fs';
@@ -110,6 +113,27 @@ function linkDir(
   }
 }
 
+// Pre-#592 installs hold ~/.claude/skills/<name>/ as a real directory of
+// per-file links. Remove it only when every entry is a link to exactly
+// <src>/<same name> (live or dangling) — the same test as lib-symlinks.sh's
+// symlink_is_legacy_skill_dir. Returns false, touching nothing, otherwise.
+function migrateLegacySkillDir(src: string, dst: string): boolean {
+  const entries = readdirSync(dst);
+  for (const name of entries) {
+    const p = join(dst, name);
+    if (!lstatSync(p).isSymbolicLink()) return false;
+    if (readlinkSync(p) !== join(src, name)) return false;
+  }
+  try {
+    for (const name of entries) unlinkSync(join(dst, name));
+    rmdirSync(dst);
+  } catch (e) {
+    actions.push({ kind: 'skipped', rel: dst, reason: `legacy skill dir migration failed: ${e}` });
+    return false;
+  }
+  return true;
+}
+
 function main(): void {
   // 1) Top-level claude/* files (plugins.txt, statusline.sh, etc.). Skipped
   //    entirely if nolink.txt is missing — without the filter we can't tell
@@ -168,9 +192,14 @@ function main(): void {
   // 5) chrome/* (all files)
   linkDir(join(CLAUDE_SRC, 'chrome'), join(CLAUDE_DST, 'chrome'), () => true, 'chrome');
 
-  // 6) skills/<name>/* — preserve per-skill subdirs
+  // 6) skills/<name> — ONE directory link per bundle, so references/,
+  //    scripts/, assets/ and .claude-plugin/ reach the destination (issue
+  //    #592; mirrors lib-symlinks.sh's skills category). A real directory left
+  //    by the old per-file layout is converted only when it holds nothing but
+  //    our own links; any other real directory is reported, never replaced.
   const skillsRoot = join(CLAUDE_SRC, 'skills');
   if (existsSync(skillsRoot)) {
+    mkdirSync(join(CLAUDE_DST, 'skills'), { recursive: true });
     for (const skillName of readdirSync(skillsRoot)) {
       const skillSrc = join(skillsRoot, skillName);
       let st;
@@ -181,10 +210,31 @@ function main(): void {
       }
       if (!st.isDirectory()) continue;
       const skillDst = join(CLAUDE_DST, 'skills', skillName);
+      const rel = `skills/${skillName}`;
+      let dstSt;
       try {
-        require('fs').mkdirSync(skillDst, { recursive: true });
-      } catch {}
-      linkDir(skillSrc, skillDst, () => true, `skills/${skillName}`);
+        dstSt = lstatSync(skillDst);
+      } catch {
+        dstSt = null;
+      }
+      if (dstSt?.isDirectory()) {
+        if (!migrateLegacySkillDir(skillSrc, skillDst)) {
+          actions.push({
+            kind: 'skipped',
+            rel,
+            reason: 'real directory present (use setup.sh to back up)',
+          });
+          continue;
+        }
+        try {
+          symlinkSync(skillSrc, skillDst);
+          actions.push({ kind: 'fixed', rel, reason: 'per-file links → directory link' });
+        } catch (e) {
+          actions.push({ kind: 'skipped', rel, reason: `migrated, relink failed: ${e}` });
+        }
+        continue;
+      }
+      ensureLink(skillSrc, skillDst, rel);
     }
   }
 

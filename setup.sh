@@ -165,6 +165,19 @@ run_health_audit() {
     while IFS=$'\t' read -r _src _dst _label _flags; do
       [ -n "$_src" ] || continue
       claude_link_managed "$_label" || continue
+      # A pre-#592 per-file skill dir is our own links only: --repair converts
+      # it (audit_link then sees MISSING and links the directory); --check
+      # names it rather than calling it an unknown directory.
+      if symlink_is_legacy_skill_dir "$_src" "$_dst"; then
+        if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+          symlink_migrate_legacy_skill_dir "$_src" "$_dst" \
+            || printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
+        else
+          printf '  \033[33mLEGACY\033[0m  %s (per-file links from before #592; --repair converts to a directory link)\n' "$_label"
+          errors=$((errors + 1))
+          continue
+        fi
+      fi
       alink "$_src" "$_dst" "$_label" "$mode"
     done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
   fi
@@ -1869,6 +1882,23 @@ while IFS=$'\t' read -r _src _dst _label _flags; do
   # per-entry preview; a [DRY] line per mkdir would just triple the noise).
   if [ "${DRY_RUN:-0}" != "1" ]; then
     mkdir -p "$(dirname "$_dst")"
+  fi
+  # Skill bundles are directory links (issue #592). A pre-#592 install holds a
+  # real directory of our own per-file links there; convert it in place rather
+  # than let link_file back it up, since <name>.backup/ would still hold a
+  # resolvable SKILL.md and load as a duplicate skill. A directory with any
+  # other content falls through to link_file's back-up-then-link.
+  if symlink_is_legacy_skill_dir "$_src" "$_dst"; then
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      echo "  [DRY] would convert per-file links in $_dst to a directory link -> $_src"
+      _tree_links=$((_tree_links + 1))
+      continue
+    fi
+    if ! symlink_migrate_legacy_skill_dir "$_src" "$_dst"; then
+      echo "ERROR: could not convert legacy per-file skill links in $_dst" >&2
+      exit 1
+    fi
+    echo "  -> converted per-file links in $_dst to a directory link"
   fi
   link_file "$_src" "$_dst"
   if [ "$_flags" = "executable" ] && [ "${DRY_RUN:-0}" != "1" ]; then

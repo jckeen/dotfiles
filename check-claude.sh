@@ -126,8 +126,24 @@ echo ""
 # top-level (nolink-filtered) → hooks → skills → agents → scripts → chrome.
 # One source of truth with setup.sh's installer and audit. The executable flag
 # (4th field) is unused here — this checker reports link state, not +x drift.
+# Skill bundles are directory links (issue #592). A pre-#592 per-file dir holds
+# only our own links, so --heal converts it (check_link then heals the MISSING
+# link); without --heal it is named as legacy, not as an unknown directory.
 while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
+  if symlink_is_legacy_skill_dir "$src" "$dst"; then
+    if [ "$HEAL" -eq 1 ]; then
+      if ! symlink_migrate_legacy_skill_dir "$src" "$dst"; then
+        red "FAILED  $label could not convert legacy per-file links"
+        ERRORS=$((ERRORS + 1))
+        continue
+      fi
+    else
+      yellow "LEGACY  $label (per-file links from before #592 — run with --heal or ./setup.sh)"
+      WARNINGS=$((WARNINGS + 1))
+      continue
+    fi
+  fi
   check_link "$src" "$dst" "$label"
 done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
 
@@ -171,7 +187,13 @@ while IFS= read -r backup; do
   # Only flag if the non-backup version exists and is a working symlink
   # (meaning setup.sh already replaced it successfully)
   if [ -L "$original" ] && [ -e "$original" ]; then
-    if [ "$FIX" -eq 1 ]; then
+    # A backed-up directory (a skill dir link_file displaced, issue #592) may
+    # hold the user's own work and still loads as a skill while it sits under
+    # skills/. Report it; --fix never deletes a directory.
+    if [ -d "$backup" ] && [ ! -L "$backup" ]; then
+      yellow "STALE   $backup (backed-up directory — review and remove it yourself)"
+      WARNINGS=$((WARNINGS + 1))
+    elif [ "$FIX" -eq 1 ]; then
       rm "$backup"
       green "CLEANED  $backup"
       FIXED=$((FIXED + 1))
