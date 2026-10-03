@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-02 — feat(agents): six subject-matter-expert agents; model and effort pins
+
+- **Six `sme-*` subagents: `sme-context`, `sme-evals`, `sme-models`,
+  `sme-mods`, `sme-skills`, `sme-workflows`.** Each is a body distilled from
+  Anthropic's developer blog (claude.dev) and the Claude Code docs, verified
+  against Claude Code 2.1.287 on 2026-10-02, for delegating a question about
+  tooling newer than the model's training: context and prompt caching, evals,
+  model and effort choice, mods, skills, and dynamic workflows. Each re-checks
+  a version gate, limit, default or price against the live docs before quoting
+  it, and is read-only. `claude/AgentPack.md` lists them in a new roster
+  section; the agent count is now 24.
+- **Model and effort frontmatter, because a subagent that names no model
+  inherits the session's price.** `repo-scout` is pinned to `haiku` and
+  `package-scout` to `sonnet` (lookups); the SME agents to `opus` with
+  `omitClaudeMd: true` (they answer from their own body and the delegation
+  prompt; the key needs v2.1.271+). `security-reviewer`, `schema-reviewer` and
+  `qa-lead` set `effort: high`, which overrides the session level both ways
+  (raises medium, lowers xhigh or max; there is no floor key). Every other
+  agent still inherits.
+- **`security-reviewer` hands the pattern scan to soundcheck only where the
+  project enables it** (`soundcheck@soundcheck` in the project's
+  `enabledPlugins`); otherwise it runs a quick pattern pass itself before the
+  in-context checks.
+- **`perf-accessibility` measures first**: a number before reasoning from code,
+  deterministic counts over wall-clock, proof that a proxy moves wall-clock,
+  a CI ratchet for proven wins, and performance findings labeled static-only
+  when the app can't be run.
+- Follow-ups: #592 (skill subfolders never sync), #593 (two hooks' warnings go
+  to the debug log), #594 (flag plugins that ship a mod), #595 (no behavioral
+  evals).
+
 ## 2026-10-01 — feat: `ccw` runs Claude on a second account
 
 - **`ccw` launches `cc` on a second (work) Claude account.** It sets
