@@ -560,14 +560,18 @@ HOOK = SCRIPTS.parent / "hooks" / "PreMergeCodexHarvest.hook.sh"
 
 
 class PreMergeHookTests(unittest.TestCase):
-    """#555: under --auto the hook runs before the bot has reviewed, so it says so."""
+    """#555: under --auto the hook runs before the bot has reviewed, so it says so.
 
-    def run_hook(self, command):
+    #593: exit-0 stderr reaches only the debug log, so the hook reports on stdout
+    as one JSON object: systemMessage for the user, additionalContext for Claude.
+    """
+
+    def run_hook(self, command, harvester_output='echo "stub harvester $*"'):
         with tempfile.TemporaryDirectory(prefix="harvest-hook-test-") as temp:
             home = Path(temp)
             stub = home / ".claude" / "scripts" / "harvest-codex-comments.sh"
             stub.parent.mkdir(parents=True)
-            stub.write_text('#!/usr/bin/env bash\necho "stub harvester $*"\n')
+            stub.write_text(f"#!/usr/bin/env bash\n{harvester_output}\n")
             stub.chmod(0o755)
             payload = json.dumps({"tool_input": {"command": command}, "cwd": temp})
             return subprocess.run(
@@ -579,23 +583,47 @@ class PreMergeHookTests(unittest.TestCase):
                 timeout=30,
             )
 
+    def message(self, result):
+        """Parse the hook's stdout JSON, assert its shape, and return the message."""
+        out = json.loads(result.stdout)
+        self.assertEqual(set(out), {"systemMessage", "hookSpecificOutput"})
+        self.assertEqual(
+            out["hookSpecificOutput"],
+            {"hookEventName": "PreToolUse", "additionalContext": out["systemMessage"]},
+        )
+        return out["systemMessage"]
+
     def test_auto_merge_prints_close_time_note_and_still_harvests(self):
         result = self.run_hook("gh pr merge 42 --auto --squash")
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("stub harvester --pr 42 --quiet", result.stderr)
-        self.assertIn("close-time harvest", result.stderr)
-        self.assertEqual(result.stderr.count("\n"), 2)  # the note is one line
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        msg = self.message(result)
+        self.assertIn("stub harvester --pr 42 --quiet", msg)
+        self.assertIn("close-time harvest", msg)
+        self.assertEqual(msg.count("\n"), 1)  # the note is one line
 
     def test_plain_merge_has_no_note(self):
         result = self.run_hook("gh pr merge 42 --squash")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        msg = self.message(result)
+        self.assertEqual(msg, "stub harvester --pr 42 --quiet")
+
+    def test_harvester_stderr_is_reported(self):
+        result = self.run_hook("gh pr merge 42", 'echo "harvest failed" >&2')
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(self.message(result), "harvest failed")
+
+    def test_nothing_to_report_is_silent(self):
+        result = self.run_hook("gh pr merge 42 --squash", "true")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_auto_note_alone_when_harvester_is_quiet(self):
+        result = self.run_hook("gh pr merge --auto --squash", "true")
         self.assertEqual(result.returncode, 0)
-        self.assertIn("stub harvester --pr 42 --quiet", result.stderr)
-        self.assertNotIn("close-time harvest", result.stderr)
+        self.assertTrue(self.message(result).startswith("PreMergeCodexHarvest: --auto"))
 
     def test_other_commands_are_ignored(self):
         result = self.run_hook("gh pr view 42 --json title")
-        self.assertEqual((result.returncode, result.stderr), (0, ""))
-
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,8 +9,11 @@
 # BEHAVIOR:
 #   Runs harvest-codex-comments.sh for the PR being merged (explicit number in the
 #   command if present, else the current branch's PR). That script files one deduped
-#   consolidated issue per PR, one checklist item per Codex-bot comment. Output goes
-#   to stderr → visible in the Bash tool output right before the merge proceeds.
+#   consolidated issue per PR, one checklist item per Codex-bot comment. Its output
+#   is printed as one JSON object on stdout: `systemMessage` shows it to the user and
+#   PreToolUse `additionalContext` shows it to Claude. Stderr from a hook that exits
+#   0 goes to the debug log only, so it cannot carry the output (#593). Nothing to
+#   report → empty stdout.
 #
 #   With `--auto` the command only arms auto-merge, usually within a minute of
 #   `gh pr create` — before the bot has reviewed — so this early pass normally finds
@@ -62,13 +65,20 @@ tmo() {
 # then resolves the current branch's PR, which is correct for the common merge but
 # may miss a cross-branch merge-by-URL. Good enough for a warn-only capture.
 if [[ -n "$prnum" ]]; then
-  tmo 30 "$script" --pr "$prnum" --quiet >&2 2>&1 || true
+  out="$(tmo 30 "$script" --pr "$prnum" --quiet 2>&1 || true)"
 else
-  tmo 30 "$script" --quiet >&2 2>&1 || true
+  out="$(tmo 30 "$script" --quiet 2>&1 || true)"
 fi
 
 if [[ "$cmd" =~ (^|[[:space:]])--auto([[:space:]=]|$) ]]; then
-  echo "PreMergeCodexHarvest: --auto arms the merge before the Codex bot has reviewed; the close-time harvest (harvest-codex-comments.yml) will file anything it finds." >&2
+  out="${out:+$out
+}PreMergeCodexHarvest: --auto arms the merge before the Codex bot has reviewed; the close-time harvest (harvest-codex-comments.yml) will file anything it finds."
+fi
+
+if [[ -n "$out" ]]; then
+  jq -n --arg m "$out" \
+    '{systemMessage:$m, hookSpecificOutput:{hookEventName:"PreToolUse", additionalContext:$m}}' \
+    2>/dev/null || true
 fi
 
 exit 0

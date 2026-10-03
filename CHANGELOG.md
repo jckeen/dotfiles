@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-02 — fix(hooks): stale-push and pre-merge harvest warnings reach the transcript (#593)
+
+- **`PrePushStaleSHACheck.hook.ts` and `PreMergeCodexHarvest.hook.sh` now
+  report through stdout JSON.** Both are PreToolUse hooks that exit 0 and
+  wrote their warning to stderr, which the hooks reference sends to the debug
+  log only, so neither the user nor Claude ever saw the stale-review warning
+  or the harvest output. Each now prints one object,
+  `{"systemMessage": …, "hookSpecificOutput": {"hookEventName": "PreToolUse",
+  "additionalContext": …}}`: `systemMessage` shows the warning to the user and
+  `additionalContext` puts it next to the tool result for Claude. Nothing to
+  report still means empty stdout; both still always exit 0 and fail open.
+  The harvest hook captures the harvester's stdout and stderr into the message.
+- **Tests.** New `claude/scripts/tests/pre-push-stale-sha.test.sh` drives the
+  bun hook with stub `git`/`gh` and asserts the JSON shape on a stale review
+  and empty stdout on every no-warning path (wired into the `checkers` shard);
+  the `PreMergeHookTests` in `harvest-codex-comments.test.py` now assert the
+  same shape and the silent case.
+
 ## 2026-10-02 — feat(agents): six subject-matter-expert agents; model and effort pins
 
 - **Six `sme-*` subagents: `sme-context`, `sme-evals`, `sme-models`,

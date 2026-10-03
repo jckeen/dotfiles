@@ -463,6 +463,12 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/plugin-drift.test.sh
 
+      # Exit-0 stderr reaches only the debug log, so the warning must be stdout
+      # JSON (systemMessage + additionalContext), and silence must be empty (#593).
+      - name: stale-review push warning (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/pre-push-stale-sha.test.sh
+
       # The pinned image bundles shellcheck and pyflakes, so every `run:`
       # block in .github/workflows is shellchecked here; the standalone
       # `shellcheck` job only sees files on disk, not inline workflow scripts.
