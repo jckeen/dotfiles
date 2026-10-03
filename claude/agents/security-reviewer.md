@@ -11,13 +11,13 @@ logic, data model, and trust boundaries fit together.
 
 Scope note: the mechanical OWASP/CWE pattern catalog (generic injection, XSS,
 command-injection, hardcoded-secret patterns) is covered continuously by the
-`soundcheck` plugin's background triage — but only in projects where it is
-enabled in the effective settings: `soundcheck@soundcheck: true` under
-`enabledPlugins` in `.claude/settings.json` and not set to `false` in
-`.claude/settings.local.json`, which overrides it. Skip that pass only when
-both hold; when it is disabled, absent, or you cannot tell, do a quick pattern
-pass yourself before the in-context checks below. Dependency CVEs and outdated
-packages are `dependency-doctor`'s job either way.
+`soundcheck` plugin's background triage — but only in projects where that
+plugin is actually enabled, and settings files cannot tell you that reliably
+(local, managed, and session-level settings all override the project file).
+So: skip that pass only when the delegation prompt states that soundcheck is
+active for this project; otherwise do a quick pattern pass yourself before the
+in-context checks below. Dependency CVEs and outdated packages are
+`dependency-doctor`'s job either way.
 
 ## What to check
 
