@@ -158,7 +158,10 @@ the `ultracode` keyword.
 ### The script
 
 This is the docs' example of a saved script ("What the saved script looks
-like"), unchanged. It is complete and runnable:
+like") with one change: the docs end with `return audits.filter(Boolean)`,
+which silently drops any route whose audit agent stopped or failed (its
+result is `null`) — for an audit, unexamined routes must be reported, not
+hidden. It is complete and runnable:
 
 ```javascript
 export const meta = {
@@ -174,7 +177,8 @@ const audits = await pipeline(found.files, file =>
   agent(`Audit ${file} for missing authentication checks.`, { label: file }),
 )
 
-return audits.filter(Boolean)
+const unaudited = found.files.filter((_, i) => audits[i] === null)
+return { audits: audits.filter(Boolean), unaudited }
 ```
 
 **`meta`** must be the first statement and a pure object literal: no
@@ -185,7 +189,8 @@ model?}]`, whose titles must equal the strings passed to `phase()` exactly.
 
 **`agent(prompt, opts?)`** spawns one subagent. Returns its final text, or a
 validated object when `schema` is given, or `null` if stopped or after an
-unrecoverable API error (hence `.filter(Boolean)`). Options:
+unrecoverable API error — so a result list can hold `null`s; count and report
+them rather than only filtering them out. Options:
 
 - `schema`: JSON Schema with `{type: 'object', properties}` at the root and
   `required` a subset of `properties`. A provably contradictory schema fails
