@@ -249,7 +249,13 @@ obvious gaps close points at a flawed case or grader.
 
 Finish at the version best on test; report test against baseline with
 confidence intervals; if the gain is within noise, say so and recommend not
-merging.
+merging. One caveat the article does not spell out: because every keep/revert
+decision and the final pick consulted the test score, that split has become a
+validation set, and repeated selection can ride its noise. For a claim that
+needs independent held-out evidence, score the chosen version once on a third
+split that no round ever saw (the runner's state file carries `train_ids`,
+`val_ids` and `test_ids`, so use val for the rounds and test only at the end),
+or state that the reported figure is validation-selected (inferred).
 
 Calibration numbers [E]:
 - Cost climb, 44 support tickets (30 search, 14 held out): Opus 4.8 default
