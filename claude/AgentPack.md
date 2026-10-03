@@ -1,8 +1,8 @@
 # Agent Pack — Multi-Agent Orchestra
 
-A team of 18 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
+A team of 24 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
-Agents deliberately carry no `model:` pin — they inherit the session model, and the orchestrator picks a lighter model per-run when the task warrants it (e.g. a quick `repo-scout` briefing on haiku).
+Most agents carry no `model:` pin and inherit the session model; the orchestrator can still pass a model per run. The exceptions are deliberate, because a subagent that names no model inherits the session's price: the two scouts do lookups, so `repo-scout` is pinned to `haiku` and `package-scout` to `sonnet`; the six SME agents are pinned to `opus`, since a wrong answer about current tooling costs more than the tokens; and `security-reviewer`, `schema-reviewer`, and `qa-lead` set `effort: high`, because their value is in the edge cases a lower effort skips (the key overrides the session level, so it raises a medium session and lowers an xhigh or max one; there is no floor key). The SME agents also set `omitClaudeMd: true` (Claude Code v2.1.271+) — they answer from their own body and the delegation prompt, so loading the global and project instruction files would only add cost.
 
 ## The Team
 
@@ -20,7 +20,7 @@ Agents deliberately carry no `model:` pin — they inherit the session model, an
 | `qa-lead` | Edge cases, bad input, error states, mobile | Before any release |
 | `perf-accessibility` | Load times, WCAG, keyboard nav, screen readers | Before launch, after major UI changes |
 | `launch-operator` | Deploy pipeline, monitoring, environment config | Pre-launch readiness check |
-| `security-reviewer` | In-context app-logic flaws: broken authz/IDOR, trust boundaries, business logic (generic patterns → soundcheck plugin) | After implementation, before merge |
+| `security-reviewer` | In-context app-logic flaws: broken authz/IDOR, trust boundaries, business logic (generic patterns → soundcheck plugin where the project enables it) | After implementation, before merge |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
 | `agent-native-review` | Agent-consumed surfaces: verification affordances, subagent context parity, primitive tool design, instruction drift | After changing skills, hooks, agent definitions, or instruction files |
 
@@ -33,6 +33,19 @@ Agents deliberately carry no `model:` pin — they inherit the session model, an
 | `test-writer` | Bug reproduction, feature coverage, edge case tests | Before fixing bugs (failing test first), after new features |
 | `schema-reviewer` | DB schema, migrations, data integrity, query patterns | After schema changes, before running migrations |
 | `package-scout` | Build-vs-buy research — finds existing packages before building from scratch | Before implementing non-trivial features or utilities |
+
+### Subject-matter experts (read-only)
+
+Delegate a question about Claude Code or Claude-model tooling that is newer than the model's training. Each SME answers from a body distilled from Anthropic's developer blog (claude.dev) and the Claude Code docs, re-checks any version gate, limit, default, or price against the live docs before quoting it, and returns only the answer.
+
+| Agent | Focus | When to use |
+|-------|-------|-------------|
+| `sme-context` | Context engineering for Claude 5 models, prompt caching, tool design, HTML vs Markdown output | Auditing what a CLAUDE.md, skill, subagent, or prompt costs in context; asking whether a change breaks the cache; shaping a tool (skill structure and triggering: `sme-skills`; agent-surface correctness: `agent-native-review`) |
+| `sme-evals` | Eval design, `claude plugin eval`, hillclimbing, measure-then-climb | Deciding whether or how to measure a skill, subagent, prompt, or API app |
+| `sme-models` | Model choice, effort levels, task cost | Picking a model or effort for a task or subagent; estimating or cutting cost; reviewing model- or effort-sensitive phrasing |
+| `sme-mods` | Claude Code mods (in-session plugin modules, the `$` API) | Writing, debugging, or reviewing a mod (whether to build a mod at all: `sme-skills`) |
+| `sme-skills` | Skill authoring, triggering, visibility, measurement | Writing or reviewing a SKILL.md; skill vs hook vs subagent vs workflow vs mod |
+| `sme-workflows` | Dynamic workflows, workflow scripts, ultracode | Writing, reviewing, saving, or resuming a workflow script (workflow vs skill or hook: `sme-skills`) |
 
 ## How to invoke
 
@@ -87,7 +100,8 @@ For risky parallel edits, spawn agents with `isolation: "worktree"` — each get
 
 The three phases below cover the code-review lifecycle. The utility agents
 (`repo-scout`, `dependency-doctor`, `test-writer`, `package-scout` — except
-where a phase names them) are invoked ad hoc rather than as part of a phase.
+where a phase names them) and the `sme-*` agents are invoked ad hoc rather
+than as part of a phase.
 
 ### Phase 1 — Product refinement
 **Agents:** product-strategist, growth-strategist, trust-safety, package-scout

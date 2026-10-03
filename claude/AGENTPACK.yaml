@@ -364,8 +364,62 @@
       "id": "subagent:security-reviewer",
       "type": "subagent",
       "name": "security-reviewer",
-      "description": "Reviews app logic for in-context security flaws a pattern scanner misses — broken authorization/IDOR, trust-boundary and business-logic bugs, sensitive-data leaks (generic injection/secret patterns are soundcheck's job)",
+      "description": "Reviews app logic for in-context security flaws a pattern scanner misses — broken authorization/IDOR, trust-boundary and business-logic bugs, sensitive-data leaks (generic injection/secret patterns go to soundcheck where the project enables it; otherwise a quick pattern pass first)",
       "path": "agents/security-reviewer.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:sme-context",
+      "type": "subagent",
+      "name": "sme-context",
+      "description": "Knowledge postdates model training; consult before answering from memory. Expert on fit and cost of what loads into Claude 5 context, prompt-cache behavior, tool shape, and HTML vs Markdown output. Skill structure and triggering are sme-skills; whether an agent surface is correct is agent-native-review.",
+      "path": "agents/sme-context.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:sme-evals",
+      "type": "subagent",
+      "name": "sme-evals",
+      "description": "Knowledge postdates model training; consult before answering from memory. Expert on eval design, claude plugin eval, and hillclimbing. Use when deciding whether or how to measure a skill, subagent, prompt or API app, reviewing an eval suite or grader, estimating eval cost, or planning a benchmark-driven optimization.",
+      "path": "agents/sme-evals.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:sme-models",
+      "type": "subagent",
+      "name": "sme-models",
+      "description": "Knowledge postdates model training; consult before answering from memory. Expert on Claude 5 model choice, effort levels and task cost (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5). Use when picking a model or effort for a task or subagent, estimating or cutting cost, or reviewing model- or effort-sensitive phrasing.",
+      "path": "agents/sme-models.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:sme-mods",
+      "type": "subagent",
+      "name": "sme-mods",
+      "description": "Knowledge postdates model training; consult before answering from memory. Expert on Claude Code mods (in-session JS/TS plugin modules, register(on, options), the $ API). Use when writing, debugging or reviewing a mod before install. Whether to build a mod, skill or hook at all is sme-skills.",
+      "path": "agents/sme-mods.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:sme-skills",
+      "type": "subagent",
+      "name": "sme-skills",
+      "description": "Knowledge postdates model training; consult before answering from memory. Expert on Claude Code skills (authoring, folder structure, triggering, visibility). Use when writing or reviewing a SKILL.md, checking why a skill does not trigger, or choosing skill vs hook vs subagent vs workflow vs mod vs instruction line.",
+      "path": "agents/sme-skills.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:sme-workflows",
+      "type": "subagent",
+      "name": "sme-workflows",
+      "description": "Knowledge postdates model training; consult before answering from memory. Expert on Claude Code dynamic workflows (Workflow tool, scripts, saved workflows, ultracode). Use when writing or reviewing a workflow script or orchestration pattern, or saving, resuming or sharing one. Workflow vs skill or hook is sme-skills.",
+      "path": "agents/sme-workflows.md",
       "risk_level": "medium",
       "permissions": []
     },
