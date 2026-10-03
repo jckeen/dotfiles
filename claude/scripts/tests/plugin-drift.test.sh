@@ -16,7 +16,9 @@
 # agree on what "installed" means or the warning never clears. The third
 # consumer, setup.sh, reads `claude plugin list` instead of the JSON and shares
 # the rule through user_scoped_plugins() in lib-checks.sh; its extraction is
-# pinned at the end. Run directly; exit 1 on any failure.
+# pinned at the end. The hook's mod scan (#594) — plugins whose
+# hooks/hooks.json has a "modules" key, minus `# mods-ok:` lines — has its own
+# fixtures. Run directly; exit 1 on any failure.
 set -uo pipefail
 
 resolve_script_path() {
@@ -198,6 +200,69 @@ vercel@claude-plugins-official' \
 assert "over-scoped [per-project] plugin still warns" 'outgrep "Plugin scoping"'
 assert "over-scoped warning names the plugin" 'outgrep "vercel@claude-plugins-official"'
 
+# ── mods: a plugin whose hooks/hooks.json has "modules" is named (#594) ──
+# run_mods <manifest-body> — a throwaway HOME holding plugins of every origin:
+#   cache/mkt/modded     hooks.json with "modules"     → warns
+#   cache/mkt/vetted     with "modules", allowlisted?  → per manifest
+#   cache/mkt/plain      settings hooks only           → silent
+#   cache/mkt/broken     malformed hooks.json          → silent, no crash
+#   synced/<bucket>/s    plugin.json name "syncmod", with "modules"
+#   skills/sk            plugin.json name "skillmod", with "modules"
+run_mods() {
+  local manifest="$1"
+  local D H C
+  D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
+  H="$(mktemp -d)" || die "mktemp -d for HOME"
+  C="$H/.claude/plugins/cache/mkt"
+  mkdir -p "$D/claude" "$C"/{modded,vetted,plain,broken}/1.0.0/hooks \
+    "$H/.claude/plugins/synced/bucket/s/hooks" "$H/.claude/plugins/synced/bucket/s/.claude-plugin" \
+    "$H/.claude/skills/sk/hooks" "$H/.claude/skills/sk/.claude-plugin" \
+    || die "mkdir mod fixture dirs"
+  printf '%s\n' "$manifest" > "$D/claude/plugins.txt" || die "write plugins.txt"
+  printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s]}}\n' \
+    "$(entry user)" > "$H/.claude/plugins/installed_plugins.json" \
+    || die "write installed_plugins.json"
+  local mod='{"modules":["./register.js"]}'
+  printf '%s\n' "$mod" > "$C/modded/1.0.0/hooks/hooks.json" || die "write modded"
+  printf '%s\n' "$mod" > "$C/vetted/1.0.0/hooks/hooks.json" || die "write vetted"
+  printf '%s\n' '{"hooks":{"SessionStart":[]}}' > "$C/plain/1.0.0/hooks/hooks.json" \
+    || die "write plain"
+  printf '%s\n' '{"modules": [' > "$C/broken/1.0.0/hooks/hooks.json" || die "write broken"
+  printf '%s\n' "$mod" > "$H/.claude/plugins/synced/bucket/s/hooks/hooks.json" || die "write synced"
+  printf '%s\n' '{"name":"syncmod"}' > "$H/.claude/plugins/synced/bucket/s/.claude-plugin/plugin.json" \
+    || die "write synced plugin.json"
+  printf '%s\n' "$mod" > "$H/.claude/skills/sk/hooks/hooks.json" || die "write skills-dir"
+  printf '%s\n' '{"name":"skillmod"}' > "$H/.claude/skills/sk/.claude-plugin/plugin.json" \
+    || die "write skills-dir plugin.json"
+  out="$(HOME="$H" DOTFILES_DIR="$D" bun "$HOOK" 2>&1)"
+  rc=$?
+  rm -rf "$D" "$H"
+}
+
+run_mods "$MANIFEST_GLOBAL"
+assert "a cached mod is named" 'outgrep "• modded@mkt"'
+assert "the mod warning has its own heading" 'outgrep "Plugin mods:"'
+assert "a synced mod is named by its manifest name" 'outgrep "• syncmod@synced"'
+assert "a skills-dir mod is named by its manifest name" 'outgrep "• skillmod@skills-dir"'
+assert "a plugin without \"modules\" is not named" '! outgrep "plain@mkt"'
+assert "a malformed hooks.json is not named" '! outgrep "broken@mkt"'
+assert "hook exits 0 (mods, malformed hooks.json)" "[ $rc -eq 0 ]"
+assert "no install-drift noise in the mods fixture" '! outgrep "Plugin drift"'
+
+run_mods "$MANIFEST_GLOBAL
+# mods-ok: vetted@mkt
+#mods-ok: syncmod@synced"
+assert "an allowlisted mod is silent" '! outgrep "vetted@mkt"'
+assert "the allowlist accepts no space after #" '! outgrep "syncmod@synced"'
+assert "allowlisting one mod does not silence another" 'outgrep "• modded@mkt"'
+
+run_mods "$MANIFEST_GLOBAL
+# mods-ok: modded@mkt
+# mods-ok: vetted@mkt
+# mods-ok: syncmod@synced
+# mods-ok: skillmod@skills-dir"
+assert "no output when every mod is allowlisted" '[ -z "$out" ]'
+
 # ── sync-plugins.sh agrees with the hook on what "installed" means ──────
 # The hook's remedy is "run sync-plugins.sh". If its fast path treated a
 # project-scoped record as satisfying the manifest, it would exit 0 without
@@ -279,6 +344,14 @@ run_sync "$MANIFEST_GLOBAL" '{"version":1,"plugins":{
 }}'
 assert "sync fast-path still trusts a non-array install record" \
   '[ -z "$sync_installs" ]'
+
+# A `# mods-ok:` allowlist line (#594) is a comment to sync-plugins.sh: it is
+# neither installed nor counted as missing by the fast path.
+run_sync "$MANIFEST_GLOBAL
+# mods-ok: modded@mkt" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}"
+assert "sync never installs a mods-ok line" '[ -z "$sync_installs" ]'
 
 # ── setup.sh's listing-based match (lib-checks.sh) ──────────────────────
 # setup.sh cannot read installed_plugins.json — it runs before the CLI state

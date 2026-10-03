@@ -189,7 +189,7 @@ is present but not registered — the drift that once left every hook inert.
 | `SymlinkRepair.hook.ts` | SessionStart (FIRST) | ✅ | Re-links missing dotfiles→`~/.claude/` symlinks (hooks/scripts/agents/skills) every session — incl. **resume** — when new files land and `setup.sh` hasn't re-run; advisory, never clobbers |
 | `StripProjectPermissions.hook.ts` | SessionStart | ✅ | Strips project-level permission overrides that fight global settings |
 | `HygieneStatus.hook.sh` | SessionStart | ✅ | Surfaces branch-hygiene drift from the daily systemd timer |
-| `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule |
+| `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule. Also names every installed plugin (cache, claude.ai synced, `~/.claude/skills`) that ships a **mod** — a `"modules"` key in its `hooks/hooks.json` — unless a `# mods-ok: <id>` line in `plugins.txt` allowlists it |
 | `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
 | `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
 | `HandoffReminder.hook.sh` | SessionStart | ✅ | Surfaces a recent handoff note for the current project into context at session start |
@@ -200,6 +200,17 @@ is present but not registered — the drift that once left every hook inert.
 | `worktree-guard.sh` | PreToolUse (`Bash`) | ✅ | Blocks `git checkout -b`/`git switch` in the **primary** checkout when >1 worktree exists — prevents a branch switch from clobbering another active session's working tree. Always allows `git worktree` commands and ops inside linked worktrees. Fail-open (exits 0 on any error) |
 
 > Security blocking (dangerous commands, secrets) is handled by the permission allowlist in `settings.json`, not by a dedicated hook.
+
+**Mods sit above every hook here.** A mod (a plugin whose `hooks/hooks.json`
+has a `"modules"` key) runs code in the session, and a `tool.check` hook in one
+can approve a call that an `ask` rule or a non-managed `PreToolUse` hook — all
+of the above — would stop; outside managed settings or a Team/Enterprise plan,
+even a `deny` rule. Before installing or updating a mod, run
+`claude plugin validate <dir>` and read its `hooks:` and `calls:` lines.
+`tool.check`, `prompt.submit`, a `tool.call` hook that answers without calling
+`next`, and `$.process.*`, `$.http.fetch` or `$.env.*` calls each need a
+deliberate yes. Then add `# mods-ok: <id>` to `claude/plugins.txt` so
+`PluginDriftCheck.hook.ts` stops naming it (#594).
 
 ---
 
