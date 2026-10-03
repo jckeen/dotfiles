@@ -158,10 +158,11 @@ the `ultracode` keyword.
 ### The script
 
 This is the docs' example of a saved script ("What the saved script looks
-like") with one change: the docs end with `return audits.filter(Boolean)`,
-which silently drops any route whose audit agent stopped or failed (its
-result is `null`) — for an audit, unexamined routes must be reported, not
-hidden. It is complete and runnable:
+like") with two changes: the docs read `found.files` without checking for a
+`null` discovery result and end with `return audits.filter(Boolean)`, which
+silently drops any route whose audit agent stopped or failed (its result is
+`null`) — for an audit, a failed discovery and unexamined routes must be
+reported, not hidden. It is complete and runnable:
 
 ```javascript
 export const meta = {
@@ -172,6 +173,7 @@ export const meta = {
 const found = await agent('List every .ts file under src/routes/.', {
   schema: { type: 'object', required: ['files'], properties: { files: { type: 'array', items: { type: 'string' } } } },
 })
+if (found === null) return { audits: [], unaudited: [], error: 'route discovery failed; coverage unknown' }
 
 const audits = await pipeline(found.files, file =>
   agent(`Audit ${file} for missing authentication checks.`, { label: file }),
