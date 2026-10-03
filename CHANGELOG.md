@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-10-02 — fix(hooks): PluginDriftCheck names installed mods (#594)
+
+- **`PluginDriftCheck.hook.ts` now names every installed plugin that ships a
+  mod** — a `"modules"` key in its `hooks/hooks.json`, which Claude Code
+  2.1.287 runs as in-session JS/TS. A mod's `tool.check` hook answers after
+  the permission rules and `PreToolUse` hooks and can replace their decision,
+  so it sits above every guard this repo ships as a settings hook. The scan
+  covers every cached version under `~/.claude/plugins/cache/`, claude.ai
+  synced plugins under `~/.claude/plugins/synced/`, and skills-directory
+  plugins under `~/.claude/skills/`; an unreadable or malformed `hooks.json`
+  is skipped. The warning now also fires when the manifest is empty. No
+  installed plugin had a `"modules"` key on 2026-10-02, so the live session
+  stays silent.
+- **Allowlist: a whole-line `# mods-ok: <id>` comment in `claude/plugins.txt`**
+  (`<plugin>@<marketplace>`, `<name>@synced` or `<name>@skills-dir`). A
+  comment, not a section or trailing marker, because `setup.sh`,
+  `sync-plugins.sh` and `check-install-integrity.sh` treat any other line as a
+  plugin to install. Documented in the manifest header.
+- `CLAUDE-GUIDE.md` (Hooks) carries the review rule: `claude plugin validate
+  <dir>` before installing or updating a mod, with `tool.check`,
+  `prompt.submit`, a `tool.call` hook that answers without `next`, and
+  `$.process.*` / `$.http.fetch` / `$.env.*` calls each needing a deliberate
+  yes.
+- `plugin-drift.test.sh` gains fixtures for a cached, a synced and a
+  skills-dir mod, an allowlisted mod, a plugin without the key, a malformed
+  `hooks.json`, and a `# mods-ok:` line under `sync-plugins.sh`.
+
 ## 2026-10-02 — feat(agents): six subject-matter-expert agents; model and effort pins
 
 - **Six `sme-*` subagents: `sme-context`, `sme-evals`, `sme-models`,
