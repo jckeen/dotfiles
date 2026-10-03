@@ -13,9 +13,11 @@
  *   3. Fetch the latest review per reviewer; pull `reviewed_sha` from each
  *      review's `Reviewed commit:` body header (Codex's convention) or
  *      `commit_id` field. Compare against local HEAD.
- *   4. If any reviewer's reviewed_sha != HEAD: print a one-line
- *      `[stale-push]` warning to stderr so the user sees it inline with
- *      the Bash tool's output.
+ *   4. If any reviewer's reviewed_sha != HEAD: print one JSON object on
+ *      stdout carrying the `[stale-push]` warning as `systemMessage` (shown
+ *      to the user) and as PreToolUse `additionalContext` (shown to Claude
+ *      next to the tool result). Stderr from a hook that exits 0 goes to
+ *      the debug log only, so it cannot carry the warning (#593).
  *   5. NEVER block. Always exit 0. The warning is informational —
  *      legitimate fix-for-Codex pushes intentionally make the prior
  *      review stale.
@@ -23,7 +25,7 @@
  * INPUT (stdin JSON, harness-supplied):
  *   { tool_name, tool_input, transcript_path, ... }
  *
- * OUTPUT: stderr only when stale; otherwise silent.
+ * OUTPUT: stdout JSON only when stale; otherwise silent (empty stdout).
  *
  * SAFETY:
  *   - <500ms typical (one `gh pr view` call, one `git rev-parse`).
@@ -96,11 +98,9 @@ function shasMatch(a: string, b: string): boolean {
   return a.startsWith(b);
 }
 
-function emitStale(pr: number, repoSlug: string, reviewerLogin: string, reviewedSha: string, headSha: string): void {
+function staleLine(pr: number, repoSlug: string, reviewerLogin: string, reviewedSha: string, headSha: string): string {
   const line = `[stale-push] PR #${pr} ${repoSlug} ${reviewerLogin} reviewed ${reviewedSha.slice(0, 10)} but HEAD is ${headSha.slice(0, 10)} — ping \`@codex review\` after push`;
-  // stderr lands in the Bash tool's user-visible output — gives me an
-  // immediate signal at push time, not just on next prompt.
-  process.stderr.write(`⚠️ STALE-REVIEW: ${line}\n`);
+  return `⚠️ STALE-REVIEW: ${line}`;
 }
 
 async function main(): Promise<void> {
@@ -164,7 +164,7 @@ async function main(): Promise<void> {
     }
   }
 
-  let warnedAny = false;
+  const warnings: string[] = [];
   for (const [login, r] of latestPerReviewer) {
     // Prefer GraphQL commit.oid (full 40-char sha); body parse is the
     // fallback for non-Codex reviewers who follow the same convention
@@ -176,19 +176,27 @@ async function main(): Promise<void> {
     // draft the reviewer hasn't published; DISMISSED was explicitly
     // discarded.
     if (r.state === "PENDING" || r.state === "DISMISSED") continue;
-    emitStale(pr.number, repoSlug, login, reviewedSha, head);
-    warnedAny = true;
+    warnings.push(staleLine(pr.number, repoSlug, login, reviewedSha, head));
   }
 
-  if (warnedAny) {
-    process.stderr.write(
-      "  └─ This push is intentional if you're addressing those findings. After it lands, ping `@codex review` so the reviewer re-runs against the new HEAD.\n",
+  if (warnings.length > 0) {
+    warnings.push(
+      "  └─ This push is intentional if you're addressing those findings. After it lands, ping `@codex review` so the reviewer re-runs against the new HEAD.",
+    );
+    const message = warnings.join("\n");
+    // Exit-0 stderr never reaches the transcript; stdout JSON does.
+    // systemMessage → the user, additionalContext → Claude.
+    process.stdout.write(
+      JSON.stringify({
+        systemMessage: message,
+        hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: message },
+      }) + "\n",
     );
   }
 }
 
 main().catch((err) => {
-  // Never block the push.
+  // Never block the push. Exit-0 stderr lands in the debug log only.
   process.stderr.write(`PrePushStaleSHACheck: ${err}\n`);
   process.exit(0);
 });

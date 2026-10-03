@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-10-02 — fix(hooks): PluginDriftCheck names installed mods (#594)
+
+- **`PluginDriftCheck.hook.ts` now names every installed plugin that ships a
+  mod** — a `"modules"` key in its `hooks/hooks.json`, which Claude Code
+  2.1.287 runs as in-session JS/TS. A mod's `tool.check` hook answers after
+  the permission rules and `PreToolUse` hooks and can replace their decision,
+  so it sits above every guard this repo ships as a settings hook. The scan
+  covers every cached version under `~/.claude/plugins/cache/`, claude.ai
+  synced plugins under `~/.claude/plugins/synced/`, and skills-directory
+  plugins under `~/.claude/skills/`; an unreadable or malformed `hooks.json`
+  is skipped. The warning now also fires when the manifest is empty. No
+  installed plugin had a `"modules"` key on 2026-10-02, so the live session
+  stays silent.
+- **Allowlist: a whole-line `# mods-ok: <id>` comment in `claude/plugins.txt`**
+  (`<plugin>@<marketplace>`, `<name>@synced` or `<name>@skills-dir`). A
+  comment, not a section or trailing marker, because `setup.sh`,
+  `sync-plugins.sh` and `check-install-integrity.sh` treat any other line as a
+  plugin to install. Documented in the manifest header.
+- `CLAUDE-GUIDE.md` (Hooks) carries the review rule: `claude plugin validate
+  <dir>` before installing or updating a mod, with `tool.check`,
+  `prompt.submit`, a `tool.call` hook that answers without `next`, and
+  `$.process.*` / `$.http.fetch` / `$.env.*` calls each needing a deliberate
+  yes.
+- `plugin-drift.test.sh` gains fixtures for a cached, a synced and a
+  skills-dir mod, an allowlisted mod, a plugin without the key, a malformed
+  `hooks.json`, and a `# mods-ok:` line under `sync-plugins.sh`.
+
+## 2026-10-02 — fix(hooks): stale-push and pre-merge harvest warnings reach the transcript (#593)
+
+- **`PrePushStaleSHACheck.hook.ts` and `PreMergeCodexHarvest.hook.sh` now
+  report through stdout JSON.** Both are PreToolUse hooks that exit 0 and
+  wrote their warning to stderr, which the hooks reference sends to the debug
+  log only, so neither the user nor Claude ever saw the stale-review warning
+  or the harvest output. Each now prints one object,
+  `{"systemMessage": …, "hookSpecificOutput": {"hookEventName": "PreToolUse",
+  "additionalContext": …}}`: `systemMessage` shows the warning to the user and
+  `additionalContext` puts it next to the tool result for Claude. Nothing to
+  report still means empty stdout; both still always exit 0 and fail open.
+  The harvest hook captures the harvester's stdout and stderr into the message.
+- **Tests.** New `claude/scripts/tests/pre-push-stale-sha.test.sh` drives the
+  bun hook with stub `git`/`gh` and asserts the JSON shape on a stale review
+  and empty stdout on every no-warning path (wired into the `checkers` shard);
+  the `PreMergeHookTests` in `harvest-codex-comments.test.py` now assert the
+  same shape and the silent case.
+
 ## 2026-10-02 — fix: link each Claude skill as one directory symlink (#592)
 
 - **A skill's supporting files now deploy.** `symlink_enumerate()` and

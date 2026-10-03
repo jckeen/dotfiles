@@ -22,13 +22,21 @@
  * but the scoping checks are new, so advisory warnings can appear where the
  * old hook was silent.
  *
+ * Mods (issue #594): a plugin whose hooks/hooks.json has a "modules" key runs
+ * JS/TS in-session, and its `tool.check` / `tool.call` hooks can approve a call
+ * that an `ask` rule or one of this repo's (non-managed) settings hooks would
+ * stop. Every installed plugin is scanned (marketplace cache, claude.ai synced,
+ * ~/.claude/skills plugins) and each mod not allowlisted by a
+ * `# mods-ok: <id>` line in the manifest is named. An unreadable or malformed
+ * hooks.json is skipped, fail-open like the rest of this hook.
+ *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
  */
 
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const HOME = homedir();
@@ -41,19 +49,28 @@ const DOTFILES_DIR =
 const MANIFEST = join(DOTFILES_DIR, 'claude', 'plugins.txt');
 const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
 const SETTINGS = join(HOME, '.claude', 'settings.json');
+const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
+const SKILLS_DIR = join(HOME, '.claude', 'skills');
 
 interface Manifest {
   global: string[];
   perProject: string[];
+  modsOk: string[];
 }
 
 function readManifest(): Manifest {
-  const manifest: Manifest = { global: [], perProject: [] };
+  const manifest: Manifest = { global: [], perProject: [], modsOk: [] };
   if (!existsSync(MANIFEST)) return manifest;
   // Lines before any section marker count as global, so a manifest without
   // markers (the pre-#214 format) parses identically to the old hook.
-  let section: keyof Manifest = 'global';
+  let section: 'global' | 'perProject' = 'global';
   for (const raw of readFileSync(MANIFEST, 'utf-8').split('\n')) {
+    // A whole-line comment, so setup.sh and sync-plugins.sh never install it.
+    const modOk = raw.match(/^\s*#\s*mods-ok:\s*(\S+)/i);
+    if (modOk) {
+      manifest.modsOk.push(modOk[1]);
+      continue;
+    }
     const marker = raw.match(/^\s*#\s*\[(global|per-project)\]/i);
     if (marker) {
       section = marker[1].toLowerCase() === 'global' ? 'global' : 'perProject';
@@ -118,14 +135,85 @@ function readGloballyEnabled(): Record<string, unknown> | null {
   }
 }
 
+function subdirs(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((d) => !d.startsWith('.'))
+      .map((d) => join(dir, d));
+  } catch {
+    return [];
+  }
+}
+
+function pluginName(dir: string): string | null {
+  try {
+    const path = join(dir, '.claude-plugin', 'plugin.json');
+    const name = JSON.parse(readFileSync(path, 'utf-8')).name;
+    return typeof name === 'string' ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+// [id, dir] for every plugin on disk, ids in the `enabledPlugins` forms
+// (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
+// version is scanned, not only the recorded installPath: a session started
+// before an update still runs the old one.
+function pluginDirs(): [string, string][] {
+  const found: [string, string][] = [];
+  for (const market of subdirs(join(PLUGINS_ROOT, 'cache')))
+    for (const plugin of subdirs(market))
+      for (const version of subdirs(plugin))
+        found.push([`${basename(plugin)}@${basename(market)}`, version]);
+  for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
+    for (const dir of subdirs(bucket)) {
+      const name = pluginName(dir);
+      if (name) found.push([`${name}@synced`, dir]);
+    }
+  for (const dir of subdirs(SKILLS_DIR)) {
+    const name = pluginName(dir);
+    if (name) found.push([`${name}@skills-dir`, dir]);
+  }
+  return found;
+}
+
+function modsWarning(allowed: string[]): string {
+  const mods = new Set<string>();
+  for (const [id, dir] of pluginDirs()) {
+    if (allowed.includes(id)) continue;
+    try {
+      const hooks = JSON.parse(
+        readFileSync(join(dir, 'hooks', 'hooks.json'), 'utf-8'),
+      );
+      if (typeof hooks === 'object' && hooks !== null && 'modules' in hooks)
+        mods.add(id);
+    } catch {
+      // No hooks.json, or one Claude Code could not load either.
+    }
+  }
+  if (mods.size === 0) return '';
+  const list = [...mods].map((p) => `  • ${p}`).join('\n');
+  return (
+    `⚠️  Plugin mods: ${mods.size} installed plugin(s) ship a mod (a "modules" key ` +
+    `in hooks/hooks.json) — in-session code that can approve tool calls past ` +
+    `\`ask\` rules and the settings hooks (issue #594):\n${list}\n\n` +
+    `Review each with \`claude plugin validate <dir>\` (CLAUDE-GUIDE.md, Hooks), ` +
+    `then allowlist it with a \`# mods-ok: <id>\` line in ${MANIFEST}, or uninstall it.\n`
+  );
+}
+
+function emit(warning: string): void {
+  if (warning.length === 0) return;
+  process.stdout.write(`<system-reminder>\n${warning}</system-reminder>\n`);
+}
+
 function main(): void {
   const manifest = readManifest();
+  let warning = modsWarning(manifest.modsOk);
   // Dedupe so a plugin duplicated across sections (warned below) doesn't
   // skew the install-drift counts.
   const desired = [...new Set([...manifest.global, ...manifest.perProject])];
-  if (desired.length === 0) return;
-
-  let warning = '';
+  if (desired.length === 0) return emit(warning);
 
   // A plugin in BOTH sections is unsatisfiable: the scoping checks below
   // would demand it be globally enabled and not globally enabled at once.
@@ -181,8 +269,7 @@ function main(): void {
     }
   }
 
-  if (warning.length === 0) return;
-  process.stdout.write(`<system-reminder>\n${warning}</system-reminder>\n`);
+  emit(warning);
 }
 
 main();
