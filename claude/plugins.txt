@@ -12,6 +12,15 @@
 # are plain comments, so setup.sh / sync-plugins.sh install both sections
 # unchanged; PluginDriftCheck.hook.ts parses them to warn (never block) when
 # live enablement drifts from this layout.
+#
+# Mods allowlist (issue #594): a plugin whose hooks/hooks.json has a "modules"
+# key is a mod — in-session code that can approve tool calls past `ask` rules
+# and the settings hooks — and PluginDriftCheck.hook.ts names every installed
+# one at session start. After reviewing a mod (CLAUDE-GUIDE.md, Hooks), silence
+# it with a whole-line comment `# mods-ok: <id>`, where <id> is
+# <plugin>@<marketplace>, <name>@synced or <name>@skills-dir. It must be a
+# whole-line comment so setup.sh and sync-plugins.sh never try to install it.
+# No plugin is allowlisted today.
 
 # [global] — enabled in ~/.claude/settings.json `enabledPlugins`
 typescript-lsp@claude-plugins-official
