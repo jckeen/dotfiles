@@ -625,5 +625,6 @@ class PreMergeHookTests(unittest.TestCase):
         result = self.run_hook("gh pr view 42 --json title")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
+
 if __name__ == "__main__":
     unittest.main()
