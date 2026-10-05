@@ -379,6 +379,13 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/deployed-orphans.test.sh
 
+      # Self-test only: two launchers healing at once must not nest a
+      # self-link inside a skill bundle (#603); drives a fixture copy of
+      # check-claude.sh over a throwaway HOME.
+      - name: heal-race (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/heal-race.test.sh
+
       # build-site's awk frontmatter reader shares gen-agentpack's loud-failure
       # contract (issue #235); the site build itself runs in pages.yml.
       - name: build-site (self-test)

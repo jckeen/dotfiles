@@ -142,7 +142,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `cx [project]` | Same launch ergonomics for Codex (runs `check-codex` instead); reuses a listening shared server when Remote Control is already enabled and otherwise launches locally; preserves explicit endpoints and leaves daemon startup and repair to explicit maintenance |
 | `pull-all` | Fast-forward pull on every ordinary checkout in dev dir; linked worktrees fetch only. Nonzero when any repo fails, with the repo name and first git error per line |
 | `sync-memory` | Commit and push pending memory changes; nonzero when publication is refused (no upstream, non-memory paths in the commit, a credential-like file name such as `*oauth*.md` — the abort names the file — push failure). Inside `cc` that refusal is a warning, not a launch blocker |
-| `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only |
+| `check-claude` | Verify all Claude config symlinks are healthy (read-only), and warn on hook-wiring drift. `cc` runs `--heal` on **every** launch (incl. `--resume`/`--continue`) to auto-create missing links; ambiguous states stay report-only. A self-link nested inside a source skill bundle (`claude/skills/<name>/<name>`) is reported as `SELFLINK`; `--fix` removes it |
 | `check-codex` | Verify public-safe Codex symlinks; warn about private/generated state |
 | `check-antigravity.sh` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Verify Claude Code config symlinks are healthy.
 # Run from anywhere: ~/dev/dotfiles/check-claude.sh
-# Checks for: broken links, unlinked files, orphaned links, stale backups.
+# Checks for: broken links, unlinked files, orphaned links, stale backups,
+# self-links nested inside a skill bundle.
 
 set +e
 
@@ -133,7 +134,12 @@ while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
   if symlink_is_legacy_skill_dir "$src" "$dst"; then
     if [ "$HEAL" -eq 1 ]; then
-      if ! symlink_migrate_legacy_skill_dir "$src" "$dst"; then
+      # A concurrent --heal (two panes launching cc) may finish the same
+      # conversion first, so rm/rmdir here fail on entries already gone. That
+      # is not a failure of this run: fall through and let check_link report
+      # whatever state the directory is in now.
+      if ! symlink_migrate_legacy_skill_dir "$src" "$dst" \
+        && symlink_is_legacy_skill_dir "$src" "$dst"; then
         red "FAILED  $label could not convert legacy per-file links"
         ERRORS=$((ERRORS + 1))
         continue
@@ -147,6 +153,32 @@ while IFS=$'\t' read -r src dst label _flags; do
   check_link "$src" "$dst" "$label"
 done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
 
+# Check for self-links inside source skill bundles — <bundle>/<name> ->
+# <bundle>. A plain `ln -s` whose destination had just become a directory
+# link (a racing --heal, issue #603) drops the link inside the bundle, where
+# it shows up as an untracked file in the repo and resolves recursively. It
+# carries no data, so --fix removes it.
+echo ""
+echo "Checking for self-links in skill bundles..."
+while IFS= read -r link; do
+  bundle="$(dirname "$link")"
+  [ "$(readlink "$link")" = "$bundle" ] || continue
+  label="${link#$CLAUDE_SRC/}"
+  if [ "$FIX" -eq 1 ]; then
+    # set +e: a failed rm (read-only bundle) must not print CLEANED.
+    if rm "$link" 2>/dev/null; then
+      green "CLEANED  $label (removed self-link -> $bundle)"
+      FIXED=$((FIXED + 1))
+    else
+      red "FAILED  $label could not remove self-link -> $bundle"
+      ERRORS=$((ERRORS + 1))
+    fi
+  else
+    red "SELFLINK  $label -> $bundle (link nested inside its own bundle; --fix removes it)"
+    ERRORS=$((ERRORS + 1))
+  fi
+done < <(find "$CLAUDE_SRC/skills" -mindepth 2 -maxdepth 2 -type l 2>/dev/null)
+
 # Check for orphaned symlinks — symlinks in ~/.claude/ pointing into dotfiles
 # whose source was removed (e.g., AgentPack.md after we stopped linking it)
 echo ""
@@ -157,9 +189,13 @@ while IFS= read -r link; do
   if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
     label="${link#$CLAUDE_DST/}"
     if [ "$FIX" -eq 1 ]; then
-      rm "$link"
-      green "CLEANED  $label (removed orphaned link -> $target)"
-      FIXED=$((FIXED + 1))
+      if rm "$link" 2>/dev/null; then
+        green "CLEANED  $label (removed orphaned link -> $target)"
+        FIXED=$((FIXED + 1))
+      else
+        red "FAILED  $label could not remove orphaned link -> $target"
+        ERRORS=$((ERRORS + 1))
+      fi
     else
       red "ORPHAN  $label -> $target (source removed from dotfiles)"
       ERRORS=$((ERRORS + 1))
@@ -194,9 +230,13 @@ while IFS= read -r backup; do
       yellow "STALE   $backup (backed-up directory — review and remove it yourself)"
       WARNINGS=$((WARNINGS + 1))
     elif [ "$FIX" -eq 1 ]; then
-      rm "$backup"
-      green "CLEANED  $backup"
-      FIXED=$((FIXED + 1))
+      if rm "$backup" 2>/dev/null; then
+        green "CLEANED  $backup"
+        FIXED=$((FIXED + 1))
+      else
+        red "FAILED  $backup could not be removed"
+        ERRORS=$((ERRORS + 1))
+      fi
     else
       yellow "STALE   $backup"
       WARNINGS=$((WARNINGS + 1))

@@ -349,7 +349,7 @@ audit_link() {
         fi
         rm "$dst"
         mkdir -p "$(dirname "$dst")"
-        ln -s "$src" "$dst"
+        ln -sn "$src" "$dst"
         printf '  \033[32mFIXED\033[0m   %s\n' "$label"
         # Codex P2 on PR #53: repair-path executable enforcement. Without
         # this, a MISSING/BROKEN bin link gets recreated but the source
@@ -370,7 +370,7 @@ audit_link() {
         fi
         mv "$dst" "$dst.backup"
         mkdir -p "$(dirname "$dst")"
-        ln -s "$src" "$dst"
+        ln -sn "$src" "$dst"
         printf '  \033[32mFIXED\033[0m   %s (old file backed up to %s.backup)\n' "$label" "$label"
         if [ "$require" = "executable" ]; then
           enforce_executable_bit "$src_real" "$label" "$mode" || true
@@ -395,7 +395,7 @@ audit_link() {
           return 1
         fi
         mkdir -p "$(dirname "$dst")"
-        ln -s "$src" "$dst"
+        ln -sn "$src" "$dst"
         printf '  \033[32mFIXED\033[0m   %s\n' "$label"
         if [ "$require" = "executable" ]; then
           enforce_executable_bit "$src_real" "$label" "$mode" || true
@@ -621,7 +621,7 @@ link_file() {
     echo "ERROR: refusing to replace unsupported destination type: $dst" >&2
     return 1
   fi
-  ln -s "$src" "$dst"
+  ln -sn "$src" "$dst"
   LINKS_CREATED=$((LINKS_CREATED + 1))
 }
 
@@ -1960,7 +1960,7 @@ elif [ -d "$MEMORY_REPO" ]; then
       cp -n "$dst"/*.md "$src/" 2>/dev/null || true
       rm -r "$dst"
     fi
-    ln -s "$src" "$dst"
+    ln -sn "$src" "$dst"
   }
   # The dev root itself (basename "dev"), then every immediate project under it.
   link_project_memory "dev" "$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"

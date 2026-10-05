@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10-05 — fix: concurrent `check-claude.sh --heal` runs no longer nest a self-link in skill bundles (#603)
+
+- **Every `src -> dst` link site uses `ln -sn`** (`lib-checks.sh` heal,
+  `setup.sh` ×5, `link-claude-profile.sh`). Two panes launching `cc` within
+  the same second both saw the post-#601 skill links as `MISSING`; the loser's
+  plain `ln -s` followed the directory link the winner had just made and
+  dropped `claude/skills/<name>/<name> -> claude/skills/<name>` inside seven
+  source bundles. `-n` (GNU and BSD) never dereferences an existing directory
+  link, so the loser's `ln` fails and the post-heal assertion still holds.
+- **`check-claude.sh --heal` tolerates a conversion the other run finished
+  first**: a failed `symlink_migrate_legacy_skill_dir` is `FAILED` only while
+  the destination is still a legacy per-file directory; otherwise it falls
+  through to `check_link`. This was the "Agent health check failed" the
+  losing launcher printed.
+- **New `SELFLINK` check** over `claude/skills/*/`: a link nested inside its
+  own bundle is reported, and `--fix` removes it (it carries no data). The
+  previous checker passed "All good" with seven of them present. A failed
+  `rm` under `--fix` (self-link, orphan, stale backup) now reports `FAILED`
+  and exits 1 instead of printing `CLEANED` under `set +e` (Codex gate
+  finding on this PR).
+- `heal-race.test.sh` (26 cases, wired into the `checkers` shard): fresh
+  heal, SELFLINK report/fix and a foreign link that is not one, the heal path
+  driven into an already-linked destination, and the lost and stuck migration
+  races.
+
 ## 2026-10-02 — fix(hooks): PluginDriftCheck names installed mods (#594)
 
 - **`PluginDriftCheck.hook.ts` now names every installed plugin that ships a
