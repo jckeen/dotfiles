@@ -121,7 +121,7 @@ for name in $SHARED; do
   if [ "$CHECK" -eq 1 ]; then
     drift "MISSING  $dst -> $src"
   else
-    ln -s "$src" "$dst" || drift "cannot link $dst"
+    ln -sn "$src" "$dst" || drift "cannot link $dst"
   fi
 done
 

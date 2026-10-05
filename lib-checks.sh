@@ -121,7 +121,11 @@ check_link() {
           WARNINGS=$((WARNINGS + 1))
         else
           mkdir -p "$(dirname "$dst")"
-          ln -s "$src" "$dst" 2>/dev/null
+          # -n: never dereference $dst. Two launchers healing at once (two
+          # panes running cc) both see MISSING; without -n the second ln
+          # follows the directory link the first one just made and drops a
+          # self-link INSIDE the skill bundle (<bundle>/<name> -> <bundle>).
+          ln -sn "$src" "$dst" 2>/dev/null
           # Assert exactly what HEALED claims: $dst is a symlink to $src that
           # resolves. readlink==src rules out a racing run that linked
           # elsewhere; -e confirms it dereferences.
