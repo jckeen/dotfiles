@@ -26,8 +26,8 @@ import time
 
 RULE_RE = re.compile(r"^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
 BUCKETS = ("allow", "ask", "deny")
-# Retirement is scoped to this bucket: it withdraws a grant, never a restriction.
-GRANT_BUCKET = "allow"
+# Retirement withdraws a grant or obsolete prompt gate from allow/ask, never a deny restriction.
+RETIRED_BUCKETS = ("allow", "ask")
 
 
 def load_json(path, required):
@@ -68,9 +68,10 @@ def load_baseline(path):
     ):
         sys.exit(f'error: {path}: every "retired" entry must be a rule like command(prefix)')
     baseline = {b: list(rules.get(b, [])) for b in BUCKETS}
-    both = sorted(set(retired) & set(baseline[GRANT_BUCKET]))
+    active_retirable = set(baseline["allow"]) | set(baseline["ask"])
+    both = sorted(set(retired) & active_retirable)
     if both:
-        sys.exit(f"error: {path}: rule(s) both granted and retired: {', '.join(both)}")
+        sys.exit(f"error: {path}: rule(s) both active and retired: {', '.join(both)}")
     return baseline, settings, retired
 
 
@@ -150,17 +151,20 @@ def main():
                 deduped.append(e)
         live_lists[bucket] = deduped
 
-    # Retirement withdraws a grant, so it only ever touches "allow". The same
-    # rule sitting in ask or deny is the operator's own hardening: deleting it
-    # would turn a forbidden operation into an approvable one.
-    retired_live = [r for r in live_lists[GRANT_BUCKET] if r in retired_set]
+    # Retirement withdraws a grant or obsolete ask gate, so it touches allow and
+    # ask, never deny. A retired rule sitting in deny is the operator's own
+    # hardening: deleting it would turn a forbidden operation into an approvable one.
+    retired_by_bucket = {
+        b: [r for r in live_lists[b] if r in retired_set] for b in RETIRED_BUCKETS
+    }
+    retired_live = [r for b in RETIRED_BUCKETS for r in retired_by_bucket[b]]
     n_retired = len(retired_live)
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
     extras = {
         b: [
             r
             for r in live_lists[b]
-            if r not in expanded_baseline[b] and not (b == GRANT_BUCKET and r in retired_set)
+            if r not in expanded_baseline[b] and not (b in RETIRED_BUCKETS and r in retired_set)
         ]
         for b in BUCKETS
     }
@@ -212,10 +216,12 @@ def main():
 
     # apply
     changed = n_missing > 0 or legacy_repaired or n_retired > 0
-    for rule in retired_live:
-        print(f"retired: removed {rule} from {GRANT_BUCKET} (withdrawn from the baseline)")
+    for b in RETIRED_BUCKETS:
+        for rule in retired_by_bucket[b]:
+            print(f"retired: removed {rule} from {b} (withdrawn from the baseline)")
     kept = dict(live_lists)
-    kept[GRANT_BUCKET] = [r for r in live_lists[GRANT_BUCKET] if r not in retired_set]
+    for b in RETIRED_BUCKETS:
+        kept[b] = [r for r in live_lists[b] if r not in retired_set]
     merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:

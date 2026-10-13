@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules, drop `git -C` prompt gate, and make `check-antigravity.sh` sandbox-aware
+
+- **`antigravity/permissions.json` & `claude/scripts/agy-apply-permissions.py`:**
+  retired `read_file(~/.bash_aliases)` and `read_file(~/.gitconfig)` (whose
+  `$HOME` symlinks resolve into `~/dev/dotfiles/` and get bind-mounted `ro` by
+  `bwrap` on top of the `rw` `~/dev/` mount) and retired `command(git -C)` from
+  `permissions.ask` (`git` is sandbox-only, and `git -C` forced prompts on
+  read-only repo checks). `agy-apply-permissions.py` now retires withdrawn
+  entries from both `allow` and `ask` (never `deny`) so existing machines drop
+  `command(git -C)` on `setup.sh` / `apply`. Added common sandboxed dev/test
+  commands and `read_url(https://antigravity.google/)` to `permissions.allow`.
+- **`check-antigravity.sh`:** detects when `~/.gemini/config` and
+  `~/.gemini/antigravity-cli` are masked by Antigravity's `/setup/deny*`
+  `tmpfs` mounts in `/proc/self/mountinfo` (`AGY_MOUNTINFO_FILE`), verifies the
+  bind-mounted regular file `GEMINI.md` via `cmp -s`, reports `SANDBOX` for
+  sandbox-masked host files instead of 6 false `MISSING`/`NOT LINKED`/`DRIFT`
+  warnings, and continues checking `skills/*` and orphan symlinks.
+- **Tests:** expanded `agy-permissions.test.sh` (24 cases) and
+  `antigravity-config.test.sh` (11 cases, including simulated sandbox
+  `mountinfo` match and drift checks).
+
 ## 2026-10-05 — fix: concurrent `check-claude.sh --heal` runs no longer nest a self-link in skill bundles (#603)
 
 - **Every `src -> dst` link site uses `ln -sn`** (`lib-checks.sh` heal,

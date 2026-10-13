@@ -50,6 +50,9 @@ assert 'command(git push --force)' in d['permissions']['deny'] and 'command(git 
 assert 'read_file(~/.gemini/antigravity-cli/)' not in d['permissions']['deny'], 'agy keeps its own brain/ and scratch/ there'
 assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefix risks over-matching every absolute path'
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
+for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
+    assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
+assert 'command(git -C)' not in d['permissions']['ask'], 'git is sandbox-only; git -C should not prompt on read-only repo checks'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
 else fail "baseline file failed validation"; fi
@@ -227,10 +230,10 @@ S_RETIRED="$ROOT/retired.json"
 python3 - "$S_RETIRED" "$RULES" <<'PY'
 import json, sys
 retired = json.load(open(sys.argv[2]))['retired']
-assert retired, 'baseline must declare retired rules'
+assert retired and 'command(git -C)' in retired, 'baseline must declare retired rules including command(git -C)'
 json.dump({'trustedWorkspaces': ['/x/dev'],
            'permissions': {'allow': ['command(local-junk)'] + retired,
-                           'ask': [], 'deny': [retired[0]]}},
+                           'ask': ['command(git -C)'], 'deny': [retired[0]]}},
           open(sys.argv[1], 'w'))
 PY
 
@@ -247,13 +250,14 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 retired = json.load(open(sys.argv[2]))['retired']
 perms = d['permissions']
-assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply'
+assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply in allow'
+assert not (set(perms['ask']) & set(retired)), 'retired ask gates survived apply in ask'
 assert retired[0] in perms['deny'], "an operator's own deny must never be retired away"
 assert 'command(local-junk)' in perms['allow'], 'unrelated local grants must be kept'
 assert d['trustedWorkspaces'] == ['/x/dev']
 assert 'command(sudo)' in perms['deny'], 'baseline rules still applied'
 PY
-then ok "apply removes retired rules and keeps unrelated local grants"
+then ok "apply removes retired rules from allow and ask and keeps unrelated local grants"
 else fail "apply did not retire the rules (rc=$rc): $out"; fi
 
 if grep -q 'retired' <<< "$out"; then ok "apply reports each retired rule it removed"
