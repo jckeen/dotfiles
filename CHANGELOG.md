@@ -1,25 +1,31 @@
 # Changelog
 
-## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules, drop `git -C` prompt gate, and make `check-antigravity.sh` sandbox-aware
+## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules, allow shipping/review gates unsandboxed, and make `check-antigravity.sh` sandbox-aware
 
 - **`antigravity/permissions.json` & `claude/scripts/agy-apply-permissions.py`:**
   retired `read_file(~/.bash_aliases)` and `read_file(~/.gitconfig)` (whose
   `$HOME` symlinks resolve into `~/dev/dotfiles/` and get bind-mounted `ro` by
-  `bwrap` on top of the `rw` `~/dev/` mount) and retired `command(git -C)` from
-  `permissions.ask` (`git` is sandbox-only, and `git -C` forced prompts on
-  read-only repo checks). `agy-apply-permissions.py` now retires withdrawn
-  entries from both `allow` and `ask` (never `deny`) so existing machines drop
-  `command(git -C)` on `setup.sh` / `apply`. Added common sandboxed dev/test
-  commands and `read_url(https://antigravity.google/)` to `permissions.allow`.
+  `bwrap` on top of the `rw` `~/dev/` mount) via `retired` (`allow`-only,
+  preserving any operator-added `ask` or `deny` restrictions), and retired
+  `command(git -C)`, `command(gh pr merge)`, `command(gh pr create)`, and
+  `command(gh issue create)` from `permissions.ask` via `retired_ask`. Added
+  sandboxed + `unsandboxed(...)` shipping and review-gate rules (`git push`,
+  `gh pr create|merge|edit|comment|close|ready`,
+  `gh issue create|comment|close|edit`, and
+  `{codex-review-gate,antigravity-review-gate,review-and-push}.sh` with `~`
+  expansion on `command`/`unsandboxed` rules), while keeping
+  `unsandboxed(git push --force-with-lease)` in `ask` and
+  `unsandboxed(git push --force|-f)` in `deny`.
 - **`check-antigravity.sh`:** detects when `~/.gemini/config` and
   `~/.gemini/antigravity-cli` are masked by Antigravity's `/setup/deny*`
-  `tmpfs` mounts in `/proc/self/mountinfo` (`AGY_MOUNTINFO_FILE`), verifies the
-  bind-mounted regular file `GEMINI.md` via `cmp -s`, reports `SANDBOX` for
-  sandbox-masked host files instead of 6 false `MISSING`/`NOT LINKED`/`DRIFT`
-  warnings, and continues checking `skills/*` and orphan symlinks.
+  `tmpfs` mounts in `/proc/self/mountinfo` (`AGY_MOUNTINFO_FILE`, decoding
+  mountinfo octal escapes like `\040`), verifies the bind-mounted regular file
+  `GEMINI.md` via `cmp -s`, reports `SANDBOX` for sandbox-masked host files
+  instead of 6 false `MISSING`/`NOT LINKED`/`DRIFT` warnings, and continues
+  checking `skills/*` and orphan symlinks.
 - **Tests:** expanded `agy-permissions.test.sh` (24 cases) and
-  `antigravity-config.test.sh` (11 cases, including simulated sandbox
-  `mountinfo` match and drift checks).
+  `antigravity-config.test.sh` (11 cases, including `\040`-escaped simulated
+  sandbox `mountinfo` match and drift checks).
 
 ## 2026-10-05 — fix: concurrent `check-claude.sh --heal` runs no longer nest a self-link in skill bundles (#603)
 

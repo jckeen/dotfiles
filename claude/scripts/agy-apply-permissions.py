@@ -26,8 +26,6 @@ import time
 
 RULE_RE = re.compile(r"^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
 BUCKETS = ("allow", "ask", "deny")
-# Retirement withdraws a grant or obsolete prompt gate from allow/ask, never a deny restriction.
-RETIRED_BUCKETS = ("allow", "ask")
 
 
 def load_json(path, required):
@@ -60,19 +58,25 @@ def load_baseline(path):
         if any("/home/" in e or "/Users/" in e for e in entries):
             sys.exit(f"error: {path}: rules must not embed a user home path")
     # Rules the baseline has withdrawn. apply is additive, so a grant deleted
-    # from "permissions" would otherwise survive on every machine that already
-    # installed it; listing it here makes apply delete it and check fail.
-    retired = data.get("retired", [])
-    if not isinstance(retired, list) or not all(
-        isinstance(e, str) and RULE_RE.match(e) for e in retired
-    ):
-        sys.exit(f'error: {path}: every "retired" entry must be a rule like command(prefix)')
+    # from "permissions.allow" or an obsolete gate deleted from "permissions.ask"
+    # would otherwise survive on every machine that already installed it;
+    # listing them in "retired" (allow) or "retired_ask" (ask) makes apply
+    # delete them from that specific bucket and check fail until removed.
+    for key in ("retired", "retired_ask"):
+        entries = data.get(key, [])
+        if not isinstance(entries, list) or not all(
+            isinstance(e, str) and RULE_RE.match(e) for e in entries
+        ):
+            sys.exit(f'error: {path}: every "{key}" entry must be a rule like command(prefix)')
+        if any("/home/" in e or "/Users/" in e for e in entries):
+            sys.exit(f"error: {path}: {key} rules must not embed a user home path")
+    retired = list(data.get("retired", []))
+    retired_ask = list(data.get("retired_ask", []))
     baseline = {b: list(rules.get(b, [])) for b in BUCKETS}
-    active_retirable = set(baseline["allow"]) | set(baseline["ask"])
-    both = sorted(set(retired) & active_retirable)
+    both = sorted((set(retired) & set(baseline["allow"])) | (set(retired_ask) & set(baseline["ask"])))
     if both:
         sys.exit(f"error: {path}: rule(s) both active and retired: {', '.join(both)}")
-    return baseline, settings, retired
+    return baseline, settings, retired, retired_ask
 
 
 def write_atomic(path, data):
@@ -91,7 +95,7 @@ def write_atomic(path, data):
 
 
 def expand_rule(rule, home):
-    m = re.match(r"^(read_file|write_file)\(~(/.*)?\)$", rule)
+    m = re.match(r"^(read_file|write_file|command|unsandboxed)\(~(/.*)?\)$", rule)
     if m:
         action, subpath = m.group(1), m.group(2)
         if subpath:
@@ -121,9 +125,13 @@ def main():
     if not os.path.isabs(args.home):
         sys.exit(f"error: --home must be an absolute path: {args.home}")
     home = args.home.rstrip("/") or "/"
-    baseline, mode_keys, retired = load_baseline(args.rules)
+    baseline, mode_keys, retired, retired_ask = load_baseline(args.rules)
     expanded_baseline = {b: [expand_rule(r, home) for r in baseline[b]] for b in BUCKETS}
-    retired_set = {expand_rule(r, home) for r in retired}
+    retired_sets = {
+        "allow": {expand_rule(r, home) for r in retired},
+        "ask": {expand_rule(r, home) for r in retired_ask},
+        "deny": set(),
+    }
     settings = load_json(args.settings, required=False)
     live = settings.get("permissions")
     if live is None:
@@ -151,20 +159,20 @@ def main():
                 deduped.append(e)
         live_lists[bucket] = deduped
 
-    # Retirement withdraws a grant or obsolete ask gate, so it touches allow and
-    # ask, never deny. A retired rule sitting in deny is the operator's own
-    # hardening: deleting it would turn a forbidden operation into an approvable one.
+    # Retirement is bucket-specific: "retired" withdraws grants from allow
+    # (preserving any operator-added ask or deny rule for the same target), and
+    # "retired_ask" withdraws obsolete baseline prompt gates from ask.
     retired_by_bucket = {
-        b: [r for r in live_lists[b] if r in retired_set] for b in RETIRED_BUCKETS
+        b: [r for r in live_lists[b] if r in retired_sets[b]] for b in ("allow", "ask")
     }
-    retired_live = [r for b in RETIRED_BUCKETS for r in retired_by_bucket[b]]
+    retired_live = [r for b in ("allow", "ask") for r in retired_by_bucket[b]]
     n_retired = len(retired_live)
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
     extras = {
         b: [
             r
             for r in live_lists[b]
-            if r not in expanded_baseline[b] and not (b in RETIRED_BUCKETS and r in retired_set)
+            if r not in expanded_baseline[b] and r not in retired_sets[b]
         ]
         for b in BUCKETS
     }
@@ -216,12 +224,12 @@ def main():
 
     # apply
     changed = n_missing > 0 or legacy_repaired or n_retired > 0
-    for b in RETIRED_BUCKETS:
+    for b in ("allow", "ask"):
         for rule in retired_by_bucket[b]:
             print(f"retired: removed {rule} from {b} (withdrawn from the baseline)")
-    kept = dict(live_lists)
-    for b in RETIRED_BUCKETS:
-        kept[b] = [r for r in live_lists[b] if r not in retired_set]
+    kept = {
+        b: [r for r in live_lists[b] if r not in retired_sets[b]] for b in BUCKETS
+    }
     merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:
