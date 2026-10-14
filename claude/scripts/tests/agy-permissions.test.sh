@@ -52,7 +52,7 @@ assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefi
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
 for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
     assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
-assert 'command(git -C)' not in d['permissions']['ask'] and 'command(git -C)' in d['retired_ask'], 'git is sandbox-only; git -C should not prompt on read-only repo checks'
+assert 'command(git -C)' in d['permissions']['ask'], 'git -C can wrap destructive subcommands like reset --hard; must ask'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
 else fail "baseline file failed validation"; fi
@@ -232,14 +232,11 @@ then ok "apply repairs legacy unexpanded ~ rules across allow, ask, and deny"; e
 S_RETIRED="$ROOT/retired.json"
 python3 - "$S_RETIRED" "$RULES" <<'PY'
 import json, sys
-data = json.load(open(sys.argv[2]))
-retired = data['retired']
-retired_ask = data['retired_ask']
-assert retired and retired_ask and 'command(git -C)' in retired_ask
+retired = json.load(open(sys.argv[2]))['retired']
+assert retired, 'baseline must declare at least one retired rule'
 json.dump({'trustedWorkspaces': ['/x/dev'],
            'permissions': {'allow': ['command(local-junk)'] + retired,
-                           'ask': list(retired_ask) + [retired[0]],
-                           'deny': [retired[0]]}},
+                           'ask': [retired[0]], 'deny': [retired[0]]}},
           open(sys.argv[1], 'w'))
 PY
 
@@ -254,19 +251,16 @@ out="$(python3 "$TOOL" apply --settings "$S_RETIRED" --rules "$RULES" 2>&1)"; rc
 if [ "$rc" -eq 0 ] && python3 - "$S_RETIRED" "$RULES" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-data = json.load(open(sys.argv[2]))
-retired = data['retired']
-retired_ask = data['retired_ask']
+retired = json.load(open(sys.argv[2]))['retired']
 perms = d['permissions']
-assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply in allow'
-assert not (set(perms['ask']) & set(retired_ask)), 'retired ask gates survived apply in ask'
+assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply'
 assert retired[0] in perms['ask'], "an operator's own ask restriction for a retired allow grant must be preserved"
 assert retired[0] in perms['deny'], "an operator's own deny must never be retired away"
 assert 'command(local-junk)' in perms['allow'], 'unrelated local grants must be kept'
 assert d['trustedWorkspaces'] == ['/x/dev']
 assert 'command(sudo)' in perms['deny'], 'baseline rules still applied'
 PY
-then ok "apply removes retired from allow and retired_ask from ask while preserving operator ask/deny restrictions"
+then ok "apply removes retired rules from allow while preserving operator ask/deny restrictions"
 else fail "apply did not retire the rules properly (rc=$rc): $out"; fi
 
 if grep -q 'retired' <<< "$out"; then ok "apply reports each retired rule it removed"

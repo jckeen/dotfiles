@@ -1,5 +1,5 @@
 {
-  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes. Precedence: deny > ask > allow. Security model: the terminal sandbox is the boundary (toolPermission=proceed-in-sandbox, enableTerminalSandbox=true); it blocks ~/.ssh and .env files by default and isolates the filesystem and network. No local code runner or text writer carries an unsandboxed(...) rule in the public baseline; only read-only gh subcommands run unsandboxed by default (git fetch/pull/push and gh write subcommands prompt when unsandboxed unless granted in machine-local settings.json, and retired_ask removes legacy ask entries that would otherwise shadow machine-local allow grants under deny > ask > allow). Reads outside the workspace are served inside the sandbox through allowNonWorkspaceAccess and read_file(~/...) rules, which the merge script expands to the machine's home; never add read_file(~/...) rules for $HOME symlinks that resolve into ~/dev/ (such as ~/.bash_aliases or ~/.gitconfig), because bwrap resolves realpath on read_file rules and mounts them read-only on top of the read-write ~/dev/ mount. read_file denies cover credential files exactly, because the file tool matches paths, not shell text. Withdrawing a rule from the permissions object does not withdraw it from a machine that already installed it, because apply is additive; the retired array lists allow grants the baseline has revoked, and retired_ask lists baseline prompt gates the baseline has revoked. apply deletes any exact match in retired from allow and in retired_ask from ask, and check fails until they are gone; operator-added ask rules for retired allow grants and all deny rules are never touched, because removing them would weaken the operator's own hardening. There are deliberately no command regexes: shell syntax cannot be classified airtight (see the reverted #411), so command denies are plain prefixes that act as speed bumps inside the sandbox, not as a boundary.",
+  "_comment": "Antigravity (agy) permission baseline. Merged by setup.sh into ~/.gemini/antigravity-cli/settings.json via claude/scripts/agy-apply-permissions.py (that file also holds trustedWorkspaces and per-machine grants, so it is never symlinked). Rules are word-by-word prefixes. Precedence: deny > ask > allow. Security model: the terminal sandbox is the boundary (toolPermission=proceed-in-sandbox, enableTerminalSandbox=true); it blocks ~/.ssh and .env files by default and isolates the filesystem and network. No local code runner or text writer carries an unsandboxed(...) rule; only gh read subcommands run unsandboxed (git fetch/pull prompt, because repository config can name programs for git to run). Reads outside the workspace are served inside the sandbox through allowNonWorkspaceAccess and read_file(~/...) rules, which the merge script expands to the machine's home; never add read_file(~/...) rules for $HOME symlinks that resolve into ~/dev/ (such as ~/.bash_aliases or ~/.gitconfig), because bwrap resolves realpath on read_file rules and mounts them read-only on top of the read-write ~/dev/ mount. read_file denies cover credential files exactly, because the file tool matches paths, not shell text. Withdrawing a rule from the permissions object does not withdraw it from a machine that already installed it, because apply is additive; the retired array lists grants the baseline has revoked. apply deletes any exact match in retired from allow, and check fails until they are gone; ask and deny are never touched, because a retired rule kept there is the operator's own hardening. There are deliberately no command regexes: shell syntax cannot be classified airtight (see the reverted #411), so command denies are plain prefixes that act as speed bumps inside the sandbox, not as a boundary.",
   "settings": {
     "toolPermission": "proceed-in-sandbox",
     "enableTerminalSandbox": true,
@@ -172,6 +172,7 @@
       "command(gh pr create)",
       "command(gh issue create)",
       "command(git clone)",
+      "command(git -C)",
       "command(git -c)",
       "command(gh auth)"
     ],
@@ -213,9 +214,6 @@
     "command(regex:^python3 +[A-Za-z0-9_./-]+\\.test\\.py$)",
     "read_file(~/.bash_aliases)",
     "read_file(~/.gitconfig)"
-  ],
-  "retired_ask": [
-    "command(git -C)"
   ]
 }
 

@@ -1,28 +1,27 @@
 # Changelog
 
-## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules, drop `git -C` prompt gate, and make `check-antigravity.sh` sandbox-aware
+## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules and make `check-antigravity.sh` sandbox-aware
 
 - **`antigravity/permissions.json` & `claude/scripts/agy-apply-permissions.py`:**
   retired `read_file(~/.bash_aliases)` and `read_file(~/.gitconfig)` (whose
   `$HOME` symlinks resolve into `~/dev/dotfiles/` and get bind-mounted `ro` by
   `bwrap` on top of the `rw` `~/dev/` mount) via `retired` (`allow`-only,
-  preserving any operator-added `ask` or `deny` restrictions), and retired
-  `command(git -C)` from `permissions.ask` via `retired_ask` (`git` is
-  sandbox-only, and `git -C` forced prompts on read-only repo checks). Added
-  common sandboxed dev/test commands, `read_url(https://antigravity.google/)`,
+  preserving any operator-added `ask` or `deny` restrictions). Added common
+  sandboxed dev/test commands, `read_url(https://antigravity.google/)`,
   `unsandboxed(git push --force-with-lease)` in `ask`, and
   `unsandboxed(git push --force|-f)` in `deny`, plus `~` expansion on
   `command(~...)` and `unsandboxed(~...)` rules.
 - **`check-antigravity.sh`:** detects when `~/.gemini/config` and
   `~/.gemini/antigravity-cli` are masked by Antigravity's `/setup/deny*`
-  `tmpfs` mounts in `/proc/self/mountinfo` (`AGY_MOUNTINFO_FILE`, decoding
-  mountinfo octal escapes like `\040`), verifies the bind-mounted regular file
-  `GEMINI.md` via `cmp -s`, reports `SANDBOX` for sandbox-masked host files
-  instead of 6 false `MISSING`/`NOT LINKED`/`DRIFT` warnings, and continues
-  checking `skills/*` and orphan symlinks.
+  `tmpfs` mounts in `/proc/self/mountinfo` (`AGY_MOUNTINFO_FILE`, encoding
+  target paths for `\134` and `\040` mountinfo escapes and passing via
+  `ENVIRON["MP"]`), verifies the bind-mounted regular file `GEMINI.md` via
+  `cmp -s`, reports `SANDBOX` for sandbox-masked host files instead of 6 false
+  `MISSING`/`NOT LINKED`/`DRIFT` warnings, and continues checking `skills/*`
+  and orphan symlinks.
 - **Tests:** expanded `agy-permissions.test.sh` (24 cases) and
-  `antigravity-config.test.sh` (11 cases, including `\040`-escaped simulated
-  sandbox `mountinfo` match and drift checks).
+  `antigravity-config.test.sh` (11 cases, including `\134`- and `\040`-escaped
+  simulated sandbox `mountinfo` match and drift checks).
 
 ## 2026-10-05 — fix: concurrent `check-claude.sh --heal` runs no longer nest a self-link in skill bundles (#603)
 
