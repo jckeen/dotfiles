@@ -311,9 +311,9 @@ if out="$(python3 "$TOOL" check --settings "$S_DENY_ONLY" --rules "$RULES" 2>&1)
   ok "a retired rule kept as an operator deny survives apply and passes check"
 else fail "an operator-owned deny was retired away or failed check: $out"; fi
 
-# ── Legacy unsandboxed(...) migration & promoted_in_ask cleanup ────────────
+# ── Legacy unsandboxed(...) migration & operator ask preservation ──────────
 S_UNSAND="$ROOT/unsandboxed.json"
-printf '{"permissions":{"allow":["unsandboxed(gh pr view)","unsandboxed(custom-net-tool)"],"ask":["unsandboxed(git push --force-with-lease)","command(gh pr merge)","command(custom-ask)"],"deny":["unsandboxed(git push --force)"]}}\n' > "$S_UNSAND"
+printf '{"permissions":{"allow":["unsandboxed(gh pr view)","unsandboxed(custom-net-tool)"],"ask":["unsandboxed(git push --force-with-lease)","command(python3)","command(custom-ask)"],"deny":["unsandboxed(git push --force)"]}}\n' > "$S_UNSAND"
 if out="$(python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" 2>&1)"; then
   fail "check passed with invalid unsandboxed(...) rules present: $out"
 else
@@ -329,14 +329,14 @@ perms = d['permissions']
 assert not any(r.startswith('unsandboxed(') for b in perms.values() for r in b), 'unsandboxed rules survived apply'
 assert 'command(custom-net-tool)' in perms['allow'], 'custom unsandboxed rule should migrate to command(...)'
 assert 'command(gh pr merge)' in perms['allow'], 'gh pr merge should be in allow'
-assert 'command(gh pr merge)' not in perms['ask'], 'gh pr merge should be removed from ask when promoted to allow in baseline'
+assert 'command(python3)' in perms['ask'], 'operator ask restriction on a baseline allow rule must be preserved'
 assert 'command(custom-ask)' in perms['ask'], 'unrelated operator ask rule must be preserved'
 PY
-then ok "apply migrates unsandboxed(...) rules to command(...) and clears promoted baseline rules from ask"
-else fail "apply failed to migrate unsandboxed(...) or clear promoted ask rules"; fi
+then ok "apply migrates unsandboxed(...) rules to command(...) while preserving operator ask restrictions"
+else fail "apply failed to migrate unsandboxed(...) or preserve operator ask restrictions"; fi
 
 if python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" >/dev/null 2>&1; then
-  ok "check passes after unsandboxed migration and promoted ask cleanup"
+  ok "check passes after unsandboxed migration with operator ask restriction preserved"
 else fail "check still failing after unsandboxed migration"; fi
 
 echo ""

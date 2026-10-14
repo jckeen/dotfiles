@@ -17,14 +17,13 @@
   shadows `allow` (`deny > ask > allow`).
 - **`claude/scripts/agy-apply-permissions.py`:** rejected `unsandboxed(...)` in
   `RULE_RE`, added `UNSANDBOXED_RE` migration in `apply` to convert/strip legacy
-  `unsandboxed(...)` entries across all buckets (`allow`, `ask`, `deny`), added
-  `promoted_in_ask` cleanup so rules promoted from `ask` to `allow` in the
-  baseline are removed from `ask` in existing `settings.json` files, and taught
-  `check` to fail when invalid `unsandboxed(...)` rules or shadowed baseline
-  `allow` rules remain.
+  `unsandboxed(...)` entries across all buckets (`allow`, `ask`, `deny`) while
+  preserving operator `ask` and `deny` restrictions, and taught `check` to fail
+  when invalid `unsandboxed(...)` rules remain.
 - **Tests:** expanded `claude/scripts/tests/agy-permissions.test.sh` (27 cases)
   to assert zero `unsandboxed(...)` entries, Claude-parity `allow`/`ask`
-  placement, legacy `unsandboxed(...)` migration, and `promoted_in_ask` cleanup.
+  placement, legacy `unsandboxed(...)` migration, and operator `ask`
+  restriction preservation.
 
 ## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules and make `check-antigravity.sh` sandbox-aware
 
