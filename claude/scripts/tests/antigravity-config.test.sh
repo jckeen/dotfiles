@@ -126,6 +126,38 @@ else
   fail "checker ignored a custom Antigravity memory repository"
 fi
 
+SANDBOX_BASE="$(mktemp -d)"
+SANDBOX_HOME="$SANDBOX_BASE/back\\slash/space home"
+SANDBOX_HOME_ESCAPED="${SANDBOX_HOME//\\/\\134}"
+SANDBOX_HOME_ESCAPED="${SANDBOX_HOME_ESCAPED// /\\040}"
+MOUNTINFO="$R/mountinfo"
+mkdir -p "$SANDBOX_HOME/.gemini/config" "$SANDBOX_HOME/.gemini/antigravity-cli"
+cp "$R/antigravity/GEMINI.md" "$SANDBOX_HOME/.gemini/config/GEMINI.md"
+cat > "$MOUNTINFO" <<EOF
+797 794 0:111 /setup/deny5 $SANDBOX_HOME_ESCAPED/.gemini/antigravity-cli ro,nosuid,nodev - tmpfs tmpfs rw
+803 794 0:111 /setup/deny6 $SANDBOX_HOME_ESCAPED/.gemini/config ro,nosuid,nodev - tmpfs tmpfs rw
+EOF
+if HOME="$SANDBOX_HOME" AGY_MOUNTINFO_FILE="$MOUNTINFO" AGY_MEMORY_REPO="$CUSTOM_MEMORY" \
+  "$R/check-antigravity.sh" --strict > "$OUT" 2>&1 \
+  && grep -q 'SANDBOX.*GEMINI.md matches' "$OUT" \
+  && grep -q 'SANDBOX.*hooks.json masked' "$OUT" \
+  && grep -q 'SANDBOX.*GEMINI.local.md masked' "$OUT"; then
+  ok "strict checker accepts sandbox-masked Antigravity config (including \\134 and \\040 mountinfo escapes)"
+else
+  fail "strict checker failed under simulated Antigravity terminal sandbox mounts"
+fi
+
+printf 'drifted content\n' > "$SANDBOX_HOME/.gemini/config/GEMINI.md"
+if HOME="$SANDBOX_HOME" AGY_MOUNTINFO_FILE="$MOUNTINFO" AGY_MEMORY_REPO="$CUSTOM_MEMORY" \
+  "$R/check-antigravity.sh" --strict > "$OUT" 2>&1; then
+  fail "strict checker accepted drifted bind-mounted GEMINI.md inside sandbox"
+elif grep -q 'DRIFT.*GEMINI.md.*differs' "$OUT"; then
+  ok "strict checker detects drifted bind-mounted GEMINI.md inside sandbox"
+else
+  fail "sandbox GEMINI.md drift lacked a useful diagnostic"
+fi
+rm -rf "$SANDBOX_BASE"
+
 echo ""
 echo "antigravity-config: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

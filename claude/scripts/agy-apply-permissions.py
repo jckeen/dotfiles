@@ -26,7 +26,7 @@ import time
 
 RULE_RE = re.compile(r"^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
 BUCKETS = ("allow", "ask", "deny")
-# Retirement is scoped to this bucket: it withdraws a grant, never a restriction.
+# Retirement withdraws a grant, never a restriction.
 GRANT_BUCKET = "allow"
 
 
@@ -90,7 +90,7 @@ def write_atomic(path, data):
 
 
 def expand_rule(rule, home):
-    m = re.match(r"^(read_file|write_file)\(~(/.*)?\)$", rule)
+    m = re.match(r"^(read_file|write_file|command|unsandboxed)\(~(/.*)?\)$", rule)
     if m:
         action, subpath = m.group(1), m.group(2)
         if subpath:

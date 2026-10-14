@@ -47,6 +47,29 @@ source "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh"
 # shellcheck disable=SC2088,SC2034  # display hint consumed by sourced lib-checks.sh; literal ~ intended
 CHECK_MISSING_HINT="~/.gemini/config/"
 
+# Detect whether a path is masked by Antigravity's Linux terminal sandbox
+# (bwrap mounts a read-only tmpfs from /setup/deny* over ~/.gemini/config and
+# ~/.gemini/antigravity-cli, re-binding only GEMINI.md as a regular file,
+# projects/, skills/, and selected runtime subdirectories).
+AGY_MOUNTINFO_FILE="${AGY_MOUNTINFO_FILE:-/proc/self/mountinfo}"
+agy_sandbox_masked() {
+  local escaped="$1"
+  [ -r "$AGY_MOUNTINFO_FILE" ] || return 1
+  escaped="${escaped//\\/\\134}"
+  escaped="${escaped// /\\040}"
+  escaped="${escaped//$'\t'/\\011}"
+  escaped="${escaped//$'\n'/\\012}"
+  MP="$escaped" awk '
+    BEGIN { mp = ENVIRON["MP"] }
+    $5 == mp && $4 ~ /^\/setup\/deny/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "-" && $(i+1) == "tmpfs") { found = 1; exit }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$AGY_MOUNTINFO_FILE"
+}
+
 echo "Checking Antigravity public-safe config..."
 echo ""
 
@@ -62,25 +85,48 @@ elif [ ! -d "$AGY_DST" ]; then
   red "MISSING  ~/.gemini/config (Antigravity has not been initialized on this machine)"
   ERRORS=$((ERRORS + 1))
 else
-  check_link "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" "GEMINI.md"
-  check_link "$AGY_SRC/hooks.json" "$AGY_DST/hooks.json" "hooks.json"
+  AGY_DST_MASKED=0
+  agy_sandbox_masked "$AGY_DST" && AGY_DST_MASKED=1
+  AGY_STATE_MASKED=0
+  agy_sandbox_masked "$AGY_STATE" && AGY_STATE_MASKED=1
+
+  if [ "$AGY_DST_MASKED" -eq 1 ] && [ ! -L "$AGY_DST/GEMINI.md" ] && [ -f "$AGY_DST/GEMINI.md" ]; then
+    if cmp -s "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md"; then
+      echo "SANDBOX GEMINI.md matches antigravity/GEMINI.md (bind-mounted inside sandbox)"
+    else
+      yellow "DRIFT   GEMINI.md inside sandbox differs from $AGY_SRC/GEMINI.md"
+      WARNINGS=$((WARNINGS + 1))
+    fi
+  else
+    check_link "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" "GEMINI.md"
+  fi
+
+  if [ "$AGY_DST_MASKED" -eq 1 ] && [ ! -e "$AGY_DST/hooks.json" ] && [ ! -L "$AGY_DST/hooks.json" ]; then
+    echo "SANDBOX hooks.json masked by Antigravity terminal sandbox (verified on host at launch)"
+  else
+    check_link "$AGY_SRC/hooks.json" "$AGY_DST/hooks.json" "hooks.json"
+  fi
 
   # Permission baseline (antigravity/permissions.json) is merged into the
   # machine-local ~/.gemini/antigravity-cli/settings.json by setup.sh, never
   # linked: that file also holds trustedWorkspaces and prompt-saved grants.
   AGY_SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
   if [ -f "$AGY_SRC/permissions.json" ] && command -v python3 >/dev/null 2>&1; then
-    # --heal applies the additive merge first (same idempotent step setup.sh runs).
-    if [ "$HEAL" -eq 1 ]; then
-      python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-        --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" >/dev/null 2>&1 || true
-    fi
-    if baseline_out="$(python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" check \
-        --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" 2>&1)"; then
-      echo "OK      permission baseline: $baseline_out"
+    if [ "$AGY_STATE_MASKED" -eq 1 ] && [ ! -e "$AGY_SETTINGS" ]; then
+      echo "SANDBOX permission baseline: settings.json masked by Antigravity terminal sandbox (verified on host at launch)"
     else
-      yellow "DRIFT   permission baseline: $baseline_out (re-run setup.sh)"
-      WARNINGS=$((WARNINGS + 1))
+      # --heal applies the additive merge first (same idempotent step setup.sh runs).
+      if [ "$HEAL" -eq 1 ]; then
+        python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
+          --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" >/dev/null 2>&1 || true
+      fi
+      if baseline_out="$(python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" check \
+          --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" 2>&1)"; then
+        echo "OK      permission baseline: $baseline_out"
+      else
+        yellow "DRIFT   permission baseline: $baseline_out (re-run setup.sh)"
+        WARNINGS=$((WARNINGS + 1))
+      fi
     fi
   fi
 
@@ -117,7 +163,9 @@ else
 
   # MCP servers: the live config is LOCAL by design (seeded from the template
   # by setup.sh); empty/missing means the runtime/browser lane has no tooling.
-  if [ ! -s "$AGY_DST/mcp_config.json" ]; then
+  if [ "$AGY_DST_MASKED" -eq 1 ] && [ ! -e "$AGY_DST/mcp_config.json" ] && [ ! -L "$AGY_DST/mcp_config.json" ]; then
+    echo "SANDBOX mcp_config.json masked by Antigravity terminal sandbox (verified on host at launch)"
+  elif [ ! -s "$AGY_DST/mcp_config.json" ]; then
     yellow "MISSING  mcp_config.json is absent or empty — the browser/runtime lane has no MCP tooling (re-run setup.sh to seed from antigravity/mcp_config.json.example)"
     WARNINGS=$((WARNINGS + 1))
   elif ! command -v jq >/dev/null 2>&1; then
@@ -134,7 +182,11 @@ else
   if [ -d "$AGY_MEMORY_REPO" ]; then
     for f in GEMINI.local.md MEMORY.md; do
       if [ -f "$AGY_MEMORY_REPO/$f" ]; then
-        check_link "$AGY_MEMORY_REPO/$f" "$AGY_DST/$f" "$f"
+        if [ "$AGY_DST_MASKED" -eq 1 ] && [ ! -e "$AGY_DST/$f" ] && [ ! -L "$AGY_DST/$f" ]; then
+          echo "SANDBOX $f masked by Antigravity terminal sandbox (verified on host at launch)"
+        else
+          check_link "$AGY_MEMORY_REPO/$f" "$AGY_DST/$f" "$f"
+        fi
       fi
     done
   fi

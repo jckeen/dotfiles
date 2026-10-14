@@ -38,7 +38,7 @@ assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
 assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
-assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox'
+assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox in the public baseline'
 assert 'read_file(~/.config/gh/)' in d['permissions']['deny'] and 'read_file(~/.claude/.credentials.json)' in d['permissions']['deny']
 assert 'command(git config)' not in d['permissions']['ask'], 'an ask prefix would shadow the read-only git config --get allow'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
@@ -46,10 +46,13 @@ assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 
 for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
     assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
 assert not any('regex:' in r for b in d['permissions'].values() for r in b), 'no command regexes: the sandbox is the boundary'
-assert 'command(git push --force)' in d['permissions']['deny'] and 'command(git clone)' in d['permissions']['ask']
+assert 'command(git push --force)' in d['permissions']['deny'] and 'unsandboxed(git push --force)' in d['permissions']['deny'] and 'command(git clone)' in d['permissions']['ask']
 assert 'read_file(~/.gemini/antigravity-cli/)' not in d['permissions']['deny'], 'agy keeps its own brain/ and scratch/ there'
 assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefix risks over-matching every absolute path'
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
+for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
+    assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
+assert 'command(git -C)' in d['permissions']['ask'], 'git -C can wrap destructive subcommands like reset --hard; must ask'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
 else fail "baseline file failed validation"; fi
@@ -65,7 +68,7 @@ assert d['permissions']['allow'][0] == 'command(local-junk)'
 assert d['permissions']['allow'].count('command(rg)') == 1
 import os
 assert f"read_file({os.environ['HOME']}/.claude/)" in d['permissions']['allow'], 'tilde rules expand to this home'
-assert not any(r.startswith(('read_file(~', 'write_file(~')) for b in d['permissions'].values() for r in b)
+assert not any(r.startswith(('read_file(~', 'write_file(~', 'command(~', 'unsandboxed(~')) for b in d['permissions'].values() for r in b)
 assert 'command(sudo)' in d['permissions']['deny']
 PY
 then ok "apply merges the baseline, seeds mode keys, keeps local rules and trustedWorkspaces"
@@ -182,8 +185,11 @@ assert mod.expand_rule("read_file(~/.ssh/)", "/home/user") == "read_file(/home/u
 assert mod.expand_rule("write_file(~/.claude/foo)", "/home/user") == "write_file(/home/user/.claude/foo)"
 assert mod.expand_rule("write_file(~)", "/home/user") == "write_file(/home/user)"
 assert mod.expand_rule("write_file(~root/bar)", "/home/user") == "write_file(~root/bar)"
+assert mod.expand_rule("unsandboxed(~/.claude/scripts/codex-review-gate.sh)", "/home/user") == "unsandboxed(/home/user/.claude/scripts/codex-review-gate.sh)"
+assert mod.expand_rule("command(~/bin/run)", "/home/user") == "command(/home/user/bin/run)"
+assert mod.expand_rule("command(rm -rf ~/*)", "/home/user") == "command(rm -rf ~/*)"
 PY
-then ok "expand_rule handles read_file and write_file while leaving ~username unexpanded"; else fail "expand_rule mishandled ~username or write_file"; fi
+then ok "expand_rule handles read_file, write_file, command, and unsandboxed while leaving ~username unexpanded"; else fail "expand_rule mishandled ~username or rule expansion"; fi
 
 S_TRAILING="$ROOT/trailing_home_settings.json"
 python3 "$TOOL" apply --settings "$S_TRAILING" --rules "$RULES" --home "/custom/home/user/" >/dev/null 2>&1
@@ -227,10 +233,10 @@ S_RETIRED="$ROOT/retired.json"
 python3 - "$S_RETIRED" "$RULES" <<'PY'
 import json, sys
 retired = json.load(open(sys.argv[2]))['retired']
-assert retired, 'baseline must declare retired rules'
+assert retired, 'baseline must declare at least one retired rule'
 json.dump({'trustedWorkspaces': ['/x/dev'],
            'permissions': {'allow': ['command(local-junk)'] + retired,
-                           'ask': [], 'deny': [retired[0]]}},
+                           'ask': [retired[0]], 'deny': [retired[0]]}},
           open(sys.argv[1], 'w'))
 PY
 
@@ -248,19 +254,20 @@ d = json.load(open(sys.argv[1]))
 retired = json.load(open(sys.argv[2]))['retired']
 perms = d['permissions']
 assert not (set(perms['allow']) & set(retired)), 'retired grants survived apply'
+assert retired[0] in perms['ask'], "an operator's own ask restriction for a retired allow grant must be preserved"
 assert retired[0] in perms['deny'], "an operator's own deny must never be retired away"
 assert 'command(local-junk)' in perms['allow'], 'unrelated local grants must be kept'
 assert d['trustedWorkspaces'] == ['/x/dev']
 assert 'command(sudo)' in perms['deny'], 'baseline rules still applied'
 PY
-then ok "apply removes retired rules and keeps unrelated local grants"
-else fail "apply did not retire the rules (rc=$rc): $out"; fi
+then ok "apply removes retired rules from allow while preserving operator ask/deny restrictions"
+else fail "apply did not retire the rules properly (rc=$rc): $out"; fi
 
 if grep -q 'retired' <<< "$out"; then ok "apply reports each retired rule it removed"
 else fail "apply removed retired rules silently: $out"; fi
 
 if python3 "$TOOL" check --settings "$S_RETIRED" --rules "$RULES" >/dev/null 2>&1; then
-  ok "check passes once the retired rules are gone"
+  ok "check passes once the retired rules are gone (preserving operator ask/deny)"
 else fail "check still failing after apply removed the retired rules"; fi
 
 # A retired rule the operator kept as their own deny is not "still granted".
