@@ -127,8 +127,9 @@ else
 fi
 
 SANDBOX_BASE="$(mktemp -d)"
-SANDBOX_HOME="$SANDBOX_BASE/space home"
-SANDBOX_HOME_ESCAPED="${SANDBOX_HOME// /\\040}"
+SANDBOX_HOME="$SANDBOX_BASE/back\\slash/space home"
+SANDBOX_HOME_ESCAPED="${SANDBOX_HOME//\\/\\134}"
+SANDBOX_HOME_ESCAPED="${SANDBOX_HOME_ESCAPED// /\\040}"
 MOUNTINFO="$R/mountinfo"
 mkdir -p "$SANDBOX_HOME/.gemini/config" "$SANDBOX_HOME/.gemini/antigravity-cli"
 cp "$R/antigravity/GEMINI.md" "$SANDBOX_HOME/.gemini/config/GEMINI.md"
@@ -141,7 +142,7 @@ if HOME="$SANDBOX_HOME" AGY_MOUNTINFO_FILE="$MOUNTINFO" AGY_MEMORY_REPO="$CUSTOM
   && grep -q 'SANDBOX.*GEMINI.md matches' "$OUT" \
   && grep -q 'SANDBOX.*hooks.json masked' "$OUT" \
   && grep -q 'SANDBOX.*GEMINI.local.md masked' "$OUT"; then
-  ok "strict checker accepts sandbox-masked Antigravity config (including \\040-escaped mountinfo paths)"
+  ok "strict checker accepts sandbox-masked Antigravity config (including \\134 and \\040 mountinfo escapes)"
 else
   fail "strict checker failed under simulated Antigravity terminal sandbox mounts"
 fi

@@ -53,17 +53,15 @@ CHECK_MISSING_HINT="~/.gemini/config/"
 # projects/, skills/, and selected runtime subdirectories).
 AGY_MOUNTINFO_FILE="${AGY_MOUNTINFO_FILE:-/proc/self/mountinfo}"
 agy_sandbox_masked() {
-  local target="$1"
+  local escaped="$1"
   [ -r "$AGY_MOUNTINFO_FILE" ] || return 1
-  awk -v mp="$target" '
-    function unescape(s) {
-      gsub(/\\040/, " ", s)
-      gsub(/\\011/, "\t", s)
-      gsub(/\\012/, "\n", s)
-      gsub(/\\134/, "\\", s)
-      return s
-    }
-    unescape($5) == mp && unescape($4) ~ /^\/setup\/deny/ {
+  escaped="${escaped//\\/\\134}"
+  escaped="${escaped// /\\040}"
+  escaped="${escaped//$'\t'/\\011}"
+  escaped="${escaped//$'\n'/\\012}"
+  MP="$escaped" awk '
+    BEGIN { mp = ENVIRON["MP"] }
+    $5 == mp && $4 ~ /^\/setup\/deny/ {
       for (i = 1; i <= NF; i++) {
         if ($i == "-" && $(i+1) == "tmpfs") { found = 1; exit }
       }
