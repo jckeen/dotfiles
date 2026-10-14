@@ -1,29 +1,25 @@
 # Changelog
 
-## 2026-10-14 — fix(agy): remove retired `unsandboxed(...)` permission rules and align baseline with Claude Code workflow
+## 2026-10-14 — fix(agy): remove retired `unsandboxed(...)` permission rules and migrate machine-local grants
 
-- **`antigravity/permissions.json`:** removed all `unsandboxed(...)` rules from
-  `permissions` and `retired` (Antigravity CLI retired `unsandboxed(...)` and
-  prints a startup warning ignoring them). Promoted routine git, GitHub
-  PR/issue, and review-gate commands (`git push`, `git branch -d`,
-  `git worktree remove`, `git worktree prune`,
-  `gh pr create|merge|edit|comment|close|ready|update-branch`,
-  `gh issue create|comment|close|edit`, `codex-review-gate.sh`,
-  `antigravity-review-gate.sh`, `review-and-push.sh`, `git-hygiene.sh`) to
-  `permissions.allow` using unified `command(...)` syntax (matching the Claude
-  Code workflow in `claude/settings.json`), and removed `command(gh pr merge)`,
-  `command(gh pr create)`, `command(gh issue create)`, and
-  `command(git worktree remove)` from `permissions.ask` so `ask` no longer
-  shadows `allow` (`deny > ask > allow`).
+- **`antigravity/permissions.json`:** removed all retired `unsandboxed(...)`
+  rules from `permissions` (`allow`, `ask`, `deny`) and `retired` (Antigravity
+  CLI retired `unsandboxed(...)` in favor of unified `command(...)` rules and
+  prints a startup warning ignoring them), while keeping the public baseline
+  `allow`, `ask`, and `deny` sets conservative (`git push` out of baseline
+  `allow`, `command(gh pr merge|create)`, `command(gh issue create)`, and
+  `command(git worktree remove)` in `ask`).
 - **`claude/scripts/agy-apply-permissions.py`:** rejected `unsandboxed(...)` in
-  `RULE_RE`, added `UNSANDBOXED_RE` migration in `apply` to convert/strip legacy
-  `unsandboxed(...)` entries across all buckets (`allow`, `ask`, `deny`) while
-  preserving operator `ask` and `deny` restrictions, and taught `check` to fail
-  when invalid `unsandboxed(...)` rules remain.
+  `RULE_RE`, added `UNSANDBOXED_RE` migration in `apply` to convert legacy
+  `unsandboxed(...)` entries across `allow`, `ask`, and `deny` to `command(...)`
+  (dropping wildcard `unsandboxed(*)` only in `allow` while migrating wildcard
+  and specific restrictions in `ask` and `deny`, and retiring any migrated
+  rule listed in `retired`), and taught `check` to fail when invalid
+  `unsandboxed(...)` rules remain.
 - **Tests:** expanded `claude/scripts/tests/agy-permissions.test.sh` (27 cases)
-  to assert zero `unsandboxed(...)` entries, Claude-parity `allow`/`ask`
-  placement, legacy `unsandboxed(...)` migration, and operator `ask`
-  restriction preservation.
+  to assert zero `unsandboxed(...)` entries in the baseline, legacy
+  `unsandboxed(...)` migration across all buckets, `allow` wildcard filtering,
+  and operator `ask`/`deny` restriction preservation.
 
 ## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules and make `check-antigravity.sh` sandbox-aware
 
