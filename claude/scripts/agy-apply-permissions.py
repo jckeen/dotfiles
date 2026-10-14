@@ -24,7 +24,8 @@ import sys
 import tempfile
 import time
 
-RULE_RE = re.compile(r"^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
+RULE_RE = re.compile(r"^(command|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
+UNSANDBOXED_RE = re.compile(r"^unsandboxed(?:\s*\((.*)\)\s*$|\s*\(.*|\s*$)", re.IGNORECASE)
 BUCKETS = ("allow", "ask", "deny")
 # Retirement withdraws a grant, never a restriction.
 GRANT_BUCKET = "allow"
@@ -90,7 +91,7 @@ def write_atomic(path, data):
 
 
 def expand_rule(rule, home):
-    m = re.match(r"^(read_file|write_file|command|unsandboxed)\(~(/.*)?\)$", rule)
+    m = re.match(r"^(read_file|write_file|command)\(~(/.*)?\)$", rule)
     if m:
         action, subpath = m.group(1), m.group(2)
         if subpath:
@@ -131,6 +132,7 @@ def main():
         sys.exit(f'error: {args.settings}: "permissions" must be an object')
     live_lists = {}
     legacy_repaired = False
+    unsandboxed_live = []
     for bucket in BUCKETS:
         entries = live.get(bucket, [])
         if not isinstance(entries, list):
@@ -138,6 +140,15 @@ def main():
         cleaned = []
         for e in entries:
             if isinstance(e, str):
+                m_unsandboxed = UNSANDBOXED_RE.match(e.strip())
+                if m_unsandboxed:
+                    unsandboxed_live.append(e)
+                    inner = (m_unsandboxed.group(1) or "").strip()
+                    if inner and not (bucket == GRANT_BUCKET and inner == "*"):
+                        migrated = expand_rule(f"command({inner})", home)
+                        if RULE_RE.match(migrated):
+                            cleaned.append(migrated)
+                    continue
                 expanded = expand_rule(e, home)
                 if expanded != e:
                     legacy_repaired = True
@@ -175,6 +186,10 @@ def main():
         problems = []
         if n_missing:
             problems.append(f"{n_missing} baseline rule(s) missing")
+        if unsandboxed_live:
+            problems.append(
+                f"{len(unsandboxed_live)} invalid unsandboxed rule(s) in settings (re-run apply)"
+            )
         if legacy_repaired:
             problems.append('unexpanded "~" rule(s) in settings (re-run apply)')
         if n_retired:
@@ -211,7 +226,9 @@ def main():
         return 0
 
     # apply
-    changed = n_missing > 0 or legacy_repaired or n_retired > 0
+    changed = n_missing > 0 or legacy_repaired or bool(unsandboxed_live) or n_retired > 0
+    if unsandboxed_live:
+        print(f"migrated: converted/removed {len(unsandboxed_live)} legacy unsandboxed rule(s)")
     for rule in retired_live:
         print(f"retired: removed {rule} from {GRANT_BUCKET} (withdrawn from the baseline)")
     kept = dict(live_lists)
