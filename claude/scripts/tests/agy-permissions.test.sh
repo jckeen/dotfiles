@@ -38,20 +38,7 @@ assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
 assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
-allowed_unsandboxed_prefixes = (
-    'unsandboxed(gh ',
-    'unsandboxed(git push)',
-    'unsandboxed(~/.claude/scripts/codex-review-gate.sh)',
-    'unsandboxed(~/.claude/scripts/antigravity-review-gate.sh)',
-    'unsandboxed(~/.claude/scripts/review-and-push.sh)',
-    'unsandboxed(./claude/scripts/codex-review-gate.sh)',
-    'unsandboxed(./claude/scripts/antigravity-review-gate.sh)',
-    'unsandboxed(./claude/scripts/review-and-push.sh)',
-)
-assert not any(
-    r.startswith('unsandboxed(') and not r.startswith(allowed_unsandboxed_prefixes)
-    for r in allow
-), 'only gh subcommands, git push, and review/shipping gates may leave the sandbox'
+assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox in the public baseline'
 assert 'read_file(~/.config/gh/)' in d['permissions']['deny'] and 'read_file(~/.claude/.credentials.json)' in d['permissions']['deny']
 assert 'command(git config)' not in d['permissions']['ask'], 'an ask prefix would shadow the read-only git config --get allow'
 assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
@@ -65,8 +52,7 @@ assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefi
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
 for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
     assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
-for ask_rule in ('command(git -C)', 'command(gh pr merge)', 'command(gh pr create)', 'command(gh issue create)'):
-    assert ask_rule not in d['permissions']['ask'] and ask_rule in d['retired_ask'], f'{ask_rule} must be retired from ask'
+assert 'command(git -C)' not in d['permissions']['ask'] and 'command(git -C)' in d['retired_ask'], 'git is sandbox-only; git -C should not prompt on read-only repo checks'
 PY
 then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
 else fail "baseline file failed validation"; fi
@@ -82,7 +68,6 @@ assert d['permissions']['allow'][0] == 'command(local-junk)'
 assert d['permissions']['allow'].count('command(rg)') == 1
 import os
 assert f"read_file({os.environ['HOME']}/.claude/)" in d['permissions']['allow'], 'tilde rules expand to this home'
-assert f"unsandboxed({os.environ['HOME']}/.claude/scripts/codex-review-gate.sh)" in d['permissions']['allow'], 'unsandboxed tilde rules expand to this home'
 assert not any(r.startswith(('read_file(~', 'write_file(~', 'command(~', 'unsandboxed(~')) for b in d['permissions'].values() for r in b)
 assert 'command(sudo)' in d['permissions']['deny']
 PY

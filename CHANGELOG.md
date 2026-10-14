@@ -1,21 +1,18 @@
 # Changelog
 
-## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules, allow shipping/review gates unsandboxed, and make `check-antigravity.sh` sandbox-aware
+## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules, drop `git -C` prompt gate, and make `check-antigravity.sh` sandbox-aware
 
 - **`antigravity/permissions.json` & `claude/scripts/agy-apply-permissions.py`:**
   retired `read_file(~/.bash_aliases)` and `read_file(~/.gitconfig)` (whose
   `$HOME` symlinks resolve into `~/dev/dotfiles/` and get bind-mounted `ro` by
   `bwrap` on top of the `rw` `~/dev/` mount) via `retired` (`allow`-only,
   preserving any operator-added `ask` or `deny` restrictions), and retired
-  `command(git -C)`, `command(gh pr merge)`, `command(gh pr create)`, and
-  `command(gh issue create)` from `permissions.ask` via `retired_ask`. Added
-  sandboxed + `unsandboxed(...)` shipping and review-gate rules (`git push`,
-  `gh pr create|merge|edit|comment|close|ready`,
-  `gh issue create|comment|close|edit`, and
-  `{codex-review-gate,antigravity-review-gate,review-and-push}.sh` with `~`
-  expansion on `command`/`unsandboxed` rules), while keeping
-  `unsandboxed(git push --force-with-lease)` in `ask` and
-  `unsandboxed(git push --force|-f)` in `deny`.
+  `command(git -C)` from `permissions.ask` via `retired_ask` (`git` is
+  sandbox-only, and `git -C` forced prompts on read-only repo checks). Added
+  common sandboxed dev/test commands, `read_url(https://antigravity.google/)`,
+  `unsandboxed(git push --force-with-lease)` in `ask`, and
+  `unsandboxed(git push --force|-f)` in `deny`, plus `~` expansion on
+  `command(~...)` and `unsandboxed(~...)` rules.
 - **`check-antigravity.sh`:** detects when `~/.gemini/config` and
   `~/.gemini/antigravity-cli` are masked by Antigravity's `/setup/deny*`
   `tmpfs` mounts in `/proc/self/mountinfo` (`AGY_MOUNTINFO_FILE`, decoding
