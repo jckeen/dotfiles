@@ -73,7 +73,9 @@ def load_baseline(path):
     retired = list(data.get("retired", []))
     retired_ask = list(data.get("retired_ask", []))
     baseline = {b: list(rules.get(b, [])) for b in BUCKETS}
-    both = sorted((set(retired) & set(baseline["allow"])) | (set(retired_ask) & set(baseline["ask"])))
+    both = sorted(
+        (set(retired) & set(baseline["allow"])) | (set(retired_ask) & set(baseline["ask"]))
+    )
     if both:
         sys.exit(f"error: {path}: rule(s) both active and retired: {', '.join(both)}")
     return baseline, settings, retired, retired_ask
@@ -169,11 +171,7 @@ def main():
     n_retired = len(retired_live)
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
     extras = {
-        b: [
-            r
-            for r in live_lists[b]
-            if r not in expanded_baseline[b] and r not in retired_sets[b]
-        ]
+        b: [r for r in live_lists[b] if r not in expanded_baseline[b] and r not in retired_sets[b]]
         for b in BUCKETS
     }
     mode_missing = [k for k in mode_keys if k not in settings]
@@ -227,9 +225,7 @@ def main():
     for b in ("allow", "ask"):
         for rule in retired_by_bucket[b]:
             print(f"retired: removed {rule} from {b} (withdrawn from the baseline)")
-    kept = {
-        b: [r for r in live_lists[b] if r not in retired_sets[b]] for b in BUCKETS
-    }
+    kept = {b: [r for r in live_lists[b] if r not in retired_sets[b]] for b in BUCKETS}
     merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:
