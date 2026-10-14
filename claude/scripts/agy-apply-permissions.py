@@ -25,7 +25,7 @@ import tempfile
 import time
 
 RULE_RE = re.compile(r"^(command|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
-UNSANDBOXED_RE = re.compile(r"^unsandboxed(?:\s*\((.*)\)|\s*$)", re.IGNORECASE)
+UNSANDBOXED_RE = re.compile(r"^unsandboxed(?:\s*\((.*)\)\s*$|\s*\(.*|\s*$)", re.IGNORECASE)
 BUCKETS = ("allow", "ask", "deny")
 # Retirement withdraws a grant, never a restriction.
 GRANT_BUCKET = "allow"
@@ -144,7 +144,7 @@ def main():
                 if m_unsandboxed:
                     unsandboxed_live.append(e)
                     inner = (m_unsandboxed.group(1) or "").strip()
-                    if inner and inner != "*":
+                    if inner and not (bucket == GRANT_BUCKET and inner == "*"):
                         migrated = expand_rule(f"command({inner})", home)
                         if RULE_RE.match(migrated):
                             cleaned.append(migrated)

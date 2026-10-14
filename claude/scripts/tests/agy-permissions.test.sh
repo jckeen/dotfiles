@@ -44,27 +44,7 @@ allow = d['permissions']['allow']
 ask = d['permissions']['ask']
 deny = d['permissions']['deny']
 assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'command(gh pr view)' in allow
-for claude_rule in (
-    'command(git push)',
-    'command(gh pr create)',
-    'command(gh pr merge)',
-    'command(gh pr edit)',
-    'command(gh pr comment)',
-    'command(gh pr close)',
-    'command(gh pr ready)',
-    'command(gh pr update-branch)',
-    'command(gh issue create)',
-    'command(gh issue comment)',
-    'command(gh issue close)',
-    'command(gh issue edit)',
-    'command(git worktree remove)',
-    'command(git worktree prune)',
-    'command(~/.claude/scripts/codex-review-gate.sh)',
-    'command(~/.claude/scripts/antigravity-review-gate.sh)',
-    'command(~/.claude/scripts/review-and-push.sh)',
-):
-    assert claude_rule in allow, f'{claude_rule} must be in allow for Claude workflow parity'
-    assert claude_rule not in ask, f'{claude_rule} must not remain in ask (ask > allow)'
+assert 'command(git push)' not in allow and 'command(gh pr merge)' in ask and 'command(git worktree remove)' in ask
 assert 'read_file(~/.config/gh/)' in deny and 'read_file(~/.claude/.credentials.json)' in deny
 assert 'command(git config)' not in ask, 'an ask prefix would shadow the read-only git config --get allow'
 assert not any('regex:' in r for b in d['permissions'].values() for r in b), 'no command regexes: the sandbox is the boundary'
@@ -76,7 +56,7 @@ for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
     assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
 assert 'command(git -C)' in ask, 'git -C can wrap destructive subcommands like reset --hard; must ask'
 PY
-then ok "baseline is valid, portable, free of unsandboxed rules, and matches Claude workflow"
+then ok "baseline is valid, portable, and free of retired unsandboxed rules"
 else fail "baseline file failed validation"; fi
 
 printf '{"trustedWorkspaces":["/x/dev"],"permissions":{"allow":["command(local-junk)","command(rg)"]}}\n' > "$S"
@@ -313,7 +293,7 @@ else fail "an operator-owned deny was retired away or failed check: $out"; fi
 
 # ── Legacy unsandboxed(...) migration & operator ask preservation ──────────
 S_UNSAND="$ROOT/unsandboxed.json"
-printf '{"permissions":{"allow":["unsandboxed(gh pr view)","unsandboxed(custom-net-tool)"],"ask":["unsandboxed(git push --force-with-lease)","command(python3)","command(custom-ask)"],"deny":["unsandboxed(git push --force)"]}}\n' > "$S_UNSAND"
+printf '{"permissions":{"allow":["unsandboxed(gh pr view)","unsandboxed(custom-net-tool)","unsandboxed(*)","unsandboxed(gh auth status)"],"ask":["unsandboxed(git push --force-with-lease)","unsandboxed(*)","command(python3)","command(custom-ask)"],"deny":["unsandboxed(git push --force)","unsandboxed(*)"]}}\n' > "$S_UNSAND"
 if out="$(python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" 2>&1)"; then
   fail "check passed with invalid unsandboxed(...) rules present: $out"
 else
@@ -328,12 +308,15 @@ d = json.load(open(sys.argv[1]))
 perms = d['permissions']
 assert not any(r.startswith('unsandboxed(') for b in perms.values() for r in b), 'unsandboxed rules survived apply'
 assert 'command(custom-net-tool)' in perms['allow'], 'custom unsandboxed rule should migrate to command(...)'
-assert 'command(gh pr merge)' in perms['allow'], 'gh pr merge should be in allow'
+assert 'command(*)' not in perms['allow'], 'wildcard unsandboxed(*) in allow must not migrate to command(*)'
+assert 'command(gh auth status)' not in perms['allow'], 'retired rule migrated from unsandboxed must be retired from allow'
+assert 'command(*)' in perms['ask'], 'wildcard unsandboxed(*) in ask must migrate to command(*)'
+assert 'command(*)' in perms['deny'], 'wildcard unsandboxed(*) in deny must migrate to command(*)'
 assert 'command(python3)' in perms['ask'], 'operator ask restriction on a baseline allow rule must be preserved'
 assert 'command(custom-ask)' in perms['ask'], 'unrelated operator ask rule must be preserved'
 PY
-then ok "apply migrates unsandboxed(...) rules to command(...) while preserving operator ask restrictions"
-else fail "apply failed to migrate unsandboxed(...) or preserve operator ask restrictions"; fi
+then ok "apply migrates unsandboxed(...) rules to command(...) while dropping allow wildcard and preserving ask/deny restrictions"
+else fail "apply failed to migrate unsandboxed(...) or preserve operator ask/deny restrictions"; fi
 
 if python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" >/dev/null 2>&1; then
   ok "check passes after unsandboxed migration with operator ask restriction preserved"
