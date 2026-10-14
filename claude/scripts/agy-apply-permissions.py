@@ -24,7 +24,8 @@ import sys
 import tempfile
 import time
 
-RULE_RE = re.compile(r"^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
+RULE_RE = re.compile(r"^(command|read_file|write_file|read_url|execute_url|mcp)\(.+\)$")
+UNSANDBOXED_RE = re.compile(r"^unsandboxed(?:\s*\((.*)\)|\s*$)", re.IGNORECASE)
 BUCKETS = ("allow", "ask", "deny")
 # Retirement withdraws a grant, never a restriction.
 GRANT_BUCKET = "allow"
@@ -90,7 +91,7 @@ def write_atomic(path, data):
 
 
 def expand_rule(rule, home):
-    m = re.match(r"^(read_file|write_file|command|unsandboxed)\(~(/.*)?\)$", rule)
+    m = re.match(r"^(read_file|write_file|command)\(~(/.*)?\)$", rule)
     if m:
         action, subpath = m.group(1), m.group(2)
         if subpath:
@@ -131,6 +132,7 @@ def main():
         sys.exit(f'error: {args.settings}: "permissions" must be an object')
     live_lists = {}
     legacy_repaired = False
+    unsandboxed_live = []
     for bucket in BUCKETS:
         entries = live.get(bucket, [])
         if not isinstance(entries, list):
@@ -138,6 +140,15 @@ def main():
         cleaned = []
         for e in entries:
             if isinstance(e, str):
+                m_unsandboxed = UNSANDBOXED_RE.match(e.strip())
+                if m_unsandboxed:
+                    unsandboxed_live.append(e)
+                    inner = (m_unsandboxed.group(1) or "").strip()
+                    if inner and inner != "*":
+                        migrated = expand_rule(f"command({inner})", home)
+                        if RULE_RE.match(migrated):
+                            cleaned.append(migrated)
+                    continue
                 expanded = expand_rule(e, home)
                 if expanded != e:
                     legacy_repaired = True
@@ -155,12 +166,18 @@ def main():
     # would turn a forbidden operation into an approvable one.
     retired_live = [r for r in live_lists[GRANT_BUCKET] if r in retired_set]
     n_retired = len(retired_live)
+    # A rule granted in the baseline's allow bucket must not remain in ask from
+    # an earlier baseline version, because ask > allow in Antigravity.
+    baseline_allow_set = set(expanded_baseline[GRANT_BUCKET])
+    promoted_in_ask = [r for r in live_lists["ask"] if r in baseline_allow_set]
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
     extras = {
         b: [
             r
             for r in live_lists[b]
-            if r not in expanded_baseline[b] and not (b == GRANT_BUCKET and r in retired_set)
+            if r not in expanded_baseline[b]
+            and not (b == GRANT_BUCKET and r in retired_set)
+            and not (b == "ask" and r in baseline_allow_set)
         ]
         for b in BUCKETS
     }
@@ -175,11 +192,20 @@ def main():
         problems = []
         if n_missing:
             problems.append(f"{n_missing} baseline rule(s) missing")
+        if unsandboxed_live:
+            problems.append(
+                f"{len(unsandboxed_live)} invalid unsandboxed rule(s) in settings (re-run apply)"
+            )
         if legacy_repaired:
             problems.append('unexpanded "~" rule(s) in settings (re-run apply)')
         if n_retired:
             named = ", ".join(retired_live)
             problems.append(f"{n_retired} retired rule(s) still granted: {named} (re-run apply)")
+        if promoted_in_ask:
+            named = ", ".join(promoted_in_ask)
+            problems.append(
+                f"{len(promoted_in_ask)} baseline allow rule(s) shadowed by ask: {named} (re-run apply)"
+            )
         if mode_missing:
             problems.append("unset: " + ", ".join(mode_missing))
         if problems:
@@ -211,11 +237,24 @@ def main():
         return 0
 
     # apply
-    changed = n_missing > 0 or legacy_repaired or n_retired > 0
+    changed = (
+        n_missing > 0
+        or legacy_repaired
+        or bool(unsandboxed_live)
+        or n_retired > 0
+        or bool(promoted_in_ask)
+    )
+    if unsandboxed_live:
+        print(
+            f"migrated: converted/removed {len(unsandboxed_live)} legacy unsandboxed rule(s)"
+        )
     for rule in retired_live:
         print(f"retired: removed {rule} from {GRANT_BUCKET} (withdrawn from the baseline)")
+    for rule in promoted_in_ask:
+        print(f"promoted: removed {rule} from ask (now granted in baseline allow)")
     kept = dict(live_lists)
     kept[GRANT_BUCKET] = [r for r in live_lists[GRANT_BUCKET] if r not in retired_set]
+    kept["ask"] = [r for r in live_lists["ask"] if r not in baseline_allow_set]
     merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:

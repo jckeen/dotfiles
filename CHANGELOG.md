@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-14 — fix(agy): remove retired `unsandboxed(...)` permission rules and align baseline with Claude Code workflow
+
+- **`antigravity/permissions.json`:** removed all `unsandboxed(...)` rules from
+  `permissions` and `retired` (Antigravity CLI retired `unsandboxed(...)` and
+  prints a startup warning ignoring them). Promoted routine git, GitHub
+  PR/issue, and review-gate commands (`git push`, `git branch -d`,
+  `git worktree remove`, `git worktree prune`,
+  `gh pr create|merge|edit|comment|close|ready|update-branch`,
+  `gh issue create|comment|close|edit`, `codex-review-gate.sh`,
+  `antigravity-review-gate.sh`, `review-and-push.sh`, `git-hygiene.sh`) to
+  `permissions.allow` using unified `command(...)` syntax (matching the Claude
+  Code workflow in `claude/settings.json`), and removed `command(gh pr merge)`,
+  `command(gh pr create)`, `command(gh issue create)`, and
+  `command(git worktree remove)` from `permissions.ask` so `ask` no longer
+  shadows `allow` (`deny > ask > allow`).
+- **`claude/scripts/agy-apply-permissions.py`:** rejected `unsandboxed(...)` in
+  `RULE_RE`, added `UNSANDBOXED_RE` migration in `apply` to convert/strip legacy
+  `unsandboxed(...)` entries across all buckets (`allow`, `ask`, `deny`), added
+  `promoted_in_ask` cleanup so rules promoted from `ask` to `allow` in the
+  baseline are removed from `ask` in existing `settings.json` files, and taught
+  `check` to fail when invalid `unsandboxed(...)` rules or shadowed baseline
+  `allow` rules remain.
+- **Tests:** expanded `claude/scripts/tests/agy-permissions.test.sh` (27 cases)
+  to assert zero `unsandboxed(...)` entries, Claude-parity `allow`/`ask`
+  placement, legacy `unsandboxed(...)` migration, and `promoted_in_ask` cleanup.
+
 ## 2026-10-13 — fix(agy): retire symlinked `$HOME` read rules and make `check-antigravity.sh` sandbox-aware
 
 - **`antigravity/permissions.json` & `claude/scripts/agy-apply-permissions.py`:**

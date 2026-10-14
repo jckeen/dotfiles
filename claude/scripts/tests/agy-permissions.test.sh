@@ -28,33 +28,55 @@ import json, re, sys
 d = json.load(open(sys.argv[1]))
 assert d['settings']['toolPermission'] == 'proceed-in-sandbox'
 assert d['settings']['enableTerminalSandbox'] is True
-rule = re.compile(r'^(command|unsandboxed|read_file|write_file|read_url|execute_url|mcp)\(.+\)$')
+rule = re.compile(r'^(command|read_file|write_file|read_url|execute_url|mcp)\(.+\)$')
 for bucket in ('allow', 'ask', 'deny'):
     for entry in d['permissions'][bucket]:
         assert rule.match(entry), entry
+        assert not entry.lower().startswith('unsandboxed'), entry
         assert '/home/' not in entry and '/Users/' not in entry, entry
+for entry in d['retired']:
+    assert rule.match(entry), entry
+    assert not entry.lower().startswith('unsandboxed'), entry
 assert 'command(sudo)' in d['permissions']['deny']
 assert 'command(rg)' in d['permissions']['allow']
 assert d['settings']['allowNonWorkspaceAccess'] is True
 allow = d['permissions']['allow']
-assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'unsandboxed(gh pr view)' in allow
-assert not any(r.startswith('unsandboxed(') and not r.startswith('unsandboxed(gh ') for r in allow), 'only gh reads may leave the sandbox in the public baseline'
-assert 'read_file(~/.config/gh/)' in d['permissions']['deny'] and 'read_file(~/.claude/.credentials.json)' in d['permissions']['deny']
-assert 'command(git config)' not in d['permissions']['ask'], 'an ask prefix would shadow the read-only git config --get allow'
-assert 'unsandboxed(python3)' not in allow and 'unsandboxed(bun run)' not in allow, 'code runners must stay sandbox-only'
-assert 'unsandboxed(echo)' not in allow and 'unsandboxed(printf)' not in allow, 'text writers must stay sandbox-only'
-for tool in ('awk', 'sed -n', 'fd', 'yq', 'jq'):
-    assert f'unsandboxed({tool})' not in allow, f'{tool} can execute or write; sandbox-only'
+ask = d['permissions']['ask']
+deny = d['permissions']['deny']
+assert 'read_file(~/.claude/)' in allow and 'write_file(~/dev/)' in allow and 'command(gh pr view)' in allow
+for claude_rule in (
+    'command(git push)',
+    'command(gh pr create)',
+    'command(gh pr merge)',
+    'command(gh pr edit)',
+    'command(gh pr comment)',
+    'command(gh pr close)',
+    'command(gh pr ready)',
+    'command(gh pr update-branch)',
+    'command(gh issue create)',
+    'command(gh issue comment)',
+    'command(gh issue close)',
+    'command(gh issue edit)',
+    'command(git worktree remove)',
+    'command(git worktree prune)',
+    'command(~/.claude/scripts/codex-review-gate.sh)',
+    'command(~/.claude/scripts/antigravity-review-gate.sh)',
+    'command(~/.claude/scripts/review-and-push.sh)',
+):
+    assert claude_rule in allow, f'{claude_rule} must be in allow for Claude workflow parity'
+    assert claude_rule not in ask, f'{claude_rule} must not remain in ask (ask > allow)'
+assert 'read_file(~/.config/gh/)' in deny and 'read_file(~/.claude/.credentials.json)' in deny
+assert 'command(git config)' not in ask, 'an ask prefix would shadow the read-only git config --get allow'
 assert not any('regex:' in r for b in d['permissions'].values() for r in b), 'no command regexes: the sandbox is the boundary'
-assert 'command(git push --force)' in d['permissions']['deny'] and 'unsandboxed(git push --force)' in d['permissions']['deny'] and 'command(git clone)' in d['permissions']['ask']
-assert 'read_file(~/.gemini/antigravity-cli/)' not in d['permissions']['deny'], 'agy keeps its own brain/ and scratch/ there'
-assert 'command(rm -rf /)' not in d['permissions']['deny'], 'a bare / or ~ prefix risks over-matching every absolute path'
+assert 'command(git push --force)' in deny and 'command(git push -f)' in deny and 'command(git push --force-with-lease)' in ask and 'command(git clone)' in ask
+assert 'read_file(~/.gemini/antigravity-cli/)' not in deny, 'agy keeps its own brain/ and scratch/ there'
+assert 'command(rm -rf /)' not in deny, 'a bare / or ~ prefix risks over-matching every absolute path'
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
 for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
     assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
-assert 'command(git -C)' in d['permissions']['ask'], 'git -C can wrap destructive subcommands like reset --hard; must ask'
+assert 'command(git -C)' in ask, 'git -C can wrap destructive subcommands like reset --hard; must ask'
 PY
-then ok "baseline is valid, portable, and denies sudo while keeping gh api out of allow"
+then ok "baseline is valid, portable, free of unsandboxed rules, and matches Claude workflow"
 else fail "baseline file failed validation"; fi
 
 printf '{"trustedWorkspaces":["/x/dev"],"permissions":{"allow":["command(local-junk)","command(rg)"]}}\n' > "$S"
@@ -185,11 +207,11 @@ assert mod.expand_rule("read_file(~/.ssh/)", "/home/user") == "read_file(/home/u
 assert mod.expand_rule("write_file(~/.claude/foo)", "/home/user") == "write_file(/home/user/.claude/foo)"
 assert mod.expand_rule("write_file(~)", "/home/user") == "write_file(/home/user)"
 assert mod.expand_rule("write_file(~root/bar)", "/home/user") == "write_file(~root/bar)"
-assert mod.expand_rule("unsandboxed(~/.claude/scripts/codex-review-gate.sh)", "/home/user") == "unsandboxed(/home/user/.claude/scripts/codex-review-gate.sh)"
+assert mod.expand_rule("command(~/.claude/scripts/codex-review-gate.sh)", "/home/user") == "command(/home/user/.claude/scripts/codex-review-gate.sh)"
 assert mod.expand_rule("command(~/bin/run)", "/home/user") == "command(/home/user/bin/run)"
 assert mod.expand_rule("command(rm -rf ~/*)", "/home/user") == "command(rm -rf ~/*)"
 PY
-then ok "expand_rule handles read_file, write_file, command, and unsandboxed while leaving ~username unexpanded"; else fail "expand_rule mishandled ~username or rule expansion"; fi
+then ok "expand_rule handles read_file, write_file, and command while leaving ~username unexpanded"; else fail "expand_rule mishandled ~username or rule expansion"; fi
 
 S_TRAILING="$ROOT/trailing_home_settings.json"
 python3 "$TOOL" apply --settings "$S_TRAILING" --rules "$RULES" --home "/custom/home/user/" >/dev/null 2>&1
@@ -288,6 +310,34 @@ if out="$(python3 "$TOOL" check --settings "$S_DENY_ONLY" --rules "$RULES" 2>&1)
   && python3 -c "import json,sys; d=json.load(open('$S_DENY_ONLY')); r=json.load(open('$RULES'))['retired'][0]; sys.exit(0 if r in d['permissions']['deny'] else 1)"; then
   ok "a retired rule kept as an operator deny survives apply and passes check"
 else fail "an operator-owned deny was retired away or failed check: $out"; fi
+
+# ── Legacy unsandboxed(...) migration & promoted_in_ask cleanup ────────────
+S_UNSAND="$ROOT/unsandboxed.json"
+printf '{"permissions":{"allow":["unsandboxed(gh pr view)","unsandboxed(custom-net-tool)"],"ask":["unsandboxed(git push --force-with-lease)","command(gh pr merge)","command(custom-ask)"],"deny":["unsandboxed(git push --force)"]}}\n' > "$S_UNSAND"
+if out="$(python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" 2>&1)"; then
+  fail "check passed with invalid unsandboxed(...) rules present: $out"
+else
+  if grep -q 'unsandboxed' <<< "$out"; then ok "check flags invalid unsandboxed(...) rules in settings"
+  else fail "check failed without flagging unsandboxed rules: $out"; fi
+fi
+
+python3 "$TOOL" apply --settings "$S_UNSAND" --rules "$RULES" >/dev/null 2>&1
+if python3 - "$S_UNSAND" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+perms = d['permissions']
+assert not any(r.startswith('unsandboxed(') for b in perms.values() for r in b), 'unsandboxed rules survived apply'
+assert 'command(custom-net-tool)' in perms['allow'], 'custom unsandboxed rule should migrate to command(...)'
+assert 'command(gh pr merge)' in perms['allow'], 'gh pr merge should be in allow'
+assert 'command(gh pr merge)' not in perms['ask'], 'gh pr merge should be removed from ask when promoted to allow in baseline'
+assert 'command(custom-ask)' in perms['ask'], 'unrelated operator ask rule must be preserved'
+PY
+then ok "apply migrates unsandboxed(...) rules to command(...) and clears promoted baseline rules from ask"
+else fail "apply failed to migrate unsandboxed(...) or clear promoted ask rules"; fi
+
+if python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" >/dev/null 2>&1; then
+  ok "check passes after unsandboxed migration and promoted ask cleanup"
+else fail "check still failing after unsandboxed migration"; fi
 
 echo ""
 echo "agy-permissions: $pass passed, $failed failed"
