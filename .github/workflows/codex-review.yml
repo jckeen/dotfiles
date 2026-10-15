@@ -1,0 +1,535 @@
+name: codex-review
+
+# Holds a PR's merge until the GitHub Codex bot (chatgpt-codex-connector) has
+# finished reviewing it (dotfiles#613 follow-up). Auto-merge fires as soon as
+# required checks pass, about five minutes after a PR opens; the bot's review
+# lands five to ten minutes after opening, so without this its findings arrived
+# after the merge. This posts a commit status `codex-review` on the PR head:
+# pending while the bot works, success once its summary table shows a completed
+# review of the head. Its findings are inline review threads, which the
+# `codex-review` ruleset's "require conversation resolution" blocks until
+# resolved.
+#
+# Canonical copy: jckeen/dotfiles. claude/scripts/fleet-codex-review.sh copies
+# this file verbatim into each fleet repo and makes `codex-review` a required
+# status there; edit it here, then re-run that script.
+#
+# One PR per head commit (design verdict, 2026-10-15). GitHub stores a commit
+# status per commit, so every PR whose head is that commit shares it, while
+# "has the bot reviewed this?" is a per-PR question (another base is another
+# diff). Five review rounds of per-case patches kept reopening that seam, so
+# the rule is structural: a PR decides its status only while it is the sole
+# open, non-draft, same-repository PR with that head (a fork PR there posts
+# nothing, so a contributor cannot hold a PR). Otherwise every one holds.
+# Every run evaluates every open PR, so a sibling closing, moving to a new
+# commit or becoming a draft is picked up by the next run. Drafts cannot merge
+# and post nothing. A PR opening at a head in the moment between another PR's
+# sole-owner check and its post is corrected by the new PR's own run.
+#
+# Only a review of the head counts, and only one that began after the last
+# base change. The bot reviews when a PR opens, not on later pushes, so a head
+# it has not reviewed gets one `@codex review` request and holds. After a
+# retarget, the request waits until no review is running, and only a run that
+# completes after that request counts: nothing was running when it was made,
+# so any later completion is a run that saw the new base. Residual, open until
+# the canary shows how the bot's table labels a comment-triggered run: a
+# review already running at the retarget whose row first appears after the
+# request is indistinguishable from the requested one.
+#
+# Fails OPEN only where the bot is absent: if no summary comment appears within
+# the poll window (the bot posts it 15-45 s after a PR opens), the status goes
+# to success saying so; that is what a repo without the bot looks like, and the
+# local review gate still ran before push. Once the bot is active on a PR it
+# fails CLOSED: a failed review or an unreviewed head holds until a fresh
+# `@codex review` completes, since an author can cause both (an oversized
+# diff, a push after the review). A `codex-skip` label applied by a repo admin
+# or maintainer passes a sole-owner PR by hand.
+#
+# Skipped (success at once): docs-only diffs that touch no instruction surface,
+# and Dependabot PRs (2026-09-02 routine-dependency ruling). Skips key on facts a
+# PR author cannot choose: the changed paths and the Dependabot account, never a
+# branch name or title. Fork PRs hold for a maintainer's codex-skip.
+#
+# Threat model (design verdict, 2026-10-14). This stops the ordinary failure:
+# a PR, usually agent-opened, auto-merging before the bot has reviewed its
+# head commit. It is not a boundary against a repository WRITER, and no commit
+# status can be: a writer can add a workflow that posts `codex-review` itself,
+# edit the bot's summary comment, push a commit whose 7-character prefix
+# collides with the reviewed one, or forge a Dependabot author email. A fork
+# contributor without write access cannot reach a passing state. Holding
+# writers to the review would need a check from an app they cannot drive, not
+# this workflow.
+#
+# pull_request_target, not pull_request: a Dependabot-triggered pull_request
+# run gets a read-only token and could not post the status. This is safe here
+# only because the job never checks out or runs PR content; it reads the PR
+# through the API. PR-controlled strings reach the script through env, never
+# through ${{ }} interpolation inside `run:`.
+#
+# A bot status edit is an issue_comment event, which runs on the default
+# branch and so cannot report through its own check run (that would attach to
+# main's HEAD); hence a commit status on the PR head SHA. The job name differs
+# from the status context so its own check run is never mistaken for it.
+
+on:
+  pull_request_target:
+    # edited: only a base change counts (filtered below). closed: a sibling
+    # sharing the head may now be its sole owner.
+    # converted_to_draft: like closed, it can leave a sibling the sole owner.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited, closed, converted_to_draft]
+  issue_comment:
+    types: [created, edited]
+  # Evaluates every open PR: run by fleet-codex-review.sh when it activates
+  # the ruleset (PRs opened before then have no status and may see no further
+  # event), and by hand after a failed run.
+  workflow_dispatch:
+
+permissions:
+  statuses: write # post the codex-review commit status
+  pull-requests: read # read the PRs, their labels and changed files
+  issues: write # read the bot's summary; request a re-review of a new head
+
+jobs:
+  # Every same-repository PR event first invalidates its head (pending), and
+  # `evaluate` runs after it (needs), so each invalidation is followed by an
+  # evaluation that started later. The writer's queued run for this event can
+  # be replaced by a newer one, which also started later. Whatever an event
+  # changed - a retarget, a sibling at the head, a removed codex-skip - a lost
+  # or failed evaluation therefore leaves the head pending, never at an older
+  # success. It reads nothing, so it cannot fail on state. Fork PRs skip it:
+  # their head may be a same-repository PR's too.
+  invalidate:
+    name: invalidate the head
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action == 'edited' && github.event.changes.base ||
+       (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+         github.event.label.name == 'codex-skip' ||
+       github.event.action != 'edited' && github.event.action != 'labeled' &&
+         github.event.action != 'unlabeled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hold the head until it is evaluated again
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=pending \
+            -f context=codex-review -f description="Re-evaluating the Codex review state" \
+            -f target_url="$RUN_URL" >/dev/null
+
+  evaluate:
+    name: evaluate Codex review state
+    needs: invalidate
+    # Only the events that can change the verdict. Every other comment and
+    # label change is skipped here, which costs no runner minutes. always():
+    # it runs whether invalidate ran, was skipped (comments, forks) or failed.
+    if: >-
+      always() && (
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action == 'edited' && github.event.changes.base ||
+         (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+           github.event.label.name == 'codex-skip' ||
+         github.event.action != 'edited' && github.event.action != 'labeled' &&
+           github.event.action != 'unlabeled')) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
+        contains(github.event.comment.body, 'codex-pull-request-review-summary')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    # One writer per repository (design verdict, 2026-10-15). Every run
+    # evaluates every open PR from live state, one run at a time. Runs are
+    # never cancelled: GitHub keeps at most one run waiting per group and a
+    # newer one replaces it, which loses nothing because each run re-reads
+    # everything, and since a running writer is never interrupted, no one -
+    # a fork contributor included - can starve it by triggering events.
+    # Job-level, so a skipped run for an unrelated comment takes no slot.
+    concurrency:
+      group: codex-review-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Post the codex-review status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # The triggering PR, for revoking its head if the PR list cannot
+          # be read. EVENT_HEAD is empty on a comment event.
+          EVENT_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # >>> codex-review-status (extracted and tested by dotfiles
+          # claude/scripts/tests/codex-review-status.test.sh)
+          set -euo pipefail
+          BOT='chatgpt-codex-connector[bot]'
+          # How long the bot gets to post its summary after a PR opens or is
+          # marked ready before the PR counts as one the bot does not review.
+          POLL_SECONDS="${POLL_SECONDS:-180}"
+          WORK="$(mktemp -d)"
+          DEADLINES="$WORK/deadlines"
+
+          # Numbers of the open, non-draft, same-repository PRs whose head is
+          # commit $1, from this pass's snapshot. Fork PRs never count: a
+          # contributor without write access could otherwise hold any PR by
+          # opening one at its head.
+          heads_at() {
+            jq -r --arg sha "$1" --arg repo "$REPO" \
+              '.[] | select(.head.sha == $sha and (.draft | not) and .head.repo.full_name == $repo) | .number' <<<"$OPEN"
+          }
+
+          # A docs-only diff passes; anything that steers an agent, a build or CI
+          # does not, so the patterns fail toward requiring the review. Matched
+          # case-insensitively (agents load claude.md as readily as CLAUDE.md),
+          # in a subshell so nocasematch stays local. .txt and .mdx are not
+          # docs: requirements.txt is a manifest, an .mdx file is a component.
+          docs_only() (
+            shopt -s nocasematch
+            any=0
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              any=1
+              # Any dot-directory (.github, .claude, .gemini, .agents, .codex,
+              # .cursor, ...) holds CI or agent configuration, not docs.
+              case "$f" in
+                .*/* | */.*/* | skills/* | */skills/* | agents/* | */agents/* | \
+                  prompts/* | */prompts/*) exit 1 ;;
+              esac
+              case "${f##*/}" in
+                # Instruction names as review-receipt.py's instruction() and
+                # risk() list them (AgentPack.md is the pack's source).
+                *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | *FABLE*.md | *SKILL*.md | \
+                  *MULTI-AGENT*.md | *AGENTPACK*) exit 1 ;;
+                *.md | *.rst | LICENSE | LICENSE.txt) ;;
+                *) exit 1 ;;
+              esac
+            done <<<"$1"
+            [ "$any" = 1 ]
+          )
+
+          # "<review type>\t<status>\t<commit>\t<finished at>" for each review row
+          # of a summary table; a row ends in its backticked commit SHA, and a
+          # finished row's status cell carries a <relative-time datetime=...>.
+          rows() {
+            # shellcheck disable=SC2016 # the backticks and $N belong to grep/awk
+            grep -E '^\|[^|]*\|[^|]*\|[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*\|' <<<"$1" |
+              awk -F'|' '{c = $4; gsub(/[` \t]/, "", c); at = ""
+                if (match($3, /datetime="[^"]*"/)) at = substr($3, RSTART + 10, 19)
+                print $2 "\t" $3 "\t" c "\t" at}' |
+              sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]*\t[[:space:]]*/\t/g' || true
+          }
+
+          # Evaluates one PR and posts its status. A subshell, so `exit` ends
+          # this PR's evaluation only.
+          evaluate() (
+            pr="$1"
+            pr_json="$(gh api "repos/$REPO/pulls/$pr")"
+            if [ "$(jq -r .state <<<"$pr_json")" != open ]; then
+              echo "#$pr is not open; nothing to post."
+              exit 0
+            fi
+            if [ "$(jq -r .draft <<<"$pr_json")" = true ]; then
+              echo "#$pr is a draft; no status until it is marked ready."
+              exit 0
+            fi
+            sha="$(jq -r .head.sha <<<"$pr_json")"
+            # Recorded so a failure below can revoke this head's status.
+            echo "$sha" >"$WORK/sha.$pr"
+
+            # Compare-and-set. Never overwrites a status written after this
+            # pass began reading (PASS_START, GitHub's clock): that is a newer
+            # invalidation or verdict this pass did not see, and it wins; the
+            # run that follows it decides the head. Also writes only a change:
+            # GitHub keeps at most 1000 statuses per commit and context, and
+            # every run re-evaluates every open PR.
+            post() {
+              local desc="${2:0:140}" current
+              current="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
+                jq -c '[.[] | select(.context == "codex-review")][0] // {}')"
+              if [ "$(jq -r '(.created_at // "")[0:19]' <<<"$current")" \> "$PASS_START" ] ||
+                [ "$(jq -r '(.created_at // "")[0:19]' <<<"$current")" = "$PASS_START" ]; then
+                echo "#$pr codex-review has a status newer than this pass; leaving it"
+                return 0
+              fi
+              if [ "$(jq -r '"\(.state)|\(.description)"' <<<"$current")" = "$1|$desc" ]; then
+                echo "#$pr codex-review unchanged: $1"
+                return 0
+              fi
+              local id
+              id="$(gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
+                -f context=codex-review -f description="$desc" \
+                -f target_url="$RUN_URL" --jq .id)"
+              echo "#$pr codex-review -> $1: $2"
+              [ "$1" = success ] || return 0
+              # The check above is not atomic: GitHub has no conditional status
+              # write, so an invalidation can land between it and this POST.
+              # Re-read, and if any other status arrived since the pass began,
+              # hand the head back to pending for the run that follows it. What
+              # remains is the second or two between this success and that
+              # revert, which no commit-status design can close.
+              # Three attempts; a re-read that still fails counts as a
+              # conflict (fails closed) and fails the run, so it shows as failed
+              # and can be re-run (workflow_dispatch) instead of leaving a quiet
+              # hold.
+              local newer attempt
+              for attempt in 1 2 3; do
+                if newer="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
+                  jq --arg start "$PASS_START" --argjson id "$id" \
+                    '[.[] | select(.context == "codex-review" and .id != $id and (.created_at[0:19] >= $start))] | length')"; then
+                  break
+                fi
+                newer=failed
+                [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
+              done
+              if [ "$newer" != 0 ]; then
+                gh api -X POST "repos/$REPO/statuses/$sha" -f state=pending \
+                  -f context=codex-review -f description="Re-evaluating the Codex review state" \
+                  -f target_url="$RUN_URL" >/dev/null
+                echo "#$pr codex-review -> pending: a newer status arrived during this pass (or the re-read failed: $newer)"
+                [ "$newer" != failed ] || return 1
+              fi
+            }
+
+            # A fork PR at the head of a same-repository PR posts nothing: its
+            # pending would hold that PR, and the status it shares cannot merge
+            # it, since merging a fork PR takes a writer.
+            fork=0
+            [ "$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")" = "$REPO" ] || fork=1
+            # Read failures end the evaluation (errexit): absent state is never
+            # inferred from a failed read.
+            owners="$(heads_at "$sha")"
+            others() { awk -v pr="$pr" 'NF && $0 != pr' <<<"$owners"; }
+            if [ "$fork" = 1 ] && [ -n "$(others)" ]; then
+              echo "#$pr is a fork PR sharing its head with a same-repository PR; posting nothing."
+              exit 0
+            fi
+
+            # The sole-owner rule, before anything that can post success.
+            # Worded the same from every sibling, since they share the status.
+            if [ -n "$(others)" ]; then
+              post pending "Head commit of open PRs $(awk 'NF { printf "%s#%s", (n++ ? ", " : ""), $0 }' <<<"$owners"); decided once one PR holds it"
+              exit 0
+            fi
+
+            # The label counts only when someone with admin or maintain on the
+            # repo applied it, so a PR author cannot waive their own review.
+            events="$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events")"
+            actor="$(jq -r '[.[][] | select(.event == "labeled" and .label.name == "codex-skip")] | last | .actor.login // empty' <<<"$events")"
+            if jq -e '[.labels[].name] | index("codex-skip")' <<<"$pr_json" >/dev/null && [ -n "$actor" ]; then
+              # A failed lookup fails this evaluation: the head goes to pending
+              # and the run fails, so it shows and can be re-run.
+              role="$(gh api "repos/$REPO/collaborators/$actor/permission" --jq .role_name)"
+              case "$role" in
+                admin | maintain)
+                  post success "Skipped by the codex-skip label"
+                  exit 0
+                  ;;
+              esac
+              echo "codex-skip was applied by $actor ($role), who cannot waive the review; ignoring it"
+            fi
+
+            # A fork PR never passes on its own: the bot's table names commits by
+            # a 7-character prefix, which a fork author can collide without any
+            # write access, and the bot may never review a fork at all.
+            if [ "$fork" = 1 ]; then
+              post pending "Fork PR: a maintainer applies codex-skip after review"
+              exit 0
+            fi
+
+            # Every commit must be Dependabot's: anyone with write access can
+            # push onto a Dependabot branch, and those commits are not routine.
+            # The commits API lists at most 250, so the list must be complete
+            # and end at the head.
+            # The read sits outside any condition, so a failure fails the run.
+            if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ]; then
+              commits_json="$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/commits")"
+              if jq -e --argjson n "$(jq .commits <<<"$pr_json")" --arg head "$sha" \
+                '[.[][]] | length == $n and length > 0 and .[-1].sha == $head and
+                 all(.author.login == "dependabot[bot]")' <<<"$commits_json" >/dev/null; then
+                post success "Dependabot PR: Codex review not required"
+                exit 0
+              fi
+            fi
+
+            # A rename is judged on both paths. The files API lists at most 3000
+            # entries, so a list shorter than changed_files is never docs-only.
+            files_json="$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/files")"
+            files="$(jq -r '.[][] | .filename, (.previous_filename // empty)' <<<"$files_json")"
+            if [ "$(jq '[.[][]] | length' <<<"$files_json")" = "$(jq .changed_files <<<"$pr_json")" ] &&
+              docs_only "$files"; then
+              post success "Docs-only change: Codex review not required"
+              exit 0
+            fi
+
+            # One snapshot of the comments: the summary and the re-review
+            # requests are judged together, never from two different moments.
+            comments_json="$(gh api --paginate --slurp "repos/$REPO/issues/$pr/comments")"
+            body="$(jq -r --arg bot "$BOT" \
+              '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty' <<<"$comments_json")"
+            if [ -z "$body" ]; then
+              # No summary yet. Inside the pickup window that is "not yet";
+              # past it, the bot is not reviewing this PR. The window starts
+              # when the PR opened, reopened or was marked ready, the moments
+              # the bot reviews.
+              ready_at="$(jq -r --argjson pr "$pr_json" \
+                '[$pr.created_at, (.[][] | select(.event == "ready_for_review" or .event == "reopened") | .created_at)] | max | .[0:19]' <<<"$events")"
+              deadline=$(($(date -u -d "${ready_at}Z" +%s) + POLL_SECONDS))
+              if [ "$(date -u +%s)" -ge "$deadline" ]; then
+                post success "Codex did not pick up this PR within ${POLL_SECONDS}s; not blocking"
+              else
+                post pending "Waiting for Codex to pick up this PR"
+                echo "$deadline" >>"$DEADLINES"
+              fi
+              exit 0
+            fi
+            if [ -z "$(rows "$body")" ]; then
+              post pending "Codex review started"
+              exit 0
+            fi
+
+            # The re-review request for this head (and base change, if any).
+            # Only this workflow's own comments count, so a pasted marker can
+            # neither suppress a request nor fake one.
+            retargeted_at="$(jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "automatic_base_change_succeeded") | .created_at[0:19]] | max // empty' <<<"$events")"
+            marker="<!-- codex-review-rerequest:$sha${retargeted_at:+:$retargeted_at} -->"
+            requested_at="$(jq -r --arg m "$marker" \
+              '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m))) | .created_at[0:19]] | min // empty' <<<"$comments_json")"
+
+            # Rows for the head commit. After a retarget only rows finishing
+            # after the request count (running rows have no finish time yet);
+            # without one, every head row counts.
+            head_rows="$(rows "$body" | awk -F'\t' -v sha="$sha" '$3 != "" && index(sha, $3) == 1')"
+            running="$(cut -f2 <<<"$head_rows" | grep -viE 'completed|fail|error|cancel|skip|timed out|unavailable|limit' | grep . || true)"
+            if [ -n "$retargeted_at" ]; then
+              if [ -z "$requested_at" ]; then
+                if [ -n "$running" ]; then
+                  post pending "Base changed during a Codex review; re-review requested once it finishes"
+                  exit 0
+                fi
+                head_rows=""
+              else
+                # Strictly after: times are whole seconds, so a run finishing in
+                # the request's own second may have finished before it.
+                # A finished row needs a finish time after the request; only a
+                # row still running may lack one.
+                head_rows="$(awk -F'\t' -v since="$requested_at" \
+                  '($4 != "" && $4 > since) || ($4 == "" && tolower($2) !~ /completed|fail|error|cancel|skip|timed out|unavailable|limit/)' <<<"$head_rows")"
+              fi
+            fi
+
+            if [ -z "$head_rows" ]; then
+              # Reviewed, but not this head (or not since the retarget): ask
+              # once per marker and hold. Never pass: the bot is active here.
+              if [ -z "$requested_at" ]; then
+                gh api -X POST "repos/$REPO/issues/$pr/comments" \
+                  -f body="@codex review"$'\n\n'"$marker" >/dev/null
+                echo "#$pr requested a Codex re-review of $sha"
+              fi
+              post pending "Head not reviewed by Codex yet; re-review requested (or comment @codex review)"
+              exit 0
+            fi
+            if [ -n "$running" ]; then
+              post pending "Codex review in progress"
+              exit 0
+            fi
+            # Each review type (code, security) needs one Completed run; an
+            # earlier failed attempt of that type is superseded by it. A type
+            # with no completed run holds: a diff can be made big enough to
+            # fail the bot, and that must not waive the review.
+            ended="$(awk -F'\t' '{ seen[$1] = $2 } $2 ~ /[Cc]ompleted/ { done[$1] = 1 }
+              END { for (k in seen) if (!(k in done)) { print seen[k]; exit } }' <<<"$head_rows")"
+            if [ -n "$ended" ]; then
+              post pending "Codex review ended without completing ($ended); comment @codex review to retry"
+              exit 0
+            fi
+            post success "Codex review completed"
+          )
+
+          # One pass evaluates every open PR from a fresh snapshot. Each runs as a
+          # background job and is waited on: called from `||` or `if`, bash
+          # would switch errexit off inside it, and a failed read would pass as
+          # absent state.
+          #
+          # A failed evaluation revokes: an earlier success may no longer hold
+          # (a retarget keeps the head), and a failed job does not clear a
+          # commit status, so the head goes back to pending. Never at a fork
+          # PR's head: that may be a same-repository PR's head too, and merging
+          # a fork PR takes a writer either way.
+          revoke() { # <pr> <head sha> <head repo>
+            [ -n "$2" ] && [ "$3" = "$REPO" ] || return 0
+            gh api -X POST "repos/$REPO/statuses/$2" -f state=pending \
+              -f context=codex-review -f description="codex-review could not evaluate #$1; re-run the workflow" \
+              -f target_url="$RUN_URL" >/dev/null || echo "#$1: could not revoke its status" >&2
+          }
+          # Without the clock or the PR list no PR can be judged; revoke the one
+          # that triggered this run (a retarget is its own event) and fail.
+          unreadable() {
+            echo "could not read $1" >&2
+            if [ -n "${EVENT_HEAD:-}" ]; then
+              revoke "$EVENT_PR" "$EVENT_HEAD" "${EVENT_HEAD_REPO:-}"
+            elif [ -n "${EVENT_PR:-}" ] && ev="$(gh api "repos/$REPO/pulls/$EVENT_PR")"; then
+              revoke "$EVENT_PR" "$(jq -r .head.sha <<<"$ev")" "$(jq -r '.head.repo.full_name // empty' <<<"$ev")"
+            fi
+            exit 1
+          }
+          rc=0
+          evaluate_all() { # <same|fork>: which PRs this pass evaluates
+            : >"$DEADLINES"
+            # GitHub's clock, not the runner's: statuses carry GitHub's times.
+            # Its Date header has whole seconds, so wait past the current one
+            # before reading anything; every status from that second or
+            # earlier is then already reflected in what this pass reads.
+            local now
+            now="$(gh api -i rate_limit | awk -F': ' 'tolower($1) == "date" { print $2; exit }' | tr -d '\r')" || now=""
+            [ -n "$now" ] || unreadable "GitHub's clock"
+            PASS_START="$(date -u -d "$now + 1 second" +%Y-%m-%dT%H:%M:%S)"
+            sleep "${SETTLE_SECONDS:-1.1}"
+            # Three attempts: a transient API error should not cost a pass.
+            local attempt
+            for attempt in 1 2 3; do
+              if OPEN="$(gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" | jq -c '[.[][]]')"; then
+                break
+              fi
+              OPEN=""
+              [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
+            done
+            [ -n "$OPEN" ] || unreadable "the open PRs"
+            if [ "$1" = same ]; then
+              mapfile -t prs < <(jq -r --arg repo "$REPO" \
+                '[.[] | select(.head.repo.full_name == $repo)] | sort_by(.number) | .[].number' <<<"$OPEN")
+            else
+              mapfile -t prs < <(jq -r --arg repo "$REPO" \
+                '[.[] | select(.head.repo.full_name != $repo)] | sort_by(.number) | .[].number' <<<"$OPEN")
+            fi
+            for t in "${prs[@]}"; do
+              rm -f "$WORK/sha.$t"
+              evaluate "$t" &
+              if ! wait "$!"; then
+                rc=1
+                # The head it read, or else the snapshot's.
+                head="$(cat "$WORK/sha.$t" 2>/dev/null ||
+                  jq -r --argjson n "$t" '.[] | select(.number == $n) | .head.sha' <<<"$OPEN")"
+                revoke "$t" "$head" "$(jq -r --argjson n "$t" '.[] | select(.number == $n) | .head.repo.full_name // empty' <<<"$OPEN")"
+              fi
+            done
+          }
+          # Same-repository PRs are settled before any fork is touched, so no
+          # number of fork PRs can spend the job's time first: one pass, and a
+          # PR still inside its pickup window waits until the last window
+          # closes and is decided once more (a bot summary arriving meanwhile
+          # queues a run that follows this one). Forks, which never pass on
+          # their own, go last.
+          evaluate_all same
+          if [ -s "$DEADLINES" ]; then
+            delay=$(($(sort -n "$DEADLINES" | tail -n 1) - $(date -u +%s)))
+            if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+            evaluate_all same
+          fi
+          evaluate_all fork
+          exit "$rc"
+          # <<< codex-review-status

@@ -146,3 +146,21 @@ any differences before changing the live rule.
   every machine that pushes to `main`.
 - To temporarily relax for a one-off rescue: `gh api -X DELETE repos/jckeen/dotfiles/branches/main/protection`,
   do the work, then re-apply this file. Don't leave it off.
+
+## The `codex-review` ruleset (layered on top)
+
+`main` also carries a separate repository ruleset named `codex-review`, created
+by `claude/scripts/fleet-codex-review.sh` (which applies the same ruleset across
+the fleet). It requires the `codex-review` commit status, posted by
+`.github/workflows/codex-review.yml` while the GitHub Codex bot reviews a PR,
+and it requires every review thread to be resolved before merging, so the bot's
+findings are fixed or explicitly declined before auto-merge fires. It is a
+ruleset rather than part of the protection body above so it can be added or
+removed without rewriting this rule:
+
+```bash
+gh api repos/jckeen/dotfiles/rulesets --jq '.[] | select(.name == "codex-review")'
+```
+
+To lift it for one PR, add the `codex-skip` label. To remove it, delete the
+ruleset by id (`gh api -X DELETE repos/jckeen/dotfiles/rulesets/<id>`).

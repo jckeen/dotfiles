@@ -1,5 +1,67 @@
 # Changelog
 
+## 2026-10-14 — ci: hold merges until the Codex bot review finishes, fleet-wide
+
+- **`.github/workflows/codex-review.yml`:** posts a `codex-review` commit status
+  on each PR head: pending while the GitHub Codex bot reviews, success once its
+  summary table shows a completed review of the head (each review type passes
+  on any completed run, so a successful retry supersedes a failed attempt).
+  **One PR per head commit (design verdict):** statuses are stored per commit
+  but the review question is per PR, and five Codex gate rounds of per-case
+  patches kept reopening that seam, so a PR decides its status only while it is
+  the sole open, non-draft, same-repository PR with that head (a fork PR
+  there posts nothing, so a contributor cannot hold a PR); siblings hold.
+  **One writer per repository:** every run evaluates every open PR from live
+  state under a single repo-wide concurrency group that never cancels, so no
+  stale verdict lands after a newer one and no one (a fork contributor
+  included) can starve the writer by triggering events; a PR waiting for the
+  bot to pick it up gets one wait to the end of its window instead of a poll
+  per PR. Only changes are written (GitHub caps statuses at 1000 per commit and context).
+  Drafts post nothing; a failed evaluation ends that PR's run and revokes its
+  head to pending (never a fork PR's head), since a failed job does not clear
+  an earlier success; the PR-list read is retried three times, and if it still
+  fails the triggering PR's head is revoked. Every same-repository PR event
+  first invalidates its head (pending) from a read-free job, and the writer
+  runs after it, so a lost or failed evaluation leaves a head pending, never
+  at an older success; the writer's posts are compare-and-set on GitHub's
+  clock (a pass never overwrites a status written after it began reading, and
+  re-reads after a success, reverting to pending if anything newer arrived
+  or the re-read still fails after three attempts, which also fails the run),
+  so an older pass cannot leave a stale success over a newer invalidation.
+  GitHub has no conditional status write, so a success can stand for the
+  second or two before that revert; no commit-status design can close it.
+  Same-repository PRs are settled (both passes) before any fork is evaluated.
+  A `workflow_dispatch` run evaluates every open PR; the rollout script starts
+  one when it activates the ruleset, since PRs opened before then have no
+  status and may see no further event. A head the bot has not reviewed gets one `@codex review` request and
+  holds; after a base retarget the request waits until no review is running,
+  and only a run completing after it counts. Docs-only diffs (no instruction
+  surface or dot-directory, names mirroring `review-receipt.py`) and
+  all-Dependabot-commit PRs pass at once; fork PRs hold for a `codex-skip`
+  applied by an admin or maintainer; it fails open only when the bot never
+  posts a summary (3 min), which is how a repo without the bot looks.
+  **Threat model:** it stops a PR, usually agent-opened, from auto-merging
+  before the bot reviewed its head; it is not a boundary against a repository
+  writer, which no commit status can be. Write access across the fleet at
+  rollout: the owner everywhere, plus one outside writer on each of
+  allora-engine, clarity-engine and creator-studios. Event-driven
+  (`pull_request_target` plus the bot's summary-comment edits), so it does not
+  poll for the review. Measured on the 12 PRs merged before this: auto-merge
+  fired about 5 minutes after opening, the bot's verdict arrived after 2–10
+  minutes, and #599 and #604 merged before their findings landed.
+- **`claude/scripts/fleet-codex-review.sh`:** copies that workflow into each
+  fleet repo through a PR, then creates a dedicated `codex-review` ruleset
+  requiring the status (pinned to the GitHub Actions app, so a hand-posted
+  status cannot satisfy it) and resolved review threads. Thread resolution is what
+  makes the hold mean something: without it the status turns green at the
+  moment the findings appear.
+- **Tests:** `codex-review-status.test.sh` (85 cases; the status script run
+  from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
+  (10 cases; never a ruleset before the workflow is current, never a forced
+  branch reset, a failed write opens no PR), both in the `checkers` shard.
+- **Docs:** `docs/BRANCH_PROTECTION.md` (the layered ruleset),
+  `claude/scripts/README.md`.
+
 ## 2026-10-14 — fix(agy): remove retired `unsandboxed(...)` permission rules and migrate machine-local grants
 
 - **`antigravity/permissions.json`:** removed all retired `unsandboxed(...)`
