@@ -83,22 +83,28 @@ permissions:
   issues: write # read the bot's summary; request a re-review of a new head
 
 jobs:
-  # A base change invalidates the head's status at once, outside the writer's
-  # queue: the writer's queued run for this event can be replaced by a newer
-  # one, and that one could fail to read the PR list. It reads nothing, so it
-  # cannot fail on state; the writer later decides the head again. Residual:
-  # a writer pass already past this PR when the base changed could still post
-  # its older verdict after this; the next pass corrects it, so it holds only
-  # if that pass also cannot read the PR list in three attempts.
+  # Every same-repository PR event first invalidates its head (pending), and
+  # `evaluate` runs after it (needs), so each invalidation is followed by an
+  # evaluation that started later. The writer's queued run for this event can
+  # be replaced by a newer one, which also started later. Whatever an event
+  # changed - a retarget, a sibling at the head, a removed codex-skip - a lost
+  # or failed evaluation therefore leaves the head pending, never at an older
+  # success. It reads nothing, so it cannot fail on state. Fork PRs skip it:
+  # their head may be a same-repository PR's too.
   invalidate:
-    name: invalidate on base change
+    name: invalidate the head
     if: >-
-      github.event_name == 'pull_request_target' && github.event.action == 'edited' &&
-      github.event.changes.base && github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action == 'edited' && github.event.changes.base ||
+       (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+         github.event.label.name == 'codex-skip' ||
+       github.event.action != 'edited' && github.event.action != 'labeled' &&
+         github.event.action != 'unlabeled')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Hold the head until it is reviewed against the new base
+      - name: Hold the head until it is evaluated again
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -106,14 +112,17 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=pending \
-            -f context=codex-review -f description="Base changed; waiting for a Codex review of the new diff" \
+            -f context=codex-review -f description="Re-evaluating the Codex review state" \
             -f target_url="$RUN_URL" >/dev/null
 
   evaluate:
     name: evaluate Codex review state
+    needs: invalidate
     # Only the events that can change the verdict. Every other comment and
-    # label change is skipped here, which costs no runner minutes.
+    # label change is skipped here, which costs no runner minutes. always():
+    # it runs whether invalidate ran, was skipped (comments, forks) or failed.
     if: >-
+      always() && (
       (github.event_name == 'pull_request_target' &&
         (github.event.action == 'edited' && github.event.changes.base ||
          (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
@@ -122,7 +131,7 @@ jobs:
            github.event.action != 'unlabeled')) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
         github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
-        contains(github.event.comment.body, 'codex-pull-request-review-summary'))
+        contains(github.event.comment.body, 'codex-pull-request-review-summary')))
     runs-on: ubuntu-latest
     timeout-minutes: 6
     # One writer per repository (design verdict, 2026-10-15). Every run

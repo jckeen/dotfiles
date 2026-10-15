@@ -580,5 +580,14 @@ else
   pass=$((pass + 1))
 fi
 
+# Ordering: every invalidation is followed by an evaluation that started later.
+if sed -n '/^  evaluate:/,/^    runs-on:/p' "$WORKFLOW" | grep -q '^    needs: invalidate$' &&
+  sed -n '/^  evaluate:/,/^    runs-on:/p' "$WORKFLOW" | grep -q '^      always() && ($'; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: evaluate must need invalidate and run under always()"
+fi
+
 echo "codex-review-status: $pass passed, $failed failed"
 [ "$failed" -eq 0 ]

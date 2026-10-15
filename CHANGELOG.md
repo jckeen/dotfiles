@@ -20,8 +20,10 @@
   Drafts post nothing; a failed evaluation ends that PR's run and revokes its
   head to pending (never a fork PR's head), since a failed job does not clear
   an earlier success; the PR-list read is retried three times, and if it still
-  fails the triggering PR's head is revoked. A base change also invalidates
-  its head at once from a separate job outside the writer's queue. A head the bot has not reviewed gets one `@codex review` request and
+  fails the triggering PR's head is revoked. Every same-repository PR event
+  first invalidates its head (pending) from a read-free job, and the writer
+  runs after it, so a lost or failed evaluation leaves a head pending, never
+  at an older success. A head the bot has not reviewed gets one `@codex review` request and
   holds; after a base retarget the request waits until no review is running,
   and only a run completing after it counts. Docs-only diffs (no instruction
   surface or dot-directory, names mirroring `review-receipt.py`) and
@@ -43,7 +45,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (74 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (75 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.
