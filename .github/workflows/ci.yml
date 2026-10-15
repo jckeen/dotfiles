@@ -436,6 +436,14 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: python3 claude/scripts/tests/harvest-codex-comments.test.py
 
+      - name: codex-review status script (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/codex-review-status.test.sh
+
+      - name: codex-review fleet rollout (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/fleet-codex-review.test.sh
+
       - name: retired skill link migration (self-test)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: python3 claude/scripts/tests/retired-skill-links.test.py

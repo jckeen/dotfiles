@@ -1,0 +1,176 @@
+name: codex-review
+
+# Holds a PR's merge until the GitHub Codex bot (chatgpt-codex-connector) has
+# finished reviewing it (dotfiles#613 follow-up). Auto-merge fires as soon as
+# required checks pass, about five minutes after a PR opens; the bot's review
+# lands five to ten minutes after opening, so without this its findings arrived
+# after the merge. This posts a commit status `codex-review` on the PR head:
+# pending while the bot works, success once every row of its summary table
+# reads Completed. Its findings are inline review threads, which the branch
+# rule's "require conversation resolution" setting blocks until resolved.
+#
+# Canonical copy: jckeen/dotfiles. claude/scripts/fleet-codex-review.sh copies
+# this file verbatim into each fleet repo and makes `codex-review` a required
+# status there; edit it here, then re-run that script.
+#
+# Fails OPEN where the bot is absent, never where it is working: if no summary
+# comment appears within the poll window (the bot posts it 15-45 s after a PR
+# opens), or the bot's own review ends in a non-Completed terminal state, the
+# status goes to success with a description saying so. The local review gate
+# still ran before push. The `codex-skip` label passes it by hand.
+#
+# Skipped (success at once): docs-only diffs that touch no instruction surface,
+# Dependabot PRs, and Nightly dep audit branches (claude/deps-*), matching the
+# 2026-09-02 routine-dependency ruling.
+#
+# pull_request_target, not pull_request: a Dependabot-triggered pull_request
+# run gets a read-only token and could not post the status. This is safe here
+# only because the job never checks out or runs PR content; it reads the PR
+# through the API. PR-controlled strings reach the script through env, never
+# through ${{ }} interpolation inside `run:`.
+#
+# A bot status edit is an issue_comment event, which runs on the default
+# branch and so cannot report through its own check run (that would attach to
+# main's HEAD); hence a commit status on the PR head SHA. The job name differs
+# from the status context so its own check run is never mistaken for it.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  statuses: write # post the codex-review commit status
+  pull-requests: read # read the PR, its labels and changed files
+  issues: read # read the bot's summary comment
+
+jobs:
+  evaluate:
+    name: evaluate Codex review state
+    # Only the events that can change the verdict. Every other comment and
+    # label change is skipped here, which costs no runner minutes.
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+        (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
+         github.event.label.name == 'codex-skip')) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
+        contains(github.event.comment.body, 'codex-pull-request-review-summary'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    # Job-level, so a skipped run for an unrelated comment never cancels a live
+    # one. The newest event re-reads all state, so cancelling older runs loses
+    # nothing.
+    concurrency:
+      group: codex-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Post the codex-review status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # >>> codex-review-status (extracted and tested by dotfiles
+          # claude/scripts/tests/codex-review-status.test.sh)
+          set -euo pipefail
+          BOT='chatgpt-codex-connector[bot]'
+          POLL_SECONDS="${POLL_SECONDS:-180}"
+          POLL_INTERVAL="${POLL_INTERVAL:-15}"
+
+          pr_json="$(gh api "repos/$REPO/pulls/$PR")"
+          if [ "$(jq -r .state <<<"$pr_json")" != open ]; then
+            echo "PR #$PR is not open; nothing to post."
+            exit 0
+          fi
+          sha="$(jq -r .head.sha <<<"$pr_json")"
+
+          post() {
+            gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
+              -f context=codex-review -f description="${2:0:140}" \
+              -f target_url="$RUN_URL" >/dev/null
+            echo "codex-review -> $1: $2"
+          }
+
+          # A docs-only diff passes; anything that steers an agent or CI does
+          # not, so the patterns fail toward requiring the review.
+          docs_only() {
+            local f any=0
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              any=1
+              case "$f" in
+                .github/* | */.github/* | .claude/* | */.claude/* | skills/* | */skills/* | \
+                  agents/* | */agents/* | prompts/* | */prompts/*) return 1 ;;
+              esac
+              case "${f##*/}" in
+                *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | SKILL.md | MULTI-AGENT.md) return 1 ;;
+                *.md | *.mdx | *.rst | *.txt | LICENSE | LICENSE.*) ;;
+                *) return 1 ;;
+              esac
+            done <<<"$1"
+            [ "$any" = 1 ]
+          }
+
+          if jq -e '[.labels[].name] | index("codex-skip")' <<<"$pr_json" >/dev/null; then
+            post success "Skipped by the codex-skip label"
+            exit 0
+          fi
+          if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ]; then
+            post success "Dependabot PR: Codex review not required"
+            exit 0
+          fi
+          case "$(jq -r .head.ref <<<"$pr_json")" in
+            claude/deps-*)
+              post success "Nightly dep audit PR: Codex review not required"
+              exit 0
+              ;;
+          esac
+          files="$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/files" | jq -r '.[][].filename')"
+          if docs_only "$files"; then
+            post success "Docs-only change: Codex review not required"
+            exit 0
+          fi
+          if [ "$(jq -r .draft <<<"$pr_json")" = true ]; then
+            post pending "Draft: Codex reviews when the PR is marked ready"
+            exit 0
+          fi
+
+          summary() {
+            gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" | jq -r --arg bot "$BOT" \
+              '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty'
+          }
+          body="$(summary)"
+          waited=0
+          while [ -z "$body" ] && [ "$waited" -lt "$POLL_SECONDS" ]; do
+            sleep "$POLL_INTERVAL"
+            waited=$((waited + POLL_INTERVAL))
+            body="$(summary)"
+          done
+          if [ -z "$body" ]; then
+            post success "Codex did not pick up this PR within ${POLL_SECONDS}s; not blocking"
+            exit 0
+          fi
+
+          # Status cell of each review row: rows end in a backticked commit SHA.
+          # shellcheck disable=SC2016 # the backticks and $3 belong to grep/awk
+          statuses="$(grep -E '^\|[^|]*\|[^|]*\|[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*\|' <<<"$body" |
+            awk -F'|' '{print $3}' | sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+          if [ -z "$statuses" ]; then
+            post pending "Codex review started"
+            exit 0
+          fi
+          running="$(grep -viE 'completed|fail|error|cancel|skip|timed out|unavailable|limit' <<<"$statuses" || true)"
+          if [ -n "$running" ]; then
+            post pending "Codex review in progress"
+            exit 0
+          fi
+          ended="$(grep -viE 'completed' <<<"$statuses" | head -n 1 || true)"
+          if [ -n "$ended" ]; then
+            post success "Codex review ended without completing ($ended); not blocking"
+            exit 0
+          fi
+          post success "Codex review completed"
+          # <<< codex-review-status
