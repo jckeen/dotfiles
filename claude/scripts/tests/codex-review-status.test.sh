@@ -25,7 +25,12 @@ fi
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
-path="" slurp=0 post=0 state="" desc="" body=""
+path="" slurp=0 post=0 state="" desc="" body="" include=0
+if [ "$*" = "api -i rate_limit" ]; then
+  [ -e "$FIX/fail_clock" ] && exit 1
+  printf 'HTTP/2.0 200 OK\r\nDate: %s\r\n\r\n{}\n' "$(date -u '+%a, %d %b %Y %H:%M:%S GMT')"
+  exit 0
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --slurp) slurp=1 ;;
@@ -49,8 +54,8 @@ if [ "$post" = 1 ]; then
       # posted: statuses on the main fixture head; posted_sha: every status.
       [ "${path##*/}" = 69cff27a1b2c3d ] && printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
       printf '%s|%s\n' "${path##*/}" "$state" >>"$FIX/posted_sha"
-      jq -nc --arg sha "${path##*/}" --arg s "$state" --arg d "$desc" \
-        '{sha: $sha, context: "codex-review", state: $s, description: $d}' >>"$FIX/status_store"
+      jq -nc --arg sha "${path##*/}" --arg s "$state" --arg d "$desc" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{sha: $sha, context: "codex-review", state: $s, description: $d, created_at: $at}' >>"$FIX/status_store"
       ;;
     */comments) printf '%s\n' "$body" >>"$FIX/commented" ;;
     *) echo "fake gh: unexpected POST $path" >&2; exit 1 ;;
@@ -186,7 +191,7 @@ request_comment() {
 
 run_status() {
   status_rc=0
-  RETRY_SECONDS=0 EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
+  RETRY_SECONDS=0 SETTLE_SECONDS=0 EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
     REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
 }
@@ -420,6 +425,32 @@ if [ "$status_rc" != 0 ] && [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-revi
   pass=$((pass + 1))
 else
   failed=$((failed + 1)); echo "FAIL: a failed PR-list read must revoke the event PR's head — exit $status_rc, posted: $(cat "$FIX/posted")"
+fi
+
+# A status newer than the pass (an invalidation it did not see) is never
+# overwritten.
+setup; summary "$done_cell"
+jq -nc --arg at "$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)" \
+  '{sha: "69cff27a1b2c3d", context: "codex-review", state: "pending", description: "Re-evaluating the Codex review state", created_at: $at}' >"$FIX/status_store"
+run_status
+if [ ! -e "$FIX/posted" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: overwrote a status newer than the pass: $(cat "$FIX/posted")"; fi
+
+# An older status is replaced as usual.
+setup; summary "$done_cell"
+jq -nc --arg at "$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)" \
+  '{sha: "69cff27a1b2c3d", context: "codex-review", state: "pending", description: "Re-evaluating the Codex review state", created_at: $at}' >"$FIX/status_store"
+expect "a status older than the pass is replaced" success "Codex review completed"
+
+# GitHub's clock cannot be read: revoke the event PR's head and fail.
+setup; summary "$done_cell"
+run_status; touch "$FIX/fail_clock"
+CASE_EVENT_HEAD=69cff27a1b2c3d CASE_EVENT_HEAD_REPO=o/r
+run_status
+if [ "$status_rc" != 0 ] && [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-review could not evaluate #1; re-run the workflow" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1)); echo "FAIL: a failed clock read must revoke — exit $status_rc, posted: $(cat "$FIX/posted")"
 fi
 
 # One failed PR-list read is retried, not treated as a failure.

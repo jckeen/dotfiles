@@ -233,13 +233,22 @@ jobs:
             # Recorded so a failure below can revoke this head's status.
             echo "$sha" >"$WORK/sha.$pr"
 
-            # Writes only a change: GitHub keeps at most 1000 statuses per
-            # commit and context, and every run re-evaluates every open PR.
+            # Compare-and-set. Never overwrites a status written after this
+            # pass began reading (PASS_START, GitHub's clock): that is a newer
+            # invalidation or verdict this pass did not see, and it wins; the
+            # run that follows it decides the head. Also writes only a change:
+            # GitHub keeps at most 1000 statuses per commit and context, and
+            # every run re-evaluates every open PR.
             post() {
               local desc="${2:0:140}" current
               current="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
-                jq -r '[.[] | select(.context == "codex-review")][0] // {} | "\(.state)|\(.description)"')"
-              if [ "$current" = "$1|$desc" ]; then
+                jq -c '[.[] | select(.context == "codex-review")][0] // {}')"
+              if [ "$(jq -r '(.created_at // "")[0:19]' <<<"$current")" \> "$PASS_START" ] ||
+                [ "$(jq -r '(.created_at // "")[0:19]' <<<"$current")" = "$PASS_START" ]; then
+                echo "#$pr codex-review has a status newer than this pass; leaving it"
+                return 0
+              fi
+              if [ "$(jq -r '"\(.state)|\(.description)"' <<<"$current")" = "$1|$desc" ]; then
                 echo "#$pr codex-review unchanged: $1"
                 return 0
               fi
@@ -417,9 +426,29 @@ jobs:
               -f context=codex-review -f description="codex-review could not evaluate #$1; re-run the workflow" \
               -f target_url="$RUN_URL" >/dev/null || echo "#$1: could not revoke its status" >&2
           }
+          # Without the clock or the PR list no PR can be judged; revoke the one
+          # that triggered this run (a retarget is its own event) and fail.
+          unreadable() {
+            echo "could not read $1" >&2
+            if [ -n "${EVENT_HEAD:-}" ]; then
+              revoke "$EVENT_PR" "$EVENT_HEAD" "${EVENT_HEAD_REPO:-}"
+            elif [ -n "${EVENT_PR:-}" ] && ev="$(gh api "repos/$REPO/pulls/$EVENT_PR")"; then
+              revoke "$EVENT_PR" "$(jq -r .head.sha <<<"$ev")" "$(jq -r '.head.repo.full_name // empty' <<<"$ev")"
+            fi
+            exit 1
+          }
           rc=0
           evaluate_all() {
             : >"$DEADLINES"
+            # GitHub's clock, not the runner's: statuses carry GitHub's times.
+            # Its Date header has whole seconds, so wait past the current one
+            # before reading anything; every status from that second or
+            # earlier is then already reflected in what this pass reads.
+            local now
+            now="$(gh api -i rate_limit | awk -F': ' 'tolower($1) == "date" { print $2; exit }' | tr -d '\r')" || now=""
+            [ -n "$now" ] || unreadable "GitHub's clock"
+            PASS_START="$(date -u -d "$now + 1 second" +%Y-%m-%dT%H:%M:%S)"
+            sleep "${SETTLE_SECONDS:-1.1}"
             # Three attempts: a transient API error should not cost a pass.
             local attempt
             for attempt in 1 2 3; do
@@ -429,17 +458,7 @@ jobs:
               OPEN=""
               [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
             done
-            if [ -z "$OPEN" ]; then
-              # Without the list no PR can be judged; revoke the one that
-              # triggered this run (a retarget is its own event).
-              echo "could not read the open PRs" >&2
-              if [ -n "${EVENT_HEAD:-}" ]; then
-                revoke "$EVENT_PR" "$EVENT_HEAD" "${EVENT_HEAD_REPO:-}"
-              elif [ -n "${EVENT_PR:-}" ] && ev="$(gh api "repos/$REPO/pulls/$EVENT_PR")"; then
-                revoke "$EVENT_PR" "$(jq -r .head.sha <<<"$ev")" "$(jq -r '.head.repo.full_name // empty' <<<"$ev")"
-              fi
-              exit 1
-            fi
+            [ -n "$OPEN" ] || unreadable "the open PRs"
             mapfile -t prs < <(jq -r '.[].number' <<<"$OPEN" | sort -un)
             for t in "${prs[@]}"; do
               rm -f "$WORK/sha.$t"
