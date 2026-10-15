@@ -458,11 +458,12 @@ run_status
 if [ "$(tail -n 1 "$FIX/posted")" = "pending|Re-evaluating the Codex review state" ]; then pass=$((pass + 1)); else
   failed=$((failed + 1)); echo "FAIL: a newer status during the pass must revert success: $(cat "$FIX/posted")"; sed 's/^/    /' "$FIX/out"; fi
 
-# The post-success re-read fails: fail closed, back to pending.
+# The post-success re-read fails three times: fail closed, back to pending,
+# and the run fails so it can be re-run.
 setup; summary "$done_cell"; touch "$FIX/fail_verify"
 run_status
-if [ "$(tail -n 1 "$FIX/posted")" = "pending|Re-evaluating the Codex review state" ]; then pass=$((pass + 1)); else
-  failed=$((failed + 1)); echo "FAIL: a failed post-success re-read must revert to pending: $(cat "$FIX/posted")"; sed 's/^/    /' "$FIX/out"; fi
+if [ "$status_rc" != 0 ] && [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-review could not evaluate #1; re-run the workflow" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a failed post-success re-read must revert to pending and fail the run — exit $status_rc, posted: $(cat "$FIX/posted")"; sed 's/^/    /' "$FIX/out"; fi
 
 # Forks are evaluated after every same-repository PR, whatever their numbers.
 setup; summary "$done_cell"; open_prs '1:ffff0001:false:fork/r' '2:69cff27a1b2c3d'

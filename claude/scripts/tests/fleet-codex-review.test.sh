@@ -25,6 +25,7 @@ case "$1 $2" in
     ;;
   "pr create") echo "pr create" >>"$FIX/writes"; echo "https://github.com/o/r/pull/8"; exit 0 ;;
   "pr merge") echo "pr merge" >>"$FIX/writes"; exit 0 ;;
+  "workflow run") echo "workflow run" >>"$FIX/writes"; exit 0 ;;
 esac
 method=GET
 [[ "$all" == *"-X POST"* ]] && method=POST
@@ -107,7 +108,7 @@ mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/fail_PUT"
 run_case "a failed workflow write opens no PR and fails" none 0 0 0 --apply "POST git/refs" 1
 run_case "open rollout PR is reused" none 0 1 1 --apply ""
 run_case "leftover branch without a PR is never reset" none 0 1 0 --apply "" 1
-run_case "current workflow creates the ruleset" current 0 0 0 --apply "POST rulesets"
+run_case "current workflow creates the ruleset, then evaluates every open PR" current 0 0 0 --apply "POST rulesets;workflow run"
 if jq -e '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks
     == [{context: "codex-review", integration_id: 15368}]' "$FIX/input" >/dev/null &&
   jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_review_thread_resolution' "$FIX/input" >/dev/null; then

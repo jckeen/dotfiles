@@ -213,11 +213,18 @@ for repo in "${repos[@]}"; do
   elif [ "$wf" != current ]; then
     ship_workflow "$repo" "$base" || rc=1
   elif [ "$want" = enforce ] && [ -z "$rs" ]; then
-    create_ruleset "$repo" || rc=1
-    # PRs opened before the workflow landed have no status yet; any new event
-    # (a push, or adding and removing a label) posts one.
-    gh pr list -R "$repo" --state open --json number,title \
-      --jq '.[] | "  open PR without a status until its next event: #\(.number) \(.title)"'
+    if create_ruleset "$repo"; then
+      # PRs opened before the workflow landed have no status yet and may see
+      # no further event: evaluate every open PR now.
+      if gh workflow run codex-review.yml -R "$repo" --ref "$base" >/dev/null; then
+        echo "  started an evaluation of every open PR"
+      else
+        echo "  could not start codex-review; run it by hand (gh workflow run codex-review.yml -R $repo)" >&2
+        rc=1
+      fi
+    else
+      rc=1
+    fi
   else
     echo "  nothing to do"
   fi

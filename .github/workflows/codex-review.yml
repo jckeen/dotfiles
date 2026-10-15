@@ -76,6 +76,10 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited, closed, converted_to_draft]
   issue_comment:
     types: [created, edited]
+  # Evaluates every open PR: run by fleet-codex-review.sh when it activates
+  # the ruleset (PRs opened before then have no status and may see no further
+  # event), and by hand after a failed run.
+  workflow_dispatch:
 
 permissions:
   statuses: write # post the codex-review commit status
@@ -123,6 +127,7 @@ jobs:
     # it runs whether invalidate ran, was skipped (comments, forks) or failed.
     if: >-
       always() && (
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' &&
         (github.event.action == 'edited' && github.event.changes.base ||
          (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
@@ -264,16 +269,26 @@ jobs:
               # hand the head back to pending for the run that follows it. What
               # remains is the second or two between this success and that
               # revert, which no commit-status design can close.
-              # A failed re-read counts as a conflict (fails closed).
-              local newer
-              newer="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
-                jq --arg start "$PASS_START" --argjson id "$id" \
-                  '[.[] | select(.context == "codex-review" and .id != $id and (.created_at[0:19] >= $start))] | length')" || newer=failed
+              # Three attempts; a re-read that still fails counts as a
+              # conflict (fails closed) and fails the run, so it shows as failed
+              # and can be re-run (workflow_dispatch) instead of leaving a quiet
+              # hold.
+              local newer attempt
+              for attempt in 1 2 3; do
+                if newer="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
+                  jq --arg start "$PASS_START" --argjson id "$id" \
+                    '[.[] | select(.context == "codex-review" and .id != $id and (.created_at[0:19] >= $start))] | length')"; then
+                  break
+                fi
+                newer=failed
+                [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
+              done
               if [ "$newer" != 0 ]; then
                 gh api -X POST "repos/$REPO/statuses/$sha" -f state=pending \
                   -f context=codex-review -f description="Re-evaluating the Codex review state" \
                   -f target_url="$RUN_URL" >/dev/null
                 echo "#$pr codex-review -> pending: a newer status arrived during this pass (or the re-read failed: $newer)"
+                [ "$newer" != failed ] || return 1
               fi
             }
 
