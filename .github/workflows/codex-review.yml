@@ -83,6 +83,32 @@ permissions:
   issues: write # read the bot's summary; request a re-review of a new head
 
 jobs:
+  # A base change invalidates the head's status at once, outside the writer's
+  # queue: the writer's queued run for this event can be replaced by a newer
+  # one, and that one could fail to read the PR list. It reads nothing, so it
+  # cannot fail on state; the writer later decides the head again. Residual:
+  # a writer pass already past this PR when the base changed could still post
+  # its older verdict after this; the next pass corrects it, so it holds only
+  # if that pass also cannot read the PR list in three attempts.
+  invalidate:
+    name: invalidate on base change
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'edited' &&
+      github.event.changes.base && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hold the head until it is reviewed against the new base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=pending \
+            -f context=codex-review -f description="Base changed; waiting for a Codex review of the new diff" \
+            -f target_url="$RUN_URL" >/dev/null
+
   evaluate:
     name: evaluate Codex review state
     # Only the events that can change the verdict. Every other comment and
@@ -385,7 +411,16 @@ jobs:
           rc=0
           evaluate_all() {
             : >"$DEADLINES"
-            if ! OPEN="$(gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" | jq -c '[.[][]]')"; then
+            # Three attempts: a transient API error should not cost a pass.
+            local attempt
+            for attempt in 1 2 3; do
+              if OPEN="$(gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" | jq -c '[.[][]]')"; then
+                break
+              fi
+              OPEN=""
+              [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
+            done
+            if [ -z "$OPEN" ]; then
               # Without the list no PR can be judged; revoke the one that
               # triggered this run (a retarget is its own event).
               echo "could not read the open PRs" >&2

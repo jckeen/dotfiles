@@ -98,8 +98,12 @@ case "$path" in
   */issues/*/events) f=events.json ;;
   *) echo "fake gh: unexpected path $path" >&2; exit 1 ;;
 esac
-# fail_<fixture> makes that read fail.
+# fail_<fixture> makes that read fail; fail_once_<fixture> only the first time.
 [ -e "$FIX/fail_$f" ] && exit 1
+if [ -e "$FIX/fail_once_$f" ]; then
+  rm "$FIX/fail_once_$f"
+  exit 1
+fi
 if [ "$slurp" = 1 ]; then
   printf '['; cat "$FIX/$f"; printf ']'
 else
@@ -182,7 +186,7 @@ request_comment() {
 
 run_status() {
   status_rc=0
-  EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
+  RETRY_SECONDS=0 EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
     REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
 }
@@ -417,6 +421,10 @@ if [ "$status_rc" != 0 ] && [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-revi
 else
   failed=$((failed + 1)); echo "FAIL: a failed PR-list read must revoke the event PR's head — exit $status_rc, posted: $(cat "$FIX/posted")"
 fi
+
+# One failed PR-list read is retried, not treated as a failure.
+setup; summary "$done_cell"; touch "$FIX/fail_once_open.json"
+expect "a transient PR-list failure is retried" success "Codex review completed"
 
 # Same, on a comment event (no head in the payload): read the PR for it.
 setup; summary "$done_cell"
