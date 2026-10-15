@@ -22,7 +22,8 @@ name: codex-review
 # open, non-draft, same-repository PR with that head (a fork PR there posts
 # nothing, so a contributor cannot hold a PR). Otherwise every one holds, and
 # when a sibling closes or moves to a new commit the survivors are evaluated
-# again. Drafts cannot merge and post nothing; marking one ready evaluates it.
+# again (a draft conversion too). Drafts cannot merge and post nothing;
+# marking one ready evaluates it.
 #
 # Only a review of the head counts, and only one that began after the last
 # base change. The bot reviews when a PR opens, not on later pushes, so a head
@@ -70,7 +71,8 @@ on:
   pull_request_target:
     # edited: only a base change counts (filtered below). closed: a sibling
     # sharing the head may now be its sole owner.
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited, closed]
+    # converted_to_draft: like closed, it can leave a sibling the sole owner.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited, closed, converted_to_draft]
   issue_comment:
     types: [created, edited]
 
@@ -97,10 +99,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     # Job-level, so a skipped run for an unrelated comment never cancels a live
-    # one. The newest event re-reads all state, so cancelling older runs loses
-    # nothing.
+    # one. The newest event re-reads all state, so cancelling an older run loses
+    # nothing, except a run that releases a commit (a push, a close, a draft
+    # conversion): it alone knows which other PRs to re-evaluate, so it gets a
+    # group of its own and is never cancelled.
     concurrency:
-      group: codex-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: >-
+        ${{ contains(fromJSON('["synchronize","closed","converted_to_draft"]'), github.event.action)
+          && format('codex-review-release-{0}', github.run_id)
+          || format('codex-review-{0}', github.event.pull_request.number || github.event.issue.number) }}
       cancel-in-progress: true
     steps:
       - name: Post the codex-review status
@@ -185,11 +192,23 @@ jobs:
             fi
             sha="$(jq -r .head.sha <<<"$pr_json")"
 
-            post() {
+            send() {
               gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
                 -f context=codex-review -f description="${2:0:140}" \
                 -f target_url="$RUN_URL" >/dev/null
               echo "#$pr codex-review -> $1: $2"
+            }
+            # A success is re-checked after it lands: a sibling that opened at
+            # this head meanwhile gets the shared status back to pending, which
+            # its own run also posts, so the two converge on the hold.
+            post() {
+              send "$1" "$2"
+              [ "$1" = success ] || return 0
+              local now
+              now="$(heads_at "$sha" | awk -v pr="$pr" 'NF && $0 != pr' | sed 's/^/#/' | paste -sd, -)"
+              if [ -n "$now" ]; then
+                send pending "Head commit is also the head of $now; decided once one PR holds it"
+              fi
             }
 
             # A fork PR at the head of a same-repository PR posts nothing: its
@@ -197,13 +216,17 @@ jobs:
             # it, since merging a fork PR takes a writer.
             fork=0
             [ "$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")" = "$REPO" ] || fork=1
-            if [ "$fork" = 1 ] && [ -n "$(heads_at "$sha" | grep -vx "$pr" || true)" ]; then
+            # Read failures end the evaluation (errexit): absent state is never
+            # inferred from a failed read.
+            owners="$(heads_at "$sha")"
+            others() { awk -v pr="$pr" 'NF && $0 != pr' <<<"$owners"; }
+            if [ "$fork" = 1 ] && [ -n "$(others)" ]; then
               echo "#$pr is a fork PR sharing its head with a same-repository PR; posting nothing."
               exit 0
             fi
 
             # The sole-owner rule, before anything that can post success.
-            siblings="$(heads_at "$sha" | grep -vx "$pr" | sed 's/^/#/' | paste -sd, - || true)"
+            siblings="$(others | sed 's/^/#/' | paste -sd, -)"
             if [ -n "$siblings" ]; then
               post pending "Head commit is also the head of $siblings; decided once one PR holds it"
               exit 0
@@ -214,6 +237,7 @@ jobs:
             events="$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events")"
             actor="$(jq -r '[.[][] | select(.event == "labeled" and .label.name == "codex-skip")] | last | .actor.login // empty' <<<"$events")"
             if jq -e '[.labels[].name] | index("codex-skip")' <<<"$pr_json" >/dev/null && [ -n "$actor" ]; then
+              # A failed lookup leaves role empty, which never skips (fails closed).
               role="$(gh api "repos/$REPO/collaborators/$actor/permission" --jq .role_name 2>/dev/null || true)"
               case "$role" in
                 admin | maintain)
@@ -299,7 +323,9 @@ jobs:
                 fi
                 head_rows=""
               else
-                head_rows="$(awk -F'\t' -v since="$requested_at" '$4 == "" || $4 >= since' <<<"$head_rows")"
+                # Strictly after: times are whole seconds, so a run finishing in
+                # the request's own second may have finished before it.
+                head_rows="$(awk -F'\t' -v since="$requested_at" '$4 == "" || $4 > since' <<<"$head_rows")"
               fi
             fi
 
@@ -336,13 +362,17 @@ jobs:
           # sole owner of its head.
           targets="$PR"
           case "${ACTION:-}" in
-            closed) targets="$(heads_at "$EVENT_HEAD")" ;;
+            closed | converted_to_draft) targets="$(heads_at "$EVENT_HEAD")" ;;
             synchronize) targets="$PR"$'\n'"$(heads_at "${BEFORE:-none}")" ;;
           esac
+          # Each evaluation runs as a background job and is waited on: called
+          # from `||` or `if`, bash would switch errexit off inside it, and a
+          # failed read would pass as absent state.
           rc=0
-          while IFS= read -r t; do
-            [ -n "$t" ] || continue
-            evaluate "$t" || rc=1
-          done < <(sort -un <<<"$targets")
+          mapfile -t prs < <(sort -un <<<"$targets" | awk NF)
+          for t in "${prs[@]}"; do
+            evaluate "$t" &
+            wait "$!" || rc=1
+          done
           exit "$rc"
           # <<< codex-review-status

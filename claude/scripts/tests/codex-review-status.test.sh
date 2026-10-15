@@ -45,6 +45,7 @@ done
 if [ "$post" = 1 ]; then
   case "$path" in
     */statuses/*)
+      [ -e "$FIX/fail_status" ] && exit 1
       printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
       printf '%s|%s\n' "${path##*/}" "$state" >>"$FIX/posted_sha"
       ;;
@@ -77,6 +78,13 @@ case "$path" in
   */issues/*/events) f=events.json ;;
   *) echo "fake gh: unexpected path $path" >&2; exit 1 ;;
 esac
+# fail_<fixture> makes that read fail. open_later.json, if present, is served
+# for every open-PR read after the first.
+[ -e "$FIX/fail_$f" ] && exit 1
+if [ "$f" = open.json ] && [ -e "$FIX/open_later.json" ]; then
+  [ -e "$FIX/open_seen" ] && f=open_later.json
+  touch "$FIX/open_seen"
+fi
 if [ "$slurp" = 1 ]; then
   printf '['; cat "$FIX/$f"; printf ']'
 else
@@ -156,9 +164,22 @@ request_comment() {
 }
 
 run_status() {
+  status_rc=0
   REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" \
     ACTION="$CASE_ACTION" EVENT_HEAD="$CASE_EVENT_HEAD" BEFORE="$CASE_BEFORE" \
-    bash "$TMP/status.sh" >"$FIX/out" 2>&1
+    bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
+}
+
+# never_passes <name> — the run must exit non-zero and post no success
+never_passes() {
+  run_status
+  if [ "$status_rc" != 0 ] && ! grep -q '^success|' "$FIX/posted" 2>/dev/null; then
+    pass=$((pass + 1))
+  else
+    failed=$((failed + 1))
+    echo "FAIL: $1 — exit $status_rc, posted: $(cat "$FIX/posted" 2>/dev/null)"
+    sed 's/^/    /' "$FIX/out"
+  fi
 }
 
 setup() {
@@ -319,6 +340,35 @@ else
   pass=$((pass + 1))
 fi
 
+setup; summary "$done_cell"; touch "$FIX/fail_events.json"
+never_passes "a failed events read never passes"
+
+setup; summary "$done_cell"; touch "$FIX/fail_open.json"
+never_passes "a failed open-PR read never passes"
+
+setup; summary "$done_cell"; touch "$FIX/fail_status"
+run_status
+if [ "$status_rc" != 0 ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a failed status POST exited 0"; fi
+
+# A sibling opens at this head between the sole-owner check and the post.
+setup; summary "$done_cell"
+open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'; mv "$FIX/open.json" "$FIX/open_later.json"
+open_prs '1:69cff27a1b2c3d'
+run_status
+if [ "$(tail -n 1 "$FIX/posted" 2>/dev/null)" = "pending|Head commit is also the head of #2; decided once one PR holds it" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: a sibling appearing after the check must end on pending — posted: $(cat "$FIX/posted" 2>/dev/null)"
+fi
+
+# PR 1 converted to draft; PR 2 is left as the sole owner and is evaluated.
+setup; summary "$done_cell"; open_prs '2:69cff27a1b2c3d'
+cp "$FIX/pr.json" "$FIX/pr2.json"
+CASE_ACTION=converted_to_draft CASE_EVENT_HEAD=69cff27a1b2c3d
+expect "a draft conversion re-evaluates the survivor" success "Codex review completed"
+
 # PR 1 closed; PR 2 is left as the sole owner of the head and is evaluated.
 setup; summary "$done_cell"; open_prs '2:69cff27a1b2c3d'
 cp "$FIX/pr.json" "$FIX/pr2.json"
@@ -415,6 +465,11 @@ fi
 
 setup; summary "$late_cell"; retarget; request_comment 2026-10-06T09:30:00Z :2026-10-06T09:00:00
 expect "a run completing after the request counts" success "Codex review completed"
+
+# Finished within the request's own second: it may have preceded it.
+setup; summary "✅ **Completed** <relative-time datetime=\"2026-10-06T09:20:00.123456Z\">x</relative-time>"; retarget
+request_comment 2026-10-06T09:20:00Z :2026-10-06T09:00:00
+expect "a run finishing in the request's second does not count" pending "re-review requested"
 
 # The run that straddled the retarget finished before the request was made.
 setup; summary "✅ **Completed** <relative-time datetime=\"2026-10-06T09:10:00Z\">x</relative-time>"; retarget
