@@ -55,7 +55,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (82 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (84 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.

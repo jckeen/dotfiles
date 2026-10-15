@@ -318,15 +318,16 @@ jobs:
             events="$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events")"
             actor="$(jq -r '[.[][] | select(.event == "labeled" and .label.name == "codex-skip")] | last | .actor.login // empty' <<<"$events")"
             if jq -e '[.labels[].name] | index("codex-skip")' <<<"$pr_json" >/dev/null && [ -n "$actor" ]; then
-              # A failed lookup leaves role empty, which never skips (fails closed).
-              role="$(gh api "repos/$REPO/collaborators/$actor/permission" --jq .role_name 2>/dev/null || true)"
+              # A failed lookup fails this evaluation: the head goes to pending
+              # and the run fails, so it shows and can be re-run.
+              role="$(gh api "repos/$REPO/collaborators/$actor/permission" --jq .role_name)"
               case "$role" in
                 admin | maintain)
                   post success "Skipped by the codex-skip label"
                   exit 0
                   ;;
               esac
-              echo "codex-skip was applied by $actor (${role:-unknown}), who cannot waive the review; ignoring it"
+              echo "codex-skip was applied by $actor ($role), who cannot waive the review; ignoring it"
             fi
 
             # A fork PR never passes on its own: the bot's table names commits by
@@ -392,7 +393,7 @@ jobs:
             # The re-review request for this head (and base change, if any).
             # Only this workflow's own comments count, so a pasted marker can
             # neither suppress a request nor fake one.
-            retargeted_at="$(jq -r '[.[][] | select(.event == "base_ref_changed") | .created_at[0:19]] | max // empty' <<<"$events")"
+            retargeted_at="$(jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "automatic_base_change_succeeded") | .created_at[0:19]] | max // empty' <<<"$events")"
             marker="<!-- codex-review-rerequest:$sha${retargeted_at:+:$retargeted_at} -->"
             requested_at="$(comments | jq -r --arg m "$marker" \
               '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m))) | .created_at[0:19]] | min // empty')"

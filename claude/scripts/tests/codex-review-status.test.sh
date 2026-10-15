@@ -87,6 +87,7 @@ case "$path" in
     ;;
   */collaborators/*/permission)
     # gh's --jq .role_name, answered directly.
+    [ -e "$FIX/fail_role" ] && exit 1
     cat "$FIX/role"
     exit 0
     ;;
@@ -622,6 +623,15 @@ fi
 
 setup; summary "$late_cell"; retarget; request_comment 2026-10-06T09:30:00Z :2026-10-06T09:00:00
 expect "a run completing after the request counts" success "Codex review completed"
+
+# GitHub's own retarget (old base merged and deleted) counts as a base change.
+setup; summary "$done_cell"
+echo '[{"event":"automatic_base_change_succeeded","created_at":"2026-10-06T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
+expect "an automatic retarget invalidates the earlier review" pending "re-review requested"
+
+# A failed permission lookup for codex-skip fails the run toward pending.
+setup; pr false jckeen feat/x codex-skip; labeled_by jckeen admin; touch "$FIX/fail_role"
+never_passes "a failed codex-skip permission lookup never passes"
 
 # After a retarget, a completed row with no finish time is no evidence.
 setup; summary "✅ **Completed**"; retarget; request_comment 2026-10-06T09:30:00Z :2026-10-06T09:00:00
