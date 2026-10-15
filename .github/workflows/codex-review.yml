@@ -264,13 +264,16 @@ jobs:
               # hand the head back to pending for the run that follows it. What
               # remains is the second or two between this success and that
               # revert, which no commit-status design can close.
-              if gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
-                jq -e --arg start "$PASS_START" --argjson id "$id" \
-                  '[.[] | select(.context == "codex-review" and .id != $id and (.created_at[0:19] >= $start))] | length > 0' >/dev/null; then
+              # A failed re-read counts as a conflict (fails closed).
+              local newer
+              newer="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
+                jq --arg start "$PASS_START" --argjson id "$id" \
+                  '[.[] | select(.context == "codex-review" and .id != $id and (.created_at[0:19] >= $start))] | length')" || newer=failed
+              if [ "$newer" != 0 ]; then
                 gh api -X POST "repos/$REPO/statuses/$sha" -f state=pending \
                   -f context=codex-review -f description="Re-evaluating the Codex review state" \
                   -f target_url="$RUN_URL" >/dev/null
-                echo "#$pr codex-review -> pending: a newer status arrived during this pass"
+                echo "#$pr codex-review -> pending: a newer status arrived during this pass (or the re-read failed: $newer)"
               fi
             }
 

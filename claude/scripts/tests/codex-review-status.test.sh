@@ -73,6 +73,8 @@ if [ "$post" = 1 ]; then
 fi
 case "$path" in
   */commits/*/statuses*)
+    # fail_verify: every statuses read after a success POST fails.
+    [ -e "$FIX/fail_verify" ] && [ -e "$FIX/status_store" ] && grep -q '"state":"success"' "$FIX/status_store" && exit 1
     # Newest first, as the API lists them.
     sha="${path#*/commits/}"
     sha="${sha%%/*}"
@@ -455,6 +457,12 @@ SETTLE_PAD=1
 run_status
 if [ "$(tail -n 1 "$FIX/posted")" = "pending|Re-evaluating the Codex review state" ]; then pass=$((pass + 1)); else
   failed=$((failed + 1)); echo "FAIL: a newer status during the pass must revert success: $(cat "$FIX/posted")"; sed 's/^/    /' "$FIX/out"; fi
+
+# The post-success re-read fails: fail closed, back to pending.
+setup; summary "$done_cell"; touch "$FIX/fail_verify"
+run_status
+if [ "$(tail -n 1 "$FIX/posted")" = "pending|Re-evaluating the Codex review state" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a failed post-success re-read must revert to pending: $(cat "$FIX/posted")"; sed 's/^/    /' "$FIX/out"; fi
 
 # Forks are evaluated after every same-repository PR, whatever their numbers.
 setup; summary "$done_cell"; open_prs '1:ffff0001:false:fork/r' '2:69cff27a1b2c3d'
