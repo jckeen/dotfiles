@@ -397,7 +397,10 @@ jobs:
               else
                 # Strictly after: times are whole seconds, so a run finishing in
                 # the request's own second may have finished before it.
-                head_rows="$(awk -F'\t' -v since="$requested_at" '$4 == "" || $4 > since' <<<"$head_rows")"
+                # A finished row needs a finish time after the request; only a
+                # row still running may lack one.
+                head_rows="$(awk -F'\t' -v since="$requested_at" \
+                  '($4 != "" && $4 > since) || ($4 == "" && tolower($2) !~ /completed|fail|error|cancel|skip|timed out|unavailable|limit/)' <<<"$head_rows")"
               fi
             fi
 
@@ -457,7 +460,7 @@ jobs:
             exit 1
           }
           rc=0
-          evaluate_all() {
+          evaluate_all() { # <same|fork>: which PRs this pass evaluates
             : >"$DEADLINES"
             # GitHub's clock, not the runner's: statuses carry GitHub's times.
             # Its Date header has whole seconds, so wait past the current one
@@ -478,11 +481,13 @@ jobs:
               [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
             done
             [ -n "$OPEN" ] || unreadable "the open PRs"
-            # Same-repository PRs first: forks come last, so no number of fork
-            # PRs can spend the job's time before a same-repository PR's turn.
-            mapfile -t prs < <(jq -r --arg repo "$REPO" \
-              '([.[] | select(.head.repo.full_name == $repo)] | sort_by(.number) | .[].number),
-               ([.[] | select(.head.repo.full_name != $repo)] | sort_by(.number) | .[].number)' <<<"$OPEN")
+            if [ "$1" = same ]; then
+              mapfile -t prs < <(jq -r --arg repo "$REPO" \
+                '[.[] | select(.head.repo.full_name == $repo)] | sort_by(.number) | .[].number' <<<"$OPEN")
+            else
+              mapfile -t prs < <(jq -r --arg repo "$REPO" \
+                '[.[] | select(.head.repo.full_name != $repo)] | sort_by(.number) | .[].number' <<<"$OPEN")
+            fi
             for t in "${prs[@]}"; do
               rm -f "$WORK/sha.$t"
               evaluate "$t" &
@@ -495,14 +500,18 @@ jobs:
               fi
             done
           }
-          evaluate_all
-          # A PR still inside its pickup window: wait until the last window
-          # closes, then decide once more. A bot summary arriving meanwhile
-          # queues a run that follows this one.
+          # Same-repository PRs are settled before any fork is touched, so no
+          # number of fork PRs can spend the job's time first: one pass, and a
+          # PR still inside its pickup window waits until the last window
+          # closes and is decided once more (a bot summary arriving meanwhile
+          # queues a run that follows this one). Forks, which never pass on
+          # their own, go last.
+          evaluate_all same
           if [ -s "$DEADLINES" ]; then
             delay=$(($(sort -n "$DEADLINES" | tail -n 1) - $(date -u +%s)))
             if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
-            evaluate_all
+            evaluate_all same
           fi
+          evaluate_all fork
           exit "$rc"
           # <<< codex-review-status

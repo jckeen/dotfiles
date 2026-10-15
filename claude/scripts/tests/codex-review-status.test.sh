@@ -622,6 +622,10 @@ fi
 setup; summary "$late_cell"; retarget; request_comment 2026-10-06T09:30:00Z :2026-10-06T09:00:00
 expect "a run completing after the request counts" success "Codex review completed"
 
+# After a retarget, a completed row with no finish time is no evidence.
+setup; summary "✅ **Completed**"; retarget; request_comment 2026-10-06T09:30:00Z :2026-10-06T09:00:00
+expect "a completed row without a finish time does not count after a retarget" pending "re-review requested"
+
 # Finished within the request's own second: it may have preceded it.
 setup; summary "✅ **Completed** <relative-time datetime=\"2026-10-06T09:20:00.123456Z\">x</relative-time>"; retarget
 request_comment 2026-10-06T09:20:00Z :2026-10-06T09:00:00
