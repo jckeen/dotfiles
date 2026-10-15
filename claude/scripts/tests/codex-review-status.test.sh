@@ -56,6 +56,7 @@ case "$path" in
     cat "$FIX/role"
     exit 0
     ;;
+  */commits/*/pulls) f=shared.json ;;
   */pulls/*/files) f=files.json ;;
   */pulls/*/commits) f=commits.json ;;
   */pulls/*)
@@ -85,7 +86,7 @@ n=0
 pr() {
   local labels='[]'
   [ -n "${4:-}" ] && labels="[{\"name\":\"$4\"}]"
-  printf '{"state":"open","draft":%s,"user":{"login":"%s"},"head":{"sha":"69cff27a1b2c3d","ref":"%s"},"labels":%s}\n' \
+  printf '{"state":"open","draft":%s,"user":{"login":"%s"},"head":{"sha":"69cff27a1b2c3d","ref":"%s","repo":{"full_name":"o/r"}},"labels":%s}\n' \
     "$1" "$2" "$3" "$labels" >"$FIX/pr.json"
 }
 
@@ -108,19 +109,21 @@ labeled_by() {
   echo "$2" >"$FIX/role"
 }
 
-# summary <status cell[@commit]>... — one review row per cell, reviewing the
-# head commit unless @commit names another; no args = no summary comment
+# summary <[type::]status cell[@commit]>... — one review row per cell, a Code
+# Review of the head commit unless type:: or @commit says otherwise; no args =
+# no summary comment
 summary() {
   if [ $# -eq 0 ]; then
     echo '[{"user":{"login":"someone"},"body":"lgtm"}]' >"$FIX/comments.json"
     return
   fi
   local body rows='' cell nl=$'\n'
-  local commit
+  local commit type
   for cell in "$@"; do
-    commit=69cff27
+    commit=69cff27 type='📝 **Code Review**'
+    case "$cell" in *::*) type="${cell%%::*}" cell="${cell#*::}" ;; esac
     case "$cell" in *@*) commit="${cell##*@}" cell="${cell%@*}" ;; esac
-    rows="$rows| 📝 **Code Review** | $cell | \`$commit\` | PR opened |$nl"
+    rows="$rows| $type | $cell | \`$commit\` | PR opened |$nl"
   done
   body="<!-- codex-pull-request-review-summary -->$nl## Codex Review Summary$nl$nl| Review | Status | Commit | Review trigger |$nl| --- | --- | --- | --- |$nl$rows${nl}Codex reacts with 👀 while any review is running"
   jq -n --arg body "$body" '[{user: {login: "chatgpt-codex-connector[bot]"}, body: $body}]' >"$FIX/comments.json"
@@ -135,6 +138,7 @@ setup() {
   files src/app.ts
   summary
   echo '[]' >"$FIX/events.json"
+  echo '[{"number":1,"state":"open"}]' >"$FIX/shared.json"
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
@@ -168,7 +172,7 @@ expect "one row still running" pending "in progress"
 setup; summary "⏳ **Queued**"
 expect "unknown non-terminal wording holds" pending "in progress"
 
-setup; summary "$done_cell" "❌ **Failed**"
+setup; summary "❌ **Failed**"
 expect "a failed bot review holds" pending "ended without completing (❌ Failed)"
 
 setup
@@ -235,6 +239,38 @@ else
   echo "FAIL: a marker from a non-workflow account suppressed the re-review request"
 fi
 
+setup; summary "❌ **Failed**" "$done_cell"
+expect "a completed retry supersedes a failed attempt" success "Codex review completed"
+
+setup; summary "$done_cell" "❌ **Failed**"
+expect "a completed run passes in either row order" success "Codex review completed"
+
+setup; summary "$done_cell" "🔒 **Security Review**::❌ **Failed**"
+expect "a failed security review holds a completed code review" pending "ended without completing (❌ Failed)"
+
+setup; summary "$done_cell" "🔒 **Security Review**::$done_cell"
+expect "both review types completed" success "Codex review completed"
+
+setup; summary "$done_cell"
+jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
+expect "a fork PR holds even with a completed review" pending "Fork PR"
+
+setup; summary
+jq '.head.repo = null' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
+expect "a deleted fork holds instead of failing open" pending "Fork PR"
+
+setup; pr false someone feat/x codex-skip; labeled_by jckeen admin
+jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
+expect "a maintainer's codex-skip passes a fork PR" success "codex-skip"
+
+setup; files README.md
+echo '[{"number":1,"state":"open"},{"number":2,"state":"open"}]' >"$FIX/shared.json"
+expect "a head shared with another open PR holds" pending "also the head of #2"
+
+setup; files README.md
+echo '[{"number":1,"state":"open"},{"number":2,"state":"closed"}]' >"$FIX/shared.json"
+expect "a closed PR sharing the head does not hold" success "Docs-only"
+
 setup; summary "$done_cell@0dd1e55" "⏳ **In progress**"
 expect "an old completed row does not pass a running head review" pending "in progress"
 
@@ -274,7 +310,7 @@ expect "a workflow file is not docs-only" pending "in progress"
 setup; pr true jckeen feat/x
 expect "draft waits for ready" pending "Draft"
 
-setup; printf '{"state":"closed","draft":false,"user":{"login":"jckeen"},"head":{"sha":"abc123","ref":"x"},"labels":[]}\n' >"$FIX/pr.json"
+setup; printf '{"state":"closed","draft":false,"user":{"login":"jckeen"},"head":{"sha":"abc123","ref":"x","repo":{"full_name":"o/r"}},"labels":[]}\n' >"$FIX/pr.json"
 REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" bash "$TMP/status.sh" >/dev/null 2>&1
 if [ -e "$FIX/posted" ]; then
   failed=$((failed + 1))

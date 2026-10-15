@@ -13,8 +13,11 @@
   chooses, and `codex-skip` counts only when an admin or maintainer applied
   it. It fails open only when the bot never posts a summary (3 min), which is
   how a repo without the bot looks; once the bot is active on a PR, a failed
-  review or an unreviewed head holds until a fresh `@codex review`. A base
-  retarget re-evaluates. **Threat model (design verdict):** it stops a PR,
+  review or an unreviewed head holds until a fresh `@codex review` (each review
+  type passes on any completed run of the head, so a successful retry
+  supersedes a failed attempt). A base retarget re-evaluates. Fork PRs, and a
+  head shared by two open PRs (statuses are stored per commit), hold until a
+  maintainer applies `codex-skip`. **Threat model (design verdict):** it stops a PR,
   usually agent-opened, from auto-merging before the bot reviewed its head; it
   is not a boundary against a repository writer, which no commit status can be
   (a writer can add a workflow that posts the status, edit the bot's comment,
@@ -32,7 +35,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (35 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (44 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.

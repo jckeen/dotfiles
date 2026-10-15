@@ -164,6 +164,23 @@ jobs:
             post success "Skipped by the codex-skip label"
             exit 0
           fi
+          # A fork PR never passes on its own: the bot's table names commits by
+          # a 7-character prefix, which a fork author can collide without any
+          # write access, and the bot may never review a fork at all. A
+          # maintainer's codex-skip, applied after reading it, passes it.
+          if [ "$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")" != "$REPO" ]; then
+            post pending "Fork PR: a maintainer applies codex-skip after review"
+            exit 0
+          fi
+          # Statuses are stored per commit, so every open PR with this head
+          # shares one codex-review status, while the verdict below depends on
+          # one PR's base and files. Hold rather than let one PR pass another.
+          sharing="$(gh api "repos/$REPO/commits/$sha/pulls" |
+            jq -r --argjson pr "$PR" '[.[] | select(.state == "open" and .number != $pr) | "#\(.number)"] | join(", ")')"
+          if [ -n "$sharing" ]; then
+            post pending "Head commit is also the head of $sharing; close one, or a maintainer applies codex-skip"
+            exit 0
+          fi
           # Every commit must be Dependabot's: anyone with write access can push
           # onto a Dependabot branch, and those commits are not routine. The
           # commits API lists at most 250, so the list must be complete and end
@@ -197,17 +214,17 @@ jobs:
             comments | jq -r --arg bot "$BOT" \
               '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty'
           }
-          # "<status>\t<commit>" for each review row of the summary table; a
-          # row ends in its backticked commit SHA.
+          # "<review type>\t<status>\t<commit>" for each review row of the
+          # summary table; a row ends in its backticked commit SHA.
           rows() {
             # shellcheck disable=SC2016 # the backticks and $N belong to grep/awk
             grep -E '^\|[^|]*\|[^|]*\|[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*\|' <<<"$1" |
-              awk -F'|' '{c = $4; gsub(/[` \t]/, "", c); print $3 "\t" c}' |
-              sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]+\t/\t/' || true
+              awk -F'|' '{c = $4; gsub(/[` \t]/, "", c); print $2 "\t" $3 "\t" c}' |
+              sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]*\t[[:space:]]*/\t/g' || true
           }
-          # Status cells of the rows that reviewed the head commit.
+          # "<review type>\t<status>" for the rows that reviewed the head commit.
           head_statuses() {
-            rows "$1" | awk -F'\t' -v sha="$sha" '$2 != "" && index(sha, $2) == 1 {print $1}'
+            rows "$1" | awk -F'\t' -v sha="$sha" '$3 != "" && index(sha, $3) == 1 {print $1 "\t" $2}'
           }
 
           body="$(summary)"
@@ -244,14 +261,17 @@ jobs:
             exit 0
           fi
 
-          running="$(grep -viE 'completed|fail|error|cancel|skip|timed out|unavailable|limit' <<<"$statuses" || true)"
+          running="$(cut -f2 <<<"$statuses" | grep -viE 'completed|fail|error|cancel|skip|timed out|unavailable|limit' || true)"
           if [ -n "$running" ]; then
             post pending "Codex review in progress"
             exit 0
           fi
-          # A review that ended without completing holds too: a diff can be
-          # made big enough to fail the bot, and that must not waive it.
-          ended="$(grep -viE 'completed' <<<"$statuses" | head -n 1 || true)"
+          # Each review type (code, security) needs one Completed run on the
+          # head; an earlier failed attempt of that type is superseded by it.
+          # A type with no completed run holds: a diff can be made big enough
+          # to fail the bot, and that must not waive the review.
+          ended="$(awk -F'\t' '{ seen[$1] = $2 } $2 ~ /[Cc]ompleted/ { done[$1] = 1 }
+            END { for (k in seen) if (!(k in done)) { print seen[k]; exit } }' <<<"$statuses")"
           if [ -n "$ended" ]; then
             post pending "Codex review ended without completing ($ended); comment @codex review to retry"
             exit 0
