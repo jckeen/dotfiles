@@ -31,7 +31,10 @@ name: codex-review
 # it has not reviewed gets one `@codex review` request and holds. After a
 # retarget, the request waits until no review is running, and only a run that
 # completes after that request counts: nothing was running when it was made,
-# so any later completion is a run that saw the new base.
+# so any later completion is a run that saw the new base. Residual, open until
+# the canary shows how the bot's table labels a comment-triggered run: a
+# review already running at the retarget whose row first appears after the
+# request is indistinguishable from the requested one.
 #
 # Fails OPEN only where the bot is absent: if no summary comment appears within
 # the poll window (the bot posts it 15-45 s after a PR opens), the status goes
@@ -342,13 +345,15 @@ jobs:
             # push onto a Dependabot branch, and those commits are not routine.
             # The commits API lists at most 250, so the list must be complete
             # and end at the head.
-            if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ] &&
-              gh api --paginate --slurp "repos/$REPO/pulls/$pr/commits" |
-              jq -e --argjson n "$(jq .commits <<<"$pr_json")" --arg head "$sha" \
+            # The read sits outside any condition, so a failure fails the run.
+            if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ]; then
+              commits_json="$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/commits")"
+              if jq -e --argjson n "$(jq .commits <<<"$pr_json")" --arg head "$sha" \
                 '[.[][]] | length == $n and length > 0 and .[-1].sha == $head and
-                 all(.author.login == "dependabot[bot]")' >/dev/null; then
-              post success "Dependabot PR: Codex review not required"
-              exit 0
+                 all(.author.login == "dependabot[bot]")' <<<"$commits_json" >/dev/null; then
+                post success "Dependabot PR: Codex review not required"
+                exit 0
+              fi
             fi
 
             # A rename is judged on both paths. The files API lists at most 3000
@@ -361,14 +366,11 @@ jobs:
               exit 0
             fi
 
-            comments() {
-              gh api --paginate --slurp "repos/$REPO/issues/$pr/comments"
-            }
-            summary() {
-              comments | jq -r --arg bot "$BOT" \
-                '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty'
-            }
-            body="$(summary)"
+            # One snapshot of the comments: the summary and the re-review
+            # requests are judged together, never from two different moments.
+            comments_json="$(gh api --paginate --slurp "repos/$REPO/issues/$pr/comments")"
+            body="$(jq -r --arg bot "$BOT" \
+              '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty' <<<"$comments_json")"
             if [ -z "$body" ]; then
               # No summary yet. Inside the pickup window that is "not yet";
               # past it, the bot is not reviewing this PR. The window starts
@@ -395,8 +397,8 @@ jobs:
             # neither suppress a request nor fake one.
             retargeted_at="$(jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "automatic_base_change_succeeded") | .created_at[0:19]] | max // empty' <<<"$events")"
             marker="<!-- codex-review-rerequest:$sha${retargeted_at:+:$retargeted_at} -->"
-            requested_at="$(comments | jq -r --arg m "$marker" \
-              '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m))) | .created_at[0:19]] | min // empty')"
+            requested_at="$(jq -r --arg m "$marker" \
+              '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m))) | .created_at[0:19]] | min // empty' <<<"$comments_json")"
 
             # Rows for the head commit. After a retarget only rows finishing
             # after the request count (running rows have no finish time yet);

@@ -629,6 +629,10 @@ setup; summary "$done_cell"
 echo '[{"event":"automatic_base_change_succeeded","created_at":"2026-10-06T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
 expect "an automatic retarget invalidates the earlier review" pending "re-review requested"
 
+# A failed Dependabot commit-list read fails the run; it never falls through.
+setup; pr false 'dependabot[bot]' dependabot/npm/x; summary; touch "$FIX/fail_commits.json"
+never_passes "a failed Dependabot commit-list read never passes"
+
 # A failed permission lookup for codex-skip fails the run toward pending.
 setup; pr false jckeen feat/x codex-skip; labeled_by jckeen admin; touch "$FIX/fail_role"
 never_passes "a failed codex-skip permission lookup never passes"
