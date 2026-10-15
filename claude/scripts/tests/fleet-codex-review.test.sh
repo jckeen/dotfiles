@@ -33,6 +33,7 @@ path=""
 for a in "$@"; do case "$a" in repos/*) path="$a" ;; esac; done
 if [ "$method" != GET ]; then
   echo "$method ${path#repos/o/r/}" >>"$FIX/writes"
+  [[ "$all" == *"--input -"* ]] && cat >"$FIX/input"
   exit 0
 fi
 case "$path" in
@@ -99,6 +100,14 @@ run_case "stale workflow opens the rollout PR, no ruleset" stale 0 0 0 --apply \
 run_case "open rollout PR is reused" none 0 1 1 --apply ""
 run_case "leftover branch without a PR is never reset" none 0 1 0 --apply "" 1
 run_case "current workflow creates the ruleset" current 0 0 0 --apply "POST rulesets"
+if jq -e '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks
+    == [{context: "codex-review", integration_id: 15368}]' "$FIX/input" >/dev/null &&
+  jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_review_thread_resolution' "$FIX/input" >/dev/null; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: ruleset body must pin codex-review to the Actions app and require thread resolution: $(cat "$FIX/input" 2>/dev/null)"
+fi
 run_case "existing ruleset is left alone" current 1 0 0 --apply ""
 run_case "advisory repo never gets a ruleset" current 0 0 0 --apply "" 0 advisory
 

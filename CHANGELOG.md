@@ -4,9 +4,11 @@
 
 - **`.github/workflows/codex-review.yml`:** posts a `codex-review` commit status
   on each PR head: pending while the GitHub Codex bot reviews, success once
-  every row of its summary table reads Completed. Docs-only diffs (no
-  instruction surface), Dependabot and Nightly dep audit PRs pass at once; it
-  fails open when the bot never picks a PR up (3 min) or its review ends in a
+  every row of its summary table reads Completed for the head commit (a push
+  after the review gets one `@codex review` request per head SHA; an older
+  commit's review never passes a newer one). Docs-only diffs (no instruction
+  surface) and Dependabot PRs pass at once; skips never key on a branch name
+  or title, which an author chooses. It fails open when the bot never picks a PR up (3 min) or its review ends in a
   non-Completed state; the `codex-skip` label passes it by hand. Event-driven
   (`pull_request_target` plus the bot's summary-comment edits), so it does not
   poll for the review. Measured on the 12 PRs merged before this: auto-merge
@@ -14,12 +16,13 @@
   minutes, and #599 and #604 merged before their findings landed.
 - **`claude/scripts/fleet-codex-review.sh`:** copies that workflow into each
   fleet repo through a PR, then creates a dedicated `codex-review` ruleset
-  requiring the status and resolved review threads. Thread resolution is what
+  requiring the status (pinned to the GitHub Actions app, so a hand-posted
+  status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (16 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (21 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
-  (8 cases; never a ruleset before the workflow is current, never a forced
+  (9 cases; never a ruleset before the workflow is current, never a forced
   branch reset), both in the `checkers` shard.
 - **Docs:** `docs/BRANCH_PROTECTION.md` (the layered ruleset),
   `claude/scripts/README.md`.

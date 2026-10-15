@@ -19,9 +19,15 @@ name: codex-review
 # status goes to success with a description saying so. The local review gate
 # still ran before push. The `codex-skip` label passes it by hand.
 #
+# Only a review of the PR's HEAD commit counts. The bot reviews when a PR
+# opens, not on later pushes, so when the head has moved past its last review
+# this comments `@codex review` once per head commit and holds; a completed
+# review of an earlier commit never passes a newer one.
+#
 # Skipped (success at once): docs-only diffs that touch no instruction surface,
-# Dependabot PRs, and Nightly dep audit branches (claude/deps-*), matching the
-# 2026-09-02 routine-dependency ruling.
+# and Dependabot PRs (2026-09-02 routine-dependency ruling). Skips key on facts a
+# PR author cannot choose: the changed paths and the Dependabot account, never a
+# branch name or title.
 #
 # pull_request_target, not pull_request: a Dependabot-triggered pull_request
 # run gets a read-only token and could not post the status. This is safe here
@@ -43,7 +49,7 @@ on:
 permissions:
   statuses: write # post the codex-review commit status
   pull-requests: read # read the PR, its labels and changed files
-  issues: read # read the bot's summary comment
+  issues: write # read the bot's summary; request a re-review of a new head
 
 jobs:
   evaluate:
@@ -122,12 +128,6 @@ jobs:
             post success "Dependabot PR: Codex review not required"
             exit 0
           fi
-          case "$(jq -r .head.ref <<<"$pr_json")" in
-            claude/deps-*)
-              post success "Nightly dep audit PR: Codex review not required"
-              exit 0
-              ;;
-          esac
           files="$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/files" | jq -r '.[][].filename')"
           if docs_only "$files"; then
             post success "Docs-only change: Codex review not required"
@@ -138,10 +138,26 @@ jobs:
             exit 0
           fi
 
+          comments() {
+            gh api --paginate --slurp "repos/$REPO/issues/$PR/comments"
+          }
           summary() {
-            gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" | jq -r --arg bot "$BOT" \
+            comments | jq -r --arg bot "$BOT" \
               '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty'
           }
+          # "<status>\t<commit>" for each review row of the summary table; a
+          # row ends in its backticked commit SHA.
+          rows() {
+            # shellcheck disable=SC2016 # the backticks and $N belong to grep/awk
+            grep -E '^\|[^|]*\|[^|]*\|[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*\|' <<<"$1" |
+              awk -F'|' '{c = $4; gsub(/[` \t]/, "", c); print $3 "\t" c}' |
+              sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]+\t/\t/' || true
+          }
+          # Status cells of the rows that reviewed the head commit.
+          head_statuses() {
+            rows "$1" | awk -F'\t' -v sha="$sha" '$2 != "" && index(sha, $2) == 1 {print $1}'
+          }
+
           body="$(summary)"
           waited=0
           while [ -z "$body" ] && [ "$waited" -lt "$POLL_SECONDS" ]; do
@@ -153,15 +169,34 @@ jobs:
             post success "Codex did not pick up this PR within ${POLL_SECONDS}s; not blocking"
             exit 0
           fi
-
-          # Status cell of each review row: rows end in a backticked commit SHA.
-          # shellcheck disable=SC2016 # the backticks and $3 belong to grep/awk
-          statuses="$(grep -E '^\|[^|]*\|[^|]*\|[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*\|' <<<"$body" |
-            awk -F'|' '{print $3}' | sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
-          if [ -z "$statuses" ]; then
+          if [ -z "$(rows "$body")" ]; then
             post pending "Codex review started"
             exit 0
           fi
+
+          statuses="$(head_statuses "$body")"
+          if [ -z "$statuses" ]; then
+            # Reviewed, but not this commit. Ask once per head SHA; the marker
+            # keeps re-runs from asking again.
+            marker="<!-- codex-review-rerequest:$sha -->"
+            if ! comments | jq -e --arg m "$marker" '[.[][] | select(.body | contains($m))] | length > 0' >/dev/null; then
+              gh api -X POST "repos/$REPO/issues/$PR/comments" \
+                -f body="@codex review"$'\n\n'"$marker" >/dev/null
+              echo "requested a Codex re-review of $sha"
+            fi
+            post pending "New commits since the Codex review; re-review requested"
+            waited=0
+            while [ -z "$statuses" ] && [ "$waited" -lt "$POLL_SECONDS" ]; do
+              sleep "$POLL_INTERVAL"
+              waited=$((waited + POLL_INTERVAL))
+              statuses="$(head_statuses "$(summary)")"
+            done
+            if [ -z "$statuses" ]; then
+              post success "Codex did not take up the re-review within ${POLL_SECONDS}s; not blocking"
+              exit 0
+            fi
+          fi
+
           running="$(grep -viE 'completed|fail|error|cancel|skip|timed out|unavailable|limit' <<<"$statuses" || true)"
           if [ -n "$running" ]; then
             post pending "Codex review in progress"

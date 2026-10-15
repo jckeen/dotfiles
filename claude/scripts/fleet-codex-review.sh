@@ -55,6 +55,10 @@ ADVISORY=(
 WORKFLOW_PATH=.github/workflows/codex-review.yml
 BRANCH=ci/codex-review-status
 RULESET=codex-review
+# The GitHub Actions app (gh api apps/github-actions). Pinning the required
+# status to it means only a workflow can satisfy it, not a person or another
+# integration posting `codex-review` by hand.
+ACTIONS_APP_ID=15368
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CANONICAL="$ROOT/$WORKFLOW_PATH"
 
@@ -136,7 +140,7 @@ ship_workflow() {
   cat >"$body" <<'EOF'
 Adds the `codex-review` workflow from jckeen/dotfiles (`.github/workflows/codex-review.yml`, copied verbatim by `claude/scripts/fleet-codex-review.sh`).
 
-It posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only, Dependabot and Nightly dep audit PRs pass at once; if the bot never picks a PR up, the status passes after three minutes. The `codex-skip` label passes it by hand.
+It posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once; a review counts only for the PR's head commit (later pushes get an `@codex review` request); if the bot never picks a PR up, the status passes after three minutes. The `codex-skip` label passes it by hand.
 
 Nothing requires the status until the follow-up `codex-review` ruleset is created after this merges; this PR on its own changes no merge behavior.
 
@@ -153,7 +157,7 @@ EOF
 
 create_ruleset() {
   local repo="$1"
-  jq -n --arg name "$RULESET" '{
+  jq -n --arg name "$RULESET" --argjson app "$ACTIONS_APP_ID" '{
     name: $name,
     target: "branch",
     enforcement: "active",
@@ -162,7 +166,7 @@ create_ruleset() {
       {type: "required_status_checks", parameters: {
         strict_required_status_checks_policy: false,
         do_not_enforce_on_create: false,
-        required_status_checks: [{context: "codex-review"}]}},
+        required_status_checks: [{context: "codex-review", integration_id: $app}]}},
       {type: "pull_request", parameters: {
         required_approving_review_count: 0,
         dismiss_stale_reviews_on_push: false,

@@ -20,11 +20,12 @@ if ! grep -q 'post success "Codex review completed"' "$TMP/status.sh"; then
 fi
 
 # Fake gh: maps the repos/... path to a fixture file, wraps it in an array for
-# --slurp, and records status POSTs as "state|description".
+# --slurp, records status POSTs as "state|description" in $FIX/posted and
+# comment POSTs (their body) in $FIX/commented.
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
-path="" slurp=0 post=0 state="" desc=""
+path="" slurp=0 post=0 state="" desc="" body=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --slurp) slurp=1 ;;
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
       case "$1" in
         state=*) state="${1#state=}" ;;
         description=*) desc="${1#description=}" ;;
+        body=*) body="${1#body=}" ;;
       esac
       ;;
     repos/*) path="$1" ;;
@@ -41,7 +43,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ "$post" = 1 ]; then
-  printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
+  case "$path" in
+    */statuses/*) printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted" ;;
+    */comments) printf '%s\n' "$body" >>"$FIX/commented" ;;
+    *) echo "fake gh: unexpected POST $path" >&2; exit 1 ;;
+  esac
   exit 0
 fi
 case "$path" in
@@ -66,7 +72,7 @@ n=0
 pr() {
   local labels='[]'
   [ -n "${4:-}" ] && labels="[{\"name\":\"$4\"}]"
-  printf '{"state":"open","draft":%s,"user":{"login":"%s"},"head":{"sha":"abc123","ref":"%s"},"labels":%s}\n' \
+  printf '{"state":"open","draft":%s,"user":{"login":"%s"},"head":{"sha":"69cff27a1b2c3d","ref":"%s"},"labels":%s}\n' \
     "$1" "$2" "$3" "$labels" >"$FIX/pr.json"
 }
 
@@ -80,15 +86,19 @@ files() {
   printf '%s]\n' "$out" >"$FIX/files.json"
 }
 
-# summary <status cell>... — one review row per cell; no args = no comment
+# summary <status cell[@commit]>... — one review row per cell, reviewing the
+# head commit unless @commit names another; no args = no summary comment
 summary() {
   if [ $# -eq 0 ]; then
     echo '[{"user":{"login":"someone"},"body":"lgtm"}]' >"$FIX/comments.json"
     return
   fi
   local body rows='' cell nl=$'\n'
+  local commit
   for cell in "$@"; do
-    rows="$rows| 📝 **Code Review** | $cell | \`69cff27\` | PR opened |$nl"
+    commit=69cff27
+    case "$cell" in *@*) commit="${cell##*@}" cell="${cell%@*}" ;; esac
+    rows="$rows| 📝 **Code Review** | $cell | \`$commit\` | PR opened |$nl"
   done
   body="<!-- codex-pull-request-review-summary -->$nl## Codex Review Summary$nl$nl| Review | Status | Commit | Review trigger |$nl| --- | --- | --- | --- |$nl$rows${nl}Codex reacts with 👀 while any review is running"
   jq -n --arg body "$body" '[{user: {login: "chatgpt-codex-connector[bot]"}, body: $body}]' >"$FIX/comments.json"
@@ -104,13 +114,14 @@ setup() {
   summary
 }
 
-# expect <name> <state> <description fragment>
+# expect <name> <state> <description fragment> — judged on the LAST status
+# posted; a run posts at most two (the re-review path holds, then resolves).
 expect() {
   local got
   REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1
-  got="$(cat "$FIX/posted" 2>/dev/null || true)"
-  if [ "$(wc -l <<<"$got")" = 1 ] && [[ "$got" == "$2|"*"$3"* ]]; then
+  got="$(tail -n 1 "$FIX/posted" 2>/dev/null || true)"
+  if [ "$(wc -l <"$FIX/posted" 2>/dev/null || echo 0)" -le 2 ] && [[ "$got" == "$2|"*"$3"* ]]; then
     pass=$((pass + 1))
   else
     failed=$((failed + 1))
@@ -148,8 +159,32 @@ expect "codex-skip label" success "codex-skip"
 setup; pr false 'dependabot[bot]' dependabot/npm/x
 expect "dependabot author" success "Dependabot"
 
-setup; pr false app/claude claude/deps-20261014
-expect "nightly dep audit branch" success "Nightly dep audit"
+setup; pr false app/claude claude/deps-20261014; summary "⏳ **In progress**"
+expect "a deps-looking branch name skips nothing" pending "in progress"
+
+setup; summary "$done_cell@0dd1e55"
+expect "a completed review of an older commit does not pass the head" success "did not take up the re-review"
+if [ "$(head -n 1 "$FIX/posted")" = "pending|New commits since the Codex review; re-review requested" ] &&
+  grep -q '^@codex review' "$FIX/commented" && grep -q 'codex-review-rerequest:69cff27a1b2c3d' "$FIX/commented"; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: stale review — expected a held status and one @codex review request; posted: $(cat "$FIX/posted"); commented: $(cat "$FIX/commented" 2>/dev/null)"
+fi
+
+setup; summary "$done_cell@0dd1e55"
+jq --arg m '<!-- codex-review-rerequest:69cff27a1b2c3d -->' '. + [{user: {login: "github-actions[bot]"}, body: ("@codex review\n\n" + $m)}]' \
+  "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
+expect "an earlier request for this head is not repeated" success "did not take up the re-review"
+if [ -e "$FIX/commented" ]; then
+  failed=$((failed + 1))
+  echo "FAIL: re-review requested twice for one head: $(cat "$FIX/commented")"
+else
+  pass=$((pass + 1))
+fi
+
+setup; summary "$done_cell@0dd1e55" "⏳ **In progress**"
+expect "an old completed row does not pass a running head review" pending "in progress"
 
 setup; files README.md docs/guide.md LICENSE
 expect "docs-only diff" success "Docs-only"
