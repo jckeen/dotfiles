@@ -138,7 +138,7 @@ setup() {
   files src/app.ts
   summary
   echo '[]' >"$FIX/events.json"
-  echo '[{"number":1,"state":"open"}]' >"$FIX/shared.json"
+  echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
@@ -263,13 +263,27 @@ setup; pr false someone feat/x codex-skip; labeled_by jckeen admin
 jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
 expect "a maintainer's codex-skip passes a fork PR" success "codex-skip"
 
-setup; files README.md
-echo '[{"number":1,"state":"open"},{"number":2,"state":"open"}]' >"$FIX/shared.json"
-expect "a head shared with another open PR holds" pending "also the head of #2"
+setup; files README.md; summary "⏳ **In progress**"
+echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"open","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
+expect "a docs-only skip does not apply to a head another open PR shares" pending "in progress"
+
+setup; files README.md; summary "$done_cell"
+echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"open","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
+expect "a shared head still passes on a completed review" success "Codex review completed"
 
 setup; files README.md
-echo '[{"number":1,"state":"open"},{"number":2,"state":"closed"}]' >"$FIX/shared.json"
-expect "a closed PR sharing the head does not hold" success "Docs-only"
+echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"open","head":{"sha":"ffff000"}}]' >"$FIX/shared.json"
+expect "a PR that has moved past this commit does not count as sharing it" success "Docs-only"
+
+setup; files README.md
+echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"closed","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
+expect "a closed PR with the same head does not count" success "Docs-only"
+
+setup; files claude/AgentPack.md; summary "⏳ **In progress**"
+expect "AgentPack.md is an instruction source, not docs" pending "in progress"
+
+setup; files docs/FABLE.md; summary "⏳ **In progress**"
+expect "a FABLE.md instruction file is not docs-only" pending "in progress"
 
 setup; summary "$done_cell@0dd1e55" "⏳ **In progress**"
 expect "an old completed row does not pass a running head review" pending "in progress"

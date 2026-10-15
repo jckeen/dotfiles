@@ -7,7 +7,8 @@
   every row of its summary table reads Completed for the head commit (a push
   after the review gets one `@codex review` request per head SHA; an older
   commit's review never passes a newer one). Docs-only diffs (no instruction
-  surface, matched case-insensitively and on both paths of a rename; `.txt`
+  surface, the instruction names mirroring `review-receipt.py`, matched
+  case-insensitively and on both paths of a rename; `.txt`
   and `.mdx` count as code) and all-Dependabot-commit PRs pass at once; skips
   never key on a branch name, title or pasted marker, which an author
   chooses, and `codex-skip` counts only when an admin or maintainer applied
@@ -15,9 +16,10 @@
   how a repo without the bot looks; once the bot is active on a PR, a failed
   review or an unreviewed head holds until a fresh `@codex review` (each review
   type passes on any completed run of the head, so a successful retry
-  supersedes a failed attempt). A base retarget re-evaluates. Fork PRs, and a
-  head shared by two open PRs (statuses are stored per commit), hold until a
-  maintainer applies `codex-skip`. **Threat model (design verdict):** it stops a PR,
+  supersedes a failed attempt). A base retarget re-evaluates. Fork PRs hold until a
+  maintainer applies `codex-skip`; the docs-only skip does not apply to a head
+  another open PR shares (statuses are stored per commit), so the bot review
+  decides there. **Threat model (design verdict):** it stops a PR,
   usually agent-opened, from auto-merging before the bot reviewed its head; it
   is not a boundary against a repository writer, which no commit status can be
   (a writer can add a workflow that posts the status, edit the bot's comment,
@@ -35,7 +37,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (44 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (48 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.

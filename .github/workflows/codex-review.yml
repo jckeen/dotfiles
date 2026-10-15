@@ -136,7 +136,10 @@ jobs:
                   prompts/* | */prompts/*) exit 1 ;;
               esac
               case "${f##*/}" in
-                *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | *SKILL*.md | *MULTI-AGENT*.md) exit 1 ;;
+                # Instruction names as review-receipt.py's instruction() and
+                # risk() list them (AgentPack.md is the pack's source).
+                *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | *FABLE*.md | *SKILL*.md | \
+                  *MULTI-AGENT*.md | *AGENTPACK*) exit 1 ;;
                 *.md | *.rst | LICENSE | LICENSE.txt) ;;
                 *) exit 1 ;;
               esac
@@ -172,15 +175,6 @@ jobs:
             post pending "Fork PR: a maintainer applies codex-skip after review"
             exit 0
           fi
-          # Statuses are stored per commit, so every open PR with this head
-          # shares one codex-review status, while the verdict below depends on
-          # one PR's base and files. Hold rather than let one PR pass another.
-          sharing="$(gh api "repos/$REPO/commits/$sha/pulls" |
-            jq -r --argjson pr "$PR" '[.[] | select(.state == "open" and .number != $pr) | "#\(.number)"] | join(", ")')"
-          if [ -n "$sharing" ]; then
-            post pending "Head commit is also the head of $sharing; close one, or a maintainer applies codex-skip"
-            exit 0
-          fi
           # Every commit must be Dependabot's: anyone with write access can push
           # onto a Dependabot branch, and those commits are not routine. The
           # commits API lists at most 250, so the list must be complete and end
@@ -195,9 +189,16 @@ jobs:
           fi
           # A rename is judged on both paths. The files API lists at most 3000
           # entries, so a list shorter than changed_files is never docs-only.
+          # Statuses are stored per commit and shared by every PR with this
+          # head, but a docs-only verdict depends on this PR's base: when
+          # another open PR has the same head, the skip does not apply and the
+          # bot's review (of the commit itself, so the same for both) decides.
           files_json="$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/files")"
           files="$(jq -r '.[][] | .filename, (.previous_filename // empty)' <<<"$files_json")"
-          if [ "$(jq '[.[][]] | length' <<<"$files_json")" = "$(jq .changed_files <<<"$pr_json")" ] &&
+          shared="$(gh api "repos/$REPO/commits/$sha/pulls" | jq --argjson pr "$PR" --arg sha "$sha" \
+            '[.[] | select(.state == "open" and .number != $pr and .head.sha == $sha)] | length')"
+          if [ "$shared" = 0 ] &&
+            [ "$(jq '[.[][]] | length' <<<"$files_json")" = "$(jq .changed_files <<<"$pr_json")" ] &&
             docs_only "$files"; then
             post success "Docs-only change: Codex review not required"
             exit 0
