@@ -51,11 +51,20 @@ if [ "$post" = 1 ]; then
   case "$path" in
     */statuses/*)
       [ -e "$FIX/fail_status" ] && exit 1
+      # race: an invalidation lands between the writer's check and its POST.
+      if [ "$state" = success ] && [ -e "$FIX/race" ]; then
+        rm "$FIX/race"
+        jq -nc --arg sha "${path##*/}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{id: 9000, sha: $sha, context: "codex-review", state: "pending", description: "Re-evaluating the Codex review state", created_at: $at}' >>"$FIX/status_store"
+      fi
+      id=$(( $(wc -l <"$FIX/status_store" 2>/dev/null || echo 0) + 1 ))
       # posted: statuses on the main fixture head; posted_sha: every status.
       [ "${path##*/}" = 69cff27a1b2c3d ] && printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
       printf '%s|%s\n' "${path##*/}" "$state" >>"$FIX/posted_sha"
-      jq -nc --arg sha "${path##*/}" --arg s "$state" --arg d "$desc" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{sha: $sha, context: "codex-review", state: $s, description: $d, created_at: $at}' >>"$FIX/status_store"
+      jq -nc --argjson id "$id" --arg sha "${path##*/}" --arg s "$state" --arg d "$desc" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id: $id, sha: $sha, context: "codex-review", state: $s, description: $d, created_at: $at}' >>"$FIX/status_store"
+      # gh's --jq .id, answered directly.
+      echo "$id"
       ;;
     */comments) printf '%s\n' "$body" >>"$FIX/commented" ;;
     *) echo "fake gh: unexpected POST $path" >&2; exit 1 ;;
@@ -191,7 +200,7 @@ request_comment() {
 
 run_status() {
   status_rc=0
-  RETRY_SECONDS=0 SETTLE_SECONDS=0 EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
+  RETRY_SECONDS=0 SETTLE_SECONDS="${SETTLE_PAD:-0}" EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
     REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
 }
@@ -218,7 +227,7 @@ setup() {
   summary
   echo '[]' >"$FIX/events.json"
   open_prs '1:69cff27a1b2c3d'
-  CASE_POLL="" CASE_EVENT_PR="" CASE_EVENT_HEAD="" CASE_EVENT_HEAD_REPO=""
+  SETTLE_PAD="" CASE_POLL="" CASE_EVENT_PR="" CASE_EVENT_HEAD="" CASE_EVENT_HEAD_REPO=""
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
@@ -435,6 +444,25 @@ jq -nc --arg at "$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)" \
 run_status
 if [ ! -e "$FIX/posted" ]; then pass=$((pass + 1)); else
   failed=$((failed + 1)); echo "FAIL: overwrote a status newer than the pass: $(cat "$FIX/posted")"; fi
+
+# An invalidation lands between the writer's check and its success POST: the
+# writer hands the head back to pending.
+setup; summary "$done_cell"
+run_status; rm -f "$FIX/posted" "$FIX/status_store"
+# PASS_START is the next second, so the race entry must be from then on.
+touch "$FIX/race"
+SETTLE_PAD=1
+run_status
+if [ "$(tail -n 1 "$FIX/posted")" = "pending|Re-evaluating the Codex review state" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a newer status during the pass must revert success: $(cat "$FIX/posted")"; sed 's/^/    /' "$FIX/out"; fi
+
+# Forks are evaluated after every same-repository PR, whatever their numbers.
+setup; summary "$done_cell"; open_prs '1:ffff0001:false:fork/r' '2:69cff27a1b2c3d'
+jq '.head.sha = "ffff0001" | .head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p1" && mv "$FIX/p1" "$FIX/pr.json"
+jq '.head.sha = "69cff27a1b2c3d" | .head.repo.full_name = "o/r"' "$FIX/pr.json" >"$FIX/pr2.json"
+run_status
+if [ "$(cut -d'|' -f1 "$FIX/posted_sha" | paste -sd' ')" = "69cff27a1b2c3d ffff0001" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: same-repo PRs must be evaluated before forks: $(cat "$FIX/posted_sha")"; fi
 
 # An older status is replaced as usual.
 setup; summary "$done_cell"

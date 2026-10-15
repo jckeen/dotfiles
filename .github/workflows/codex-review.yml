@@ -252,10 +252,26 @@ jobs:
                 echo "#$pr codex-review unchanged: $1"
                 return 0
               fi
-              gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
+              local id
+              id="$(gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
                 -f context=codex-review -f description="$desc" \
-                -f target_url="$RUN_URL" >/dev/null
+                -f target_url="$RUN_URL" --jq .id)"
               echo "#$pr codex-review -> $1: $2"
+              [ "$1" = success ] || return 0
+              # The check above is not atomic: GitHub has no conditional status
+              # write, so an invalidation can land between it and this POST.
+              # Re-read, and if any other status arrived since the pass began,
+              # hand the head back to pending for the run that follows it. What
+              # remains is the second or two between this success and that
+              # revert, which no commit-status design can close.
+              if gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
+                jq -e --arg start "$PASS_START" --argjson id "$id" \
+                  '[.[] | select(.context == "codex-review" and .id != $id and (.created_at[0:19] >= $start))] | length > 0' >/dev/null; then
+                gh api -X POST "repos/$REPO/statuses/$sha" -f state=pending \
+                  -f context=codex-review -f description="Re-evaluating the Codex review state" \
+                  -f target_url="$RUN_URL" >/dev/null
+                echo "#$pr codex-review -> pending: a newer status arrived during this pass"
+              fi
             }
 
             # A fork PR at the head of a same-repository PR posts nothing: its
@@ -459,7 +475,11 @@ jobs:
               [ "$attempt" = 3 ] || sleep "${RETRY_SECONDS:-5}"
             done
             [ -n "$OPEN" ] || unreadable "the open PRs"
-            mapfile -t prs < <(jq -r '.[].number' <<<"$OPEN" | sort -un)
+            # Same-repository PRs first: forks come last, so no number of fork
+            # PRs can spend the job's time before a same-repository PR's turn.
+            mapfile -t prs < <(jq -r --arg repo "$REPO" \
+              '([.[] | select(.head.repo.full_name == $repo)] | sort_by(.number) | .[].number),
+               ([.[] | select(.head.repo.full_name != $repo)] | sort_by(.number) | .[].number)' <<<"$OPEN")
             for t in "${prs[@]}"; do
               rm -f "$WORK/sha.$t"
               evaluate "$t" &
