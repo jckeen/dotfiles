@@ -15,8 +15,11 @@
   state under a single repo-wide concurrency group, so the newest run
   cancelling an older one loses nothing and no stale verdict lands after a
   newer one; a PR waiting for the bot to pick it up gets one wait to the end
-  of its window instead of a poll per PR. Drafts post nothing; a failed API
-  read ends the run rather than reading as absent state. A head the bot has not reviewed gets one `@codex review` request and
+  of its window instead of a poll per PR. A fork PR's own events run apart and
+  evaluate only that PR, so a contributor cannot cancel the writer. Only
+  changes are written (GitHub caps statuses at 1000 per commit and context).
+  Drafts post nothing; a failed evaluation ends that PR's run and revokes its
+  head to pending, since a failed job does not clear an earlier success. A head the bot has not reviewed gets one `@codex review` request and
   holds; after a base retarget the request waits until no review is running,
   and only a run completing after it counts. Docs-only diffs (no instruction
   surface or dot-directory, names mirroring `review-receipt.py`) and
@@ -38,7 +41,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (67 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (71 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.

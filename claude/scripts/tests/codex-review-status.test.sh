@@ -49,6 +49,8 @@ if [ "$post" = 1 ]; then
       # posted: statuses on the main fixture head; posted_sha: every status.
       [ "${path##*/}" = 69cff27a1b2c3d ] && printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
       printf '%s|%s\n' "${path##*/}" "$state" >>"$FIX/posted_sha"
+      jq -nc --arg sha "${path##*/}" --arg s "$state" --arg d "$desc" \
+        '{sha: $sha, context: "codex-review", state: $s, description: $d}' >>"$FIX/status_store"
       ;;
     */comments) printf '%s\n' "$body" >>"$FIX/commented" ;;
     *) echo "fake gh: unexpected POST $path" >&2; exit 1 ;;
@@ -56,6 +58,17 @@ if [ "$post" = 1 ]; then
   exit 0
 fi
 case "$path" in
+  */commits/*/statuses*)
+    # Newest first, as the API lists them.
+    sha="${path#*/commits/}"
+    sha="${sha%%/*}"
+    if [ -e "$FIX/status_store" ]; then
+      jq -s --arg sha "$sha" '[.[] | select(.sha == $sha)] | reverse' "$FIX/status_store"
+    else
+      echo '[]'
+    fi
+    exit 0
+    ;;
   */collaborators/*/permission)
     # gh's --jq .role_name, answered directly.
     cat "$FIX/role"
@@ -67,6 +80,7 @@ case "$path" in
   */pulls/*)
     # PR 1 is pr.json, PR N is prN.json. changed_files is the files
     # fixture's length unless a case overrides it.
+    [ -e "$FIX/fail_pr" ] && exit 1
     num="${path##*/}"
     prf="$FIX/pr.json"
     if [ "$num" != 1 ]; then
@@ -168,7 +182,7 @@ request_comment() {
 
 run_status() {
   status_rc=0
-  REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
+  FORK_PR="${CASE_FORK_PR:-}" REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
 }
 
@@ -194,7 +208,7 @@ setup() {
   summary
   echo '[]' >"$FIX/events.json"
   open_prs '1:69cff27a1b2c3d'
-  CASE_POLL=""
+  CASE_POLL="" CASE_FORK_PR=""
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
@@ -354,6 +368,42 @@ setup; summary "$done_cell"; touch "$FIX/fail_status"
 run_status
 if [ "$status_rc" != 0 ]; then pass=$((pass + 1)); else
   failed=$((failed + 1)); echo "FAIL: a failed status POST exited 0"; fi
+
+setup; summary "$done_cell"
+run_status; run_status
+if [ "$(wc -l <"$FIX/posted")" = 1 ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: an unchanged status is written again: $(cat "$FIX/posted")"; fi
+
+# Passed, then the PR is retargeted and the next evaluation fails: revoke.
+setup; summary "$done_cell"
+run_status
+retarget_events='[{"event":"base_ref_changed","created_at":"2026-10-06T09:00:00Z","actor":{"login":"jckeen"}}]'
+echo "$retarget_events" >"$FIX/events.json"; touch "$FIX/fail_events.json"
+run_status
+if [ "$status_rc" != 0 ] && [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-review could not evaluate #1; re-run the workflow" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: a failed evaluation must revoke an earlier success — exit $status_rc, posted: $(cat "$FIX/posted")"
+fi
+
+# A failure before the PR read still revokes, from the open-PR snapshot.
+setup; summary "$done_cell"
+run_status; touch "$FIX/fail_pr"
+run_status
+if [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-review could not evaluate #1; re-run the workflow" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1)); echo "FAIL: a failed PR read must revoke from the snapshot: $(cat "$FIX/posted")"
+fi
+
+# A fork PR's own event evaluates only that PR.
+setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d' '2:ffff0002:false:fork/r'
+jq '.head.sha = "ffff0002" | .head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/pr2.json"
+CASE_FORK_PR=2
+run_status
+if [ "$(cat "$FIX/posted_sha")" = "ffff0002|pending" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a fork event must evaluate only the fork PR: $(cat "$FIX/posted_sha")"; fi
 
 # Opened just now with no summary yet: pending, then decided once the pickup
 # window closes.

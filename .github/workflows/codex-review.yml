@@ -104,14 +104,27 @@ jobs:
     # older one loses nothing, and a cancelled run can never write a stale
     # verdict after a newer one. Job-level, so a skipped run for an unrelated
     # comment never cancels a live one.
+    #
+    # A fork PR's own events run apart, in a group per run that cancels
+    # nothing, and evaluate only that PR: otherwise a contributor without
+    # write access could cancel the repository's writer by pushing to a fork
+    # PR over and over. A fork PR only ever writes its own head (it posts
+    # nothing at a same-repository PR's head), so it cannot race the writer.
     concurrency:
-      group: codex-review-${{ github.repository }}
+      group: >-
+        ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository
+          && format('codex-review-fork-{0}', github.run_id)
+          || format('codex-review-{0}', github.repository) }}
       cancel-in-progress: true
     steps:
       - name: Post the codex-review status
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          # The fork PR's number on a fork PR's own event, else empty.
+          FORK_PR: >-
+            ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository
+              && github.event.pull_request.number || '' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # >>> codex-review-status (extracted and tested by dotfiles
@@ -121,7 +134,9 @@ jobs:
           # How long the bot gets to post its summary after a PR opens or is
           # marked ready before the PR counts as one the bot does not review.
           POLL_SECONDS="${POLL_SECONDS:-180}"
-          DEADLINES="$(mktemp)"
+          FORK_PR="$(tr -d '[:space:]' <<<"${FORK_PR:-}")"
+          WORK="$(mktemp -d)"
+          DEADLINES="$WORK/deadlines"
 
           # Numbers of the open, non-draft, same-repository PRs whose head is
           # commit $1, from this pass's snapshot. Fork PRs never count: a
@@ -187,10 +202,21 @@ jobs:
               exit 0
             fi
             sha="$(jq -r .head.sha <<<"$pr_json")"
+            # Recorded so a failure below can revoke this head's status.
+            echo "$sha" >"$WORK/sha.$pr"
 
+            # Writes only a change: GitHub keeps at most 1000 statuses per
+            # commit and context, and every run re-evaluates every open PR.
             post() {
+              local desc="${2:0:140}" current
+              current="$(gh api "repos/$REPO/commits/$sha/statuses?per_page=100" |
+                jq -r '[.[] | select(.context == "codex-review")][0] // {} | "\(.state)|\(.description)"')"
+              if [ "$current" = "$1|$desc" ]; then
+                echo "#$pr codex-review unchanged: $1"
+                return 0
+              fi
               gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
-                -f context=codex-review -f description="${2:0:140}" \
+                -f context=codex-review -f description="$desc" \
                 -f target_url="$RUN_URL" >/dev/null
               echo "#$pr codex-review -> $1: $2"
             }
@@ -351,14 +377,33 @@ jobs:
           # background job and is waited on: called from `||` or `if`, bash
           # would switch errexit off inside it, and a failed read would pass as
           # absent state.
+          #
+          # A failed evaluation revokes: an earlier success may no longer hold
+          # (a retarget keeps the head), and a failed job does not clear a
+          # commit status, so the head goes back to pending.
           rc=0
           evaluate_all() {
             : >"$DEADLINES"
             OPEN="$(gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" | jq -c '[.[][]]')"
-            mapfile -t prs < <(jq -r '.[].number' <<<"$OPEN" | sort -un)
+            if [ -n "$FORK_PR" ]; then
+              prs=("$FORK_PR")
+            else
+              mapfile -t prs < <(jq -r '.[].number' <<<"$OPEN" | sort -un)
+            fi
             for t in "${prs[@]}"; do
+              rm -f "$WORK/sha.$t"
               evaluate "$t" &
-              wait "$!" || rc=1
+              if ! wait "$!"; then
+                rc=1
+                # The head it read, or else the snapshot's.
+                head="$(cat "$WORK/sha.$t" 2>/dev/null ||
+                  jq -r --argjson n "$t" '.[] | select(.number == $n) | .head.sha' <<<"$OPEN")"
+                if [ -n "$head" ]; then
+                  gh api -X POST "repos/$REPO/statuses/$head" -f state=pending \
+                    -f context=codex-review -f description="codex-review could not evaluate #$t; re-run the workflow" \
+                    -f target_url="$RUN_URL" >/dev/null || echo "#$t: could not revoke its status" >&2
+                fi
+              fi
             done
           }
           evaluate_all
