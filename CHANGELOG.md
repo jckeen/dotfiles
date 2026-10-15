@@ -13,7 +13,15 @@
   chooses, and `codex-skip` counts only when an admin or maintainer applied
   it. It fails open only when the bot never posts a summary (3 min), which is
   how a repo without the bot looks; once the bot is active on a PR, a failed
-  review or an unreviewed head holds until a fresh `@codex review`. Event-driven
+  review or an unreviewed head holds until a fresh `@codex review`. A base
+  retarget re-evaluates. **Threat model (design verdict):** it stops a PR,
+  usually agent-opened, from auto-merging before the bot reviewed its head; it
+  is not a boundary against a repository writer, which no commit status can be
+  (a writer can add a workflow that posts the status, edit the bot's comment,
+  or forge commit attribution). Fork contributors cannot reach a pass. Write
+  access across the fleet at rollout: the owner everywhere, plus one outside
+  writer on each of allora-engine, clarity-engine and creator-studios.
+  Event-driven
   (`pull_request_target` plus the bot's summary-comment edits), so it does not
   poll for the review. Measured on the 12 PRs merged before this: auto-merge
   fired about 5 minutes after opening, the bot's verdict arrived after 2–10
@@ -24,10 +32,10 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (32 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (35 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
-  (9 cases; never a ruleset before the workflow is current, never a forced
-  branch reset), both in the `checkers` shard.
+  (10 cases; never a ruleset before the workflow is current, never a forced
+  branch reset, a failed write opens no PR), both in the `checkers` shard.
 - **Docs:** `docs/BRANCH_PROTECTION.md` (the layered ruleset),
   `claude/scripts/README.md`.
 

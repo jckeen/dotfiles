@@ -61,7 +61,8 @@ case "$path" in
   */pulls/*)
     # changed_files is the files fixture's length unless a case overrides it.
     jq --argjson n "$(cat "$FIX/changed_files" 2>/dev/null || jq length "$FIX/files.json")" \
-      '. + {changed_files: $n}' "$FIX/pr.json"
+      --argjson c "$(cat "$FIX/commit_count" 2>/dev/null || jq length "$FIX/commits.json")" \
+      '. + {changed_files: $n, commits: $c}' "$FIX/pr.json"
     exit 0
     ;;
   */issues/*/comments) f=comments.json ;;
@@ -135,7 +136,7 @@ setup() {
   summary
   echo '[]' >"$FIX/events.json"
   echo write >"$FIX/role"
-  echo '[{"author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
+  echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
 
 # expect <name> <state> <description fragment> — exactly one status posted.
@@ -192,8 +193,12 @@ setup; pr false 'dependabot[bot]' dependabot/npm/x
 expect "dependabot author" success "Dependabot"
 
 setup; pr false 'dependabot[bot]' dependabot/npm/x; summary "⏳ **In progress**"
-echo '[{"author":{"login":"dependabot[bot]"}},{"author":{"login":"someone"}}]' >"$FIX/commits.json"
+echo '[{"sha":"1","author":{"login":"dependabot[bot]"}},{"sha":"69cff27a1b2c3d","author":{"login":"someone"}}]' >"$FIX/commits.json"
 expect "a human commit on a Dependabot branch is reviewed" pending "in progress"
+
+setup; pr false 'dependabot[bot]' dependabot/npm/x; summary "⏳ **In progress**"
+echo 251 >"$FIX/commit_count"
+expect "a truncated Dependabot commit list is reviewed" pending "in progress"
 
 setup; pr false app/claude claude/deps-20261014; summary "⏳ **In progress**"
 expect "a deps-looking branch name skips nothing" pending "in progress"
@@ -241,6 +246,12 @@ expect "CLAUDE.md is not docs-only" pending "in progress"
 
 setup; files docs/claude.md; summary "⏳ **In progress**"
 expect "instruction names match case-insensitively" pending "in progress"
+
+setup; files docs/x.md .gemini/commands/check.md; summary "⏳ **In progress**"
+expect "a .gemini command is not docs-only" pending "in progress"
+
+setup; files .agents/example/guide.md; summary "⏳ **In progress**"
+expect "an .agents guide is not docs-only" pending "in progress"
 
 setup; files requirements.txt; summary "⏳ **In progress**"
 expect "a .txt manifest is not docs-only" pending "in progress"

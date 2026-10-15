@@ -38,6 +38,16 @@ name: codex-review
 # through the API. PR-controlled strings reach the script through env, never
 # through ${{ }} interpolation inside `run:`.
 #
+# Threat model (design verdict, 2026-10-14). This stops the ordinary failure:
+# a PR, usually agent-opened, auto-merging before the bot has reviewed its
+# head commit. It is not a boundary against a repository WRITER, and no commit
+# status can be: a writer can add a workflow that posts `codex-review` itself,
+# edit the bot's summary comment, push a commit whose 7-character prefix
+# collides with the reviewed one, or forge a Dependabot author email. A fork
+# contributor without write access cannot reach a passing state. Holding
+# writers to the review would need a check from an app they cannot drive, not
+# this workflow.
+#
 # A bot status edit is an issue_comment event, which runs on the default
 # branch and so cannot report through its own check run (that would attach to
 # main's HEAD); hence a commit status on the PR head SHA. The job name differs
@@ -45,7 +55,9 @@ name: codex-review
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+    # edited: only a base change counts (filtered below). Retargeting a PR
+    # changes its diff without changing its head SHA.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited]
   issue_comment:
     types: [created, edited]
 
@@ -61,8 +73,11 @@ jobs:
     # label change is skipped here, which costs no runner minutes.
     if: >-
       (github.event_name == 'pull_request_target' &&
-        (github.event.action != 'labeled' && github.event.action != 'unlabeled' ||
-         github.event.label.name == 'codex-skip')) ||
+        (github.event.action == 'edited' && github.event.changes.base ||
+         (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+           github.event.label.name == 'codex-skip' ||
+         github.event.action != 'edited' && github.event.action != 'labeled' &&
+           github.event.action != 'unlabeled')) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
         github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
         contains(github.event.comment.body, 'codex-pull-request-review-summary'))
@@ -114,9 +129,11 @@ jobs:
             while IFS= read -r f; do
               [ -n "$f" ] || continue
               any=1
+              # Any dot-directory (.github, .claude, .gemini, .agents, .codex,
+              # .cursor, ...) holds CI or agent configuration, not docs.
               case "$f" in
-                .github/* | */.github/* | .claude/* | */.claude/* | skills/* | */skills/* | \
-                  agents/* | */agents/* | prompts/* | */prompts/*) exit 1 ;;
+                .*/* | */.*/* | skills/* | */skills/* | agents/* | */agents/* | \
+                  prompts/* | */prompts/*) exit 1 ;;
               esac
               case "${f##*/}" in
                 *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | *SKILL*.md | *MULTI-AGENT*.md) exit 1 ;;
@@ -148,10 +165,14 @@ jobs:
             exit 0
           fi
           # Every commit must be Dependabot's: anyone with write access can push
-          # onto a Dependabot branch, and those commits are not routine.
+          # onto a Dependabot branch, and those commits are not routine. The
+          # commits API lists at most 250, so the list must be complete and end
+          # at the head.
           if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ] &&
             gh api --paginate --slurp "repos/$REPO/pulls/$PR/commits" |
-            jq -e '[.[][]] | length > 0 and all(.author.login == "dependabot[bot]")' >/dev/null; then
+            jq -e --argjson n "$(jq .commits <<<"$pr_json")" --arg head "$sha" \
+              '[.[][]] | length == $n and length > 0 and .[-1].sha == $head and
+               all(.author.login == "dependabot[bot]")' >/dev/null; then
             post success "Dependabot PR: Codex review not required"
             exit 0
           fi

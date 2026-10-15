@@ -32,6 +32,10 @@ method=GET
 path=""
 for a in "$@"; do case "$a" in repos/*) path="$a" ;; esac; done
 if [ "$method" != GET ]; then
+  if [ -e "$FIX/fail_$method" ]; then
+    echo "fake gh: $method failed" >&2
+    exit 1
+  fi
   echo "$method ${path#repos/o/r/}" >>"$FIX/writes"
   [[ "$all" == *"--input -"* ]] && cat >"$FIX/input"
   exit 0
@@ -97,6 +101,10 @@ run_case "missing workflow opens the rollout PR, no ruleset" none 0 0 0 --apply 
   "POST git/refs;PUT contents/.github/workflows/codex-review.yml;pr create;pr merge"
 run_case "stale workflow opens the rollout PR, no ruleset" stale 0 0 0 --apply \
   "POST git/refs;PUT contents/.github/workflows/codex-review.yml;pr create;pr merge"
+# A failed file write stops before the PR: no PR for an empty branch.
+n_next=$((n + 1))
+mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/fail_PUT"
+run_case "a failed workflow write opens no PR and fails" none 0 0 0 --apply "POST git/refs" 1
 run_case "open rollout PR is reused" none 0 1 1 --apply ""
 run_case "leftover branch without a PR is never reset" none 0 1 0 --apply "" 1
 run_case "current workflow creates the ruleset" current 0 0 0 --apply "POST rulesets"

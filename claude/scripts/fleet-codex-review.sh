@@ -115,6 +115,8 @@ open_rollout_pr() {
   gh pr list -R "$1" --head "$BRANCH" --state open --json number --jq '.[0].number // empty'
 }
 
+# Called from an OR-list, where bash suspends errexit inside the function, so
+# every write checks its own result and stops the rollout for this repo.
 ship_workflow() {
   local repo="$1" base="$2" pr base_sha file_sha body
   pr="$(open_rollout_pr "$repo")"
@@ -128,30 +130,44 @@ ship_workflow() {
     echo "  branch $BRANCH exists with no open PR; inspect or delete it, then re-run" >&2
     return 1
   fi
-  base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)"
-  gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$base_sha" >/dev/null
+  if ! base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)" || [ -z "$base_sha" ]; then
+    echo "  could not read $base" >&2
+    return 1
+  fi
+  if ! gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$base_sha" >/dev/null; then
+    echo "  could not create branch $BRANCH" >&2
+    return 1
+  fi
   file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_PATH?ref=$BRANCH" --jq .sha 2>/dev/null || true)"
   local args=(-X PUT "repos/$repo/contents/$WORKFLOW_PATH" -f branch="$BRANCH"
     -f message="ci: hold merges until the Codex bot review finishes"
     -f content="$(base64 -w0 <"$CANONICAL")")
   [ -n "$file_sha" ] && args+=(-f sha="$file_sha")
-  gh api "${args[@]}" >/dev/null
+  if ! gh api "${args[@]}" >/dev/null; then
+    echo "  could not write $WORKFLOW_PATH on $BRANCH; branch left for inspection" >&2
+    return 1
+  fi
   body="$(mktemp)"
   cat >"$body" <<'EOF'
 Adds the `codex-review` workflow from jckeen/dotfiles (`.github/workflows/codex-review.yml`, copied verbatim by `claude/scripts/fleet-codex-review.sh`).
 
-It posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once; a review counts only for the PR's head commit (later pushes get an `@codex review` request); if the bot never picks a PR up, the status passes after three minutes. The `codex-skip` label passes it by hand.
+It posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once. A review counts only for the PR's head commit: a later push gets an `@codex review` request and holds until that review completes. If the bot never picks a PR up at all, the status passes after three minutes. A `codex-skip` label applied by an admin or maintainer passes it by hand.
 
 Nothing requires the status until the follow-up `codex-review` ruleset is created after this merges; this PR on its own changes no merge behavior.
 
 Revert: `git revert <merge sha>` (delete the `codex-review` ruleset first if it was created).
 EOF
-  pr="$(gh pr create -R "$repo" --base "$base" --head "$BRANCH" \
-    --title "ci: hold merges until the Codex bot review finishes" --body-file "$body")"
+  if ! pr="$(gh pr create -R "$repo" --base "$base" --head "$BRANCH" \
+    --title "ci: hold merges until the Codex bot review finishes" --body-file "$body")"; then
+    rm -f "$body"
+    echo "  could not open the rollout PR; branch $BRANCH left for inspection" >&2
+    return 1
+  fi
   rm -f "$body"
   echo "  opened $pr"
   if ! gh pr merge -R "$repo" --auto --squash "$pr" >/dev/null; then
     echo "  could not enable auto-merge on $pr; merge it by hand" >&2
+    return 1
   fi
 }
 
