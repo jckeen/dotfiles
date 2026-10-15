@@ -3,33 +3,26 @@
 ## 2026-10-14 — ci: hold merges until the Codex bot review finishes, fleet-wide
 
 - **`.github/workflows/codex-review.yml`:** posts a `codex-review` commit status
-  on each PR head: pending while the GitHub Codex bot reviews, success once
-  every row of its summary table reads Completed for the head commit (a push
-  after the review gets one `@codex review` request per head SHA; an older
-  commit's review never passes a newer one). Docs-only diffs (no instruction
-  surface, the instruction names mirroring `review-receipt.py`, matched
-  case-insensitively and on both paths of a rename; `.txt`
-  and `.mdx` count as code) and all-Dependabot-commit PRs pass at once; skips
-  never key on a branch name, title or pasted marker, which an author
-  chooses, and `codex-skip` counts only when an admin or maintainer applied
-  it. It fails open only when the bot never posts a summary (3 min), which is
-  how a repo without the bot looks; once the bot is active on a PR, a failed
-  review or an unreviewed head holds until a fresh `@codex review` (each review
-  type passes on any completed run of the head, so a successful retry
-  supersedes a failed attempt). A base retarget re-evaluates, and a review
-  that finished before the retarget no longer counts (it covered another diff).
-  Drafts post no status, since a commit status lands on every PR sharing the
-  head and a draft's pending would outlive it. Fork PRs hold until a
-  maintainer applies `codex-skip`; the docs-only skip does not apply to a head
-  another open PR shares (statuses are stored per commit), so the bot review
-  decides there. **Threat model (design verdict):** it stops a PR,
-  usually agent-opened, from auto-merging before the bot reviewed its head; it
-  is not a boundary against a repository writer, which no commit status can be
-  (a writer can add a workflow that posts the status, edit the bot's comment,
-  or forge commit attribution). Fork contributors cannot reach a pass. Write
-  access across the fleet at rollout: the owner everywhere, plus one outside
-  writer on each of allora-engine, clarity-engine and creator-studios.
-  Event-driven
+  on each PR head: pending while the GitHub Codex bot reviews, success once its
+  summary table shows a completed review of the head (each review type passes
+  on any completed run, so a successful retry supersedes a failed attempt).
+  **One PR per head commit (design verdict):** statuses are stored per commit
+  but the review question is per PR, and five Codex gate rounds of per-case
+  patches kept reopening that seam, so a PR decides its status only while it is
+  the sole open, non-draft PR with that head; siblings hold, and closing a PR
+  or pushing past a commit re-evaluates the PRs left holding it. Drafts post
+  nothing. A head the bot has not reviewed gets one `@codex review` request and
+  holds; after a base retarget the request waits until no review is running,
+  and only a run completing after it counts. Docs-only diffs (no instruction
+  surface or dot-directory, names mirroring `review-receipt.py`) and
+  all-Dependabot-commit PRs pass at once; fork PRs hold for a `codex-skip`
+  applied by an admin or maintainer; it fails open only when the bot never
+  posts a summary (3 min), which is how a repo without the bot looks.
+  **Threat model:** it stops a PR, usually agent-opened, from auto-merging
+  before the bot reviewed its head; it is not a boundary against a repository
+  writer, which no commit status can be. Write access across the fleet at
+  rollout: the owner everywhere, plus one outside writer on each of
+  allora-engine, clarity-engine and creator-studios. Event-driven
   (`pull_request_target` plus the bot's summary-comment edits), so it does not
   poll for the review. Measured on the 12 PRs merged before this: auto-merge
   fired about 5 minutes after opening, the bot's verdict arrived after 2–10
@@ -40,7 +33,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (51 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (58 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.

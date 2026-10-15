@@ -44,7 +44,10 @@ while [ $# -gt 0 ]; do
 done
 if [ "$post" = 1 ]; then
   case "$path" in
-    */statuses/*) printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted" ;;
+    */statuses/*)
+      printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
+      printf '%s|%s\n' "${path##*/}" "$state" >>"$FIX/posted_sha"
+      ;;
     */comments) printf '%s\n' "$body" >>"$FIX/commented" ;;
     *) echo "fake gh: unexpected POST $path" >&2; exit 1 ;;
   esac
@@ -56,14 +59,18 @@ case "$path" in
     cat "$FIX/role"
     exit 0
     ;;
-  */commits/*/pulls) f=shared.json ;;
+  */pulls\?*) f=open.json ;;
   */pulls/*/files) f=files.json ;;
   */pulls/*/commits) f=commits.json ;;
   */pulls/*)
-    # changed_files is the files fixture's length unless a case overrides it.
+    # PR 1 is pr.json, PR N is prN.json. changed_files is the files
+    # fixture's length unless a case overrides it.
+    num="${path##*/}"
+    prf="$FIX/pr.json"
+    [ "$num" = 1 ] || prf="$FIX/pr$num.json"
     jq --argjson n "$(cat "$FIX/changed_files" 2>/dev/null || jq length "$FIX/files.json")" \
       --argjson c "$(cat "$FIX/commit_count" 2>/dev/null || jq length "$FIX/commits.json")" \
-      '. + {changed_files: $n, commits: $c}' "$FIX/pr.json"
+      '. + {changed_files: $n, commits: $c}' "$prf"
     exit 0
     ;;
   */issues/*/comments) f=comments.json ;;
@@ -129,6 +136,30 @@ summary() {
   jq -n --arg body "$body" '[{user: {login: "chatgpt-codex-connector[bot]"}, body: $body}]' >"$FIX/comments.json"
 }
 
+# open_prs <number:headsha[:draft]>... — the open-PR list the sole-owner rule reads
+open_prs() {
+  local out='[' sep='' e num sha draft
+  for e in "$@"; do
+    IFS=: read -r num sha draft <<<"$e"
+    out="$out$sep{\"number\":$num,\"head\":{\"sha\":\"$sha\"},\"draft\":${draft:-false}}"
+    sep=','
+  done
+  printf '%s]\n' "$out" >"$FIX/open.json"
+}
+
+# request_comment <created_at> [marker suffix] [login] — a re-review request
+request_comment() {
+  jq --arg m "<!-- codex-review-rerequest:69cff27a1b2c3d${2:-} -->" --arg at "$1" --arg who "${3:-github-actions[bot]}" \
+    '. + [{user: {login: $who}, created_at: $at, body: ("@codex review\n\n" + $m)}]' \
+    "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
+}
+
+run_status() {
+  REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" \
+    ACTION="$CASE_ACTION" EVENT_HEAD="$CASE_EVENT_HEAD" BEFORE="$CASE_BEFORE" \
+    bash "$TMP/status.sh" >"$FIX/out" 2>&1
+}
+
 setup() {
   n=$((n + 1))
   FIX="$TMP/case$n"
@@ -138,7 +169,8 @@ setup() {
   files src/app.ts
   summary
   echo '[]' >"$FIX/events.json"
-  echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
+  open_prs '1:69cff27a1b2c3d'
+  CASE_ACTION="" CASE_EVENT_HEAD="" CASE_BEFORE=""
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
@@ -146,8 +178,7 @@ setup() {
 # expect <name> <state> <description fragment> — exactly one status posted.
 expect() {
   local got
-  REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" \
-    bash "$TMP/status.sh" >"$FIX/out" 2>&1
+  run_status
   got="$(cat "$FIX/posted" 2>/dev/null || true)"
   if [ "$(wc -l <<<"$got")" = 1 ] && [[ "$got" == "$2|"*"$3"* ]]; then
     pass=$((pass + 1))
@@ -217,9 +248,7 @@ else
   echo "FAIL: stale review — expected a held status and one @codex review request; posted: $(cat "$FIX/posted"); commented: $(cat "$FIX/commented" 2>/dev/null)"
 fi
 
-setup; summary "$done_cell@0dd1e55"
-jq --arg m '<!-- codex-review-rerequest:69cff27a1b2c3d -->' '. + [{user: {login: "github-actions[bot]"}, body: ("@codex review\n\n" + $m)}]' \
-  "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
+setup; summary "$done_cell@0dd1e55"; request_comment 2026-10-06T09:00:00Z
 expect "an earlier request for this head is not repeated" pending "re-review requested"
 if [ -e "$FIX/commented" ]; then
   failed=$((failed + 1))
@@ -228,9 +257,7 @@ else
   pass=$((pass + 1))
 fi
 
-setup; summary "$done_cell@0dd1e55"
-jq --arg m '<!-- codex-review-rerequest:69cff27a1b2c3d -->' '. + [{user: {login: "someone"}, body: ("@codex review\n\n" + $m)}]' \
-  "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
+setup; summary "$done_cell@0dd1e55"; request_comment 2026-10-06T09:00:00Z "" someone
 expect "a pasted marker does not suppress the re-review request" pending "re-review requested"
 if grep -q 'codex-review-rerequest:69cff27a1b2c3d' "$FIX/commented" 2>/dev/null; then
   pass=$((pass + 1))
@@ -263,21 +290,39 @@ setup; pr false someone feat/x codex-skip; labeled_by jckeen admin
 jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
 expect "a maintainer's codex-skip passes a fork PR" success "codex-skip"
 
-setup; files README.md; summary "⏳ **In progress**"
-echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"open","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
-expect "a docs-only skip does not apply to a head another open PR shares" pending "in progress"
+setup; files README.md; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'
+expect "a docs-only PR sharing its head holds" pending "also the head of #2"
 
-setup; files README.md; summary "$done_cell"
-echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"open","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
-expect "a shared head still passes on a completed review" success "Codex review completed"
+setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'
+expect "a reviewed PR sharing its head holds" pending "also the head of #2"
 
-setup; files README.md
-echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"open","head":{"sha":"ffff000"}}]' >"$FIX/shared.json"
-expect "a PR that has moved past this commit does not count as sharing it" success "Docs-only"
+setup; pr false jckeen feat/x codex-skip; labeled_by jckeen admin; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'
+expect "codex-skip does not pass a shared head" pending "also the head of #2"
 
-setup; files README.md
-echo '[{"number":1,"state":"open","head":{"sha":"69cff27a1b2c3d"}},{"number":2,"state":"closed","head":{"sha":"69cff27a1b2c3d"}}]' >"$FIX/shared.json"
-expect "a closed PR with the same head does not count" success "Docs-only"
+setup; files README.md; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d:true'
+expect "a draft sibling does not count" success "Docs-only"
+
+setup; files README.md; open_prs '1:69cff27a1b2c3d' '2:ffff0001'
+expect "a PR that moved past this commit does not count" success "Docs-only"
+
+# PR 1 closed; PR 2 is left as the sole owner of the head and is evaluated.
+setup; summary "$done_cell"; open_prs '2:69cff27a1b2c3d'
+cp "$FIX/pr.json" "$FIX/pr2.json"
+CASE_ACTION=closed CASE_EVENT_HEAD=69cff27a1b2c3d
+expect "closing a sibling re-evaluates the survivor" success "Codex review completed"
+
+# PR 1 pushed past 0dd1e55; PR 2 still has it as head and is re-evaluated too.
+setup; summary "$done_cell" "$done_cell@0dd1e55"; open_prs '1:69cff27a1b2c3d' '2:0dd1e55aaaa'
+jq '.head.sha = "0dd1e55aaaa"' "$FIX/pr.json" >"$FIX/pr2.json"
+CASE_ACTION=synchronize CASE_BEFORE=0dd1e55aaaa
+run_status
+if [ "$(sort "$FIX/posted_sha" 2>/dev/null | paste -sd' ')" = "0dd1e55aaaa|success 69cff27a1b2c3d|success" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: a push re-evaluates the PR left holding the old head — posted: $(cat "$FIX/posted_sha" 2>/dev/null)"
+  sed 's/^/    /' "$FIX/out"
+fi
 
 setup; files claude/AgentPack.md; summary "⏳ **In progress**"
 expect "AgentPack.md is an instruction source, not docs" pending "in progress"
@@ -322,7 +367,7 @@ setup; files README.md .github/workflows/ci.yml; summary "⏳ **In progress**"
 expect "a workflow file is not docs-only" pending "in progress"
 
 setup; pr true jckeen feat/x
-REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" bash "$TMP/status.sh" >/dev/null 2>&1
+run_status
 if [ -e "$FIX/posted" ]; then
   failed=$((failed + 1))
   echo "FAIL: a draft posted a status (it would land on any PR sharing the head): $(cat "$FIX/posted")"
@@ -330,23 +375,46 @@ else
   pass=$((pass + 1))
 fi
 
-# done_cell finished at 2026-10-05T15:33:42Z.
-setup; summary "$done_cell"
-echo '[{"event":"base_ref_changed","created_at":"2026-10-06T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
-expect "a review that finished before a retarget does not count" pending "re-review requested"
-if grep -q 'codex-review-rerequest:69cff27a1b2c3d:2026-10-06T09:00:00Z' "$FIX/commented" 2>/dev/null; then
+# done_cell finished at 2026-10-05T15:33:42Z; the base changed after it.
+retarget() {
+  echo '[{"event":"base_ref_changed","created_at":"2026-10-06T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
+}
+late_cell='✅ **Completed** <relative-time datetime="2026-10-06T10:00:00.123456Z">2026-10-06T10:00:00Z</relative-time>'
+
+setup; summary "$done_cell"; retarget
+expect "a review from before a retarget does not count" pending "re-review requested"
+if grep -q 'codex-review-rerequest:69cff27a1b2c3d:2026-10-06T09:00:00 -->' "$FIX/commented" 2>/dev/null; then
   pass=$((pass + 1))
 else
   failed=$((failed + 1))
-  echo "FAIL: retarget — expected a re-review request keyed on the base change"
+  echo "FAIL: retarget — expected a re-review request keyed on the base change: $(cat "$FIX/commented" 2>/dev/null)"
 fi
 
-setup; summary "$done_cell"
-echo '[{"event":"base_ref_changed","created_at":"2026-10-04T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
-expect "a review that finished after the retarget counts" success "Codex review completed"
+setup; summary "⏳ **In progress**"; retarget
+expect "a review running across a retarget waits, then re-requests" pending "once it finishes"
+if [ -e "$FIX/commented" ]; then
+  failed=$((failed + 1))
+  echo "FAIL: requested a re-review while a review was still running"
+else
+  pass=$((pass + 1))
+fi
+
+setup; summary "$late_cell"; retarget; request_comment 2026-10-06T09:30:00Z :2026-10-06T09:00:00
+expect "a run completing after the request counts" success "Codex review completed"
+
+# The run that straddled the retarget finished before the request was made.
+setup; summary "✅ **Completed** <relative-time datetime=\"2026-10-06T09:10:00Z\">x</relative-time>"; retarget
+request_comment 2026-10-06T09:20:00Z :2026-10-06T09:00:00
+expect "a run finishing before the request does not count" pending "re-review requested"
+if [ -e "$FIX/commented" ]; then
+  failed=$((failed + 1))
+  echo "FAIL: re-requested although a request for this base change exists"
+else
+  pass=$((pass + 1))
+fi
 
 setup; printf '{"state":"closed","draft":false,"user":{"login":"jckeen"},"head":{"sha":"abc123","ref":"x","repo":{"full_name":"o/r"}},"labels":[]}\n' >"$FIX/pr.json"
-REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" bash "$TMP/status.sh" >/dev/null 2>&1
+run_status
 if [ -e "$FIX/posted" ]; then
   failed=$((failed + 1))
   echo "FAIL: closed PR — posted a status: $(cat "$FIX/posted")"
