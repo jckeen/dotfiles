@@ -11,8 +11,9 @@
   and `.mdx` count as code) and all-Dependabot-commit PRs pass at once; skips
   never key on a branch name, title or pasted marker, which an author
   chooses, and `codex-skip` counts only when an admin or maintainer applied
-  it. It fails open when the bot never picks a PR up (3 min) or its review ends in a
-  non-Completed state; the `codex-skip` label passes it by hand. Event-driven
+  it. It fails open only when the bot never posts a summary (3 min), which is
+  how a repo without the bot looks; once the bot is active on a PR, a failed
+  review or an unreviewed head holds until a fresh `@codex review`. Event-driven
   (`pull_request_target` plus the bot's summary-comment edits), so it does not
   poll for the review. Measured on the 12 PRs merged before this: auto-merge
   fired about 5 minutes after opening, the bot's verdict arrived after 2–10

@@ -13,11 +13,13 @@ name: codex-review
 # this file verbatim into each fleet repo and makes `codex-review` a required
 # status there; edit it here, then re-run that script.
 #
-# Fails OPEN where the bot is absent, never where it is working: if no summary
-# comment appears within the poll window (the bot posts it 15-45 s after a PR
-# opens), or the bot's own review ends in a non-Completed terminal state, the
-# status goes to success with a description saying so. The local review gate
-# still ran before push. The `codex-skip` label passes it by hand, but only when
+# Fails OPEN only where the bot is absent: if no summary comment appears within
+# the poll window (the bot posts it 15-45 s after a PR opens), the status goes
+# to success saying so; that is what a repo without the bot looks like, and the
+# local review gate still ran before push. Once the bot is active on a PR it
+# fails CLOSED: a review that ends without completing, or a head it has not
+# reviewed, holds until a fresh `@codex review` completes, since an author can
+# cause both (an oversized diff, a push after the review). The `codex-skip` label passes it by hand, but only when
 # a repo admin or maintainer applied it.
 #
 # Only a review of the PR's HEAD commit counts. The bot reviews when a PR
@@ -215,17 +217,10 @@ jobs:
                 -f body="@codex review"$'\n\n'"$marker" >/dev/null
               echo "requested a Codex re-review of $sha"
             fi
-            post pending "New commits since the Codex review; re-review requested"
-            waited=0
-            while [ -z "$statuses" ] && [ "$waited" -lt "$POLL_SECONDS" ]; do
-              sleep "$POLL_INTERVAL"
-              waited=$((waited + POLL_INTERVAL))
-              statuses="$(head_statuses "$(summary)")"
-            done
-            if [ -z "$statuses" ]; then
-              post success "Codex did not take up the re-review within ${POLL_SECONDS}s; not blocking"
-              exit 0
-            fi
+            # Hold, never pass: the bot is active on this PR, so a push after its
+            # review must not merge unreviewed if it ignores the request.
+            post pending "New commits since the Codex review; re-review requested (or comment @codex review)"
+            exit 0
           fi
 
           running="$(grep -viE 'completed|fail|error|cancel|skip|timed out|unavailable|limit' <<<"$statuses" || true)"
@@ -233,9 +228,11 @@ jobs:
             post pending "Codex review in progress"
             exit 0
           fi
+          # A review that ended without completing holds too: a diff can be
+          # made big enough to fail the bot, and that must not waive it.
           ended="$(grep -viE 'completed' <<<"$statuses" | head -n 1 || true)"
           if [ -n "$ended" ]; then
-            post success "Codex review ended without completing ($ended); not blocking"
+            post pending "Codex review ended without completing ($ended); comment @codex review to retry"
             exit 0
           fi
           post success "Codex review completed"

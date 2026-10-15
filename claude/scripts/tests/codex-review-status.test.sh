@@ -138,14 +138,13 @@ setup() {
   echo '[{"author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
 
-# expect <name> <state> <description fragment> — judged on the LAST status
-# posted; a run posts at most two (the re-review path holds, then resolves).
+# expect <name> <state> <description fragment> — exactly one status posted.
 expect() {
   local got
   REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1
-  got="$(tail -n 1 "$FIX/posted" 2>/dev/null || true)"
-  if [ "$(wc -l <"$FIX/posted" 2>/dev/null || echo 0)" -le 2 ] && [[ "$got" == "$2|"*"$3"* ]]; then
+  got="$(cat "$FIX/posted" 2>/dev/null || true)"
+  if [ "$(wc -l <<<"$got")" = 1 ] && [[ "$got" == "$2|"*"$3"* ]]; then
     pass=$((pass + 1))
   else
     failed=$((failed + 1))
@@ -169,7 +168,7 @@ setup; summary "⏳ **Queued**"
 expect "unknown non-terminal wording holds" pending "in progress"
 
 setup; summary "$done_cell" "❌ **Failed**"
-expect "bot review failed fails open" success "ended without completing (❌ Failed)"
+expect "a failed bot review holds" pending "ended without completing (❌ Failed)"
 
 setup
 expect "no summary comment after the poll fails open" success "did not pick up this PR"
@@ -200,8 +199,8 @@ setup; pr false app/claude claude/deps-20261014; summary "⏳ **In progress**"
 expect "a deps-looking branch name skips nothing" pending "in progress"
 
 setup; summary "$done_cell@0dd1e55"
-expect "a completed review of an older commit does not pass the head" success "did not take up the re-review"
-if [ "$(head -n 1 "$FIX/posted")" = "pending|New commits since the Codex review; re-review requested" ] &&
+expect "a completed review of an older commit holds the head" pending "re-review requested"
+if [ "$(wc -l <"$FIX/posted")" = 1 ] &&
   grep -q '^@codex review' "$FIX/commented" && grep -q 'codex-review-rerequest:69cff27a1b2c3d' "$FIX/commented"; then
   pass=$((pass + 1))
 else
@@ -212,7 +211,7 @@ fi
 setup; summary "$done_cell@0dd1e55"
 jq --arg m '<!-- codex-review-rerequest:69cff27a1b2c3d -->' '. + [{user: {login: "github-actions[bot]"}, body: ("@codex review\n\n" + $m)}]' \
   "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
-expect "an earlier request for this head is not repeated" success "did not take up the re-review"
+expect "an earlier request for this head is not repeated" pending "re-review requested"
 if [ -e "$FIX/commented" ]; then
   failed=$((failed + 1))
   echo "FAIL: re-review requested twice for one head: $(cat "$FIX/commented")"
@@ -223,7 +222,7 @@ fi
 setup; summary "$done_cell@0dd1e55"
 jq --arg m '<!-- codex-review-rerequest:69cff27a1b2c3d -->' '. + [{user: {login: "someone"}, body: ("@codex review\n\n" + $m)}]' \
   "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
-expect "a pasted marker does not suppress the re-review request" success "did not take up the re-review"
+expect "a pasted marker does not suppress the re-review request" pending "re-review requested"
 if grep -q 'codex-review-rerequest:69cff27a1b2c3d' "$FIX/commented" 2>/dev/null; then
   pass=$((pass + 1))
 else
