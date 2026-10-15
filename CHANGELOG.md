@@ -9,7 +9,8 @@
   **One PR per head commit (design verdict):** statuses are stored per commit
   but the review question is per PR, and five Codex gate rounds of per-case
   patches kept reopening that seam, so a PR decides its status only while it is
-  the sole open, non-draft PR with that head; siblings hold, and closing a PR
+  the sole open, non-draft, same-repository PR with that head (a fork PR
+  there posts nothing, so a contributor cannot hold a PR); siblings hold, and closing a PR
   or pushing past a commit re-evaluates the PRs left holding it. Drafts post
   nothing. A head the bot has not reviewed gets one `@codex review` request and
   holds; after a base retarget the request waits until no review is running,
@@ -33,7 +34,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (58 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (60 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.

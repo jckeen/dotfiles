@@ -19,7 +19,8 @@ name: codex-review
 # "has the bot reviewed this?" is a per-PR question (another base is another
 # diff). Five review rounds of per-case patches kept reopening that seam, so
 # the rule is structural: a PR decides its status only while it is the sole
-# open, non-draft PR with that head. Otherwise every one of them holds, and
+# open, non-draft, same-repository PR with that head (a fork PR there posts
+# nothing, so a contributor cannot hold a PR). Otherwise every one holds, and
 # when a sibling closes or moves to a new commit the survivors are evaluated
 # again. Drafts cannot merge and post nothing; marking one ready evaluates it.
 #
@@ -119,10 +120,13 @@ jobs:
           POLL_SECONDS="${POLL_SECONDS:-180}"
           POLL_INTERVAL="${POLL_INTERVAL:-15}"
 
-          # Numbers of the open, non-draft PRs whose head is commit $1.
+          # Numbers of the open, non-draft, same-repository PRs whose head is
+          # commit $1. Fork PRs never count: a contributor without write access
+          # could otherwise hold any PR by opening one at its head.
           heads_at() {
             gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" |
-              jq -r --arg sha "$1" '.[][] | select(.head.sha == $sha and (.draft | not)) | .number'
+              jq -r --arg sha "$1" --arg repo "$REPO" \
+                '.[][] | select(.head.sha == $sha and (.draft | not) and .head.repo.full_name == $repo) | .number'
           }
 
           # A docs-only diff passes; anything that steers an agent, a build or CI
@@ -188,6 +192,16 @@ jobs:
               echo "#$pr codex-review -> $1: $2"
             }
 
+            # A fork PR at the head of a same-repository PR posts nothing: its
+            # pending would hold that PR, and the status it shares cannot merge
+            # it, since merging a fork PR takes a writer.
+            fork=0
+            [ "$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")" = "$REPO" ] || fork=1
+            if [ "$fork" = 1 ] && [ -n "$(heads_at "$sha" | grep -vx "$pr" || true)" ]; then
+              echo "#$pr is a fork PR sharing its head with a same-repository PR; posting nothing."
+              exit 0
+            fi
+
             # The sole-owner rule, before anything that can post success.
             siblings="$(heads_at "$sha" | grep -vx "$pr" | sed 's/^/#/' | paste -sd, - || true)"
             if [ -n "$siblings" ]; then
@@ -213,7 +227,7 @@ jobs:
             # A fork PR never passes on its own: the bot's table names commits by
             # a 7-character prefix, which a fork author can collide without any
             # write access, and the bot may never review a fork at all.
-            if [ "$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")" != "$REPO" ]; then
+            if [ "$fork" = 1 ]; then
               post pending "Fork PR: a maintainer applies codex-skip after review"
               exit 0
             fi

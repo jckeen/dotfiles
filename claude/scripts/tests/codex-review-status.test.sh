@@ -136,12 +136,13 @@ summary() {
   jq -n --arg body "$body" '[{user: {login: "chatgpt-codex-connector[bot]"}, body: $body}]' >"$FIX/comments.json"
 }
 
-# open_prs <number:headsha[:draft]>... — the open-PR list the sole-owner rule reads
+# open_prs <number:headsha[:draft[:repo]]>... — the open-PR list the
+# sole-owner rule reads
 open_prs() {
-  local out='[' sep='' e num sha draft
+  local out='[' sep='' e num sha draft repo
   for e in "$@"; do
-    IFS=: read -r num sha draft <<<"$e"
-    out="$out$sep{\"number\":$num,\"head\":{\"sha\":\"$sha\"},\"draft\":${draft:-false}}"
+    IFS=: read -r num sha draft repo <<<"$e"
+    out="$out$sep{\"number\":$num,\"head\":{\"sha\":\"$sha\",\"repo\":{\"full_name\":\"${repo:-o/r}\"}},\"draft\":${draft:-false}}"
     sep=','
   done
   printf '%s]\n' "$out" >"$FIX/open.json"
@@ -304,6 +305,19 @@ expect "a draft sibling does not count" success "Docs-only"
 
 setup; files README.md; open_prs '1:69cff27a1b2c3d' '2:ffff0001'
 expect "a PR that moved past this commit does not count" success "Docs-only"
+
+setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d:false:fork/r'
+expect "a fork PR at the same head does not hold a same-repo PR" success "Codex review completed"
+
+setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d:false:fork/r' '2:69cff27a1b2c3d'
+jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
+run_status
+if [ -e "$FIX/posted" ]; then
+  failed=$((failed + 1))
+  echo "FAIL: a fork PR sharing a same-repo PR's head posted: $(cat "$FIX/posted")"
+else
+  pass=$((pass + 1))
+fi
 
 # PR 1 closed; PR 2 is left as the sole owner of the head and is evaluated.
 setup; summary "$done_cell"; open_prs '2:69cff27a1b2c3d'
