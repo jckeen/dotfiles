@@ -322,7 +322,28 @@ setup; files README.md .github/workflows/ci.yml; summary "⏳ **In progress**"
 expect "a workflow file is not docs-only" pending "in progress"
 
 setup; pr true jckeen feat/x
-expect "draft waits for ready" pending "Draft"
+REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" bash "$TMP/status.sh" >/dev/null 2>&1
+if [ -e "$FIX/posted" ]; then
+  failed=$((failed + 1))
+  echo "FAIL: a draft posted a status (it would land on any PR sharing the head): $(cat "$FIX/posted")"
+else
+  pass=$((pass + 1))
+fi
+
+# done_cell finished at 2026-10-05T15:33:42Z.
+setup; summary "$done_cell"
+echo '[{"event":"base_ref_changed","created_at":"2026-10-06T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
+expect "a review that finished before a retarget does not count" pending "re-review requested"
+if grep -q 'codex-review-rerequest:69cff27a1b2c3d:2026-10-06T09:00:00Z' "$FIX/commented" 2>/dev/null; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: retarget — expected a re-review request keyed on the base change"
+fi
+
+setup; summary "$done_cell"
+echo '[{"event":"base_ref_changed","created_at":"2026-10-04T09:00:00Z","actor":{"login":"jckeen"}}]' >"$FIX/events.json"
+expect "a review that finished after the retarget counts" success "Codex review completed"
 
 setup; printf '{"state":"closed","draft":false,"user":{"login":"jckeen"},"head":{"sha":"abc123","ref":"x","repo":{"full_name":"o/r"}},"labels":[]}\n' >"$FIX/pr.json"
 REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" bash "$TMP/status.sh" >/dev/null 2>&1

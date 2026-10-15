@@ -203,8 +203,11 @@ jobs:
             post success "Docs-only change: Codex review not required"
             exit 0
           fi
+          # A draft cannot merge, so it posts nothing: a pending status here
+          # would also land on any other PR sharing this head commit and stay
+          # there after the draft closed. ready_for_review evaluates it.
           if [ "$(jq -r .draft <<<"$pr_json")" = true ]; then
-            post pending "Draft: Codex reviews when the PR is marked ready"
+            echo "Draft PR: no status until it is marked ready."
             exit 0
           fi
 
@@ -215,17 +218,28 @@ jobs:
             comments | jq -r --arg bot "$BOT" \
               '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty'
           }
-          # "<review type>\t<status>\t<commit>" for each review row of the
-          # summary table; a row ends in its backticked commit SHA.
+          # "<review type>\t<status>\t<commit>\t<finished at>" for each review row
+          # of the summary table; a row ends in its backticked commit SHA, and a
+          # finished row's status cell carries a <relative-time datetime=...>.
           rows() {
             # shellcheck disable=SC2016 # the backticks and $N belong to grep/awk
             grep -E '^\|[^|]*\|[^|]*\|[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*\|' <<<"$1" |
-              awk -F'|' '{c = $4; gsub(/[` \t]/, "", c); print $2 "\t" $3 "\t" c}' |
+              awk -F'|' '{c = $4; gsub(/[` \t]/, "", c); at = ""
+                if (match($3, /datetime="[^"]*"/)) at = substr($3, RSTART + 10, RLENGTH - 11)
+                print $2 "\t" $3 "\t" c "\t" at}' |
               sed -E 's/<[^>]*>[^<]*<\/[^>]*>//g; s/[*]//g; s/^[[:space:]]+//; s/[[:space:]]*\t[[:space:]]*/\t/g' || true
           }
-          # "<review type>\t<status>" for the rows that reviewed the head commit.
+          # When the base last changed (empty if never). Retargeting changes the
+          # diff without changing the head, so a review that finished before it
+          # covered a different diff.
+          retargeted_at="$(gh api --paginate --slurp "repos/$REPO/issues/$PR/events" | jq -r \
+            '[.[][] | select(.event == "base_ref_changed") | .created_at] | max // empty')"
+          # "<review type>\t<status>" for the rows that reviewed the head commit
+          # since the last retarget. A running row has no finish time yet and
+          # always counts. ISO-8601 UTC times compare as strings.
           head_statuses() {
-            rows "$1" | awk -F'\t' -v sha="$sha" '$3 != "" && index(sha, $3) == 1 {print $1 "\t" $2}'
+            rows "$1" | awk -F'\t' -v sha="$sha" -v since="$retargeted_at" \
+              '$3 != "" && index(sha, $3) == 1 && ($4 == "" || since == "" || $4 >= since) {print $1 "\t" $2}'
           }
 
           body="$(summary)"
@@ -246,10 +260,11 @@ jobs:
 
           statuses="$(head_statuses "$body")"
           if [ -z "$statuses" ]; then
-            # Reviewed, but not this commit. Ask once per head SHA; the marker
+            # Reviewed, but not this commit (or not since a retarget). Ask once
+            # per head SHA and base change; the marker
             # keeps re-runs from asking again. Only this workflow's own
             # comments count, so a pasted marker cannot suppress the request.
-            marker="<!-- codex-review-rerequest:$sha -->"
+            marker="<!-- codex-review-rerequest:$sha${retargeted_at:+:$retargeted_at} -->"
             if ! comments | jq -e --arg m "$marker" \
               '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m)))] | length > 0' >/dev/null; then
               gh api -X POST "repos/$REPO/issues/$PR/comments" \

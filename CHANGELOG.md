@@ -16,7 +16,10 @@
   how a repo without the bot looks; once the bot is active on a PR, a failed
   review or an unreviewed head holds until a fresh `@codex review` (each review
   type passes on any completed run of the head, so a successful retry
-  supersedes a failed attempt). A base retarget re-evaluates. Fork PRs hold until a
+  supersedes a failed attempt). A base retarget re-evaluates, and a review
+  that finished before the retarget no longer counts (it covered another diff).
+  Drafts post no status, since a commit status lands on every PR sharing the
+  head and a draft's pending would outlive it. Fork PRs hold until a
   maintainer applies `codex-skip`; the docs-only skip does not apply to a head
   another open PR shares (statuses are stored per commit), so the bot review
   decides there. **Threat model (design verdict):** it stops a PR,
@@ -37,7 +40,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (48 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (51 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.
