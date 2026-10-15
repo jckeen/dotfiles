@@ -80,8 +80,8 @@ case "$path" in
   */pulls/*)
     # PR 1 is pr.json, PR N is prN.json. changed_files is the files
     # fixture's length unless a case overrides it.
-    [ -e "$FIX/fail_pr" ] && exit 1
     num="${path##*/}"
+    [ -e "$FIX/fail_pr" ] || [ -e "$FIX/fail_pr$num" ] && exit 1
     prf="$FIX/pr.json"
     if [ "$num" != 1 ]; then
       prf="$FIX/pr$num.json"
@@ -182,7 +182,8 @@ request_comment() {
 
 run_status() {
   status_rc=0
-  FORK_PR="${CASE_FORK_PR:-}" REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
+  EVENT_PR="${CASE_EVENT_PR:-1}" EVENT_HEAD="${CASE_EVENT_HEAD:-}" EVENT_HEAD_REPO="${CASE_EVENT_HEAD_REPO:-}" \
+    REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
 }
 
@@ -208,7 +209,7 @@ setup() {
   summary
   echo '[]' >"$FIX/events.json"
   open_prs '1:69cff27a1b2c3d'
-  CASE_POLL="" CASE_FORK_PR=""
+  CASE_POLL="" CASE_EVENT_PR="" CASE_EVENT_HEAD="" CASE_EVENT_HEAD_REPO=""
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
@@ -397,13 +398,32 @@ else
   failed=$((failed + 1)); echo "FAIL: a failed PR read must revoke from the snapshot: $(cat "$FIX/posted")"
 fi
 
-# A fork PR's own event evaluates only that PR.
-setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d' '2:ffff0002:false:fork/r'
-jq '.head.sha = "ffff0002" | .head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/pr2.json"
-CASE_FORK_PR=2
+# A fork PR at a reviewed same-repo PR's head fails to evaluate: no revoke.
+setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d:false:fork/r'
+jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/pr2.json"
+run_status; touch "$FIX/fail_pr2"
 run_status
-if [ "$(cat "$FIX/posted_sha")" = "ffff0002|pending" ]; then pass=$((pass + 1)); else
-  failed=$((failed + 1)); echo "FAIL: a fork event must evaluate only the fork PR: $(cat "$FIX/posted_sha")"; fi
+if [ "$(tail -n 1 "$FIX/posted")" = "success|Codex review completed" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a failed fork evaluation revoked a shared head: $(cat "$FIX/posted")"; fi
+
+# Passed, then the PR list cannot be read on its retarget event: revoke the
+# triggering PR's head.
+setup; summary "$done_cell"
+run_status; touch "$FIX/fail_open.json"
+CASE_EVENT_HEAD=69cff27a1b2c3d CASE_EVENT_HEAD_REPO=o/r
+run_status
+if [ "$status_rc" != 0 ] && [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-review could not evaluate #1; re-run the workflow" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1)); echo "FAIL: a failed PR-list read must revoke the event PR's head — exit $status_rc, posted: $(cat "$FIX/posted")"
+fi
+
+# Same, on a comment event (no head in the payload): read the PR for it.
+setup; summary "$done_cell"
+run_status; touch "$FIX/fail_open.json"
+run_status
+if [ "$(tail -n 1 "$FIX/posted")" = "pending|codex-review could not evaluate #1; re-run the workflow" ]; then pass=$((pass + 1)); else
+  failed=$((failed + 1)); echo "FAIL: a comment-event list failure must revoke via the PR read: $(cat "$FIX/posted")"; fi
 
 # Opened just now with no summary yet: pending, then decided once the pickup
 # window closes.

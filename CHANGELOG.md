@@ -12,14 +12,15 @@
   the sole open, non-draft, same-repository PR with that head (a fork PR
   there posts nothing, so a contributor cannot hold a PR); siblings hold.
   **One writer per repository:** every run evaluates every open PR from live
-  state under a single repo-wide concurrency group, so the newest run
-  cancelling an older one loses nothing and no stale verdict lands after a
-  newer one; a PR waiting for the bot to pick it up gets one wait to the end
-  of its window instead of a poll per PR. A fork PR's own events run apart and
-  evaluate only that PR, so a contributor cannot cancel the writer. Only
-  changes are written (GitHub caps statuses at 1000 per commit and context).
+  state under a single repo-wide concurrency group that never cancels, so no
+  stale verdict lands after a newer one and no one (a fork contributor
+  included) can starve the writer by triggering events; a PR waiting for the
+  bot to pick it up gets one wait to the end of its window instead of a poll
+  per PR. Only changes are written (GitHub caps statuses at 1000 per commit and context).
   Drafts post nothing; a failed evaluation ends that PR's run and revokes its
-  head to pending, since a failed job does not clear an earlier success. A head the bot has not reviewed gets one `@codex review` request and
+  head to pending (never a fork PR's head), since a failed job does not clear
+  an earlier success; if the PR list itself cannot be read, the triggering
+  PR's head is revoked. A head the bot has not reviewed gets one `@codex review` request and
   holds; after a base retarget the request waits until no review is running,
   and only a run completing after it counts. Docs-only diffs (no instruction
   surface or dot-directory, names mirroring `review-receipt.py`) and
@@ -41,7 +42,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (71 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (73 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.
