@@ -20,10 +20,11 @@ name: codex-review
 # diff). Five review rounds of per-case patches kept reopening that seam, so
 # the rule is structural: a PR decides its status only while it is the sole
 # open, non-draft, same-repository PR with that head (a fork PR there posts
-# nothing, so a contributor cannot hold a PR). Otherwise every one holds, and
-# when a sibling closes or moves to a new commit the survivors are evaluated
-# again (a draft conversion too). Drafts cannot merge and post nothing;
-# marking one ready evaluates it.
+# nothing, so a contributor cannot hold a PR). Otherwise every one holds.
+# Every run evaluates every open PR, so a sibling closing, moving to a new
+# commit or becoming a draft is picked up by the next run. Drafts cannot merge
+# and post nothing. A PR opening at a head in the moment between another PR's
+# sole-owner check and its post is corrected by the new PR's own run.
 #
 # Only a review of the head counts, and only one that began after the last
 # base change. The bot reviews when a PR opens, not on later pushes, so a head
@@ -98,42 +99,37 @@ jobs:
         contains(github.event.comment.body, 'codex-pull-request-review-summary'))
     runs-on: ubuntu-latest
     timeout-minutes: 6
-    # Job-level, so a skipped run for an unrelated comment never cancels a live
-    # one. The newest event re-reads all state, so cancelling an older run loses
-    # nothing, except a run that releases a commit (a push, a close, a draft
-    # conversion): it alone knows which other PRs to re-evaluate, so it gets a
-    # group of its own and is never cancelled.
+    # One writer per repository (design verdict, 2026-10-15). Every run
+    # evaluates every open PR from live state, so the newest run cancelling an
+    # older one loses nothing, and a cancelled run can never write a stale
+    # verdict after a newer one. Job-level, so a skipped run for an unrelated
+    # comment never cancels a live one.
     concurrency:
-      group: >-
-        ${{ contains(fromJSON('["synchronize","closed","converted_to_draft"]'), github.event.action)
-          && format('codex-review-release-{0}', github.run_id)
-          || format('codex-review-{0}', github.event.pull_request.number || github.event.issue.number) }}
+      group: codex-review-${{ github.repository }}
       cancel-in-progress: true
     steps:
       - name: Post the codex-review status
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
-          ACTION: ${{ github.event.action }}
-          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
-          BEFORE: ${{ github.event.before }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # >>> codex-review-status (extracted and tested by dotfiles
           # claude/scripts/tests/codex-review-status.test.sh)
           set -euo pipefail
           BOT='chatgpt-codex-connector[bot]'
+          # How long the bot gets to post its summary after a PR opens or is
+          # marked ready before the PR counts as one the bot does not review.
           POLL_SECONDS="${POLL_SECONDS:-180}"
-          POLL_INTERVAL="${POLL_INTERVAL:-15}"
+          DEADLINES="$(mktemp)"
 
           # Numbers of the open, non-draft, same-repository PRs whose head is
-          # commit $1. Fork PRs never count: a contributor without write access
-          # could otherwise hold any PR by opening one at its head.
+          # commit $1, from this pass's snapshot. Fork PRs never count: a
+          # contributor without write access could otherwise hold any PR by
+          # opening one at its head.
           heads_at() {
-            gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" |
-              jq -r --arg sha "$1" --arg repo "$REPO" \
-                '.[][] | select(.head.sha == $sha and (.draft | not) and .head.repo.full_name == $repo) | .number'
+            jq -r --arg sha "$1" --arg repo "$REPO" \
+              '.[] | select(.head.sha == $sha and (.draft | not) and .head.repo.full_name == $repo) | .number' <<<"$OPEN"
           }
 
           # A docs-only diff passes; anything that steers an agent, a build or CI
@@ -192,23 +188,11 @@ jobs:
             fi
             sha="$(jq -r .head.sha <<<"$pr_json")"
 
-            send() {
+            post() {
               gh api -X POST "repos/$REPO/statuses/$sha" -f state="$1" \
                 -f context=codex-review -f description="${2:0:140}" \
                 -f target_url="$RUN_URL" >/dev/null
               echo "#$pr codex-review -> $1: $2"
-            }
-            # A success is re-checked after it lands: a sibling that opened at
-            # this head meanwhile gets the shared status back to pending, which
-            # its own run also posts, so the two converge on the hold.
-            post() {
-              send "$1" "$2"
-              [ "$1" = success ] || return 0
-              local now
-              now="$(heads_at "$sha" | awk -v pr="$pr" 'NF && $0 != pr' | sed 's/^/#/' | paste -sd, -)"
-              if [ -n "$now" ]; then
-                send pending "Head commit is also the head of $now; decided once one PR holds it"
-              fi
             }
 
             # A fork PR at the head of a same-repository PR posts nothing: its
@@ -226,9 +210,9 @@ jobs:
             fi
 
             # The sole-owner rule, before anything that can post success.
-            siblings="$(others | sed 's/^/#/' | paste -sd, -)"
-            if [ -n "$siblings" ]; then
-              post pending "Head commit is also the head of $siblings; decided once one PR holds it"
+            # Worded the same from every sibling, since they share the status.
+            if [ -n "$(others)" ]; then
+              post pending "Head commit of open PRs $(awk 'NF { printf "%s#%s", (n++ ? ", " : ""), $0 }' <<<"$owners"); decided once one PR holds it"
               exit 0
             fi
 
@@ -287,14 +271,20 @@ jobs:
                 '[.[][] | select(.user.login == $bot and (.body | contains("codex-pull-request-review-summary")))] | last | .body // empty'
             }
             body="$(summary)"
-            waited=0
-            while [ -z "$body" ] && [ "$waited" -lt "$POLL_SECONDS" ]; do
-              sleep "$POLL_INTERVAL"
-              waited=$((waited + POLL_INTERVAL))
-              body="$(summary)"
-            done
             if [ -z "$body" ]; then
-              post success "Codex did not pick up this PR within ${POLL_SECONDS}s; not blocking"
+              # No summary yet. Inside the pickup window that is "not yet";
+              # past it, the bot is not reviewing this PR. The window starts
+              # when the PR opened, reopened or was marked ready, the moments
+              # the bot reviews.
+              ready_at="$(jq -r --argjson pr "$pr_json" \
+                '[$pr.created_at, (.[][] | select(.event == "ready_for_review" or .event == "reopened") | .created_at)] | max | .[0:19]' <<<"$events")"
+              deadline=$(($(date -u -d "${ready_at}Z" +%s) + POLL_SECONDS))
+              if [ "$(date -u +%s)" -ge "$deadline" ]; then
+                post success "Codex did not pick up this PR within ${POLL_SECONDS}s; not blocking"
+              else
+                post pending "Waiting for Codex to pick up this PR"
+                echo "$deadline" >>"$DEADLINES"
+              fi
               exit 0
             fi
             if [ -z "$(rows "$body")" ]; then
@@ -357,22 +347,28 @@ jobs:
             post success "Codex review completed"
           )
 
-          # This PR, plus the PRs left holding a commit a PR just released: on
-          # close its head, on a push its previous head. Each may now be the
-          # sole owner of its head.
-          targets="$PR"
-          case "${ACTION:-}" in
-            closed | converted_to_draft) targets="$(heads_at "$EVENT_HEAD")" ;;
-            synchronize) targets="$PR"$'\n'"$(heads_at "${BEFORE:-none}")" ;;
-          esac
-          # Each evaluation runs as a background job and is waited on: called
-          # from `||` or `if`, bash would switch errexit off inside it, and a
-          # failed read would pass as absent state.
+          # One pass evaluates every open PR from a fresh snapshot. Each runs as a
+          # background job and is waited on: called from `||` or `if`, bash
+          # would switch errexit off inside it, and a failed read would pass as
+          # absent state.
           rc=0
-          mapfile -t prs < <(sort -un <<<"$targets" | awk NF)
-          for t in "${prs[@]}"; do
-            evaluate "$t" &
-            wait "$!" || rc=1
-          done
+          evaluate_all() {
+            : >"$DEADLINES"
+            OPEN="$(gh api --paginate --slurp "repos/$REPO/pulls?state=open&per_page=100" | jq -c '[.[][]]')"
+            mapfile -t prs < <(jq -r '.[].number' <<<"$OPEN" | sort -un)
+            for t in "${prs[@]}"; do
+              evaluate "$t" &
+              wait "$!" || rc=1
+            done
+          }
+          evaluate_all
+          # A PR still inside its pickup window: wait until the last window
+          # closes, then decide once more. A bot summary arriving meanwhile
+          # starts a newer run, which cancels this one.
+          if [ -s "$DEADLINES" ]; then
+            delay=$(($(sort -n "$DEADLINES" | tail -n 1) - $(date -u +%s)))
+            if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+            evaluate_all
+          fi
           exit "$rc"
           # <<< codex-review-status

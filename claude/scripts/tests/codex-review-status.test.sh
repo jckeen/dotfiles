@@ -46,7 +46,8 @@ if [ "$post" = 1 ]; then
   case "$path" in
     */statuses/*)
       [ -e "$FIX/fail_status" ] && exit 1
-      printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
+      # posted: statuses on the main fixture head; posted_sha: every status.
+      [ "${path##*/}" = 69cff27a1b2c3d ] && printf '%s|%s\n' "$state" "$desc" >>"$FIX/posted"
       printf '%s|%s\n' "${path##*/}" "$state" >>"$FIX/posted_sha"
       ;;
     */comments) printf '%s\n' "$body" >>"$FIX/commented" ;;
@@ -68,7 +69,12 @@ case "$path" in
     # fixture's length unless a case overrides it.
     num="${path##*/}"
     prf="$FIX/pr.json"
-    [ "$num" = 1 ] || prf="$FIX/pr$num.json"
+    if [ "$num" != 1 ]; then
+      prf="$FIX/pr$num.json"
+      # A sibling without its own fixture is pr.json with its open-list entry.
+      [ -e "$prf" ] || jq --argjson e "$(jq --argjson n "$num" '.[] | select(.number == $n)' "$FIX/open.json")" \
+        '.head = (.head + $e.head) | .draft = $e.draft' "$FIX/pr.json" >"$prf"
+    fi
     jq --argjson n "$(cat "$FIX/changed_files" 2>/dev/null || jq length "$FIX/files.json")" \
       --argjson c "$(cat "$FIX/commit_count" 2>/dev/null || jq length "$FIX/commits.json")" \
       '. + {changed_files: $n, commits: $c}' "$prf"
@@ -78,13 +84,8 @@ case "$path" in
   */issues/*/events) f=events.json ;;
   *) echo "fake gh: unexpected path $path" >&2; exit 1 ;;
 esac
-# fail_<fixture> makes that read fail. open_later.json, if present, is served
-# for every open-PR read after the first.
+# fail_<fixture> makes that read fail.
 [ -e "$FIX/fail_$f" ] && exit 1
-if [ "$f" = open.json ] && [ -e "$FIX/open_later.json" ]; then
-  [ -e "$FIX/open_seen" ] && f=open_later.json
-  touch "$FIX/open_seen"
-fi
 if [ "$slurp" = 1 ]; then
   printf '['; cat "$FIX/$f"; printf ']'
 else
@@ -96,13 +97,15 @@ chmod +x "$TMP/bin/gh"
 pass=0
 failed=0
 n=0
+# Fixture PRs opened an hour ago, well past the bot's pickup window.
+OPENED="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
 
 # pr <draft> <author> <ref> [label]
 pr() {
   local labels='[]'
   [ -n "${4:-}" ] && labels="[{\"name\":\"$4\"}]"
-  printf '{"state":"open","draft":%s,"user":{"login":"%s"},"head":{"sha":"69cff27a1b2c3d","ref":"%s","repo":{"full_name":"o/r"}},"labels":%s}\n' \
-    "$1" "$2" "$3" "$labels" >"$FIX/pr.json"
+  printf '{"state":"open","draft":%s,"created_at":"%s","user":{"login":"%s"},"head":{"sha":"69cff27a1b2c3d","ref":"%s","repo":{"full_name":"o/r"}},"labels":%s}\n' \
+    "$1" "$OPENED" "$2" "$3" "$labels" >"$FIX/pr.json"
 }
 
 # files <path | old=>new>...
@@ -165,8 +168,7 @@ request_comment() {
 
 run_status() {
   status_rc=0
-  REPO=o/r PR=1 RUN_URL=u POLL_SECONDS=0 POLL_INTERVAL=1 PATH="$TMP/bin:$PATH" \
-    ACTION="$CASE_ACTION" EVENT_HEAD="$CASE_EVENT_HEAD" BEFORE="$CASE_BEFORE" \
+  REPO=o/r RUN_URL=u POLL_SECONDS="${CASE_POLL:-180}" PATH="$TMP/bin:$PATH" \
     bash "$TMP/status.sh" >"$FIX/out" 2>&1 || status_rc=$?
 }
 
@@ -192,16 +194,17 @@ setup() {
   summary
   echo '[]' >"$FIX/events.json"
   open_prs '1:69cff27a1b2c3d'
-  CASE_ACTION="" CASE_EVENT_HEAD="" CASE_BEFORE=""
+  CASE_POLL=""
   echo write >"$FIX/role"
   echo '[{"sha":"69cff27a1b2c3d","author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
 
-# expect <name> <state> <description fragment> — exactly one status posted.
+# expect <name> <state> <description fragment> — exactly one distinct status
+# posted on the fixture head (PRs sharing it post the same one).
 expect() {
   local got
   run_status
-  got="$(cat "$FIX/posted" 2>/dev/null || true)"
+  got="$(sort -u "$FIX/posted" 2>/dev/null || true)"
   if [ "$(wc -l <<<"$got")" = 1 ] && [[ "$got" == "$2|"*"$3"* ]]; then
     pass=$((pass + 1))
   else
@@ -313,13 +316,13 @@ jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "
 expect "a maintainer's codex-skip passes a fork PR" success "codex-skip"
 
 setup; files README.md; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'
-expect "a docs-only PR sharing its head holds" pending "also the head of #2"
+expect "a docs-only PR sharing its head holds" pending "Head commit of open PRs #1, #2;"
 
 setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'
-expect "a reviewed PR sharing its head holds" pending "also the head of #2"
+expect "a reviewed PR sharing its head holds" pending "Head commit of open PRs #1, #2;"
 
 setup; pr false jckeen feat/x codex-skip; labeled_by jckeen admin; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'
-expect "codex-skip does not pass a shared head" pending "also the head of #2"
+expect "codex-skip does not pass a shared head" pending "Head commit of open PRs #1, #2;"
 
 setup; files README.md; open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d:true'
 expect "a draft sibling does not count" success "Docs-only"
@@ -333,11 +336,12 @@ expect "a fork PR at the same head does not hold a same-repo PR" success "Codex 
 setup; summary "$done_cell"; open_prs '1:69cff27a1b2c3d:false:fork/r' '2:69cff27a1b2c3d'
 jq '.head.repo.full_name = "fork/r"' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
 run_status
-if [ -e "$FIX/posted" ]; then
-  failed=$((failed + 1))
-  echo "FAIL: a fork PR sharing a same-repo PR's head posted: $(cat "$FIX/posted")"
-else
+# Only PR 2 (same-repo, reviewed, sole same-repo owner) posts; the fork posts nothing.
+if [ "$(cat "$FIX/posted" 2>/dev/null)" = "success|Codex review completed" ]; then
   pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: a fork PR sharing a same-repo PR's head must post nothing — posted: $(cat "$FIX/posted" 2>/dev/null)"
 fi
 
 setup; summary "$done_cell"; touch "$FIX/fail_events.json"
@@ -351,34 +355,41 @@ run_status
 if [ "$status_rc" != 0 ]; then pass=$((pass + 1)); else
   failed=$((failed + 1)); echo "FAIL: a failed status POST exited 0"; fi
 
-# A sibling opens at this head between the sole-owner check and the post.
-setup; summary "$done_cell"
-open_prs '1:69cff27a1b2c3d' '2:69cff27a1b2c3d'; mv "$FIX/open.json" "$FIX/open_later.json"
-open_prs '1:69cff27a1b2c3d'
+# Opened just now with no summary yet: pending, then decided once the pickup
+# window closes.
+setup; jq --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.created_at = $at' "$FIX/pr.json" >"$FIX/p2" && mv "$FIX/p2" "$FIX/pr.json"
+CASE_POLL=2
 run_status
-if [ "$(tail -n 1 "$FIX/posted" 2>/dev/null)" = "pending|Head commit is also the head of #2; decided once one PR holds it" ]; then
+if [ "$(paste -sd' ' "$FIX/posted" 2>/dev/null)" = "pending|Waiting for Codex to pick up this PR success|Codex did not pick up this PR within 2s; not blocking" ]; then
   pass=$((pass + 1))
 else
   failed=$((failed + 1))
-  echo "FAIL: a sibling appearing after the check must end on pending — posted: $(cat "$FIX/posted" 2>/dev/null)"
+  echo "FAIL: pickup window — posted: $(cat "$FIX/posted" 2>/dev/null)"
+  sed 's/^/    /' "$FIX/out"
+fi
+
+setup; summary "$done_cell" "$done_cell@0dd1e55"; open_prs '1:69cff27a1b2c3d' '2:0dd1e55aaaa'
+run_status
+if [ "$(sort "$FIX/posted_sha" | paste -sd' ')" = "0dd1e55aaaa|success 69cff27a1b2c3d|success" ]; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: every open PR is evaluated on every run — posted: $(cat "$FIX/posted_sha" 2>/dev/null)"
 fi
 
 # PR 1 converted to draft; PR 2 is left as the sole owner and is evaluated.
 setup; summary "$done_cell"; open_prs '2:69cff27a1b2c3d'
 cp "$FIX/pr.json" "$FIX/pr2.json"
-CASE_ACTION=converted_to_draft CASE_EVENT_HEAD=69cff27a1b2c3d
 expect "a draft conversion re-evaluates the survivor" success "Codex review completed"
 
 # PR 1 closed; PR 2 is left as the sole owner of the head and is evaluated.
 setup; summary "$done_cell"; open_prs '2:69cff27a1b2c3d'
 cp "$FIX/pr.json" "$FIX/pr2.json"
-CASE_ACTION=closed CASE_EVENT_HEAD=69cff27a1b2c3d
 expect "closing a sibling re-evaluates the survivor" success "Codex review completed"
 
 # PR 1 pushed past 0dd1e55; PR 2 still has it as head and is re-evaluated too.
 setup; summary "$done_cell" "$done_cell@0dd1e55"; open_prs '1:69cff27a1b2c3d' '2:0dd1e55aaaa'
 jq '.head.sha = "0dd1e55aaaa"' "$FIX/pr.json" >"$FIX/pr2.json"
-CASE_ACTION=synchronize CASE_BEFORE=0dd1e55aaaa
 run_status
 if [ "$(sort "$FIX/posted_sha" 2>/dev/null | paste -sd' ')" = "0dd1e55aaaa|success 69cff27a1b2c3d|success" ]; then
   pass=$((pass + 1))

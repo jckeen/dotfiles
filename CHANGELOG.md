@@ -10,11 +10,13 @@
   but the review question is per PR, and five Codex gate rounds of per-case
   patches kept reopening that seam, so a PR decides its status only while it is
   the sole open, non-draft, same-repository PR with that head (a fork PR
-  there posts nothing, so a contributor cannot hold a PR); siblings hold, and closing a PR
-  or pushing past a commit or converting it to a draft re-evaluates the PRs
-  left holding it (those runs are never cancelled), and a success is
-  re-checked after it lands. Drafts post nothing; a failed API read ends the
-  run rather than reading as absent state. A head the bot has not reviewed gets one `@codex review` request and
+  there posts nothing, so a contributor cannot hold a PR); siblings hold.
+  **One writer per repository:** every run evaluates every open PR from live
+  state under a single repo-wide concurrency group, so the newest run
+  cancelling an older one loses nothing and no stale verdict lands after a
+  newer one; a PR waiting for the bot to pick it up gets one wait to the end
+  of its window instead of a poll per PR. Drafts post nothing; a failed API
+  read ends the run rather than reading as absent state. A head the bot has not reviewed gets one `@codex review` request and
   holds; after a base retarget the request waits until no review is running,
   and only a run completing after it counts. Docs-only diffs (no instruction
   surface or dot-directory, names mirroring `review-receipt.py`) and
@@ -36,7 +38,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (66 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (67 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (10 cases; never a ruleset before the workflow is current, never a forced
   branch reset, a failed write opens no PR), both in the `checkers` shard.
