@@ -7,8 +7,11 @@
   every row of its summary table reads Completed for the head commit (a push
   after the review gets one `@codex review` request per head SHA; an older
   commit's review never passes a newer one). Docs-only diffs (no instruction
-  surface) and Dependabot PRs pass at once; skips never key on a branch name
-  or title, which an author chooses. It fails open when the bot never picks a PR up (3 min) or its review ends in a
+  surface, matched case-insensitively and on both paths of a rename; `.txt`
+  and `.mdx` count as code) and all-Dependabot-commit PRs pass at once; skips
+  never key on a branch name, title or pasted marker, which an author
+  chooses, and `codex-skip` counts only when an admin or maintainer applied
+  it. It fails open when the bot never picks a PR up (3 min) or its review ends in a
   non-Completed state; the `codex-skip` label passes it by hand. Event-driven
   (`pull_request_target` plus the bot's summary-comment edits), so it does not
   poll for the review. Measured on the 12 PRs merged before this: auto-merge
@@ -20,7 +23,7 @@
   status cannot satisfy it) and resolved review threads. Thread resolution is what
   makes the hold mean something: without it the status turns green at the
   moment the findings appear.
-- **Tests:** `codex-review-status.test.sh` (21 cases; the status script run
+- **Tests:** `codex-review-status.test.sh` (32 cases; the status script run
   from the workflow file against a fake `gh`) and `fleet-codex-review.test.sh`
   (9 cases; never a ruleset before the workflow is current, never a forced
   branch reset), both in the `checkers` shard.

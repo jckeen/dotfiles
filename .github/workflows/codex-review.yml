@@ -17,7 +17,8 @@ name: codex-review
 # comment appears within the poll window (the bot posts it 15-45 s after a PR
 # opens), or the bot's own review ends in a non-Completed terminal state, the
 # status goes to success with a description saying so. The local review gate
-# still ran before push. The `codex-skip` label passes it by hand.
+# still ran before push. The `codex-skip` label passes it by hand, but only when
+# a repo admin or maintainer applied it.
 #
 # Only a review of the PR's HEAD commit counts. The bot reviews when a PR
 # opens, not on later pushes, so when the head has moved past its last review
@@ -100,36 +101,64 @@ jobs:
             echo "codex-review -> $1: $2"
           }
 
-          # A docs-only diff passes; anything that steers an agent or CI does
-          # not, so the patterns fail toward requiring the review.
-          docs_only() {
-            local f any=0
+          # A docs-only diff passes; anything that steers an agent, a build or CI
+          # does not, so the patterns fail toward requiring the review. Matched
+          # case-insensitively (agents load claude.md as readily as CLAUDE.md),
+          # in a subshell so nocasematch stays local. .txt and .mdx are not
+          # docs: requirements.txt is a manifest, an .mdx file is a component.
+          docs_only() (
+            shopt -s nocasematch
+            any=0
             while IFS= read -r f; do
               [ -n "$f" ] || continue
               any=1
               case "$f" in
                 .github/* | */.github/* | .claude/* | */.claude/* | skills/* | */skills/* | \
-                  agents/* | */agents/* | prompts/* | */prompts/*) return 1 ;;
+                  agents/* | */agents/* | prompts/* | */prompts/*) exit 1 ;;
               esac
               case "${f##*/}" in
-                *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | SKILL.md | MULTI-AGENT.md) return 1 ;;
-                *.md | *.mdx | *.rst | *.txt | LICENSE | LICENSE.*) ;;
-                *) return 1 ;;
+                *AGENTS*.md | *CLAUDE*.md | *GEMINI*.md | *SKILL*.md | *MULTI-AGENT*.md) exit 1 ;;
+                *.md | *.rst | LICENSE | LICENSE.txt) ;;
+                *) exit 1 ;;
               esac
             done <<<"$1"
             [ "$any" = 1 ]
+          )
+
+          # The label counts only when someone with admin or maintain on the
+          # repo applied it, so a PR author cannot waive their own review.
+          skip_label_by_maintainer() {
+            local actor role
+            jq -e '[.labels[].name] | index("codex-skip")' <<<"$pr_json" >/dev/null || return 1
+            actor="$(gh api --paginate --slurp "repos/$REPO/issues/$PR/events" | jq -r \
+              '[.[][] | select(.event == "labeled" and .label.name == "codex-skip")] | last | .actor.login // empty')"
+            [ -n "$actor" ] || return 1
+            role="$(gh api "repos/$REPO/collaborators/$actor/permission" --jq .role_name 2>/dev/null)" || return 1
+            case "$role" in
+              admin | maintain) return 0 ;;
+            esac
+            echo "codex-skip was applied by $actor ($role), who cannot waive the review; ignoring it"
+            return 1
           }
 
-          if jq -e '[.labels[].name] | index("codex-skip")' <<<"$pr_json" >/dev/null; then
+          if skip_label_by_maintainer; then
             post success "Skipped by the codex-skip label"
             exit 0
           fi
-          if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ]; then
+          # Every commit must be Dependabot's: anyone with write access can push
+          # onto a Dependabot branch, and those commits are not routine.
+          if [ "$(jq -r .user.login <<<"$pr_json")" = 'dependabot[bot]' ] &&
+            gh api --paginate --slurp "repos/$REPO/pulls/$PR/commits" |
+            jq -e '[.[][]] | length > 0 and all(.author.login == "dependabot[bot]")' >/dev/null; then
             post success "Dependabot PR: Codex review not required"
             exit 0
           fi
-          files="$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/files" | jq -r '.[][].filename')"
-          if docs_only "$files"; then
+          # A rename is judged on both paths. The files API lists at most 3000
+          # entries, so a list shorter than changed_files is never docs-only.
+          files_json="$(gh api --paginate --slurp "repos/$REPO/pulls/$PR/files")"
+          files="$(jq -r '.[][] | .filename, (.previous_filename // empty)' <<<"$files_json")"
+          if [ "$(jq '[.[][]] | length' <<<"$files_json")" = "$(jq .changed_files <<<"$pr_json")" ] &&
+            docs_only "$files"; then
             post success "Docs-only change: Codex review not required"
             exit 0
           fi
@@ -177,9 +206,11 @@ jobs:
           statuses="$(head_statuses "$body")"
           if [ -z "$statuses" ]; then
             # Reviewed, but not this commit. Ask once per head SHA; the marker
-            # keeps re-runs from asking again.
+            # keeps re-runs from asking again. Only this workflow's own
+            # comments count, so a pasted marker cannot suppress the request.
             marker="<!-- codex-review-rerequest:$sha -->"
-            if ! comments | jq -e --arg m "$marker" '[.[][] | select(.body | contains($m))] | length > 0' >/dev/null; then
+            if ! comments | jq -e --arg m "$marker" \
+              '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($m)))] | length > 0' >/dev/null; then
               gh api -X POST "repos/$REPO/issues/$PR/comments" \
                 -f body="@codex review"$'\n\n'"$marker" >/dev/null
               echo "requested a Codex re-review of $sha"

@@ -51,9 +51,21 @@ if [ "$post" = 1 ]; then
   exit 0
 fi
 case "$path" in
+  */collaborators/*/permission)
+    # gh's --jq .role_name, answered directly.
+    cat "$FIX/role"
+    exit 0
+    ;;
   */pulls/*/files) f=files.json ;;
-  */pulls/*) f=pr.json ;;
+  */pulls/*/commits) f=commits.json ;;
+  */pulls/*)
+    # changed_files is the files fixture's length unless a case overrides it.
+    jq --argjson n "$(cat "$FIX/changed_files" 2>/dev/null || jq length "$FIX/files.json")" \
+      '. + {changed_files: $n}' "$FIX/pr.json"
+    exit 0
+    ;;
   */issues/*/comments) f=comments.json ;;
+  */issues/*/events) f=events.json ;;
   *) echo "fake gh: unexpected path $path" >&2; exit 1 ;;
 esac
 if [ "$slurp" = 1 ]; then
@@ -76,14 +88,23 @@ pr() {
     "$1" "$2" "$3" "$labels" >"$FIX/pr.json"
 }
 
-# files <path>...
+# files <path | old=>new>...
 files() {
-  local out='[' sep=''
+  local out='[' sep='' f
   for f in "$@"; do
-    out="$out$sep{\"filename\":\"$f\"}"
+    case "$f" in
+      *'=>'*) out="$out$sep{\"filename\":\"${f#*=>}\",\"previous_filename\":\"${f%%=>*}\"}" ;;
+      *) out="$out$sep{\"filename\":\"$f\"}" ;;
+    esac
     sep=','
   done
   printf '%s]\n' "$out" >"$FIX/files.json"
+}
+
+# labeled_by <login> <role> — codex-skip applied by <login>, who holds <role>
+labeled_by() {
+  printf '[{"event":"labeled","label":{"name":"codex-skip"},"actor":{"login":"%s"}}]\n' "$1" >"$FIX/events.json"
+  echo "$2" >"$FIX/role"
 }
 
 # summary <status cell[@commit]>... — one review row per cell, reviewing the
@@ -112,6 +133,9 @@ setup() {
   pr false jckeen feat/x
   files src/app.ts
   summary
+  echo '[]' >"$FIX/events.json"
+  echo write >"$FIX/role"
+  echo '[{"author":{"login":"dependabot[bot]"}}]' >"$FIX/commits.json"
 }
 
 # expect <name> <state> <description fragment> — judged on the LAST status
@@ -153,11 +177,24 @@ expect "no summary comment after the poll fails open" success "did not pick up t
 setup; printf '[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-pull-request-review-summary -->\\n## Codex Review Summary"}]\n' >"$FIX/comments.json"
 expect "summary without rows yet" pending "started"
 
-setup; pr false jckeen feat/x codex-skip
-expect "codex-skip label" success "codex-skip"
+setup; pr false jckeen feat/x codex-skip; labeled_by jckeen admin
+expect "codex-skip applied by an admin" success "codex-skip"
+
+setup; pr false jckeen feat/x codex-skip; labeled_by jckeen maintain
+expect "codex-skip applied by a maintainer" success "codex-skip"
+
+setup; pr false someone feat/x codex-skip; labeled_by someone write; summary "⏳ **In progress**"
+expect "codex-skip applied by a writer is ignored" pending "in progress"
+
+setup; pr false someone feat/x codex-skip; summary "⏳ **In progress**"
+expect "codex-skip with no labeled event is ignored" pending "in progress"
 
 setup; pr false 'dependabot[bot]' dependabot/npm/x
 expect "dependabot author" success "Dependabot"
+
+setup; pr false 'dependabot[bot]' dependabot/npm/x; summary "⏳ **In progress**"
+echo '[{"author":{"login":"dependabot[bot]"}},{"author":{"login":"someone"}}]' >"$FIX/commits.json"
+expect "a human commit on a Dependabot branch is reviewed" pending "in progress"
 
 setup; pr false app/claude claude/deps-20261014; summary "⏳ **In progress**"
 expect "a deps-looking branch name skips nothing" pending "in progress"
@@ -183,6 +220,17 @@ else
   pass=$((pass + 1))
 fi
 
+setup; summary "$done_cell@0dd1e55"
+jq --arg m '<!-- codex-review-rerequest:69cff27a1b2c3d -->' '. + [{user: {login: "someone"}, body: ("@codex review\n\n" + $m)}]' \
+  "$FIX/comments.json" >"$FIX/c2" && mv "$FIX/c2" "$FIX/comments.json"
+expect "a pasted marker does not suppress the re-review request" success "did not take up the re-review"
+if grep -q 'codex-review-rerequest:69cff27a1b2c3d' "$FIX/commented" 2>/dev/null; then
+  pass=$((pass + 1))
+else
+  failed=$((failed + 1))
+  echo "FAIL: a marker from a non-workflow account suppressed the re-review request"
+fi
+
 setup; summary "$done_cell@0dd1e55" "⏳ **In progress**"
 expect "an old completed row does not pass a running head review" pending "in progress"
 
@@ -191,6 +239,21 @@ expect "docs-only diff" success "Docs-only"
 
 setup; files README.md CLAUDE.md; summary "⏳ **In progress**"
 expect "CLAUDE.md is not docs-only" pending "in progress"
+
+setup; files docs/claude.md; summary "⏳ **In progress**"
+expect "instruction names match case-insensitively" pending "in progress"
+
+setup; files requirements.txt; summary "⏳ **In progress**"
+expect "a .txt manifest is not docs-only" pending "in progress"
+
+setup; files docs/page.mdx; summary "⏳ **In progress**"
+expect "an .mdx component is not docs-only" pending "in progress"
+
+setup; files 'scripts/run.sh=>notes.md'; summary "⏳ **In progress**"
+expect "renaming code to .md is judged on the old path too" pending "in progress"
+
+setup; files README.md; echo 3001 >"$FIX/changed_files"; summary "⏳ **In progress**"
+expect "a truncated file list is never docs-only" pending "in progress"
 
 setup; files docs/x.md .claude/skills/foo/SKILL.md; summary "⏳ **In progress**"
 expect "a skill file is not docs-only" pending "in progress"
