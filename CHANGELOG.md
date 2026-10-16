@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-16 — fix(hooks): SymlinkRepair no longer crashes on a missing category dir
+
+- **`claude/hooks/SymlinkRepair.hook.ts`** (#598): on a fresh machine or a new
+  `CLAUDE_CONFIG_DIR` profile where the hook ran before `setup.sh`, a missing
+  `~/.claude/scripts` (or `hooks/`, `agents/`, `chrome/`) made the first
+  `symlinkSync` throw `ENOENT`, exiting the hook 1 and skipping every later
+  category. The hook now creates each category dir first, and a link or dir it
+  cannot create is reported as skipped rather than thrown, so it exits 0 as its
+  header promises. The scripts category also links `*.py` (receipt helpers),
+  matching `lib-symlinks.sh`.
+- **Tests:** `symlink-enumerate.test.sh`'s hook cases no longer pre-create
+  `~/.claude/scripts`; new cases cover a missing category dir, `*.py` linking,
+  and a read-only category dir (7 failed before the fix, all pass after).
+
 ## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
 
 - **`.github/workflows/codex-review.yml`:** the first live run (the close of
