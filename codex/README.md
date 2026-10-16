@@ -118,6 +118,31 @@ finish and stop it explicitly before switching supervisors.
 install -Dm755 codex/remote-control-service.sh ~/.local/libexec/codex-remote-control
 install -Dm644 codex/remote_control_enabled.py ~/.local/libexec/remote_control_enabled.py
 install -Dm644 codex/codex-remote-control.service ~/.config/systemd/user/codex-remote-control.service
+```
+
+Before enabling the service, persist the state directory used by `cx`:
+
+```bash
+systemctl --user edit codex-remote-control.service
+```
+
+Add this override for the default state directory:
+
+```ini
+[Service]
+Environment="CODEX_HOME=%h/.codex"
+```
+
+If your shell sets `CODEX_HOME`, replace `%h/.codex` with that directory's
+absolute path instead. Use a literal path, not `$CODEX_HOME` or `~`; escape any
+literal `%` as `%%`. The user manager does not inherit shell exports, and a
+temporary `systemctl import-environment` would not persist across reboot.
+The service and `cx` must select the same directory before startup so they use
+the same saved opt-in, credentials, and socket.
+
+Then enable automatic startup:
+
+```bash
 loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
 systemctl --user enable --now codex-remote-control.service
