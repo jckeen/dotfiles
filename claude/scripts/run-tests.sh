@@ -30,6 +30,11 @@
 
 set -uo pipefail
 
+# No suite may leave a bytecode cache behind. A suite that imports a skill's
+# script writes __pycache__ under agents/skills, an instruction surface, and the
+# review gate that ran these suites then refuses its own receipt (#581).
+export PYTHONDONTWRITEBYTECODE=1
+
 # shellcheck source=claude/scripts/checker-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/checker-lib.sh"
 REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
