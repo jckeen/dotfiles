@@ -33,6 +33,42 @@
 - Verified repeated service starts preserve a connected client, competing native
   starts refuse the live socket, and a disposable server recovers after a crash.
 
+## 2026-10-16 — feat: a codex-findings queue, and codex-threads.sh to work it
+
+- **`.github/workflows/codex-findings.yml`:** labels a PR `codex-findings`
+  while the GitHub Codex bot has an unresolved review thread on it, and
+  removes the label once none remain. It recounts on each bot review and on
+  `workflow_dispatch`. `gh pr list --label codex-findings` is then the queue
+  of PRs blocked on bot findings, so no agent has to poll each PR (#617). A
+  failed or truncated read leaves the label as it was. Fork PRs are skipped.
+- **`fleet-codex-review.sh`:** rolls out both workflows, shipping only the
+  files that are missing or out of date. It still creates the ruleset only
+  once both are current. A failed read of a workflow file or of the
+  rulesets now skips the repo and fails the run. Before, it counted as
+  "missing" or "no ruleset", so a temporary GitHub error could ship a file
+  the repo already had or create a duplicate ruleset.
+- **`claude/scripts/codex-threads.sh`:** `list --pr N` (or
+  `--merged-since DATE`) prints one TSV line per unresolved thread the GitHub
+  Codex bot opened: thread id, location, priority, outdated flag, title and
+  link. `resolve --thread ID --reply TEXT` posts the reply and then resolves
+  the thread. It refuses an empty reply and refuses a thread anyone other
+  than the bot opened. Once the `codex-review` ruleset requires resolved
+  threads (#615), this is how an agent answers each finding before merge,
+  either "fixed in" or "moot because". Resolving a PR's last bot thread also
+  starts `codex-findings.yml`, because GitHub has no workflow trigger for a
+  resolved thread. The reply and the resolve are separate requests, so a
+  rejected reply never leaves a thread closed without a reason. A thread
+  from another repository is refused. A failed or truncated read, including
+  a merged-PR list that reaches its limit, exits 1 rather than printing a
+  partial list. A failed recount after a resolve exits 1 and names the
+  command that finishes the job.
+- **Why:** a 2026-10-16 triage found 35 unresolved bot threads on merged
+  PRs #564–#604, because auto-merge lands before the bot comments (#617).
+- **Tests:** `codex-threads.test.sh` and `codex-findings-label.test.sh`
+  (both run against a fake `gh`, and the second extracts the workflow's
+  script), wired into the CI `checkers` shard. `fleet-codex-review.test.sh`
+  gains cases for partial rollouts.
+
 ## 2026-10-16 — fix(hooks): SymlinkRepair no longer crashes on a missing category dir
 
 - **`claude/hooks/SymlinkRepair.hook.ts`** (#598): on a fresh machine or a new

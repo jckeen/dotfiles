@@ -86,8 +86,11 @@ on:
 
 permissions:
   statuses: write # post the codex-review commit status
-  pull-requests: read # read the PRs, their labels and changed files
-  issues: write # read the bot's summary; request a re-review of a new head
+  # Write, not read: posting the `@codex review` request on a PR's
+  # conversation is refused with only issues: write (HTTP 403, canary run
+  # 38859540053 on #622, 2026-10-16). Nothing else here writes to a PR.
+  pull-requests: write # read the PRs, their labels and changed files; request a re-review
+  issues: write # read the bot's summary
 
 jobs:
   # Every same-repository PR event first invalidates its head (pending), and

@@ -1,0 +1,158 @@
+name: codex-findings
+
+# Labels a PR `codex-findings` while the GitHub Codex bot
+# (chatgpt-codex-connector) has review threads on it that nobody has resolved,
+# and removes the label once none remain (dotfiles#617). The `codex-review`
+# ruleset already blocks the merge until every thread is resolved. The label
+# turns "which PRs are waiting on bot findings?" into one query that an agent
+# or routine can act on when it runs (`gh pr list --label codex-findings`),
+# instead of polling every PR.
+#
+# Canonical copy: jckeen/dotfiles. claude/scripts/fleet-codex-review.sh copies
+# this file verbatim into each fleet repo along with codex-review.yml; edit it
+# here, then re-run that script.
+#
+# Recount triggers: each review the bot submits or that is dismissed, and
+# workflow_dispatch. GitHub has no workflow trigger for a thread being
+# resolved, so claude/scripts/codex-threads.sh dispatches this workflow after
+# it resolves a PR's last bot thread. A thread resolved by hand in the web UI
+# clears the label at the next review or dispatch. The label is a work queue,
+# not a gate: the ruleset's required thread resolution is the gate.
+#
+# Every run recounts from live state, so a newer run supersedes an older one.
+# A failed or truncated read fails the run and leaves the label as it was.
+# Fork PRs are skipped on every trigger, a manual dispatch included: on a
+# review event their GITHUB_TOKEN is read-only, and labelling them only by
+# hand would make the queue inconsistent.
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to recount
+        required: true
+
+# Adding or removing a label on a PR, and creating the label, accept the
+# "Pull requests" write permission. Nothing is checked out.
+permissions:
+  pull-requests: write
+
+jobs:
+  label:
+    name: recount unresolved Codex bot threads
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.state == 'open' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.review.user.login == 'chatgpt-codex-connector[bot]')
+    # Only an eligible run shares the PR's group: the expression below is
+    # the job's `if` verbatim. Any other review gets a group of its own from
+    # its run id,
+    # so it can never cancel a running recount and then skip its own job,
+    # whatever the order GitHub evaluates `if` and concurrency in. A newer
+    # eligible run may cancel an older one: every run recounts live state.
+    concurrency:
+      group: "codex-findings-${{ (github.event_name == 'workflow_dispatch' || (github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login == 'chatgpt-codex-connector[bot]')) && format('pr-{0}', github.event.pull_request.number || inputs.pr) || format('skip-{0}', github.run_id) }}"
+      cancel-in-progress: true
+    steps:
+      - name: Recount and label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          # >>> codex-findings-label (extracted and tested by dotfiles
+          # claude/scripts/tests/codex-findings-label.test.sh)
+          set -euo pipefail
+          LABEL=codex-findings
+          # No leading zeros: "007" would name PR 7 under another concurrency
+          # group, letting two recounts of one PR race.
+          [[ "$PR" =~ ^[1-9][0-9]*$ ]] || { echo "::error::bad PR number: $PR"; exit 1; }
+          owner=${REPO%/*}
+          name=${REPO#*/}
+          # shellcheck disable=SC2016 # $owner, $name and $pr are GraphQL variables
+          out=$(gh api graphql -f owner="$owner" -f name="$name" -F pr="$PR" -f query='
+          query($owner:String!,$name:String!,$pr:Int!){
+            repository(owner:$owner,name:$name){
+              pullRequest(number:$pr){
+                state
+                isCrossRepository
+                labels(first:100){pageInfo{hasNextPage} nodes{name}}
+                reviewThreads(first:100){
+                  pageInfo{hasNextPage}
+                  nodes{isResolved comments(first:1){nodes{author{__typename login}}}}}}}}')
+          # Decide only on a complete read. GraphQL may return null for any
+          # node it could not resolve (and for a deleted author), and either
+          # result page may be truncated, so every field the decision reads
+          # must be present with its type: the state, the fork flag, every
+          # label name, every thread's resolved flag, and the author of every
+          # unresolved thread (an unknown author cannot be ruled out as the
+          # bot). Anything less fails the run and leaves the label as it is.
+          if [ "$(jq -r '.data.repository.pullRequest as $p
+              | ($p | type == "object")
+              and ($p.state | IN("OPEN", "CLOSED", "MERGED"))
+              and ($p.isCrossRepository | type == "boolean")
+              and $p.labels.pageInfo.hasNextPage == false
+              and ($p.labels.nodes | type == "array"
+                and all(.[]; type == "object" and (.name | type == "string")))
+              and $p.reviewThreads.pageInfo.hasNextPage == false
+              and ($p.reviewThreads.nodes | type == "array"
+                and all(.[]; type == "object"
+                  and (.isResolved | type == "boolean")
+                  and (.isResolved or (
+                    (.comments.nodes | type == "array")
+                    and (.comments.nodes[0] | type == "object")
+                    and (.comments.nodes[0].author | type == "object")
+                    and (.comments.nodes[0].author.login | type == "string")
+                    and (.comments.nodes[0].author.__typename | type == "string")))))' <<<"$out")" != true ]; then
+            echo "::error::could not read every label and review thread of #$PR; leaving the label as it is"
+            exit 1
+          fi
+          state=$(jq -r '.data.repository.pullRequest.state' <<<"$out")
+          if [ "$state" != OPEN ]; then
+            echo "#$PR is $state; nothing to do"
+            exit 0
+          fi
+          if [ "$(jq -r '.data.repository.pullRequest.isCrossRepository' <<<"$out")" != false ]; then
+            echo "#$PR is from a fork; skipped"
+            exit 0
+          fi
+          # GraphQL reports the app's login without the [bot] suffix, and a
+          # user account could hold that bare name, so require a Bot actor.
+          count=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+            | select(.isResolved | not)
+            | .comments.nodes[0].author
+            | select(.__typename == "Bot" and .login == "chatgpt-codex-connector")]
+            | length' <<<"$out")
+          # GitHub matches label names case-insensitively, so Codex-Findings
+          # is the same label and must count as present.
+          present=$(jq -r --arg l "$LABEL" '[.data.repository.pullRequest.labels.nodes[].name
+            | select(ascii_downcase == ($l | ascii_downcase))][0] // ""' <<<"$out")
+          if [ -n "$present" ]; then has=true; else has=false; fi
+          if [ "$count" -gt 0 ] && [ "$has" = false ]; then
+            # Adding a label that does not exist creates it, but with a random
+            # colour and no description, so create it first. Only a 404 means
+            # it is missing; any other failed lookup fails the run. A label
+            # another run created in the meantime is not an error.
+            if ! err=$(gh api "repos/$REPO/labels/$LABEL" 2>&1 >/dev/null); then
+              if ! grep -q 'HTTP 404' <<<"$err"; then
+                echo "::error::could not look up the $LABEL label: $err"
+                exit 1
+              fi
+              gh api -X POST "repos/$REPO/labels" -f name="$LABEL" -f color=d93f0b \
+                -f description="Unresolved Codex bot review threads" >/dev/null 2>&1 ||
+                gh api "repos/$REPO/labels/$LABEL" >/dev/null
+            fi
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$LABEL" >/dev/null
+            echo "#$PR: $count unresolved Codex bot thread(s); labelled $LABEL"
+          elif [ "$count" -eq 0 ] && [ "$has" = true ]; then
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$present" >/dev/null
+            echo "#$PR: no unresolved Codex bot threads; removed $LABEL"
+          else
+            echo "#$PR: $count unresolved Codex bot thread(s); label unchanged"
+          fi
+          # <<< codex-findings-label
