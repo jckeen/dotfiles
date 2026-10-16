@@ -17,6 +17,75 @@
 - **Tests:** new cases in `plugin-drift.test.sh` (7 failed before the fix,
   all pass after).
 
+## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
+
+- **`claude/hooks/PluginDriftCheck.hook.ts`** (Codex threads on #599 and
+  #646): the mod scan now also reads every relative-path entry of a
+  marketplace added from a local `directory` or `file` source (Claude Code
+  loads these in place, never from `cache/`; a `file` catalog is read from
+  its recorded path), and `<name>@skills-dir` plugins under the project's
+  `.claude/skills`, where the project is the hook input's `cwd` (it follows a
+  `--worktree`) plus `$CLAUDE_PROJECT_DIR`. Entries are scanned enabled or
+  not: enablement can come from `--settings`, managed settings or
+  `--add-dir`, which the hook cannot see, so a filter would fail open.
+- **Allowlist:** a project mod is named even when allowlisted, since it
+  shares the `@skills-dir` id space with `~/.claude/skills` and a cloned repo
+  could reuse an allowlisted name. A safe id prints whole (up to 300
+  characters) so a long one stays allowlistable; a sanitized one says it
+  cannot be.
+- **Output hardening:** every id and path printed passes through `shown()`
+  (only `[A-Za-z0-9._@/-]`, capped when changed), so a name from a
+  marketplace or a cloned repo cannot inject lines or close the
+  `<system-reminder>`.
+- **Unverifiable, not skipped:** a `hooks.json`, `plugin.json` or
+  `marketplace.json` of any origin that exists but cannot be read or parsed
+  is named under "Plugin mods (unverifiable)"; only a missing file is
+  skipped. All plugin JSON goes through one reader that accepts a regular
+  file of at most 1 MiB, so a FIFO cannot hang the hook and `/dev/zero`
+  cannot exhaust memory. Each catalog entry and plugin dir is checked in its
+  own try/catch, each warning section is guarded, and no untrusted value is
+  stringified before a `typeof` check (a `{"toString":null}` name used to
+  exit the hook with no output). Best-effort and advisory: a parser
+  differential with Claude Code's loader stays possible (#647).
+- **Tests:** `plugin-drift.test.sh` runs every case with a throwaway HOME and
+  project dir and explicit stdin, with fixtures for both origins, an
+  allowlist-shadowing project plugin, injection names, a hostile catalog,
+  malformed, FIFO, `/dev/zero` and oversized files, long ids and a
+  `--worktree` cwd (40 of 105 failed on origin/main, all pass after; an
+  intermediate version hung on the FIFO until the test's timeout).
+
+## 2026-10-16 — test: heal-race rivals no longer hold the capture pipe
+
+- **`claude/scripts/tests/heal-race.test.sh`** (#635 review): the in-flight
+  fixture's background rival inherited the checker's captured stdout, so the
+  capture waited for it and "checker finished only after the rival" passed
+  even when the checker exited early. Rivals now redirect away from the
+  capture, and the test waits for one with a bounded `wait_rival` instead of
+  a bare `wait`, which never covered the checker's children. Against a
+  checker that exits before the migration completes, that assertion passed
+  before and fails after.
+
+## 2026-10-16 — fix: check-claude warns on a missing CLI stack and waits out a racing migration
+
+- **`check-claude.sh` / `lib-checks.sh`** (closes #605): the CLI tools the
+  Claude config tells sessions to prefer now live in one list,
+  `CLI_STACK_TOOLS` in `lib-checks.sh`, and `check_cli_stack` prints a `TOOL`
+  warning for each one missing (or present only under its Debian name, with
+  the `setup.sh` shim hint). Advisory: it does not fail the check, because
+  `cc` blocks launch on a failed checker.
+- **`check-claude.sh --heal`** (PR #604 review, #635 review): a real
+  directory where a skill bundle link belongs now goes through one bounded
+  settle loop (a few seconds) before it is reported: converted while it is
+  legacy, waited on while a concurrent `--heal` is still draining it (even
+  when the first scan raced that drain and saw it as foreign), and reported
+  promptly once a non-legacy listing holds still. Previously a concurrent
+  conversion produced a false `FAILED` or `NOT LINKED`. Two concurrent
+  checkers on a 500-entry legacy bundle: 10/10 trials had a failing checker
+  before, 0/10 after, with the source bundle intact in every trial.
+- **Tests:** `heal-race.test.sh` covers the in-flight migration, an entry
+  vanishing mid-scan, stable foreign content, and the tool advisory under a
+  controlled PATH (9 failed against the origin/main checker, all pass after).
+
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 
 - **`claude/scripts/run-tests.sh`** (refs #581): now exports
