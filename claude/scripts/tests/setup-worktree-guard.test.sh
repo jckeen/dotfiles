@@ -59,6 +59,15 @@ else
   fail "--check was refused from a linked worktree"
 fi
 
+# A read-only flag anywhere in argv must not exempt a mutating action that
+# dispatches first.
+out="$(HOME="$TESTHOME" "$WT/setup.sh" --repair --show-services 2>&1)"
+if grep -q 'refusing to run setup.sh' <<< "$out" && [ "$(snapshot "$TESTHOME")" = "$before" ]; then
+  ok "--repair --show-services is still refused from a linked worktree"
+else
+  fail "--repair --show-services bypassed the linked-worktree guard"
+fi
+
 out="$(HOME="$TESTHOME" DOTFILES_ALLOW_LINKED_WORKTREE=1 "$WT/setup.sh" --yes --dry-run 2>&1)"
 if ! grep -q 'refusing to run setup.sh' <<< "$out" && grep -q 'Mode: DRY-RUN' <<< "$out"; then
   ok "DOTFILES_ALLOW_LINKED_WORKTREE=1 overrides the guard"
