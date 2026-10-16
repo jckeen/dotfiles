@@ -118,12 +118,20 @@ esac
 INSTALLED_JSON="$HOME/.claude/plugins/installed_plugins.json"
 user_scoped=""
 installed_state="known"
-# A dangling symlink is present (and unreadable), not a fresh machine.
+#
+# Present means it exists or is a symlink. Only a regular file (after following
+# links) is read: a dangling link, directory, device or FIFO is unreadable — a
+# FIFO would block open() and hang cc's launch. The timeout covers a file
+# swapped for a FIFO after the check, where timeout(1) exists.
+py_timeout=()
+command -v timeout >/dev/null 2>&1 && py_timeout=(timeout 5)
 if [[ ! -e "$INSTALLED_JSON" && ! -L "$INSTALLED_JSON" ]]; then
   :
+elif [[ ! -f "$INSTALLED_JSON" ]]; then
+  installed_state="$INSTALLED_JSON is not a regular file"
 elif ! command -v python3 >/dev/null 2>&1; then
   installed_state="python3 is not on PATH, so $INSTALLED_JSON cannot be read"
-elif ! user_scoped="$(python3 -c '
+elif ! user_scoped="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -c '
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))

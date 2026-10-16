@@ -618,6 +618,10 @@ assert "the hook does not crash on its own error path" '! outgrep "PluginDriftCh
 sync_out=""
 sync_rc=0
 sync_installs=""
+SYNC_TIMEOUT=()
+if timeout_bin="$(command -v timeout)"; then
+  SYNC_TIMEOUT=("$timeout_bin" 10)
+fi
 sync_uninstalls=""
 run_sync() {
   local manifest="$1" installed="$2" services="${3:-}"
@@ -660,10 +664,21 @@ STUB
     rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
     ln -s "$H/nowhere.json" "$H/.claude/plugins/installed_plugins.json" \
       || die "link a dangling installed json"
+  elif [[ "$installed" == "<fifo>" || "$installed" == "<fifo-link>" ]]; then
+    rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+    mkfifo "$H/fifo.json" || die "mkfifo"
+    if [[ "$installed" == "<fifo>" ]]; then
+      mv "$H/fifo.json" "$H/.claude/plugins/installed_plugins.json" || die "place fifo"
+    else
+      ln -s "$H/fifo.json" "$H/.claude/plugins/installed_plugins.json" \
+        || die "link the fifo"
+    fi
   fi
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+  # A hang (a FIFO read, say) must fail the case, not stall the suite.
   sync_out="$(HOME="$H" XDG_CONFIG_HOME="$H/.config" DOTFILES_DIR="$D" \
-    PATH="$B:${SYNC_PATH:-$PATH}" env -u DOTFILES_SERVICES "$SYNC" 2>&1)"
+    PATH="$B:${SYNC_PATH:-$PATH}" ${SYNC_TIMEOUT[@]+"${SYNC_TIMEOUT[@]}"} \
+    env -u DOTFILES_SERVICES "$SYNC" 2>&1)"
   sync_rc=$?
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
   sync_installs="$(cat "$B/installs")"
@@ -816,6 +831,14 @@ rm -rf "$NOPY_BIN"
 run_sync "$MANIFEST_REMOVED" "<dangling>"
 assert "a dangling installed_plugins.json fails a pending removal" \
   '[ $sync_rc -ne 0 ] && grep -qF "marked removed but was not checked" <<<"$sync_out"'
+
+# A FIFO (or a link to one) is not a regular file: unreadable, never opened.
+run_sync "$MANIFEST_REMOVED" "<fifo>"
+assert "a FIFO installed_plugins.json fails a pending removal promptly" \
+  '[ $sync_rc -eq 1 ] && grep -qF "is not a regular file" <<<"$sync_out"'
+run_sync "$MANIFEST_REMOVED" "<fifo-link>"
+assert "a symlink to a FIFO fails a pending removal promptly" \
+  '[ $sync_rc -eq 1 ] && grep -qF "is not a regular file" <<<"$sync_out"'
 
 # No installed_plugins.json at all is a fresh machine, not a read failure.
 run_sync "$MANIFEST_REMOVED" "<absent>"

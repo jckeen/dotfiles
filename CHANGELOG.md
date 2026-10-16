@@ -11,7 +11,7 @@
   user-scope install; a plugin merely absent from the manifest is never
   touched. `claude/plugins.txt` marks `superpowers@claude-plugins-official`
   removed, so machines that still carry it drop it on the next fresh launch.
-  When `installed_plugins.json` can't be read (python3 missing, malformed
+  When `installed_plugins.json` can't be read (python3 missing, not a regular file or malformed
   JSON), the script warns, and each pending removal fails with a named
   diagnostic and exit 1. A pending removal is never skipped silently.
 - **`claude/hooks/PluginDriftCheck.hook.ts`:** applies the same filter. A
@@ -20,7 +20,7 @@
   `services_filter_plugins`), and both the hook and `sync-plugins.sh` call
   it. An unreadable selection reports every plugin, plus a note saying the
   selection could not be read.
-- **Tests:** new cases in `plugin-drift.test.sh` (11 failed before the fix,
+- **Tests:** new cases in `plugin-drift.test.sh` (13 failed before the fix,
   all pass after).
 
 ## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
