@@ -324,6 +324,9 @@ for i in $(seq 1 40); do many="$many
 run_in "$FX/dotfiles" "$many"
 assert "summary: capped at the item cap" "[ \"\$(summary_order | tr ',' '\n' | grep -c .)\" -eq 20 ]"
 assert "summary: overflow line counts the rest" "outgrep '  …and 20 more projects'"
+# Show-all is not capped (Codex thread on #567): every item past MAX_ITEMS prints.
+run_in "$FX/dotfiles" "$many" OPERATOR_QUEUE_SHOW_ALL=1
+assert "show-all: items past the cap still print" "line_for many-21 && line_for many-40 && ! outgrep 'more — see'"
 
 # Every line is bounded, not only the action: a huge slug or project name.
 long_word="$(printf 'y%.0s' $(seq 1 3000))"

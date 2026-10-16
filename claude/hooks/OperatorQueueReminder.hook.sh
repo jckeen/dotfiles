@@ -43,10 +43,11 @@
 #   parseable item blocks; one warning line if the parse itself fails. This
 #   hook only reads, never writes, the queue.
 # BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits;
-#   at most MAX_ITEMS items and MAX_ITEMS project summaries are rendered
-#   ("…and N more" for the rest), each action is cut at MAX_ACTION_CHARS
-#   bytes, each item line at MAX_LINE_CHARS and each summary label at 80, so
-#   a grown queue can never flood session context or stall SessionStart.
+#   at most MAX_ITEMS items (every item under OPERATOR_QUEUE_SHOW_ALL=1) and
+#   MAX_ITEMS project summaries are rendered ("…and N more" for the rest),
+#   each action is cut at MAX_ACTION_CHARS bytes, each item line at
+#   MAX_LINE_CHARS and each summary label at 80, so a grown queue can never
+#   flood session context or stall SessionStart.
 # SELF-TEST: claude/scripts/tests/operator-queue-reminder.test.sh
 
 set -uo pipefail
@@ -214,8 +215,13 @@ if [ "$SHOW_ALL" -ne 1 ]; then
   [ "$full_count" -gt 0 ] || echo "  (none for $repo)"
 fi
 if [ "$full_count" -gt 0 ]; then
-  printf '%s\n' "$full_lines" | head -n "$MAX_ITEMS"
-  if [ "$full_count" -gt "$MAX_ITEMS" ]; then
+  # Show-all is the explicit opt-out of the item cap; each line stays bounded.
+  if [ "$SHOW_ALL" -eq 1 ]; then
+    printf '%s\n' "$full_lines"
+  else
+    printf '%s\n' "$full_lines" | head -n "$MAX_ITEMS"
+  fi
+  if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -gt "$MAX_ITEMS" ]; then
     echo "  …and $((full_count - MAX_ITEMS)) more — see $QUEUE_SHOWN"
   fi
 fi

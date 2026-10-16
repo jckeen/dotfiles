@@ -50,7 +50,8 @@ milestone above). Shipped: gitleaks `secret-scan`, a real local Codex review
 gate on push (`codex-review-gate.sh`, ADR-0003 made concrete), a Claude/Codex
 rule `agent-parity` guard, a server-side `commit-format` lint, and broadened
 `check-doc-refs.sh`. Auto-memory now syncs into the private `claude-memory` repo.
-Details in [`CHANGELOG.md`](CHANGELOG.md).
+Details in [`docs/changelog/CHANGELOG-2026-Q2.md`](docs/changelog/CHANGELOG-2026-Q2.md)
+(the 2026-06-09 enforcement-hardening entry).
 
 - **Done 2026-07 (#203):** `smoke-install.yml` flipped to gating early —
   `continue-on-error` removed and the workflow made always-run so it can be a

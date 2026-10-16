@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-16 — fix: small fixes from unresolved Codex review threads
+
+- **`claude/scripts/resolve-changelog.py`:** a CHANGELOG that git still
+  reports unmerged but whose markers are gone (`git checkout --ours`, an
+  editor) is now resolved from the index stages instead of reported as
+  "nothing to do", which let a following `git add` drop the other side's
+  entries.
+- **`claude/hooks/OperatorQueueReminder.hook.sh`:** `OPERATOR_QUEUE_SHOW_ALL=1`
+  now prints every item; it was still cut at the item cap.
+- **`claude/scripts/harvest-codex-comments.sh`:** a filed comment on an
+  instruction surface is classified before the outdated/resolved skips, so a
+  failed `instruction-surface` label is repaired after the comment goes
+  obsolete. An obsolete comment that was never filed still labels nothing.
+- **`ROADMAP.md`:** the 2026-06 enforcement-hardening details link points at
+  the Q2 changelog archive. **`antigravity/permissions.json`:** the symlinked
+  `read_file` note is descriptive, not an imperative (#608).
+- **Tests:** each code fix has a case that failed before it.
+
 ## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
 
 - **`.github/workflows/codex-review.yml`:** the first live run (the close of
