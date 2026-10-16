@@ -78,6 +78,14 @@ check "--services replaces a malformed selection file" \
   'grep -qx "services=codex" <<< "$(HOME="$H" "$SETUP" --show-services --services codex 2>/dev/null)"'
 check "DOTFILES_SERVICES also overrides a malformed selection file" \
   'grep -qx "services=claude" <<< "$(DOTFILES_SERVICES=claude HOME="$H" "$SETUP" --show-services 2>/dev/null)"'
+check "--help still works past a malformed selection file" \
+  'HOME="$H" "$SETUP" --help 2>/dev/null | grep -q "^Usage: ./setup.sh"'
+rm -f "$(saved_file "$H")"
+mkdir -p "$(saved_file "$H")"
+rc=0; services_save "$(saved_file "$H")" "claude" 2>/dev/null || rc=$?
+check "save refuses a directory at the selection path instead of moving into it" \
+  '[ "$rc" -ne 0 ] && [ -z "$(ls -A "$(saved_file "$H")")" ]'
+rmdir "$(saved_file "$H")"
 
 # ── Migration default: no saved selection keeps all three services ──
 H="$(new_home)"
@@ -116,6 +124,17 @@ check "codex-only: shared ~/.claude/scripts tooling is still linked" \
   'grep -q "would link $H/.claude/scripts/" "$OUT"'
 check "codex-only: Antigravity is skipped" '! grep -q "would link $H/.gemini" "$OUT"'
 check "codex-only: completion points at cx" 'grep -q "Try next: cx" "$OUT"'
+# §1b audio routing exists only for Claude /voice; it only runs on WSL, so
+# the assertion is skipped elsewhere (CI's Linux runners).
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  check "codex-only: WSL audio setup for Claude /voice is skipped" \
+    '! grep -q "Set up audio routing for Claude /voice" "$OUT"'
+  PATH="$CLEAN_PATH" HOME="$(new_home)" "$SETUP" --yes --dry-run --services claude > "$ROOT/out.claude" 2>&1
+  check "claude-only: WSL audio setup for Claude /voice is still offered" \
+    'grep -q "Set up audio routing for Claude /voice" "$ROOT/out.claude"'
+else
+  echo "skip - codex-only WSL audio check (not running on WSL)"
+fi
 
 H="$(new_home)"
 PATH="$CLEAN_PATH" HOME="$H" "$SETUP" --yes --dry-run --services antigravity > "$OUT" 2>&1

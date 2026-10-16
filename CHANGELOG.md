@@ -1,12 +1,37 @@
 # Changelog
 
+## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
+
+- **`claude/scripts/run-tests.sh`** (refs #581): now exports
+  `PYTHONDONTWRITEBYTECODE=1`. Any suite that imported a skill's script wrote
+  `__pycache__` under `agents/skills/`, which is an instruction surface. The
+  review gate that had just run the suites then refused its own receipt
+  ("dirty instruction surface outside committed target"). That cost three
+  agent gate runs on 2026-10-16. `run-tests.test.sh` has a new case covering it.
+  The receipt-side fix (ignore a gitignored `*.pyc`-only cache, as #514 did for
+  `node_modules`) is gate machinery and stays on #581.
+
+## 2026-10-16 — fix: setup.sh service-selection edge cases (Codex review on #577)
+
+- **`setup.sh`:** picks the action once (the first of `--help`, `--check`,
+  `--repair`, `--show-services`), so `--repair --show-services` from a linked
+  worktree no longer slips past the worktree guard; `--help` runs before the
+  saved service selection is loaded, so it works when that file is damaged;
+  and the WSL audio routing for Claude `/voice` is skipped when Claude is
+  not a selected service.
+- **`lib-services.sh`:** `services_save` refuses a directory at the selection
+  path instead of moving the temp file into it and reporting success.
+- **Tests:** new cases in `setup-services.test.sh` and
+  `setup-worktree-guard.test.sh` (4 failed before the fix, all pass after;
+  the audio case runs only on WSL).
+
 ## 2026-10-16 — fix: worktree expiry rechecks recovery files and reports accurately
 
 - **`claude/scripts/worktree-lifecycle.py expire`** (Codex threads on #570
   and #576): `--apply` rechecks `recovery.json` and the bundle and metadata
   tar hashes on the staged checkout, then confirms after the final inspection
   that none of them changed since, so the slow hash never sits between that
-  inspection and `git worktree remove`; a tar read error mid-member is
+  inspection and `git worktree remove`; any failure in the staged inspection is
   retained and rolled back instead of escaping;
   a failed rollback names where the checkout actually is; the metadata tar is
   streamed instead of loaded whole, and its hard-link members are compared by

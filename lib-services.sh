@@ -105,6 +105,11 @@ services_load_saved() {
 # (temp file + rename in the same directory). Returns non-zero on failure.
 services_save() {
   local file="$1" list="$2" dir tmp
+  # mv onto a directory would move the temp file INTO it and report success.
+  if [ -d "$file" ]; then
+    echo "service selection path is a directory: $file" >&2
+    return 1
+  fi
   dir="$(dirname "$file")"
   mkdir -p "$dir" || return 1
   tmp="$(mktemp "$dir/.services.XXXXXX")" || return 1
