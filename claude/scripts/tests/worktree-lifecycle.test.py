@@ -36,36 +36,44 @@ def host_git_marker(root):
     return None
 
 
+# Fixtures bind Unix sockets several directories below the temporary root,
+# and AF_UNIX paths are capped near 108 bytes, so a fallback root may be at
+# most this long. Measured 2026-10-16: a 38-character root passes the whole
+# suite and a 53-character one fails a socket fixture.
+MAX_TEMP_BASE_LEN = 24
+
+
 def clean_temp_base(candidates):
-    """The first candidate directory with no Git marker at or above it.
+    """The first usable candidate, resolved, with no Git marker at or above it.
 
     Codex's Linux sandbox mounts a tmpfs at `/tmp/.git` (and at the dev
     directory's `.git`), which leaves an empty `/tmp/.git` on the host for as
     long as any sandboxed command runs (#621, #368). It can appear mid-run,
-    so a check at start-up cannot vouch for /tmp. Missing or unwritable
-    candidates are skipped. Returns None when no candidate is clean.
+    so a check at start-up cannot vouch for /tmp. A candidate is resolved
+    first, because retirement resolves symlinks before it inspects
+    ancestors; missing, unwritable or over-long candidates are skipped.
+    Returns None when no candidate is usable.
     """
     for candidate in candidates:
         if not candidate:
             continue
-        base = Path(candidate)
+        base = Path(candidate).resolve()
         if not base.is_dir() or not os.access(base, os.W_OK | os.X_OK):
+            continue
+        if len(str(base)) > MAX_TEMP_BASE_LEN:
             continue
         if host_git_marker(base) is None:
             return base
     return None
 
 
-_MODULE_TEMP = None
-
-
 def setUpModule():
     """Root every fixture of this module in a directory with no Git marker
     above it, trying ones Codex's sandbox never mounts over before the
     system one (see clean_temp_base). Only this test process's `tempfile`
-    default changes; TMPDIR is untouched, so suites that need it under /tmp
-    are unaffected."""
-    global _MODULE_TEMP
+    default changes, and fixtures sit directly in the chosen directory as
+    they would in /tmp; TMPDIR is untouched, so suites that need it under
+    /tmp are unaffected."""
     system = Path(tempfile.gettempdir())
     base = clean_temp_base(
         ["/var/tmp", os.environ.get("XDG_RUNTIME_DIR"), Path.home() / ".cache", system]
@@ -73,21 +81,16 @@ def setUpModule():
     if base is None:
         raise RuntimeError(
             f"host state, not the code under test: every temporary directory tried "
-            f"(starting with {system}) has a Git marker at or above it, and retirement "
-            "inspects every archive ancestor; set TMPDIR to a directory with no Git marker "
-            "above it"
+            f"(ending with {system}) has a Git marker at or above it, or is missing, "
+            f"unwritable or longer than {MAX_TEMP_BASE_LEN} characters, and retirement "
+            "inspects every archive ancestor; set TMPDIR to a short directory with no "
+            "Git marker above it"
         )
-    if base != system:
-        _MODULE_TEMP = tempfile.mkdtemp(prefix="worktree-lifecycle-test-", dir=base)
-        tempfile.tempdir = _MODULE_TEMP
+    tempfile.tempdir = str(base)
 
 
 def tearDownModule():
-    global _MODULE_TEMP
-    if _MODULE_TEMP is not None:
-        tempfile.tempdir = None
-        shutil.rmtree(_MODULE_TEMP, ignore_errors=True)
-        _MODULE_TEMP = None
+    tempfile.tempdir = None
 
 
 class HostStateTests(unittest.TestCase):
@@ -112,8 +115,29 @@ class HostStateTests(unittest.TestCase):
             (marked / ".git").mkdir(parents=True)
             clean = base / "clean"
             clean.mkdir()
-            self.assertEqual(clean_temp_base([marked, None, base / "missing", clean]), clean)
+            self.assertEqual(
+                clean_temp_base([marked, None, base / "missing", clean]), clean.resolve()
+            )
             self.assertIsNone(clean_temp_base([marked, base / "missing"]))
+
+    def test_a_symlink_into_a_marked_tree_is_not_clean(self):
+        # Retirement resolves symlinks before inspecting ancestors, so the
+        # check must judge where a candidate leads, not how it is spelled.
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            inner = base / "marked" / "inner"
+            inner.mkdir(parents=True)
+            (base / "marked" / ".git").mkdir()
+            link = base / "link"
+            link.symlink_to(inner)
+            self.assertIsNone(host_git_marker(link))  # lexically clean
+            self.assertIsNone(clean_temp_base([link]))
+
+    def test_an_over_long_candidate_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            long_dir = Path(temp) / ("x" * MAX_TEMP_BASE_LEN)
+            long_dir.mkdir()
+            self.assertIsNone(clean_temp_base([long_dir]))
 
 
 class LifecycleTests(unittest.TestCase):

@@ -10,7 +10,10 @@
   marker can appear mid-run, while another session's sandboxed commands are
   active, so the module now roots its fixtures outside `/tmp`: the first
   temp base with no Git marker above it, trying `/var/tmp`,
-  `$XDG_RUNTIME_DIR`, `~/.cache` and only then the system one.
+  `$XDG_RUNTIME_DIR`, `~/.cache` and only then the system one. Candidates
+  are resolved before the check, because retirement resolves symlinks.
+  Any candidate longer than 24 characters is skipped, because the suite's
+  socket fixtures break once the root reaches about 53 characters.
   Only this test process's `tempfile` default changes, so `TMPDIR` is left
   alone for suites that need it under `/tmp` (#621). The guard still fails
   with a clear message when none of them is clean. Verified: with an empty
