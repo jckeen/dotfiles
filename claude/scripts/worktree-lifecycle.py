@@ -28,7 +28,6 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -1052,20 +1051,34 @@ def check_metadata_archived(admin, archive, head):
     the gitdir path holds work. Every other file, the index included, must be
     byte-identical to its archived copy, and no other name may appear.
     """
-    try:
-        with tarfile.open(
-            fileobj=io.BytesIO(read_regular(archive / "worktree-metadata.tar"))
-        ) as tar:
-            saved = {}
-            for member in tar.getmembers():
-                relative = member.name.removeprefix("worktree-metadata/")
-                content = None
-                if member.isfile():
-                    with tar.extractfile(member) as stream:
-                        content = stream.read()
-                saved[relative] = (member, content)
-    except (OSError, tarfile.TarError) as error:
-        raise ValueError("cannot read worktree-metadata.tar; retain for inspection") from error
+
+    def unreadable():
+        return ValueError("cannot read worktree-metadata.tar; retain for inspection")
+
+    def archived(member):
+        # A hard-link member is the second name of a file retirement saved;
+        # extractfile resolves it to the content within the archive.
+        if not (member.isfile() or member.islnk()):
+            return None
+        try:
+            return tar.extractfile(member)
+        except (OSError, tarfile.TarError) as error:
+            raise unreadable() from error
+
+    def same_content(member, path):
+        original = archived(member)
+        if original is None:
+            return False
+        with original, open_regular(path) as current:
+            while True:
+                try:
+                    chunk = original.read(1024 * 1024)
+                except (OSError, tarfile.TarError) as error:
+                    raise unreadable() from error
+                if current.read(1024 * 1024) != chunk:
+                    return False
+                if not chunk:
+                    return True
 
     def refuse(relative, why):
         raise ValueError(f"Git metadata {relative} {why} since retirement; retain for inspection")
@@ -1073,46 +1086,70 @@ def check_metadata_archived(admin, archive, head):
     def scan_error(error):
         raise error
 
-    for directory, dirs, files in os.walk(admin, followlinks=False, onerror=scan_error):
-        for name in dirs + files:
-            path = Path(directory) / name
-            relative = path.relative_to(admin).as_posix()
-            info = path.lstat()
-            member, content = saved.get(relative, (None, None))
-            if stat.S_ISDIR(info.st_mode):
-                # A directory holds nothing itself; its entries are walked.
-                if member is not None and not member.isdir():
-                    refuse(relative, "changed type")
-                continue
-            if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
-                refuse(relative, "is a special file created or changed")
-            if relative in ("locked", "gitdir"):
-                if not stat.S_ISREG(info.st_mode):
-                    refuse(relative, "changed type")
-                continue
-            if relative == "HEAD":
-                if read_regular(path).strip() != head.encode():
-                    refuse(relative, "moved")
-                continue
-            if relative == "logs/HEAD":
-                live, old = read_regular(path), content or b""
-                if not live.startswith(old):
-                    refuse(relative, "was rewritten")
-                # Retirement's detach logs head -> head. A line naming any
-                # other commit on either side may be its last reference.
-                for line in live[len(old) :].splitlines():
-                    if line.split(b" ")[:2] != [head.encode(), head.encode()]:
-                        refuse(relative, "recorded a commit other than the recorded head")
-                continue
-            if member is None:
-                refuse(relative, "was written")
-            if stat.S_IMODE(info.st_mode) != member.mode:
-                refuse(relative, "changed mode")
-            if stat.S_ISLNK(info.st_mode):
-                if not member.issym() or os.readlink(path) != member.linkname:
-                    refuse(relative, "changed")
-            elif not member.isfile() or read_regular(path) != content:
-                refuse(relative, "changed")
+    # Streamed, never held whole: in a large repository the archived index
+    # alone can be as large as the memory the hygiene timer's run may use.
+    try:
+        stream = open_regular(archive / "worktree-metadata.tar")
+    except OSError as error:
+        raise unreadable() from error
+    with stream:
+        try:
+            tar = tarfile.open(fileobj=stream)
+            saved = {
+                member.name.removeprefix("worktree-metadata/"): member
+                for member in tar.getmembers()
+            }
+        except (OSError, tarfile.TarError) as error:
+            raise unreadable() from error
+        with tar:
+            for directory, dirs, files in os.walk(admin, followlinks=False, onerror=scan_error):
+                for name in dirs + files:
+                    path = Path(directory) / name
+                    relative = path.relative_to(admin).as_posix()
+                    info = path.lstat()
+                    member = saved.get(relative)
+                    if stat.S_ISDIR(info.st_mode):
+                        # A directory holds nothing itself; its entries are walked.
+                        if member is not None and not member.isdir():
+                            refuse(relative, "changed type")
+                        continue
+                    if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                        refuse(relative, "is a special file created or changed")
+                    if relative in ("locked", "gitdir"):
+                        if not stat.S_ISREG(info.st_mode):
+                            refuse(relative, "changed type")
+                        continue
+                    if relative == "HEAD":
+                        if read_regular(path).strip() != head.encode():
+                            refuse(relative, "moved")
+                        continue
+                    if relative == "logs/HEAD":
+                        # A reflog is small; read whole, as the comparison
+                        # below needs the archived bytes as a prefix.
+                        old = b""
+                        if member is not None:
+                            original = archived(member)
+                            if original is not None:
+                                with original:
+                                    old = original.read()
+                        live = read_regular(path)
+                        if not live.startswith(old):
+                            refuse(relative, "was rewritten")
+                        # Retirement's detach logs head -> head. A line naming any
+                        # other commit on either side may be its last reference.
+                        for line in live[len(old) :].splitlines():
+                            if line.split(b" ")[:2] != [head.encode(), head.encode()]:
+                                refuse(relative, "recorded a commit other than the recorded head")
+                        continue
+                    if member is None:
+                        refuse(relative, "was written")
+                    if stat.S_IMODE(info.st_mode) != member.mode:
+                        refuse(relative, "changed mode")
+                    if stat.S_ISLNK(info.st_mode):
+                        if not member.issym() or os.readlink(path) != member.linkname:
+                            refuse(relative, "changed")
+                    elif not same_content(member, path):
+                        refuse(relative, "changed")
 
 
 def still_registered(repo, path, head, lock):
@@ -1190,14 +1227,21 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
         try:
             git(repo, "worktree", "repair", str(staging))
             inspect(staging)
+            # The process scan never covers the archive entry, so the recovery
+            # files the removal relies on are rechecked last as well.
+            if recovery_record(archive)[0] != record:
+                raise ValueError("recovery.json changed; retain for inspection")
+            check_recovery_files(archive, record)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
+            location, step = staging, "moving it back"
             try:
                 os.rename(staging, quarantine)
+                location, step = quarantine, "repairing its registration"
                 git(repo, "worktree", "repair", str(quarantine))
             except (OSError, ValueError, subprocess.SubprocessError) as restore:
                 raise ValueError(
-                    f"changed after inspection ({error}); the checkout is retained at {staging} "
-                    f"because moving it back failed: {restore}"
+                    f"changed after inspection ({error}); the checkout is retained at {location} "
+                    f"because {step} failed: {restore}"
                 ) from error
             raise ValueError(f"changed after inspection; retained: {error}") from error
         # --force twice overrides the lock this function verified names this
@@ -1245,7 +1289,11 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
         try:
             if child.is_symlink() or not child.is_dir():
                 raise ValueError("not an archive directory; retain for inspection")
-            if staged is not None:
+            if staged is not None and registration is not None:
+                # Two live checkouts are not one interrupted expiry; neither
+                # registration is this entry's to consume as the other.
+                entry["kind"] = "quarantine"
+            elif staged is not None:
                 entry["kind"] = "interrupted-expiry"
             elif registration is not None:
                 entry["kind"] = "quarantine"
@@ -1264,6 +1312,11 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
             if entry["kind"] == "recovery-files":
                 entries.append(entry)
                 continue
+            if staged is not None and registration is not None:
+                raise ValueError(
+                    f"both {child / 'worktree'} and {child / STAGING} are registered "
+                    "worktrees; inspect both and remove the one that does not belong by hand"
+                )
             if entry["kind"] == "interrupted-expiry":
                 raise ValueError(
                     f"an interrupted expiry left the checkout registered at {child / STAGING}; "
@@ -1318,8 +1371,13 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
                 "inspect and remove it by hand",
             )
         )
-    # Kept recovery files are not retired worktrees any more.
-    live = [entry for entry in entries if entry["kind"] != "recovery-files"]
+    # Kept recovery files are not retired worktrees any more, including an
+    # entry this run expired.
+    live = [
+        entry
+        for entry in entries
+        if entry["kind"] != "recovery-files" and entry.get("disposition") != "expired"
+    ]
     ages = [entry["age_days"] for entry in live if entry["age_days"] is not None]
     return dict(
         archive_dir=str(archive_dir),

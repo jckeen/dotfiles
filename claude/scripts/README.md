@@ -565,7 +565,10 @@ timer saves this read-only inventory to `~/.local/state/hygiene/worktrees.json`.
 Read it with `hygiene-status.sh --worktrees`; `--status` describes repository
 settings plus one `retired worktrees: N (oldest Xd, M expirable)` line from
 the timer's expiry report (see Expiring retired worktrees below); it reads
-`oldest unknown` when no retired entry has a readable age.
+`oldest unknown` when no retired entry has a readable age. That line does not
+depend on the settings state: with no `status.json`, `--status` prints
+`no-data` and then the line, and the quiet modes still report an expirable
+entry.
 Unreleased worktrees have unknown or active ownership and remain retained.
 
 The task owner stops its processes, leaves the target directory, and releases
@@ -748,9 +751,13 @@ holds the head stays on disk.
 `worktree-expiring` inside the same entry, so a path-based writer can no longer
 land in what is about to be deleted, and repairs Git's link. It then runs the
 clean, process, registration and metadata checks again on the moved directory.
-The metadata check runs last, because a commit made through the Git metadata
-during that inspection leaves the checkout clean. Anything found moves the
-checkout back to `worktree` and retains the entry. Only then does it run
+The metadata check runs after them, because a commit made through the Git
+metadata during that inspection leaves the checkout clean. Last, since the
+process checks never cover the archive entry, `recovery.json` must still hold
+the record read at the start and the bundle and metadata tar must still hash
+to it. Anything found moves the checkout back to `worktree` and retains the
+entry; if moving it back or repairing its registration fails, the reason names
+where the checkout actually is. Only then does it run
 `git worktree remove --force --force` on it from the primary checkout,
 refusing when the current directory is inside it. The window left between that
 last read and the removal is Git's own, the same one #522 records for branch
@@ -758,20 +765,25 @@ deletion. The merged branch ref and stashes are untouched. Every file expire
 reads from an archive entry or worktree metadata goes through one reader that
 requires a regular file by `lstat`, opens it non-blocking without following
 links, and checks it again by `fstat`. A FIFO therefore retains the entry with
-a reason and cannot hang the timer's report run.
+a reason and cannot hang the timer's report run. The metadata tar is compared
+in chunks, never held whole, and a hard-link member (the second name of a
+hard-linked metadata file) is compared by content like a regular one.
 
 Every other shape is reported and left alone:
 
 - `recovery-files`: an entry with no checkout, left by an earlier expiry or by
   a retirement that stopped before its quarantine step. It is always `kept`
-  and is not counted as a retired worktree.
+  and is not counted as a retired worktree; neither is an entry the same run
+  just expired.
 - `orphan-directory`: an entry whose `worktree` (or a leftover
   `worktree-expiring`) Git no longer registers. Always retained; inspect and
   remove it by hand.
 - `interrupted-expiry`: an entry whose checkout an interrupted expiry left
   registered at `worktree-expiring`. Reported once, as that entry, and always
   retained; inspect it, then remove it or move it back to `worktree` and run
-  `git worktree repair`.
+  `git worktree repair`. When `worktree` is registered as well, the two are
+  not one interrupted expiry: the entry is a retained `quarantine` whose
+  reason names both paths, and neither registration is touched.
 - `orphan-registration`: a worktree registered under the archive whose entry
   directory is gone. Always retained, since the recovery files that would back
   its removal are gone too.
