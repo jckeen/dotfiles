@@ -113,6 +113,7 @@ run_case() {
   mkdir -p "$TMP/root$n/claude/scripts" "$TMP/root$n/.github/workflows"
   cp "$CANON_DIR/codex-review.yml" "$CANON_DIR/codex-findings.yml" "$TMP/root$n/.github/workflows/"
   mv "$script" "$TMP/root$n/claude/scripts/fleet.sh"
+  [ -e "$FIX/unreadable_canonical" ] && chmod 000 "$TMP/root$n/.github/workflows/codex-findings.yml"
   PATH="$TMP/bin:$PATH" bash "$TMP/root$n/claude/scripts/fleet.sh" $6 o/r >"$FIX/out" 2>&1
   local code=$?
   local got
@@ -127,6 +128,9 @@ run_case() {
 }
 
 run_case "check writes nothing" none 0 0 0 --check ""
+n_next=$((n + 1))
+mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/unreadable_canonical"
+run_case "an unreadable canonical workflow ships nothing" none 0 0 0 --apply "" 2
 run_case "missing workflows open the rollout PR, no ruleset" none 0 0 0 --apply \
   "POST git/refs;PUT contents/.github/workflows/codex-review.yml;PUT contents/.github/workflows/codex-findings.yml;pr create;pr merge"
 run_case "stale workflows open the rollout PR, no ruleset" stale 0 0 0 --apply \

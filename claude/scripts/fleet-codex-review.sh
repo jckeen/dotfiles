@@ -83,11 +83,15 @@ for arg in "$@"; do
       ;;
   esac
 done
+# Every canonical file is read once, here, before any repository is touched,
+# so a local read that fails can never ship an empty or partial workflow.
+declare -A CANON_B64
 for f in "${WORKFLOWS[@]}"; do
-  [ -f "$CANONICAL_DIR/$f" ] || {
-    echo "canonical workflow missing: $CANONICAL_DIR/$f" >&2
+  if ! b64="$(base64 -w0 <"$CANONICAL_DIR/$f")" || [ -z "$b64" ]; then
+    echo "canonical workflow missing, unreadable or empty: $CANONICAL_DIR/$f" >&2
     exit 2
-  }
+  fi
+  CANON_B64[$f]=$b64
 done
 if [ "${#repos[@]}" -eq 0 ]; then
   repos=("${ENFORCE[@]}" "${ADVISORY[@]}")
@@ -111,7 +115,7 @@ file_state() {
     return
   fi
   rm -f "$err"
-  if [ "$(printf '%s' "$content" | base64 -d)" = "$(cat "$CANONICAL_DIR/$f")" ]; then
+  if [ "$(printf '%s' "$content" | base64 -d)" = "$(printf '%s' "${CANON_B64[$f]}" | base64 -d)" ]; then
     echo current
   else
     echo stale
@@ -141,11 +145,12 @@ open_rollout_pr() {
 
 # Called from an OR-list, where bash suspends errexit inside the function, so
 # every write checks its own result and stops the rollout for this repo.
-# ship_workflow <repo> <base> <workflow state>: the state is workflow_state's
-# file:state pairs from the one read the caller already checked, so nothing
-# here re-reads the default branch and acts on a failed read.
+# ship_workflow <repo> <base> <base sha> <workflow state>: the state is
+# workflow_state's file:state pairs, read by the caller at that exact base
+# commit, which is also the commit the branch is cut from, so the states and
+# the branch can never disagree about which files exist.
 ship_workflow() {
-  local repo="$1" base="$2" todo="$3" pr base_sha file_sha body pair f st
+  local repo="$1" base="$2" base_sha="$3" todo="$4" pr file_sha body pair f st
   if ! pr="$(open_rollout_pr "$repo")"; then
     echo "  could not list open PRs" >&2
     return 1
@@ -170,10 +175,6 @@ ship_workflow() {
     return 1
   fi
   rm -f "$err"
-  if ! base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)" || [ -z "$base_sha" ]; then
-    echo "  could not read $base" >&2
-    return 1
-  fi
   # Every read happens before the first write: a stale file's blob sha is
   # read at the base commit the branch is about to be cut from (the same
   # blob), so a failed read leaves no branch and no partial upload behind.
@@ -199,7 +200,7 @@ ship_workflow() {
     f=${pair%%:*}
     local args=(-X PUT "repos/$repo/contents/$WORKFLOW_DIR/$f" -f branch="$BRANCH"
       -f message="ci: add or update $f from jckeen/dotfiles"
-      -f content="$(base64 -w0 <"$CANONICAL_DIR/$f")")
+      -f content="${CANON_B64[$f]}")
     [ -n "${shas[$i]}" ] && args+=(-f sha="${shas[$i]}")
     i=$((i + 1))
     if ! gh api "${args[@]}" >/dev/null; then
@@ -264,7 +265,14 @@ for repo in "${repos[@]}"; do
     rc=1
     continue
   fi
-  wf="$(workflow_state "$repo" "$base")"
+  # Pin one base commit: the workflow states and any rollout branch both use
+  # it, so a workflow landing in between cannot make them disagree.
+  if ! base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)" || [ -z "$base_sha" ]; then
+    echo "  could not read $base" >&2
+    rc=1
+    continue
+  fi
+  wf="$(workflow_state "$repo" "$base_sha")"
   if [[ "$wf" == *unreadable* ]]; then
     echo "  workflow=$wf; cannot read the workflows, skipping" >&2
     rc=1
@@ -282,7 +290,7 @@ for repo in "${repos[@]}"; do
     # The canonical copy lands here through dotfiles' own reviewed PR.
     echo "  workflow lands through the dotfiles PR; nothing to do here"
   elif [ "$wf" != current ]; then
-    ship_workflow "$repo" "$base" "$wf" || rc=1
+    ship_workflow "$repo" "$base" "$base_sha" "$wf" || rc=1
   elif [ "$want" = enforce ] && [ -z "$rs" ]; then
     if create_ruleset "$repo"; then
       # PRs opened before the workflow landed have no status yet and may see
