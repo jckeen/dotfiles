@@ -36,15 +36,82 @@ def host_git_marker(root):
     return None
 
 
+# Fixtures bind Unix sockets several directories below the temporary root,
+# and AF_UNIX paths are capped near 108 bytes, so a fallback root may be at
+# most this many bytes. Measured 2026-10-16: a 38-character root passes the whole
+# suite and a 53-character one fails a socket fixture.
+MAX_TEMP_BASE_LEN = 24
+
+
+def can_execute_in(base):
+    """Whether a script written under `base` can run. The fixtures execute
+    generated `gh` and `systemctl` stand-ins there, and a noexec mount
+    passes every permission check on the directory itself."""
+    try:
+        fd, probe = tempfile.mkstemp(dir=base)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(probe, 0o700)
+        return subprocess.run([probe], check=False).returncode == 0
+    except OSError:
+        return False
+    finally:
+        os.unlink(probe)
+
+
+def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN, can_execute=can_execute_in):
+    """The first usable candidate, resolved, with no Git marker at or above it.
+
+    Codex's Linux sandbox mounts a tmpfs at `/tmp/.git` (and at the dev
+    directory's `.git`), which leaves an empty `/tmp/.git` on the host for as
+    long as any sandboxed command runs (#621, #368). It can appear mid-run,
+    so a check at start-up cannot vouch for /tmp. A candidate is resolved
+    first, because retirement resolves symlinks before it inspects
+    ancestors; missing, unwritable, over-long or noexec candidates are
+    skipped.
+    Returns None when no candidate is usable.
+    """
+    for candidate in candidates:
+        if not candidate:
+            continue
+        base = Path(candidate).resolve()
+        if not base.is_dir() or not os.access(base, os.W_OK | os.X_OK):
+            continue
+        # AF_UNIX limits bytes, not characters: count the encoded path.
+        if len(os.fsencode(base)) > max_len:
+            continue
+        if host_git_marker(base) is None and can_execute(base):
+            return base
+    return None
+
+
 def setUpModule():
-    with tempfile.TemporaryDirectory() as probe:
-        marker = host_git_marker(Path(probe))
-    if marker is not None:
+    """Root every fixture of this module in a directory with no Git marker
+    above it, trying ones Codex's sandbox never mounts over before the
+    system one (see clean_temp_base). Only this test process's `tempfile`
+    default changes, and fixtures sit directly in the chosen directory as
+    they would in /tmp; TMPDIR is untouched, so suites that need it under
+    /tmp are unaffected."""
+    system = Path(tempfile.gettempdir())
+    base = clean_temp_base(
+        ["/var/tmp", os.environ.get("XDG_RUNTIME_DIR"), Path.home() / ".cache", system]
+    )
+    if base is None:
         raise RuntimeError(
-            f"host state, not the code under test: a Git marker at {marker} sits above the "
-            "fixture root, and retirement inspects every archive ancestor; remove it or set "
-            "TMPDIR to a directory with no Git marker above it"
+            f"host state, not the code under test: every temporary directory tried "
+            f"(ending with {system}) has a Git marker at or above it, or is missing, "
+            f"unwritable, noexec or longer than {MAX_TEMP_BASE_LEN} characters, and retirement "
+            "inspects every archive ancestor; set TMPDIR to a short directory with no "
+            "Git marker above it"
         )
+    tempfile.tempdir = str(base)
+
+
+def tearDownModule():
+    tempfile.tempdir = None
 
 
 class HostStateTests(unittest.TestCase):
@@ -58,6 +125,66 @@ class HostStateTests(unittest.TestCase):
             self.assertEqual(host_git_marker(nested), base / "outer" / ".git")
             (base / "outer" / "inner" / ".git").write_text("gitdir: nowhere\n")
             self.assertEqual(host_git_marker(nested), base / "outer" / "inner" / ".git")
+
+    def test_fixtures_move_past_a_marked_temp_dir(self):
+        # The /tmp/.git that Codex's sandbox leaves behind (#621): the marked
+        # directory is skipped for the first clean one, and missing or None
+        # candidates are skipped too.
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            marked = base / "marked"
+            (marked / ".git").mkdir(parents=True)
+            clean = base / "clean"
+            clean.mkdir()
+            self.assertEqual(
+                clean_temp_base([marked, None, base / "missing", clean], max_len=4096),
+                clean.resolve(),
+            )
+            self.assertIsNone(clean_temp_base([marked, base / "missing"], max_len=4096))
+
+    def test_a_symlink_into_a_marked_tree_is_not_clean(self):
+        # Retirement resolves symlinks before inspecting ancestors, so the
+        # check must judge where a candidate leads, not how it is spelled.
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            inner = base / "marked" / "inner"
+            inner.mkdir(parents=True)
+            (base / "marked" / ".git").mkdir()
+            link = base / "link"
+            link.symlink_to(inner)
+            self.assertIsNone(host_git_marker(link))  # lexically clean
+            self.assertIsNone(clean_temp_base([link], max_len=4096))
+
+    def test_a_candidate_that_cannot_run_scripts_is_skipped(self):
+        # A noexec mount passes every directory permission check, so the
+        # chooser must try running a script; mounting one needs root, so the
+        # probe is stubbed here and exercised for real below.
+        with tempfile.TemporaryDirectory() as temp:
+            first = Path(temp) / "noexec"
+            second = Path(temp) / "exec"
+            first.mkdir()
+            second.mkdir()
+            chosen = clean_temp_base(
+                [first, second], max_len=4096, can_execute=lambda base: base != first.resolve()
+            )
+            self.assertEqual(chosen, second.resolve())
+            self.assertTrue(can_execute_in(second))
+            self.assertEqual(list(second.iterdir()), [])  # the probe cleans up
+
+    def test_the_length_cap_counts_bytes(self):
+        # Two-byte characters: within the cap by character count, over it
+        # by bytes, which is what the socket limit measures.
+        with tempfile.TemporaryDirectory() as temp:
+            wide = Path(temp) / ("é" * 8)
+            wide.mkdir()
+            cap = len(str(wide.resolve())) + 1
+            self.assertIsNone(clean_temp_base([wide], max_len=cap))
+
+    def test_an_over_long_candidate_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            long_dir = Path(temp) / ("x" * MAX_TEMP_BASE_LEN)
+            long_dir.mkdir()
+            self.assertIsNone(clean_temp_base([long_dir]))
 
 
 class LifecycleTests(unittest.TestCase):
