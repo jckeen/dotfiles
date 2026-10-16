@@ -40,19 +40,31 @@
  * or parsed is named as unverifiable instead: Claude Code's loader may accept
  * what this parser rejects, so skipping it would hide the mod.
  *
+ * Only local-marketplace entries that are installed or enabled are scanned:
+ * registering a marketplace does not load its whole catalog. Every JSON file
+ * is read through readJsonFile(), which refuses anything but a regular file
+ * of bounded size, so a FIFO cannot hang the hook and /dev/zero cannot
+ * exhaust memory; for an untrusted plugin such a file is unverifiable.
+ *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
- * shown() first.
+ * shown() first. An id that needed sanitizing is marked as not allowlistable,
+ * since the allowlist matches the raw id.
  *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
  */
 
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
 } from 'fs';
 import { homedir } from 'os';
@@ -72,15 +84,76 @@ const SETTINGS = join(HOME, '.claude', 'settings.json');
 const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
 const SKILLS_DIR = join(HOME, '.claude', 'skills');
 const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
-// Hooks run in the session's primary working directory, the only place
-// Claude Code reads project .claude/skills plugins from (no parent search).
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const PROJECT_SKILLS_DIR = join(PROJECT_DIR, '.claude', 'skills');
+const MAX_JSON_BYTES = 1024 * 1024;
+
+type JsonRead =
+  | { state: 'absent' }
+  | { state: 'bad' }
+  | { state: 'ok'; value: unknown };
+
+// The one reader for every plugin-side JSON file. Opened non-blocking and
+// checked on the open descriptor, so a FIFO, a device (/dev/zero), a
+// directory or an oversized file is `bad` without being read, and a swap
+// between check and read cannot slip one past. `absent` means nothing is
+// there at all; a dangling symlink is `bad`.
+function readJsonFile(path: string): JsonRead {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch {
+    return present(path) ? { state: 'bad' } : { state: 'absent' };
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_JSON_BYTES) return { state: 'bad' };
+    const buf = Buffer.alloc(stat.size + 1);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    if (n > stat.size) return { state: 'bad' }; // Grew since the fstat.
+    return { state: 'ok', value: JSON.parse(buf.toString('utf-8', 0, n)) };
+  } catch {
+    return { state: 'bad' };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The hook input's `cwd`: it follows the session into a --worktree, where
+// $CLAUDE_PROJECT_DIR stays on the main checkout.
+function inputCwd(): string | null {
+  if (process.stdin.isTTY) return null;
+  try {
+    const input = JSON.parse(readFileSync(0, 'utf-8').slice(0, MAX_JSON_BYTES));
+    return typeof input?.cwd === 'string' && input.cwd ? input.cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+// Claude Code reads project .claude/skills plugins from the session's working
+// directory (no parent search). $CLAUDE_PROJECT_DIR is scanned too: a
+// worktree without its own .claude/skills, and a desktop worktree session,
+// load the main checkout's.
+const PROJECT_DIRS = [
+  ...new Set(
+    [inputCwd() ?? process.cwd(), process.env.CLAUDE_PROJECT_DIR].filter(
+      (d): d is string => !!d,
+    ),
+  ),
+];
+
+const SAFE_ID = /^[A-Za-z0-9._@/-]+$/;
+
+// True when shown() prints the text unchanged, so it can be copied into a
+// `# mods-ok:` line.
+function verbatim(text: string): boolean {
+  return SAFE_ID.test(text) && text.length <= 300;
+}
 
 // Untrusted text in model context: keep plugin-id and path characters only,
-// so a name cannot carry a newline, a closing tag or an instruction, and cap
-// the length.
+// so a name cannot carry a newline, a closing tag or an instruction. Safe
+// text is printed whole; text that needed changing is also capped.
 function shown(text: string): string {
+  if (verbatim(text)) return text;
   const safe = text.replace(/[^A-Za-z0-9._@/-]/g, '_');
   return safe.length > 100 ? `${safe.slice(0, 100)}...` : safe;
 }
@@ -182,22 +255,42 @@ function subdirs(dir: string): string[] {
   }
 }
 
-function pluginName(dir: string): string | null {
-  try {
-    const path = join(dir, '.claude-plugin', 'plugin.json');
-    const name = JSON.parse(readFileSync(path, 'utf-8')).name;
-    return typeof name === 'string' ? name : null;
-  } catch {
-    return null;
-  }
+function readJson(path: string): unknown {
+  const read = readJsonFile(path);
+  return read.state === 'ok' ? read.value : null;
 }
 
-function readJson(path: string): unknown {
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
-  } catch {
-    return null;
+function pluginName(dir: string): string | null {
+  const name = (
+    readJson(join(dir, '.claude-plugin', 'plugin.json')) as {
+      name?: unknown;
+    } | null
+  )?.name;
+  return typeof name === 'string' ? name : null;
+}
+
+// Ids that can load from a local marketplace: installed at any scope, or
+// enabled (`true`) in user or project settings — a relative-path plugin needs
+// no install record once enabled. Over-counting only adds a warning.
+function activeIds(): Set<string> {
+  const ids = new Set<string>();
+  const installed = (readJson(INSTALLED) as { plugins?: unknown } | null)
+    ?.plugins;
+  if (typeof installed === 'object' && installed !== null)
+    for (const id of Object.keys(installed)) ids.add(id);
+  const settings = [SETTINGS];
+  for (const dir of PROJECT_DIRS)
+    settings.push(
+      join(dir, '.claude', 'settings.json'),
+      join(dir, '.claude', 'settings.local.json'),
+    );
+  for (const path of settings) {
+    const enabled = (readJson(path) as { enabledPlugins?: unknown } | null)
+      ?.enabledPlugins;
+    if (typeof enabled === 'object' && enabled !== null)
+      for (const [id, on] of Object.entries(enabled)) if (on === true) ids.add(id);
   }
+  return ids;
 }
 
 // A plugin entry's relative-path source, resolved from the marketplace root
@@ -265,6 +358,7 @@ function untrustedPlugin(
 // marketplace's clone is skipped — its plugins load from the cache copy.
 function localMarketplacePlugins(): Scanned[] {
   const found: Scanned[] = [];
+  const active = activeIds();
   const known = readJson(KNOWN_MARKETPLACES);
   if (typeof known !== 'object' || known === null) return found;
   for (const [market, entry] of Object.entries(known)) {
@@ -282,10 +376,13 @@ function localMarketplacePlugins(): Scanned[] {
       root = dirname(dirname(source.path));
       catalogPath = source.path;
     } else continue;
-    const catalog = readJson(catalogPath);
+    const read = readJsonFile(catalogPath);
+    const catalog = read.state === 'ok' ? read.value : null;
     const plugins = (catalog as { plugins?: unknown } | null)?.plugins;
     if (!Array.isArray(plugins)) {
-      if (present(catalogPath))
+      // Unreadable: report it only if something from it is in use.
+      const used = [...active].some((id) => id.endsWith(`@${market}`));
+      if (read.state !== 'absent' && used)
         found.push({
           id: `marketplace.json@${market}`,
           dir: root,
@@ -302,9 +399,10 @@ function localMarketplacePlugins(): Scanned[] {
         source?: unknown;
       };
       const dir = relativeSource(root, src, pluginRoot);
+      const id = `${name}@${market}`;
       const scanned =
-        typeof name === 'string' && dir
-          ? untrustedPlugin('local', dir, `${name}@${market}`)
+        typeof name === 'string' && dir && active.has(id)
+          ? untrustedPlugin('local', dir, id)
           : null;
       if (scanned) found.push(scanned);
     }
@@ -333,13 +431,17 @@ function pluginDirs(): Scanned[] {
     const name = pluginName(dir);
     if (name) found.push({ id: `${name}@skills-dir`, dir, origin });
   }
-  // Skipped only when the project's skills dir provably IS ~/.claude/skills
-  // (a session started in HOME); a path that fails to resolve is scanned.
-  if (!sameDir(PROJECT_SKILLS_DIR, SKILLS_DIR))
-    for (const dir of subdirs(PROJECT_SKILLS_DIR)) {
+  // A project skills dir is skipped only when it provably IS
+  // ~/.claude/skills (a session started in HOME); a path that fails to
+  // resolve is scanned.
+  for (const project of PROJECT_DIRS) {
+    const skills = join(project, '.claude', 'skills');
+    if (sameDir(skills, SKILLS_DIR)) continue;
+    for (const dir of subdirs(skills)) {
       const scanned = untrustedPlugin('project', dir);
       if (scanned) found.push(scanned);
     }
+  }
   return found;
 }
 
@@ -357,20 +459,22 @@ function modsWarning(allowed: string[]): string {
   for (const { id, dir, origin, unverifiable: noManifest } of pluginDirs()) {
     if (origin !== 'project' && allowed.includes(id)) continue;
     const label =
-      origin === 'project' ? `${shown(id)} (project .claude/skills)` : shown(id);
+      shown(id) +
+      (verbatim(id) ? '' : ' (sanitized: cannot be allowlisted)') +
+      (origin === 'project' ? ' (project .claude/skills)' : '');
     if (noManifest) {
       unverifiable.add(label);
       continue;
     }
-    const hooksPath = join(dir, 'hooks', 'hooks.json');
-    try {
-      const hooks = JSON.parse(readFileSync(hooksPath, 'utf-8'));
-      if (typeof hooks === 'object' && hooks !== null && 'modules' in hooks)
+    const hooks = readJsonFile(join(dir, 'hooks', 'hooks.json'));
+    if (hooks.state === 'ok') {
+      const value = hooks.value;
+      if (typeof value === 'object' && value !== null && 'modules' in value)
         mods.add(label);
-    } catch {
+    } else if (hooks.state === 'bad' && origin !== 'installed') {
       // No hooks.json is no mod. An installed plugin's unloadable one is
       // skipped; an untrusted plugin's is reported (see header).
-      if (origin !== 'installed' && present(hooksPath)) unverifiable.add(label);
+      unverifiable.add(label);
     }
   }
   let warning = '';

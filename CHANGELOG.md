@@ -25,10 +25,20 @@
   marketplace's catalog is read from its recorded path under any name. The
   project scan is skipped only when its path provably resolves to
   `~/.claude/skills`; a path that fails to resolve is scanned.
+- **Scope and safety (gate and Codex review on #646):** the project scan
+  reads the hook input's `cwd`, which follows a `--worktree`, plus
+  `$CLAUDE_PROJECT_DIR`; local-marketplace entries are scanned only when
+  installed or enabled; every plugin JSON file goes through one reader that
+  accepts only a regular file under 1 MiB, so a FIFO cannot hang the hook and
+  `/dev/zero` cannot exhaust memory; a safe id is printed whole (up to 300
+  characters) so a long id stays allowlistable, and a sanitized one says it
+  cannot be.
 - **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
-  dir and adds fixtures for both origins, an allowlist-shadowing project
-  plugin, injection names, and unparseable untrusted files (22 of 78 failed on
-  origin/main, all pass after).
+  dir with explicit stdin, and adds fixtures for both origins, an
+  allowlist-shadowing project plugin, injection names, unparseable, FIFO,
+  `/dev/zero` and oversized untrusted files, inactive catalog entries, long
+  ids and a `--worktree` cwd (30 of 93 failed on origin/main, all pass after;
+  the previous hook hung on the FIFO until the test's timeout).
 
 ## 2026-10-16 — test: heal-race rivals no longer hold the capture pipe
 
