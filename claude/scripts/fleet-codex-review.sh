@@ -174,25 +174,34 @@ ship_workflow() {
     echo "  could not read $base" >&2
     return 1
   fi
+  # Every read happens before the first write: a stale file's blob sha is
+  # read at the base commit the branch is about to be cut from (the same
+  # blob), so a failed read leaves no branch and no partial upload behind.
+  local shas=()
+  for pair in $todo; do
+    f=${pair%%:*}
+    st=${pair#*:}
+    file_sha=""
+    if [ "$st" = stale ]; then
+      if ! file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$base_sha" --jq .sha)" || [ -z "$file_sha" ]; then
+        echo "  could not read $WORKFLOW_DIR/$f at $base_sha; nothing written" >&2
+        return 1
+      fi
+    fi
+    shas+=("$file_sha")
+  done
   if ! gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$base_sha" >/dev/null; then
     echo "  could not create branch $BRANCH" >&2
     return 1
   fi
+  local i=0
   for pair in $todo; do
     f=${pair%%:*}
-    st=${pair#*:}
     local args=(-X PUT "repos/$repo/contents/$WORKFLOW_DIR/$f" -f branch="$BRANCH"
       -f message="ci: add or update $f from jckeen/dotfiles"
       -f content="$(base64 -w0 <"$CANONICAL_DIR/$f")")
-    # The branch was just cut from the base, so a stale file is there and
-    # updating it needs its blob sha; a missing one is created without.
-    if [ "$st" = stale ]; then
-      if ! file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$BRANCH" --jq .sha)" || [ -z "$file_sha" ]; then
-        echo "  could not read $WORKFLOW_DIR/$f on $BRANCH; branch left for inspection" >&2
-        return 1
-      fi
-      args+=(-f sha="$file_sha")
-    fi
+    [ -n "${shas[$i]}" ] && args+=(-f sha="${shas[$i]}")
+    i=$((i + 1))
     if ! gh api "${args[@]}" >/dev/null; then
       echo "  could not write $WORKFLOW_DIR/$f on $BRANCH; branch left for inspection" >&2
       return 1

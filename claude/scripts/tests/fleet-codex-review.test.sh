@@ -158,7 +158,7 @@ run_case "the rollout acts on the one checked read, never a reread" partial 0 0 
   "POST git/refs;PUT contents/.github/workflows/codex-findings.yml;pr create;pr merge"
 n_next=$((n + 1))
 mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/reread_error"
-run_case "a stale file whose sha cannot be read stops before the PR" stale 0 0 0 --apply "POST git/refs" 1
+run_case "a stale file whose sha cannot be read writes nothing at all" stale 0 0 0 --apply "" 1
 run_case "an unreadable workflow (not a 404) ships nothing and fails" error 0 0 0 --apply "" 1
 run_case "unreadable rulesets never create a duplicate and fail" current error 0 0 --apply "" 1
 run_case "advisory repo never gets a ruleset" current 0 0 0 --apply "" 0 advisory

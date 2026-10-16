@@ -197,6 +197,18 @@ run
 check "an unreadable state fails and writes nothing" 1 ""
 
 new_fix
+graphql OPEN false true true:Bot:chatgpt-codex-connector
+mutate "$P.labels.nodes = [{name: \"Codex-Findings\"}]"
+run
+check "a differently cased label counts as present and is removed by its own name" 0 "DELETE issues/7/labels/Codex-Findings"
+
+new_fix
+graphql OPEN false false "$BOT"
+mutate "$P.labels.nodes = [{name: \"CODEX-FINDINGS\"}]"
+run
+check "a differently cased label is not added twice" 0 ""
+
+new_fix
 graphql MERGED false true "$BOT"
 run
 check "closed PR is left alone" 0 ""
@@ -228,6 +240,20 @@ new_fix
 graphql OPEN false false "$BOT"
 PR=007 run
 check "a leading-zero PR number is refused" 1 ""
+
+# The concurrency group's eligibility test must be the job's `if` verbatim,
+# or an event the job skips could still share, and cancel, a recount.
+norm() { tr -s ' \n' ' ' | sed 's/^ //; s/ $//'; }
+job_if=$(awk '/^    if: >-/{on=1; next} on && /^    [a-z#]/{on=0} on' "$WF" | norm)
+group_if=$(sed -n 's/.*group: "codex-findings-\${{ \(.*\) \&\& format(.pr-{0}.*/\1/p' "$WF" | norm)
+if [ -n "$job_if" ] && [ "$group_if" = "($job_if)" ]; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "FAIL - concurrency eligibility differs from the job's if:" >&2
+  echo "    if:    $job_if" >&2
+  echo "    group: $group_if" >&2
+fi
 
 echo "codex-findings-label: $pass passed, $fail failed"
 [ "$fail" = 0 ]
