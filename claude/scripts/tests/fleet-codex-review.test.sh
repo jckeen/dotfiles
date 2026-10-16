@@ -113,7 +113,12 @@ run_case() {
   mkdir -p "$TMP/root$n/claude/scripts" "$TMP/root$n/.github/workflows"
   cp "$CANON_DIR/codex-review.yml" "$CANON_DIR/codex-findings.yml" "$TMP/root$n/.github/workflows/"
   mv "$script" "$TMP/root$n/claude/scripts/fleet.sh"
-  [ -e "$FIX/unreadable_canonical" ] && chmod 000 "$TMP/root$n/.github/workflows/codex-findings.yml"
+  # A directory in the file's place fails the read even as root, which
+  # chmod 000 would not.
+  if [ -e "$FIX/unreadable_canonical" ]; then
+    rm "$TMP/root$n/.github/workflows/codex-findings.yml"
+    mkdir "$TMP/root$n/.github/workflows/codex-findings.yml"
+  fi
   PATH="$TMP/bin:$PATH" bash "$TMP/root$n/claude/scripts/fleet.sh" $6 o/r >"$FIX/out" 2>&1
   local code=$?
   local got

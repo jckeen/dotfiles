@@ -28,6 +28,14 @@
   `read_file` note is descriptive, not an imperative (#608).
 - **Tests:** each code fix has a case that failed before it.
 
+## 2026-10-16 — test: fleet-codex-review's unreadable-file case works under root
+
+- **`claude/scripts/tests/fleet-codex-review.test.sh`:** the unreadable
+  canonical workflow was simulated with `chmod 000`, which root ignores, so
+  the case would fail in a root-run container. A directory now stands in for
+  the file, and reading it fails for every user. Raised by the GitHub Codex
+  bot on #622.
+
 ## 2026-10-16 — test: worktree-lifecycle fixtures survive Codex's /tmp/.git
 
 - **`claude/scripts/tests/worktree-lifecycle.test.py`:** Codex's Linux
