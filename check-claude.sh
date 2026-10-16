@@ -133,32 +133,42 @@ echo ""
 # link); without --heal it is named as legacy, not as an unknown directory.
 while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
-  if symlink_is_legacy_skill_dir "$src" "$dst"; then
-    if [ "$HEAL" -eq 1 ]; then
-      # A concurrent --heal (two panes launching cc) may be converting the
-      # same directory, so rm/rmdir here fail on entries already gone, and a
-      # recheck can land mid-drain and see a real directory that becomes the
-      # correct link a moment later. That is not a failure of this run: retry,
-      # bounded (~5s), until $dst stops being a real directory, then let
-      # check_link report whatever state it settled in. A real directory
-      # left after the wait is only FAILED if it is still legacy.
-      tries=0
-      until symlink_migrate_legacy_skill_dir "$src" "$dst"; do
-        { [ -L "$dst" ] || [ ! -e "$dst" ]; } && break
-        tries=$((tries + 1))
-        [ "$tries" -lt 50 ] || break
-        sleep 0.1
-      done
+  if [ "$HEAL" -eq 1 ] && [ -d "$src" ] && [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    # A real directory where a bundle link belongs. A concurrent --heal (two
+    # panes launching cc) may be converting it right now: our rm/rmdir then
+    # fail on entries already gone, and any scan can land mid-drain, even
+    # misjudge the directory as foreign when an entry vanishes between its -L
+    # and readlink. So every such state goes through one bounded (~5s) settle
+    # loop: convert it while it is legacy, wait while its listing is still
+    # changing, and stop once $dst is no longer a real directory or a
+    # non-legacy listing holds still across a retry (genuine foreign content,
+    # left for check_link to report). Still legacy after the wait is FAILED.
+    tries=0
+    seen=""
+    seen_set=0
+    while [ -d "$dst" ] && [ ! -L "$dst" ]; do
       if symlink_is_legacy_skill_dir "$src" "$dst"; then
-        red "FAILED  $label could not convert legacy per-file links"
-        ERRORS=$((ERRORS + 1))
-        continue
+        symlink_migrate_legacy_skill_dir "$src" "$dst" && break
+        seen_set=0
+      else
+        listing="$(ls -A "$dst" 2>/dev/null)"
+        [ "$seen_set" -eq 1 ] && [ "$listing" = "$seen" ] && break
+        seen="$listing"
+        seen_set=1
       fi
-    else
-      yellow "LEGACY  $label (per-file links from before #592 — run with --heal or ./setup.sh)"
-      WARNINGS=$((WARNINGS + 1))
+      tries=$((tries + 1))
+      [ "$tries" -lt 50 ] || break
+      sleep 0.1
+    done
+    if symlink_is_legacy_skill_dir "$src" "$dst"; then
+      red "FAILED  $label could not convert legacy per-file links"
+      ERRORS=$((ERRORS + 1))
       continue
     fi
+  elif symlink_is_legacy_skill_dir "$src" "$dst"; then
+    yellow "LEGACY  $label (per-file links from before #592 — run with --heal or ./setup.sh)"
+    WARNINGS=$((WARNINGS + 1))
+    continue
   fi
   check_link "$src" "$dst" "$label"
 done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")

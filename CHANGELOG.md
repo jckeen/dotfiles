@@ -8,13 +8,18 @@
   warning for each one missing (or present only under its Debian name, with
   the `setup.sh` shim hint). Advisory: it does not fail the check, because
   `cc` blocks launch on a failed checker.
-- **`check-claude.sh --heal`** (PR #604 review): a legacy skill-directory
-  conversion that a concurrent `--heal` is still finishing is retried for a
-  bounded few seconds until the destination settles, instead of being
-  reported as `FAILED` or `NOT LINKED`. Two concurrent checkers on a
-  500-entry legacy bundle: 8/8 trials had a failing checker before, 0/8 after.
-- **Tests:** `heal-race.test.sh` covers the in-flight migration and the tool
-  advisory under a controlled PATH (5 failed before the fix, all pass after).
+- **`check-claude.sh --heal`** (PR #604 review, #635 review): a real
+  directory where a skill bundle link belongs now goes through one bounded
+  settle loop (a few seconds) before it is reported: converted while it is
+  legacy, waited on while a concurrent `--heal` is still draining it (even
+  when the first scan raced that drain and saw it as foreign), and reported
+  promptly once a non-legacy listing holds still. Previously a concurrent
+  conversion produced a false `FAILED` or `NOT LINKED`. Two concurrent
+  checkers on a 500-entry legacy bundle: 10/10 trials had a failing checker
+  before, 0/10 after, with the source bundle intact in every trial.
+- **Tests:** `heal-race.test.sh` covers the in-flight migration, an entry
+  vanishing mid-scan, stable foreign content, and the tool advisory under a
+  controlled PATH (9 failed against the origin/main checker, all pass after).
 
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 

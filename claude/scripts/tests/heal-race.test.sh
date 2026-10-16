@@ -6,7 +6,7 @@
 # which the checker could not see. Covers: the heal path never nests (ln -sn),
 # the SELFLINK check and its --fix, and a migration that a concurrent run
 # finished first is not reported as FAILED, nor one it is still finishing
-# (PR #604 review). Also covers the CLI-stack advisory (issue #605): a missing
+# (PR #604 review), even when the first scan already raced it (#635 review). Also covers the CLI-stack advisory (issue #605): a missing
 # rg/fd/bat/eza warns without failing the check. Fixture-driven: the checker and its
 # libs are copied into a throwaway repo so DOTFILES_DIR resolves there, and
 # HOME points at a throwaway tree. Mirrors check-tests-wired.test.sh.
@@ -234,6 +234,70 @@ check "in-flight migration: directory link in place" \
   "$([ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
 check "in-flight migration: source files survive" \
   "$([ -f "$SRC/SKILL.md" ] && [ -f "$SRC/f1" ] && [ -f "$SRC/f5" ] && echo 1 || echo 0)"
+
+# The rival can also win the very first scan: an entry vanishes between the
+# predicate's -L and its readlink, so the directory looks foreign, not legacy
+# (gate review on #635). A fake readlink makes that window deterministic: on
+# its first call for an entry under $DST it removes that entry, starts the
+# rival draining the rest, and lets the real readlink fail. The migrate shim
+# stays busy until the rival has linked the directory, as above.
+new_fixture vanish
+mkdir -p "$DST"
+for i in 1 2 3 4 5; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
+ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
+M="$FIX/vanish/marks"
+mkdir -p "$M"
+VTOOLS="$FIX/tools-vanish"
+fake_tools "$VTOOLS" rg fd bat eza
+REAL_READLINK="$(command -v readlink)"
+cat > "$VTOOLS/readlink" <<FAKE
+#!/bin/bash
+if [ ! -e "$M/raced" ] && [ "\${1%/*}" = "$DST" ]; then
+  : > "$M/raced"
+  rm "\$1"
+  (
+    for e in "$DST"/* "$DST"/.[!.]*; do
+      [ -L "\$e" ] || continue
+      sleep 0.2
+      rm "\$e"
+    done
+    rmdir "$DST" && ln -sn "$SRC" "$DST" && : > "$M/done"
+  ) >/dev/null 2>&1 &
+fi
+exec "$REAL_READLINK" "\$@"
+FAKE
+chmod +x "$VTOOLS/readlink"
+cat >> "$R/lib-symlinks.sh" <<SHIM
+eval "orig_\$(declare -f symlink_migrate_legacy_skill_dir)"
+symlink_migrate_legacy_skill_dir() {
+  [ -e "$M/done" ] || return 1
+  orig_symlink_migrate_legacy_skill_dir "\$@"
+}
+SHIM
+TOOLS="$VTOOLS"
+out="$(run_check --heal)"; rc=$?
+done_before_exit="$([ -e "$M/done" ] && echo 1 || echo 0)"
+wait
+TOOLS="$FIX/tools-all"
+check "vanished entry: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "vanished entry: --heal exits 0" "$([ "$rc" -eq 0 ] && echo 1 || echo 0)"
+check "vanished entry: not reported FAILED or NOT LINKED" \
+  "$(! grep -qE 'FAILED|NOT LINKED' <<<"$out" && echo 1 || echo 0)"
+check "vanished entry: checker finished only after the rival" "$done_before_exit"
+check "vanished entry: directory link in place, sources intact" \
+  "$([ "$(readlink "$DST")" = "$SRC" ] && [ -f "$SRC/SKILL.md" ] && [ -f "$SRC/f1" ] && echo 1 || echo 0)"
+
+# Genuine foreign content is not waited out: a stable non-legacy directory is
+# reported NOT LINKED promptly, never FAILED, and left untouched.
+new_fixture foreign
+mkdir -p "$DST"
+printf 'mine\n' > "$DST/notes.md"
+t0=$SECONDS
+out="$(run_check --heal)"; rc=$?
+check "foreign dir: --heal exits 1 with NOT LINKED" \
+  "$([ "$rc" -eq 1 ] && grep -q 'NOT LINKED  skills/demo' <<<"$out" && ! grep -q FAILED <<<"$out" && echo 1 || echo 0)"
+check "foreign dir: not held for the full wait" "$([ $((SECONDS - t0)) -lt 3 ] && echo 1 || echo 0)"
+check "foreign dir: content untouched" "$([ -f "$DST/notes.md" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
 
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools
