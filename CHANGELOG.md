@@ -14,7 +14,13 @@
   When `installed_plugins.json` can't be read (python3 missing, malformed
   JSON), the script warns, and each pending removal fails with a named
   diagnostic and exit 1. A pending removal is never skipped silently.
-- **Tests:** new cases in `plugin-drift.test.sh` (7 failed before the fix,
+- **`claude/hooks/PluginDriftCheck.hook.ts`:** applies the same filter. A
+  deselected service's plugin is no longer reported as missing or un-enabled.
+  The rule lives once in `lib-services.sh` (`services_effective`,
+  `services_filter_plugins`), and both the hook and `sync-plugins.sh` call
+  it. An unreadable selection reports every plugin, plus a note saying the
+  selection could not be read.
+- **Tests:** new cases in `plugin-drift.test.sh` (9 failed before the fix,
   all pass after).
 
 ## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins

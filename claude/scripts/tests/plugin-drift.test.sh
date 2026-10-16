@@ -56,16 +56,23 @@ die() {
 
 # run_hook <manifest-body> <installed-json> [settings-json]
 # Builds a throwaway DOTFILES_DIR + HOME and captures the hook's stdout and rc.
+# HOOK_SERVICES, when set, is written as the saved agent-service selection
+# under a throwaway XDG_CONFIG_HOME; unset means no saved selection.
 run_hook() {
   local manifest="$1" installed="$2" settings="${3:-}"
   local D H P
   D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
   H="$(mktemp -d)" || die "mktemp -d for HOME"
   P="$(mktemp -d)" || die "mktemp -d for the project dir"
-  mkdir -p "$D/claude" "$H/.claude/plugins" || die "mkdir fixture dirs"
+  mkdir -p "$D/claude" "$H/.claude/plugins" "$H/.config/dotfiles" \
+    || die "mkdir fixture dirs"
   printf '%s\n' "$manifest" > "$D/claude/plugins.txt" || die "write plugins.txt"
   printf '%s\n' "$installed" > "$H/.claude/plugins/installed_plugins.json" \
     || die "write installed_plugins.json"
+  if [[ -n "${HOOK_SERVICES:-}" ]]; then
+    printf '%s\n' "$HOOK_SERVICES" > "$H/.config/dotfiles/services" \
+      || die "write the services file"
+  fi
   # No settings file at all => the scoping checks are skipped, which keeps
   # these assertions about install drift only.
   if [[ -n "$settings" ]]; then
@@ -73,7 +80,8 @@ run_hook() {
   fi
   # The hook scans the project's .claude/skills, so it never runs from (or
   # points at) a real checkout.
-  out="$(cd "$P" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$P" bun "$HOOK" 2>&1 </dev/null)"
+  out="$(cd "$P" && HOME="$H" XDG_CONFIG_HOME="$H/.config" DOTFILES_DIR="$D" \
+    CLAUDE_PROJECT_DIR="$P" bun "$HOOK" 2>&1 </dev/null)"
   rc=$?
   rm -rf "$D" "$H" "$P"
 }
@@ -804,6 +812,29 @@ rm -rf "$NOPY_BIN"
 run_sync "$MANIFEST_REMOVED" "<absent>"
 assert "absent installed_plugins.json is not a removal failure" \
   '[ $sync_rc -eq 0 ] && [ -z "$sync_uninstalls" ]'
+
+# ── the hook honours the saved service selection too ────────────────────
+# Same filter as sync-plugins.sh (services_filter_plugins in lib-services.sh):
+# a deselected service's plugin is neither missing nor un-enabled drift.
+HOOK_SERVICES="services=claude" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
+assert "hook: a deselected Codex plugin is not reported as drift" '[ -z "$out" ]'
+
+HOOK_SERVICES="services=claude,codex" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
+assert "hook: a selected Codex plugin is still reported missing" \
+  'outgrep "codex@openai-codex"'
+
+# A damaged selection fails toward reporting: everything, plus a note.
+HOOK_SERVICES="services=bogus" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
+assert "hook: a damaged selection still reports the Codex plugin" \
+  'outgrep "codex@openai-codex"'
+assert "hook: a damaged selection is named" \
+  'outgrep "agent-service selection could not be read"'
 
 # ── setup.sh's listing-based match (lib-checks.sh) ──────────────────────
 # setup.sh cannot read installed_plugins.json — it runs before the CLI state
