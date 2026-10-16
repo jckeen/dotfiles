@@ -99,13 +99,18 @@ enforced() {
   return 1
 }
 
-# Prints current | stale | missing for one workflow file on <repo>@<ref>.
+# Prints current | stale | missing | unreadable for one workflow file on
+# <repo>@<ref>. Only a 404 is missing; any other failed read is unreadable,
+# which stops the repo rather than shipping a file it may already have.
 file_state() {
-  local repo="$1" ref="$2" f="$3" content
-  if ! content="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$ref" --jq .content 2>/dev/null)"; then
-    echo missing
+  local repo="$1" ref="$2" f="$3" content err
+  err="$(mktemp)"
+  if ! content="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$ref" --jq .content 2>"$err")"; then
+    if grep -q 'HTTP 404' "$err"; then echo missing; else echo unreadable; fi
+    rm -f "$err"
     return
   fi
+  rm -f "$err"
   if [ "$(printf '%s' "$content" | base64 -d)" = "$(cat "$CANONICAL_DIR/$f")" ]; then
     echo current
   else
@@ -124,6 +129,8 @@ workflow_state() {
   if [ "${#out[@]}" -eq 0 ]; then echo current; else echo "${out[*]}"; fi
 }
 
+# Fails when the rulesets cannot be read, so the caller never mistakes a
+# failed read for "no ruleset" and creates a duplicate.
 ruleset_id() {
   gh api "repos/$1/rulesets" --jq "[.[] | select(.name == \"$RULESET\")][0].id // empty"
 }
@@ -225,7 +232,16 @@ for repo in "${repos[@]}"; do
     continue
   fi
   wf="$(workflow_state "$repo" "$base")"
-  rs="$(ruleset_id "$repo" || true)"
+  if [[ "$wf" == *unreadable* ]]; then
+    echo "  workflow=$wf; cannot read the workflows, skipping" >&2
+    rc=1
+    continue
+  fi
+  if ! rs="$(ruleset_id "$repo")"; then
+    echo "  cannot read rulesets, skipping" >&2
+    rc=1
+    continue
+  fi
   if enforced "$repo"; then want=enforce; else want=advisory; fi
   echo "  workflow=$wf ruleset=${rs:-none} mode=$want"
   [ "$mode" = apply ] || continue

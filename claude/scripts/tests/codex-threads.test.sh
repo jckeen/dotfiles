@@ -13,8 +13,10 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Fake gh. Fixtures live in $FIX: threads_<pr> (GraphQL reviewThreads
 # response; absent = read failure), merged (PR numbers), node (thread lookup),
-# mutation (mutation response), fail_mutation (fail the write). Every
-# mutation is logged to $FIX/writes.
+# reply / resolve (mutation responses), fail_reply / fail_resolve (fail that
+# write), wf (absent | missing = HTTP 404 | error = HTTP 500 for the
+# codex-findings workflow lookup), fail_dispatch. Every write is logged to
+# $FIX/writes.
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
@@ -29,10 +31,22 @@ case "$1 $2" in
 esac
 all="$*"
 case "$all" in
-  *mutation*)
-    [ -e "$FIX/fail_mutation" ] && { echo "fake gh: mutation failed" >&2; exit 1; }
-    echo mutation >>"$FIX/writes"
-    cat "$FIX/mutation"
+  *addPullRequestReviewThreadReply*)
+    [ -e "$FIX/fail_reply" ] && { echo "fake gh: reply failed" >&2; exit 1; }
+    echo reply >>"$FIX/writes"
+    cat "$FIX/reply"
+    ;;
+  *resolveReviewThread*)
+    [ -e "$FIX/fail_resolve" ] && { echo "fake gh: resolve failed" >&2; exit 1; }
+    echo resolve >>"$FIX/writes"
+    cat "$FIX/resolve"
+    ;;
+  *actions/workflows/codex-findings.yml*)
+    case "$(cat "$FIX/wf" 2>/dev/null)" in
+      missing) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      error) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
+    esac
+    echo '{}'
     ;;
   *"node(id"*) cat "$FIX/node" ;;
   *reviewThreads*)
@@ -111,6 +125,12 @@ rm "$FIX/threads_4"
 "$CT" list --merged-since 2026-10-01 >/dev/null 2>&1 && rc=0 || rc=$?
 if [ "$rc" = 1 ]; then ok; else bad "merged-since with a failed read must exit 1 (rc=$rc)"; fi
 
+# 4b. A merged-PR list that reaches the limit may be truncated: refused.
+new_fix
+seq 1 1000 >"$FIX/merged"
+out=$("$CT" list --merged-since 2026-01-01 2>/dev/null) && rc=0 || rc=$?
+if [ "$rc" = 1 ] && [ -z "$out" ]; then ok; else bad "a merged list at the limit must exit 1 (rc=$rc)"; fi
+
 # 5. Usage errors exit 2.
 new_fix
 for args in "list" "list --pr 1 --merged-since 2026-01-01" "resolve --thread T1" \
@@ -120,76 +140,112 @@ for args in "list" "list --pr 1 --merged-since 2026-01-01" "resolve --thread T1"
 done
 if [ ! -s "$FIX/writes" ]; then ok; else bad "usage errors must not write"; fi
 
-node() { # node <login> <resolved> [type]  (the thread is on PR 9)
-  jq -nc --arg l "$1" --argjson r "$2" --arg t "${3:-Bot}" \
-    '{data:{node:{isResolved:$r,pullRequest:{number:9},
+node() { # node <login> <resolved> [type] [repo]  (the thread is on PR 9)
+  jq -nc --arg l "$1" --argjson r "$2" --arg t "${3:-Bot}" --arg repo "${4:-o/r}" \
+    '{data:{node:{isResolved:$r,pullRequest:{number:9,repository:{nameWithOwner:$repo}},
       comments:{nodes:[{author:{__typename:$t,login:$l}}]}}}}' >"$FIX/node"
 }
-mutation() { # mutation <resolved>
-  jq -nc --argjson r "$1" \
-    '{data:{addPullRequestReviewThreadReply:{comment:{url:"https://x/reply"}},
-      resolveReviewThread:{thread:{isResolved:$r}}}}' >"$FIX/mutation"
+mutations() { # mutations <reply posted:true|false> <resolved:true|false>
+  if [ "$1" = true ]; then
+    echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"url":"https://x/reply"}}}}' >"$FIX/reply"
+  else
+    echo '{"data":{"addPullRequestReviewThreadReply":null},"errors":[{"message":"body too long"}]}' >"$FIX/reply"
+  fi
+  jq -nc --argjson r "$2" '{data:{resolveReviewThread:{thread:{isResolved:$r}}}}' >"$FIX/resolve"
 }
+# resolve_case <name> <expected rc> <expected writes, ; separated> [stderr pattern]
+resolve_case() {
+  local out got
+  out=$("$CT" resolve --thread T1 --reply "Fixed in #9" 2>&1) && rc=0 || rc=$?
+  got=$(paste -sd';' "$FIX/writes")
+  if [ "$rc" = "$2" ] && [ "$got" = "$3" ] && { [ -z "${4:-}" ] || grep -q -- "$4" <<<"$out"; }; then
+    ok
+  else
+    bad "$1: rc=$rc writes='$got' (want rc=$2 writes='$3'): $out"
+  fi
+}
+OTHER=$(thread T2 false false chatgpt-codex-connector "$BADGE")
 
-# 6. resolve replies and resolves a bot thread; with another bot thread
-# still open on the PR, the label workflow is not started.
 new_fix
 node chatgpt-codex-connector false
-mutation true
-threads false "$(thread T2 false false chatgpt-codex-connector "$BADGE")" >"$FIX/threads_9"
-out=$("$CT" resolve --thread T1 --reply "Fixed in #9") && rc=0 || rc=$?
-if [ "$rc" = 0 ] && [ "$(cat "$FIX/writes")" = mutation ] && grep -q '^resolved: T1 https://x/reply$' <<<"$out"; then ok; else bad "resolve bot thread (rc=$rc): $out"; fi
+mutations true true
+threads false "$OTHER" >"$FIX/threads_9"
+resolve_case "resolve replies, then resolves; other bot threads keep the label" 0 "reply;resolve" '^resolved: T1 https://x/reply$'
 
-# 6b. Resolving the PR's last bot thread starts codex-findings for that PR.
 new_fix
 node chatgpt-codex-connector false
-mutation true
+mutations true true
 threads false >"$FIX/threads_9"
-"$CT" resolve --thread T1 --reply "Fixed" >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 0 ] && grep -q '^dispatch workflow run codex-findings.yml -R o/r -f pr=9$' "$FIX/writes"; then ok; else bad "last thread must dispatch codex-findings (rc=$rc): $(cat "$FIX/writes")"; fi
+resolve_case "the PR's last bot thread starts codex-findings" 0 \
+  "reply;resolve;dispatch workflow run codex-findings.yml -R o/r -f pr=9"
 
-# 6c. A repo without the workflow still resolves (exit 0) and warns.
 new_fix
 node chatgpt-codex-connector false
-mutation true
+mutations true true
+threads false >"$FIX/threads_9"
+echo missing >"$FIX/wf"
+resolve_case "a repo without codex-findings needs no dispatch" 0 "reply;resolve" "has no codex-findings workflow"
+
+new_fix
+node chatgpt-codex-connector false
+mutations true true
+threads false >"$FIX/threads_9"
+echo error >"$FIX/wf"
+resolve_case "a failed workflow lookup fails and names the recount" 1 "reply;resolve" "run: gh workflow run codex-findings.yml -R o/r -f pr=9"
+
+new_fix
+node chatgpt-codex-connector false
+mutations true true
 threads false >"$FIX/threads_9"
 : >"$FIX/fail_dispatch"
-err=$("$CT" resolve --thread T1 --reply "Fixed" 2>&1 >/dev/null) && rc=0 || rc=$?
-if [ "$rc" = 0 ] && grep -q 'could not start codex-findings.yml' <<<"$err"; then ok; else bad "failed dispatch must warn, not fail (rc=$rc): $err"; fi
+resolve_case "a failed dispatch fails and names the recount" 1 "reply;resolve" "run: gh workflow run"
 
-# 7. A thread someone else opened is refused without a write.
+new_fix
+node chatgpt-codex-connector false
+mutations true true
+resolve_case "a failed recount fails and names the recount" 1 "reply;resolve" "could not recount #9; run: gh workflow run"
+
+new_fix
+node chatgpt-codex-connector false
+mutations false true
+resolve_case "a reply that did not post never resolves" 1 "reply" "was not resolved"
+
+new_fix
+node chatgpt-codex-connector false
+mutations true true
+: >"$FIX/fail_reply"
+resolve_case "a failed reply never resolves" 1 "" "was not resolved"
+
+new_fix
+node chatgpt-codex-connector false
+mutations true true
+: >"$FIX/fail_resolve"
+resolve_case "a failed resolve after the reply fails" 1 "reply" "could not resolve it"
+
+new_fix
+node chatgpt-codex-connector false
+mutations true false
+resolve_case "a resolve that did not take fails" 1 "reply;resolve" "did not resolve"
+
 new_fix
 node someone false User
-mutation true
-"$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 1 ] && [ ! -s "$FIX/writes" ]; then ok; else bad "non-bot thread must be refused (rc=$rc)"; fi
+mutations true true
+resolve_case "a thread someone else opened is refused" 1 "" "not the Codex bot"
 
-# 7b. A user account holding the bot's bare login is refused too.
 new_fix
 node chatgpt-codex-connector false User
-mutation true
-"$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 1 ] && [ ! -s "$FIX/writes" ]; then ok; else bad "user with the bot's login must be refused (rc=$rc)"; fi
+mutations true true
+resolve_case "a user holding the bot's bare login is refused" 1 "" "not the Codex bot"
 
-# 8. An already-resolved thread is left alone.
+new_fix
+node chatgpt-codex-connector false Bot other/repo
+mutations true true
+resolve_case "a thread from another repository is refused" 1 "" "belongs to other/repo"
+
 new_fix
 node chatgpt-codex-connector true
-mutation true
-"$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 0 ] && [ ! -s "$FIX/writes" ]; then ok; else bad "resolved thread must not be written (rc=$rc)"; fi
-
-# 9. A failed write, or one that did not resolve, exits 1.
-new_fix
-node chatgpt-codex-connector false
-mutation true
-: >"$FIX/fail_mutation"
-"$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 1 ]; then ok; else bad "failed mutation must exit 1 (rc=$rc)"; fi
-new_fix
-node chatgpt-codex-connector false
-mutation false
-"$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 1 ]; then ok; else bad "unresolved result must exit 1 (rc=$rc)"; fi
+mutations true true
+resolve_case "an already-resolved thread is left alone" 0 "" "already resolved"
 
 echo "codex-threads: $pass passed, $fail failed"
 [ "$fail" = 0 ]

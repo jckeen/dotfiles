@@ -12,7 +12,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Fake gh. State lives in $FIX: workflow (none|current|stale|partial, where
-# partial = codex-review.yml current and codex-findings.yml missing), ruleset (0|1),
+# partial = codex-review.yml current and codex-findings.yml missing;
+# error = every file read fails with HTTP 500), ruleset (0|1|error),
 # branch (0|1), openpr (0|1). Every write is logged to $FIX/writes.
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'FAKE'
@@ -52,12 +53,18 @@ case "$path" in
       if [ "$f" = codex-review.yml ]; then w=current; else w=none; fi
     fi
     case "$w" in
-      none) exit 1 ;;
+      none) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      error) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
       current) base64 -w0 <"$CANON_DIR/$f" ;;
       stale) printf 'old' | base64 -w0 ;;
     esac
     ;;
-  repos/o/r/rulesets) [ "$(st ruleset)" = 1 ] && echo 42 ;;
+  repos/o/r/rulesets)
+    case "$(st ruleset)" in
+      1) echo 42 ;;
+      error) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
+    esac
+    ;;
   repos/o/r/git/ref/heads/ci/codex-review-status) [ "$(st branch)" = 1 ] || exit 1 ;;
   repos/o/r/git/ref/heads/main) echo deadbeef ;;
   *) echo "fake gh: unexpected $path" >&2; exit 1 ;;
@@ -128,6 +135,8 @@ else
   echo "FAIL: ruleset body must pin codex-review to the Actions app and require thread resolution: $(cat "$FIX/input" 2>/dev/null)"
 fi
 run_case "existing ruleset is left alone" current 1 0 0 --apply ""
+run_case "an unreadable workflow (not a 404) ships nothing and fails" error 0 0 0 --apply "" 1
+run_case "unreadable rulesets never create a duplicate and fail" current error 0 0 --apply "" 1
 run_case "advisory repo never gets a ruleset" current 0 0 0 --apply "" 0 advisory
 
 echo "fleet-codex-review: $pass passed, $failed failed"

@@ -17,8 +17,8 @@
 #       not open, and does nothing to one that is already resolved. After the
 #       PR's last bot thread is resolved, starts the codex-findings workflow so
 #       it removes the PR's `codex-findings` label (GitHub has no workflow
-#       trigger for a resolved thread); a repo without that workflow gets a
-#       warning only.
+#       trigger for a resolved thread); a repo without that workflow is
+#       skipped. Refuses a thread from a repository other than --repo.
 #
 # Exit: 0 success; 1 a read or write failed (never a silent partial list);
 # 2 usage error.
@@ -93,9 +93,15 @@ case "$CMD" in
       list_pr "$PR"
     elif [ -n "$SINCE" ] && [ -z "$PR" ]; then
       [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "bad --merged-since: $SINCE"
+      # --limit caps the whole result, so a result that reaches it may be
+      # missing older PRs: refuse it rather than list a partial set.
+      limit=1000
       prs=$(gh pr list -R "$REPO" --state merged --search "merged:>=$SINCE" \
-        --limit 500 --json number --jq '.[].number') ||
+        --limit "$limit" --json number --jq '.[].number') ||
         die "could not list PRs merged since $SINCE"
+      if [ "$(wc -w <<<"$prs")" -ge "$limit" ]; then
+        die "$limit or more PRs merged since $SINCE; use a later date"
+      fi
       for n in $prs; do list_pr "$n"; done
     else
       echo "codex-threads: list takes exactly one of --pr or --merged-since" >&2
@@ -112,8 +118,15 @@ case "$CMD" in
     fi
     info=$(gh api graphql -f id="$THREAD" -f query='
 query($id:ID!){node(id:$id){... on PullRequestReviewThread{
-  isResolved pullRequest{number} comments(first:1){nodes{author{__typename login}}}}}}') ||
+  isResolved
+  pullRequest{number repository{nameWithOwner}}
+  comments(first:1){nodes{author{__typename login}}}}}}') ||
       die "could not read thread $THREAD"
+    # Node ids are global, so a thread from another repository would pass
+    # every other check here; the recount below would then hit the wrong PR.
+    thread_repo=$(jq -r '.data.node.pullRequest.repository.nameWithOwner // ""' <<<"$info")
+    [ "${thread_repo,,}" = "${REPO,,}" ] ||
+      die "$THREAD belongs to ${thread_repo:-an unreadable repository}, not $REPO; refusing"
     author=$(jq -r '.data.node.comments.nodes[0].author.login // ""' <<<"$info")
     [ -n "$author" ] || die "$THREAD is not a readable review thread"
     kind=$(jq -r '.data.node.comments.nodes[0].author.__typename // ""' <<<"$info")
@@ -123,22 +136,43 @@ query($id:ID!){node(id:$id){... on PullRequestReviewThread{
       echo "already resolved: $THREAD"
       exit 0
     fi
+    # Reply and resolve are separate requests: in one GraphQL document a
+    # rejected reply (its field is nullable) would not stop the resolve, and
+    # the thread would close with no reason on it.
     out=$(gh api graphql -f tid="$THREAD" -f body="$REPLY" -f query='
 mutation($tid:ID!,$body:String!){
-  addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid,body:$body}){comment{url}}
-  resolveReviewThread(input:{threadId:$tid}){thread{isResolved}}}') ||
-      die "could not reply to or resolve $THREAD (check it on the PR: the reply may have posted)"
+  addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$tid,body:$body}){comment{url}}}') ||
+      die "could not reply on $THREAD; it was not resolved"
+    url=$(jq -r '.data.addPullRequestReviewThreadReply.comment.url // ""' <<<"$out")
+    [ -n "$url" ] || die "the reply on $THREAD did not post; it was not resolved"
+    out=$(gh api graphql -f tid="$THREAD" -f query='
+mutation($tid:ID!){resolveReviewThread(input:{threadId:$tid}){thread{isResolved}}}') ||
+      die "replied on $THREAD ($url) but could not resolve it; resolve it on the PR"
     [ "$(jq -r '.data.resolveReviewThread.thread.isResolved' <<<"$out")" = true ] ||
-      die "$THREAD did not resolve"
-    echo "resolved: $THREAD $(jq -r '.data.addPullRequestReviewThreadReply.comment.url' <<<"$out")"
+      die "replied on $THREAD ($url) but it did not resolve; resolve it on the PR"
+    echo "resolved: $THREAD $url"
     pr=$(jq -r '.data.node.pullRequest.number // ""' <<<"$info")
-    if [[ "$pr" =~ ^[0-9]+$ ]] && remaining=$(list_pr "$pr") && [ -z "$remaining" ]; then
-      if gh workflow run codex-findings.yml -R "$REPO" -f pr="$pr" >/dev/null 2>&1; then
-        echo "no bot threads left on #$pr; started codex-findings to clear its label"
-      else
-        echo "codex-threads: no bot threads left on #$pr, but could not start codex-findings.yml in $REPO; its label (if any) stays until the next bot review" >&2
-      fi
+    [[ "$pr" =~ ^[0-9]+$ ]] || die "resolved $THREAD but could not read its PR number to recount"
+    # The thread is resolved now and a retry exits at "already resolved", so
+    # every failure from here names the command that finishes the job.
+    recount="gh workflow run codex-findings.yml -R $REPO -f pr=$pr"
+    remaining=$(list_pr "$pr") ||
+      die "resolved $THREAD but could not recount #$pr; run: $recount"
+    if [ -n "$remaining" ]; then
+      exit 0 # other bot threads remain, so the label stays
     fi
+    # A repo without the workflow has no label to clear; any other failure
+    # to read or start it leaves a stale label, so it fails the run.
+    if ! err=$(gh api "repos/$REPO/actions/workflows/codex-findings.yml" 2>&1 >/dev/null); then
+      if grep -q 'HTTP 404' <<<"$err"; then
+        echo "no bot threads left on #$pr ($REPO has no codex-findings workflow)"
+        exit 0
+      fi
+      die "resolved $THREAD but could not read codex-findings.yml in $REPO ($err); run: $recount"
+    fi
+    gh workflow run codex-findings.yml -R "$REPO" -f pr="$pr" >/dev/null ||
+      die "resolved $THREAD but could not start codex-findings; run: $recount"
+    echo "no bot threads left on #$pr; started codex-findings to clear its label"
     ;;
   *) usage ;;
 esac

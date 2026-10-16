@@ -5,7 +5,7 @@
 # against a fake `gh` (no framework). The invariants under test: the label
 # tracks exactly the unresolved threads the Codex bot opened (a user account
 # holding the bot's bare login does not count), a failed or truncated read
-# changes nothing, and a closed PR is left alone. Run directly; exit 1 on any
+# changes nothing, and closed and fork PRs are left alone. Run directly; exit 1 on any
 # failure.
 set -uo pipefail
 
@@ -22,7 +22,9 @@ grep -q '# <<< codex-findings-label' "$TMP/label.sh" || {
 }
 
 # Fake gh. Fixtures in $FIX: graphql (response; absent = read failure),
-# label_exists (repo label present), fail_write (fail every write). Every
+# label_exists (repo label present), label_error (the label lookup fails with
+# HTTP 500), fail_write (fail every write). Set FORK=true before graphql to
+# make the PR a fork PR. Every
 # write is logged to $FIX/writes as "<METHOD> <path>".
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'FAKE'
@@ -40,7 +42,10 @@ path=""
 for a in "$@"; do case "$a" in repos/*) path=${a#repos/o/r/} ;; esac; done
 if [ "$method" = GET ]; then
   case "$path" in
-    labels/codex-findings) [ -e "$FIX/label_exists" ] || { echo "HTTP 404" >&2; exit 1; } ;;
+    labels/codex-findings)
+      [ -e "$FIX/label_error" ] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
+      [ -e "$FIX/label_exists" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+      ;;
     *) echo "fake gh: unexpected GET $path" >&2; exit 1 ;;
   esac
   exit 0
@@ -73,7 +78,8 @@ graphql() {
       '{isResolved:$r,comments:{nodes:[{author:{__typename:$t,login:$l}}]}}')")
   done
   printf '%s\n' "${threads[@]}" | jq -sc --arg s "$state" --argjson n "$next" --argjson lab "$labelled" \
-    '{data:{repository:{pullRequest:{state:$s,
+    --argjson fork "${FORK:-false}" \
+    '{data:{repository:{pullRequest:{state:$s,isCrossRepository:$fork,
        labels:{nodes:(if $lab then [{name:"codex-findings"}] else [] end)},
        reviewThreads:{pageInfo:{hasNextPage:$n},nodes:.}}}}}' >"$FIX/graphql"
 }
@@ -135,6 +141,17 @@ new_fix
 graphql MERGED false true "$BOT"
 run
 check "closed PR is left alone" 0 ""
+
+new_fix
+FORK=true graphql OPEN false false "$BOT"
+run
+check "fork PR is left alone, even on a manual dispatch" 0 ""
+
+new_fix
+: >"$FIX/label_error"
+graphql OPEN false false "$BOT"
+run
+check "a failed label lookup (not a 404) fails and writes nothing" 1 ""
 
 new_fix
 : >"$FIX/label_exists"

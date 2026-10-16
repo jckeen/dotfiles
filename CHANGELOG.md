@@ -10,7 +10,10 @@
   failed or truncated read leaves the label as it was. Fork PRs are skipped.
 - **`fleet-codex-review.sh`:** rolls out both workflows, shipping only the
   files that are missing or out of date. It still creates the ruleset only
-  once both are current.
+  once both are current. A failed read of a workflow file or of the
+  rulesets now skips the repo and fails the run. Before, it counted as
+  "missing" or "no ruleset", so a temporary GitHub error could ship a file
+  the repo already had or create a duplicate ruleset.
 - **`claude/scripts/codex-threads.sh`:** `list --pr N` (or
   `--merged-since DATE`) prints one TSV line per unresolved thread the GitHub
   Codex bot opened: thread id, location, priority, outdated flag, title and
@@ -20,8 +23,12 @@
   threads (#615), this is how an agent answers each finding before merge,
   either "fixed in" or "moot because". Resolving a PR's last bot thread also
   starts `codex-findings.yml`, because GitHub has no workflow trigger for a
-  resolved thread. A failed or truncated read exits 1 rather than printing a
-  partial list.
+  resolved thread. The reply and the resolve are separate requests, so a
+  rejected reply never leaves a thread closed without a reason. A thread
+  from another repository is refused. A failed or truncated read, including
+  a merged-PR list that reaches its limit, exits 1 rather than printing a
+  partial list. A failed recount after a resolve exits 1 and names the
+  command that finishes the job.
 - **Why:** a 2026-10-16 triage found 35 unresolved bot threads on merged
   PRs #564–#604, because auto-merge lands before the bot comments (#617).
 - **Tests:** `codex-threads.test.sh` and `codex-findings-label.test.sh`
