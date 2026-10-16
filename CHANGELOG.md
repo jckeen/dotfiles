@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-10-16 — test: worktree-lifecycle fixtures survive Codex's /tmp/.git
+
+- **`claude/scripts/tests/worktree-lifecycle.test.py`:** Codex's Linux
+  sandbox mounts a tmpfs at `/tmp/.git` (`bwrap --tmpfs /tmp/.git`). That
+  leaves an empty `/tmp/.git` on the host after every sandboxed command, so
+  this suite's guard refused to start whenever any Codex run had been active.
+  That failed `run-tests` in every agent's review gate on 2026-10-16. The
+  marker can appear mid-run, while another session's sandboxed commands are
+  active, so the module now roots its fixtures outside `/tmp`: the first
+  temp base with no Git marker above it, trying `/var/tmp`,
+  `$XDG_RUNTIME_DIR`, `~/.cache` and only then the system one. Candidates
+  are resolved before the check, because retirement resolves symlinks.
+  Any candidate longer than 24 characters is skipped, because the suite's
+  socket fixtures break once the root reaches about 53 characters.
+  Only this test process's `tempfile` default changes, so `TMPDIR` is left
+  alone for suites that need it under `/tmp` (#621). The guard still fails
+  with a clear message when none of them is clean. Verified: with an empty
+  `/tmp/.git` present, 120 tests pass and nothing is left in `/var/tmp`.
+
+## 2026-10-15 — Automatic Codex Remote Control startup
+
+- Added an opt-in systemd user service that supervises the foreground server,
+  restarts it after a crash, and preserves the connection-only `cx` launcher.
+  Its launcher checks the saved opt-in, uses the standalone CLI, and loads user
+  tools including the current NVM default.
+- Shared strict opt-in parsing between the service and `cx`, rejecting multiple
+  JSON documents, duplicate keys, and nonstandard numeric constants.
+- Added a Windows login-task installer that keeps the selected WSL distribution
+  running for phone access with terminals closed, without a console window or
+  changes to sleep policy.
+- Verified repeated service starts preserve a connected client, competing native
+  starts refuse the live socket, and a disposable server recovers after a crash.
+
 ## 2026-10-16 — fix: small fixes from unresolved Codex review threads
 
 - **`claude/scripts/resolve-changelog.py`:** a CHANGELOG that git still
