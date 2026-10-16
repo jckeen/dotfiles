@@ -25,6 +25,26 @@
   `setup-worktree-guard.test.sh` (4 failed before the fix, all pass after;
   the audio case runs only on WSL).
 
+## 2026-10-16 — fix: worktree expiry rechecks recovery files and reports accurately
+
+- **`claude/scripts/worktree-lifecycle.py expire`** (Codex threads on #570
+  and #576): `--apply` rechecks `recovery.json` and the bundle and metadata
+  tar hashes on the staged checkout, then confirms after the final inspection
+  that none of them changed since, so the slow hash never sits between that
+  inspection and `git worktree remove`; any failure in the staged inspection is
+  retained and rolled back instead of escaping;
+  a failed rollback names where the checkout actually is; the metadata tar is
+  streamed instead of loaded whole, and its hard-link members are compared by
+  content, so a quarantine with hard-linked metadata can expire; an entry
+  expired in this run no longer counts toward `retired`/`oldest_days`; and an
+  entry with both `worktree` and `worktree-expiring` registered is retained as
+  ambiguous, naming both, instead of reported as one interrupted expiry.
+- **`hygiene-status.sh`:** reads `retired-worktrees.json` even when
+  `status.json` is absent (`--status` prints `no-data` and then the line; the
+  quiet modes still report an expirable entry).
+- **Tests:** new and extended cases in `worktree-lifecycle.test.py`, each
+  failing before the fix and passing after.
+
 ## 2026-10-16 — fix: harden the ccw profile linker
 
 - **`claude/scripts/link-claude-profile.sh`** (refs #591): refuses a profile

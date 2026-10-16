@@ -14,7 +14,7 @@
 # State file: $HOME/.local/state/hygiene/status.json
 #   (written by claude/scripts/hygiene-cron.sh, fired by git-hygiene.timer)
 # Retired-worktree summary: $HOME/.local/state/hygiene/retired-worktrees.json
-#   (the timer's report-mode `worktree-lifecycle.py expire` run). --status always
+#   (the timer's report-mode `worktree-lifecycle.py expire` run), read even without status.json. --status always
 #   adds `retired worktrees: N (oldest Xd, M expirable)` (`oldest unknown` when
 #   no entry has a readable age); the other modes add it only while M > 0. The timer never deletes them: expiry is the operator's
 #   `--apply` run (claude/scripts/README.md, Worktree lifecycle).
@@ -48,41 +48,12 @@ case "$MODE" in
     exit 2 ;;
 esac
 
-# State file missing — silent except in modes that always emit
-if [[ ! -f "$STATE_FILE" ]]; then
-  case "$MODE" in
-    json)   echo '{"error":"state file not found"}' ;;
-    status) echo "no-data" ;;
-  esac
-  exit 0
-fi
-
-command -v jq >/dev/null 2>&1 || exit 0
-
-drift_count=$(jq -r '.drift_count // 0' "$STATE_FILE" 2>/dev/null || echo 0)
-checked_at=$(jq -r '.checked_at // empty' "$STATE_FILE" 2>/dev/null || echo "")
-mapfile -t drifted_repos < <(jq -r '.drifted_repos[]?' "$STATE_FILE" 2>/dev/null)
-
-# Compute staleness
-stale_hours=0
-if [[ -n "$checked_at" ]]; then
-  checked_epoch=$(date -d "$checked_at" +%s 2>/dev/null || echo 0)
-  now_epoch=$(date +%s)
-  if [[ "$checked_epoch" -gt 0 ]]; then
-    stale_hours=$(( (now_epoch - checked_epoch) / 3600 ))
-  fi
-fi
-
-is_stale=0
-[[ "$stale_hours" -ge "$STALE_HOURS" ]] && is_stale=1
-
-is_drifted=0
-[[ "$drift_count" -gt 0 ]] && is_drifted=1
-
-# Retired-worktree summary; absent or malformed means no line at all.
+# Retired-worktree summary; absent or malformed means no line at all. Read
+# before the settings state: the timer writes it separately, so it stands on
+# its own when status.json is missing.
 retired_line=""
 expirable=0
-if [[ -f "$RETIRED_FILE" ]]; then
+if [[ -f "$RETIRED_FILE" ]] && command -v jq >/dev/null 2>&1; then
   retired=$(jq -r '.retired // empty' "$RETIRED_FILE" 2>/dev/null || true)
   oldest=$(jq -r '.oldest_days // empty' "$RETIRED_FILE" 2>/dev/null || true)
   expirable=$(jq -r '.expirable // 0' "$RETIRED_FILE" 2>/dev/null || echo 0)
@@ -100,6 +71,44 @@ if [[ -f "$RETIRED_FILE" ]]; then
   fi
 fi
 [[ -n "$retired_line" ]] || expirable=0
+
+# State file missing — silent except in modes that always emit, or while a
+# retired worktree is expirable
+if [[ ! -f "$STATE_FILE" ]]; then
+  case "$MODE" in
+    json)   echo '{"error":"state file not found"}'; exit 0 ;;
+    status)
+      echo "no-data"
+      [[ -n "$retired_line" ]] && echo "$retired_line"
+      exit 0 ;;
+  esac
+  [[ "$expirable" -gt 0 ]] || exit 0
+  drift_count=0
+  checked_at=""
+  drifted_repos=()
+else
+  command -v jq >/dev/null 2>&1 || exit 0
+  drift_count=$(jq -r '.drift_count // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+  checked_at=$(jq -r '.checked_at // empty' "$STATE_FILE" 2>/dev/null || echo "")
+  mapfile -t drifted_repos < <(jq -r '.drifted_repos[]?' "$STATE_FILE" 2>/dev/null)
+fi
+
+# Compute staleness
+stale_hours=0
+if [[ -n "$checked_at" ]]; then
+  checked_epoch=$(date -d "$checked_at" +%s 2>/dev/null || echo 0)
+  now_epoch=$(date +%s)
+  if [[ "$checked_epoch" -gt 0 ]]; then
+    stale_hours=$(( (now_epoch - checked_epoch) / 3600 ))
+  fi
+fi
+
+is_stale=0
+[[ "$stale_hours" -ge "$STALE_HOURS" ]] && is_stale=1
+
+is_drifted=0
+[[ "$drift_count" -gt 0 ]] && is_drifted=1
+
 
 # JSON / status modes always emit, regardless of cleanliness
 case "$MODE" in
