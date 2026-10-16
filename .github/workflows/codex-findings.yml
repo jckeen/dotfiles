@@ -68,7 +68,9 @@ jobs:
           # claude/scripts/tests/codex-findings-label.test.sh)
           set -euo pipefail
           LABEL=codex-findings
-          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::bad PR number: $PR"; exit 1; }
+          # No leading zeros: "007" would name PR 7 under another concurrency
+          # group, letting two recounts of one PR race.
+          [[ "$PR" =~ ^[1-9][0-9]*$ ]] || { echo "::error::bad PR number: $PR"; exit 1; }
           owner=${REPO%/*}
           name=${REPO#*/}
           out=$(gh api graphql -f owner="$owner" -f name="$name" -F pr="$PR" -f query='
@@ -83,6 +85,15 @@ jobs:
                   nodes{isResolved comments(first:1){nodes{author{__typename login}}}}}}}}')
           if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$out")" != false ]; then
             echo "::error::could not read every review thread of #$PR; leaving the label as it is"
+            exit 1
+          fi
+          # GraphQL may return null for a node it could not resolve; counting
+          # past one could clear the label while a finding is still open.
+          if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.nodes
+              | type == "array" and all(.[]; type == "object"
+                  and (.comments.nodes | type == "array")
+                  and (.comments.nodes[0] | type == "object"))' <<<"$out")" != true ]; then
+            echo "::error::a review thread of #$PR could not be read; leaving the label as it is"
             exit 1
           fi
           state=$(jq -r '.data.repository.pullRequest.state' <<<"$out")
