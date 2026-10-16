@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-16 — feat: codex-threads.sh lists and closes out Codex bot review threads
+
+- **`claude/scripts/codex-threads.sh`:** `list --pr N` (or
+  `--merged-since DATE`) prints one TSV line per unresolved thread the GitHub
+  Codex bot opened: thread id, location, priority, outdated flag, title and
+  link. `resolve --thread ID --reply TEXT` posts the reply and then resolves
+  the thread. It refuses an empty reply and refuses a thread anyone other
+  than the bot opened. Once the `codex-review` ruleset requires resolved
+  threads (#615), this is how an agent answers each finding before merge,
+  either "fixed in" or "moot because". A failed or truncated read exits 1
+  rather than printing a partial list.
+- **Why:** a 2026-10-16 triage found 35 unresolved bot threads on merged
+  PRs #564–#604, because auto-merge lands before the bot comments (#617).
+- **Tests:** `claude/scripts/tests/codex-threads.test.sh` (fake `gh`), wired
+  into the CI `checkers` shard.
+
 ## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
 
 - **`.github/workflows/codex-review.yml`:** the first live run (the close of
