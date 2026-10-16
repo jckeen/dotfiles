@@ -80,7 +80,7 @@ graphql() {
   printf '%s\n' "${threads[@]}" | jq -sc --arg s "$state" --argjson n "$next" --argjson lab "$labelled" \
     --argjson fork "${FORK:-false}" \
     '{data:{repository:{pullRequest:{state:$s,isCrossRepository:$fork,
-       labels:{nodes:(if $lab then [{name:"codex-findings"}] else [] end)},
+       labels:{pageInfo:{hasNextPage:false},nodes:(if $lab then [{name:"codex-findings"}] else [] end)},
        reviewThreads:{pageInfo:{hasNextPage:$n},nodes:.}}}}}' >"$FIX/graphql"
 }
 run() { bash "$TMP/label.sh" >"$FIX/out" 2>&1 && rc=0 || rc=$?; }
@@ -148,6 +148,53 @@ graphql OPEN false true "$BOT"
 jq -c '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes = [null]' "$FIX/graphql" >"$FIX/g2" && mv "$FIX/g2" "$FIX/graphql"
 run
 check "an unreadable first comment never clears the label" 1 ""
+
+# mutate <jq assignment>: rewrite the current fixture's graphql response.
+mutate() { jq -c "$1" "$FIX/graphql" >"$FIX/g2" && mv "$FIX/g2" "$FIX/graphql"; }
+P=.data.repository.pullRequest
+
+new_fix
+graphql OPEN false true "$BOT"
+mutate "$P.reviewThreads.nodes[0].comments.nodes[0].author = null"
+run
+check "an unresolved thread with an unreadable author never clears the label" 1 ""
+
+new_fix
+graphql OPEN false true "$BOT" true:Bot:chatgpt-codex-connector
+mutate "$P.reviewThreads.nodes[1].comments.nodes[0].author = null"
+mutate "$P.reviewThreads.nodes[0].isResolved = true"
+run
+check "a resolved thread's unreadable author does not block the count" 0 "DELETE issues/7/labels/codex-findings"
+
+new_fix
+graphql OPEN false false
+mutate "$P.labels.nodes = [null]"
+run
+check "an unreadable label entry fails and writes nothing" 1 ""
+
+new_fix
+graphql OPEN false false "$BOT"
+mutate "$P.labels.pageInfo.hasNextPage = true"
+run
+check "a truncated label page fails and writes nothing" 1 ""
+
+new_fix
+graphql OPEN false true "$BOT"
+mutate "$P.reviewThreads.nodes[0].isResolved = null"
+run
+check "an unreadable resolved flag fails and writes nothing" 1 ""
+
+new_fix
+graphql OPEN false false "$BOT"
+mutate "$P.isCrossRepository = null"
+run
+check "an unreadable fork flag fails and writes nothing" 1 ""
+
+new_fix
+graphql OPEN false false "$BOT"
+mutate "$P.state = null"
+run
+check "an unreadable state fails and writes nothing" 1 ""
 
 new_fix
 graphql MERGED false true "$BOT"

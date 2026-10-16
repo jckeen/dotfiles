@@ -119,6 +119,24 @@ threads false '{"id":"T9","isResolved":false,"isOutdated":false,"path":"a","line
 "$CT" list --pr 9 >/dev/null 2>&1 && rc=0 || rc=$?
 if [ "$rc" = 1 ]; then ok; else bad "a thread with an unreadable first comment must exit 1 (rc=$rc)"; fi
 
+# 2b'. An unresolved thread whose author is unreadable (null) fails: an
+# unknown author cannot be ruled out as the bot. A resolved one does not
+# matter.
+new_fix
+threads false "$(thread T1 false false chatgpt-codex-connector "$BADGE")" \
+  '{"id":"T9","isResolved":false,"isOutdated":false,"path":"a","line":1,"comments":{"nodes":[{"author":null,"body":"x","url":"u"}]}}' >"$FIX/threads_9"
+out=$("$CT" list --pr 9 2>/dev/null) && rc=0 || rc=$?
+if [ "$rc" = 1 ] && [ -z "$out" ]; then ok; else bad "an unresolved null-author thread must exit 1 with no output (rc=$rc): $out"; fi
+new_fix
+threads false "$(thread T1 false false chatgpt-codex-connector "$BADGE")" \
+  '{"id":"T9","isResolved":true,"isOutdated":false,"path":"a","line":1,"comments":{"nodes":[{"author":null,"body":"x","url":"u"}]}}' >"$FIX/threads_9"
+out=$("$CT" list --pr 9) && rc=0 || rc=$?
+if [ "$rc" = 0 ] && grep -qP '^9\tT1\t' <<<"$out"; then ok; else bad "a resolved null-author thread must not block the list (rc=$rc): $out"; fi
+new_fix
+threads false '{"id":"T9","isResolved":null,"isOutdated":false,"path":"a","line":1,"comments":{"nodes":[]}}' >"$FIX/threads_9"
+"$CT" list --pr 9 >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" = 1 ]; then ok; else bad "an unreadable isResolved must exit 1 (rc=$rc)"; fi
+
 # 2c. A PR number with a leading zero is a usage error, never a second name
 # for the same PR.
 new_fix

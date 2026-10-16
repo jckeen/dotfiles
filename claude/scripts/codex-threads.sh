@@ -29,11 +29,20 @@ set -euo pipefail
 # account could hold that bare name, so the author must also be a Bot actor.
 BOT_RE='^chatgpt-codex-connector(\[bot\])?$'
 
-# True only when every thread node and its first comment came back readable.
+# True only when the read is complete enough to decide on: every thread node
+# is an object with a boolean isResolved, and every UNRESOLVED one has a
+# readable first comment whose author's type and login are strings. GraphQL
+# may return null for any of these (a node it could not resolve, a deleted
+# author), and an unknown author cannot be ruled out as the bot.
 COMPLETE_JQ='.data.repository.pullRequest.reviewThreads.nodes
   | type == "array" and all(.[]; type == "object"
-      and (.comments.nodes | type == "array")
-      and (.comments.nodes[0] | type == "object"))'
+      and (.isResolved | type == "boolean")
+      and (.isResolved or (
+        (.comments.nodes | type == "array")
+        and (.comments.nodes[0] | type == "object")
+        and (.comments.nodes[0].author | type == "object")
+        and (.comments.nodes[0].author.login | type == "string")
+        and (.comments.nodes[0].author.__typename | type == "string"))))'
 
 die() { echo "codex-threads: $*" >&2; exit 1; }
 usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0" >&2; exit 2; }
