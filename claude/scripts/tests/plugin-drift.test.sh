@@ -229,7 +229,8 @@ assert "a reverse-drift id is shown sanitized" 'outgrep "• x__/system-reminder
 #   localmkt (a `directory` marketplace, loaded in place, not cached):
 #     ./plugins/localmod with "modules" → warns; ./plugins/localplain → silent
 #     bare "baremod" under metadata.pluginRoot → warns
-#   filemkt (a `file` marketplace: root is two levels above marketplace.json):
+#   filemkt (a `file` marketplace: the catalog is read from its recorded path,
+#     here .claude-plugin/catalog.json; sources resolve two levels above it):
 #     ./p/filemod with "modules" → warns
 #   ghmkt (a `github` clone: its plugins load from cache/, not the clone):
 #     ./plugins/ghmod with "modules" → silent
@@ -287,7 +288,7 @@ run_mods() {
   printf '%s\n' '{"hooks":{}}' > "$L/plugins/localplain/hooks/hooks.json" || die "write localplain"
   printf '%s\n' "$mod" > "$L/plugins/baremod/hooks/hooks.json" || die "write baremod"
   printf '%s\n' '{"name":"filemkt","plugins":[{"name":"filemod","source":"./p/filemod"}]}' \
-    > "$F/.claude-plugin/marketplace.json" || die "write filemkt marketplace.json"
+    > "$F/.claude-plugin/catalog.json" || die "write filemkt catalog.json"
   printf '%s\n' "$mod" > "$F/p/filemod/hooks/hooks.json" || die "write filemod"
   printf '%s\n' '{"name":"ghmkt","plugins":[{"name":"ghmod","source":"./plugins/ghmod"}]}' \
     > "$G/.claude-plugin/marketplace.json" || die "write ghmkt marketplace.json"
@@ -295,7 +296,7 @@ run_mods() {
   printf '{"localmkt":{"source":{"source":"directory","path":"%s"},"installLocation":"%s"},
     "filemkt":{"source":{"source":"file","path":"%s"},"installLocation":"%s"},
     "ghmkt":{"source":{"source":"github","repo":"o/ghmkt"},"installLocation":"%s"}}\n' \
-    "$L" "$L" "$F/.claude-plugin/marketplace.json" "$F/.claude-plugin/marketplace.json" "$G" \
+    "$L" "$L" "$F/.claude-plugin/catalog.json" "$F/.claude-plugin/catalog.json" "$G" \
     > "$H/.claude/plugins/known_marketplaces.json" || die "write known_marketplaces.json"
   if [[ "$how" == cwd ]]; then
     out="$(cd "$P" && env -u CLAUDE_PROJECT_DIR HOME="$H" DOTFILES_DIR="$D" bun "$HOOK" 2>&1)"
@@ -317,7 +318,7 @@ assert "a project skills-dir mod is named (#599 review)" 'outgrep "• projmod@s
 assert "a mod loaded in place from a directory marketplace is named (#599 review)" \
   'outgrep "• localmod@localmkt"'
 assert "a bare-name source under metadata.pluginRoot is resolved" 'outgrep "• baremod@localmkt"'
-assert "a file marketplace's root is two levels above marketplace.json" \
+assert "a file marketplace's catalog is read from its recorded path, any name" \
   'outgrep "• filemod@filemkt"'
 assert "a local-marketplace plugin without \"modules\" is not named" '! outgrep "localplain@"'
 assert "a github marketplace clone is not scanned (its plugins load from cache)" \
@@ -397,10 +398,20 @@ run_untrusted() {
   printf '%s\n' "$mod" > "$S/notaplugin/hooks/hooks.json" || die "write notaplugin hooks"
   local L="$H/src/lm" B="$H/src/lmbroken"
   mkdir -p "$L/.claude-plugin" "$L/p/lmbad/hooks" "$L/p/lmnone" "$B/.claude-plugin" \
+    "$L/p/lmmanifest/.claude-plugin" \
+    "$L/p/lmdirmanifest/.claude-plugin/plugin.json" "$L/p/lmok/.claude-plugin" \
     || die "mkdir local marketplace dirs"
   printf '%s\n' '{"name":"lm","plugins":[{"name":"lmbad","source":"./p/lmbad"},
-    {"name":"lmnone","source":"./p/lmnone"}]}' > "$L/.claude-plugin/marketplace.json" \
+    {"name":"lmnone","source":"./p/lmnone"},
+    {"name":"lmmanifest","source":"./p/lmmanifest"},
+    {"name":"lmdirmanifest","source":"./p/lmdirmanifest"},
+    {"name":"lmok","source":"./p/lmok"}]}' > "$L/.claude-plugin/marketplace.json" \
     || die "write lm marketplace.json"
+  printf '%s\n' '{"name": "lmmanifest",' > "$L/p/lmmanifest/.claude-plugin/plugin.json" \
+    || die "write lmmanifest plugin.json"
+  # No hooks.json: an unreadable manifest may declare hooks elsewhere.
+  printf '%s\n' '{"name":"lmok"}' > "$L/p/lmok/.claude-plugin/plugin.json" \
+    || die "write lmok plugin.json"
   printf '%s\n' '{"modules": [' > "$L/p/lmbad/hooks/hooks.json" || die "write lmbad"
   printf '%s\n' '{"name":"lmbroken",' > "$B/.claude-plugin/marketplace.json" \
     || die "write lmbroken marketplace.json"
@@ -434,6 +445,12 @@ assert "a project plugin without hooks.json is not named" '! outgrep "nohooks@"'
 assert "a project dir without .claude-plugin/ is not a plugin" '! outgrep "notaplugin"'
 assert "a local-marketplace plugin's malformed hooks.json is named" 'outline "  • lmbad@lm"'
 assert "a local-marketplace plugin without hooks.json is not named" '! outgrep "lmnone@"'
+assert "a local-marketplace plugin's malformed plugin.json is named" \
+  'outline "  • lmmanifest@lm"'
+assert "a local-marketplace plugin whose plugin.json is a directory is named" \
+  'outline "  • lmdirmanifest@lm"'
+assert "a local-marketplace plugin with a valid plugin.json and no hooks is silent" \
+  '! outgrep "lmok@"'
 assert "an unparseable local marketplace.json is named" \
   'outline "  • marketplace.json@lmbroken"'
 assert "hook exits 0 (unverifiable files)" "[ $rc -eq 0 ]"

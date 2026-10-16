@@ -21,11 +21,13 @@
   read or parsed (malformed, a directory, a dangling symlink) is named under
   "Plugin mods (unverifiable)" instead of skipped, since Claude Code's loader
   may accept what this parser rejects. An installed plugin's stays silent. The
+  local and project plugins share one verification path. A `file`
+  marketplace's catalog is read from its recorded path under any name. The
   project scan is skipped only when its path provably resolves to
   `~/.claude/skills`; a path that fails to resolve is scanned.
 - **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
   dir and adds fixtures for both origins, an allowlist-shadowing project
-  plugin, injection names, and unparseable untrusted files (20 of 75 failed on
+  plugin, injection names, and unparseable untrusted files (22 of 78 failed on
   origin/main, all pass after).
 
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind

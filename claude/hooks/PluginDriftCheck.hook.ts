@@ -238,6 +238,27 @@ function present(path: string): boolean {
   }
 }
 
+// A plugin from a local marketplace path or the project, which nobody
+// installed. Both origins go through here so their checks cannot drift: a
+// plugin.json that exists but yields no name is unverifiable, never skipped.
+// `id` is the marketplace id; without one (the project), a dir with no
+// plugin.json is not a plugin and the id comes from the manifest name.
+function untrustedPlugin(
+  origin: Origin,
+  dir: string,
+  id?: string,
+): Scanned | null {
+  if (!present(join(dir, '.claude-plugin', 'plugin.json')))
+    return id ? { id, dir, origin } : null;
+  const name = pluginName(dir);
+  return {
+    id: id ?? `${name ?? basename(dir)}@skills-dir`,
+    dir,
+    origin,
+    unverifiable: name === null,
+  };
+}
+
 // Relative-path plugins of marketplaces added from a local
 // `directory` or `file` source: Claude Code loads these in place from the
 // marketplace folder and never copies them into cache/. A git or GitHub
@@ -250,12 +271,17 @@ function localMarketplacePlugins(): Scanned[] {
     const source = (entry as { source?: { source?: unknown; path?: unknown } })
       ?.source;
     if (typeof source?.path !== 'string') continue;
-    // A `file` source names <root>/.claude-plugin/marketplace.json.
+    // A `file` source is the catalog itself, read where it is under any
+    // name; relative plugin sources resolve from two directories above it.
     let root: string;
-    if (source.source === 'directory') root = source.path;
-    else if (source.source === 'file') root = dirname(dirname(source.path));
-    else continue;
-    const catalogPath = join(root, '.claude-plugin', 'marketplace.json');
+    let catalogPath: string;
+    if (source.source === 'directory') {
+      root = source.path;
+      catalogPath = join(root, '.claude-plugin', 'marketplace.json');
+    } else if (source.source === 'file') {
+      root = dirname(dirname(source.path));
+      catalogPath = source.path;
+    } else continue;
     const catalog = readJson(catalogPath);
     const plugins = (catalog as { plugins?: unknown } | null)?.plugins;
     if (!Array.isArray(plugins)) {
@@ -276,8 +302,11 @@ function localMarketplacePlugins(): Scanned[] {
         source?: unknown;
       };
       const dir = relativeSource(root, src, pluginRoot);
-      if (typeof name === 'string' && dir)
-        found.push({ id: `${name}@${market}`, dir, origin: 'local' });
+      const scanned =
+        typeof name === 'string' && dir
+          ? untrustedPlugin('local', dir, `${name}@${market}`)
+          : null;
+      if (scanned) found.push(scanned);
     }
   }
   return found;
@@ -308,15 +337,8 @@ function pluginDirs(): Scanned[] {
   // (a session started in HOME); a path that fails to resolve is scanned.
   if (!sameDir(PROJECT_SKILLS_DIR, SKILLS_DIR))
     for (const dir of subdirs(PROJECT_SKILLS_DIR)) {
-      const name = pluginName(dir);
-      if (name) found.push({ id: `${name}@skills-dir`, dir, origin: 'project' });
-      else if (present(join(dir, '.claude-plugin', 'plugin.json')))
-        found.push({
-          id: `${basename(dir)}@skills-dir`,
-          dir,
-          origin: 'project',
-          unverifiable: true,
-        });
+      const scanned = untrustedPlugin('project', dir);
+      if (scanned) found.push(scanned);
     }
   return found;
 }
