@@ -423,8 +423,9 @@ alink() {
   return 0
 }
 
-# Flags. We do TWO passes so flag order doesn't matter: first set DRY_RUN,
-# then handle action flags (--check/--repair/--help) which exit.
+# Flags. We do TWO passes so flag order doesn't matter: first set DRY_RUN
+# and pick the action (the FIRST of --help/--check/--repair/--show-services),
+# then dispatch that action, which exits.
 #
 # Supported flags:
 #   --dry-run          Print destructive ops via run() instead of executing them
@@ -437,6 +438,7 @@ alink() {
 SERVICES_FLAG=""
 SERVICES_FLAG_SET=0
 SELECT_SERVICES=0
+_setup_action=""
 _prev_arg=""
 for arg in "$@"; do
   if [ "$_prev_arg" = "--services" ]; then
@@ -451,13 +453,55 @@ for arg in "$@"; do
     --services) _prev_arg="--services" ;;
     --services=*) SERVICES_FLAG="${arg#--services=}"; SERVICES_FLAG_SET=1 ;;
     --select-services) SELECT_SERVICES=1 ;;
-    --show-services) ;;  # dispatched with --help/--check below
+    --help|-h|--check|--repair|--show-services)
+      [ -n "$_setup_action" ] || _setup_action="$arg" ;;
   esac
 done
 if [ "$_prev_arg" = "--services" ]; then
   echo "ERROR: --services needs a list, e.g. --services claude,codex" >&2
   exit 1
 fi
+
+print_help() {
+  cat <<'HELP'
+Usage: ./setup.sh [flags]
+
+Flags:
+  --dry-run      Show destructive ops without executing (installs, downloads)
+  --yes, -y      Non-interactive: take safe defaults for every prompt and skip
+                 the browser-login steps (for unattended/CI runs)
+  --check        Run symlink health audit and exit
+  --repair       Audit symlinks and recreate broken ones, then exit
+                 (combine with --dry-run to preview fixes without applying)
+  --services LIST
+                 Manage only these agent services: a comma-separated subset of
+                 claude, codex, antigravity (or "all"). Saved machine-locally,
+                 so later reruns keep it. Add a service later by rerunning with
+                 the longer list. Deselecting stops setup.sh managing that
+                 service; it never deletes its existing config or credentials.
+  --select-services
+                 Re-ask the interactive service selection (e.g. to opt in to a
+                 service you skipped)
+  --show-services
+                 Print the effective service selection and where it came from
+  --help, -h     Show this help
+
+Environment:
+  GIT_NAME           Pre-populate git user.name
+  GIT_EMAIL          Pre-populate git user.email
+  DOTFILES_SERVICES  Same as --services (the flag wins when both are set)
+
+Service selection is saved in $XDG_CONFIG_HOME/dotfiles/services (default
+~/.config/dotfiles/services). With no saved selection, setup.sh manages all
+three services (the behavior before selection existed); an interactive first
+run asks, and --yes keeps all three.
+HELP
+}
+# --help depends on no machine-local state, so it runs before the saved
+# selection is loaded and still works when that file is damaged.
+case "$_setup_action" in
+  --help|-h) print_help; exit 0 ;;
+esac
 
 # Resolve the service selection before any mode runs, so --check/--repair
 # audit the same services an install manages. Precedence: --services, then
@@ -495,11 +539,11 @@ fi
 # run setup.sh from a temporary `git worktree`; every managed link resolves
 # against DOTFILES_DIR, so that wires ~/.claude to a checkout that vanishes
 # when the branch lands (two ~/.claude/scripts links dangled at /tmp/trnn-gate-*
-# this way). --help and --check are read-only and stay usable anywhere.
+# this way). --check and --show-services are read-only and stay usable
+# anywhere. Keyed on the action that actually dispatches, so a read-only flag
+# later in argv cannot exempt --repair or an install.
 _setup_readonly=0
-for arg in "$@"; do
-  case "$arg" in --help|-h|--check|--show-services) _setup_readonly=1 ;; esac
-done
+case "$_setup_action" in --check|--show-services) _setup_readonly=1 ;; esac
 if [ "$_setup_readonly" = "0" ] && [ "${DOTFILES_ALLOW_LINKED_WORKTREE:-0}" != "1" ]; then
   _setup_git_dir="$(git -C "$DOTFILES_DIR" rev-parse --git-dir 2>/dev/null || true)"
   _setup_git_common="$(git -C "$DOTFILES_DIR" rev-parse --git-common-dir 2>/dev/null || true)"
@@ -514,54 +558,16 @@ if [ "$_setup_readonly" = "0" ] && [ "${DOTFILES_ALLOW_LINKED_WORKTREE:-0}" != "
     exit 1
   fi
 fi
-for arg in "$@"; do
-  case "$arg" in
-    --help|-h)
-      cat <<'HELP'
-Usage: ./setup.sh [flags]
-
-Flags:
-  --dry-run      Show destructive ops without executing (installs, downloads)
-  --yes, -y      Non-interactive: take safe defaults for every prompt and skip
-                 the browser-login steps (for unattended/CI runs)
-  --check        Run symlink health audit and exit
-  --repair       Audit symlinks and recreate broken ones, then exit
-                 (combine with --dry-run to preview fixes without applying)
-  --services LIST
-                 Manage only these agent services: a comma-separated subset of
-                 claude, codex, antigravity (or "all"). Saved machine-locally,
-                 so later reruns keep it. Add a service later by rerunning with
-                 the longer list. Deselecting stops setup.sh managing that
-                 service; it never deletes its existing config or credentials.
-  --select-services
-                 Re-ask the interactive service selection (e.g. to opt in to a
-                 service you skipped)
-  --show-services
-                 Print the effective service selection and where it came from
-  --help, -h     Show this help
-
-Environment:
-  GIT_NAME           Pre-populate git user.name
-  GIT_EMAIL          Pre-populate git user.email
-  DOTFILES_SERVICES  Same as --services (the flag wins when both are set)
-
-Service selection is saved in $XDG_CONFIG_HOME/dotfiles/services (default
-~/.config/dotfiles/services). With no saved selection, setup.sh manages all
-three services (the behavior before selection existed); an interactive first
-run asks, and --yes keeps all three.
-HELP
-      exit 0
-      ;;
-    --show-services)
-      echo "services=$DOTFILES_SELECTED_SERVICES"
-      echo "source=$SERVICES_SOURCE"
-      echo "file=$SERVICES_FILE"
-      exit 0
-      ;;
-    --check)  _rc=0; run_health_audit "check"  || _rc=$?; exit "$_rc" ;;
-    --repair) _rc=0; run_health_audit "repair" || _rc=$?; exit "$_rc" ;;
-  esac
-done
+case "$_setup_action" in
+  --show-services)
+    echo "services=$DOTFILES_SELECTED_SERVICES"
+    echo "source=$SERVICES_SOURCE"
+    echo "file=$SERVICES_FILE"
+    exit 0
+    ;;
+  --check)  _rc=0; run_health_audit "check"  || _rc=$?; exit "$_rc" ;;
+  --repair) _rc=0; run_health_audit "repair" || _rc=$?; exit "$_rc" ;;
+esac
 
 # ─── Platform detection ──────────────────────────────────────────────
 detect_platform() {
@@ -818,7 +824,8 @@ if [[ "$PLATFORM" != "macos" ]]; then
 fi
 
 # ─── 1b. Audio (WSL only — ALSA → PulseAudio for WSLg) ──────────────
-if [[ "$PLATFORM" == "wsl" ]]; then
+# Only Claude's /voice uses it, so a deselected Claude skips it too.
+if [[ "$PLATFORM" == "wsl" ]] && service_selected claude; then
   echo ""
   echo "--- ALSA → PulseAudio routing (WSL, needed for /voice) ---"
   ask_yn "N" "Set up audio routing for Claude /voice? (requires sudo) [y/N] "
