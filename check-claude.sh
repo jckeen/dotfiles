@@ -37,6 +37,7 @@ ERRORS=0
 WARNINGS=0
 FIXED=0
 HEALED=0
+TOOL_NOTES=0
 
 # Flags:
 #   --fix    auto-clean orphaned symlinks and stale backups (existing behavior)
@@ -134,12 +135,21 @@ while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
   if symlink_is_legacy_skill_dir "$src" "$dst"; then
     if [ "$HEAL" -eq 1 ]; then
-      # A concurrent --heal (two panes launching cc) may finish the same
-      # conversion first, so rm/rmdir here fail on entries already gone. That
-      # is not a failure of this run: fall through and let check_link report
-      # whatever state the directory is in now.
-      if ! symlink_migrate_legacy_skill_dir "$src" "$dst" \
-        && symlink_is_legacy_skill_dir "$src" "$dst"; then
+      # A concurrent --heal (two panes launching cc) may be converting the
+      # same directory, so rm/rmdir here fail on entries already gone, and a
+      # recheck can land mid-drain and see a real directory that becomes the
+      # correct link a moment later. That is not a failure of this run: retry,
+      # bounded (~5s), until $dst stops being a real directory, then let
+      # check_link report whatever state it settled in. A real directory
+      # left after the wait is only FAILED if it is still legacy.
+      tries=0
+      until symlink_migrate_legacy_skill_dir "$src" "$dst"; do
+        { [ -L "$dst" ] || [ ! -e "$dst" ]; } && break
+        tries=$((tries + 1))
+        [ "$tries" -lt 50 ] || break
+        sleep 0.1
+      done
+      if symlink_is_legacy_skill_dir "$src" "$dst"; then
         red "FAILED  $label could not convert legacy per-file links"
         ERRORS=$((ERRORS + 1))
         continue
@@ -244,6 +254,10 @@ while IFS= read -r backup; do
   fi
 done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
 
+# CLI stack the instructions mandate (issue #605; silent if all present).
+# Advisory only: see check_cli_stack in lib-checks.sh.
+check_cli_stack
+
 # Branch hygiene status (silent if clean)
 if [ -x "$DOTFILES_DIR/hygiene-status.sh" ]; then
   "$DOTFILES_DIR/hygiene-status.sh" --cli || true
@@ -258,6 +272,7 @@ fi
 # Summary
 echo ""
 [ $HEALED -gt 0 ] && green "Self-healed $HEALED missing link(s)."
+[ $TOOL_NOTES -gt 0 ] && yellow "$TOOL_NOTES CLI tool(s) missing (advisory; does not fail the check)."
 if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
   green "All good. Claude config is in sync."
   [ $FIXED -gt 0 ] && green "Cleaned up $FIXED item(s)."

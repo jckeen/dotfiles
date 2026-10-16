@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-16 — fix: check-claude warns on a missing CLI stack and waits out a racing migration
+
+- **`check-claude.sh` / `lib-checks.sh`** (closes #605): the CLI tools the
+  Claude config tells sessions to prefer now live in one list,
+  `CLI_STACK_TOOLS` in `lib-checks.sh`, and `check_cli_stack` prints a `TOOL`
+  warning for each one missing (or present only under its Debian name, with
+  the `setup.sh` shim hint). Advisory: it does not fail the check, because
+  `cc` blocks launch on a failed checker.
+- **`check-claude.sh --heal`** (PR #604 review): a legacy skill-directory
+  conversion that a concurrent `--heal` is still finishing is retried for a
+  bounded few seconds until the destination settles, instead of being
+  reported as `FAILED` or `NOT LINKED`. Two concurrent checkers on a
+  500-entry legacy bundle: 8/8 trials had a failing checker before, 0/8 after.
+- **Tests:** `heal-race.test.sh` covers the in-flight migration and the tool
+  advisory under a controlled PATH (4 failed before the fix, all pass after).
+
 ## 2026-10-16 — fix: harden the ccw profile linker
 
 - **`claude/scripts/link-claude-profile.sh`** (refs #591): refuses a profile

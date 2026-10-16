@@ -5,7 +5,9 @@
 # dropped a self-link INSIDE the source bundle (<bundle>/<name> -> <bundle>),
 # which the checker could not see. Covers: the heal path never nests (ln -sn),
 # the SELFLINK check and its --fix, and a migration that a concurrent run
-# finished first is not reported as FAILED. Fixture-driven: the checker and its
+# finished first is not reported as FAILED, nor one it is still finishing
+# (PR #604 review). Also covers the CLI-stack advisory (issue #605): a missing
+# rg/fd/bat/eza warns without failing the check. Fixture-driven: the checker and its
 # libs are copied into a throwaway repo so DOTFILES_DIR resolves there, and
 # HOME points at a throwaway tree. Mirrors check-tests-wired.test.sh.
 set -uo pipefail
@@ -37,6 +39,28 @@ check() {
 FIX="$(mktemp -d)"
 trap 'rm -rf "$FIX"' EXIT
 
+# The checker looks the CLI stack up on PATH, so every run gets a controlled
+# one: SYSBIN mirrors the real PATH minus rg/fd/bat/eza (and their Debian
+# names), and TOOLS holds stubs for the ones a case wants present. One cp -s
+# per directory keeps the mirror cheap; Windows dirs (WSL) are skipped.
+SYSBIN="$FIX/sysbin"
+mkdir -p "$SYSBIN"
+IFS=: read -ra _path_dirs <<<"$PATH"
+for _d in "${_path_dirs[@]}"; do
+  case "$_d" in /mnt/*|"") continue ;; esac
+  [ -d "$_d" ] && cp -sn "$_d"/* "$SYSBIN"/ 2>/dev/null
+done
+rm -f "$SYSBIN"/{rg,fd,fdfind,bat,batcat,eza}
+# fake_tools <dir> <name>... — a PATH dir holding a stub per name.
+fake_tools() {
+  local dir="$1" t
+  shift
+  rm -rf "$dir" && mkdir -p "$dir"
+  for t in "$@"; do printf '#!/bin/sh\nexit 0\n' > "$dir/$t" && chmod +x "$dir/$t"; done
+}
+TOOLS="$FIX/tools-all"
+fake_tools "$TOOLS" rg fd bat eza
+
 # new_fixture <name> — a repo copy at $R with one skill bundle, and an empty
 # HOME at $H. Only the files check-claude.sh sources are copied, so the
 # enumerator sees exactly: nolink.txt (filtered), skills/demo, and the two
@@ -53,7 +77,7 @@ new_fixture() {
   SRC="$R/claude/skills/demo"
   DST="$H/.claude/skills/demo"
 }
-run_check() { HOME="$H" "$R/check-claude.sh" "$@" 2>&1; }
+run_check() { HOME="$H" PATH="$TOOLS:$SYSBIN" "$R/check-claude.sh" "$@" 2>&1; }
 
 # ── 1. --heal on a fresh HOME links the bundle as one directory link ─────
 new_fixture fresh
@@ -160,6 +184,49 @@ SHIM
 out="$(run_check --heal)"; rc=$?
 check "stuck migration: --heal exits 1" "$([ "$rc" -eq 1 ] && echo 1 || echo 0)"
 check "stuck migration: reported FAILED" "$(grep -q 'FAILED  skills/demo' <<<"$out" && echo 1 || echo 0)"
+
+# A conversion still in flight elsewhere is waited out, not reported. The
+# shim loses once: a competing run starts draining the directory a moment
+# later, so this run's recheck sees a legacy directory that is about to become
+# the correct link (PR #604 review, r4185789022).
+new_fixture inflight
+mkdir -p "$DST"
+for i in 1 2 3 4 5; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
+ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
+cat >> "$R/lib-symlinks.sh" <<'SHIM'
+eval "orig_$(declare -f symlink_migrate_legacy_skill_dir)"
+symlink_migrate_legacy_skill_dir() {
+  if [ ! -e "$2.lost" ]; then
+    : > "$2.lost"
+    ( sleep 0.5; for e in "$2"/*; do rm "$e"; sleep 0.1; done; rmdir "$2" && ln -sn "$1" "$2" ) &
+    return 1
+  fi
+  orig_symlink_migrate_legacy_skill_dir "$@"
+}
+SHIM
+out="$(run_check --heal)"; rc=$?
+wait
+check "in-flight migration: --heal exits 0" "$([ "$rc" -eq 0 ] && echo 1 || echo 0)"
+check "in-flight migration: not reported FAILED or NOT LINKED" \
+  "$(! grep -qE 'FAILED|NOT LINKED' <<<"$out" && echo 1 || echo 0)"
+check "in-flight migration: directory link in place" \
+  "$([ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
+rm -f "$DST.lost"
+
+# ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
+new_fixture tools
+out="$(run_check --heal)"; rc=$?
+check "tools present: no TOOL line" "$([ "$rc" -eq 0 ] && ! grep -q 'TOOL' <<<"$out" && echo 1 || echo 0)"
+TOOLS="$FIX/tools-some"
+fake_tools "$TOOLS" rg fdfind
+out="$(run_check)"; rc=$?
+check "tools missing: still exits 0 (advisory)" "$([ "$rc" -eq 0 ] && echo 1 || echo 0)"
+check "tools missing: WARN for bat and eza" \
+  "$(grep -q '\[WARN\] TOOL  bat ' <<<"$out" && grep -q '\[WARN\] TOOL  eza ' <<<"$out" && echo 1 || echo 0)"
+check "tools missing: rg present, no WARN" "$(! grep -q 'TOOL  rg ' <<<"$out" && echo 1 || echo 0)"
+check "tools missing: fd only as fdfind names the shim" \
+  "$(grep -q '\[WARN\] TOOL  fd .*fdfind' <<<"$out" && echo 1 || echo 0)"
+TOOLS="$FIX/tools-all"
 
 echo "heal-race: $pass passed, $failed failed"
 [ "$failed" -eq 0 ]
