@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-16 — test: heal-race rivals no longer hold the capture pipe
+
+- **`claude/scripts/tests/heal-race.test.sh`** (#635 review): the in-flight
+  fixture's background rival inherited the checker's captured stdout, so the
+  capture waited for it and "checker finished only after the rival" passed
+  even when the checker exited early. Rivals now redirect away from the
+  capture, and the test waits for one with a bounded `wait_rival` instead of
+  a bare `wait`, which never covered the checker's children. Against a
+  checker that exits before the migration completes, that assertion passed
+  before and fails after.
+
 ## 2026-10-16 — fix: check-claude warns on a missing CLI stack and waits out a racing migration
 
 - **`check-claude.sh` / `lib-checks.sh`** (closes #605): the CLI tools the

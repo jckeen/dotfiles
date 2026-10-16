@@ -61,6 +61,21 @@ fake_tools() {
 TOOLS="$FIX/tools-all"
 fake_tools "$TOOLS" rg fd bat eza
 
+# A rival migration runs in the background of the checker, so it must not
+# hold the checker's stdout: `out="$(run_check ...)"` would wait for it and
+# hide a checker that exits early (#635 review). Rivals redirect away from
+# the capture, and the test waits for one with wait_rival — a bare `wait`
+# cannot, since the rival is the checker's child, not ours.
+# wait_rival <marks dir> — up to ~10s for the rival's done mark.
+wait_rival() {
+  local i
+  for i in $(seq 1 100); do
+    [ -e "$1/done" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 # new_fixture <name> — a repo copy at $R with one skill bundle, and an empty
 # HOME at $H. Only the files check-claude.sh sources are copied, so the
 # enumerator sees exactly: nolink.txt (filtered), skills/demo, and the two
@@ -211,7 +226,7 @@ symlink_migrate_legacy_skill_dir() {
         sleep 0.2
       done
       rmdir "\$2" && ln -sn "\$1" "\$2" && : > "$M/done"
-    ) &
+    ) >/dev/null 2>&1 &
     until [ -e "$M/started" ]; do sleep 0.05; done
   fi
   if [ ! -e "$M/done" ]; then
@@ -223,7 +238,7 @@ symlink_migrate_legacy_skill_dir() {
 SHIM
 out="$(run_check --heal)"; rc=$?
 done_before_exit="$([ -e "$M/done" ] && echo 1 || echo 0)"
-wait
+wait_rival "$M"
 check "in-flight migration: --heal exits 0" "$([ "$rc" -eq 0 ] && echo 1 || echo 0)"
 check "in-flight migration: not reported FAILED or NOT LINKED" \
   "$(! grep -qE 'FAILED|NOT LINKED' <<<"$out" && echo 1 || echo 0)"
@@ -277,7 +292,7 @@ SHIM
 TOOLS="$VTOOLS"
 out="$(run_check --heal)"; rc=$?
 done_before_exit="$([ -e "$M/done" ] && echo 1 || echo 0)"
-wait
+wait_rival "$M"
 TOOLS="$FIX/tools-all"
 check "vanished entry: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
 check "vanished entry: --heal exits 0" "$([ "$rc" -eq 0 ] && echo 1 || echo 0)"
