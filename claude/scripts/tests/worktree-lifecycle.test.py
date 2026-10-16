@@ -39,11 +39,11 @@ def host_git_marker(root):
 def clean_temp_base(candidates):
     """The first candidate directory with no Git marker at or above it.
 
-    Codex's Linux sandbox mounts a tmpfs at `/tmp/.git`, which leaves an empty
-    `/tmp/.git` on the host after every sandboxed command (#621, #368), so the
-    system temporary directory cannot be assumed clean while any Codex run is
-    active. Missing or unwritable candidates are skipped. Returns None when no
-    candidate is clean.
+    Codex's Linux sandbox mounts a tmpfs at `/tmp/.git` (and at the dev
+    directory's `.git`), which leaves an empty `/tmp/.git` on the host for as
+    long as any sandboxed command runs (#621, #368). It can appear mid-run,
+    so a check at start-up cannot vouch for /tmp. Missing or unwritable
+    candidates are skipped. Returns None when no candidate is clean.
     """
     for candidate in candidates:
         if not candidate:
@@ -61,13 +61,14 @@ _MODULE_TEMP = None
 
 def setUpModule():
     """Root every fixture of this module in a directory with no Git marker
-    above it: the system one when it is clean, else the first clean fallback.
-    Only this test process's `tempfile` default changes; TMPDIR is untouched,
-    so suites that need it under /tmp are unaffected."""
+    above it, trying ones Codex's sandbox never mounts over before the
+    system one (see clean_temp_base). Only this test process's `tempfile`
+    default changes; TMPDIR is untouched, so suites that need it under /tmp
+    are unaffected."""
     global _MODULE_TEMP
     system = Path(tempfile.gettempdir())
     base = clean_temp_base(
-        [system, "/var/tmp", os.environ.get("XDG_RUNTIME_DIR"), Path.home() / ".cache"]
+        ["/var/tmp", os.environ.get("XDG_RUNTIME_DIR"), Path.home() / ".cache", system]
     )
     if base is None:
         raise RuntimeError(
