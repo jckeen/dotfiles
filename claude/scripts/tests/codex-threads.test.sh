@@ -109,6 +109,23 @@ threads true "$(thread T1 false false chatgpt-codex-connector "$BADGE")" >"$FIX/
 out=$("$CT" list --pr 9 2>/dev/null) && rc=0 || rc=$?
 if [ "$rc" = 1 ] && [ -z "$out" ]; then ok; else bad "truncated page must exit 1 with no output (rc=$rc)"; fi
 
+# 2b. An unreadable (null) thread node fails instead of being skipped.
+new_fix
+threads false "$(thread T1 false false chatgpt-codex-connector "$BADGE")" null >"$FIX/threads_9"
+out=$("$CT" list --pr 9 2>/dev/null) && rc=0 || rc=$?
+if [ "$rc" = 1 ] && [ -z "$out" ]; then ok; else bad "a null thread node must exit 1 with no output (rc=$rc): $out"; fi
+new_fix
+threads false '{"id":"T9","isResolved":false,"isOutdated":false,"path":"a","line":1,"comments":{"nodes":[null]}}' >"$FIX/threads_9"
+"$CT" list --pr 9 >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" = 1 ]; then ok; else bad "a thread with an unreadable first comment must exit 1 (rc=$rc)"; fi
+
+# 2c. A PR number with a leading zero is a usage error, never a second name
+# for the same PR.
+new_fix
+threads false >"$FIX/threads_007"
+"$CT" list --pr 007 >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" = 1 ]; then ok; else bad "--pr 007 must be refused (rc=$rc)"; fi
+
 # 3. A failed read exits 1.
 new_fix
 "$CT" list --pr 9 >/dev/null 2>&1 && rc=0 || rc=$?
@@ -204,6 +221,12 @@ new_fix
 node chatgpt-codex-connector false
 mutations true true
 resolve_case "a failed recount fails and names the recount" 1 "reply;resolve" "could not recount #9; run: gh workflow run"
+
+new_fix
+node chatgpt-codex-connector false
+mutations true true
+threads false null >"$FIX/threads_9"
+resolve_case "an unreadable recount never clears the label" 1 "reply;resolve" "could not recount #9"
 
 new_fix
 node chatgpt-codex-connector false

@@ -138,6 +138,18 @@ run
 check "failed read fails and writes nothing" 1 ""
 
 new_fix
+graphql OPEN false true "$BOT"
+jq -c '.data.repository.pullRequest.reviewThreads.nodes = [null]' "$FIX/graphql" >"$FIX/g2" && mv "$FIX/g2" "$FIX/graphql"
+run
+check "a null thread node never clears the label" 1 ""
+
+new_fix
+graphql OPEN false true "$BOT"
+jq -c '.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes = [null]' "$FIX/graphql" >"$FIX/g2" && mv "$FIX/g2" "$FIX/graphql"
+run
+check "an unreadable first comment never clears the label" 1 ""
+
+new_fix
 graphql MERGED false true "$BOT"
 run
 check "closed PR is left alone" 0 ""
@@ -164,6 +176,11 @@ new_fix
 graphql OPEN false false "$BOT"
 PR='7;x' run
 check "non-numeric PR is refused" 1 ""
+
+new_fix
+graphql OPEN false false "$BOT"
+PR=007 run
+check "a leading-zero PR number is refused" 1 ""
 
 echo "codex-findings-label: $pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -29,6 +29,12 @@ set -euo pipefail
 # account could hold that bare name, so the author must also be a Bot actor.
 BOT_RE='^chatgpt-codex-connector(\[bot\])?$'
 
+# True only when every thread node and its first comment came back readable.
+COMPLETE_JQ='.data.repository.pullRequest.reviewThreads.nodes
+  | type == "array" and all(.[]; type == "object"
+      and (.comments.nodes | type == "array")
+      and (.comments.nodes[0] | type == "object"))'
+
 die() { echo "codex-threads: $*" >&2; exit 1; }
 usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0" >&2; exit 2; }
 
@@ -72,6 +78,11 @@ query($owner:String!,$name:String!,$pr:Int!){
   if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$out")" != false ]; then
     die "#$1 has more than 100 review threads (or none could be read); not listing a partial set"
   fi
+  # GraphQL may return null for a node it could not resolve; skipping one
+  # would drop a finding, so any unreadable thread fails the whole read.
+  if [ "$(jq -r "$COMPLETE_JQ" <<<"$out")" != true ]; then
+    die "#$1 has a review thread that could not be read; not listing a partial set"
+  fi
   jq -r --arg pr "$1" --arg re "$BOT_RE" '
     .data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved | not)
@@ -89,7 +100,7 @@ query($owner:String!,$name:String!,$pr:Int!){
 case "$CMD" in
   list)
     if [ -n "$PR" ] && [ -z "$SINCE" ]; then
-      [[ "$PR" =~ ^[0-9]+$ ]] || die "bad --pr: $PR"
+      [[ "$PR" =~ ^[1-9][0-9]*$ ]] || die "bad --pr: $PR"
       list_pr "$PR"
     elif [ -n "$SINCE" ] && [ -z "$PR" ]; then
       [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "bad --merged-since: $SINCE"
