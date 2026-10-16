@@ -43,7 +43,7 @@ def host_git_marker(root):
 MAX_TEMP_BASE_LEN = 24
 
 
-def clean_temp_base(candidates):
+def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN):
     """The first usable candidate, resolved, with no Git marker at or above it.
 
     Codex's Linux sandbox mounts a tmpfs at `/tmp/.git` (and at the dev
@@ -60,7 +60,7 @@ def clean_temp_base(candidates):
         base = Path(candidate).resolve()
         if not base.is_dir() or not os.access(base, os.W_OK | os.X_OK):
             continue
-        if len(str(base)) > MAX_TEMP_BASE_LEN:
+        if len(str(base)) > max_len:
             continue
         if host_git_marker(base) is None:
             return base
@@ -116,9 +116,10 @@ class HostStateTests(unittest.TestCase):
             clean = base / "clean"
             clean.mkdir()
             self.assertEqual(
-                clean_temp_base([marked, None, base / "missing", clean]), clean.resolve()
+                clean_temp_base([marked, None, base / "missing", clean], max_len=4096),
+                clean.resolve(),
             )
-            self.assertIsNone(clean_temp_base([marked, base / "missing"]))
+            self.assertIsNone(clean_temp_base([marked, base / "missing"], max_len=4096))
 
     def test_a_symlink_into_a_marked_tree_is_not_clean(self):
         # Retirement resolves symlinks before inspecting ancestors, so the
@@ -131,7 +132,7 @@ class HostStateTests(unittest.TestCase):
             link = base / "link"
             link.symlink_to(inner)
             self.assertIsNone(host_git_marker(link))  # lexically clean
-            self.assertIsNone(clean_temp_base([link]))
+            self.assertIsNone(clean_temp_base([link], max_len=4096))
 
     def test_an_over_long_candidate_is_skipped(self):
         with tempfile.TemporaryDirectory() as temp:
