@@ -39,10 +39,6 @@ on:
 permissions:
   pull-requests: write
 
-concurrency:
-  group: codex-findings-${{ github.event.pull_request.number || inputs.pr }}
-  cancel-in-progress: true
-
 jobs:
   label:
     name: recount unresolved Codex bot threads
@@ -53,6 +49,14 @@ jobs:
       (github.event.pull_request.state == 'open' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.review.user.login == 'chatgpt-codex-connector[bot]')
+    # Only an eligible run (a dispatch, or a Codex bot review) shares the
+    # PR's group; any other review gets a group of its own from its run id,
+    # so it can never cancel a running recount and then skip its own job,
+    # whatever the order GitHub evaluates `if` and concurrency in. A newer
+    # eligible run may cancel an older one: every run recounts live state.
+    concurrency:
+      group: "codex-findings-${{ (github.event_name == 'workflow_dispatch' || github.event.review.user.login == 'chatgpt-codex-connector[bot]') && format('pr-{0}', github.event.pull_request.number || inputs.pr) || format('skip-{0}', github.run_id) }}"
+      cancel-in-progress: true
     steps:
       - name: Recount and label
         env:
