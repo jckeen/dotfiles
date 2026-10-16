@@ -21,7 +21,9 @@ name: codex-findings
 #
 # Every run recounts from live state, so a newer run supersedes an older one.
 # A failed or truncated read fails the run and leaves the label as it was.
-# Fork PRs are skipped, because their GITHUB_TOKEN is read-only.
+# Fork PRs are skipped on every trigger, a manual dispatch included: on a
+# review event their GITHUB_TOKEN is read-only, and labelling them only by
+# hand would make the queue inconsistent.
 
 on:
   pull_request_review:
@@ -70,6 +72,7 @@ jobs:
             repository(owner:$owner,name:$name){
               pullRequest(number:$pr){
                 state
+                isCrossRepository
                 labels(first:100){nodes{name}}
                 reviewThreads(first:100){
                   pageInfo{hasNextPage}
@@ -83,6 +86,10 @@ jobs:
             echo "#$PR is $state; nothing to do"
             exit 0
           fi
+          if [ "$(jq -r '.data.repository.pullRequest.isCrossRepository' <<<"$out")" != false ]; then
+            echo "#$PR is from a fork; skipped"
+            exit 0
+          fi
           # GraphQL reports the app's login without the [bot] suffix, and a
           # user account could hold that bare name, so require a Bot actor.
           count=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
@@ -93,9 +100,14 @@ jobs:
           has=$(jq --arg l "$LABEL" '[.data.repository.pullRequest.labels.nodes[].name] | index($l) != null' <<<"$out")
           if [ "$count" -gt 0 ] && [ "$has" = false ]; then
             # Adding a label that does not exist creates it, but with a random
-            # colour and no description, so create it first. A label another
-            # run created in the meantime is not an error.
-            if ! gh api "repos/$REPO/labels/$LABEL" >/dev/null 2>&1; then
+            # colour and no description, so create it first. Only a 404 means
+            # it is missing; any other failed lookup fails the run. A label
+            # another run created in the meantime is not an error.
+            if ! err=$(gh api "repos/$REPO/labels/$LABEL" 2>&1 >/dev/null); then
+              if ! grep -q 'HTTP 404' <<<"$err"; then
+                echo "::error::could not look up the $LABEL label: $err"
+                exit 1
+              fi
               gh api -X POST "repos/$REPO/labels" -f name="$LABEL" -f color=d93f0b \
                 -f description="Unresolved Codex bot review threads" >/dev/null 2>&1 ||
                 gh api "repos/$REPO/labels/$LABEL" >/dev/null
