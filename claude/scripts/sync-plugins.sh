@@ -120,10 +120,19 @@ done < "$MANIFEST"
 # Without python3 the fast path is skipped entirely rather than guessed at: the
 # install loop below is idempotent, so the cost is launch latency, not
 # correctness. python3 is already required by the pre-push receipt checker.
+#
+# installed_state says whether $user_scoped can be trusted: "known" (read, or
+# no file at all — nothing installed yet) or the reason it could not be read.
+# An unreadable state is never treated as "nothing installed": installs fall
+# back to the idempotent slow path, and removals fail loudly below.
 INSTALLED_JSON="$HOME/.claude/plugins/installed_plugins.json"
 user_scoped=""
-if [[ -f "$INSTALLED_JSON" ]] && command -v python3 >/dev/null 2>&1; then
-  user_scoped="$(python3 -c '
+installed_state="known"
+if [[ ! -e "$INSTALLED_JSON" ]]; then
+  :
+elif ! command -v python3 >/dev/null 2>&1; then
+  installed_state="python3 is not on PATH, so $INSTALLED_JSON cannot be read"
+elif ! user_scoped="$(python3 -c '
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -139,18 +148,30 @@ for name, records in plugins.items():
         for r in records
     ):
         print(name)
-' "$INSTALLED_JSON" 2>/dev/null)" || user_scoped=""
+' "$INSTALLED_JSON" 2>/dev/null)"; then
+  user_scoped=""
+  installed_state="$INSTALLED_JSON is unreadable or not the expected JSON shape"
+fi
+if [[ "$installed_state" != "known" ]]; then
+  echo "⚠ $installed_state; installing every manifest plugin instead of checking" >&2
 fi
 
-# Removals need to know what is installed at user scope, so without the JSON
-# (or python3) they wait for a run that can read it rather than guess.
+# Removals need to know what is installed at user scope. When that state could
+# not be read, each pending removal is reported as a failure (exit 1) instead
+# of being skipped: guessing "installed" could uninstall at the wrong scope.
 to_remove=()
+unevaluated=()
 for p in ${removed[@]+"${removed[@]}"}; do
   grep -qxF "$p" <<<"$active_all" && continue
-  grep -qxF "$p" <<<"$user_scoped" && to_remove+=("$p")
+  if [[ "$installed_state" != "known" ]]; then
+    unevaluated+=("$p")
+  elif grep -qxF "$p" <<<"$user_scoped"; then
+    to_remove+=("$p")
+  fi
 done
 
-if [[ -n "$user_scoped" ]] && (( ${#to_remove[@]} == 0 )); then
+if [[ -n "$user_scoped" ]] && (( ${#to_remove[@]} == 0 )) \
+  && (( ${#unevaluated[@]} == 0 )); then
   missing=0
   for p in ${wanted[@]+"${wanted[@]}"}; do
     if ! grep -qxF "$p" <<<"$user_scoped"; then
@@ -188,6 +209,11 @@ for p in ${to_remove[@]+"${to_remove[@]}"}; do
   else
     failed+=("$p")
   fi
+done
+
+for p in ${unevaluated[@]+"${unevaluated[@]}"}; do
+  echo "✘ $p is marked removed but was not checked: $installed_state" >&2
+  failed+=("$p")
 done
 
 echo

@@ -11,7 +11,10 @@
   user-scope install; a plugin merely absent from the manifest is never
   touched. `claude/plugins.txt` marks `superpowers@claude-plugins-official`
   removed, so machines that still carry it drop it on the next fresh launch.
-- **Tests:** new cases in `plugin-drift.test.sh` (5 failed before the fix,
+  When `installed_plugins.json` can't be read (python3 missing, malformed
+  JSON), the script warns, and each pending removal fails with a named
+  diagnostic and exit 1. A pending removal is never skipped silently.
+- **Tests:** new cases in `plugin-drift.test.sh` (7 failed before the fix,
   all pass after).
 
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind

@@ -312,9 +312,12 @@ STUB
   [[ -x "$B/claude" ]] || die "the claude stub is not executable"
   [[ "$(PATH="$B:$PATH" command -v claude)" == "$B/claude" ]] \
     || die "the claude stub does not shadow the real CLI on PATH"
+  if [[ "$installed" == "<absent>" ]]; then
+    rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+  fi
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
   sync_out="$(HOME="$H" XDG_CONFIG_HOME="$H/.config" DOTFILES_DIR="$D" \
-    PATH="$B:$PATH" env -u DOTFILES_SERVICES "$SYNC" 2>&1)"
+    PATH="$B:${SYNC_PATH:-$PATH}" env -u DOTFILES_SERVICES "$SYNC" 2>&1)"
   sync_rc=$?
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
   sync_installs="$(cat "$B/installs")"
@@ -439,6 +442,34 @@ superpowers@claude-plugins-official" "{\"version\":2,\"plugins\":{
 }}"
 assert "an active manifest line outranks a removed line" \
   '[ -z "$sync_uninstalls" ]'
+
+# Removals that cannot be evaluated fail loudly instead of exiting 0.
+run_sync "$MANIFEST_REMOVED" '{"version":2,"plugins":'
+assert "malformed installed_plugins.json fails a pending removal" \
+  '[ $sync_rc -ne 0 ] && grep -qF "superpowers@claude-plugins-official is marked removed but was not checked" <<<"$sync_out"'
+assert "malformed installed_plugins.json still installs the manifest" \
+  'grep -qxF "typescript-lsp@claude-plugins-official" <<<"$sync_installs"'
+assert "malformed installed_plugins.json uninstalls nothing" \
+  '[ -z "$sync_uninstalls" ]'
+
+# python3 missing: a PATH holding only the tools sync-plugins.sh needs.
+NOPY_BIN="$(mktemp -d)" || die "mktemp -d for the no-python PATH"
+for tool in bash env dirname cat grep tail mktemp rm tr pwd readlink; do
+  tool_path="$(command -v "$tool")" || die "missing tool $tool"
+  ln -s "$tool_path" "$NOPY_BIN/$tool" || die "link $tool"
+done
+SYNC_PATH="$NOPY_BIN" run_sync "$MANIFEST_REMOVED" "{\"version\":2,\"plugins\":{
+  \"superpowers@claude-plugins-official\":[$(entry user)]
+}}"
+assert "missing python3 fails a pending removal" \
+  '[ $sync_rc -ne 0 ] && grep -qF "python3 is not on PATH" <<<"$sync_out"'
+assert "missing python3 uninstalls nothing" '[ -z "$sync_uninstalls" ]'
+rm -rf "$NOPY_BIN"
+
+# No installed_plugins.json at all is a fresh machine, not a read failure.
+run_sync "$MANIFEST_REMOVED" "<absent>"
+assert "absent installed_plugins.json is not a removal failure" \
+  '[ $sync_rc -eq 0 ] && [ -z "$sync_uninstalls" ]'
 
 # ── setup.sh's listing-based match (lib-checks.sh) ──────────────────────
 # setup.sh cannot read installed_plugins.json — it runs before the CLI state
