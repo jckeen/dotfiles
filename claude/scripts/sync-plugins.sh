@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # sync-plugins.sh — Install any plugins listed in the dotfiles plugin manifest
-# that are not currently installed. Idempotent.
+# that are not currently installed, and uninstall any it marks removed.
+# Idempotent.
 #
 # Source of truth: $DOTFILES_DIR/claude/plugins.txt (one
 # `<plugin>@<marketplace>` per line). The manifest stays in the dotfiles repo
@@ -16,6 +17,17 @@
 # user scope. A plugin someone installed with `--scope project` for one repo is
 # that repo's, is deliberately absent from the manifest, and does not count as
 # installed by the fast path below.
+#
+# Service selection (issue #425): plugins are Claude Code's, so nothing is
+# synced when Claude Code is not a selected service, and `*@openai-codex`
+# plugins (which drive the Codex CLI) are skipped when Codex is not. This is
+# the same rule setup.sh §3b applies; an existing install is left as-is.
+#
+# Removal: a plugin dropped from the manifest is NOT uninstalled — the operator
+# may have installed plugins of their own that the manifest never listed. To
+# retire a plugin on every machine, replace its line with a whole-line comment
+# `# removed: <plugin>@<marketplace>`; this script then uninstalls its
+# USER-scope install. An active manifest line for the same id wins.
 
 set -eo pipefail
 
@@ -33,6 +45,60 @@ if [[ ! -f "$MANIFEST" ]]; then
   echo "✘ Manifest not found: $MANIFEST" >&2
   exit 1
 fi
+
+# lib-services.sh is code, so it comes from this script's own checkout, not
+# from a DOTFILES_DIR override (which only relocates the manifest).
+LIB_SERVICES="$SCRIPT_DIR/../../lib-services.sh"
+if [[ ! -f "$LIB_SERVICES" ]]; then
+  echo "✘ lib-services.sh not found: $LIB_SERVICES" >&2
+  exit 1
+fi
+# shellcheck source=lib-services.sh
+. "$LIB_SERVICES"
+
+# Same precedence as setup.sh: DOTFILES_SERVICES, then the saved selection,
+# then (no saved selection) every service. A damaged file is refused, not
+# guessed at — guessing "all" would reinstall what the operator opted out of.
+# shellcheck disable=SC2034  # read by service_selected (lib-services.sh)
+if [[ -n "${DOTFILES_SERVICES:-}" ]]; then
+  DOTFILES_SELECTED_SERVICES="$(services_normalize "$DOTFILES_SERVICES")" || exit 1
+else
+  saved_rc=0
+  DOTFILES_SELECTED_SERVICES="$(services_load_saved "$(services_config_path)")" || saved_rc=$?
+  case "$saved_rc" in
+    0) ;;
+    1) DOTFILES_SELECTED_SERVICES="$DOTFILES_ALL_SERVICES" ;;
+    *)
+      echo "✘ Cannot read the agent service selection; fix it with setup.sh --select-services" >&2
+      exit 1
+      ;;
+  esac
+fi
+if ! service_selected claude; then
+  exit 0
+fi
+
+# Parse the manifest once. wanted: active lines whose service is selected.
+# removed: ids named by a `# removed:` line. active_all: every active line,
+# selected or not, so an active line always outranks a `# removed:` one.
+wanted=()
+removed=()
+active_all=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*removed:[[:space:]]*([^[:space:]]+)[[:space:]]*$ ]]; then
+    removed+=("${BASH_REMATCH[1]}")
+    continue
+  fi
+  p="${line%%#*}"
+  # Strip all whitespace (spaces, tabs, and CR from CRLF line endings)
+  p="${p//[[:space:]]/}"
+  [[ -z "$p" ]] && continue
+  active_all+="$p"$'\n'
+  case "$p" in
+    *@openai-codex) service_selected codex || continue ;;
+  esac
+  wanted+=("$p")
+done < "$MANIFEST"
 
 # Fast path: if every manifest plugin already has a USER-scope install, there is
 # nothing to do — exit silently without touching the network. Keys in
@@ -76,17 +142,22 @@ for name, records in plugins.items():
 ' "$INSTALLED_JSON" 2>/dev/null)" || user_scoped=""
 fi
 
-if [[ -n "$user_scoped" ]]; then
+# Removals need to know what is installed at user scope, so without the JSON
+# (or python3) they wait for a run that can read it rather than guess.
+to_remove=()
+for p in ${removed[@]+"${removed[@]}"}; do
+  grep -qxF "$p" <<<"$active_all" && continue
+  grep -qxF "$p" <<<"$user_scoped" && to_remove+=("$p")
+done
+
+if [[ -n "$user_scoped" ]] && (( ${#to_remove[@]} == 0 )); then
   missing=0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    p="${line%%#*}"
-    p="${p//[[:space:]]/}"
-    [[ -z "$p" ]] && continue
+  for p in ${wanted[@]+"${wanted[@]}"}; do
     if ! grep -qxF "$p" <<<"$user_scoped"; then
       missing=1
       break
     fi
-  done < "$MANIFEST"
+  done
   if [[ "$missing" -eq 0 ]]; then
     exit 0
   fi
@@ -98,26 +169,32 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 installed=()
+uninstalled=()
 failed=()
 
-while IFS= read -r line || [[ -n "$line" ]]; do
-  p="${line%%#*}"
-  # Strip all whitespace (spaces, tabs, and CR from CRLF line endings)
-  p="${p//[[:space:]]/}"
-  [[ -z "$p" ]] && continue
+for p in ${wanted[@]+"${wanted[@]}"}; do
   echo "── $p"
   if claude plugin install "$p" 2>&1 | tail -1; then
     installed+=("$p")
   else
     failed+=("$p")
   fi
-done < "$MANIFEST"
+done
+
+for p in ${to_remove[@]+"${to_remove[@]}"}; do
+  echo "── $p (removed from the manifest)"
+  if claude plugin uninstall --scope user "$p" 2>&1 | tail -1; then
+    uninstalled+=("$p")
+  else
+    failed+=("$p")
+  fi
+done
 
 echo
 echo "═══ DONE ═══"
-echo "Processed: ${#installed[@]} ok, ${#failed[@]} failed"
+echo "Processed: ${#installed[@]} installed, ${#uninstalled[@]} uninstalled, ${#failed[@]} failed"
 if (( ${#failed[@]} > 0 )); then
   printf '  ✘ %s\n' "${failed[@]}"
   exit 1
 fi
-echo "Restart Claude Code to load any newly-installed plugins."
+echo "Restart Claude Code to load the plugin changes."

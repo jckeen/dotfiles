@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-16 — fix: sync-plugins honours service selection and reconciles removals
+
+- **`claude/scripts/sync-plugins.sh`** (Codex review on #577 and #574): reads
+  the saved agent-service selection the way setup.sh does. It syncs nothing
+  when Claude Code is deselected and skips `*@openai-codex` plugins when Codex
+  is, so the every-launch sync in `cc` no longer reinstalls an opted-out Codex
+  plugin. A damaged selection file is refused rather than read as "all". A new
+  `# removed: <plugin>@<marketplace>` manifest line uninstalls that plugin's
+  user-scope install; a plugin merely absent from the manifest is never
+  touched. `claude/plugins.txt` marks `superpowers@claude-plugins-official`
+  removed, so machines that still carry it drop it on the next fresh launch.
+- **Tests:** new cases in `plugin-drift.test.sh` (5 failed before the fix,
+  all pass after).
+
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 
 - **`claude/scripts/run-tests.sh`** (refs #581): now exports
