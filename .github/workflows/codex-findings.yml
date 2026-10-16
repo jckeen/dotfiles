@@ -49,13 +49,14 @@ jobs:
       (github.event.pull_request.state == 'open' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.review.user.login == 'chatgpt-codex-connector[bot]')
-    # Only an eligible run (a dispatch, or a Codex bot review) shares the
-    # PR's group; any other review gets a group of its own from its run id,
+    # Only an eligible run shares the PR's group: the expression below is
+    # the job's `if` verbatim. Any other review gets a group of its own from
+    # its run id,
     # so it can never cancel a running recount and then skip its own job,
     # whatever the order GitHub evaluates `if` and concurrency in. A newer
     # eligible run may cancel an older one: every run recounts live state.
     concurrency:
-      group: "codex-findings-${{ (github.event_name == 'workflow_dispatch' || github.event.review.user.login == 'chatgpt-codex-connector[bot]') && format('pr-{0}', github.event.pull_request.number || inputs.pr) || format('skip-{0}', github.run_id) }}"
+      group: "codex-findings-${{ (github.event_name == 'workflow_dispatch' || (github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login == 'chatgpt-codex-connector[bot]')) && format('pr-{0}', github.event.pull_request.number || inputs.pr) || format('skip-{0}', github.run_id) }}"
       cancel-in-progress: true
     steps:
       - name: Recount and label
@@ -126,7 +127,11 @@ jobs:
             | .comments.nodes[0].author
             | select(.__typename == "Bot" and .login == "chatgpt-codex-connector")]
             | length' <<<"$out")
-          has=$(jq --arg l "$LABEL" '[.data.repository.pullRequest.labels.nodes[].name] | index($l) != null' <<<"$out")
+          # GitHub matches label names case-insensitively, so Codex-Findings
+          # is the same label and must count as present.
+          present=$(jq -r --arg l "$LABEL" '[.data.repository.pullRequest.labels.nodes[].name
+            | select(ascii_downcase == ($l | ascii_downcase))][0] // ""' <<<"$out")
+          if [ -n "$present" ]; then has=true; else has=false; fi
           if [ "$count" -gt 0 ] && [ "$has" = false ]; then
             # Adding a label that does not exist creates it, but with a random
             # colour and no description, so create it first. Only a 404 means
@@ -144,7 +149,7 @@ jobs:
             gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=$LABEL" >/dev/null
             echo "#$PR: $count unresolved Codex bot thread(s); labelled $LABEL"
           elif [ "$count" -eq 0 ] && [ "$has" = true ]; then
-            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$LABEL" >/dev/null
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$present" >/dev/null
             echo "#$PR: no unresolved Codex bot threads; removed $LABEL"
           else
             echo "#$PR: $count unresolved Codex bot thread(s); label unchanged"
