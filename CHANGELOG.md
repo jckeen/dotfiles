@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-16 — fix(hooks): SymlinkRepair creates ~/.claude before top-level links
+
+- **`claude/hooks/SymlinkRepair.hook.ts`** (follow-up to #598, Codex review
+  on #625): when `~/.claude` itself was absent, the top-level pass ran before
+  any category dir created it, so every top-level link (`CLAUDE.md`,
+  `statusline.sh`, ...) failed and stayed missing until the next SessionStart.
+  The hook now creates the config root before that pass.
+- **Tests:** `symlink-enumerate.test.sh` covers a HOME with no `~/.claude`
+  and a non-empty `nolink.txt` (failed before the fix, passes after).
+
 ## 2026-10-16 — test: worktree-lifecycle fixtures survive Codex's /tmp/.git
 
 - **`claude/scripts/tests/worktree-lifecycle.test.py`:** Codex's Linux
