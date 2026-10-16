@@ -185,33 +185,55 @@ out="$(run_check --heal)"; rc=$?
 check "stuck migration: --heal exits 1" "$([ "$rc" -eq 1 ] && echo 1 || echo 0)"
 check "stuck migration: reported FAILED" "$(grep -q 'FAILED  skills/demo' <<<"$out" && echo 1 || echo 0)"
 
-# A conversion still in flight elsewhere is waited out, not reported. The
-# shim loses once: a competing run starts draining the directory a moment
-# later, so this run's recheck sees a legacy directory that is about to become
-# the correct link (PR #604 review, r4185789022).
+# A conversion still in flight elsewhere is waited out, not reported (PR #604
+# review, r4185789022). The shim plays the losing run: on its first call it
+# starts a rival that drains the directory slowly, waits until the rival has
+# removed its first entry, and fails. Every later call fails too ("busy")
+# while the rival runs, so the checker can only succeed by waiting for it; once
+# the rival has linked the directory the real migrator runs (and finds a link).
+# The rival removes entries by name from the real directory only, so it can
+# never reach through a link into the source bundle.
 new_fixture inflight
 mkdir -p "$DST"
 for i in 1 2 3 4 5; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
 ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
-cat >> "$R/lib-symlinks.sh" <<'SHIM'
-eval "orig_$(declare -f symlink_migrate_legacy_skill_dir)"
+M="$FIX/inflight/marks"
+mkdir -p "$M"
+cat >> "$R/lib-symlinks.sh" <<SHIM
+eval "orig_\$(declare -f symlink_migrate_legacy_skill_dir)"
 symlink_migrate_legacy_skill_dir() {
-  if [ ! -e "$2.lost" ]; then
-    : > "$2.lost"
-    ( sleep 0.5; for e in "$2"/*; do rm "$e"; sleep 0.1; done; rmdir "$2" && ln -sn "$1" "$2" ) &
+  if [ ! -e "$M/started" ]; then
+    (
+      first=1
+      for n in f1 f2 f3 f4 f5 SKILL.md; do
+        rm "\$2/\$n"
+        [ "\$first" -eq 1 ] && : > "$M/started" && first=0
+        sleep 0.2
+      done
+      rmdir "\$2" && ln -sn "\$1" "\$2" && : > "$M/done"
+    ) &
+    until [ -e "$M/started" ]; do sleep 0.05; done
+  fi
+  if [ ! -e "$M/done" ]; then
+    echo busy >> "$M/calls"
     return 1
   fi
-  orig_symlink_migrate_legacy_skill_dir "$@"
+  orig_symlink_migrate_legacy_skill_dir "\$@"
 }
 SHIM
 out="$(run_check --heal)"; rc=$?
+done_before_exit="$([ -e "$M/done" ] && echo 1 || echo 0)"
 wait
 check "in-flight migration: --heal exits 0" "$([ "$rc" -eq 0 ] && echo 1 || echo 0)"
 check "in-flight migration: not reported FAILED or NOT LINKED" \
   "$(! grep -qE 'FAILED|NOT LINKED' <<<"$out" && echo 1 || echo 0)"
+check "in-flight migration: checker finished only after the rival" "$done_before_exit"
+check "in-flight migration: retried while the rival was still running" \
+  "$([ "$(wc -l < "$M/calls")" -ge 2 ] && echo 1 || echo 0)"
 check "in-flight migration: directory link in place" \
   "$([ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
-rm -f "$DST.lost"
+check "in-flight migration: source files survive" \
+  "$([ -f "$SRC/SKILL.md" ] && [ -f "$SRC/f1" ] && [ -f "$SRC/f5" ] && echo 1 || echo 0)"
 
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools
