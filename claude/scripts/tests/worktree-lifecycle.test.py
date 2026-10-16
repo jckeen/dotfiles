@@ -38,7 +38,7 @@ def host_git_marker(root):
 
 # Fixtures bind Unix sockets several directories below the temporary root,
 # and AF_UNIX paths are capped near 108 bytes, so a fallback root may be at
-# most this long. Measured 2026-10-16: a 38-character root passes the whole
+# most this many bytes. Measured 2026-10-16: a 38-character root passes the whole
 # suite and a 53-character one fails a socket fixture.
 MAX_TEMP_BASE_LEN = 24
 
@@ -80,7 +80,8 @@ def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN, can_execute=can_execu
         base = Path(candidate).resolve()
         if not base.is_dir() or not os.access(base, os.W_OK | os.X_OK):
             continue
-        if len(str(base)) > max_len:
+        # AF_UNIX limits bytes, not characters: count the encoded path.
+        if len(os.fsencode(base)) > max_len:
             continue
         if host_git_marker(base) is None and can_execute(base):
             return base
@@ -169,6 +170,15 @@ class HostStateTests(unittest.TestCase):
             self.assertEqual(chosen, second.resolve())
             self.assertTrue(can_execute_in(second))
             self.assertEqual(list(second.iterdir()), [])  # the probe cleans up
+
+    def test_the_length_cap_counts_bytes(self):
+        # Two-byte characters: within the cap by character count, over it
+        # by bytes, which is what the socket limit measures.
+        with tempfile.TemporaryDirectory() as temp:
+            wide = Path(temp) / ("é" * 8)
+            wide.mkdir()
+            cap = len(str(wide.resolve())) + 1
+            self.assertIsNone(clean_temp_base([wide], max_len=cap))
 
     def test_an_over_long_candidate_is_skipped(self):
         with tempfile.TemporaryDirectory() as temp:
