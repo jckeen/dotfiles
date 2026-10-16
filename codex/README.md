@@ -104,7 +104,7 @@ service runs a foreground server, restarts it after a process failure, and
 leaves `cx` as a connection-only launcher. Native socket binding refuses an
 existing listener; service startup never stops it to take ownership.
 
-The service requires the standalone CLI at `~/.local/bin/codex`, `jq`, and an
+The service requires the standalone CLI at `~/.local/bin/codex`, Python, and an
 existing `remoteControlEnabled: true` preference in the active Codex home's
 `app-server-daemon/settings.json`. It refuses missing, malformed, or disabled
 preferences. It loads optional NVM configuration and adds the usual user tool
@@ -116,6 +116,7 @@ finish and stop it explicitly before switching supervisors.
 
 ```bash
 install -Dm755 codex/remote-control-service.sh ~/.local/libexec/codex-remote-control
+install -Dm644 codex/remote_control_enabled.py ~/.local/libexec/remote_control_enabled.py
 install -Dm644 codex/codex-remote-control.service ~/.config/systemd/user/codex-remote-control.service
 loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
