@@ -656,6 +656,10 @@ STUB
     || die "the claude stub does not shadow the real CLI on PATH"
   if [[ "$installed" == "<absent>" ]]; then
     rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+  elif [[ "$installed" == "<dangling>" ]]; then
+    rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+    ln -s "$H/nowhere.json" "$H/.claude/plugins/installed_plugins.json" \
+      || die "link a dangling installed json"
   fi
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
   sync_out="$(HOME="$H" XDG_CONFIG_HOME="$H/.config" DOTFILES_DIR="$D" \
@@ -808,6 +812,11 @@ assert "missing python3 fails a pending removal" \
 assert "missing python3 uninstalls nothing" '[ -z "$sync_uninstalls" ]'
 rm -rf "$NOPY_BIN"
 
+# A dangling symlink is present but unreadable, not a fresh machine.
+run_sync "$MANIFEST_REMOVED" "<dangling>"
+assert "a dangling installed_plugins.json fails a pending removal" \
+  '[ $sync_rc -ne 0 ] && grep -qF "marked removed but was not checked" <<<"$sync_out"'
+
 # No installed_plugins.json at all is a fresh machine, not a read failure.
 run_sync "$MANIFEST_REMOVED" "<absent>"
 assert "absent installed_plugins.json is not a removal failure" \
@@ -826,6 +835,15 @@ HOOK_SERVICES="services=claude,codex" run_hook "$MANIFEST_CODEX" "{\"version\":2
 }}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
 assert "hook: a selected Codex plugin is still reported missing" \
   'outgrep "codex@openai-codex"'
+
+# Every install/scoping list is filtered, not only the missing one.
+HOOK_SERVICES="services=claude" run_hook "$MANIFEST_GLOBAL
+# [per-project]
+codex@openai-codex" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true,"codex@openai-codex":true}}'
+assert "hook: a deselected per-project plugin enabled globally is not drift" \
+  '[ -z "$out" ]'
 
 # A damaged selection fails toward reporting: everything, plus a note.
 HOOK_SERVICES="services=bogus" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{

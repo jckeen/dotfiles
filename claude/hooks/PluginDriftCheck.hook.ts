@@ -643,11 +643,15 @@ function driftWarning(manifest: Manifest): string {
       `Fix it with \`setup.sh --select-services\`.\n`;
   }
 
-  const installed = readInstalled();
+  // Every install and scoping list below is built from these filtered lists.
   // Reverse drift still compares against the whole manifest: a deselected
   // service's plugin that is installed is declared, not undeclared.
-  const missing = desired.filter((p) => managed(p) && !installed.has(p));
   const wanted = desired.filter(managed);
+  const wantedGlobal = manifest.global.filter(managed);
+  const wantedPerProject = manifest.perProject.filter(managed);
+
+  const installed = readInstalled();
+  const missing = wanted.filter((p) => !installed.has(p));
   const undeclared = [...installed].filter((p) => !desired.includes(p));
   if (missing.length > 0) {
     const list = bullets(missing);
@@ -666,10 +670,8 @@ function driftWarning(manifest: Manifest): string {
 
   const enabled = readGloballyEnabled();
   if (enabled !== null) {
-    const notEnabled = manifest.global.filter(
-      (p) => managed(p) && enabled[p] !== true,
-    );
-    const overScoped = manifest.perProject.filter((p) => enabled[p] === true);
+    const notEnabled = wantedGlobal.filter((p) => enabled[p] !== true);
+    const overScoped = wantedPerProject.filter((p) => enabled[p] === true);
     if (notEnabled.length > 0) {
       const list = bullets(notEnabled);
       warning +=

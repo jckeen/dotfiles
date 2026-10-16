@@ -118,7 +118,8 @@ esac
 INSTALLED_JSON="$HOME/.claude/plugins/installed_plugins.json"
 user_scoped=""
 installed_state="known"
-if [[ ! -e "$INSTALLED_JSON" ]]; then
+# A dangling symlink is present (and unreadable), not a fresh machine.
+if [[ ! -e "$INSTALLED_JSON" && ! -L "$INSTALLED_JSON" ]]; then
   :
 elif ! command -v python3 >/dev/null 2>&1; then
   installed_state="python3 is not on PATH, so $INSTALLED_JSON cannot be read"

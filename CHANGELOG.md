@@ -20,7 +20,7 @@
   `services_filter_plugins`), and both the hook and `sync-plugins.sh` call
   it. An unreadable selection reports every plugin, plus a note saying the
   selection could not be read.
-- **Tests:** new cases in `plugin-drift.test.sh` (9 failed before the fix,
+- **Tests:** new cases in `plugin-drift.test.sh` (11 failed before the fix,
   all pass after).
 
 ## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
