@@ -79,21 +79,35 @@ jobs:
               pullRequest(number:$pr){
                 state
                 isCrossRepository
-                labels(first:100){nodes{name}}
+                labels(first:100){pageInfo{hasNextPage} nodes{name}}
                 reviewThreads(first:100){
                   pageInfo{hasNextPage}
                   nodes{isResolved comments(first:1){nodes{author{__typename login}}}}}}}}')
-          if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$out")" != false ]; then
-            echo "::error::could not read every review thread of #$PR; leaving the label as it is"
-            exit 1
-          fi
-          # GraphQL may return null for a node it could not resolve; counting
-          # past one could clear the label while a finding is still open.
-          if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.nodes
-              | type == "array" and all(.[]; type == "object"
-                  and (.comments.nodes | type == "array")
-                  and (.comments.nodes[0] | type == "object"))' <<<"$out")" != true ]; then
-            echo "::error::a review thread of #$PR could not be read; leaving the label as it is"
+          # Decide only on a complete read. GraphQL may return null for any
+          # node it could not resolve (and for a deleted author), and either
+          # result page may be truncated, so every field the decision reads
+          # must be present with its type: the state, the fork flag, every
+          # label name, every thread's resolved flag, and the author of every
+          # unresolved thread (an unknown author cannot be ruled out as the
+          # bot). Anything less fails the run and leaves the label as it is.
+          if [ "$(jq -r '.data.repository.pullRequest as $p
+              | ($p | type == "object")
+              and ($p.state | IN("OPEN", "CLOSED", "MERGED"))
+              and ($p.isCrossRepository | type == "boolean")
+              and $p.labels.pageInfo.hasNextPage == false
+              and ($p.labels.nodes | type == "array"
+                and all(.[]; type == "object" and (.name | type == "string")))
+              and $p.reviewThreads.pageInfo.hasNextPage == false
+              and ($p.reviewThreads.nodes | type == "array"
+                and all(.[]; type == "object"
+                  and (.isResolved | type == "boolean")
+                  and (.isResolved or (
+                    (.comments.nodes | type == "array")
+                    and (.comments.nodes[0] | type == "object")
+                    and (.comments.nodes[0].author | type == "object")
+                    and (.comments.nodes[0].author.login | type == "string")
+                    and (.comments.nodes[0].author.__typename | type == "string")))))' <<<"$out")" != true ]; then
+            echo "::error::could not read every label and review thread of #$PR; leaving the label as it is"
             exit 1
           fi
           state=$(jq -r '.data.repository.pullRequest.state' <<<"$out")
