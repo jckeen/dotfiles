@@ -165,6 +165,22 @@ else
   [ "$(readlink "$H/.claude/scripts/review-receipt.py")" = "$FIX/claude/scripts/review-receipt.py" ] && ok=1
   check "SymlinkRepair links scripts/*.py (matches symlink_enumerate)" "$ok"
 
+  # No ~/.claude at all: the top-level pass runs first, so the config root
+  # must exist before it, or every top-level link fails and stays missing
+  # until the next SessionStart. Own fixture: the shared one's empty
+  # nolink.txt makes the hook skip top-level files entirely.
+  TOP="$FIX/top-dotfiles"
+  mkdir -p "$TOP/claude"
+  printf 'nolink.txt\n' >"$TOP/claude/nolink.txt"
+  printf '# global\n' >"$TOP/claude/CLAUDE.md"
+  H="$FIX/h-noroot"
+  mkdir -p "$H"
+  HOME="$H" DOTFILES_DIR="$TOP" bun "$HOOK" >/dev/null 2>&1
+  ok=0
+  [ "$(readlink "$H/.claude/CLAUDE.md")" = "$TOP/claude/CLAUDE.md" ] \
+    && [ ! -e "$H/.claude/nolink.txt" ] && ok=1
+  check "SymlinkRepair creates ~/.claude before linking top-level files" "$ok"
+
   # A link that cannot be created (read-only category dir) is reported as
   # skipped, never thrown: the hook still exits 0 and later categories run.
   if [ "$(id -u)" -ne 0 ]; then

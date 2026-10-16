@@ -157,7 +157,9 @@ function main(): void {
   //    entirely if nolink.txt is missing — without the filter we can't tell
   //    which top-level files must NOT be linked, and guessing risks linking
   //    private/on-demand files. The rest of the tree below needs no filter.
-  if (existsSync(CLAUDE_SRC)) {
+  //    ~/.claude itself may be absent (fresh machine), and this pass runs
+  //    before any category creates it.
+  if (existsSync(CLAUDE_SRC) && ensureDir(CLAUDE_DST, '.claude')) {
     if (!TOP_LEVEL_NOLINK) {
       actions.push({
         kind: 'skipped',
