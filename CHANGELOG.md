@@ -8,10 +8,17 @@
   never copies into `cache/`, and `<name>@skills-dir` plugins under the
   project's `.claude/skills` (`$CLAUDE_PROJECT_DIR`, else the working
   directory). A git or GitHub marketplace's clone is still skipped; its
-  plugins load from the cache copy.
+  plugins load from the cache copy. A project mod is named even when
+  allowlisted: it shares the `@skills-dir` id space with `~/.claude/skills`,
+  so a cloned repo could reuse an allowlisted name.
+- **Output hardening:** every id and path the hook prints (mods, install and
+  scoping drift, the manifest path) passes through `shown()`: characters
+  outside `[A-Za-z0-9._@/-]` become `_` and the length is capped, so a name
+  read from a marketplace or a cloned repo cannot inject lines or close the
+  `<system-reminder>` into model context.
 - **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
-  dir and adds fixtures for both origins (5 failed before the fix, all pass
-  after).
+  dir and adds fixtures for both origins, an allowlist-shadowing project
+  plugin, and injection names (14 failed before the fix, all pass after).
 
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 

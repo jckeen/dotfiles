@@ -29,8 +29,15 @@
  * plugins loaded in place from a local-path marketplace, claude.ai synced,
  * ~/.claude/skills and the project's .claude/skills plugins) and each mod not
  * allowlisted by a
- * `# mods-ok: <id>` line in the manifest is named. An unreadable or malformed
- * hooks.json is skipped, fail-open like the rest of this hook.
+ * `# mods-ok: <id>` line in the manifest is named. A project .claude/skills
+ * mod is named even when allowlisted: its id shares the `@skills-dir`
+ * namespace with ~/.claude/skills, so a cloned repo could otherwise ship a
+ * plugin under an allowlisted name. An unreadable or malformed hooks.json is
+ * skipped, fail-open like the rest of this hook.
+ *
+ * Every name and path printed comes from files a cloned repo or a marketplace
+ * controls, and the output becomes model context, so each is passed through
+ * shown() first.
  *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
@@ -57,6 +64,19 @@ const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
 // Hooks run in the session's primary working directory, the only place
 // Claude Code reads project .claude/skills plugins from (no parent search).
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const PROJECT_SKILLS_DIR = join(PROJECT_DIR, '.claude', 'skills');
+
+// Untrusted text in model context: keep plugin-id and path characters only,
+// so a name cannot carry a newline, a closing tag or an instruction, and cap
+// the length.
+function shown(text: string): string {
+  const safe = text.replace(/[^A-Za-z0-9._@/-]/g, '_');
+  return safe.length > 100 ? `${safe.slice(0, 100)}...` : safe;
+}
+
+function bullets(items: string[]): string {
+  return items.map((p) => `  • ${shown(p)}`).join('\n');
+}
 
 interface Manifest {
   global: string[];
@@ -220,52 +240,68 @@ function localMarketplacePlugins(): [string, string][] {
   return found;
 }
 
-// [id, dir] for every plugin on disk, ids in the `enabledPlugins` forms
+// [id, dir, fromProject] for every plugin on disk, ids in the `enabledPlugins` forms
 // (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
 // version is scanned, not only the recorded installPath: a session started
 // before an update still runs the old one.
-function pluginDirs(): [string, string][] {
-  const found: [string, string][] = [];
+function pluginDirs(): [string, string, boolean][] {
+  const found: [string, string, boolean][] = [];
   for (const market of subdirs(join(PLUGINS_ROOT, 'cache')))
     for (const plugin of subdirs(market))
       for (const version of subdirs(plugin))
-        found.push([`${basename(plugin)}@${basename(market)}`, version]);
+        found.push([`${basename(plugin)}@${basename(market)}`, version, false]);
   for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
     for (const dir of subdirs(bucket)) {
       const name = pluginName(dir);
-      if (name) found.push([`${name}@synced`, dir]);
+      if (name) found.push([`${name}@synced`, dir, false]);
     }
-  found.push(...localMarketplacePlugins());
-  for (const skills of [SKILLS_DIR, join(PROJECT_DIR, '.claude', 'skills')])
-    for (const dir of subdirs(skills)) {
+  for (const [id, dir] of localMarketplacePlugins()) found.push([id, dir, false]);
+  for (const dir of subdirs(SKILLS_DIR)) {
+    const name = pluginName(dir);
+    if (name) found.push([`${name}@skills-dir`, dir, false]);
+  }
+  // Skipped when the project is HOME itself: that is the user's own dir.
+  if (realPath(PROJECT_SKILLS_DIR) !== realPath(SKILLS_DIR))
+    for (const dir of subdirs(PROJECT_SKILLS_DIR)) {
       const name = pluginName(dir);
-      if (name) found.push([`${name}@skills-dir`, dir]);
+      if (name) found.push([`${name}@skills-dir`, dir, true]);
     }
   return found;
 }
 
+function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 function modsWarning(allowed: string[]): string {
   const mods = new Set<string>();
-  for (const [id, dir] of pluginDirs()) {
-    if (allowed.includes(id)) continue;
+  for (const [id, dir, fromProject] of pluginDirs()) {
+    if (!fromProject && allowed.includes(id)) continue;
     try {
       const hooks = JSON.parse(
         readFileSync(join(dir, 'hooks', 'hooks.json'), 'utf-8'),
       );
       if (typeof hooks === 'object' && hooks !== null && 'modules' in hooks)
-        mods.add(id);
+        mods.add(fromProject ? `${shown(id)} (project .claude/skills)` : shown(id));
     } catch {
       // No hooks.json, or one Claude Code could not load either.
     }
   }
   if (mods.size === 0) return '';
+  // Already passed through shown().
   const list = [...mods].map((p) => `  • ${p}`).join('\n');
   return (
     `⚠️  Plugin mods: ${mods.size} installed plugin(s) ship a mod (a "modules" key ` +
     `in hooks/hooks.json) — in-session code that can approve tool calls past ` +
     `\`ask\` rules and the settings hooks (issue #594):\n${list}\n\n` +
     `Review each with \`claude plugin validate <dir>\` (CLAUDE-GUIDE.md, Hooks), ` +
-    `then allowlist it with a \`# mods-ok: <id>\` line in ${MANIFEST}, or uninstall it.\n`
+    `then allowlist it with a \`# mods-ok: <id>\` line in ${shown(MANIFEST)}, or uninstall it. ` +
+    `A project .claude/skills mod is always named: the allowlist cannot vouch ` +
+    `for a repo's copy.\n`
   );
 }
 
@@ -288,10 +324,10 @@ function main(): void {
     manifest.perProject.includes(p),
   );
   if (duplicated.length > 0) {
-    const list = [...new Set(duplicated)].map((p) => `  • ${p}`).join('\n');
+    const list = bullets([...new Set(duplicated)]);
     warning +=
       `⚠️  Plugin manifest: ${new Set(duplicated).size} plugin(s) listed in BOTH the ` +
-      `[global] and [per-project] sections of ${MANIFEST} — unsatisfiable scoping; ` +
+      `[global] and [per-project] sections of ${shown(MANIFEST)} — unsatisfiable scoping; ` +
       `keep each plugin in exactly one section:\n${list}\n\n`;
   }
 
@@ -299,18 +335,18 @@ function main(): void {
   const missing = desired.filter((p) => !installed.has(p));
   const undeclared = [...installed].filter((p) => !desired.includes(p));
   if (missing.length > 0) {
-    const list = missing.map((p) => `  • ${p}`).join('\n');
+    const list = bullets(missing);
     warning +=
       `⚠️  Plugin drift: ${missing.length} of ${desired.length} plugins from ` +
-      `${MANIFEST} are not installed:\n${list}\n\n` +
+      `${shown(MANIFEST)} are not installed:\n${list}\n\n` +
       `Run \`~/.claude/scripts/sync-plugins.sh\` to install them, then restart Claude Code.\n`;
   }
   if (undeclared.length > 0) {
-    const list = undeclared.map((p) => `  • ${p}`).join('\n');
+    const list = bullets(undeclared);
     warning +=
       `⚠️  Plugin drift (reverse): ${undeclared.length} installed plugin(s) missing from ` +
       `the manifest — a fresh-clone setup would drop them:\n${list}\n\n` +
-      `Add them to ${MANIFEST} (or uninstall them) to resolve.\n`;
+      `Add them to ${shown(MANIFEST)} (or uninstall them) to resolve.\n`;
   }
 
   const enabled = readGloballyEnabled();
@@ -318,20 +354,20 @@ function main(): void {
     const notEnabled = manifest.global.filter((p) => enabled[p] !== true);
     const overScoped = manifest.perProject.filter((p) => enabled[p] === true);
     if (notEnabled.length > 0) {
-      const list = notEnabled.map((p) => `  • ${p}`).join('\n');
+      const list = bullets(notEnabled);
       warning +=
         `⚠️  Plugin scoping: ${notEnabled.length} [global] plugin(s) from the manifest ` +
         `are not enabled in ~/.claude/settings.json \`enabledPlugins\`:\n${list}\n\n` +
         `Add them there (value \`true\`) so they load in every session.\n`;
     }
     if (overScoped.length > 0) {
-      const list = overScoped.map((p) => `  • ${p}`).join('\n');
+      const list = bullets(overScoped);
       warning +=
         `⚠️  Plugin scoping: ${overScoped.length} [per-project] plugin(s) are enabled ` +
         `globally in ~/.claude/settings.json — their skills dilute every session's ` +
         `skill list (issue #214):\n${list}\n\n` +
         `Move each to the target project's .claude/settings.json \`enabledPlugins\` ` +
-        `(targets are noted in ${MANIFEST}) and remove it from the global map. ` +
+        `(targets are noted in ${shown(MANIFEST)}) and remove it from the global map. ` +
         `Warning only — nothing is blocked.\n`;
     }
   }
