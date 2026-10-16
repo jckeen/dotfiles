@@ -25,16 +25,64 @@
  * Mods (issue #594): a plugin whose hooks/hooks.json has a "modules" key runs
  * JS/TS in-session, and its `tool.check` / `tool.call` hooks can approve a call
  * that an `ask` rule or one of this repo's (non-managed) settings hooks would
- * stop. Every installed plugin is scanned (marketplace cache, claude.ai synced,
- * ~/.claude/skills plugins) and each mod not allowlisted by a
- * `# mods-ok: <id>` line in the manifest is named. An unreadable or malformed
- * hooks.json is skipped, fail-open like the rest of this hook.
+ * stop. Every installed plugin is scanned (marketplace cache, relative-path
+ * plugins loaded in place from a local-path marketplace, claude.ai synced,
+ * ~/.claude/skills and the project's .claude/skills plugins) and each mod not
+ * allowlisted by a
+ * `# mods-ok: <id>` line in the manifest is named. A project .claude/skills
+ * mod is named even when allowlisted: its id shares the `@skills-dir`
+ * namespace with ~/.claude/skills, so a cloned repo could otherwise ship a
+ * plugin under an allowlisted name. For a plugin of any origin, a
+ * hooks.json, plugin.json or marketplace.json that exists but cannot be read
+ * or parsed is named as unverifiable: Claude Code's loader may accept what
+ * this parser rejects, so skipping it would hide the mod. Only a file that is
+ * not there at all is skipped.
+ *
+ * Every relative-path entry of a registered local marketplace is scanned,
+ * enabled or not. Enablement can also come from --settings, managed settings
+ * or --add-dir, none of which this hook can see, so filtering on it would
+ * fail open; an advisory warning for a catalog mod nobody enabled is the
+ * cheaper error. Every JSON file is read through readJsonFile(), which
+ * refuses anything but a regular file of at most 1 MiB, so a FIFO cannot hang
+ * the hook and /dev/zero cannot exhaust memory.
+ *
+ * Best-effort and advisory, not a security boundary: a parser differential
+ * with Claude Code's loader is possible; see #647.
+ *
+ * Every name and path printed comes from files a cloned repo or a marketplace
+ * controls, and the output becomes model context, so each is passed through
+ * shown() first. An id that needed sanitizing is marked as not allowlistable,
+ * since the allowlist matches the raw id.
+ *
+ * Two rules govern everything read from a marketplace, a project or settings:
+ *
+ * RULE 1, isolation. Each untrusted item (a catalog entry, a plugin dir) is
+ * processed inside its own try/catch; a throw names that
+ * item as unverifiable and the scan goes on. Each warning section runs
+ * guarded too, and main() is wrapped, so whatever was collected is emitted
+ * even if something unexpected throws. No untrusted value is interpolated,
+ * compared or used as a key before `typeof === 'string'`.
+ *
+ * RULE 2, fail toward reporting. A skip that depends on a read (is this dir
+ * ~/.claude/skills? does this file exist?) treats an unreadable or malformed
+ * input as "report it".
  *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+} from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -51,6 +99,84 @@ const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
 const SETTINGS = join(HOME, '.claude', 'settings.json');
 const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
 const SKILLS_DIR = join(HOME, '.claude', 'skills');
+const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
+const MAX_JSON_BYTES = 1024 * 1024;
+
+type JsonRead =
+  | { state: 'absent' }
+  | { state: 'bad' }
+  | { state: 'ok'; value: unknown };
+
+// The one reader for every plugin-side JSON file. Opened non-blocking and
+// checked on the open descriptor, so a FIFO, a device (/dev/zero), a
+// directory or an oversized file is `bad` without being read, and a swap
+// between check and read cannot slip one past. `absent` means nothing is
+// there at all; a dangling symlink is `bad`.
+function readJsonFile(path: string): JsonRead {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch {
+    return present(path) ? { state: 'bad' } : { state: 'absent' };
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_JSON_BYTES) return { state: 'bad' };
+    const buf = Buffer.alloc(stat.size + 1);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    if (n > stat.size) return { state: 'bad' }; // Grew since the fstat.
+    return { state: 'ok', value: JSON.parse(buf.toString('utf-8', 0, n)) };
+  } catch {
+    return { state: 'bad' };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The hook input's `cwd`: it follows the session into a --worktree, where
+// $CLAUDE_PROJECT_DIR stays on the main checkout.
+function inputCwd(): string | null {
+  if (process.stdin.isTTY) return null;
+  try {
+    const input = JSON.parse(readFileSync(0, 'utf-8').slice(0, MAX_JSON_BYTES));
+    return typeof input?.cwd === 'string' && input.cwd ? input.cwd : null;
+  } catch {
+    return null;
+  }
+}
+
+// Claude Code reads project .claude/skills plugins from the session's working
+// directory (no parent search). $CLAUDE_PROJECT_DIR is scanned too: a
+// worktree without its own .claude/skills, and a desktop worktree session,
+// load the main checkout's.
+const PROJECT_DIRS = [
+  ...new Set(
+    [inputCwd() ?? process.cwd(), process.env.CLAUDE_PROJECT_DIR].filter(
+      (d): d is string => !!d,
+    ),
+  ),
+];
+
+const SAFE_ID = /^[A-Za-z0-9._@/-]+$/;
+
+// True when shown() prints the text unchanged, so it can be copied into a
+// `# mods-ok:` line.
+function verbatim(text: string): boolean {
+  return SAFE_ID.test(text) && text.length <= 300;
+}
+
+// Untrusted text in model context: keep plugin-id and path characters only,
+// so a name cannot carry a newline, a closing tag or an instruction. Safe
+// text is printed whole; text that needed changing is also capped.
+function shown(text: string): string {
+  if (verbatim(text)) return text;
+  const safe = text.replace(/[^A-Za-z0-9._@/-]/g, '_');
+  return safe.length > 100 ? `${safe.slice(0, 100)}...` : safe;
+}
+
+function bullets(items: string[]): string {
+  return items.map((p) => `  • ${shown(p)}`).join('\n');
+}
 
 interface Manifest {
   global: string[];
@@ -145,61 +271,295 @@ function subdirs(dir: string): string[] {
   }
 }
 
+function readJson(path: string): unknown {
+  const read = readJsonFile(path);
+  return read.state === 'ok' ? read.value : null;
+}
+
 function pluginName(dir: string): string | null {
-  try {
-    const path = join(dir, '.claude-plugin', 'plugin.json');
-    const name = JSON.parse(readFileSync(path, 'utf-8')).name;
-    return typeof name === 'string' ? name : null;
-  } catch {
+  const name = (
+    readJson(join(dir, '.claude-plugin', 'plugin.json')) as {
+      name?: unknown;
+    } | null
+  )?.name;
+  return typeof name === 'string' ? name : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// A plugin entry's relative-path source, resolved from the marketplace root
+// (the directory holding .claude-plugin/): "./x", "." for the root itself, or
+// a bare name under metadata.pluginRoot. Object sources are fetched into
+// cache/ and anything with ".." is refused by Claude Code, so both are null.
+function relativeSource(
+  root: string,
+  source: unknown,
+  pluginRoot: unknown,
+): string | null {
+  if (typeof source !== 'string' || source.split('/').includes('..'))
     return null;
+  if (source === '.' || source.startsWith('./')) return join(root, source);
+  if (typeof pluginRoot === 'string' && !source.includes('/'))
+    return join(root, pluginRoot, source);
+  return null;
+}
+
+// Where a scanned plugin came from. `local` and `project` files were never
+// installed by the user; all origins are read the same way (see header).
+type Origin = 'installed' | 'local' | 'project';
+interface Scanned {
+  id: string;
+  dir: string;
+  origin: Origin;
+  // The plugin or its entry could not be read: report without reading hooks.
+  unverifiable?: boolean;
+}
+
+function unverifiable(id: string, origin: Origin): Scanned {
+  return { id, dir: '', origin, unverifiable: true };
+}
+
+// True when something may be at the path, a dangling symlink included. Only
+// "no such entry" is absence; any other lstat error counts as present, so an
+// unreadable path is reported rather than skipped (rule 2).
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    return code !== 'ENOENT' && code !== 'ENOTDIR';
   }
 }
 
-// [id, dir] for every plugin on disk, ids in the `enabledPlugins` forms
-// (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
-// version is scanned, not only the recorded installPath: a session started
-// before an update still runs the old one.
-function pluginDirs(): [string, string][] {
-  const found: [string, string][] = [];
-  for (const market of subdirs(join(PLUGINS_ROOT, 'cache')))
-    for (const plugin of subdirs(market))
-      for (const version of subdirs(plugin))
-        found.push([`${basename(plugin)}@${basename(market)}`, version]);
-  for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
-    for (const dir of subdirs(bucket)) {
-      const name = pluginName(dir);
-      if (name) found.push([`${name}@synced`, dir]);
+// Every plugin dir but a cache version goes through here, so the origins'
+// checks cannot drift: a plugin.json that exists but yields no name is
+// unverifiable, never skipped. `id` is a marketplace entry's id; without one
+// (synced, skills dirs), a dir with no plugin.json is not a plugin and the id
+// is the manifest name plus `suffix`.
+function scanPlugin(
+  origin: Origin,
+  dir: string,
+  id?: string,
+  suffix = '@skills-dir',
+): Scanned | null {
+  if (!present(join(dir, '.claude-plugin', 'plugin.json')))
+    return id ? { id, dir, origin } : null;
+  const name = pluginName(dir);
+  return {
+    id: id ?? `${name ?? basename(dir)}${suffix}`,
+    dir,
+    origin,
+    unverifiable: name === null,
+  };
+}
+
+// The catalog entries of one local marketplace, each isolated (rule 1).
+function catalogPlugins(
+  market: string,
+  root: string,
+  catalogPath: string,
+): Scanned[] {
+  const found: Scanned[] = [];
+  const read = readJsonFile(catalogPath);
+  const catalog = read.state === 'ok' ? read.value : null;
+  const plugins = isRecord(catalog) ? catalog.plugins : null;
+  if (!Array.isArray(plugins)) {
+    if (read.state !== 'absent')
+      found.push(unverifiable(`marketplace.json@${market}`, 'local'));
+    return found;
+  }
+  const metadata = isRecord(catalog) ? catalog.metadata : null;
+  const pluginRoot = isRecord(metadata) ? metadata.pluginRoot : undefined;
+  plugins.forEach((plugin: unknown, index: number) => {
+    try {
+      const name = isRecord(plugin) ? plugin.name : undefined;
+      const src = isRecord(plugin) ? plugin.source : undefined;
+      // An entry that names nothing cannot be identified, so it is reported
+      // (rule 2); an object source is fetched into cache/.
+      if (typeof name !== 'string') {
+        found.push(unverifiable(`entry-${index}@${market}`, 'local'));
+        return;
+      }
+      if (isRecord(src)) return;
+      const id = `${name}@${market}`;
+      const dir = relativeSource(root, src, pluginRoot);
+      if (dir === null) {
+        // Not a usable relative path: a `..` path Claude Code refuses is
+        // nothing to scan; any other shape is unknown, so reported.
+        if (typeof src !== 'string') found.push(unverifiable(id, 'local'));
+        return;
+      }
+      const scanned = scanPlugin('local', dir, id);
+      if (scanned) found.push(scanned);
+    } catch {
+      found.push(unverifiable(`entry-${index}@${market}`, 'local'));
     }
-  for (const dir of subdirs(SKILLS_DIR)) {
-    const name = pluginName(dir);
-    if (name) found.push([`${name}@skills-dir`, dir]);
+  });
+  return found;
+}
+
+// Relative-path plugins of marketplaces added from a local
+// `directory` or `file` source: Claude Code loads these in place from the
+// marketplace folder and never copies them into cache/. A git or GitHub
+// marketplace's clone is skipped — its plugins load from the cache copy.
+function localMarketplacePlugins(): Scanned[] {
+  const found: Scanned[] = [];
+  const known = readJsonFile(KNOWN_MARKETPLACES);
+  if (known.state === 'absent') return found;
+  if (known.state === 'bad' || !isRecord(known.value))
+    return [unverifiable('known_marketplaces.json', 'local')];
+  for (const [market, entry] of Object.entries(known.value)) {
+    try {
+      const source = isRecord(entry) ? entry.source : null;
+      const kind = isRecord(source) ? source.source : undefined;
+      if (kind !== 'directory' && kind !== 'file') continue;
+      const path = isRecord(source) ? source.path : undefined;
+      if (typeof path !== 'string') {
+        found.push(unverifiable(`marketplace.json@${market}`, 'local'));
+        continue;
+      }
+      // A `file` source is the catalog itself, read where it is under any
+      // name; relative plugin sources resolve from two directories above it.
+      const root = kind === 'directory' ? path : dirname(dirname(path));
+      const catalogPath =
+        kind === 'directory'
+          ? join(path, '.claude-plugin', 'marketplace.json')
+          : path;
+      found.push(...catalogPlugins(market, root, catalogPath));
+    } catch {
+      found.push(unverifiable(`marketplace.json@${market}`, 'local'));
+    }
   }
   return found;
 }
 
-function modsWarning(allowed: string[]): string {
-  const mods = new Set<string>();
-  for (const [id, dir] of pluginDirs()) {
-    if (allowed.includes(id)) continue;
+// Every plugin on disk, ids in the `enabledPlugins` forms
+// (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
+// version is scanned, not only the recorded installPath: a session started
+// before an update still runs the old one.
+function pluginDirs(): Scanned[] {
+  const found: Scanned[] = [];
+  const origin = 'installed';
+  for (const market of subdirs(join(PLUGINS_ROOT, 'cache')))
+    for (const plugin of subdirs(market))
+      for (const dir of subdirs(plugin))
+        found.push({ id: `${basename(plugin)}@${basename(market)}`, dir, origin });
+  for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
+    for (const dir of subdirs(bucket)) {
+      const scanned = scanPlugin(origin, dir, undefined, '@synced');
+      if (scanned) found.push(scanned);
+    }
+  found.push(...localMarketplacePlugins());
+  for (const dir of subdirs(SKILLS_DIR)) {
+    const scanned = scanPlugin(origin, dir);
+    if (scanned) found.push(scanned);
+  }
+  // A project skills dir is skipped only when it provably IS
+  // ~/.claude/skills (a session started in HOME); a path that fails to
+  // resolve is scanned, and one that exists but cannot be listed is named.
+  for (const project of PROJECT_DIRS) {
+    const skills = join(project, '.claude', 'skills');
+    if (sameDir(skills, SKILLS_DIR)) continue;
+    let entries: string[];
     try {
-      const hooks = JSON.parse(
-        readFileSync(join(dir, 'hooks', 'hooks.json'), 'utf-8'),
-      );
-      if (typeof hooks === 'object' && hooks !== null && 'modules' in hooks)
-        mods.add(id);
+      entries = readdirSync(skills).filter((d) => !d.startsWith('.'));
     } catch {
-      // No hooks.json, or one Claude Code could not load either.
+      if (present(skills)) found.push(unverifiable(skills, 'project'));
+      continue;
+    }
+    for (const entry of entries) {
+      const dir = join(skills, entry);
+      try {
+        const scanned = scanPlugin('project', dir);
+        if (scanned) found.push(scanned);
+      } catch {
+        found.push(unverifiable(`${entry}@skills-dir`, 'project'));
+      }
     }
   }
-  if (mods.size === 0) return '';
+  return found;
+}
+
+function sameDir(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
+
+function modsWarning(allowed: string[]): string {
+  const mods = new Set<string>();
+  const unknown = new Set<string>();
+  for (const { id, dir, origin, unverifiable: noManifest } of pluginDirs()) {
+    if (origin !== 'project' && allowed.includes(id)) continue;
+    const label =
+      shown(id) +
+      (verbatim(id) ? '' : ' (sanitized: cannot be allowlisted)') +
+      (origin === 'project' ? ' (project .claude/skills)' : '');
+    if (noManifest) {
+      unknown.add(label);
+      continue;
+    }
+    try {
+      const hooks = readJsonFile(join(dir, 'hooks', 'hooks.json'));
+      if (hooks.state === 'ok') {
+        const value = hooks.value;
+        if (typeof value === 'object' && value !== null && 'modules' in value)
+          mods.add(label);
+      } else if (hooks.state === 'bad') {
+        // No hooks.json is no mod; one that cannot be read is reported.
+        unknown.add(label);
+      }
+    } catch {
+      unknown.add(label);
+    }
+  }
+  let warning = '';
+  if (unknown.size > 0) {
+    const list = [...unknown].map((p) => `  • ${p}`).join('\n');
+    warning +=
+      `⚠️  Plugin mods (unverifiable): ${unknown.size} plugin(s) have a ` +
+      `hooks.json, plugin.json, marketplace.json or catalog entry this hook ` +
+      `cannot read or parse (malformed, not a regular file, or over 1 MiB), so ` +
+      `whether they ship a mod is unknown — review each manually:\n${list}\n\n`;
+  }
+  if (mods.size === 0) return warning;
+  // Labels were already passed through shown().
   const list = [...mods].map((p) => `  • ${p}`).join('\n');
   return (
+    warning +
     `⚠️  Plugin mods: ${mods.size} installed plugin(s) ship a mod (a "modules" key ` +
     `in hooks/hooks.json) — in-session code that can approve tool calls past ` +
     `\`ask\` rules and the settings hooks (issue #594):\n${list}\n\n` +
     `Review each with \`claude plugin validate <dir>\` (CLAUDE-GUIDE.md, Hooks), ` +
-    `then allowlist it with a \`# mods-ok: <id>\` line in ${MANIFEST}, or uninstall it.\n`
+    `then allowlist it with a \`# mods-ok: <id>\` line in ${shown(MANIFEST)}, or uninstall it. ` +
+    `A project .claude/skills mod is always named: the allowlist cannot vouch ` +
+    `for a repo's copy.\n`
   );
+}
+
+function errorText(err: unknown): string {
+  try {
+    return shown(err instanceof Error ? err.message : String(err));
+  } catch {
+    return 'unprintable error';
+  }
+}
+
+// Rule 1: every section's warnings are kept even when a later one throws.
+let collected = '';
+function section(name: string, check: () => string): void {
+  try {
+    collected += check();
+  } catch (err) {
+    collected +=
+      `⚠️  PluginDriftCheck: the ${name} check failed (${errorText(err)}); ` +
+      `its warnings are missing this session.\n`;
+  }
 }
 
 function emit(warning: string): void {
@@ -207,13 +567,12 @@ function emit(warning: string): void {
   process.stdout.write(`<system-reminder>\n${warning}</system-reminder>\n`);
 }
 
-function main(): void {
-  const manifest = readManifest();
-  let warning = modsWarning(manifest.modsOk);
+function driftWarning(manifest: Manifest): string {
+  let warning = '';
   // Dedupe so a plugin duplicated across sections (warned below) doesn't
   // skew the install-drift counts.
   const desired = [...new Set([...manifest.global, ...manifest.perProject])];
-  if (desired.length === 0) return emit(warning);
+  if (desired.length === 0) return warning;
 
   // A plugin in BOTH sections is unsatisfiable: the scoping checks below
   // would demand it be globally enabled and not globally enabled at once.
@@ -221,10 +580,10 @@ function main(): void {
     manifest.perProject.includes(p),
   );
   if (duplicated.length > 0) {
-    const list = [...new Set(duplicated)].map((p) => `  • ${p}`).join('\n');
+    const list = bullets([...new Set(duplicated)]);
     warning +=
       `⚠️  Plugin manifest: ${new Set(duplicated).size} plugin(s) listed in BOTH the ` +
-      `[global] and [per-project] sections of ${MANIFEST} — unsatisfiable scoping; ` +
+      `[global] and [per-project] sections of ${shown(MANIFEST)} — unsatisfiable scoping; ` +
       `keep each plugin in exactly one section:\n${list}\n\n`;
   }
 
@@ -232,18 +591,18 @@ function main(): void {
   const missing = desired.filter((p) => !installed.has(p));
   const undeclared = [...installed].filter((p) => !desired.includes(p));
   if (missing.length > 0) {
-    const list = missing.map((p) => `  • ${p}`).join('\n');
+    const list = bullets(missing);
     warning +=
       `⚠️  Plugin drift: ${missing.length} of ${desired.length} plugins from ` +
-      `${MANIFEST} are not installed:\n${list}\n\n` +
+      `${shown(MANIFEST)} are not installed:\n${list}\n\n` +
       `Run \`~/.claude/scripts/sync-plugins.sh\` to install them, then restart Claude Code.\n`;
   }
   if (undeclared.length > 0) {
-    const list = undeclared.map((p) => `  • ${p}`).join('\n');
+    const list = bullets(undeclared);
     warning +=
       `⚠️  Plugin drift (reverse): ${undeclared.length} installed plugin(s) missing from ` +
       `the manifest — a fresh-clone setup would drop them:\n${list}\n\n` +
-      `Add them to ${MANIFEST} (or uninstall them) to resolve.\n`;
+      `Add them to ${shown(MANIFEST)} (or uninstall them) to resolve.\n`;
   }
 
   const enabled = readGloballyEnabled();
@@ -251,25 +610,35 @@ function main(): void {
     const notEnabled = manifest.global.filter((p) => enabled[p] !== true);
     const overScoped = manifest.perProject.filter((p) => enabled[p] === true);
     if (notEnabled.length > 0) {
-      const list = notEnabled.map((p) => `  • ${p}`).join('\n');
+      const list = bullets(notEnabled);
       warning +=
         `⚠️  Plugin scoping: ${notEnabled.length} [global] plugin(s) from the manifest ` +
         `are not enabled in ~/.claude/settings.json \`enabledPlugins\`:\n${list}\n\n` +
         `Add them there (value \`true\`) so they load in every session.\n`;
     }
     if (overScoped.length > 0) {
-      const list = overScoped.map((p) => `  • ${p}`).join('\n');
+      const list = bullets(overScoped);
       warning +=
         `⚠️  Plugin scoping: ${overScoped.length} [per-project] plugin(s) are enabled ` +
         `globally in ~/.claude/settings.json — their skills dilute every session's ` +
         `skill list (issue #214):\n${list}\n\n` +
         `Move each to the target project's .claude/settings.json \`enabledPlugins\` ` +
-        `(targets are noted in ${MANIFEST}) and remove it from the global map. ` +
+        `(targets are noted in ${shown(MANIFEST)}) and remove it from the global map. ` +
         `Warning only — nothing is blocked.\n`;
     }
   }
-
-  emit(warning);
+  return warning;
 }
 
-main();
+function main(): void {
+  const manifest = readManifest();
+  section('plugin mods', () => modsWarning(manifest.modsOk));
+  section('plugin drift', () => driftWarning(manifest));
+}
+
+try {
+  main();
+} catch (err) {
+  collected += `⚠️  PluginDriftCheck failed (${errorText(err)}).\n`;
+}
+emit(collected);

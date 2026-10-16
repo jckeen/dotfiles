@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
+
+- **`claude/hooks/PluginDriftCheck.hook.ts`** (Codex threads on #599 and
+  #646): the mod scan now also reads every relative-path entry of a
+  marketplace added from a local `directory` or `file` source (Claude Code
+  loads these in place, never from `cache/`; a `file` catalog is read from
+  its recorded path), and `<name>@skills-dir` plugins under the project's
+  `.claude/skills`, where the project is the hook input's `cwd` (it follows a
+  `--worktree`) plus `$CLAUDE_PROJECT_DIR`. Entries are scanned enabled or
+  not: enablement can come from `--settings`, managed settings or
+  `--add-dir`, which the hook cannot see, so a filter would fail open.
+- **Allowlist:** a project mod is named even when allowlisted, since it
+  shares the `@skills-dir` id space with `~/.claude/skills` and a cloned repo
+  could reuse an allowlisted name. A safe id prints whole (up to 300
+  characters) so a long one stays allowlistable; a sanitized one says it
+  cannot be.
+- **Output hardening:** every id and path printed passes through `shown()`
+  (only `[A-Za-z0-9._@/-]`, capped when changed), so a name from a
+  marketplace or a cloned repo cannot inject lines or close the
+  `<system-reminder>`.
+- **Unverifiable, not skipped:** a `hooks.json`, `plugin.json` or
+  `marketplace.json` of any origin that exists but cannot be read or parsed
+  is named under "Plugin mods (unverifiable)"; only a missing file is
+  skipped. All plugin JSON goes through one reader that accepts a regular
+  file of at most 1 MiB, so a FIFO cannot hang the hook and `/dev/zero`
+  cannot exhaust memory. Each catalog entry and plugin dir is checked in its
+  own try/catch, each warning section is guarded, and no untrusted value is
+  stringified before a `typeof` check (a `{"toString":null}` name used to
+  exit the hook with no output). Best-effort and advisory: a parser
+  differential with Claude Code's loader stays possible (#647).
+- **Tests:** `plugin-drift.test.sh` runs every case with a throwaway HOME and
+  project dir and explicit stdin, with fixtures for both origins, an
+  allowlist-shadowing project plugin, injection names, a hostile catalog,
+  malformed, FIFO, `/dev/zero` and oversized files, long ids and a
+  `--worktree` cwd (40 of 105 failed on origin/main, all pass after; an
+  intermediate version hung on the FIFO until the test's timeout).
+
 ## 2026-10-16 — test: heal-race rivals no longer hold the capture pipe
 
 - **`claude/scripts/tests/heal-race.test.sh`** (#635 review): the in-flight
