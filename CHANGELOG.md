@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-16 — fix: setup.sh service-selection edge cases (Codex review on #577)
+
+- **`setup.sh`:** picks the action once (the first of `--help`, `--check`,
+  `--repair`, `--show-services`), so `--repair --show-services` from a linked
+  worktree no longer slips past the worktree guard; `--help` runs before the
+  saved service selection is loaded, so it works when that file is damaged;
+  and the WSL audio routing for Claude `/voice` is skipped when Claude is
+  not a selected service.
+- **`lib-services.sh`:** `services_save` refuses a directory at the selection
+  path instead of moving the temp file into it and reporting success.
+- **Tests:** new cases in `setup-services.test.sh` and
+  `setup-worktree-guard.test.sh` (4 failed before the fix, all pass after;
+  the audio case runs only on WSL).
+
 ## 2026-10-16 — fix: harden the ccw profile linker
 
 - **`claude/scripts/link-claude-profile.sh`** (refs #591): refuses a profile
