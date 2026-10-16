@@ -2720,7 +2720,13 @@ if kind == 'writer':
         # is expirable again.
         self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
 
-    def expire_with_clean_hook(self, hook, apply=True, git=None):
+    def expire_with_clean_hook(self, hook, apply=True, git=None, recovery=None):
+        """Run expire in process, calling hook(count, path) after each clean().
+
+        `git` and `recovery`, when given, wrap the module's git() and
+        check_recovery_files() as fn(original, *args).
+        """
+        from contextlib import ExitStack
         from functools import partial
         from unittest.mock import patch
 
@@ -2734,10 +2740,13 @@ if kind == 'writer':
             calls.append(Path(path))
             hook(len(calls), Path(path))
 
-        git_patch = (
-            patch.object(lifecycle, "git", partial(git, lifecycle.git)) if git else nullcontext()
-        )
-        with patch.dict(os.environ, self.env), patch.object(lifecycle, "clean", counted), git_patch:
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, self.env))
+            stack.enter_context(patch.object(lifecycle, "clean", counted))
+            for name, wrapper in (("git", git), ("check_recovery_files", recovery)):
+                if wrapper:
+                    wrapped = partial(wrapper, getattr(lifecycle, name))
+                    stack.enter_context(patch.object(lifecycle, name, wrapped))
             return lifecycle.expire([self.repo], self.root / "archive", 30, apply)
 
     def test_expire_never_silently_loses_a_write_after_the_final_check(self):
@@ -2925,6 +2934,64 @@ if kind == 'writer':
                     path.write_bytes(saved)
                     shutil.rmtree(self.proc / "123")
         self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
+
+    def test_expire_inspects_metadata_after_rehashing_the_recovery_files(self):
+        # Hashing the bundle is slow, so a metadata write during it must still
+        # meet the staged inspection, never a removal that deletes it.
+        archive = self.retired()
+        self.age(archive, 40)
+        late = self.repo / ".git/worktrees/task/late-evidence"
+        calls = []
+
+        def hashing(original, *args):
+            calls.append(None)
+            if len(calls) == 2:
+                late.write_text("late\n")
+            return original(*args)
+
+        report = self.expire_with_clean_hook(lambda *_: None, recovery=hashing)
+        item = self.entry(report, archive)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertIn("late-evidence was written", item["reason"])
+        self.assertEqual(late.read_text(), "late\n")
+        self.assertTrue(self.registered(archive / "worktree"))
+
+    def test_expire_rolls_back_when_the_metadata_tar_fails_mid_read(self):
+        # A tar truncated during the staged inspection's reflog read raises
+        # tarfile.ReadError; it must retain and roll back, not escape.
+        from unittest.mock import patch
+
+        archive = self.retired()
+        self.age(archive, 40)
+        staged = {}
+        extract = tarfile.TarFile.extractfile
+
+        class Truncated:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, *_):
+                raise tarfile.ReadError("unexpected end of data")
+
+        def extractfile(tar, member):
+            if staged and getattr(member, "name", member).endswith("logs/HEAD"):
+                return Truncated()
+            return extract(tar, member)
+
+        def mark(count, _):
+            if count == 2:
+                staged["now"] = True
+
+        with patch.object(tarfile.TarFile, "extractfile", extractfile):
+            item = self.entry(self.expire_with_clean_hook(mark), archive)
+        self.assertEqual(item["disposition"], "retained", item)
+        self.assertIn("cannot read worktree-metadata.tar", item["reason"])
+        self.assertTrue(self.registered(archive / "worktree"))
+        self.assertFalse(os.path.lexists(archive / "worktree-expiring"))
 
     def test_expire_names_where_a_failed_rollback_left_the_checkout(self):
         # The checkout moved back but its registration repair failed: the

@@ -1040,6 +1040,21 @@ def check_recovery_files(archive, record):
             raise ValueError(f"{name} differs from what retirement recorded; retain for inspection")
 
 
+def recovery_identity(archive):
+    """Each recovery file's inode and change time: any write or replacement moves them."""
+    identity = {}
+    for name in ARCHIVE_FILES:
+        info = (archive / name).lstat()
+        identity[name] = (
+            info.st_dev,
+            info.st_ino,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+    return identity
+
+
 def check_metadata_archived(admin, archive, head):
     """Refuse live Git metadata that holds anything worktree-metadata.tar does not.
 
@@ -1065,16 +1080,20 @@ def check_metadata_archived(admin, archive, head):
         except (OSError, tarfile.TarError) as error:
             raise unreadable() from error
 
+    def read_archived(original, size=-1):
+        # A tar truncated or replaced since the hash check fails mid-member.
+        try:
+            return original.read(size)
+        except (OSError, tarfile.TarError) as error:
+            raise unreadable() from error
+
     def same_content(member, path):
         original = archived(member)
         if original is None:
             return False
         with original, open_regular(path) as current:
             while True:
-                try:
-                    chunk = original.read(1024 * 1024)
-                except (OSError, tarfile.TarError) as error:
-                    raise unreadable() from error
+                chunk = read_archived(original, 1024 * 1024)
                 if current.read(1024 * 1024) != chunk:
                     return False
                 if not chunk:
@@ -1131,7 +1150,7 @@ def check_metadata_archived(admin, archive, head):
                             original = archived(member)
                             if original is not None:
                                 with original:
-                                    old = original.read()
+                                    old = read_archived(original)
                         live = read_regular(path)
                         if not live.startswith(old):
                             refuse(relative, "was rewritten")
@@ -1226,19 +1245,25 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
         os.rename(quarantine, staging)
         try:
             git(repo, "worktree", "repair", str(staging))
-            inspect(staging)
             # The process scan never covers the archive entry, so the recovery
-            # files the removal relies on are rechecked last as well.
+            # files the removal relies on are rechecked here too. Hashing a
+            # bundle is slow, so it runs before the staged inspection, which
+            # must stay last; a cheap identity check after it catches any
+            # write to them from the hash onwards.
+            recovery = recovery_identity(archive)
             if recovery_record(archive)[0] != record:
                 raise ValueError("recovery.json changed; retain for inspection")
             check_recovery_files(archive, record)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            inspect(staging)
+            if recovery_identity(archive) != recovery:
+                raise ValueError("the recovery files changed; retain for inspection")
+        except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
             location, step = staging, "moving it back"
             try:
                 os.rename(staging, quarantine)
                 location, step = quarantine, "repairing its registration"
                 git(repo, "worktree", "repair", str(quarantine))
-            except (OSError, ValueError, subprocess.SubprocessError) as restore:
+            except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as restore:
                 raise ValueError(
                     f"changed after inspection ({error}); the checkout is retained at {location} "
                     f"because {step} failed: {restore}"
@@ -1350,7 +1375,13 @@ def expire(repos, archive_dir, days, apply, trust_process_manager=False, now=Non
                     reason="removed the checkout and registration, kept the recovery files; "
                     + entry["reason"],
                 )
-        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            subprocess.SubprocessError,
+            tarfile.TarError,
+        ) as error:
             if entry["kind"] != "recovery-files":
                 entry.update(disposition="retained", reason=str(error))
             else:

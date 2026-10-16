@@ -4,7 +4,10 @@
 
 - **`claude/scripts/worktree-lifecycle.py expire`** (Codex threads on #570
   and #576): `--apply` rechecks `recovery.json` and the bundle and metadata
-  tar hashes after the staged inspection, just before `git worktree remove`;
+  tar hashes on the staged checkout, then confirms after the final inspection
+  that none of them changed since, so the slow hash never sits between that
+  inspection and `git worktree remove`; a tar read error mid-member is
+  retained and rolled back instead of escaping;
   a failed rollback names where the checkout actually is; the metadata tar is
   streamed instead of loaded whole, and its hard-link members are compared by
   content, so a quarantine with hard-linked metadata can expire; an entry

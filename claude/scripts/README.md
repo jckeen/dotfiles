@@ -751,11 +751,14 @@ holds the head stays on disk.
 `worktree-expiring` inside the same entry, so a path-based writer can no longer
 land in what is about to be deleted, and repairs Git's link. It then runs the
 clean, process, registration and metadata checks again on the moved directory.
-The metadata check runs after them, because a commit made through the Git
-metadata during that inspection leaves the checkout clean. Last, since the
-process checks never cover the archive entry, `recovery.json` must still hold
-the record read at the start and the bundle and metadata tar must still hash
-to it. Anything found moves the checkout back to `worktree` and retains the
+Before them, since the process checks never cover the archive entry,
+`recovery.json` must still hold the record read at the start and the bundle
+and metadata tar must still hash to it; hashing a bundle is slow, so it never
+runs between the final inspection and the removal. After them, the recovery
+files' inode, size and change times must be unchanged since that hash. The
+metadata check runs last among the inspection checks, because a commit made
+through the Git metadata during that inspection leaves the checkout clean.
+Anything found moves the checkout back to `worktree` and retains the
 entry; if moving it back or repairing its registration fails, the reason names
 where the checkout actually is. Only then does it run
 `git worktree remove --force --force` on it from the primary checkout,
