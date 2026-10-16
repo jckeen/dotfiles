@@ -65,9 +65,9 @@ If the socket is missing, refuses connections, or cannot be verified, `cx`
 launches locally. It never starts, stops, restarts, or repairs a daemon during
 launch. Even a native start can discard a live PID record if a server becomes
 available after the probe. When no shared server is running, start Remote
-Control explicitly with `codex remote-control start --json`, then reopen with
-`cx`. Repairing stale daemon metadata is an explicit maintenance action after
-active work is finished.
+Control explicitly with `codex remote-control start --json`, or install the
+automatic user service below, then reopen with `cx`. Repairing stale daemon
+metadata is an explicit maintenance action after active work is finished.
 
 Explicit `--remote` and remote authentication options pass through unchanged.
 Utility subcommands and help/version requests do not attach the daemon.
@@ -95,6 +95,79 @@ external model requests. It also simulates a listener appearing after an
 absent-socket probe. The regular launcher and socket tests run through
 `claude/scripts/tests/cx-remote-control.test.sh` and
 `claude/scripts/tests/codex-remote-recovery.test.sh`.
+
+### Automatic startup on Linux and WSL
+
+`codex app-server daemon bootstrap --remote-control` starts a detached process;
+it does not install a service that survives reboot. The optional systemd user
+service runs a foreground server, restarts it after a process failure, and
+leaves `cx` as a connection-only launcher. Native socket binding refuses an
+existing listener; service startup never stops it to take ownership.
+
+The service requires the standalone CLI at `~/.local/bin/codex`, Python, and an
+existing `remoteControlEnabled: true` preference in the active Codex home's
+`app-server-daemon/settings.json`. It refuses missing, malformed, or disabled
+preferences. It loads optional NVM configuration and adds the usual user tool
+directories to PATH because systemd does not run interactive shell setup.
+
+Install from the dotfiles checkout after finishing any work on an existing
+native daemon. If a native daemon is already serving conversations, let them
+finish and stop it explicitly before switching supervisors.
+
+```bash
+install -Dm755 codex/remote-control-service.sh ~/.local/libexec/codex-remote-control
+install -Dm644 codex/remote_control_enabled.py ~/.local/libexec/remote_control_enabled.py
+install -Dm644 codex/codex-remote-control.service ~/.config/systemd/user/codex-remote-control.service
+```
+
+Before enabling the service, persist the state directory used by `cx`:
+
+```bash
+systemctl --user edit codex-remote-control.service
+```
+
+Add this override for the default state directory:
+
+```ini
+[Service]
+Environment="CODEX_HOME=%h/.codex"
+```
+
+If your shell sets `CODEX_HOME`, replace `%h/.codex` with that directory's
+absolute path instead. Use a literal path, not `$CODEX_HOME` or `~`; escape any
+literal `%` as `%%`. The user manager does not inherit shell exports, and a
+temporary `systemctl import-environment` would not persist across reboot.
+The service and `cx` must select the same directory before startup so they use
+the same saved opt-in, credentials, and socket.
+
+Then enable automatic startup:
+
+```bash
+sudo loginctl enable-linger "$(id -un)"
+systemctl --user daemon-reload
+systemctl --user enable --now codex-remote-control.service
+systemctl --user status codex-remote-control.service
+```
+
+Use `systemctl --user stop codex-remote-control.service` for maintenance and
+`systemctl --user disable --now codex-remote-control.service` to remove automatic
+startup. Stop/restart affects attached conversations and their tools; finish
+active work first. The service owns this process, so native daemon stop,
+restart, update, and bootstrap commands are not its management interface.
+CLI updates take effect on the next service start; schedule restarts after work
+finishes. Inspect failures with
+`journalctl --user -u codex-remote-control.service`.
+
+WSL user services start when the distribution starts. They do not themselves
+keep WSL alive after the last Windows client exits. For access with terminals
+closed, run `windows/install-codex-wsl-startup.ps1 -Distribution Ubuntu` from a
+normal Windows PowerShell session, substituting your installed distribution
+name. It registers a task for the current Windows user that launches WSL at
+login and keeps a harmless `sleep` client open without a console window, task time limit, or
+changing Windows sleep policy. Explicit WSL shutdown stays stopped until the
+next login or manual task start. Remove that behavior by stopping and deleting
+the `Codex Remote Control - <distribution>` task in Task Scheduler. Windows must
+remain awake for remote access.
 
 ## Public Skills
 

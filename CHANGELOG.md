@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-15 — Automatic Codex Remote Control startup
+
+- Added an opt-in systemd user service that supervises the foreground server,
+  restarts it after a crash, and preserves the connection-only `cx` launcher.
+  Its launcher checks the saved opt-in, uses the standalone CLI, and loads user
+  tools including the current NVM default.
+- Shared strict opt-in parsing between the service and `cx`, rejecting multiple
+  JSON documents, duplicate keys, and nonstandard numeric constants.
+- Added a Windows login-task installer that keeps the selected WSL distribution
+  running for phone access with terminals closed, without a console window or
+  changes to sleep policy.
+- Verified repeated service starts preserve a connected client, competing native
+  starts refuse the live socket, and a disposable server recovers after a crash.
+
 ## 2026-10-16 — feat: a codex-findings queue, and codex-threads.sh to work it
 
 - **`.github/workflows/codex-findings.yml`:** labels a PR `codex-findings`
