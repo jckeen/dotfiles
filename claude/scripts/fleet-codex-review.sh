@@ -7,10 +7,11 @@
 #
 # With no repos named, acts on ENFORCE and ADVISORY below. Per repo, --apply
 # takes at most one step, so re-run it after each rollout PR merges:
-#   1. The default branch lacks .github/workflows/codex-review.yml, or its copy
-#      differs from this checkout's: open (or reuse) a PR on branch
-#      ci/codex-review-status carrying the canonical file, with auto-merge on.
-#   2. The workflow is current and the repo is in ENFORCE: create the
+#   1. The default branch lacks one of WORKFLOWS (.github/workflows/
+#      codex-review.yml, codex-findings.yml), or its copy differs from this
+#      checkout's: open (or reuse) a PR on branch ci/codex-review-status
+#      carrying every file that is not current, with auto-merge on.
+#   2. Every workflow is current and the repo is in ENFORCE: create the
 #      `codex-review` ruleset on ~DEFAULT_BRANCH — required status
 #      `codex-review` plus required review-thread resolution. Never before step
 #      1 lands: a required status no workflow posts would hold every PR forever,
@@ -52,7 +53,10 @@ ADVISORY=(
   Keen-Media/giant-steps
 )
 
-WORKFLOW_PATH=.github/workflows/codex-review.yml
+# codex-review.yml posts the required status; codex-findings.yml labels PRs
+# that still have unresolved bot threads (dotfiles#617).
+WORKFLOW_DIR=.github/workflows
+WORKFLOWS=(codex-review.yml codex-findings.yml)
 BRANCH=ci/codex-review-status
 RULESET=codex-review
 # The GitHub Actions app (gh api apps/github-actions). Pinning the required
@@ -60,7 +64,7 @@ RULESET=codex-review
 # integration posting `codex-review` by hand.
 ACTIONS_APP_ID=15368
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CANONICAL="$ROOT/$WORKFLOW_PATH"
+CANONICAL_DIR="$ROOT/$WORKFLOW_DIR"
 
 mode=check
 repos=()
@@ -79,10 +83,12 @@ for arg in "$@"; do
       ;;
   esac
 done
-[ -f "$CANONICAL" ] || {
-  echo "canonical workflow missing: $CANONICAL" >&2
-  exit 2
-}
+for f in "${WORKFLOWS[@]}"; do
+  [ -f "$CANONICAL_DIR/$f" ] || {
+    echo "canonical workflow missing: $CANONICAL_DIR/$f" >&2
+    exit 2
+  }
+done
 if [ "${#repos[@]}" -eq 0 ]; then
   repos=("${ENFORCE[@]}" "${ADVISORY[@]}")
 fi
@@ -93,18 +99,29 @@ enforced() {
   return 1
 }
 
-# Prints current | stale | missing for the workflow on <repo>@<ref>.
-workflow_state() {
-  local repo="$1" ref="$2" content
-  if ! content="$(gh api "repos/$repo/contents/$WORKFLOW_PATH?ref=$ref" --jq .content 2>/dev/null)"; then
+# Prints current | stale | missing for one workflow file on <repo>@<ref>.
+file_state() {
+  local repo="$1" ref="$2" f="$3" content
+  if ! content="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$ref" --jq .content 2>/dev/null)"; then
     echo missing
     return
   fi
-  if [ "$(printf '%s' "$content" | base64 -d)" = "$(cat "$CANONICAL")" ]; then
+  if [ "$(printf '%s' "$content" | base64 -d)" = "$(cat "$CANONICAL_DIR/$f")" ]; then
     echo current
   else
     echo stale
   fi
+}
+
+# Prints current when every workflow is, else the files that are not, as
+# file:state pairs (e.g. "codex-findings.yml:missing").
+workflow_state() {
+  local repo="$1" ref="$2" f st out=()
+  for f in "${WORKFLOWS[@]}"; do
+    st="$(file_state "$repo" "$ref" "$f")"
+    [ "$st" = current ] || out+=("$f:$st")
+  done
+  if [ "${#out[@]}" -eq 0 ]; then echo current; else echo "${out[*]}"; fi
 }
 
 ruleset_id() {
@@ -118,7 +135,7 @@ open_rollout_pr() {
 # Called from an OR-list, where bash suspends errexit inside the function, so
 # every write checks its own result and stops the rollout for this repo.
 ship_workflow() {
-  local repo="$1" base="$2" pr base_sha file_sha body
+  local repo="$1" base="$2" pr base_sha file_sha body f
   pr="$(open_rollout_pr "$repo")"
   if [ -n "$pr" ]; then
     echo "  rollout PR #$pr already open"
@@ -138,27 +155,32 @@ ship_workflow() {
     echo "  could not create branch $BRANCH" >&2
     return 1
   fi
-  file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_PATH?ref=$BRANCH" --jq .sha 2>/dev/null || true)"
-  local args=(-X PUT "repos/$repo/contents/$WORKFLOW_PATH" -f branch="$BRANCH"
-    -f message="ci: hold merges until the Codex bot review finishes"
-    -f content="$(base64 -w0 <"$CANONICAL")")
-  [ -n "$file_sha" ] && args+=(-f sha="$file_sha")
-  if ! gh api "${args[@]}" >/dev/null; then
-    echo "  could not write $WORKFLOW_PATH on $BRANCH; branch left for inspection" >&2
-    return 1
-  fi
+  for f in "${WORKFLOWS[@]}"; do
+    [ "$(file_state "$repo" "$base" "$f")" = current ] && continue
+    file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$BRANCH" --jq .sha 2>/dev/null || true)"
+    local args=(-X PUT "repos/$repo/contents/$WORKFLOW_DIR/$f" -f branch="$BRANCH"
+      -f message="ci: add or update $f from jckeen/dotfiles"
+      -f content="$(base64 -w0 <"$CANONICAL_DIR/$f")")
+    [ -n "$file_sha" ] && args+=(-f sha="$file_sha")
+    if ! gh api "${args[@]}" >/dev/null; then
+      echo "  could not write $WORKFLOW_DIR/$f on $BRANCH; branch left for inspection" >&2
+      return 1
+    fi
+  done
   body="$(mktemp)"
   cat >"$body" <<'EOF'
-Adds the `codex-review` workflow from jckeen/dotfiles (`.github/workflows/codex-review.yml`, copied verbatim by `claude/scripts/fleet-codex-review.sh`).
+Adds or updates the Codex review workflows from jckeen/dotfiles (`.github/workflows/codex-review.yml` and `codex-findings.yml`, copied verbatim by `claude/scripts/fleet-codex-review.sh`). Only files that differ from the canonical copy are in this PR.
 
-It posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once. A review counts only for the PR's head commit: a later push gets an `@codex review` request and holds until that review completes. If the bot never picks a PR up at all, the status passes after three minutes. A `codex-skip` label applied by an admin or maintainer passes it by hand.
+`codex-review` posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once. A review counts only for the PR's head commit: a later push gets an `@codex review` request and holds until that review completes. If the bot never picks a PR up at all, the status passes after three minutes. A `codex-skip` label applied by an admin or maintainer passes it by hand.
+
+`codex-findings` labels a PR `codex-findings` while the bot has review threads on it that nobody has resolved, so `gh pr list --label codex-findings` lists the PRs waiting on bot findings.
 
 Nothing requires the status until the follow-up `codex-review` ruleset is created after this merges; this PR on its own changes no merge behavior.
 
 Revert: `git revert <merge sha>` (delete the `codex-review` ruleset first if it was created).
 EOF
   if ! pr="$(gh pr create -R "$repo" --base "$base" --head "$BRANCH" \
-    --title "ci: hold merges until the Codex bot review finishes" --body-file "$body")"; then
+    --title "ci: Codex review workflows from jckeen/dotfiles" --body-file "$body")"; then
     rm -f "$body"
     echo "  could not open the rollout PR; branch $BRANCH left for inspection" >&2
     return 1

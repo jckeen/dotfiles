@@ -7,11 +7,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLEET="$SCRIPT_DIR/../fleet-codex-review.sh"
-export CANONICAL="$SCRIPT_DIR/../../../.github/workflows/codex-review.yml"
+export CANON_DIR="${CODEX_WORKFLOWS_DIR:-$SCRIPT_DIR/../../../.github/workflows}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Fake gh. State lives in $FIX: workflow (none|current|stale), ruleset (0|1),
+# Fake gh. State lives in $FIX: workflow (none|current|stale|partial, where
+# partial = codex-review.yml current and codex-findings.yml missing), ruleset (0|1),
 # branch (0|1), openpr (0|1). Every write is logged to $FIX/writes.
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'FAKE'
@@ -44,9 +45,15 @@ fi
 case "$path" in
   repos/o/r) echo main ;;
   repos/o/r/contents/*)
-    case "$(st workflow)" in
+    f=${path##*/}
+    f=${f%%\?*}
+    w=$(st workflow)
+    if [ "$w" = partial ]; then
+      if [ "$f" = codex-review.yml ]; then w=current; else w=none; fi
+    fi
+    case "$w" in
       none) exit 1 ;;
-      current) base64 -w0 <"$CANONICAL" ;;
+      current) base64 -w0 <"$CANON_DIR/$f" ;;
       stale) printf 'old' | base64 -w0 ;;
     esac
     ;;
@@ -82,7 +89,7 @@ run_case() {
     cp "$FLEET" "$script"
   fi
   mkdir -p "$TMP/root$n/claude/scripts" "$TMP/root$n/.github/workflows"
-  cp "$CANONICAL" "$TMP/root$n/.github/workflows/"
+  cp "$CANON_DIR/codex-review.yml" "$CANON_DIR/codex-findings.yml" "$TMP/root$n/.github/workflows/"
   mv "$script" "$TMP/root$n/claude/scripts/fleet.sh"
   PATH="$TMP/bin:$PATH" bash "$TMP/root$n/claude/scripts/fleet.sh" $6 o/r >"$FIX/out" 2>&1
   local code=$?
@@ -98,10 +105,13 @@ run_case() {
 }
 
 run_case "check writes nothing" none 0 0 0 --check ""
-run_case "missing workflow opens the rollout PR, no ruleset" none 0 0 0 --apply \
-  "POST git/refs;PUT contents/.github/workflows/codex-review.yml;pr create;pr merge"
-run_case "stale workflow opens the rollout PR, no ruleset" stale 0 0 0 --apply \
-  "POST git/refs;PUT contents/.github/workflows/codex-review.yml;pr create;pr merge"
+run_case "missing workflows open the rollout PR, no ruleset" none 0 0 0 --apply \
+  "POST git/refs;PUT contents/.github/workflows/codex-review.yml;PUT contents/.github/workflows/codex-findings.yml;pr create;pr merge"
+run_case "stale workflows open the rollout PR, no ruleset" stale 0 0 0 --apply \
+  "POST git/refs;PUT contents/.github/workflows/codex-review.yml;PUT contents/.github/workflows/codex-findings.yml;pr create;pr merge"
+run_case "only the workflow that is not current is shipped" partial 0 0 0 --apply \
+  "POST git/refs;PUT contents/.github/workflows/codex-findings.yml;pr create;pr merge"
+run_case "a missing codex-findings.yml holds the ruleset" partial 0 0 1 --apply ""
 # A failed file write stops before the PR: no PR for an empty branch.
 n_next=$((n + 1))
 mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/fail_PUT"

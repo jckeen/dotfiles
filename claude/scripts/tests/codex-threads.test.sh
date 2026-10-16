@@ -21,6 +21,11 @@ cat >"$TMP/bin/gh" <<'FAKE'
 case "$1 $2" in
   "repo view") echo o/r; exit 0 ;;
   "pr list") cat "$FIX/merged"; exit 0 ;;
+  "workflow run")
+    [ -e "$FIX/fail_dispatch" ] && exit 1
+    echo "dispatch $*" >>"$FIX/writes"
+    exit 0
+    ;;
 esac
 all="$*"
 case "$all" in
@@ -115,9 +120,10 @@ for args in "list" "list --pr 1 --merged-since 2026-01-01" "resolve --thread T1"
 done
 if [ ! -s "$FIX/writes" ]; then ok; else bad "usage errors must not write"; fi
 
-node() { # node <login> <resolved> [type]
+node() { # node <login> <resolved> [type]  (the thread is on PR 9)
   jq -nc --arg l "$1" --argjson r "$2" --arg t "${3:-Bot}" \
-    '{data:{node:{isResolved:$r,comments:{nodes:[{author:{__typename:$t,login:$l}}]}}}}' >"$FIX/node"
+    '{data:{node:{isResolved:$r,pullRequest:{number:9},
+      comments:{nodes:[{author:{__typename:$t,login:$l}}]}}}}' >"$FIX/node"
 }
 mutation() { # mutation <resolved>
   jq -nc --argjson r "$1" \
@@ -125,12 +131,31 @@ mutation() { # mutation <resolved>
       resolveReviewThread:{thread:{isResolved:$r}}}}' >"$FIX/mutation"
 }
 
-# 6. resolve replies and resolves a bot thread.
+# 6. resolve replies and resolves a bot thread; with another bot thread
+# still open on the PR, the label workflow is not started.
 new_fix
 node chatgpt-codex-connector false
 mutation true
+threads false "$(thread T2 false false chatgpt-codex-connector "$BADGE")" >"$FIX/threads_9"
 out=$("$CT" resolve --thread T1 --reply "Fixed in #9") && rc=0 || rc=$?
 if [ "$rc" = 0 ] && [ "$(cat "$FIX/writes")" = mutation ] && grep -q '^resolved: T1 https://x/reply$' <<<"$out"; then ok; else bad "resolve bot thread (rc=$rc): $out"; fi
+
+# 6b. Resolving the PR's last bot thread starts codex-findings for that PR.
+new_fix
+node chatgpt-codex-connector false
+mutation true
+threads false >"$FIX/threads_9"
+"$CT" resolve --thread T1 --reply "Fixed" >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" = 0 ] && grep -q '^dispatch workflow run codex-findings.yml -R o/r -f pr=9$' "$FIX/writes"; then ok; else bad "last thread must dispatch codex-findings (rc=$rc): $(cat "$FIX/writes")"; fi
+
+# 6c. A repo without the workflow still resolves (exit 0) and warns.
+new_fix
+node chatgpt-codex-connector false
+mutation true
+threads false >"$FIX/threads_9"
+: >"$FIX/fail_dispatch"
+err=$("$CT" resolve --thread T1 --reply "Fixed" 2>&1 >/dev/null) && rc=0 || rc=$?
+if [ "$rc" = 0 ] && grep -q 'could not start codex-findings.yml' <<<"$err"; then ok; else bad "failed dispatch must warn, not fail (rc=$rc): $err"; fi
 
 # 7. A thread someone else opened is refused without a write.
 new_fix

@@ -14,7 +14,11 @@
 #       pr  thread-id  path:line  priority  outdated  title  url
 #   codex-threads.sh resolve [--repo owner/name] --thread ID --reply TEXT
 #       Replies on the thread, then resolves it. Refuses a thread the bot did
-#       not open, and does nothing to one that is already resolved.
+#       not open, and does nothing to one that is already resolved. After the
+#       PR's last bot thread is resolved, starts the codex-findings workflow so
+#       it removes the PR's `codex-findings` label (GitHub has no workflow
+#       trigger for a resolved thread); a repo without that workflow gets a
+#       warning only.
 #
 # Exit: 0 success; 1 a read or write failed (never a silent partial list);
 # 2 usage error.
@@ -108,7 +112,7 @@ case "$CMD" in
     fi
     info=$(gh api graphql -f id="$THREAD" -f query='
 query($id:ID!){node(id:$id){... on PullRequestReviewThread{
-  isResolved comments(first:1){nodes{author{__typename login}}}}}}') ||
+  isResolved pullRequest{number} comments(first:1){nodes{author{__typename login}}}}}}') ||
       die "could not read thread $THREAD"
     author=$(jq -r '.data.node.comments.nodes[0].author.login // ""' <<<"$info")
     [ -n "$author" ] || die "$THREAD is not a readable review thread"
@@ -127,6 +131,14 @@ mutation($tid:ID!,$body:String!){
     [ "$(jq -r '.data.resolveReviewThread.thread.isResolved' <<<"$out")" = true ] ||
       die "$THREAD did not resolve"
     echo "resolved: $THREAD $(jq -r '.data.addPullRequestReviewThreadReply.comment.url' <<<"$out")"
+    pr=$(jq -r '.data.node.pullRequest.number // ""' <<<"$info")
+    if [[ "$pr" =~ ^[0-9]+$ ]] && remaining=$(list_pr "$pr") && [ -z "$remaining" ]; then
+      if gh workflow run codex-findings.yml -R "$REPO" -f pr="$pr" >/dev/null 2>&1; then
+        echo "no bot threads left on #$pr; started codex-findings to clear its label"
+      else
+        echo "codex-threads: no bot threads left on #$pr, but could not start codex-findings.yml in $REPO; its label (if any) stays until the next bot review" >&2
+      fi
+    fi
     ;;
   *) usage ;;
 esac

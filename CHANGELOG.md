@@ -1,7 +1,16 @@
 # Changelog
 
-## 2026-10-16 — feat: codex-threads.sh lists and closes out Codex bot review threads
+## 2026-10-16 — feat: a codex-findings queue, and codex-threads.sh to work it
 
+- **`.github/workflows/codex-findings.yml`:** labels a PR `codex-findings`
+  while the GitHub Codex bot has an unresolved review thread on it, and
+  removes the label once none remain. It recounts on each bot review and on
+  `workflow_dispatch`. `gh pr list --label codex-findings` is then the queue
+  of PRs blocked on bot findings, so no agent has to poll each PR (#617). A
+  failed or truncated read leaves the label as it was. Fork PRs are skipped.
+- **`fleet-codex-review.sh`:** rolls out both workflows, shipping only the
+  files that are missing or out of date. It still creates the ruleset only
+  once both are current.
 - **`claude/scripts/codex-threads.sh`:** `list --pr N` (or
   `--merged-since DATE`) prints one TSV line per unresolved thread the GitHub
   Codex bot opened: thread id, location, priority, outdated flag, title and
@@ -9,12 +18,16 @@
   the thread. It refuses an empty reply and refuses a thread anyone other
   than the bot opened. Once the `codex-review` ruleset requires resolved
   threads (#615), this is how an agent answers each finding before merge,
-  either "fixed in" or "moot because". A failed or truncated read exits 1
-  rather than printing a partial list.
+  either "fixed in" or "moot because". Resolving a PR's last bot thread also
+  starts `codex-findings.yml`, because GitHub has no workflow trigger for a
+  resolved thread. A failed or truncated read exits 1 rather than printing a
+  partial list.
 - **Why:** a 2026-10-16 triage found 35 unresolved bot threads on merged
   PRs #564–#604, because auto-merge lands before the bot comments (#617).
-- **Tests:** `claude/scripts/tests/codex-threads.test.sh` (fake `gh`), wired
-  into the CI `checkers` shard.
+- **Tests:** `codex-threads.test.sh` and `codex-findings-label.test.sh`
+  (both run against a fake `gh`, and the second extracts the workflow's
+  script), wired into the CI `checkers` shard. `fleet-codex-review.test.sh`
+  gains cases for partial rollouts.
 
 ## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
 
