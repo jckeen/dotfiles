@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
+
+- **`.github/workflows/codex-review.yml`:** the first live run (the close of
+  #614) failed with "could not read GitHub's clock". The `Date`-header awk
+  exited at its first match, closing the pipe while `gh api -i` was still
+  writing the body; `gh` died of SIGPIPE and `pipefail` reported a failed read.
+  Measured locally: 3 of 5 early-exit reads returned 141, and 0 of 5 for a
+  reader that drains its input. It failed closed (pending, failed run), but it
+  would have failed about half of every evaluation. The awk now reads to the
+  end. A sweep of the script and of `fleet-codex-review.sh` found no other
+  reader that exits early on a pipe.
+- **Tests:** the fake `gh` now sends a 256 KiB body after the headers, so an
+  early-exiting reader fails deterministically (69 of 85 cases failed before
+  the fix, 85 of 85 pass after).
+
 ## 2026-10-14 — ci: hold merges until the Codex bot review finishes, fleet-wide
 
 - **`.github/workflows/codex-review.yml`:** posts a `codex-review` commit status

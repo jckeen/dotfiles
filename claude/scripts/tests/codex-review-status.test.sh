@@ -28,7 +28,12 @@ cat >"$TMP/bin/gh" <<'FAKE'
 path="" slurp=0 post=0 state="" desc="" body="" include=0
 if [ "$*" = "api -i rate_limit" ]; then
   [ -e "$FIX/fail_clock" ] && exit 1
-  printf 'HTTP/2.0 200 OK\r\nDate: %s\r\n\r\n{}\n' "$(date -u '+%a, %d %b %Y %H:%M:%S GMT')"
+  printf 'HTTP/2.0 200 OK\r\nDate: %s\r\n\r\n' "$(date -u '+%a, %d %b %Y %H:%M:%S GMT')"
+  # A body far larger than a pipe buffer, as the real response can outlast a
+  # reader: one that stops at the Date header kills this writer with SIGPIPE,
+  # which pipefail reports as a failed clock read (the 2026-10-15 canary bug).
+  head -c 262144 /dev/zero | tr '\0' x
+  echo
   exit 0
 fi
 while [ $# -gt 0 ]; do
