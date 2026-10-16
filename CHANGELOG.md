@@ -33,11 +33,20 @@
   `/dev/zero` cannot exhaust memory; a safe id is printed whole (up to 300
   characters) so a long id stays allowlistable, and a sanitized one says it
   cannot be.
+- **Design rules (review gate on #646):** each untrusted item (catalog
+  entry, plugin dir, settings file) is checked in its own try/catch and named
+  as unverifiable on a throw, every warning section is guarded so a crash
+  cannot drop the others, and no untrusted value is stringified before a
+  `typeof` check (a `{"toString":null}` name used to exit the hook with no
+  output). Any skip that depends on a read fails toward reporting: an
+  unreadable or malformed settings or install record drops the
+  enabled-entries filter.
 - **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
-  dir with explicit stdin, and adds fixtures for both origins, an
+  dir with explicit stdin, and adds a hostile catalog, malformed and
+  unreadable settings, and fixtures for both origins, an
   allowlist-shadowing project plugin, injection names, unparseable, FIFO,
   `/dev/zero` and oversized untrusted files, inactive catalog entries, long
-  ids and a `--worktree` cwd (30 of 93 failed on origin/main, all pass after;
+  ids and a `--worktree` cwd (39 of 108 failed on origin/main, all pass after;
   the previous hook hung on the FIFO until the test's timeout).
 
 ## 2026-10-16 — test: heal-race rivals no longer hold the capture pipe

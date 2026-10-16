@@ -547,6 +547,87 @@ run_untrusted "$MANIFEST_GLOBAL" home
 assert "a session in HOME names the user's skills-dir mod once, as the user's" \
   'outline "  • homemod@skills-dir" && ! outgrep "homemod@skills-dir (project"'
 
+# ── rule 1: a hostile catalog is isolated per entry ────────────────────
+# Non-string names and sources, {"toString":null} (which throws when
+# stringified), arrays, nulls and scalars: each bad entry is named as
+# unverifiable and the control warning (a missing manifest plugin) still
+# prints. Rule 2: a settings file that cannot be read drops the
+# enabled-entries filter, so an entry nothing enables is scanned too.
+# run_hostile <project-settings: ok|malformed|unreadable>
+run_hostile() {
+  local how="$1"
+  local D H P
+  D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
+  H="$(mktemp -d)" || die "mktemp -d for HOME"
+  P="$(mktemp -d)" || die "mktemp -d for the project dir"
+  mkdir -p "$D/claude" "$H/.claude/plugins" "$P/.claude" || die "mkdir fixture dirs"
+  printf '%s\n' "$MANIFEST_GLOBAL
+missing-one@claude-plugins-official" > "$D/claude/plugins.txt" || die "write plugins.txt"
+  printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s]}}\n' \
+    "$(entry user)" > "$H/.claude/plugins/installed_plugins.json" \
+    || die "write installed_plugins.json"
+  local M="$H/src/hm"
+  mkdir -p "$M/.claude-plugin" "$M/a/hooks" "$M/idle/hooks" || die "mkdir hostile marketplace"
+  printf '%s\n' '{"modules":["./register.js"]}' > "$M/a/hooks/hooks.json" || die "write a hooks"
+  printf '%s\n' '{"modules":["./register.js"]}' > "$M/idle/hooks/hooks.json" || die "write idle hooks"
+  printf '%s\n' '{"name":"hm","metadata":{"pluginRoot":{"toString":null}},"plugins":[
+    {"name":{"toString":null},"source":"./a"},
+    {"name":["x"],"source":"./a"},
+    null, 5, "str", [],
+    {"name":"objsrc","source":{"toString":null}},
+    {"name":"nosrc"},
+    {"name":"arrsrc","source":["./a"]},
+    {"name":"good","source":"./a"},
+    {"name":"idle","source":"./idle"}]}' > "$M/.claude-plugin/marketplace.json" \
+    || die "write hostile marketplace.json"
+  printf '{"hm":{"source":{"source":"directory","path":"%s"}},
+    "badpath":{"source":{"source":"directory","path":{"toString":null}}},
+    "weird":null, "arr":[1,2]}\n' "$M" > "$H/.claude/plugins/known_marketplaces.json" \
+    || die "write known_marketplaces.json"
+  printf '%s\n' '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true,
+    "objsrc@hm":true,"nosrc@hm":true,"arrsrc@hm":true,"good@hm":true}}' \
+    > "$H/.claude/settings.json" || die "write user settings.json"
+  case "$how" in
+    malformed) printf '%s\n' '{"enabledPlugins":' > "$P/.claude/settings.json" \
+      || die "write malformed project settings" ;;
+    unreadable) printf '%s\n' '{"enabledPlugins":{}}' > "$P/.claude/settings.local.json" \
+      && chmod 000 "$P/.claude/settings.local.json" || die "write unreadable project settings" ;;
+  esac
+  out="$(cd "$P" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$P" \
+    timeout 60 bun "$HOOK" 2>&1 </dev/null)"
+  rc=$?
+  chmod -R u+rwX "$P" 2>/dev/null
+  rm -rf "$D" "$H" "$P"
+}
+
+run_hostile ok
+assert "hook exits 0 on a hostile catalog" "[ $rc -eq 0 ]"
+assert "the control warning still prints beside a hostile catalog" \
+  'outgrep "Plugin drift:" && outgrep "• missing-one@claude-plugins-official"'
+assert "a toString:null name is named by its entry index" 'outline "  • entry-0@hm"'
+assert "an array name is named by its entry index" 'outline "  • entry-1@hm"'
+assert "null, number, string and array entries are named" \
+  'outline "  • entry-2@hm" && outline "  • entry-3@hm" && outline "  • entry-4@hm" && outline "  • entry-5@hm"'
+assert "an object source is fetched into cache/, not scanned" '! outgrep "objsrc@"'
+assert "an enabled entry with no source is unverifiable" 'outline "  • nosrc@hm"'
+assert "an enabled entry with an array source is unverifiable" 'outline "  • arrsrc@hm"'
+assert "a good entry beside hostile ones is still scanned" 'outline "  • good@hm"'
+assert "a known_marketplaces entry with a non-string path is named" \
+  'outline "  • marketplace.json@badpath"'
+assert "the hook does not crash on its own error path" '! outgrep "PluginDriftCheck"'
+assert "an entry nothing enables is skipped while settings are readable" '! outgrep "idle@hm"'
+
+run_hostile malformed
+assert "a malformed project settings file drops the filter (rule 2)" 'outline "  • idle@hm"'
+assert "hook exits 0 (malformed settings)" "[ $rc -eq 0 ]"
+
+if [[ "$(id -u)" != 0 ]]; then
+  run_hostile unreadable
+  assert "an unreadable project settings file drops the filter (rule 2)" 'outline "  • idle@hm"'
+else
+  echo "skip - unreadable-settings case (root reads mode-000 files)"
+fi
+
 # ── sync-plugins.sh agrees with the hook on what "installed" means ──────
 # The hook's remedy is "run sync-plugins.sh". If its fast path treated a
 # project-scoped record as satisfying the manifest, it would exit 0 without
