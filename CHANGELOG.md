@@ -9,7 +9,8 @@
 - Shared strict opt-in parsing between the service and `cx`, rejecting multiple
   JSON documents, duplicate keys, and nonstandard numeric constants.
 - Added a Windows login-task installer that keeps the selected WSL distribution
-  running for phone access with terminals closed, without changing sleep policy.
+  running for phone access with terminals closed, without a console window or
+  changes to sleep policy.
 - Verified repeated service starts preserve a connected client, competing native
   starts refuse the live socket, and a disposable server recovers after a crash.
 

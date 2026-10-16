@@ -14,8 +14,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 $taskName = "Codex Remote Control - $Distribution"
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute $wsl `
-    -Argument "--distribution $Distribution --exec /bin/sleep infinity"
+# A headless console host keeps the client attached without opening a window.
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" `
+    -Argument "--headless -- `"$wsl`" --distribution $Distribution --exec /bin/sleep infinity"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `

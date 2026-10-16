@@ -138,7 +138,7 @@ keep WSL alive after the last Windows client exits. For access with terminals
 closed, run `windows/install-codex-wsl-startup.ps1 -Distribution Ubuntu` from a
 normal Windows PowerShell session, substituting your installed distribution
 name. It registers a task for the current Windows user that launches WSL at
-login and keeps a harmless `sleep` client open, without a task time limit or
+login and keeps a harmless `sleep` client open without a console window, task time limit, or
 changing Windows sleep policy. Explicit WSL shutdown stays stopped until the
 next login or manual task start. Remove that behavior by stopping and deleting
 the `Codex Remote Control - <distribution>` task in Task Scheduler. Windows must
