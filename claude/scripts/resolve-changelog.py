@@ -139,7 +139,9 @@ def resolve(text, stages=None):
     stages: (ours, base, theirs) from index_stages(), preferred over markers.
     """
     rebuilt = sides(text.splitlines(keepends=True))
-    if rebuilt is None:
+    # A path git still reports unmerged is a conflict even with the markers
+    # gone (`git checkout --ours`, an editor): resolve it from the stages.
+    if rebuilt is None and stages is None:
         return None
     ours_lines, base_lines, theirs_lines = stages if stages is not None else rebuilt
     if base_lines is None:

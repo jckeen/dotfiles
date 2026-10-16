@@ -201,6 +201,16 @@ class ResolveChangelog(unittest.TestCase):
             f"## 2026-09-22 — ours\n\n- Same line.\n- ours tail.\n\n{OLD}",
         )
 
+    def test_unmerged_path_without_markers_is_resolved_from_the_index(self):
+        # `git checkout --ours` (or an editor) drops the markers but git still
+        # has the path unmerged; "nothing to do" here would lose theirs' entry.
+        self.merge_conflict(HEAD + OLD, HEAD + OURS + "\n" + OLD, HEAD + THEIRS + "\n" + OLD)
+        self.git("checkout", "--ours", "CHANGELOG.md")
+        r = run(self.path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("nothing to do", r.stdout)
+        self.assertEqual(self.path.read_text(), f"{HEAD}{THEIRS}\n{OURS}\n{OLD}")
+
     def test_refuses_edit_to_an_existing_section(self):
         # Ours prepends and also edits OLD's body; theirs only prepends.
         edited = OLD.replace("- Old body.", "- Edited.")
