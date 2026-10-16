@@ -141,19 +141,35 @@ open_rollout_pr() {
 
 # Called from an OR-list, where bash suspends errexit inside the function, so
 # every write checks its own result and stops the rollout for this repo.
+# ship_workflow <repo> <base> <workflow state>: the state is workflow_state's
+# file:state pairs from the one read the caller already checked, so nothing
+# here re-reads the default branch and acts on a failed read.
 ship_workflow() {
-  local repo="$1" base="$2" pr base_sha file_sha body f
-  pr="$(open_rollout_pr "$repo")"
+  local repo="$1" base="$2" todo="$3" pr base_sha file_sha body pair f st
+  if ! pr="$(open_rollout_pr "$repo")"; then
+    echo "  could not list open PRs" >&2
+    return 1
+  fi
   if [ -n "$pr" ]; then
     echo "  rollout PR #$pr already open"
     return 0
   fi
   # A leftover branch with no open PR is reported, never force-reset: it may
   # hold someone's work.
-  if gh api "repos/$repo/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
+  local err
+  err="$(mktemp)"
+  if gh api "repos/$repo/git/ref/heads/$BRANCH" >/dev/null 2>"$err"; then
+    rm -f "$err"
     echo "  branch $BRANCH exists with no open PR; inspect or delete it, then re-run" >&2
     return 1
   fi
+  # Only a 404 means the branch is absent.
+  if ! grep -q 'HTTP 404' "$err"; then
+    echo "  could not read branch $BRANCH: $(cat "$err")" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
   if ! base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)" || [ -z "$base_sha" ]; then
     echo "  could not read $base" >&2
     return 1
@@ -162,13 +178,21 @@ ship_workflow() {
     echo "  could not create branch $BRANCH" >&2
     return 1
   fi
-  for f in "${WORKFLOWS[@]}"; do
-    [ "$(file_state "$repo" "$base" "$f")" = current ] && continue
-    file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$BRANCH" --jq .sha 2>/dev/null || true)"
+  for pair in $todo; do
+    f=${pair%%:*}
+    st=${pair#*:}
     local args=(-X PUT "repos/$repo/contents/$WORKFLOW_DIR/$f" -f branch="$BRANCH"
       -f message="ci: add or update $f from jckeen/dotfiles"
       -f content="$(base64 -w0 <"$CANONICAL_DIR/$f")")
-    [ -n "$file_sha" ] && args+=(-f sha="$file_sha")
+    # The branch was just cut from the base, so a stale file is there and
+    # updating it needs its blob sha; a missing one is created without.
+    if [ "$st" = stale ]; then
+      if ! file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$BRANCH" --jq .sha)" || [ -z "$file_sha" ]; then
+        echo "  could not read $WORKFLOW_DIR/$f on $BRANCH; branch left for inspection" >&2
+        return 1
+      fi
+      args+=(-f sha="$file_sha")
+    fi
     if ! gh api "${args[@]}" >/dev/null; then
       echo "  could not write $WORKFLOW_DIR/$f on $BRANCH; branch left for inspection" >&2
       return 1
@@ -249,7 +273,7 @@ for repo in "${repos[@]}"; do
     # The canonical copy lands here through dotfiles' own reviewed PR.
     echo "  workflow lands through the dotfiles PR; nothing to do here"
   elif [ "$wf" != current ]; then
-    ship_workflow "$repo" "$base" || rc=1
+    ship_workflow "$repo" "$base" "$wf" || rc=1
   elif [ "$want" = enforce ] && [ -z "$rs" ]; then
     if create_ruleset "$repo"; then
       # PRs opened before the workflow landed have no status yet and may see

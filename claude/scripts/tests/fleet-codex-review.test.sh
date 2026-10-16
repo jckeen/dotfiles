@@ -22,7 +22,10 @@ st() { cat "$FIX/$1"; }
 all="$*"
 case "$1 $2" in
   "pr list")
-    if [ "$(st openpr)" = 1 ]; then echo 7; fi
+    case "$(st openpr)" in
+      1) echo 7 ;;
+      error) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
+    esac
     exit 0
     ;;
   "pr create") echo "pr create" >>"$FIX/writes"; echo "https://github.com/o/r/pull/8"; exit 0 ;;
@@ -46,9 +49,15 @@ fi
 case "$path" in
   repos/o/r) echo main ;;
   repos/o/r/contents/*)
-    f=${path##*/}
-    f=${f%%\?*}
+    f=${path%%\?*}
+    f=${f##*/}
     w=$(st workflow)
+    # reread_error: the first read of each file succeeds, any later one
+    # fails, so a code path that reads twice acts on a failed read.
+    if [ -e "$FIX/reread_error" ]; then
+      if [ -e "$FIX/read_$f" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+      : >"$FIX/read_$f"
+    fi
     if [ "$w" = partial ]; then
       if [ "$f" = codex-review.yml ]; then w=current; else w=none; fi
     fi
@@ -65,7 +74,13 @@ case "$path" in
       error) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
     esac
     ;;
-  repos/o/r/git/ref/heads/ci/codex-review-status) [ "$(st branch)" = 1 ] || exit 1 ;;
+  repos/o/r/git/ref/heads/ci/codex-review-status)
+    case "$(st branch)" in
+      1) ;;
+      error) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
+      *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+    esac
+    ;;
   repos/o/r/git/ref/heads/main) echo deadbeef ;;
   *) echo "fake gh: unexpected $path" >&2; exit 1 ;;
 esac
@@ -125,6 +140,8 @@ mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/fail_PUT"
 run_case "a failed workflow write opens no PR and fails" none 0 0 0 --apply "POST git/refs" 1
 run_case "open rollout PR is reused" none 0 1 1 --apply ""
 run_case "leftover branch without a PR is never reset" none 0 1 0 --apply "" 1
+run_case "an unreadable PR list opens nothing and fails" none 0 0 error --apply "" 1
+run_case "an unreadable branch (not a 404) is never created over and fails" none 0 error 0 --apply "" 1
 run_case "current workflow creates the ruleset, then evaluates every open PR" current 0 0 0 --apply "POST rulesets;workflow run"
 if jq -e '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks
     == [{context: "codex-review", integration_id: 15368}]' "$FIX/input" >/dev/null &&
@@ -135,6 +152,13 @@ else
   echo "FAIL: ruleset body must pin codex-review to the Actions app and require thread resolution: $(cat "$FIX/input" 2>/dev/null)"
 fi
 run_case "existing ruleset is left alone" current 1 0 0 --apply ""
+n_next=$((n + 1))
+mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/reread_error"
+run_case "the rollout acts on the one checked read, never a reread" partial 0 0 0 --apply \
+  "POST git/refs;PUT contents/.github/workflows/codex-findings.yml;pr create;pr merge"
+n_next=$((n + 1))
+mkdir -p "$TMP/c$n_next" && touch "$TMP/c$n_next/reread_error"
+run_case "a stale file whose sha cannot be read stops before the PR" stale 0 0 0 --apply "POST git/refs" 1
 run_case "an unreadable workflow (not a 404) ships nothing and fails" error 0 0 0 --apply "" 1
 run_case "unreadable rulesets never create a duplicate and fail" current error 0 0 --apply "" 1
 run_case "advisory repo never gets a ruleset" current 0 0 0 --apply "" 0 advisory

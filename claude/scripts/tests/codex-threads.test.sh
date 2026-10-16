@@ -122,8 +122,8 @@ threads false "$(thread B false false chatgpt-codex-connector "$BADGE")" >"$FIX/
 out=$("$CT" list --merged-since 2026-10-01) && rc=0 || rc=$?
 if [ "$rc" = 0 ] && grep -qP '^3\tA\t' <<<"$out" && grep -qP '^4\tB\t' <<<"$out"; then ok; else bad "merged-since lists every PR (rc=$rc): $out"; fi
 rm "$FIX/threads_4"
-"$CT" list --merged-since 2026-10-01 >/dev/null 2>&1 && rc=0 || rc=$?
-if [ "$rc" = 1 ]; then ok; else bad "merged-since with a failed read must exit 1 (rc=$rc)"; fi
+out=$("$CT" list --merged-since 2026-10-01 2>/dev/null) && rc=0 || rc=$?
+if [ "$rc" = 1 ] && [ -z "$out" ]; then ok; else bad "merged-since with a failed read must exit 1 and print nothing (rc=$rc): $out"; fi
 
 # 4b. A merged-PR list that reaches the limit may be truncated: refused.
 new_fix

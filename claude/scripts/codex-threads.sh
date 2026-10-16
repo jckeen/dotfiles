@@ -102,7 +102,14 @@ case "$CMD" in
       if [ "$(wc -w <<<"$prs")" -ge "$limit" ]; then
         die "$limit or more PRs merged since $SINCE; use a later date"
       fi
-      for n in $prs; do list_pr "$n"; done
+      # Collect every PR before printing anything, so a failed read part way
+      # through leaves stdout empty rather than a partial list.
+      all=""
+      for n in $prs; do
+        rows=$(list_pr "$n") || exit 1
+        [ -n "$rows" ] && all+="$rows"$'\n'
+      done
+      printf '%s' "$all"
     else
       echo "codex-threads: list takes exactly one of --pr or --merged-since" >&2
       usage
