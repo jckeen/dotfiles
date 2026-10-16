@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
+
+- **`claude/scripts/run-tests.sh`** (refs #581): now exports
+  `PYTHONDONTWRITEBYTECODE=1`. Any suite that imported a skill's script wrote
+  `__pycache__` under `agents/skills/`, which is an instruction surface. The
+  review gate that had just run the suites then refused its own receipt
+  ("dirty instruction surface outside committed target"). That cost three
+  agent gate runs on 2026-10-16. `run-tests.test.sh` has a new case covering it.
+  The receipt-side fix (ignore a gitignored `*.pyc`-only cache, as #514 did for
+  `node_modules`) is gate machinery and stays on #581.
+
 ## 2026-10-16 — fix: harden the ccw profile linker
 
 - **`claude/scripts/link-claude-profile.sh`** (refs #591): refuses a profile
