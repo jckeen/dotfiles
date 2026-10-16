@@ -485,7 +485,10 @@ jobs:
             # before reading anything; every status from that second or
             # earlier is then already reflected in what this pass reads.
             local now
-            now="$(gh api -i rate_limit | awk -F': ' 'tolower($1) == "date" { print $2; exit }' | tr -d '\r')" || now=""
+            # awk reads to the end rather than exiting at the header: an early
+            # exit closes the pipe while gh is still writing the body, gh dies
+            # of SIGPIPE, and pipefail reports a failed read.
+            now="$(gh api -i rate_limit | awk -F': ' 'tolower($1) == "date" && !seen { print $2; seen = 1 }' | tr -d '\r')" || now=""
             [ -n "$now" ] || unreadable "GitHub's clock"
             PASS_START="$(date -u -d "$now + 1 second" +%Y-%m-%dT%H:%M:%S)"
             sleep "${SETTLE_SECONDS:-1.1}"
