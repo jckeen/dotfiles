@@ -430,6 +430,27 @@ want "a property suite whose dependency is present still fails on failure" 1 \
   'FAIL[[:space:]]+epsilon\.property' '0 passed, 1 failed' 'ran epsilon.property'
 rm -rf "$R"
 
+# ── Bytecode caches ───────────────────────────────────────────────────
+# A suite that imports a script writes __pycache__ beside it. Under
+# agents/skills that directory is an instruction surface, and the review gate
+# that just ran these suites then refuses its own receipt (#581). The runner
+# exports PYTHONDONTWRITEBYTECODE so no suite leaves a cache behind.
+new_repo
+mkdir -p "$R/agents/skills/demo/scripts"
+printf 'X = 1\n' > "$R/agents/skills/demo/scripts/demo_mod.py"
+printf 'import sys\nsys.path.insert(0, "agents/skills/demo/scripts")\nimport demo_mod\nprint("ran zeta")\n' \
+  > "$R/claude/scripts/tests/zeta.test.py"
+run zeta
+want "a Python suite that imports a script still runs" 0 'PASS[[:space:]]+zeta'
+if [ -e "$R/agents/skills/demo/scripts/__pycache__" ]; then
+  failed=$((failed + 1))
+  echo "FAIL - a suite's import leaves no __pycache__ behind"
+else
+  pass=$((pass + 1))
+  echo "ok   - a suite's import leaves no __pycache__ behind"
+fi
+rm -rf "$R"
+
 echo "---"
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]
