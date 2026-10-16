@@ -16,6 +16,12 @@ trap 'rm -rf "$TMP"' EXIT
 
 awk '/# >>> codex-findings-label/{on=1} on{print} /# <<< codex-findings-label/{on=0}' "$WF" |
   sed 's/^          //' >"$TMP/label.sh"
+# CI's actionlint runs shellcheck on this script at every severity, so the
+# self-test does too (a warning-only run let an info finding reach CI).
+if command -v shellcheck >/dev/null && ! shellcheck -s bash "$TMP/label.sh" >&2; then
+  echo "FAIL - shellcheck reported the extracted script" >&2
+  exit 1
+fi
 grep -q '# <<< codex-findings-label' "$TMP/label.sh" || {
   echo "FAIL - could not extract the script from $WF" >&2
   exit 1
