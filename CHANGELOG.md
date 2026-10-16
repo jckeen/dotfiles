@@ -18,7 +18,7 @@
   `<system-reminder>` into model context.
 - **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
   dir and adds fixtures for both origins, an allowlist-shadowing project
-  plugin, and injection names (14 failed before the fix, all pass after).
+  plugin, and injection names (13 of 62 failed on origin/main, all pass after).
 
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 
