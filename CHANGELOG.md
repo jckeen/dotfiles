@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
+
+- **`claude/hooks/PluginDriftCheck.hook.ts`** (Codex threads on #599): the
+  mod scan now also reads relative-path plugins of marketplaces added from a
+  local `directory` or `file` source, which Claude Code loads in place and
+  never copies into `cache/`, and `<name>@skills-dir` plugins under the
+  project's `.claude/skills` (`$CLAUDE_PROJECT_DIR`, else the working
+  directory). A git or GitHub marketplace's clone is still skipped; its
+  plugins load from the cache copy.
+- **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
+  dir and adds fixtures for both origins (5 failed before the fix, all pass
+  after).
+
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 
 - **`claude/scripts/run-tests.sh`** (refs #581): now exports

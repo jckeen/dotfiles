@@ -58,9 +58,10 @@ die() {
 # Builds a throwaway DOTFILES_DIR + HOME and captures the hook's stdout and rc.
 run_hook() {
   local manifest="$1" installed="$2" settings="${3:-}"
-  local D H
+  local D H P
   D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
   H="$(mktemp -d)" || die "mktemp -d for HOME"
+  P="$(mktemp -d)" || die "mktemp -d for the project dir"
   mkdir -p "$D/claude" "$H/.claude/plugins" || die "mkdir fixture dirs"
   printf '%s\n' "$manifest" > "$D/claude/plugins.txt" || die "write plugins.txt"
   printf '%s\n' "$installed" > "$H/.claude/plugins/installed_plugins.json" \
@@ -70,9 +71,11 @@ run_hook() {
   if [[ -n "$settings" ]]; then
     printf '%s\n' "$settings" > "$H/.claude/settings.json" || die "write settings.json"
   fi
-  out="$(HOME="$H" DOTFILES_DIR="$D" bun "$HOOK" 2>&1)"
+  # The hook scans the project's .claude/skills, so it never runs from (or
+  # points at) a real checkout.
+  out="$(cd "$P" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$P" bun "$HOOK" 2>&1)"
   rc=$?
-  rm -rf "$D" "$H"
+  rm -rf "$D" "$H" "$P"
 }
 
 assert() {
@@ -208,11 +211,23 @@ assert "over-scoped warning names the plugin" 'outgrep "vercel@claude-plugins-of
 #   cache/mkt/broken     malformed hooks.json          → silent, no crash
 #   synced/<bucket>/s    plugin.json name "syncmod", with "modules"
 #   skills/sk            plugin.json name "skillmod", with "modules"
+#   <project>/.claude/skills/pk   name "projmod", with "modules" (loads as
+#                        <name>@skills-dir from the primary working directory)
+#   localmkt (a `directory` marketplace, loaded in place, not cached):
+#     ./plugins/localmod with "modules" → warns; ./plugins/localplain → silent
+#     bare "baremod" under metadata.pluginRoot → warns
+#   filemkt (a `file` marketplace: root is two levels above marketplace.json):
+#     ./p/filemod with "modules" → warns
+#   ghmkt (a `github` clone: its plugins load from cache/, not the clone):
+#     ./plugins/ghmod with "modules" → silent
+# run_mods <manifest-body> [cwd] — with "cwd", the project dir is found from
+# the working directory alone (no CLAUDE_PROJECT_DIR).
 run_mods() {
-  local manifest="$1"
-  local D H C
+  local manifest="$1" how="${2:-env}"
+  local D H C P
   D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
   H="$(mktemp -d)" || die "mktemp -d for HOME"
+  P="$(mktemp -d)" || die "mktemp -d for the project dir"
   C="$H/.claude/plugins/cache/mkt"
   mkdir -p "$D/claude" "$C"/{modded,vetted,plain,broken}/1.0.0/hooks \
     "$H/.claude/plugins/synced/bucket/s/hooks" "$H/.claude/plugins/synced/bucket/s/.claude-plugin" \
@@ -234,9 +249,42 @@ run_mods() {
   printf '%s\n' "$mod" > "$H/.claude/skills/sk/hooks/hooks.json" || die "write skills-dir"
   printf '%s\n' '{"name":"skillmod"}' > "$H/.claude/skills/sk/.claude-plugin/plugin.json" \
     || die "write skills-dir plugin.json"
-  out="$(HOME="$H" DOTFILES_DIR="$D" bun "$HOOK" 2>&1)"
+  mkdir -p "$P/.claude/skills/pk/hooks" "$P/.claude/skills/pk/.claude-plugin" \
+    || die "mkdir project skills-dir"
+  printf '%s\n' "$mod" > "$P/.claude/skills/pk/hooks/hooks.json" || die "write project skills-dir"
+  printf '%s\n' '{"name":"projmod"}' > "$P/.claude/skills/pk/.claude-plugin/plugin.json" \
+    || die "write project skills-dir plugin.json"
+  local L="$H/src/localmkt" F="$H/src/filemkt" G="$H/.claude/plugins/marketplaces/ghmkt"
+  mkdir -p "$L/.claude-plugin" "$L/plugins"/{localmod,localplain,baremod}/hooks \
+    "$F/.claude-plugin" "$F/p/filemod/hooks" "$G/.claude-plugin" "$G/plugins/ghmod/hooks" \
+    || die "mkdir marketplace fixture dirs"
+  printf '%s\n' '{"name":"localmkt","metadata":{"pluginRoot":"./plugins"},"plugins":[
+    {"name":"localmod","source":"./plugins/localmod"},
+    {"name":"localplain","source":"./plugins/localplain"},
+    {"name":"baremod","source":"baremod"},
+    {"name":"remote","source":{"source":"github","repo":"o/r"}}]}' \
+    > "$L/.claude-plugin/marketplace.json" || die "write localmkt marketplace.json"
+  printf '%s\n' "$mod" > "$L/plugins/localmod/hooks/hooks.json" || die "write localmod"
+  printf '%s\n' '{"hooks":{}}' > "$L/plugins/localplain/hooks/hooks.json" || die "write localplain"
+  printf '%s\n' "$mod" > "$L/plugins/baremod/hooks/hooks.json" || die "write baremod"
+  printf '%s\n' '{"name":"filemkt","plugins":[{"name":"filemod","source":"./p/filemod"}]}' \
+    > "$F/.claude-plugin/marketplace.json" || die "write filemkt marketplace.json"
+  printf '%s\n' "$mod" > "$F/p/filemod/hooks/hooks.json" || die "write filemod"
+  printf '%s\n' '{"name":"ghmkt","plugins":[{"name":"ghmod","source":"./plugins/ghmod"}]}' \
+    > "$G/.claude-plugin/marketplace.json" || die "write ghmkt marketplace.json"
+  printf '%s\n' "$mod" > "$G/plugins/ghmod/hooks/hooks.json" || die "write ghmod"
+  printf '{"localmkt":{"source":{"source":"directory","path":"%s"},"installLocation":"%s"},
+    "filemkt":{"source":{"source":"file","path":"%s"},"installLocation":"%s"},
+    "ghmkt":{"source":{"source":"github","repo":"o/ghmkt"},"installLocation":"%s"}}\n' \
+    "$L" "$L" "$F/.claude-plugin/marketplace.json" "$F/.claude-plugin/marketplace.json" "$G" \
+    > "$H/.claude/plugins/known_marketplaces.json" || die "write known_marketplaces.json"
+  if [[ "$how" == cwd ]]; then
+    out="$(cd "$P" && env -u CLAUDE_PROJECT_DIR HOME="$H" DOTFILES_DIR="$D" bun "$HOOK" 2>&1)"
+  else
+    out="$(cd "$H" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$P" bun "$HOOK" 2>&1)"
+  fi
   rc=$?
-  rm -rf "$D" "$H"
+  rm -rf "$D" "$H" "$P"
 }
 
 run_mods "$MANIFEST_GLOBAL"
@@ -246,6 +294,15 @@ assert "a synced mod is named by its manifest name" 'outgrep "• syncmod@synced
 assert "a skills-dir mod is named by its manifest name" 'outgrep "• skillmod@skills-dir"'
 assert "a plugin without \"modules\" is not named" '! outgrep "plain@mkt"'
 assert "a malformed hooks.json is not named" '! outgrep "broken@mkt"'
+assert "a project skills-dir mod is named (#599 review)" 'outgrep "• projmod@skills-dir"'
+assert "a mod loaded in place from a directory marketplace is named (#599 review)" \
+  'outgrep "• localmod@localmkt"'
+assert "a bare-name source under metadata.pluginRoot is resolved" 'outgrep "• baremod@localmkt"'
+assert "a file marketplace's root is two levels above marketplace.json" \
+  'outgrep "• filemod@filemkt"'
+assert "a local-marketplace plugin without \"modules\" is not named" '! outgrep "localplain@"'
+assert "a github marketplace clone is not scanned (its plugins load from cache)" \
+  '! outgrep "ghmod@"'
 assert "hook exits 0 (mods, malformed hooks.json)" "[ $rc -eq 0 ]"
 assert "no install-drift noise in the mods fixture" '! outgrep "Plugin drift"'
 
@@ -260,8 +317,16 @@ run_mods "$MANIFEST_GLOBAL
 # mods-ok: modded@mkt
 # mods-ok: vetted@mkt
 # mods-ok: syncmod@synced
-# mods-ok: skillmod@skills-dir"
+# mods-ok: skillmod@skills-dir
+# mods-ok: projmod@skills-dir
+# mods-ok: localmod@localmkt
+# mods-ok: baremod@localmkt
+# mods-ok: filemod@filemkt"
 assert "no output when every mod is allowlisted" '[ -z "$out" ]'
+
+run_mods "$MANIFEST_GLOBAL" cwd
+assert "without CLAUDE_PROJECT_DIR the working directory is the project" \
+  'outgrep "• projmod@skills-dir"'
 
 # ── sync-plugins.sh agrees with the hook on what "installed" means ──────
 # The hook's remedy is "run sync-plugins.sh". If its fast path treated a

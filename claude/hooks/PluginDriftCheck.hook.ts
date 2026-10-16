@@ -25,8 +25,10 @@
  * Mods (issue #594): a plugin whose hooks/hooks.json has a "modules" key runs
  * JS/TS in-session, and its `tool.check` / `tool.call` hooks can approve a call
  * that an `ask` rule or one of this repo's (non-managed) settings hooks would
- * stop. Every installed plugin is scanned (marketplace cache, claude.ai synced,
- * ~/.claude/skills plugins) and each mod not allowlisted by a
+ * stop. Every installed plugin is scanned (marketplace cache, relative-path
+ * plugins loaded in place from a local-path marketplace, claude.ai synced,
+ * ~/.claude/skills and the project's .claude/skills plugins) and each mod not
+ * allowlisted by a
  * `# mods-ok: <id>` line in the manifest is named. An unreadable or malformed
  * hooks.json is skipped, fail-open like the rest of this hook.
  *
@@ -51,6 +53,10 @@ const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
 const SETTINGS = join(HOME, '.claude', 'settings.json');
 const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
 const SKILLS_DIR = join(HOME, '.claude', 'skills');
+const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
+// Hooks run in the session's primary working directory, the only place
+// Claude Code reads project .claude/skills plugins from (no parent search).
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
 interface Manifest {
   global: string[];
@@ -155,6 +161,65 @@ function pluginName(dir: string): string | null {
   }
 }
 
+function readJson(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+// A plugin entry's relative-path source, resolved from the marketplace root
+// (the directory holding .claude-plugin/): "./x", "." for the root itself, or
+// a bare name under metadata.pluginRoot. Object sources are fetched into
+// cache/ and anything with ".." is refused by Claude Code, so both are null.
+function relativeSource(
+  root: string,
+  source: unknown,
+  pluginRoot: unknown,
+): string | null {
+  if (typeof source !== 'string' || source.split('/').includes('..'))
+    return null;
+  if (source === '.' || source.startsWith('./')) return join(root, source);
+  if (typeof pluginRoot === 'string' && !source.includes('/'))
+    return join(root, pluginRoot, source);
+  return null;
+}
+
+// [id, dir] for relative-path plugins of marketplaces added from a local
+// `directory` or `file` source: Claude Code loads these in place from the
+// marketplace folder and never copies them into cache/. A git or GitHub
+// marketplace's clone is skipped — its plugins load from the cache copy.
+function localMarketplacePlugins(): [string, string][] {
+  const found: [string, string][] = [];
+  const known = readJson(KNOWN_MARKETPLACES);
+  if (typeof known !== 'object' || known === null) return found;
+  for (const [market, entry] of Object.entries(known)) {
+    const source = (entry as { source?: { source?: unknown; path?: unknown } })
+      ?.source;
+    if (typeof source?.path !== 'string') continue;
+    // A `file` source names <root>/.claude-plugin/marketplace.json.
+    let root: string;
+    if (source.source === 'directory') root = source.path;
+    else if (source.source === 'file') root = dirname(dirname(source.path));
+    else continue;
+    const catalog = readJson(join(root, '.claude-plugin', 'marketplace.json'));
+    const plugins = (catalog as { plugins?: unknown } | null)?.plugins;
+    if (!Array.isArray(plugins)) continue;
+    const pluginRoot = (catalog as { metadata?: { pluginRoot?: unknown } })
+      .metadata?.pluginRoot;
+    for (const plugin of plugins) {
+      const { name, source: src } = (plugin ?? {}) as {
+        name?: unknown;
+        source?: unknown;
+      };
+      const dir = relativeSource(root, src, pluginRoot);
+      if (typeof name === 'string' && dir) found.push([`${name}@${market}`, dir]);
+    }
+  }
+  return found;
+}
+
 // [id, dir] for every plugin on disk, ids in the `enabledPlugins` forms
 // (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
 // version is scanned, not only the recorded installPath: a session started
@@ -170,10 +235,12 @@ function pluginDirs(): [string, string][] {
       const name = pluginName(dir);
       if (name) found.push([`${name}@synced`, dir]);
     }
-  for (const dir of subdirs(SKILLS_DIR)) {
-    const name = pluginName(dir);
-    if (name) found.push([`${name}@skills-dir`, dir]);
-  }
+  found.push(...localMarketplacePlugins());
+  for (const skills of [SKILLS_DIR, join(PROJECT_DIR, '.claude', 'skills')])
+    for (const dir of subdirs(skills)) {
+      const name = pluginName(dir);
+      if (name) found.push([`${name}@skills-dir`, dir]);
+    }
   return found;
 }
 
