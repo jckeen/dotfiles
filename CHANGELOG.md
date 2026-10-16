@@ -2,52 +2,40 @@
 
 ## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
 
-- **`claude/hooks/PluginDriftCheck.hook.ts`** (Codex threads on #599): the
-  mod scan now also reads relative-path plugins of marketplaces added from a
-  local `directory` or `file` source, which Claude Code loads in place and
-  never copies into `cache/`, and `<name>@skills-dir` plugins under the
-  project's `.claude/skills` (`$CLAUDE_PROJECT_DIR`, else the working
-  directory). A git or GitHub marketplace's clone is still skipped; its
-  plugins load from the cache copy. A project mod is named even when
-  allowlisted: it shares the `@skills-dir` id space with `~/.claude/skills`,
-  so a cloned repo could reuse an allowlisted name.
-- **Output hardening:** every id and path the hook prints (mods, install and
-  scoping drift, the manifest path) passes through `shown()`: characters
-  outside `[A-Za-z0-9._@/-]` become `_` and the length is capped, so a name
-  read from a marketplace or a cloned repo cannot inject lines or close the
-  `<system-reminder>` into model context.
-- **No fail-open for untrusted files:** a local-marketplace or project plugin
-  whose `hooks.json`, `plugin.json` or `marketplace.json` exists but cannot be
-  read or parsed (malformed, a directory, a dangling symlink) is named under
-  "Plugin mods (unverifiable)" instead of skipped, since Claude Code's loader
-  may accept what this parser rejects. An installed plugin's stays silent. The
-  local and project plugins share one verification path. A `file`
-  marketplace's catalog is read from its recorded path under any name. The
-  project scan is skipped only when its path provably resolves to
-  `~/.claude/skills`; a path that fails to resolve is scanned.
-- **Scope and safety (gate and Codex review on #646):** the project scan
-  reads the hook input's `cwd`, which follows a `--worktree`, plus
-  `$CLAUDE_PROJECT_DIR`; local-marketplace entries are scanned only when
-  installed or enabled; every plugin JSON file goes through one reader that
-  accepts only a regular file under 1 MiB, so a FIFO cannot hang the hook and
-  `/dev/zero` cannot exhaust memory; a safe id is printed whole (up to 300
-  characters) so a long id stays allowlistable, and a sanitized one says it
+- **`claude/hooks/PluginDriftCheck.hook.ts`** (Codex threads on #599 and
+  #646): the mod scan now also reads every relative-path entry of a
+  marketplace added from a local `directory` or `file` source (Claude Code
+  loads these in place, never from `cache/`; a `file` catalog is read from
+  its recorded path), and `<name>@skills-dir` plugins under the project's
+  `.claude/skills`, where the project is the hook input's `cwd` (it follows a
+  `--worktree`) plus `$CLAUDE_PROJECT_DIR`. Entries are scanned enabled or
+  not: enablement can come from `--settings`, managed settings or
+  `--add-dir`, which the hook cannot see, so a filter would fail open.
+- **Allowlist:** a project mod is named even when allowlisted, since it
+  shares the `@skills-dir` id space with `~/.claude/skills` and a cloned repo
+  could reuse an allowlisted name. A safe id prints whole (up to 300
+  characters) so a long one stays allowlistable; a sanitized one says it
   cannot be.
-- **Design rules (review gate on #646):** each untrusted item (catalog
-  entry, plugin dir, settings file) is checked in its own try/catch and named
-  as unverifiable on a throw, every warning section is guarded so a crash
-  cannot drop the others, and no untrusted value is stringified before a
-  `typeof` check (a `{"toString":null}` name used to exit the hook with no
-  output). Any skip that depends on a read fails toward reporting: an
-  unreadable or malformed settings or install record drops the
-  enabled-entries filter.
-- **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
-  dir with explicit stdin, and adds a hostile catalog, malformed and
-  unreadable settings, and fixtures for both origins, an
-  allowlist-shadowing project plugin, injection names, unparseable, FIFO,
-  `/dev/zero` and oversized untrusted files, inactive catalog entries, long
-  ids and a `--worktree` cwd (39 of 108 failed on origin/main, all pass after;
-  the previous hook hung on the FIFO until the test's timeout).
+- **Output hardening:** every id and path printed passes through `shown()`
+  (only `[A-Za-z0-9._@/-]`, capped when changed), so a name from a
+  marketplace or a cloned repo cannot inject lines or close the
+  `<system-reminder>`.
+- **Unverifiable, not skipped:** a `hooks.json`, `plugin.json` or
+  `marketplace.json` of any origin that exists but cannot be read or parsed
+  is named under "Plugin mods (unverifiable)"; only a missing file is
+  skipped. All plugin JSON goes through one reader that accepts a regular
+  file of at most 1 MiB, so a FIFO cannot hang the hook and `/dev/zero`
+  cannot exhaust memory. Each catalog entry and plugin dir is checked in its
+  own try/catch, each warning section is guarded, and no untrusted value is
+  stringified before a `typeof` check (a `{"toString":null}` name used to
+  exit the hook with no output). Best-effort and advisory: a parser
+  differential with Claude Code's loader stays possible (#647).
+- **Tests:** `plugin-drift.test.sh` runs every case with a throwaway HOME and
+  project dir and explicit stdin, with fixtures for both origins, an
+  allowlist-shadowing project plugin, injection names, a hostile catalog,
+  malformed, FIFO, `/dev/zero` and oversized files, long ids and a
+  `--worktree` cwd (40 of 105 failed on origin/main, all pass after; an
+  intermediate version hung on the FIFO until the test's timeout).
 
 ## 2026-10-16 — test: heal-race rivals no longer hold the capture pipe
 

@@ -32,19 +32,22 @@
  * `# mods-ok: <id>` line in the manifest is named. A project .claude/skills
  * mod is named even when allowlisted: its id shares the `@skills-dir`
  * namespace with ~/.claude/skills, so a cloned repo could otherwise ship a
- * plugin under an allowlisted name. For an installed (cache, synced,
- * ~/.claude/skills) plugin an unreadable or malformed hooks.json is skipped,
- * fail-open like the rest of this hook. For a plugin read from a local
- * marketplace path or the project, whose files nobody installed, a
+ * plugin under an allowlisted name. For a plugin of any origin, a
  * hooks.json, plugin.json or marketplace.json that exists but cannot be read
- * or parsed is named as unverifiable instead: Claude Code's loader may accept
- * what this parser rejects, so skipping it would hide the mod.
+ * or parsed is named as unverifiable: Claude Code's loader may accept what
+ * this parser rejects, so skipping it would hide the mod. Only a file that is
+ * not there at all is skipped.
  *
- * Only local-marketplace entries that are installed or enabled are scanned:
- * registering a marketplace does not load its whole catalog. Every JSON file
- * is read through readJsonFile(), which refuses anything but a regular file
- * of bounded size, so a FIFO cannot hang the hook and /dev/zero cannot
- * exhaust memory; for an untrusted plugin such a file is unverifiable.
+ * Every relative-path entry of a registered local marketplace is scanned,
+ * enabled or not. Enablement can also come from --settings, managed settings
+ * or --add-dir, none of which this hook can see, so filtering on it would
+ * fail open; an advisory warning for a catalog mod nobody enabled is the
+ * cheaper error. Every JSON file is read through readJsonFile(), which
+ * refuses anything but a regular file of at most 1 MiB, so a FIFO cannot hang
+ * the hook and /dev/zero cannot exhaust memory.
+ *
+ * Best-effort and advisory, not a security boundary: a parser differential
+ * with Claude Code's loader is possible; see #647.
  *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
@@ -53,18 +56,16 @@
  *
  * Two rules govern everything read from a marketplace, a project or settings:
  *
- * RULE 1, isolation. Each untrusted item (a catalog entry, a plugin dir, a
- * settings file) is processed inside its own try/catch; a throw names that
+ * RULE 1, isolation. Each untrusted item (a catalog entry, a plugin dir) is
+ * processed inside its own try/catch; a throw names that
  * item as unverifiable and the scan goes on. Each warning section runs
  * guarded too, and main() is wrapped, so whatever was collected is emitted
  * even if something unexpected throws. No untrusted value is interpolated,
  * compared or used as a key before `typeof === 'string'`.
  *
- * RULE 2, fail toward reporting. A skip or filter that depends on a read
- * (is it installed? enabled? is this dir ~/.claude/skills? does this file
- * exist?) treats an unreadable or malformed input as "report it". If a
- * settings or install record cannot be read, the local-marketplace filter is
- * dropped and every entry is scanned.
+ * RULE 2, fail toward reporting. A skip that depends on a read (is this dir
+ * ~/.claude/skills? does this file exist?) treats an unreadable or malformed
+ * input as "report it".
  *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
@@ -288,38 +289,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-// Ids that can load from a local marketplace: installed at any scope, or
-// enabled (`true`) in user or project settings — a relative-path plugin needs
-// no install record once enabled. null means "unknown, scan everything"
-// (rule 2): an install record or settings file exists but cannot be read, or
-// has the wrong shape.
-function activeIds(): Set<string> | null {
-  const ids = new Set<string>();
-  const installed = readJsonFile(INSTALLED);
-  if (installed.state === 'bad') return null;
-  if (installed.state === 'ok') {
-    const plugins = isRecord(installed.value) ? installed.value.plugins : null;
-    if (!isRecord(plugins)) return null;
-    for (const id of Object.keys(plugins)) ids.add(id);
-  }
-  const settings = [SETTINGS];
-  for (const dir of PROJECT_DIRS)
-    settings.push(
-      join(dir, '.claude', 'settings.json'),
-      join(dir, '.claude', 'settings.local.json'),
-    );
-  for (const path of settings) {
-    const read = readJsonFile(path);
-    if (read.state === 'absent') continue;
-    if (read.state === 'bad' || !isRecord(read.value)) return null;
-    const enabled = read.value.enabledPlugins;
-    if (enabled === undefined) continue;
-    if (!isRecord(enabled)) return null;
-    for (const [id, on] of Object.entries(enabled)) if (on === true) ids.add(id);
-  }
-  return ids;
-}
-
 // A plugin entry's relative-path source, resolved from the marketplace root
 // (the directory holding .claude-plugin/): "./x", "." for the root itself, or
 // a bare name under metadata.pluginRoot. Object sources are fetched into
@@ -338,7 +307,7 @@ function relativeSource(
 }
 
 // Where a scanned plugin came from. `local` and `project` files were never
-// installed by the user, so they are not trusted to parse (see header).
+// installed by the user; all origins are read the same way (see header).
 type Origin = 'installed' | 'local' | 'project';
 interface Scanned {
   id: string;
@@ -365,21 +334,22 @@ function present(path: string): boolean {
   }
 }
 
-// A plugin from a local marketplace path or the project, which nobody
-// installed. Both origins go through here so their checks cannot drift: a
-// plugin.json that exists but yields no name is unverifiable, never skipped.
-// `id` is the marketplace id; without one (the project), a dir with no
-// plugin.json is not a plugin and the id comes from the manifest name.
-function untrustedPlugin(
+// Every plugin dir but a cache version goes through here, so the origins'
+// checks cannot drift: a plugin.json that exists but yields no name is
+// unverifiable, never skipped. `id` is a marketplace entry's id; without one
+// (synced, skills dirs), a dir with no plugin.json is not a plugin and the id
+// is the manifest name plus `suffix`.
+function scanPlugin(
   origin: Origin,
   dir: string,
   id?: string,
+  suffix = '@skills-dir',
 ): Scanned | null {
   if (!present(join(dir, '.claude-plugin', 'plugin.json')))
     return id ? { id, dir, origin } : null;
   const name = pluginName(dir);
   return {
-    id: id ?? `${name ?? basename(dir)}@skills-dir`,
+    id: id ?? `${name ?? basename(dir)}${suffix}`,
     dir,
     origin,
     unverifiable: name === null,
@@ -391,17 +361,13 @@ function catalogPlugins(
   market: string,
   root: string,
   catalogPath: string,
-  active: Set<string> | null,
 ): Scanned[] {
   const found: Scanned[] = [];
   const read = readJsonFile(catalogPath);
   const catalog = read.state === 'ok' ? read.value : null;
   const plugins = isRecord(catalog) ? catalog.plugins : null;
   if (!Array.isArray(plugins)) {
-    // Unreadable or malformed: report it unless nothing from it is in use.
-    const used =
-      active === null || [...active].some((id) => id.endsWith(`@${market}`));
-    if (read.state !== 'absent' && used)
+    if (read.state !== 'absent')
       found.push(unverifiable(`marketplace.json@${market}`, 'local'));
     return found;
   }
@@ -411,15 +377,14 @@ function catalogPlugins(
     try {
       const name = isRecord(plugin) ? plugin.name : undefined;
       const src = isRecord(plugin) ? plugin.source : undefined;
-      // An entry that names nothing cannot be matched against settings, so it
-      // is reported (rule 2); an object source is fetched into cache/.
+      // An entry that names nothing cannot be identified, so it is reported
+      // (rule 2); an object source is fetched into cache/.
       if (typeof name !== 'string') {
         found.push(unverifiable(`entry-${index}@${market}`, 'local'));
         return;
       }
       if (isRecord(src)) return;
       const id = `${name}@${market}`;
-      if (active !== null && !active.has(id)) return;
       const dir = relativeSource(root, src, pluginRoot);
       if (dir === null) {
         // Not a usable relative path: a `..` path Claude Code refuses is
@@ -427,7 +392,7 @@ function catalogPlugins(
         if (typeof src !== 'string') found.push(unverifiable(id, 'local'));
         return;
       }
-      const scanned = untrustedPlugin('local', dir, id);
+      const scanned = scanPlugin('local', dir, id);
       if (scanned) found.push(scanned);
     } catch {
       found.push(unverifiable(`entry-${index}@${market}`, 'local'));
@@ -442,12 +407,6 @@ function catalogPlugins(
 // marketplace's clone is skipped — its plugins load from the cache copy.
 function localMarketplacePlugins(): Scanned[] {
   const found: Scanned[] = [];
-  let active: Set<string> | null = null;
-  try {
-    active = activeIds();
-  } catch {
-    active = null;
-  }
   const known = readJsonFile(KNOWN_MARKETPLACES);
   if (known.state === 'absent') return found;
   if (known.state === 'bad' || !isRecord(known.value))
@@ -469,7 +428,7 @@ function localMarketplacePlugins(): Scanned[] {
         kind === 'directory'
           ? join(path, '.claude-plugin', 'marketplace.json')
           : path;
-      found.push(...catalogPlugins(market, root, catalogPath, active));
+      found.push(...catalogPlugins(market, root, catalogPath));
     } catch {
       found.push(unverifiable(`marketplace.json@${market}`, 'local'));
     }
@@ -490,13 +449,13 @@ function pluginDirs(): Scanned[] {
         found.push({ id: `${basename(plugin)}@${basename(market)}`, dir, origin });
   for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
     for (const dir of subdirs(bucket)) {
-      const name = pluginName(dir);
-      if (name) found.push({ id: `${name}@synced`, dir, origin });
+      const scanned = scanPlugin(origin, dir, undefined, '@synced');
+      if (scanned) found.push(scanned);
     }
   found.push(...localMarketplacePlugins());
   for (const dir of subdirs(SKILLS_DIR)) {
-    const name = pluginName(dir);
-    if (name) found.push({ id: `${name}@skills-dir`, dir, origin });
+    const scanned = scanPlugin(origin, dir);
+    if (scanned) found.push(scanned);
   }
   // A project skills dir is skipped only when it provably IS
   // ~/.claude/skills (a session started in HOME); a path that fails to
@@ -514,7 +473,7 @@ function pluginDirs(): Scanned[] {
     for (const entry of entries) {
       const dir = join(skills, entry);
       try {
-        const scanned = untrustedPlugin('project', dir);
+        const scanned = scanPlugin('project', dir);
         if (scanned) found.push(scanned);
       } catch {
         found.push(unverifiable(`${entry}@skills-dir`, 'project'));
@@ -551,22 +510,21 @@ function modsWarning(allowed: string[]): string {
         const value = hooks.value;
         if (typeof value === 'object' && value !== null && 'modules' in value)
           mods.add(label);
-      } else if (hooks.state === 'bad' && origin !== 'installed') {
-        // No hooks.json is no mod. An installed plugin's unloadable one is
-        // skipped; an untrusted plugin's is reported (see header).
+      } else if (hooks.state === 'bad') {
+        // No hooks.json is no mod; one that cannot be read is reported.
         unknown.add(label);
       }
     } catch {
-      if (origin !== 'installed') unknown.add(label);
+      unknown.add(label);
     }
   }
   let warning = '';
   if (unknown.size > 0) {
     const list = [...unknown].map((p) => `  • ${p}`).join('\n');
     warning +=
-      `⚠️  Plugin mods (unverifiable): ${unknown.size} plugin(s) loaded from a ` +
-      `local marketplace or the project have a hooks.json, plugin.json, ` +
-      `marketplace.json or catalog entry this hook cannot read or parse, so ` +
+      `⚠️  Plugin mods (unverifiable): ${unknown.size} plugin(s) have a ` +
+      `hooks.json, plugin.json, marketplace.json or catalog entry this hook ` +
+      `cannot read or parse (malformed, not a regular file, or over 1 MiB), so ` +
       `whether they ship a mod is unknown — review each manually:\n${list}\n\n`;
   }
   if (mods.size === 0) return warning;
