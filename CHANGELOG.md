@@ -6,6 +6,8 @@
   restarts it after a crash, and preserves the connection-only `cx` launcher.
   Its launcher checks the saved opt-in, uses the standalone CLI, and loads user
   tools including the current NVM default.
+- Tightened both service and `cx` opt-in parsing to reject multiple JSON
+  documents, matching the native settings parser.
 - Added a Windows login-task installer that keeps the selected WSL distribution
   running for phone access with terminals closed, without changing sleep policy.
 - Verified repeated service starts preserve a connected client, competing native

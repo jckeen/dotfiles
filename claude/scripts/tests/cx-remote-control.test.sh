@@ -162,6 +162,9 @@ fi
 assert_launch "disabled Remote Control leaves interactive sessions local" "$local_prefix"
 printf 'invalid-json\n' > "$HOME/.codex/app-server-daemon/settings.json"
 assert_launch "malformed opt-in never enables Remote Control" "$local_prefix"
+printf '{"remoteControlEnabled":false}\n{"remoteControlEnabled":true}\n' \
+  > "$HOME/.codex/app-server-daemon/settings.json"
+assert_launch "multiple JSON documents never enable Remote Control" "$local_prefix"
 
 printf '{"remoteControlEnabled":true}\n' \
   > "$HOME/.codex/app-server-daemon/settings.json"

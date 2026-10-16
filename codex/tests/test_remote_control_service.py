@@ -55,6 +55,7 @@ class ServiceLauncherTest(unittest.TestCase):
             '{"remoteControlEnabled":false}',
             "invalid",
             '{"remoteControlEnabled":"true"}',
+            '{"remoteControlEnabled":false}\n{"remoteControlEnabled":true}',
         ]:
             with self.subTest(settings=settings):
                 if settings is None:

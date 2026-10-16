@@ -4,7 +4,7 @@
 set -eo pipefail
 
 codex_state="${CODEX_HOME:-$HOME/.codex}"
-if ! jq -e '.remoteControlEnabled == true' \
+if ! jq -e -s 'length == 1 and .[0].remoteControlEnabled == true' \
     "$codex_state/app-server-daemon/settings.json" >/dev/null 2>&1; then
   echo "Codex Remote Control is not enabled in $codex_state/app-server-daemon/settings.json" >&2
   exit 78
