@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-15 — Automatic Codex Remote Control startup
+
+- Added an opt-in systemd user service that supervises the foreground server,
+  restarts it after a crash, and preserves the connection-only `cx` launcher.
+  Its launcher checks the saved opt-in, uses the standalone CLI, and loads user
+  tools including the current NVM default.
+- Added a Windows login-task installer that keeps the selected WSL distribution
+  running for phone access with terminals closed, without changing sleep policy.
+- Verified repeated service starts preserve a connected client, competing native
+  starts refuse the live socket, and a disposable server recovers after a crash.
+
 ## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
 
 - **`.github/workflows/codex-review.yml`:** the first live run (the close of
