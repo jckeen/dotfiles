@@ -1,0 +1,16 @@
+[Unit]
+Description=Codex Remote Control
+
+[Service]
+Type=exec
+WorkingDirectory=%h
+ExecStart=%h/.local/libexec/codex-remote-control
+Restart=on-failure
+RestartSec=10
+# A missing, disabled, or malformed opt-in requires operator action.
+RestartPreventExitStatus=78
+TimeoutStopSec=90
+UMask=0077
+
+[Install]
+WantedBy=default.target

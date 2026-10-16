@@ -949,9 +949,9 @@ cx() {
   local remote_settings="${CODEX_HOME:-$HOME/.codex}/app-server-daemon/settings.json"
   local -a remote_args=()
   if _codex_wants_shared_remote "$@" && [ -f "$remote_settings" ]; then
-    if ! command -v jq >/dev/null 2>&1; then
-      echo "⚠ jq not installed — skipping the shared-server attachment check." >&2
-    elif jq -e '.remoteControlEnabled == true' "$remote_settings" >/dev/null 2>&1 \
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "⚠ Python not installed — skipping the shared-server attachment check." >&2
+    elif python3 "$(_dev_dir)/dotfiles/codex/remote_control_enabled.py" "$remote_settings" >/dev/null 2>&1 \
       && _codex_ensure_remote_control; then
       remote_args=(--remote unix://)
     fi
