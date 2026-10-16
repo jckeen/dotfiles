@@ -26,6 +26,7 @@ export HOME="$TEST_HOME"
 export CODEX_MEMORY_REPO="$TEST_DEV/private-codex-memory"
 mkdir -p "$HOME/.codex/app-server-daemon"
 mkdir -p "$CODEX_MEMORY_REPO"
+ln -s "$REPO_ROOT" "$TEST_DEV/dotfiles"
 printf '{"remoteControlEnabled":true}\n' \
   > "$HOME/.codex/app-server-daemon/settings.json"
 cat > "$CODEX_MEMORY_REPO/bootstrap.sh" <<EOF
@@ -162,6 +163,16 @@ fi
 assert_launch "disabled Remote Control leaves interactive sessions local" "$local_prefix"
 printf 'invalid-json\n' > "$HOME/.codex/app-server-daemon/settings.json"
 assert_launch "malformed opt-in never enables Remote Control" "$local_prefix"
+printf '{"remoteControlEnabled":false}\n{"remoteControlEnabled":true}\n' \
+  > "$HOME/.codex/app-server-daemon/settings.json"
+assert_launch "multiple JSON documents never enable Remote Control" "$local_prefix"
+for invalid_settings in \
+  '{"remoteControlEnabled":true,"x":NaN}' \
+  '{"remoteControlEnabled":true,"x":Infinity}' \
+  '{"remoteControlEnabled":false,"remoteControlEnabled":true}'; do
+  printf '%s\n' "$invalid_settings" > "$HOME/.codex/app-server-daemon/settings.json"
+  assert_launch "nonstandard or ambiguous opt-in stays local: $invalid_settings" "$local_prefix"
+done
 
 printf '{"remoteControlEnabled":true}\n' \
   > "$HOME/.codex/app-server-daemon/settings.json"

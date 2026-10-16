@@ -338,7 +338,7 @@ templates, and the golden rules. What follows is the short version.
 | Command | What it does |
 |---------|-------------|
 | `cc [project]` | Sync repos + memory, health check, heal plugin drift, launch Claude |
-| `cx [project]` | Same ergonomics for Codex; reuses a listening shared server when Remote Control is enabled and otherwise launches locally; daemon startup and repair are explicit maintenance actions |
+| `cx [project]` | Same ergonomics for Codex; reuses a listening shared server when Remote Control is enabled and otherwise launches locally; optional [user service](codex/README.md#automatic-startup-on-linux-and-wsl) handles automatic startup |
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
 | `cct [project]` | `cc` inside a named tmux session, so the process and its Remote Control link survive a closed terminal |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
