@@ -53,10 +53,11 @@ new_fix() {
   : >"$FIX/writes"
 }
 
-thread() { # thread <id> <resolved> <outdated> <login> <body>
+thread() { # thread <id> <resolved> <outdated> <login> <body> [type]
   jq -nc --arg id "$1" --argjson r "$2" --argjson o "$3" --arg l "$4" --arg b "$5" \
+    --arg t "${6:-Bot}" \
     '{id:$id,isResolved:$r,isOutdated:$o,path:"a.sh",line:7,originalLine:5,
-      comments:{nodes:[{author:{login:$l},body:$b,url:("https://x/"+$id)}]}}'
+      comments:{nodes:[{author:{__typename:$t,login:$l},body:$b,url:("https://x/"+$id)}]}}'
 }
 threads() { # threads <hasNext> <thread json>...
   local next=$1
@@ -75,7 +76,8 @@ threads false \
   "$(thread T2 true false chatgpt-codex-connector "$BADGE")" \
   "$(thread T3 false true chatgpt-codex-connector '<!-- x -->
 ### Security note')" \
-  "$(thread T4 false false someone "$BADGE")" >"$FIX/threads_9"
+  "$(thread T4 false false someone "$BADGE" User)" \
+  "$(thread T5 false false chatgpt-codex-connector "$BADGE" User)" >"$FIX/threads_9"
 out=$("$CT" list --pr 9) && rc=0 || rc=$?
 if [ "$rc" = 0 ] &&
   [ "$(wc -l <<<"$out")" = 2 ] &&
@@ -113,9 +115,9 @@ for args in "list" "list --pr 1 --merged-since 2026-01-01" "resolve --thread T1"
 done
 if [ ! -s "$FIX/writes" ]; then ok; else bad "usage errors must not write"; fi
 
-node() { # node <login> <resolved>
-  jq -nc --arg l "$1" --argjson r "$2" \
-    '{data:{node:{isResolved:$r,comments:{nodes:[{author:{login:$l}}]}}}}' >"$FIX/node"
+node() { # node <login> <resolved> [type]
+  jq -nc --arg l "$1" --argjson r "$2" --arg t "${3:-Bot}" \
+    '{data:{node:{isResolved:$r,comments:{nodes:[{author:{__typename:$t,login:$l}}]}}}}' >"$FIX/node"
 }
 mutation() { # mutation <resolved>
   jq -nc --argjson r "$1" \
@@ -132,10 +134,17 @@ if [ "$rc" = 0 ] && [ "$(cat "$FIX/writes")" = mutation ] && grep -q '^resolved:
 
 # 7. A thread someone else opened is refused without a write.
 new_fix
-node someone false
+node someone false User
 mutation true
 "$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
 if [ "$rc" = 1 ] && [ ! -s "$FIX/writes" ]; then ok; else bad "non-bot thread must be refused (rc=$rc)"; fi
+
+# 7b. A user account holding the bot's bare login is refused too.
+new_fix
+node chatgpt-codex-connector false User
+mutation true
+"$CT" resolve --thread T1 --reply "x" >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" = 1 ] && [ ! -s "$FIX/writes" ]; then ok; else bad "user with the bot's login must be refused (rc=$rc)"; fi
 
 # 8. An already-resolved thread is left alone.
 new_fix

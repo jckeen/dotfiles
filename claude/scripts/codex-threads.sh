@@ -21,6 +21,8 @@
 
 set -euo pipefail
 
+# GraphQL reports a GitHub App's login without the `[bot]` suffix, and a user
+# account could hold that bare name, so the author must also be a Bot actor.
 BOT_RE='^chatgpt-codex-connector(\[bot\])?$'
 
 die() { echo "codex-threads: $*" >&2; exit 1; }
@@ -61,7 +63,7 @@ query($owner:String!,$name:String!,$pr:Int!){
       reviewThreads(first:100){
         pageInfo{hasNextPage}
         nodes{id isResolved isOutdated path line originalLine
-          comments(first:1){nodes{author{login} body url}}}}}}}') ||
+          comments(first:1){nodes{author{__typename login} body url}}}}}}}') ||
     die "could not read review threads of #$1"
   if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$out")" != false ]; then
     die "#$1 has more than 100 review threads (or none could be read); not listing a partial set"
@@ -70,7 +72,7 @@ query($owner:String!,$name:String!,$pr:Int!){
     .data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved | not)
     | .comments.nodes[0] as $c
-    | select(($c.author.login // "") | test($re))
+    | select($c.author.__typename == "Bot" and (($c.author.login // "") | test($re)))
     | ((try ($c.body | capture("!\\[(?<p>P[0-9]) Badge\\]").p)) // "-") as $prio
     | ([$c.body | split("\n")[]
         | gsub("<[^>]*>|!\\[[^]]*\\]\\([^)]*\\)|\\*\\*|\\t|^#+"; "")
@@ -106,11 +108,13 @@ case "$CMD" in
     fi
     info=$(gh api graphql -f id="$THREAD" -f query='
 query($id:ID!){node(id:$id){... on PullRequestReviewThread{
-  isResolved comments(first:1){nodes{author{login}}}}}}') ||
+  isResolved comments(first:1){nodes{author{__typename login}}}}}}') ||
       die "could not read thread $THREAD"
     author=$(jq -r '.data.node.comments.nodes[0].author.login // ""' <<<"$info")
     [ -n "$author" ] || die "$THREAD is not a readable review thread"
-    [[ "$author" =~ $BOT_RE ]] || die "$THREAD was opened by $author, not the Codex bot; refusing"
+    kind=$(jq -r '.data.node.comments.nodes[0].author.__typename // ""' <<<"$info")
+    [[ "$kind" = Bot && "$author" =~ $BOT_RE ]] ||
+      die "$THREAD was opened by $author ($kind), not the Codex bot; refusing"
     if [ "$(jq -r '.data.node.isResolved' <<<"$info")" = true ]; then
       echo "already resolved: $THREAD"
       exit 0
