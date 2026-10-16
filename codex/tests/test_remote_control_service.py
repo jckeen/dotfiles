@@ -3,7 +3,9 @@
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -68,6 +70,17 @@ class ServiceLauncherTest(unittest.TestCase):
                 result, stdout, _, _ = self.run_launcher()
                 self.assertEqual(result, 78)
                 self.assertEqual(stdout, "")
+
+    def test_user_installed_python_can_read_the_opt_in(self):
+        base_bin = self.home / "base-bin"
+        base_bin.mkdir()
+        for command in ("bash", "dirname"):
+            (base_bin / command).symlink_to(shutil.which(command))
+        (self.home / ".local/bin/python3").symlink_to(sys.executable)
+        self.env["PATH"] = str(base_bin)
+        result, stdout, stderr, _ = self.run_launcher()
+        self.assertEqual(result, 0, stderr)
+        self.assertEqual(json.loads(stdout)["args"][0], "app-server")
 
     def test_custom_codex_home_cannot_inherit_default_opt_in(self):
         self.env["CODEX_HOME"] = str(self.home / "other")
