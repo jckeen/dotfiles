@@ -12,6 +12,42 @@
 - **Tests:** one case per finding in `tests/claude-profile.test.sh`
   (8 failed before the fix, all pass after).
 
+## 2026-10-16 — fix(hooks): SymlinkRepair creates ~/.claude before top-level links
+
+- **`claude/hooks/SymlinkRepair.hook.ts`** (follow-up to #598, Codex review
+  on #625): when `~/.claude` itself was absent, the top-level pass ran before
+  any category dir created it, so every top-level link (`CLAUDE.md`,
+  `statusline.sh`, ...) failed and stayed missing until the next SessionStart.
+  The hook now creates the config root before that pass.
+- **Tests:** `symlink-enumerate.test.sh` covers a HOME with no `~/.claude`
+  and a non-empty `nolink.txt` (failed before the fix, passes after).
+
+## 2026-10-16 — fix: small fixes from unresolved Codex review threads
+
+- **`claude/scripts/resolve-changelog.py`:** a CHANGELOG that git still
+  reports unmerged but whose markers are gone (`git checkout --ours`, an
+  editor) is now resolved from the index stages instead of reported as
+  "nothing to do", which let a following `git add` drop the other side's
+  entries.
+- **`claude/hooks/OperatorQueueReminder.hook.sh`:** `OPERATOR_QUEUE_SHOW_ALL=1`
+  now prints every item; it was still cut at the item cap.
+- **`claude/scripts/harvest-codex-comments.sh`:** a filed comment on an
+  instruction surface is classified before the outdated/resolved skips, so a
+  failed `instruction-surface` label is repaired after the comment goes
+  obsolete. An obsolete comment that was never filed still labels nothing.
+- **`ROADMAP.md`:** the 2026-06 enforcement-hardening details link points at
+  the Q2 changelog archive. **`antigravity/permissions.json`:** the symlinked
+  `read_file` note is descriptive, not an imperative (#608).
+- **Tests:** each code fix has a case that failed before it.
+
+## 2026-10-16 — test: fleet-codex-review's unreadable-file case works under root
+
+- **`claude/scripts/tests/fleet-codex-review.test.sh`:** the unreadable
+  canonical workflow was simulated with `chmod 000`, which root ignores, so
+  the case would fail in a root-run container. A directory now stands in for
+  the file, and reading it fails for every user. Raised by the GitHub Codex
+  bot on #622.
+
 ## 2026-10-16 — test: worktree-lifecycle fixtures survive Codex's /tmp/.git
 
 - **`claude/scripts/tests/worktree-lifecycle.test.py`:** Codex's Linux
@@ -44,6 +80,56 @@
   changes to sleep policy.
 - Verified repeated service starts preserve a connected client, competing native
   starts refuse the live socket, and a disposable server recovers after a crash.
+
+## 2026-10-16 — feat: a codex-findings queue, and codex-threads.sh to work it
+
+- **`.github/workflows/codex-findings.yml`:** labels a PR `codex-findings`
+  while the GitHub Codex bot has an unresolved review thread on it, and
+  removes the label once none remain. It recounts on each bot review and on
+  `workflow_dispatch`. `gh pr list --label codex-findings` is then the queue
+  of PRs blocked on bot findings, so no agent has to poll each PR (#617). A
+  failed or truncated read leaves the label as it was. Fork PRs are skipped.
+- **`fleet-codex-review.sh`:** rolls out both workflows, shipping only the
+  files that are missing or out of date. It still creates the ruleset only
+  once both are current. A failed read of a workflow file or of the
+  rulesets now skips the repo and fails the run. Before, it counted as
+  "missing" or "no ruleset", so a temporary GitHub error could ship a file
+  the repo already had or create a duplicate ruleset.
+- **`claude/scripts/codex-threads.sh`:** `list --pr N` (or
+  `--merged-since DATE`) prints one TSV line per unresolved thread the GitHub
+  Codex bot opened: thread id, location, priority, outdated flag, title and
+  link. `resolve --thread ID --reply TEXT` posts the reply and then resolves
+  the thread. It refuses an empty reply and refuses a thread anyone other
+  than the bot opened. Once the `codex-review` ruleset requires resolved
+  threads (#615), this is how an agent answers each finding before merge,
+  either "fixed in" or "moot because". Resolving a PR's last bot thread also
+  starts `codex-findings.yml`, because GitHub has no workflow trigger for a
+  resolved thread. The reply and the resolve are separate requests, so a
+  rejected reply never leaves a thread closed without a reason. A thread
+  from another repository is refused. A failed or truncated read, including
+  a merged-PR list that reaches its limit, exits 1 rather than printing a
+  partial list. A failed recount after a resolve exits 1 and names the
+  command that finishes the job.
+- **Why:** a 2026-10-16 triage found 35 unresolved bot threads on merged
+  PRs #564–#604, because auto-merge lands before the bot comments (#617).
+- **Tests:** `codex-threads.test.sh` and `codex-findings-label.test.sh`
+  (both run against a fake `gh`, and the second extracts the workflow's
+  script), wired into the CI `checkers` shard. `fleet-codex-review.test.sh`
+  gains cases for partial rollouts.
+
+## 2026-10-16 — fix(hooks): SymlinkRepair no longer crashes on a missing category dir
+
+- **`claude/hooks/SymlinkRepair.hook.ts`** (#598): on a fresh machine or a new
+  `CLAUDE_CONFIG_DIR` profile where the hook ran before `setup.sh`, a missing
+  `~/.claude/scripts` (or `hooks/`, `agents/`, `chrome/`) made the first
+  `symlinkSync` throw `ENOENT`, exiting the hook 1 and skipping every later
+  category. The hook now creates each category dir first, and a link or dir it
+  cannot create is reported as skipped rather than thrown, so it exits 0 as its
+  header promises. The scripts category also links `*.py` (receipt helpers),
+  matching `lib-symlinks.sh`.
+- **Tests:** `symlink-enumerate.test.sh`'s hook cases no longer pre-create
+  `~/.claude/scripts`; new cases cover a missing category dir, `*.py` linking,
+  and a read-only category dir (7 failed before the fix, all pass after).
 
 ## 2026-10-16 — fix(ci): codex-review clock read died of SIGPIPE
 

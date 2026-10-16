@@ -214,6 +214,18 @@ for rec in "${COMMENTS[@]}"; do
   IFS=$'\t' read -r cid path line fresh b64 <<<"$rec"
   [[ -z "${cid:-}" ]] && continue
 
+  marker="<!-- codex-comment-id:${REPO}#${PR}:${cid} -->"
+  tracked=false
+  [[ "$existing_bodies" == *"$marker"* ]] && tracked=true
+
+  # Classified before the obsolete skips below, so a tracked comment whose label
+  # failed to apply on an earlier run is repaired on the next one (ensure_labels
+  # below) even after it goes outdated or resolved. An untracked comment counts
+  # only once it survives those skips: an obsolete one is never filed.
+  surface=false
+  grep -qE "$INSTRUCTION_SURFACE_RE" <<<"$path" && surface=true
+  [[ "$surface" == true && "$tracked" == true ]] && surface_any=true
+
   # Skip obsolete comments: outdated anchors (REST signal, computed above) and
   # resolved threads (optional GraphQL signal). The flagged code was already
   # fixed or the thread was closed out — filing it would track a non-problem.
@@ -228,14 +240,8 @@ for rec in "${COMMENTS[@]}"; do
     continue
   fi
 
-  # Computed over tracked comments too, so a label that failed to apply on an
-  # earlier run is repaired on the next one (ensure_labels below).
-  if grep -qE "$INSTRUCTION_SURFACE_RE" <<<"$path"; then
-    surface_any=true
-  fi
-
-  marker="<!-- codex-comment-id:${REPO}#${PR}:${cid} -->"
-  if [[ "$existing_bodies" == *"$marker"* ]]; then
+  [[ "$surface" == true ]] && surface_any=true
+  if [[ "$tracked" == true ]]; then
     skipped=$((skipped+1))
     continue
   fi

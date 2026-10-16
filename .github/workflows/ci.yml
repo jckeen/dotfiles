@@ -444,6 +444,14 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/fleet-codex-review.test.sh
 
+      - name: codex-threads helper (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/codex-threads.test.sh
+
+      - name: codex-findings label script (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/codex-findings-label.test.sh
+
       - name: retired skill link migration (self-test)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: python3 claude/scripts/tests/retired-skill-links.test.py

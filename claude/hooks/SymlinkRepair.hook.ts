@@ -68,8 +68,14 @@ function ensureLink(src: string, dst: string, rel: string): void {
   try {
     st = lstatSync(dst);
   } catch {
-    symlinkSync(src, dst);
-    actions.push({ kind: 'linked', rel });
+    // Missing entry. A failed link is reported, never thrown — the hook
+    // promises exit 0 (issue #598).
+    try {
+      symlinkSync(src, dst);
+      actions.push({ kind: 'linked', rel });
+    } catch (e) {
+      actions.push({ kind: 'skipped', rel, reason: `link failed: ${e}` });
+    }
     return;
   }
   if (st.isSymbolicLink()) {
@@ -92,13 +98,25 @@ function ensureLink(src: string, dst: string, rel: string): void {
   actions.push({ kind: 'skipped', rel, reason: 'real file present (use setup.sh to back up)' });
 }
 
+// setup.sh may not have run yet (fresh machine, new CLAUDE_CONFIG_DIR
+// profile), so a category dir can be absent (issue #598).
+function ensureDir(dir: string, rel: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true });
+    return true;
+  } catch (e) {
+    actions.push({ kind: 'skipped', rel, reason: `cannot create dir: ${e}` });
+    return false;
+  }
+}
+
 function linkDir(
   srcDir: string,
   dstDir: string,
   filter: (name: string) => boolean,
   relPrefix: string,
 ): void {
-  if (!existsSync(srcDir)) return;
+  if (!existsSync(srcDir) || !ensureDir(dstDir, relPrefix)) return;
   for (const name of readdirSync(srcDir)) {
     if (!filter(name)) continue;
     const src = join(srcDir, name);
@@ -139,7 +157,9 @@ function main(): void {
   //    entirely if nolink.txt is missing — without the filter we can't tell
   //    which top-level files must NOT be linked, and guessing risks linking
   //    private/on-demand files. The rest of the tree below needs no filter.
-  if (existsSync(CLAUDE_SRC)) {
+  //    ~/.claude itself may be absent (fresh machine), and this pass runs
+  //    before any category creates it.
+  if (existsSync(CLAUDE_SRC) && ensureDir(CLAUDE_DST, '.claude')) {
     if (!TOP_LEVEL_NOLINK) {
       actions.push({
         kind: 'skipped',
@@ -170,14 +190,14 @@ function main(): void {
     'hooks',
   );
 
-  // 3) scripts/*.{sh,json} — gate scripts resolve sibling data files (JSON
-  //    schemas) via plain dirname, so a schema not linked beside the script
-  //    is invisible to it and the gate degrades open (issue #271; mirrors
-  //    lib-symlinks.sh's scripts category).
+  // 3) scripts/*.{sh,json,py} — gate scripts resolve sibling data files (JSON
+  //    schemas, receipt helpers) via plain dirname, so a file not linked
+  //    beside the script is invisible to it and the gate degrades open (issue
+  //    #271; mirrors lib-symlinks.sh's scripts category).
   linkDir(
     join(CLAUDE_SRC, 'scripts'),
     join(CLAUDE_DST, 'scripts'),
-    (n) => n.endsWith('.sh') || n.endsWith('.json'),
+    (n) => n.endsWith('.sh') || n.endsWith('.json') || n.endsWith('.py'),
     'scripts',
   );
 
@@ -198,8 +218,7 @@ function main(): void {
   //    by the old per-file layout is converted only when it holds nothing but
   //    our own links; any other real directory is reported, never replaced.
   const skillsRoot = join(CLAUDE_SRC, 'skills');
-  if (existsSync(skillsRoot)) {
-    mkdirSync(join(CLAUDE_DST, 'skills'), { recursive: true });
+  if (existsSync(skillsRoot) && ensureDir(join(CLAUDE_DST, 'skills'), 'skills')) {
     for (const skillName of readdirSync(skillsRoot)) {
       const skillSrc = join(skillsRoot, skillName);
       let st;

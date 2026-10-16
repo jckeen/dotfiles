@@ -501,6 +501,38 @@ class HarvestTests(unittest.TestCase):
         calls, _ = h.run(comments=[comment(456, path="AGENTS.md")])
         self.assertEqual(calls, [])
 
+    def test_failed_label_is_repaired_after_the_comment_goes_obsolete(self):
+        # The comment was filed but its label write failed; it has since gone
+        # outdated or its thread was resolved. The repair must still happen.
+        tracked = PR_MARKER + "\n<!-- codex-comment-id:example/repo#1:456 -->"
+        for case, extra in (
+            ("outdated", {"comments": [comment(456, path="AGENTS.md", line=None)]}),
+            ("resolved", {"comments": [comment(456, path="AGENTS.md")], "resolved": [456]}),
+        ):
+            with self.subTest(case):
+                h = self.harness()
+                h.seed(
+                    {"number": 55, "state": "open", "labels": ["codex-finding"], "body": tracked}
+                )
+                calls, _ = h.run(**extra)
+                self.assertEqual(
+                    [(c["kind"], c["labels"]) for c in calls], [("label", ["instruction-surface"])]
+                )
+
+    def test_untracked_obsolete_surface_comment_does_not_label(self):
+        # Never filed, so it must not pull an existing PR issue into review.
+        for case, extra in (
+            ("outdated", {"comments": [comment(456, path="AGENTS.md", line=None)]}),
+            ("resolved", {"comments": [comment(456, path="AGENTS.md")], "resolved": [456]}),
+        ):
+            with self.subTest(case):
+                h = self.harness()
+                h.seed(
+                    {"number": 55, "state": "open", "labels": ["codex-finding"], "body": PR_MARKER}
+                )
+                calls, _ = h.run(**extra)
+                self.assertEqual(calls, [])
+
     def test_rejected_surface_label_keeps_codex_finding(self):
         h = self.harness()
         calls, _ = h.run(
