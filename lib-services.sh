@@ -142,3 +142,33 @@ services_unselected() {
   done
   printf '%s\n' "$out"
 }
+
+# services_effective — echo the selection a runtime consumer (sync-plugins.sh,
+# PluginDriftCheck.hook.ts) acts on: the saved one, or every service when none
+# was ever saved (the migration rule above). Returns 2 when the saved file
+# exists but cannot be used; callers refuse rather than guess "all".
+services_effective() {
+  local saved rc=0
+  saved="$(services_load_saved "$(services_config_path)")" || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$saved" ;;
+    1) printf '%s\n' "$DOTFILES_ALL_SERVICES" ;;
+    *) return 2 ;;
+  esac
+}
+
+# services_filter_plugins <canonical-list> — read `<plugin>@<marketplace>` ids
+# on stdin, one per line, and echo those the selection manages. Every plugin is
+# Claude Code's, so none pass without claude; `*@openai-codex` plugins drive the
+# Codex CLI and also need codex (setup.sh §3b applies the same rule).
+services_filter_plugins() {
+  local DOTFILES_SELECTED_SERVICES="$1" id
+  service_selected claude || { cat >/dev/null; return 0; }
+  while IFS= read -r id || [ -n "$id" ]; do
+    [ -n "$id" ] || continue
+    case "$id" in
+      *@openai-codex) service_selected codex || continue ;;
+    esac
+    printf '%s\n' "$id"
+  done
+}

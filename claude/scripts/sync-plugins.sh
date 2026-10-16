@@ -56,32 +56,17 @@ fi
 # shellcheck source=lib-services.sh
 . "$LIB_SERVICES"
 
-# Same precedence as setup.sh: DOTFILES_SERVICES, then the saved selection,
-# then (no saved selection) every service. A damaged file is refused, not
-# guessed at — guessing "all" would reinstall what the operator opted out of.
-# shellcheck disable=SC2034  # read by service_selected (lib-services.sh)
-if [[ -n "${DOTFILES_SERVICES:-}" ]]; then
-  DOTFILES_SELECTED_SERVICES="$(services_normalize "$DOTFILES_SERVICES")" || exit 1
-else
-  saved_rc=0
-  DOTFILES_SELECTED_SERVICES="$(services_load_saved "$(services_config_path)")" || saved_rc=$?
-  case "$saved_rc" in
-    0) ;;
-    1) DOTFILES_SELECTED_SERVICES="$DOTFILES_ALL_SERVICES" ;;
-    *)
-      echo "✘ Cannot read the agent service selection; fix it with setup.sh --select-services" >&2
-      exit 1
-      ;;
-  esac
-fi
-if ! service_selected claude; then
-  exit 0
+# The saved selection, or every service when none was saved. A damaged file is
+# refused, not guessed at: "all" would reinstall what the operator opted out of.
+if ! selected_services="$(services_effective)"; then
+  echo "✘ Cannot read the agent service selection; fix it with setup.sh --select-services" >&2
+  exit 1
 fi
 
-# Parse the manifest once. wanted: active lines whose service is selected.
-# removed: ids named by a `# removed:` line. active_all: every active line,
-# selected or not, so an active line always outranks a `# removed:` one.
-wanted=()
+# Parse the manifest once. wanted: active lines whose service is selected
+# (services_filter_plugins). removed: ids named by a `# removed:` line.
+# active_all: every active line, selected or not, so an active line always
+# outranks a `# removed:` one.
 removed=()
 active_all=""
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -94,11 +79,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   p="${p//[[:space:]]/}"
   [[ -z "$p" ]] && continue
   active_all+="$p"$'\n'
-  case "$p" in
-    *@openai-codex) service_selected codex || continue ;;
-  esac
-  wanted+=("$p")
 done < "$MANIFEST"
+wanted=()
+while IFS= read -r p; do
+  [[ -n "$p" ]] && wanted+=("$p")
+done < <(printf '%s' "$active_all" | services_filter_plugins "$selected_services")
+# Plugins are Claude Code's: with it deselected there is nothing to manage.
+case ",$selected_services," in
+  *,claude,*) ;;
+  *) exit 0 ;;
+esac
 
 # Fast path: if every manifest plugin already has a USER-scope install, there is
 # nothing to do — exit silently without touching the network. Keys in
