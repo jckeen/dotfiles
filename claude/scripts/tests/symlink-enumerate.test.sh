@@ -114,17 +114,13 @@ rm -rf "$H"
 # The SessionStart hook mirrors the enumerator in TypeScript; drive it against
 # the same fixture and assert the same directory-link shape and migration.
 HOOK="$SCRIPT_DIR/../../hooks/SymlinkRepair.hook.ts"
-# The hook's per-file categories assume setup.sh already created their parent
-# dirs (the hook throws without them, #598), so each fixture HOME starts with
-# ~/.claude/scripts in place.
-mkhome() { mkdir -p "$1/.claude/scripts"; }
 if ! command -v bun >/dev/null 2>&1; then
   echo "FAIL: bun is required to run SymlinkRepair.hook.ts" >&2
   failed=$((failed + 1))
 else
   # Fresh HOME: the bundle lands as one directory link.
   H="$FIX/h-fresh"
-  mkhome "$H"
+  mkdir -p "$H"
   HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" >/dev/null 2>&1
   ok=0
   [ "$(readlink "$H/.claude/skills/demo")" = "$SK" ] \
@@ -135,7 +131,7 @@ else
 
   # Legacy per-file layout: converted to the directory link.
   H="$FIX/h-legacy"
-  mkhome "$H"
+  mkdir -p "$H"
   mkdir -p "$H/.claude/skills/demo"
   ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
   HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" >/dev/null 2>&1
@@ -145,13 +141,44 @@ else
 
   # Real content at the destination: left alone and reported.
   H="$FIX/h-real"
-  mkhome "$H"
+  mkdir -p "$H"
   mkdir -p "$H/.claude/skills/demo"
   printf 'mine\n' >"$H/.claude/skills/demo/notes.md"
   hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" 2>&1)"
   [ ! -L "$H/.claude/skills/demo" ] && [ -f "$H/.claude/skills/demo/notes.md" ] \
     && grep -q 'skills/demo' <<<"$hook_out"
   check "SymlinkRepair leaves a real skill dir alone and reports it" $((1 - $?))
+
+  # No ~/.claude/scripts yet (fresh machine, hook wired before setup.sh ran,
+  # #598): the hook creates the category dir, links *.sh, *.json and *.py
+  # (the same set as symlink_enumerate) and exits 0.
+  H="$FIX/h-nodir"
+  mkdir -p "$H"
+  HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" >/dev/null 2>&1
+  check "SymlinkRepair exits 0 when ~/.claude/scripts is missing" $((1 - $?))
+  ok=0
+  [ "$(readlink "$H/.claude/scripts/gate.sh")" = "$FIX/claude/scripts/gate.sh" ] \
+    && [ "$(readlink "$H/.claude/scripts/gate-schema.json")" = "$FIX/claude/scripts/gate-schema.json" ] \
+    && [ ! -e "$H/.claude/scripts/README.md" ] && ok=1
+  check "SymlinkRepair creates ~/.claude/scripts and links into it" "$ok"
+  ok=0
+  [ "$(readlink "$H/.claude/scripts/review-receipt.py")" = "$FIX/claude/scripts/review-receipt.py" ] && ok=1
+  check "SymlinkRepair links scripts/*.py (matches symlink_enumerate)" "$ok"
+
+  # A link that cannot be created (read-only category dir) is reported as
+  # skipped, never thrown: the hook still exits 0 and later categories run.
+  if [ "$(id -u)" -ne 0 ]; then
+    H="$FIX/h-ro"
+    mkdir -p "$H/.claude/scripts"
+    chmod 555 "$H/.claude/scripts"
+    hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" 2>&1)"
+    rc=$?
+    chmod 755 "$H/.claude/scripts"
+    ok=0
+    [ "$rc" -eq 0 ] && grep -q 'scripts/gate.sh' <<<"$hook_out" \
+      && [ "$(readlink "$H/.claude/skills/demo")" = "$SK" ] && ok=1
+    check "SymlinkRepair records an unlinkable entry as skipped and continues" "$ok"
+  fi
 fi
 
 echo "symlink-enumerate: $pass passed, $failed failed"
