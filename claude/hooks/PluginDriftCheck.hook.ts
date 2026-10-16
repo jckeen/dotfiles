@@ -32,8 +32,13 @@
  * `# mods-ok: <id>` line in the manifest is named. A project .claude/skills
  * mod is named even when allowlisted: its id shares the `@skills-dir`
  * namespace with ~/.claude/skills, so a cloned repo could otherwise ship a
- * plugin under an allowlisted name. An unreadable or malformed hooks.json is
- * skipped, fail-open like the rest of this hook.
+ * plugin under an allowlisted name. For an installed (cache, synced,
+ * ~/.claude/skills) plugin an unreadable or malformed hooks.json is skipped,
+ * fail-open like the rest of this hook. For a plugin read from a local
+ * marketplace path or the project, whose files nobody installed, a
+ * hooks.json, plugin.json or marketplace.json that exists but cannot be read
+ * or parsed is named as unverifiable instead: Claude Code's loader may accept
+ * what this parser rejects, so skipping it would hide the mod.
  *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
@@ -43,7 +48,13 @@
  * EXIT: 0 always (warnings are non-blocking)
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -206,12 +217,33 @@ function relativeSource(
   return null;
 }
 
-// [id, dir] for relative-path plugins of marketplaces added from a local
+// Where a scanned plugin came from. `local` and `project` files were never
+// installed by the user, so they are not trusted to parse (see header).
+type Origin = 'installed' | 'local' | 'project';
+interface Scanned {
+  id: string;
+  dir: string;
+  origin: Origin;
+  // The plugin's own manifest could not be read: report without reading hooks.
+  unverifiable?: boolean;
+}
+
+// True when the path exists as anything at all, a dangling symlink included.
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Relative-path plugins of marketplaces added from a local
 // `directory` or `file` source: Claude Code loads these in place from the
 // marketplace folder and never copies them into cache/. A git or GitHub
 // marketplace's clone is skipped — its plugins load from the cache copy.
-function localMarketplacePlugins(): [string, string][] {
-  const found: [string, string][] = [];
+function localMarketplacePlugins(): Scanned[] {
+  const found: Scanned[] = [];
   const known = readJson(KNOWN_MARKETPLACES);
   if (typeof known !== 'object' || known === null) return found;
   for (const [market, entry] of Object.entries(known)) {
@@ -223,9 +255,19 @@ function localMarketplacePlugins(): [string, string][] {
     if (source.source === 'directory') root = source.path;
     else if (source.source === 'file') root = dirname(dirname(source.path));
     else continue;
-    const catalog = readJson(join(root, '.claude-plugin', 'marketplace.json'));
+    const catalogPath = join(root, '.claude-plugin', 'marketplace.json');
+    const catalog = readJson(catalogPath);
     const plugins = (catalog as { plugins?: unknown } | null)?.plugins;
-    if (!Array.isArray(plugins)) continue;
+    if (!Array.isArray(plugins)) {
+      if (present(catalogPath))
+        found.push({
+          id: `marketplace.json@${market}`,
+          dir: root,
+          origin: 'local',
+          unverifiable: true,
+        });
+      continue;
+    }
     const pluginRoot = (catalog as { metadata?: { pluginRoot?: unknown } })
       .metadata?.pluginRoot;
     for (const plugin of plugins) {
@@ -234,67 +276,95 @@ function localMarketplacePlugins(): [string, string][] {
         source?: unknown;
       };
       const dir = relativeSource(root, src, pluginRoot);
-      if (typeof name === 'string' && dir) found.push([`${name}@${market}`, dir]);
+      if (typeof name === 'string' && dir)
+        found.push({ id: `${name}@${market}`, dir, origin: 'local' });
     }
   }
   return found;
 }
 
-// [id, dir, fromProject] for every plugin on disk, ids in the `enabledPlugins` forms
+// Every plugin on disk, ids in the `enabledPlugins` forms
 // (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
 // version is scanned, not only the recorded installPath: a session started
 // before an update still runs the old one.
-function pluginDirs(): [string, string, boolean][] {
-  const found: [string, string, boolean][] = [];
+function pluginDirs(): Scanned[] {
+  const found: Scanned[] = [];
+  const origin = 'installed';
   for (const market of subdirs(join(PLUGINS_ROOT, 'cache')))
     for (const plugin of subdirs(market))
-      for (const version of subdirs(plugin))
-        found.push([`${basename(plugin)}@${basename(market)}`, version, false]);
+      for (const dir of subdirs(plugin))
+        found.push({ id: `${basename(plugin)}@${basename(market)}`, dir, origin });
   for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
     for (const dir of subdirs(bucket)) {
       const name = pluginName(dir);
-      if (name) found.push([`${name}@synced`, dir, false]);
+      if (name) found.push({ id: `${name}@synced`, dir, origin });
     }
-  for (const [id, dir] of localMarketplacePlugins()) found.push([id, dir, false]);
+  found.push(...localMarketplacePlugins());
   for (const dir of subdirs(SKILLS_DIR)) {
     const name = pluginName(dir);
-    if (name) found.push([`${name}@skills-dir`, dir, false]);
+    if (name) found.push({ id: `${name}@skills-dir`, dir, origin });
   }
-  // Skipped when the project is HOME itself: that is the user's own dir.
-  if (realPath(PROJECT_SKILLS_DIR) !== realPath(SKILLS_DIR))
+  // Skipped only when the project's skills dir provably IS ~/.claude/skills
+  // (a session started in HOME); a path that fails to resolve is scanned.
+  if (!sameDir(PROJECT_SKILLS_DIR, SKILLS_DIR))
     for (const dir of subdirs(PROJECT_SKILLS_DIR)) {
       const name = pluginName(dir);
-      if (name) found.push([`${name}@skills-dir`, dir, true]);
+      if (name) found.push({ id: `${name}@skills-dir`, dir, origin: 'project' });
+      else if (present(join(dir, '.claude-plugin', 'plugin.json')))
+        found.push({
+          id: `${basename(dir)}@skills-dir`,
+          dir,
+          origin: 'project',
+          unverifiable: true,
+        });
     }
   return found;
 }
 
-function realPath(path: string): string {
+function sameDir(a: string, b: string): boolean {
   try {
-    return realpathSync(path);
+    return realpathSync(a) === realpathSync(b);
   } catch {
-    return path;
+    return false;
   }
 }
 
 function modsWarning(allowed: string[]): string {
   const mods = new Set<string>();
-  for (const [id, dir, fromProject] of pluginDirs()) {
-    if (!fromProject && allowed.includes(id)) continue;
+  const unverifiable = new Set<string>();
+  for (const { id, dir, origin, unverifiable: noManifest } of pluginDirs()) {
+    if (origin !== 'project' && allowed.includes(id)) continue;
+    const label =
+      origin === 'project' ? `${shown(id)} (project .claude/skills)` : shown(id);
+    if (noManifest) {
+      unverifiable.add(label);
+      continue;
+    }
+    const hooksPath = join(dir, 'hooks', 'hooks.json');
     try {
-      const hooks = JSON.parse(
-        readFileSync(join(dir, 'hooks', 'hooks.json'), 'utf-8'),
-      );
+      const hooks = JSON.parse(readFileSync(hooksPath, 'utf-8'));
       if (typeof hooks === 'object' && hooks !== null && 'modules' in hooks)
-        mods.add(fromProject ? `${shown(id)} (project .claude/skills)` : shown(id));
+        mods.add(label);
     } catch {
-      // No hooks.json, or one Claude Code could not load either.
+      // No hooks.json is no mod. An installed plugin's unloadable one is
+      // skipped; an untrusted plugin's is reported (see header).
+      if (origin !== 'installed' && present(hooksPath)) unverifiable.add(label);
     }
   }
-  if (mods.size === 0) return '';
-  // Already passed through shown().
+  let warning = '';
+  if (unverifiable.size > 0) {
+    const list = [...unverifiable].map((p) => `  • ${p}`).join('\n');
+    warning +=
+      `⚠️  Plugin mods (unverifiable): ${unverifiable.size} plugin(s) loaded from a ` +
+      `local marketplace or the project have a hooks.json, plugin.json or ` +
+      `marketplace.json this hook cannot read or parse, so whether they ship a ` +
+      `mod is unknown — review each manually:\n${list}\n\n`;
+  }
+  if (mods.size === 0) return warning;
+  // Labels were already passed through shown().
   const list = [...mods].map((p) => `  • ${p}`).join('\n');
   return (
+    warning +
     `⚠️  Plugin mods: ${mods.size} installed plugin(s) ship a mod (a "modules" key ` +
     `in hooks/hooks.json) — in-session code that can approve tool calls past ` +
     `\`ask\` rules and the settings hooks (issue #594):\n${list}\n\n` +

@@ -366,6 +366,89 @@ run_mods "$MANIFEST_GLOBAL" cwd
 assert "without CLAUDE_PROJECT_DIR the working directory is the project" \
   'outgrep "• projmod@skills-dir"'
 
+# ── untrusted files the hook cannot parse are named, never skipped ──────
+# A local-marketplace or project plugin's files were never installed, and
+# Claude Code's loader may accept what JSON.parse rejects, so "cannot read"
+# must surface as "review manually". An installed plugin's malformed
+# hooks.json stays silent (cache/mkt/broken above).
+# run_untrusted <manifest-body> [project-dir: proj|home]
+run_untrusted() {
+  local manifest="$1" where="${2:-proj}"
+  local D H P
+  D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
+  H="$(mktemp -d)" || die "mktemp -d for HOME"
+  P="$(mktemp -d)" || die "mktemp -d for the project dir"
+  mkdir -p "$D/claude" "$H/.claude/plugins" || die "mkdir fixture dirs"
+  printf '%s\n' "$manifest" > "$D/claude/plugins.txt" || die "write plugins.txt"
+  printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s]}}\n' \
+    "$(entry user)" > "$H/.claude/plugins/installed_plugins.json" \
+    || die "write installed_plugins.json"
+  local mod='{"modules":["./register.js"]}' S="$P/.claude/skills" n
+  for n in badhooks dirhooks badmanifest nohooks; do
+    mkdir -p "$S/$n/.claude-plugin" "$S/$n/hooks" || die "mkdir $n"
+    printf '{"name":"%s"}\n' "$n" > "$S/$n/.claude-plugin/plugin.json" || die "write $n plugin.json"
+  done
+  mkdir -p "$S/notaplugin/hooks" || die "mkdir notaplugin"
+  printf '%s\n' '{"modules": [' > "$S/badhooks/hooks/hooks.json" || die "write badhooks"
+  mkdir -p "$S/dirhooks/hooks/hooks.json" || die "mkdir dirhooks hooks.json"
+  printf '%s\n' '{"name": "badmanifest",' > "$S/badmanifest/.claude-plugin/plugin.json" \
+    || die "write badmanifest plugin.json"
+  printf '%s\n' "$mod" > "$S/badmanifest/hooks/hooks.json" || die "write badmanifest hooks"
+  printf '%s\n' "$mod" > "$S/notaplugin/hooks/hooks.json" || die "write notaplugin hooks"
+  local L="$H/src/lm" B="$H/src/lmbroken"
+  mkdir -p "$L/.claude-plugin" "$L/p/lmbad/hooks" "$L/p/lmnone" "$B/.claude-plugin" \
+    || die "mkdir local marketplace dirs"
+  printf '%s\n' '{"name":"lm","plugins":[{"name":"lmbad","source":"./p/lmbad"},
+    {"name":"lmnone","source":"./p/lmnone"}]}' > "$L/.claude-plugin/marketplace.json" \
+    || die "write lm marketplace.json"
+  printf '%s\n' '{"modules": [' > "$L/p/lmbad/hooks/hooks.json" || die "write lmbad"
+  printf '%s\n' '{"name":"lmbroken",' > "$B/.claude-plugin/marketplace.json" \
+    || die "write lmbroken marketplace.json"
+  printf '{"lm":{"source":{"source":"directory","path":"%s"}},
+    "lmbroken":{"source":{"source":"directory","path":"%s"}}}\n' "$L" "$B" \
+    > "$H/.claude/plugins/known_marketplaces.json" || die "write known_marketplaces.json"
+  local proj="$P"
+  if [[ "$where" == home ]]; then
+    # The session runs in HOME: its .claude/skills is the user's own.
+    mkdir -p "$H/.claude/skills/hm/hooks" "$H/.claude/skills/hm/.claude-plugin" \
+      || die "mkdir home skills-dir"
+    printf '%s\n' "$mod" > "$H/.claude/skills/hm/hooks/hooks.json" || die "write hm"
+    printf '%s\n' '{"name":"homemod"}' > "$H/.claude/skills/hm/.claude-plugin/plugin.json" \
+      || die "write hm plugin.json"
+    proj="$H"
+  fi
+  out="$(cd "$proj" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$proj" bun "$HOOK" 2>&1)"
+  rc=$?
+  rm -rf "$D" "$H" "$P"
+}
+
+run_untrusted "$MANIFEST_GLOBAL"
+assert "unverifiable plugins get their own heading" 'outgrep "Plugin mods (unverifiable):"'
+assert "a project plugin's malformed hooks.json is named" \
+  'outline "  • badhooks@skills-dir (project .claude/skills)"'
+assert "a project plugin whose hooks.json is a directory is named" \
+  'outline "  • dirhooks@skills-dir (project .claude/skills)"'
+assert "a project plugin with an unparseable plugin.json is named by its dir" \
+  'outline "  • badmanifest@skills-dir (project .claude/skills)"'
+assert "a project plugin without hooks.json is not named" '! outgrep "nohooks@"'
+assert "a project dir without .claude-plugin/ is not a plugin" '! outgrep "notaplugin"'
+assert "a local-marketplace plugin's malformed hooks.json is named" 'outline "  • lmbad@lm"'
+assert "a local-marketplace plugin without hooks.json is not named" '! outgrep "lmnone@"'
+assert "an unparseable local marketplace.json is named" \
+  'outline "  • marketplace.json@lmbroken"'
+assert "hook exits 0 (unverifiable files)" "[ $rc -eq 0 ]"
+
+run_untrusted "$MANIFEST_GLOBAL
+# mods-ok: lmbad@lm
+# mods-ok: badhooks@skills-dir"
+assert "an allowlisted local-marketplace plugin is silent" '! outgrep "lmbad@lm"'
+assert "an allowlist line never covers an unverifiable project plugin" \
+  'outline "  • badhooks@skills-dir (project .claude/skills)"'
+
+run_untrusted "$MANIFEST_GLOBAL" home
+assert "a session in HOME names the user's skills-dir mod once, as the user's" \
+  'outline "  • homemod@skills-dir" && ! outgrep "homemod@skills-dir (project"'
+
 # ── sync-plugins.sh agrees with the hook on what "installed" means ──────
 # The hook's remedy is "run sync-plugins.sh". If its fast path treated a
 # project-scoped record as satisfying the manifest, it would exit 0 without

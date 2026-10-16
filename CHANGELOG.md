@@ -16,9 +16,17 @@
   outside `[A-Za-z0-9._@/-]` become `_` and the length is capped, so a name
   read from a marketplace or a cloned repo cannot inject lines or close the
   `<system-reminder>` into model context.
+- **No fail-open for untrusted files:** a local-marketplace or project plugin
+  whose `hooks.json`, `plugin.json` or `marketplace.json` exists but cannot be
+  read or parsed (malformed, a directory, a dangling symlink) is named under
+  "Plugin mods (unverifiable)" instead of skipped, since Claude Code's loader
+  may accept what this parser rejects. An installed plugin's stays silent. The
+  project scan is skipped only when its path provably resolves to
+  `~/.claude/skills`; a path that fails to resolve is scanned.
 - **Tests:** `plugin-drift.test.sh` runs every case from a throwaway project
   dir and adds fixtures for both origins, an allowlist-shadowing project
-  plugin, and injection names (13 of 62 failed on origin/main, all pass after).
+  plugin, injection names, and unparseable untrusted files (20 of 75 failed on
+  origin/main, all pass after).
 
 ## 2026-10-16 — fix: run-tests.sh leaves no bytecode caches behind
 
