@@ -143,7 +143,7 @@ the same saved opt-in, credentials, and socket.
 Then enable automatic startup:
 
 ```bash
-loginctl enable-linger "$(id -un)"
+sudo loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
 systemctl --user enable --now codex-remote-control.service
 systemctl --user status codex-remote-control.service
