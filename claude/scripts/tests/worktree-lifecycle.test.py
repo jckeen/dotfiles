@@ -43,7 +43,26 @@ def host_git_marker(root):
 MAX_TEMP_BASE_LEN = 24
 
 
-def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN):
+def can_execute_in(base):
+    """Whether a script written under `base` can run. The fixtures execute
+    generated `gh` and `systemctl` stand-ins there, and a noexec mount
+    passes every permission check on the directory itself."""
+    try:
+        fd, probe = tempfile.mkstemp(dir=base)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(probe, 0o700)
+        return subprocess.run([probe], check=False).returncode == 0
+    except OSError:
+        return False
+    finally:
+        os.unlink(probe)
+
+
+def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN, can_execute=can_execute_in):
     """The first usable candidate, resolved, with no Git marker at or above it.
 
     Codex's Linux sandbox mounts a tmpfs at `/tmp/.git` (and at the dev
@@ -51,7 +70,8 @@ def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN):
     long as any sandboxed command runs (#621, #368). It can appear mid-run,
     so a check at start-up cannot vouch for /tmp. A candidate is resolved
     first, because retirement resolves symlinks before it inspects
-    ancestors; missing, unwritable or over-long candidates are skipped.
+    ancestors; missing, unwritable, over-long or noexec candidates are
+    skipped.
     Returns None when no candidate is usable.
     """
     for candidate in candidates:
@@ -62,7 +82,7 @@ def clean_temp_base(candidates, max_len=MAX_TEMP_BASE_LEN):
             continue
         if len(str(base)) > max_len:
             continue
-        if host_git_marker(base) is None:
+        if host_git_marker(base) is None and can_execute(base):
             return base
     return None
 
@@ -82,7 +102,7 @@ def setUpModule():
         raise RuntimeError(
             f"host state, not the code under test: every temporary directory tried "
             f"(ending with {system}) has a Git marker at or above it, or is missing, "
-            f"unwritable or longer than {MAX_TEMP_BASE_LEN} characters, and retirement "
+            f"unwritable, noexec or longer than {MAX_TEMP_BASE_LEN} characters, and retirement "
             "inspects every archive ancestor; set TMPDIR to a short directory with no "
             "Git marker above it"
         )
@@ -133,6 +153,22 @@ class HostStateTests(unittest.TestCase):
             link.symlink_to(inner)
             self.assertIsNone(host_git_marker(link))  # lexically clean
             self.assertIsNone(clean_temp_base([link], max_len=4096))
+
+    def test_a_candidate_that_cannot_run_scripts_is_skipped(self):
+        # A noexec mount passes every directory permission check, so the
+        # chooser must try running a script; mounting one needs root, so the
+        # probe is stubbed here and exercised for real below.
+        with tempfile.TemporaryDirectory() as temp:
+            first = Path(temp) / "noexec"
+            second = Path(temp) / "exec"
+            first.mkdir()
+            second.mkdir()
+            chosen = clean_temp_base(
+                [first, second], max_len=4096, can_execute=lambda base: base != first.resolve()
+            )
+            self.assertEqual(chosen, second.resolve())
+            self.assertTrue(can_execute_in(second))
+            self.assertEqual(list(second.iterdir()), [])  # the probe cleans up
 
     def test_an_over_long_candidate_is_skipped(self):
         with tempfile.TemporaryDirectory() as temp:
