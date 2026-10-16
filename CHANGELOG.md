@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-16 — test: worktree-lifecycle fixtures survive Codex's /tmp/.git
+
+- **`claude/scripts/tests/worktree-lifecycle.test.py`:** Codex's Linux
+  sandbox mounts a tmpfs at `/tmp/.git` (`bwrap --tmpfs /tmp/.git`). That
+  leaves an empty `/tmp/.git` on the host after every sandboxed command, so
+  this suite's guard refused to start whenever any Codex run had been active.
+  That failed `run-tests` in every agent's review gate on 2026-10-16. The
+  module now moves its fixtures to the first temp base with no Git marker
+  above it: the system one, `/var/tmp`, `$XDG_RUNTIME_DIR` or `~/.cache`.
+  Only this test process's `tempfile` default changes, so `TMPDIR` is left
+  alone for suites that need it under `/tmp` (#621). The guard still fails
+  with a clear message when none of them is clean. Verified: with an empty
+  `/tmp/.git` present, 120 tests pass and nothing is left in `/var/tmp`.
+
 ## 2026-10-15 — Automatic Codex Remote Control startup
 
 - Added an opt-in systemd user service that supervises the foreground server,

@@ -36,15 +36,57 @@ def host_git_marker(root):
     return None
 
 
+def clean_temp_base(candidates):
+    """The first candidate directory with no Git marker at or above it.
+
+    Codex's Linux sandbox mounts a tmpfs at `/tmp/.git`, which leaves an empty
+    `/tmp/.git` on the host after every sandboxed command (#621, #368), so the
+    system temporary directory cannot be assumed clean while any Codex run is
+    active. Missing or unwritable candidates are skipped. Returns None when no
+    candidate is clean.
+    """
+    for candidate in candidates:
+        if not candidate:
+            continue
+        base = Path(candidate)
+        if not base.is_dir() or not os.access(base, os.W_OK | os.X_OK):
+            continue
+        if host_git_marker(base) is None:
+            return base
+    return None
+
+
+_MODULE_TEMP = None
+
+
 def setUpModule():
-    with tempfile.TemporaryDirectory() as probe:
-        marker = host_git_marker(Path(probe))
-    if marker is not None:
+    """Root every fixture of this module in a directory with no Git marker
+    above it: the system one when it is clean, else the first clean fallback.
+    Only this test process's `tempfile` default changes; TMPDIR is untouched,
+    so suites that need it under /tmp are unaffected."""
+    global _MODULE_TEMP
+    system = Path(tempfile.gettempdir())
+    base = clean_temp_base(
+        [system, "/var/tmp", os.environ.get("XDG_RUNTIME_DIR"), Path.home() / ".cache"]
+    )
+    if base is None:
         raise RuntimeError(
-            f"host state, not the code under test: a Git marker at {marker} sits above the "
-            "fixture root, and retirement inspects every archive ancestor; remove it or set "
-            "TMPDIR to a directory with no Git marker above it"
+            f"host state, not the code under test: every temporary directory tried "
+            f"(starting with {system}) has a Git marker at or above it, and retirement "
+            "inspects every archive ancestor; set TMPDIR to a directory with no Git marker "
+            "above it"
         )
+    if base != system:
+        _MODULE_TEMP = tempfile.mkdtemp(prefix="worktree-lifecycle-test-", dir=base)
+        tempfile.tempdir = _MODULE_TEMP
+
+
+def tearDownModule():
+    global _MODULE_TEMP
+    if _MODULE_TEMP is not None:
+        tempfile.tempdir = None
+        shutil.rmtree(_MODULE_TEMP, ignore_errors=True)
+        _MODULE_TEMP = None
 
 
 class HostStateTests(unittest.TestCase):
@@ -58,6 +100,19 @@ class HostStateTests(unittest.TestCase):
             self.assertEqual(host_git_marker(nested), base / "outer" / ".git")
             (base / "outer" / "inner" / ".git").write_text("gitdir: nowhere\n")
             self.assertEqual(host_git_marker(nested), base / "outer" / "inner" / ".git")
+
+    def test_fixtures_move_past_a_marked_temp_dir(self):
+        # The /tmp/.git that Codex's sandbox leaves behind (#621): the marked
+        # directory is skipped for the first clean one, and missing or None
+        # candidates are skipped too.
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            marked = base / "marked"
+            (marked / ".git").mkdir(parents=True)
+            clean = base / "clean"
+            clean.mkdir()
+            self.assertEqual(clean_temp_base([marked, None, base / "missing", clean]), clean)
+            self.assertIsNone(clean_temp_base([marked, base / "missing"]))
 
 
 class LifecycleTests(unittest.TestCase):
