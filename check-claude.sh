@@ -37,6 +37,7 @@ ERRORS=0
 WARNINGS=0
 FIXED=0
 HEALED=0
+TOOL_NOTES=0
 
 # Flags:
 #   --fix    auto-clean orphaned symlinks and stale backups (existing behavior)
@@ -132,23 +133,42 @@ echo ""
 # link); without --heal it is named as legacy, not as an unknown directory.
 while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
-  if symlink_is_legacy_skill_dir "$src" "$dst"; then
-    if [ "$HEAL" -eq 1 ]; then
-      # A concurrent --heal (two panes launching cc) may finish the same
-      # conversion first, so rm/rmdir here fail on entries already gone. That
-      # is not a failure of this run: fall through and let check_link report
-      # whatever state the directory is in now.
-      if ! symlink_migrate_legacy_skill_dir "$src" "$dst" \
-        && symlink_is_legacy_skill_dir "$src" "$dst"; then
-        red "FAILED  $label could not convert legacy per-file links"
-        ERRORS=$((ERRORS + 1))
-        continue
+  if [ "$HEAL" -eq 1 ] && [ -d "$src" ] && [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    # A real directory where a bundle link belongs. A concurrent --heal (two
+    # panes launching cc) may be converting it right now: our rm/rmdir then
+    # fail on entries already gone, and any scan can land mid-drain, even
+    # misjudge the directory as foreign when an entry vanishes between its -L
+    # and readlink. So every such state goes through one bounded (~5s) settle
+    # loop: convert it while it is legacy, wait while its listing is still
+    # changing, and stop once $dst is no longer a real directory or a
+    # non-legacy listing holds still across a retry (genuine foreign content,
+    # left for check_link to report). Still legacy after the wait is FAILED.
+    tries=0
+    seen=""
+    seen_set=0
+    while [ -d "$dst" ] && [ ! -L "$dst" ]; do
+      if symlink_is_legacy_skill_dir "$src" "$dst"; then
+        symlink_migrate_legacy_skill_dir "$src" "$dst" && break
+        seen_set=0
+      else
+        listing="$(ls -A "$dst" 2>/dev/null)"
+        [ "$seen_set" -eq 1 ] && [ "$listing" = "$seen" ] && break
+        seen="$listing"
+        seen_set=1
       fi
-    else
-      yellow "LEGACY  $label (per-file links from before #592 — run with --heal or ./setup.sh)"
-      WARNINGS=$((WARNINGS + 1))
+      tries=$((tries + 1))
+      [ "$tries" -lt 50 ] || break
+      sleep 0.1
+    done
+    if symlink_is_legacy_skill_dir "$src" "$dst"; then
+      red "FAILED  $label could not convert legacy per-file links"
+      ERRORS=$((ERRORS + 1))
       continue
     fi
+  elif symlink_is_legacy_skill_dir "$src" "$dst"; then
+    yellow "LEGACY  $label (per-file links from before #592 — run with --heal or ./setup.sh)"
+    WARNINGS=$((WARNINGS + 1))
+    continue
   fi
   check_link "$src" "$dst" "$label"
 done < <(symlink_enumerate "$CLAUDE_SRC" "$CLAUDE_DST")
@@ -244,6 +264,10 @@ while IFS= read -r backup; do
   fi
 done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
 
+# CLI stack the instructions mandate (issue #605; silent if all present).
+# Advisory only: see check_cli_stack in lib-checks.sh.
+check_cli_stack
+
 # Branch hygiene status (silent if clean)
 if [ -x "$DOTFILES_DIR/hygiene-status.sh" ]; then
   "$DOTFILES_DIR/hygiene-status.sh" --cli || true
@@ -258,6 +282,7 @@ fi
 # Summary
 echo ""
 [ $HEALED -gt 0 ] && green "Self-healed $HEALED missing link(s)."
+[ $TOOL_NOTES -gt 0 ] && yellow "$TOOL_NOTES CLI tool(s) missing (advisory; does not fail the check)."
 if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
   green "All good. Claude config is in sync."
   [ $FIXED -gt 0 ] && green "Cleaned up $FIXED item(s)."
