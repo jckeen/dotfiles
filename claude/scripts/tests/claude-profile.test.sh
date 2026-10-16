@@ -109,6 +109,45 @@ if "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "a foreign link refuses"; else 
 [ "$(readlink "$PROFILE/skills")" = "$HOME/elsewhere" ] && ok "a foreign link is kept" \
   || fail "a foreign link is kept"
 
+# ── account state stays this profile's own file ──────────────────────────
+new_home state-link
+"$LINK" "$PROFILE" >/dev/null 2>&1
+rm "$PROFILE/.claude.json"
+ln -s "$HOME/.claude.json" "$PROFILE/.claude.json"
+if "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "a linked .claude.json is drift"; else ok "a linked .claude.json is drift"; fi
+if "$LINK" --check "$PROFILE" >/dev/null 2>&1; then fail "--check reports a linked .claude.json"; else ok "--check reports a linked .claude.json"; fi
+echo '{"mcpServers":{},"oauthAccount":{"emailAddress":"other"}}' > "$HOME/other.json"
+ln -sfn "$HOME/other.json" "$PROFILE/.claude.json"
+"$LINK" "$PROFILE" >/dev/null 2>&1
+[ "$(readlink "$PROFILE/.claude.json")" = "$HOME/other.json" ] \
+  && [ "$(jq -c '.mcpServers' "$HOME/other.json")" = '{}' ] \
+  && ok "a linked .claude.json is neither replaced nor written through" \
+  || fail "a linked .claude.json is neither replaced nor written through"
+
+# ── a shared state dir removed after wiring ──────────────────────────────
+new_home state-gone
+"$LINK" "$PROFILE" >/dev/null 2>&1
+rm -rf "$BASE/projects"
+if "$LINK" --check "$PROFILE" >/dev/null 2>&1; then fail "--check reports a removed state dir"; else ok "--check reports a removed state dir"; fi
+[ ! -e "$BASE/projects" ] && ok "--check does not recreate it" || fail "--check does not recreate it"
+"$LINK" "$PROFILE" >/dev/null 2>&1 && [ -d "$BASE/projects" ] && "$LINK" --check "$PROFILE" >/dev/null 2>&1 \
+  && ok "a re-run recreates it" || fail "a re-run recreates it"
+
+# ── a concurrent launcher made the link first ────────────────────────────
+new_home race
+RACE="$ROOT/race-bin"
+mkdir -p "$RACE"
+# Stands in for losing the race: the link exists (made by the other launcher)
+# and this ln fails because of it.
+printf '#!/usr/bin/env bash\n"%s" "$@" 2>/dev/null; echo "ln: File exists" >&2; exit 1\n' "$(command -v ln)" > "$RACE/ln"
+chmod +x "$RACE/ln"
+if PATH="$RACE:$REAL_PATH" "$LINK" "$PROFILE" >/dev/null 2>&1; then ok "a link made by a concurrent run is accepted"
+else fail "a link made by a concurrent run is accepted"; fi
+new_home race-wrong
+printf '#!/usr/bin/env bash\n"%s" -sn /nonexistent "${@: -1}"; exit 1\n' "$(command -v ln)" > "$RACE/ln"
+if PATH="$RACE:$REAL_PATH" "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "a wrong link made by a concurrent run is drift"
+else ok "a wrong link made by a concurrent run is drift"; fi
+
 # ── --check never writes ─────────────────────────────────────────────────
 new_home check
 if "$LINK" --check "$PROFILE" >/dev/null 2>&1; then fail "--check reports a missing profile"; else ok "--check reports a missing profile"; fi
@@ -120,7 +159,7 @@ if "$LINK" --check "$PROFILE" >/dev/null 2>&1; then fail "--check reports drift"
 
 # ── refused targets ──────────────────────────────────────────────────────
 new_home guard
-for target in "$BASE" "$BASE/sub" "relative/dir" ""; do
+for target in "$BASE" "$BASE/sub" "$HOME" "$ROOT" "relative/dir" ""; do
   "$LINK" "$target" >/dev/null 2>&1
   [ $? -eq 2 ] && ok "refuses target '${target:-<empty>}'" || fail "refuses target '${target:-<empty>}'"
 done

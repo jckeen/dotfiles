@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-16 — fix: harden the ccw profile linker
+
+- **`claude/scripts/link-claude-profile.sh`** (refs #591): refuses a profile
+  directory that contains `~/.claude` (such as `$HOME`), not only the default
+  directory and its descendants; refuses a symlinked or non-file
+  `.claude.json` instead of reading through it or replacing it; `--check`
+  reports a missing or broken shared state directory (`projects`, `plugins`,
+  `file-history`) instead of accepting a dangling link to it; and a link a
+  concurrent `ccw` launch made first is accepted rather than reported as drift.
+- **Tests:** one case per finding in `tests/claude-profile.test.sh`
+  (8 failed before the fix, all pass after).
+
 ## 2026-10-16 — fix(hooks): SymlinkRepair creates ~/.claude before top-level links
 
 - **`claude/hooks/SymlinkRepair.hook.ts`** (follow-up to #598, Codex review

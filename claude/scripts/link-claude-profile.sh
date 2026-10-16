@@ -53,18 +53,29 @@ esac
 # lexical test and then have the loop below link ~/.claude onto itself.
 leaf="$(basename "$PROFILE")"
 parent="$(cd -P "$(dirname "$PROFILE")" 2>/dev/null && pwd -P)" || parent=""
-if [ -z "$parent" ] || [ "$leaf" = "." ] || [ "$leaf" = ".." ]; then
+if [ -z "$parent" ] || [ "$leaf" = "." ] || [ "$leaf" = ".." ] || [ "$leaf" = "/" ]; then
   echo "link-claude-profile: $PROFILE must name a directory under an existing parent" >&2
   exit 2
 fi
 PROFILE="${parent%/}/$leaf"
-BASE_REAL="$(cd -P "$BASE" 2>/dev/null && pwd -P)" || BASE_REAL="$BASE"
-case "$PROFILE/" in
-  "$BASE/"*|"$BASE_REAL/"*)
-    echo "link-claude-profile: $PROFILE is the default config dir (or inside it)" >&2
-    exit 2
-    ;;
-esac
+BASE_REAL="$(cd -P "$BASE" 2>/dev/null && pwd -P)" \
+  || BASE_REAL="$(cd -P "$HOME" 2>/dev/null && pwd -P)/.claude" || BASE_REAL="$BASE"
+for base in "$BASE" "$BASE_REAL"; do
+  case "$PROFILE/" in
+    "$base/"*)
+      echo "link-claude-profile: $PROFILE is the default config dir (or inside it)" >&2
+      exit 2
+      ;;
+  esac
+  # An ancestor such as $HOME would have its ordinary entries (~/projects,
+  # ~/plugins) treated as profile state and replaced by links.
+  case "$base/" in
+    "$PROFILE/"*)
+      echo "link-claude-profile: $PROFILE contains the default config dir" >&2
+      exit 2
+      ;;
+  esac
+done
 if [ -L "$PROFILE" ]; then
   echo "link-claude-profile: $PROFILE is a symlink — a profile must be a real directory" >&2
   exit 2
@@ -84,14 +95,24 @@ fi
 for name in $SHARED; do
   src="$BASE/$name"
   dst="$PROFILE/$name"
-  if [ ! -e "$src" ] && [ ! -L "$src" ]; then
-    case "$ENSURED" in
-      *" $name "*)
-        if [ "$CHECK" -eq 0 ]; then
-          mkdir -p "$src" || { drift "cannot create $src"; continue; }
+  case "$ENSURED" in
+    *" $name "*)
+      # A link to a missing state dir would pass a readlink comparison while
+      # leaving the profile unusable, so the source itself must be a directory.
+      if [ ! -d "$src" ]; then
+        if [ -e "$src" ] || [ -L "$src" ]; then
+          drift "BROKEN  $src is not a directory — fix it in the default profile, re-run"
+          continue
         fi
-        ;;
-      *)
+        if [ "$CHECK" -eq 1 ]; then
+          drift "MISSING  $src"
+          continue
+        fi
+        mkdir -p "$src" || { drift "cannot create $src"; continue; }
+      fi
+      ;;
+    *)
+      if [ ! -e "$src" ] && [ ! -L "$src" ]; then
         # Nothing to share until the default profile has it — but a copy that
         # exists only here would make the two accounts behave differently.
         if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then continue; fi
@@ -102,9 +123,9 @@ for name in $SHARED; do
           drift "PRIVATE  $dst exists only in this profile — move it to $src or remove it, re-run"
         fi
         continue
-        ;;
-    esac
-  fi
+      fi
+      ;;
+  esac
   if [ -L "$dst" ]; then
     [ "$(readlink "$dst")" = "$src" ] || drift "WRONG  $dst -> $(readlink "$dst") (expected $src)"
     continue
@@ -121,7 +142,10 @@ for name in $SHARED; do
   if [ "$CHECK" -eq 1 ]; then
     drift "MISSING  $dst -> $src"
   else
-    ln -sn "$src" "$dst" || drift "cannot link $dst"
+    # A concurrent launcher may have made the same link after the checks
+    # above; ln then fails only because the correct link already exists.
+    ln -sn "$src" "$dst" 2>/dev/null || [ "$(readlink "$dst" 2>/dev/null)" = "$src" ] \
+      || drift "cannot link $dst"
   fi
 done
 
@@ -129,7 +153,11 @@ done
 # ~/.claude, a named profile's inside its own directory.
 BASE_STATE="$HOME/.claude.json"
 PROFILE_STATE="$PROFILE/.claude.json"
-if [ -f "$BASE_STATE" ]; then
+# Account state must be this profile's own file: a link would share another
+# account's state, and the rename below would silently replace it.
+if [ -L "$PROFILE_STATE" ] || { [ -e "$PROFILE_STATE" ] && [ ! -f "$PROFILE_STATE" ]; }; then
+  drift "NOT OWN  $PROFILE_STATE is not a regular file — replace it with this profile's own state, re-run"
+elif [ -f "$BASE_STATE" ]; then
   if ! command -v jq >/dev/null 2>&1; then
     drift "jq not found — cannot compare MCP servers in $PROFILE_STATE with $BASE_STATE"
   else
