@@ -2957,14 +2957,15 @@ if kind == 'writer':
         self.assertEqual(late.read_text(), "late\n")
         self.assertTrue(self.registered(archive / "worktree"))
 
-    def test_expire_rolls_back_when_the_metadata_tar_fails_mid_read(self):
-        # A tar truncated during the staged inspection's reflog read raises
-        # tarfile.ReadError; it must retain and roll back, not escape.
+    def test_expire_rolls_back_whatever_the_staged_metadata_read_raises(self):
+        # The metadata tar can change after the staged hash: a truncated
+        # member raises tarfile.ReadError, a hard link whose target is gone
+        # raises KeyError. Each, and any other failure, must retain the entry
+        # with the checkout moved back, never escape with it at staging.
         from unittest.mock import patch
 
         archive = self.retired()
         self.age(archive, 40)
-        staged = {}
         extract = tarfile.TarFile.extractfile
 
         class Truncated:
@@ -2977,21 +2978,44 @@ if kind == 'writer':
             def read(self, *_):
                 raise tarfile.ReadError("unexpected end of data")
 
-        def extractfile(tar, member):
-            if staged and getattr(member, "name", member).endswith("logs/HEAD"):
-                return Truncated()
-            return extract(tar, member)
+        def truncated(member):
+            return Truncated()
 
-        def mark(count, _):
-            if count == 2:
-                staged["now"] = True
+        def missing_target(member):
+            raise KeyError(f"linkname {member.name!r} not found")
 
-        with patch.object(tarfile.TarFile, "extractfile", extractfile):
-            item = self.entry(self.expire_with_clean_hook(mark), archive)
-        self.assertEqual(item["disposition"], "retained", item)
-        self.assertIn("cannot read worktree-metadata.tar", item["reason"])
-        self.assertTrue(self.registered(archive / "worktree"))
-        self.assertFalse(os.path.lexists(archive / "worktree-expiring"))
+        def unexpected(member):
+            raise RuntimeError("unexpected failure")
+
+        cases = (
+            ("truncated", truncated, "cannot read worktree-metadata.tar"),
+            ("missing hard-link target", missing_target, "cannot read worktree-metadata.tar"),
+            ("unexpected", unexpected, "unexpected failure"),
+        )
+        for label, failure, reason in cases:
+            with self.subTest(failure=label):
+                staged = {}
+
+                def extractfile(tar, member, failure=failure, staged=staged):
+                    if staged and getattr(member, "name", member).endswith("logs/HEAD"):
+                        return failure(member)
+                    return extract(tar, member)
+
+                def mark(count, _, staged=staged):
+                    if count == 2:
+                        staged["now"] = True
+
+                try:
+                    with patch.object(tarfile.TarFile, "extractfile", extractfile):
+                        item = self.entry(self.expire_with_clean_hook(mark), archive)
+                finally:
+                    shutil.rmtree(self.proc / "123")
+                self.assertEqual(item["disposition"], "retained", item)
+                self.assertIn("changed after inspection", item["reason"])
+                self.assertIn(reason, item["reason"])
+                self.assertTrue(self.registered(archive / "worktree"))
+                self.assertFalse(os.path.lexists(archive / "worktree-expiring"))
+        self.assertEqual(self.entry(self.expire(), archive)["disposition"], "expirable")
 
     def test_expire_names_where_a_failed_rollback_left_the_checkout(self):
         # The checkout moved back but its registration repair failed: the

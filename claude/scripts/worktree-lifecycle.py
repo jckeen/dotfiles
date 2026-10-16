@@ -1077,14 +1077,15 @@ def check_metadata_archived(admin, archive, head):
             return None
         try:
             return tar.extractfile(member)
-        except (OSError, tarfile.TarError) as error:
+        except (OSError, KeyError, tarfile.TarError) as error:
+            # KeyError: a hard-link member whose target is no longer in the tar.
             raise unreadable() from error
 
     def read_archived(original, size=-1):
         # A tar truncated or replaced since the hash check fails mid-member.
         try:
             return original.read(size)
-        except (OSError, tarfile.TarError) as error:
+        except (OSError, KeyError, tarfile.TarError) as error:
             raise unreadable() from error
 
     def same_content(member, path):
@@ -1257,13 +1258,16 @@ def expirable_quarantine(repo, archive, item, record, moment, now, days, trust):
             inspect(staging)
             if recovery_identity(archive) != recovery:
                 raise ValueError("the recovery files changed; retain for inspection")
-        except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
+        # Any failure at all, of any type, must move the checkout back: an
+        # exception escaping here would leave it registered at the staging
+        # path with a reason that never says so.
+        except Exception as error:
             location, step = staging, "moving it back"
             try:
                 os.rename(staging, quarantine)
                 location, step = quarantine, "repairing its registration"
                 git(repo, "worktree", "repair", str(quarantine))
-            except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as restore:
+            except Exception as restore:
                 raise ValueError(
                     f"changed after inspection ({error}); the checkout is retained at {location} "
                     f"because {step} failed: {restore}"
