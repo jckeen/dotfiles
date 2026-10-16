@@ -164,3 +164,11 @@ gh api repos/jckeen/dotfiles/rulesets --jq '.[] | select(.name == "codex-review"
 
 To lift it for one PR, add the `codex-skip` label. To remove it, delete the
 ruleset by id (`gh api -X DELETE repos/jckeen/dotfiles/rulesets/<id>`).
+
+Finding which PRs wait on bot findings needs no polling:
+`.github/workflows/codex-findings.yml` labels a PR `codex-findings` while it
+has an unresolved Codex bot thread, so `gh pr list --label codex-findings` is
+the queue. Answer each thread with `claude/scripts/codex-threads.sh`: `list
+--pr N`, then `resolve --thread ID --reply "Fixed in <sha>"` or a reason it
+is moot. Resolving a PR's last bot thread this way also clears its label;
+resolving one in the web UI clears it at the bot's next review.

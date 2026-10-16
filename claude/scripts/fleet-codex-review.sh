@@ -7,10 +7,11 @@
 #
 # With no repos named, acts on ENFORCE and ADVISORY below. Per repo, --apply
 # takes at most one step, so re-run it after each rollout PR merges:
-#   1. The default branch lacks .github/workflows/codex-review.yml, or its copy
-#      differs from this checkout's: open (or reuse) a PR on branch
-#      ci/codex-review-status carrying the canonical file, with auto-merge on.
-#   2. The workflow is current and the repo is in ENFORCE: create the
+#   1. The default branch lacks one of WORKFLOWS (.github/workflows/
+#      codex-review.yml, codex-findings.yml), or its copy differs from this
+#      checkout's: open (or reuse) a PR on branch ci/codex-review-status
+#      carrying every file that is not current, with auto-merge on.
+#   2. Every workflow is current and the repo is in ENFORCE: create the
 #      `codex-review` ruleset on ~DEFAULT_BRANCH — required status
 #      `codex-review` plus required review-thread resolution. Never before step
 #      1 lands: a required status no workflow posts would hold every PR forever,
@@ -52,7 +53,10 @@ ADVISORY=(
   Keen-Media/giant-steps
 )
 
-WORKFLOW_PATH=.github/workflows/codex-review.yml
+# codex-review.yml posts the required status; codex-findings.yml labels PRs
+# that still have unresolved bot threads (dotfiles#617).
+WORKFLOW_DIR=.github/workflows
+WORKFLOWS=(codex-review.yml codex-findings.yml)
 BRANCH=ci/codex-review-status
 RULESET=codex-review
 # The GitHub Actions app (gh api apps/github-actions). Pinning the required
@@ -60,7 +64,7 @@ RULESET=codex-review
 # integration posting `codex-review` by hand.
 ACTIONS_APP_ID=15368
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CANONICAL="$ROOT/$WORKFLOW_PATH"
+CANONICAL_DIR="$ROOT/$WORKFLOW_DIR"
 
 mode=check
 repos=()
@@ -79,10 +83,16 @@ for arg in "$@"; do
       ;;
   esac
 done
-[ -f "$CANONICAL" ] || {
-  echo "canonical workflow missing: $CANONICAL" >&2
-  exit 2
-}
+# Every canonical file is read once, here, before any repository is touched,
+# so a local read that fails can never ship an empty or partial workflow.
+declare -A CANON_B64
+for f in "${WORKFLOWS[@]}"; do
+  if ! b64="$(base64 -w0 <"$CANONICAL_DIR/$f")" || [ -z "$b64" ]; then
+    echo "canonical workflow missing, unreadable or empty: $CANONICAL_DIR/$f" >&2
+    exit 2
+  fi
+  CANON_B64[$f]=$b64
+done
 if [ "${#repos[@]}" -eq 0 ]; then
   repos=("${ENFORCE[@]}" "${ADVISORY[@]}")
 fi
@@ -93,20 +103,38 @@ enforced() {
   return 1
 }
 
-# Prints current | stale | missing for the workflow on <repo>@<ref>.
-workflow_state() {
-  local repo="$1" ref="$2" content
-  if ! content="$(gh api "repos/$repo/contents/$WORKFLOW_PATH?ref=$ref" --jq .content 2>/dev/null)"; then
-    echo missing
+# Prints current | stale | missing | unreadable for one workflow file on
+# <repo>@<ref>. Only a 404 is missing; any other failed read is unreadable,
+# which stops the repo rather than shipping a file it may already have.
+file_state() {
+  local repo="$1" ref="$2" f="$3" content err
+  err="$(mktemp)"
+  if ! content="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$ref" --jq .content 2>"$err")"; then
+    if grep -q 'HTTP 404' "$err"; then echo missing; else echo unreadable; fi
+    rm -f "$err"
     return
   fi
-  if [ "$(printf '%s' "$content" | base64 -d)" = "$(cat "$CANONICAL")" ]; then
+  rm -f "$err"
+  if [ "$(printf '%s' "$content" | base64 -d)" = "$(printf '%s' "${CANON_B64[$f]}" | base64 -d)" ]; then
     echo current
   else
     echo stale
   fi
 }
 
+# Prints current when every workflow is, else the files that are not, as
+# file:state pairs (e.g. "codex-findings.yml:missing").
+workflow_state() {
+  local repo="$1" ref="$2" f st out=()
+  for f in "${WORKFLOWS[@]}"; do
+    st="$(file_state "$repo" "$ref" "$f")"
+    [ "$st" = current ] || out+=("$f:$st")
+  done
+  if [ "${#out[@]}" -eq 0 ]; then echo current; else echo "${out[*]}"; fi
+}
+
+# Fails when the rulesets cannot be read, so the caller never mistakes a
+# failed read for "no ruleset" and creates a duplicate.
 ruleset_id() {
   gh api "repos/$1/rulesets" --jq "[.[] | select(.name == \"$RULESET\")][0].id // empty"
 }
@@ -117,48 +145,83 @@ open_rollout_pr() {
 
 # Called from an OR-list, where bash suspends errexit inside the function, so
 # every write checks its own result and stops the rollout for this repo.
+# ship_workflow <repo> <base> <base sha> <workflow state>: the state is
+# workflow_state's file:state pairs, read by the caller at that exact base
+# commit, which is also the commit the branch is cut from, so the states and
+# the branch can never disagree about which files exist.
 ship_workflow() {
-  local repo="$1" base="$2" pr base_sha file_sha body
-  pr="$(open_rollout_pr "$repo")"
+  local repo="$1" base="$2" base_sha="$3" todo="$4" pr file_sha body pair f st
+  if ! pr="$(open_rollout_pr "$repo")"; then
+    echo "  could not list open PRs" >&2
+    return 1
+  fi
   if [ -n "$pr" ]; then
     echo "  rollout PR #$pr already open"
     return 0
   fi
   # A leftover branch with no open PR is reported, never force-reset: it may
   # hold someone's work.
-  if gh api "repos/$repo/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
+  local err
+  err="$(mktemp)"
+  if gh api "repos/$repo/git/ref/heads/$BRANCH" >/dev/null 2>"$err"; then
+    rm -f "$err"
     echo "  branch $BRANCH exists with no open PR; inspect or delete it, then re-run" >&2
     return 1
   fi
-  if ! base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)" || [ -z "$base_sha" ]; then
-    echo "  could not read $base" >&2
+  # Only a 404 means the branch is absent.
+  if ! grep -q 'HTTP 404' "$err"; then
+    echo "  could not read branch $BRANCH: $(cat "$err")" >&2
+    rm -f "$err"
     return 1
   fi
+  rm -f "$err"
+  # Every read happens before the first write: a stale file's blob sha is
+  # read at the base commit the branch is about to be cut from (the same
+  # blob), so a failed read leaves no branch and no partial upload behind.
+  local shas=()
+  for pair in $todo; do
+    f=${pair%%:*}
+    st=${pair#*:}
+    file_sha=""
+    if [ "$st" = stale ]; then
+      if ! file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_DIR/$f?ref=$base_sha" --jq .sha)" || [ -z "$file_sha" ]; then
+        echo "  could not read $WORKFLOW_DIR/$f at $base_sha; nothing written" >&2
+        return 1
+      fi
+    fi
+    shas+=("$file_sha")
+  done
   if ! gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$base_sha" >/dev/null; then
     echo "  could not create branch $BRANCH" >&2
     return 1
   fi
-  file_sha="$(gh api "repos/$repo/contents/$WORKFLOW_PATH?ref=$BRANCH" --jq .sha 2>/dev/null || true)"
-  local args=(-X PUT "repos/$repo/contents/$WORKFLOW_PATH" -f branch="$BRANCH"
-    -f message="ci: hold merges until the Codex bot review finishes"
-    -f content="$(base64 -w0 <"$CANONICAL")")
-  [ -n "$file_sha" ] && args+=(-f sha="$file_sha")
-  if ! gh api "${args[@]}" >/dev/null; then
-    echo "  could not write $WORKFLOW_PATH on $BRANCH; branch left for inspection" >&2
-    return 1
-  fi
+  local i=0
+  for pair in $todo; do
+    f=${pair%%:*}
+    local args=(-X PUT "repos/$repo/contents/$WORKFLOW_DIR/$f" -f branch="$BRANCH"
+      -f message="ci: add or update $f from jckeen/dotfiles"
+      -f content="${CANON_B64[$f]}")
+    [ -n "${shas[$i]}" ] && args+=(-f sha="${shas[$i]}")
+    i=$((i + 1))
+    if ! gh api "${args[@]}" >/dev/null; then
+      echo "  could not write $WORKFLOW_DIR/$f on $BRANCH; branch left for inspection" >&2
+      return 1
+    fi
+  done
   body="$(mktemp)"
   cat >"$body" <<'EOF'
-Adds the `codex-review` workflow from jckeen/dotfiles (`.github/workflows/codex-review.yml`, copied verbatim by `claude/scripts/fleet-codex-review.sh`).
+Adds or updates the Codex review workflows from jckeen/dotfiles (`.github/workflows/codex-review.yml` and `codex-findings.yml`, copied verbatim by `claude/scripts/fleet-codex-review.sh`). Only files that differ from the canonical copy are in this PR.
 
-It posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once. A review counts only for the PR's head commit: a later push gets an `@codex review` request and holds until that review completes. If the bot never picks a PR up at all, the status passes after three minutes. A `codex-skip` label applied by an admin or maintainer passes it by hand.
+`codex-review` posts a `codex-review` commit status on each PR: pending while the GitHub Codex bot reviews, success once its summary table reads Completed. Docs-only and Dependabot PRs pass at once. A review counts only for the PR's head commit: a later push gets an `@codex review` request and holds until that review completes. If the bot never picks a PR up at all, the status passes after three minutes. A `codex-skip` label applied by an admin or maintainer passes it by hand.
+
+`codex-findings` labels a PR `codex-findings` while the bot has review threads on it that nobody has resolved, so `gh pr list --label codex-findings` lists the PRs waiting on bot findings.
 
 Nothing requires the status until the follow-up `codex-review` ruleset is created after this merges; this PR on its own changes no merge behavior.
 
 Revert: `git revert <merge sha>` (delete the `codex-review` ruleset first if it was created).
 EOF
   if ! pr="$(gh pr create -R "$repo" --base "$base" --head "$BRANCH" \
-    --title "ci: hold merges until the Codex bot review finishes" --body-file "$body")"; then
+    --title "ci: Codex review workflows from jckeen/dotfiles" --body-file "$body")"; then
     rm -f "$body"
     echo "  could not open the rollout PR; branch $BRANCH left for inspection" >&2
     return 1
@@ -202,8 +265,24 @@ for repo in "${repos[@]}"; do
     rc=1
     continue
   fi
-  wf="$(workflow_state "$repo" "$base")"
-  rs="$(ruleset_id "$repo" || true)"
+  # Pin one base commit: the workflow states and any rollout branch both use
+  # it, so a workflow landing in between cannot make them disagree.
+  if ! base_sha="$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)" || [ -z "$base_sha" ]; then
+    echo "  could not read $base" >&2
+    rc=1
+    continue
+  fi
+  wf="$(workflow_state "$repo" "$base_sha")"
+  if [[ "$wf" == *unreadable* ]]; then
+    echo "  workflow=$wf; cannot read the workflows, skipping" >&2
+    rc=1
+    continue
+  fi
+  if ! rs="$(ruleset_id "$repo")"; then
+    echo "  cannot read rulesets, skipping" >&2
+    rc=1
+    continue
+  fi
   if enforced "$repo"; then want=enforce; else want=advisory; fi
   echo "  workflow=$wf ruleset=${rs:-none} mode=$want"
   [ "$mode" = apply ] || continue
@@ -211,7 +290,7 @@ for repo in "${repos[@]}"; do
     # The canonical copy lands here through dotfiles' own reviewed PR.
     echo "  workflow lands through the dotfiles PR; nothing to do here"
   elif [ "$wf" != current ]; then
-    ship_workflow "$repo" "$base" || rc=1
+    ship_workflow "$repo" "$base" "$base_sha" "$wf" || rc=1
   elif [ "$want" = enforce ] && [ -z "$rs" ]; then
     if create_ruleset "$repo"; then
       # PRs opened before the workflow landed have no status yet and may see
