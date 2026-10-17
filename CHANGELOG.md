@@ -4,35 +4,35 @@
 
 - **`claude/hooks/OperatorQueueReminder.hook.sh`**: a second source, open
   issues labelled `operator-action` in the private `OPERATOR_QUEUE_REPO`
-  (default `jckeen/claude-memory`). The phone and cloud sessions can read
-  these; the local `~/.claude/operator-queue.md` cannot reach them. The issues
-  are listed with `gh` (8s ceiling), turned into the same `## <slug>` blocks,
-  and rendered by the unchanged filter, ordering and freshness logic. They are
-  cached owner-only for 10 minutes under `~/.local/state/operator-queue/`.
-  `added` comes from the body's `- added:` line, falling back to the creation
-  date. `verified` is the newer of the body's `- verified:` date and the
-  latest comment. Migrated items therefore keep their real age, and a
-  re-verify comment, not a label edit, refreshes an item. An unreachable
-  GitHub is never silent: the header names the cache's age, or with no cache
-  one line names the `gh` command, including when the last good answer was
-  empty. A result that fills the 500-issue fetch limit says the list is
-  incomplete. The cache is keyed by GitHub host and repo. The fetch writes to a
-  file, never a pipe a surviving descendant could hold open, and is bounded on
-  every path: `timeout -k` escalates to SIGKILL, and without `timeout` a poll
-  loop kills the process tree and stops waiting. `verified` dates must be real
-  calendar dates. A queue file that exists, even empty, stays
-  the source until a line in its first five *starts* with the historical
-  banner, so nothing goes dark mid-migration. The body's full `- project:`
-  value wins over the `project:` label, so a migrated multi-project item still
-  matches each of its repos.
+  (default `github.com/jckeen/claude-memory`; the host is always explicit).
+  The phone and cloud sessions can read these; the local
+  `~/.claude/operator-queue.md` cannot reach them. SessionStart only renders
+  an owner-only cache under `~/.local/state/operator-queue/`. When the cache
+  is missing or older than 10 minutes, the hook starts `--refresh` detached.
+  That refresh pages the issues through one GraphQL query, using
+  `comments(last: 1)` for the newest comment. It turns them into the same
+  `## <slug>` blocks and replaces the cache atomically. A slow or stalled
+  `gh`/`jq` therefore costs SessionStart nothing. The Codex gate found the
+  in-hook fetch's timeout unsound three ways, which is why the fetch moved out
+  of the hook. `added` comes from the body's `- added:` line, falling back to
+  the creation date. `verified` is the newer of the body's calendar-valid
+  `- verified:` date and the newest comment, so migrated items keep their
+  real age and a re-verify comment, not a label edit, refreshes an item. The
+  body's full `- project:` value wins over the `project:` label, so a
+  multi-project item matches each of its repos. Nothing reads as "no open
+  items" unless a refresh within 10 minutes said so. The header names an old
+  cache, or one older than a failed refresh. With no cache, one line says a
+  refresh is running or that the last one failed. A queue file that exists,
+  even empty, stays the source until a line in its first five *starts* with
+  the historical banner, so nothing goes dark mid-migration.
 - **`claude/scripts/migrate-operator-queue.sh`** (new): dry-run by default,
   one row per block with its `project:<name>` label and target. `--apply`
   creates the missing labels and one issue per block, with the block's field
   lines verbatim in the body; titles that already have an issue are skipped,
   so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE,
   and refuses when the existing-title list is too long to be complete. Titles
-  match exactly (no awk escape processing), and a title repeated within one
-  queue is created once.
+  match exactly as strings (no awk escape processing or numeric comparison),
+  and a title repeated within one queue is created once.
   On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as
   new, all bound for the private repo. The handoff skills still write to the
   file; their switch to issues is a separate, operator-reviewed

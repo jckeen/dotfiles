@@ -7,9 +7,14 @@
 # open issues labelled `operator-action` in the private OPERATOR_QUEUE_REPO,
 # which a phone or a cloud session can read too. The file stays the source
 # until its first lines carry the "> **Historical**" banner; after that the
-# issues are listed with `gh` (bounded by FETCH_TIMEOUT), turned into the same
-# blocks (see fetch_issues) and cached owner-only under
-# ${XDG_STATE_HOME:-~/.local/state}/operator-queue/ for CACHE_TTL seconds.
+# hook renders a cache of the issues and never touches the network itself.
+# When the cache is missing or older than CACHE_TTL it starts `$0 --refresh`
+# detached (stdio to /dev/null, its own session where setsid exists), which
+# pages the issues through one GraphQL query, turns them into the same blocks
+# (see refresh) and atomically replaces the owner-only cache under
+# ${XDG_STATE_HOME:-~/.local/state}/operator-queue/. SessionStart therefore
+# costs no network time, however slow gh or jq is; the price is that a
+# session may see data one refresh old, and the header says how old.
 # Without a surface, queued items rot the way handoff prose did (each
 # new handoff buries the last). A SessionStart hook's stdout is added to
 # Claude's context, so every session starts knowing what only the operator can
@@ -42,19 +47,21 @@
 #   OPERATOR_QUEUE_SHOW_ALL=1  print every item in full (the pre-#558 view).
 #   OPERATOR_QUEUE_FILE=<path> read this queue instead of
 #                              ~/.claude/operator-queue.md (test fixtures).
-#   OPERATOR_QUEUE_REPO=<o/r>  the issue source's repo (default
-#                              jckeen/claude-memory; keep it private — items
-#                              name credentials and providers).
-#   OPERATOR_QUEUE_FETCH_TIMEOUT=<s>  the gh fetch ceiling (default 8).
+#   OPERATOR_QUEUE_REPO=[host/]owner/name  the issue source (default
+#                              github.com/jckeen/claude-memory; a bare
+#                              owner/name means github.com). Keep it private —
+#                              items name credentials and providers.
+#   OPERATOR_QUEUE_REFRESH_SYNC=1  refresh inline instead of detached (tests).
 #
 # TRIGGER: SessionStart (after HandoffReminder)
 # EXIT: 0 always (advisory/warn-only, never blocks)
 # FAILURE MODE: open — silent when the file queue is empty or has no parseable
-#   item blocks, or when GitHub answers with no open issues; one warning line
-#   if the parse itself fails. An unreachable GitHub is never silent: the
-#   header says the items come from a cache of a given age, or, with no cache,
-#   one line names the gh command to run. This hook only reads the queue; its
-#   one write is the issue cache.
+#   item blocks, or when a fresh cache holds no open issues; one warning line
+#   if the parse itself fails. A cache that is old, or older than a failed
+#   refresh, is named as such in the header; with no cache at all, one line
+#   says a refresh is under way or that the last one failed. Nothing reads as
+#   "no open items" unless a refresh within CACHE_TTL said so. This hook only
+#   reads the queue; its writes are the cache and the refresh markers.
 # BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits;
 #   at most MAX_ITEMS items (every item under OPERATOR_QUEUE_SHOW_ALL=1) and
 #   MAX_ITEMS project summaries are rendered ("…and N more" for the rest),
@@ -66,73 +73,67 @@
 set -uo pipefail
 
 LEGACY="$HOME/.claude/operator-queue.md"
-ISSUE_REPO="${OPERATOR_QUEUE_REPO:-jckeen/claude-memory}"
-# One cache per host and source repo, so switching OPERATOR_QUEUE_REPO or
-# GH_HOST never shows another repo's items under the new name.
-CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue/issues-$(printf '%s' "${GH_HOST:-github.com}/$ISSUE_REPO" | tr -c 'A-Za-z0-9._-' '_').md"
+ISSUE_REPO="${OPERATOR_QUEUE_REPO:-github.com/jckeen/claude-memory}"
+# The host is always explicit, so the cache key is exactly what gh queries
+# (gh's own default host can come from its config, which the key cannot see).
+case "$ISSUE_REPO" in */*/*) ;; *) ISSUE_REPO="github.com/$ISSUE_REPO" ;; esac
+GH_HOSTNAME="${ISSUE_REPO%%/*}"
+REPO_PATH="${ISSUE_REPO#*/}"
+CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
+CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | tr -c 'A-Za-z0-9._-' '_').md"
+FAILED="$CACHE.failed"   # mtime = the last failed refresh
+LOCK="$CACHE.lock"
 CACHE_TTL=600
-FETCH_TIMEOUT="${OPERATOR_QUEUE_FETCH_TIMEOUT:-8}"
-FETCH_LIMIT=500
 SOURCE="file"
 CACHE_NOTE=""
 
-# run_bounded <secs> <outfile> <cmd...> — run cmd with stdout to a file (never a
-# pipe: a descendant that outlives the kill could hold a pipe open and stall the
-# reader) and return 124 once <secs> pass. GNU `timeout` / `gtimeout` escalate
-# to SIGKILL a second later; without either, a poll loop waits on the pid alone,
-# then SIGKILLs it and its children and returns without waiting for any
-# descendant, so the ceiling holds even for a command that ignores SIGTERM.
-run_bounded() {
-  local secs="$1" out="$2"; shift 2
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k 1 "$secs" "$@" > "$out" 2>/dev/null; return
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout -k 1 "$secs" "$@" > "$out" 2>/dev/null; return
-  fi
-  "$@" > "$out" 2>/dev/null < /dev/null & local pid=$! ticks=$(( secs * 10 ))
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$ticks" -le 0 ]; then
-      pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null
-      return 124
-    fi
-    sleep 0.1; ticks=$(( ticks - 1 ))
-  done
-  wait "$pid"
-}
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 
-# fetch_issues — open operator-action issues rendered as the same "## <slug>"
-# blocks the file queue uses, so one renderer serves both sources. added is the
-# body's `- added:` line (migrated items keep their real age), else the issue's
-# creation date. verified is the newer of the body's `- verified:` date and the
-# latest comment, so a re-verify comment bumps it but a label edit does not.
-# project is the body's full `- project:` value (a migrated "keen-media,
+# refresh — page every open operator-action issue through one GraphQL query
+# (comments(last: 1) is the newest comment however many there are) and
+# replace the cache with the rendered blocks; on any failure leave the cache
+# alone and touch FAILED. added is the body's `- added:` line (migrated items
+# keep their real age), else the creation date. verified is the newer of the
+# body's `- verified:` date and the newest comment, so a re-verify comment
+# bumps it but a label edit does not; only real calendar dates count. project
+# is the body's full `- project:` value (a migrated "keen-media,
 # operator-commons" item still matches either session), else a
 # `project:<name>` label; deadline and action come from the body's
 # `- deadline:` / `- action:` lines (the action falls back to the first
-# non-empty body line that is not a field). A result that fills FETCH_LIMIT is
-# marked "# truncated" so the header can say the list is incomplete.
-fetch_issues() {
-  command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
-  local raw rc
-  raw="$(mktemp "${CACHE}.raw.XXXXXX")" || return 1
-  run_bounded "$FETCH_TIMEOUT" "$raw" gh issue list -R "$ISSUE_REPO" --label operator-action \
-    --state open --limit "$FETCH_LIMIT" --json number,title,body,createdAt,labels,comments
-  rc=$?
-  if [ "$rc" -ne 0 ]; then rm -f "$raw"; return 1; fi
-  jq -r --argjson limit "$FETCH_LIMIT" '
+# non-empty body line that is not a field).
+refresh() {
+  mkdir -p "$CACHE_DIR" || return 1
+  # One refresh at a time; a lock older than 5 minutes is a crashed run.
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    [ $(( $(date +%s) - $(mtime "$LOCK") )) -gt 300 ] || return 0
+    rmdir "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || return 0
+  fi
+  local raw tmp rc=1
+  raw="$(mktemp "$CACHE.raw.XXXXXX")" && tmp="$(mktemp "$CACHE.new.XXXXXX")" &&
+  command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
+  gh api graphql --hostname "$GH_HOSTNAME" --paginate \
+    -f owner="${REPO_PATH%%/*}" -f name="${REPO_PATH#*/}" -f query='
+      query($owner: String!, $name: String!, $endCursor: String) {
+        repository(owner: $owner, name: $name) {
+          issues(first: 100, after: $endCursor, states: OPEN, labels: ["operator-action"]) {
+            pageInfo { hasNextPage endCursor }
+            nodes { number title body createdAt
+              labels(first: 100) { nodes { name } }
+              comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null &&
+  jq -rs '
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
       and ((try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .);
     def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
     "# Operator-action issues",
-    (if length >= $limit then "# truncated" else empty end),
-    ( .[] | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
+    ( [ .[].data.repository.issues.nodes[] ] | .[]
+      | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
       | (($lines | field("project")) as $p
           | if $p != "" then $p
-            else ([ .labels[].name | select(startswith("project:")) | sub("^project:"; "") ][0] // "") end) as $project
+            else ([ .labels.nodes[].name | select(startswith("project:")) | sub("^project:"; "") ][0] // "") end) as $project
       | ($lines | field("deadline")) as $deadline
       | (($lines | field("added")) as $a | if $a != "" then $a else .createdAt[0:10] end) as $added
-      | ([ ($lines | field("verified") | .[0:10]), ((.comments // [])[].createdAt[0:10]) ]
+      | ([ ($lines | field("verified") | .[0:10]), (.comments.nodes[].createdAt[0:10]) ]
           | map(select(isdate)) | max // "") as $verified
       | (($lines | field("action")) as $a
           | if $a != "" then $a else ([ $lines[] | select(test("\\S") and (test("^- [a-z]+:") | not)) ][0] // "") end) as $action
@@ -141,11 +142,18 @@ fetch_issues() {
         (if $verified != "" then "- verified: \($verified)" else empty end),
         (if $project != "" then "- project: \($project)" else empty end),
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
-        "- action: \($action)" )' "$raw"
-  rc=$?
-  rm -f "$raw"
+        "- action: \($action)" )' "$raw" > "$tmp" &&
+  chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
+  rm -f "$raw" "${tmp:-}"
+  if [ "$rc" -eq 0 ]; then rm -f "$FAILED"; else touch "$FAILED"; fi
+  rmdir "$LOCK" 2>/dev/null
   return "$rc"
 }
+
+if [ "${1:-}" = "--refresh" ]; then
+  refresh
+  exit
+fi
 
 # Source: the file queue is migrating to operator-action issues in the private
 # ISSUE_REPO, which the phone and cloud sessions can read. A queue file that
@@ -160,28 +168,37 @@ elif [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'
 else
   SOURCE="issues"
   QUEUE="$CACHE"
+  now="$(date +%s)"
   cache_age=-1
-  if [ -f "$CACHE" ]; then
-    cache_age=$(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || stat -f %m "$CACHE") ))
-  fi
+  [ -f "$CACHE" ] && cache_age=$(( now - $(mtime "$CACHE") ))
   if [ "$cache_age" -lt 0 ] || [ "$cache_age" -gt "$CACHE_TTL" ]; then
-    mkdir -p "$(dirname "$CACHE")"
-    tmp="$(mktemp "$CACHE.XXXXXX")"
-    if fetch_issues > "$tmp"; then
-      chmod 600 "$tmp"; mv -f "$tmp" "$CACHE"
+    if [ "${OPERATOR_QUEUE_REFRESH_SYNC:-}" = "1" ]; then
+      refresh
+    elif command -v setsid >/dev/null 2>&1; then
+      setsid bash "$0" --refresh < /dev/null > /dev/null 2>&1 &
     else
-      rm -f "$tmp"
-      # A failed fetch must never read as "no open items": say so, and fall
-      # back to the last good cache when there is one.
-      if [ "$cache_age" -lt 0 ]; then
-        echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action\`."
-        exit 0
-      fi
-      CACHE_NOTE=" (GitHub unreachable — cached $((cache_age / 60)) min ago)"
+      nohup bash "$0" --refresh < /dev/null > /dev/null 2>&1 &
     fi
+    now="$(date +%s)"
+    cache_age=-1
+    [ -f "$CACHE" ] && cache_age=$(( now - $(mtime "$CACHE") ))
   fi
-  if grep -qx '# truncated' "$CACHE" 2>/dev/null; then
-    CACHE_NOTE="$CACHE_NOTE (first $FETCH_LIMIT only — more are open)"
+  failed_age=-1
+  [ -f "$FAILED" ] && failed_age=$(( now - $(mtime "$FAILED") ))
+  if [ "$cache_age" -lt 0 ]; then
+    if [ "$failed_age" -ge 0 ]; then
+      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action\`."
+    else
+      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action\` to see them now."
+    fi
+    exit 0
+  fi
+  # A refresh that failed after the cache was written means GitHub was not
+  # reachable; an old cache without a failure is simply being refreshed.
+  if [ "$failed_age" -ge 0 ] && [ "$failed_age" -lt "$cache_age" ]; then
+    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable or gh unauthenticated)"
+  elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
+    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
   fi
   if ! grep -q '^## ' "$CACHE" 2>/dev/null; then
     # An empty answer is only "nothing open" when it is fresh.

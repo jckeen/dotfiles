@@ -22,7 +22,7 @@ cat > "$FX/bin/gh" <<'GH'
 printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$1 $2" in
   "repo view")    echo "$FAKE_VIS" ;;
-  "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n' ;;
+  "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n001\t9\n100\t10\n' ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
   "issue create")
@@ -95,6 +95,12 @@ printf '## repeated\n- action: one\n\n## repeated\n- action: two\n\n## rotate-\\
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/dupes.md" --repo o/r --apply 2>&1)"; rc=$?
 assert "apply: a title repeated in the queue is created once" "[ $rc -eq 0 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +#[0-9]+ \\(exists, skipped\\)$' <<<\"\$out\""
 assert "apply: a backslash title matches its existing issue" "! grep -q -- '--title rotate-' '$FAKE_LOG' && grep -qF '#8 (exists, skipped)' <<<\"\$out\""
+
+# Numeric-looking titles compare as strings: "1" is not "001", "1e2" is not "100".
+printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/numeric.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: numeric-looking titles are not matched numerically" "[ $rc -eq 0 ] && grep -q -- '--title 1 --label' '$FAKE_LOG' && grep -q -- '--title 1e2 --label' '$FAKE_LOG'"
 
 # A queue with no project anywhere: --apply must not abort on the empty label list.
 printf '## lone\n- added: 2026-09-01\n- action: unscoped only\n' > "$FX/unscoped.md"

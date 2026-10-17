@@ -36,9 +36,15 @@ out=""
 FAKEBIN="$(mktemp -d)"
 cat > "$FAKEBIN/gh" <<'GH'
 #!/usr/bin/env bash
+# Answers `gh api graphql --paginate` with one page wrapping the fixture array:
+# labels and comments as GraphQL connections, comments cut to the newest one
+# the way comments(last: 1) is. FAKE_GH_SLEEP stalls first (a slow GitHub).
 [ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+[ -n "${FAKE_GH_SLEEP:-}" ] && sleep "$FAKE_GH_SLEEP"
 [ -n "${FAKE_GH_JSON:-}" ] || exit 1
-cat "$FAKE_GH_JSON"
+jq '{data: {repository: {issues: {pageInfo: {hasNextPage: false, endCursor: null},
+  nodes: [ .[] | .labels = {nodes: (.labels // [])}
+                | .comments = {nodes: ((.comments // []) | .[-1:])} ]}}}}' "$FAKE_GH_JSON"
 GH
 chmod +x "$FAKEBIN/gh"
 export PATH="$FAKEBIN:$PATH"
@@ -200,8 +206,8 @@ run_hook ""
 unset FAKE_GH_JSON
 assert "empty queue, no open issues: silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
 H="$(mktemp -d)"
-out="$(env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_FILE HOME="$H" "$HOOK" 2>&1)"; rc=$?
-assert "absent queue, GitHub unreachable, no cache: one warning line" "[ $rc -eq 0 ] && [ \"\$(printf '%s\n' \"\$out\" | wc -l)\" -eq 1 ] && outgrep 'could not list operator-action issues in jckeen/claude-memory'"
+out="$(env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_FILE HOME="$H" OPERATOR_QUEUE_REFRESH_SYNC=1 "$HOOK" 2>&1)"; rc=$?
+assert "absent queue, GitHub unreachable, no cache: one warning line" "[ $rc -eq 0 ] && [ \"\$(printf '%s\n' \"\$out\" | wc -l)\" -eq 1 ] && outgrep 'could not list operator-action issues in github.com/jckeen/claude-memory'"
 rm -rf "$H"
 
 # ── project filter (#558) ───────────────────────────────────────────────
@@ -379,35 +385,38 @@ iso() { date -u -d "$1 days" +%Y-%m-%dT%H:%M:%SZ; }
 ISSUES="$FX/issues.json"
 cat > "$ISSUES" <<JSON
 [
-  {"number": 12, "title": "dot-issue", "createdAt": "$(iso -45)", "updatedAt": "$(iso -1)",
+  {"number": 12, "title": "dot-issue", "createdAt": "$(iso -45)",
    "labels": [{"name": "operator-action"}, {"name": "project:dotfiles"}],
    "comments": [{"createdAt": "$(iso -20)"}, {"createdAt": "$(iso -5)"}],
    "body": "- action: approve the dotfiles thing\r\n- deadline: $P3\r\n\r\nMore context."},
-  {"number": 13, "title": "str-issue", "createdAt": "$(iso -1)", "updatedAt": "$(iso -1)",
+  {"number": 13, "title": "str-issue", "createdAt": "$(iso -1)",
    "labels": [{"name": "operator-action"}], "comments": [],
    "body": "- added: $D90\n- verified: $(day -60) (owning issue open)\n- project: stringer\nRotate the stringer credential."},
-  {"number": 14, "title": "bare-issue", "createdAt": "$(iso -2)", "updatedAt": "$(iso -2)",
+  {"number": 14, "title": "bare-issue", "createdAt": "$(iso -2)",
    "labels": [{"name": "operator-action"}], "body": null}
 ]
 JSON
 IH="$FX/ihome"
-# run_issues [VAR=val...] — no OPERATOR_QUEUE_FILE, HOME=$IH, cwd = the dotfiles fixture.
+# run_issues [VAR=val...] — no OPERATOR_QUEUE_FILE, HOME=$IH, cwd = the dotfiles
+# fixture, refresh inline (OPERATOR_QUEUE_REFRESH_SYNC=1) unless a case
+# overrides it, so each assertion sees the refresh's result.
 run_issues() {
   out="$(cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
-    HOME="$IH" FAKE_GH_LOG="$FX/gh.log" "$@" "$HOOK" 2>&1)"
+    HOME="$IH" FAKE_GH_LOG="$FX/gh.log" OPERATOR_QUEUE_REFRESH_SYNC=1 "$@" "$HOOK" 2>&1)"
   rc=$?
 }
 CACHEF="$IH/.local/state/operator-queue/issues-github.com_jckeen_claude-memory.md"
+fresh_home() { rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"; }
 
-rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"
+fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
 assert "issues: exits 0" "[ $rc -eq 0 ]"
-assert "issues: gh lists the label in the private repo" "grep -qF 'issue list -R jckeen/claude-memory --label operator-action --state open' '$FX/gh.log'"
-assert "issues: header names the issue source; stale count uses body and comment dates" "outgrep '3 open item(s), 1 stale (>30d since added/verified) in operator-action issues in jckeen/claude-memory:'"
+assert "issues: one GraphQL query against the explicit host and repo" "grep -qF 'api graphql --hostname github.com --paginate -f owner=jckeen -f name=claude-memory' '$FX/gh.log' && grep -qF 'labels: [\"operator-action\"]' '$FX/gh.log'"
+assert "issues: header names the issue source; stale count uses body and comment dates" "outgrep '3 open item(s), 1 stale (>30d since added/verified) in operator-action issues in github.com/jckeen/claude-memory:'"
 assert "issues: project label, body deadline/action, newest comment as verified" "outgrep '[PAST DUE $P3] dot-issue (#12) — approve the dotfiles thing (project: dotfiles, added 45d ago, verified 5d ago)'"
 assert "issues: body project line and first-line action" "outgrep '  stringer: 1 item (oldest 90d)'"
 assert "issues: null body renders a placeholder action, unscoped" "outgrep '  (no project): 1 item (oldest 2d)'"
-assert "issues: footer names the gh command" "outgrep 'gh issue list -R jckeen/claude-memory --label operator-action'"
+assert "issues: footer names the gh command" "outgrep 'gh issue list -R github.com/jckeen/claude-memory --label operator-action'"
 assert "issues: trailer asks for a comment and close-when-done" "outgrep 'comment on the issue' && outgrep 'close it only when it is done'"
 assert "issues: cache written owner-only" "[ -f '$CACHEF' ] && [ \"\$(stat -c %a '$CACHEF')\" = 600 ]"
 
@@ -417,14 +426,14 @@ assert "issues: show-all renders the bodiless item, fresh by creation date" "out
 
 : > "$FX/gh.log"
 run_issues
-assert "issues: fresh cache is used without calling gh" "[ ! -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)' && ! outgrep 'unreachable'"
+assert "issues: fresh cache is rendered without calling gh" "[ ! -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)' && ! outgrep 'cached'"
 
 touch -d '2 hours ago' "$CACHEF"
 run_issues
-assert "issues: stale cache + unreachable GitHub says so" "outgrep 'GitHub unreachable — cached 120 min ago' && outgrep 'dot-issue (#12)'"
+assert "issues: old cache + failed refresh says GitHub is unreachable" "outgrep 'cached 120 min ago; the last refresh failed' && outgrep 'dot-issue (#12)'"
 touch -d '2 hours ago' "$CACHEF"
 run_issues FAKE_GH_JSON="$ISSUES"
-assert "issues: stale cache refreshed when GitHub answers" "! outgrep 'unreachable' && [ \"\$(( \$(date +%s) - \$(stat -c %Y '$CACHEF') ))\" -lt 60 ]"
+assert "issues: a successful refresh replaces the old cache and clears the failure" "! outgrep 'cached' && [ ! -e '$CACHEF.failed' ] && [ \"\$(( \$(date +%s) - \$(stat -c %Y '$CACHEF') ))\" -lt 60 ]"
 
 printf '> **Historical** — point-in-time record (2026-10-17). Do not act on this.\n\n## old-file-item\n- added: %s\n- project: dotfiles\n- action: from the retired file\n' "$D5" > "$IH/.claude/operator-queue.md"
 rm -f "$CACHEF"
@@ -434,17 +443,6 @@ printf '# queue\n\n## live-file-item\n- added: %s\n- project: dotfiles\n- action
 : > "$FX/gh.log"
 run_issues FAKE_GH_JSON="$ISSUES"
 assert "live queue file: stays the source, gh not called" "outgrep 'live-file-item' && ! outgrep 'dot-issue' && [ ! -s '$FX/gh.log' ]"
-
-rm -rf "$IH"; mkdir -p "$IH"
-run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
-assert "issues: no open issues is silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
-
-# Gate findings on the first draft, one case each.
-touch -d '2 hours ago' "$CACHEF"
-run_issues
-assert "empty stale cache + unreachable GitHub is not silent" "outgrep 'no open operator-action issues in jckeen/claude-memory as of the last good fetch (GitHub unreachable — cached 120 min ago)'"
-
-mkdir -p "$IH/.claude"
 printf '## live-first\n- added: %s\n- project: dotfiles\n- action: Add the > **Historical** banner to the retired guide.\n' "$D5" > "$IH/.claude/operator-queue.md"
 : > "$FX/gh.log"
 run_issues FAKE_GH_JSON="$ISSUES"
@@ -452,12 +450,24 @@ assert "a banner mention inside an action does not retire the file" "outgrep 'li
 : > "$IH/.claude/operator-queue.md"
 run_issues FAKE_GH_JSON="$ISSUES"
 assert "a zero-byte live file stays the source (silent, gh not called)" "[ -z \"\$out\" ] && [ ! -s '$FX/gh.log' ]"
-rm -f "$IH/.claude/operator-queue.md"
 
-rm -rf "$IH"; mkdir -p "$IH"
+fresh_home
+run_issues
+assert "no cache, refresh failed: one warning line" "[ \"\$(printf '%s\n' \"\$out\" | wc -l)\" -eq 1 ] && outgrep 'could not list operator-action issues in github.com/jckeen/claude-memory'"
+
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "issues: no open issues, fresh: silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
+touch -d '2 hours ago' "$CACHEF"
+run_issues
+assert "empty old cache + failed refresh is not silent" "outgrep 'no open operator-action issues in github.com/jckeen/claude-memory as of the last good fetch (cached 120 min ago; the last refresh failed'"
+
+fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
 run_issues OPERATOR_QUEUE_REPO=other/queue
-assert "cache is per repo: another repo never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list operator-action issues in other/queue'"
+assert "cache is per repo: another repo never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list operator-action issues in github.com/other/queue'"
+run_issues OPERATOR_QUEUE_REPO=ghe.example.com/jckeen/claude-memory
+assert "cache is per host: another host never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list' && grep -qF -- '--hostname ghe.example.com' '$FX/gh.log'"
 
 cat > "$FX/multi.json" <<JSON
 [{"number": 30, "title": "shared-item", "createdAt": "$(iso -3)", "comments": [],
@@ -465,55 +475,35 @@ cat > "$FX/multi.json" <<JSON
   "body": "- project: keen-media, operator-commons\n- action: shared between two repos"}]
 JSON
 mkdir -p "$FX/plain/operator-commons"
-rm -rf "$IH"; mkdir -p "$IH"
+fresh_home
 run_issues FAKE_GH_JSON="$FX/multi.json" CLAUDE_PROJECT_DIR="$FX/plain/operator-commons"
 assert "secondary project word in the body still matches its session" "outgrep 'shared-item (#30) — shared between two repos (project: keen-media, operator-commons'"
-
-jq -n --arg c "$(iso -1)" '[range(500) | {number: ., title: "bulk-\(.)", createdAt: $c, labels: [], comments: [], body: "- action: bulk"}]' > "$FX/full.json"
-rm -rf "$IH"; mkdir -p "$IH"
-run_issues FAKE_GH_JSON="$FX/full.json"
-assert "a fetch that fills the limit says the list is incomplete" "outgrep '(first 500 only — more are open)'"
-
-rm -rf "$IH"; mkdir -p "$IH"
-run_issues FAKE_GH_JSON="$ISSUES"
-run_issues GH_HOST=github.example.com
-assert "cache is per host: another host never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list'"
 
 cat > "$FX/baddate.json" <<JSON
 [{"number": 40, "title": "bad-date", "createdAt": "$(iso -90)", "labels": [],
   "comments": [{"createdAt": "$(iso -3)"}],
   "body": "- verified: 2026-99-99\n- action: body date is garbage"}]
 JSON
-rm -rf "$IH"; mkdir -p "$IH"
+fresh_home
 run_issues FAKE_GH_JSON="$FX/baddate.json" OPERATOR_QUEUE_SHOW_ALL=1
 assert "an impossible body date does not outrank a real comment" "outgrep 'bad-date (#40) — body date is garbage (added 90d ago, verified 3d ago)' && ! outgrep '$STALE bad-date'"
 
-# A gh that ignores SIGTERM: GNU timeout's -k escalation still ends it.
-printf '#!/bin/bash\ntrap "" TERM\nsleep 30\n' > "$FX/stubborn-gh"; chmod +x "$FX/stubborn-gh"
-mkdir -p "$FX/stubborn"; ln -sf "$FX/stubborn-gh" "$FX/stubborn/gh"
-rm -rf "$IH"; mkdir -p "$IH"
+# Detached refresh: a stalled GitHub costs SessionStart nothing. The hook
+# returns at once (its capture is not held by the refresh), says a refresh is
+# running, and a later session sees what the refresh wrote.
+fresh_home
 # shellcheck disable=SC2034 # read inside the eval-ed assert condition
 start=$(date +%s)
-run_issues PATH="$FX/stubborn:$PATH" OPERATOR_QUEUE_FETCH_TIMEOUT=1
-assert "SIGTERM-ignoring gh: bounded by the KILL escalation" "[ \$(( \$(date +%s) - start )) -lt 8 ] && outgrep 'could not list'"
-
-# No timeout/gtimeout on PATH: the watchdog fallback still bounds a stalled gh.
-mkdir -p "$FX/notimeout"
-for d in /usr/local/bin /usr/bin /bin; do
-  for f in "$d"/*; do
-    b="${f##*/}"
-    case "$b" in timeout|gtimeout|gh) continue ;; esac
-    [ -e "$FX/notimeout/$b" ] || ln -s "$f" "$FX/notimeout/$b" 2>/dev/null
-  done
-done
-# A wrapper whose grandchild ignores SIGTERM and inherits stdout: the shape that
-# held a pipe open past the ceiling.
-printf '#!/bin/bash\nbash -c "trap \\"\\" TERM; sleep 30"\n' > "$FX/notimeout/gh"; chmod +x "$FX/notimeout/gh"
-rm -rf "$IH"; mkdir -p "$IH"
-# shellcheck disable=SC2034 # read inside the eval-ed assert condition
-start=$(date +%s)
-run_issues PATH="$FX/notimeout" OPERATOR_QUEUE_FETCH_TIMEOUT=1
-assert "no timeout binary: fetch still bounded, failure reported" "[ \$(( \$(date +%s) - start )) -lt 10 ] && outgrep 'could not list operator-action issues'"
+run_issues OPERATOR_QUEUE_REFRESH_SYNC=0 FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=2
+assert "async: the hook returns before a slow refresh finishes" "[ \$(( \$(date +%s) - start )) -lt 2 ] && outgrep 'a refresh is running in the background'"
+for _ in $(seq 1 50); do [ -f "$CACHEF" ] && break; sleep 0.1; done
+run_issues OPERATOR_QUEUE_REFRESH_SYNC=0
+assert "async: the detached refresh wrote the cache for the next session" "outgrep 'dot-issue (#12)' && ! outgrep 'cached'"
+touch -d '2 hours ago' "$CACHEF"
+: > "$FX/gh.log"
+run_issues OPERATOR_QUEUE_REFRESH_SYNC=0 FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=2
+assert "async: an old cache renders at once, marked as refreshing" "outgrep 'cached 120 min ago; refreshing in the background' && outgrep 'dot-issue (#12)'"
+for _ in $(seq 1 50); do [ "$(( $(date +%s) - $(stat -c %Y "$CACHEF") ))" -lt 60 ] && break; sleep 0.1; done
 
 rm -rf "$FAKEBIN"
 echo ""

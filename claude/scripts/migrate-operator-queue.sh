@@ -105,7 +105,9 @@ while IFS=$'\t' read -r n slug group; do
   total=$((total + 1))
   label="project:$group"; [ "$group" = "-" ] && label="(none)"
   # ENVIRON, not -v: awk -v would turn a backslash in the title into an escape.
-  num="$(t="$slug" awk -F'\t' '$1 == ENVIRON["t"] { print $2; exit }' "$work/existing.tsv")"
+  # The "" concatenations force a string comparison: awk would otherwise
+  # compare numeric-looking titles as numbers ("1" == "001", "1e2" == "100").
+  num="$(t="$slug" awk -F'\t' '($1 "") == (ENVIRON["t"] "") { print $2; exit }' "$work/existing.tsv")"
   if [ -n "$num" ]; then
     existing=$((existing + 1))
     printf '%-48s  %-24s  %s\n' "$slug" "$label" "#$num (exists, skipped)"
