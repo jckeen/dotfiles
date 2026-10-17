@@ -28,6 +28,10 @@
   and a refresh that replaced the cache and died is still seen in flight. A
   snapshot that cannot be taken prints a warning line instead of nothing. A
   refresh removes its in-flight marker only after its outcome is recorded.
+  A refresh fetches only if, once it holds the lock, the cache is missing or
+  older than 10 minutes (a queued refresh finds its predecessor's fresh
+  cache and stops), so whenever a fetch is under way every session already
+  names the cache as old.
   Accepted limit: the output is the state as of the hook's reads; a refresh
   that starts after them shows in the next session. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the

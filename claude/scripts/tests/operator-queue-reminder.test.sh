@@ -468,9 +468,10 @@ assert "empty old cache + failed refresh is not silent" "outgrep 'no open operat
 # marker's existence, not its timestamp, says the latest refresh failed.
 fresh_home
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"   # stale: a refresh fetches only then
 ( cd "$FX/dotfiles" && env -u FAKE_GH_JSON HOME="$IH" "$HOOK" --refresh )
 run_issues
-assert "same-second failure after an empty success is not silent" "outgrep 'as of the last good fetch (cached 0 min ago; the last refresh failed'"
+assert "same-second failure after an empty success is not silent" "outgrep 'as of the last good fetch (cached 11 min ago; the last refresh failed'"
 
 # A marker or cache stamped after the hook read the clock (a refresh running
 # alongside it) still counts: presence decides, not a possibly negative age.
@@ -502,21 +503,22 @@ for _ in $(seq 1 200); do grep -q gh-done "$FX/gh.log" && break; sleep 0.05; don
 # INFLIGHT marker keeps the empty cache from reading as "nothing open".
 fresh_home
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"   # stale: a refresh fetches only then
 : > "$FX/gh.log"
 ( cd "$FX/dotfiles" && exec env -u FAKE_GH_JSON HOME="$IH" FAKE_GH_SLEEP=1 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
 victim=$!
 for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
 kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
 for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
-run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
-assert "a killed refresh whose gh failed is reported, not silent" "[ ! -f '$CACHEF.failed' ] && [ -f '$CACHEF.inflight' ] && outgrep 'as of the last good fetch (cached 0 min ago; a refresh is running or was interrupted)'"
+run_issues OPERATOR_QUEUE_REFRESH_SYNC=never
+assert "a killed refresh whose gh failed is reported, not silent" "[ ! -f '$CACHEF.failed' ] && [ -f '$CACHEF.inflight' ] && outgrep 'as of the last good fetch (cached 11 min ago; a refresh is running or was interrupted)'"
 
 # Many sessions starting at once all see the orphaned marker (readers take no
 # lock, so none can mistake another for a running refresh).
 mkdir -p "$FX/readers"
 for i in $(seq 1 24); do
   ( cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
-      HOME="$IH" OPERATOR_QUEUE_REFRESH_SYNC=1 "$HOOK" > "$FX/readers/$i" 2>&1 ) &
+      HOME="$IH" OPERATOR_QUEUE_REFRESH_SYNC=never "$HOOK" > "$FX/readers/$i" 2>&1 ) &
 done
 wait
 assert "concurrent readers all report the killed refresh" "[ \"\$(grep -l 'a refresh is running or was interrupted' '$FX'/readers/* | wc -l)\" -eq 24 ]"
@@ -573,7 +575,7 @@ run_issues FAKE_GH_JSON="$ISSUES"
 assert "a dead holder's lock is free again" "[ -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)'"
 
 # Refreshes never overlap: one started while a slow one is fetching waits for
-# it, then fetches, so the newer fetch is the one that lands.
+# it, then finds the cache fresh and does not fetch again.
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
 touch -d '2 hours ago' "$CACHEF"
@@ -584,18 +586,19 @@ for _ in $(seq 1 50); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
 ( cd "$FX/dotfiles" && HOME="$IH" PATH="$FAKEBIN:$PATH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" "$HOOK" --refresh )
 wait "$slow"
 run_issues OPERATOR_QUEUE_SHOW_ALL=1
-assert "a refresh during another one waits, then its newer fetch lands" "[ \"\$(grep -oE '^(api graphql|gh-done)' '$FX/gh.log' | cut -c1-6 | tr '\\n' ' ')\" = 'api gr gh-don api gr gh-don ' ] && outgrep 'dot-issue (#12)' && ! outgrep 'only-in-first'"
+assert "a queued refresh waits, finds the cache fresh, and makes no second fetch" "[ \"\$(grep -c graphql '$FX/gh.log')\" -eq 1 ] && outgrep 'only-in-first (#50)'"
 
 # While a killed refresh's gh still holds the lock, and while a successor
 # holds it before recording the orphan, the marker is reported at once.
 fresh_home
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"   # stale: a refresh fetches only then
 : > "$FX/gh.log"
 ( cd "$FX/dotfiles" && exec env -u FAKE_GH_JSON HOME="$IH" FAKE_GH_SLEEP=3 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
 victim=$!
 for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
 kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
-run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+run_issues OPERATOR_QUEUE_REFRESH_SYNC=never
 assert "a killed refresh whose gh still runs is reported, not silent" "! flock -n '$CACHEF.lock' true && outgrep 'a refresh is running or was interrupted'"
 for _ in $(seq 1 200); do grep -q gh-done "$FX/gh.log" && break; sleep 0.05; done
 fresh_home
@@ -678,16 +681,36 @@ rm -rf "$FX/nofail"
 # first, so readers keep reporting it while the new fetch is still running.
 fresh_home
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"   # stale: a refresh fetches only then
 touch "$CACHEF.inflight"
+touch -d '11 minutes ago' "$CACHEF"
 : > "$FX/gh.log"
 ( cd "$FX/dotfiles" && exec env HOME="$IH" FAKE_GH_JSON="$FAKEBIN/none.json" FAKE_GH_SLEEP=2 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
 next=$!
 for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
-run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+run_issues OPERATOR_QUEUE_REFRESH_SYNC=never
 assert "during the next fetch, the killed refresh is still reported" "outgrep 'the last refresh failed'"
 wait "$next"
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
 assert "once that fetch succeeds, the failure clears" "[ -z \"\$out\" ] && [ ! -e '$CACHEF.failed' ] && [ ! -e '$CACHEF.inflight' ]"
+
+# The invariant behind every in-flight case: a refresh fetches only while
+# the cache is stale, so a fresh cache is never one a fetch is replacing.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+: > "$FX/gh.log"
+( cd "$FX/dotfiles" && env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh )
+assert "a refresh over a fresh cache makes no fetch and no marker" "[ ! -s '$FX/gh.log' ] && [ ! -e '$CACHEF.inflight' ] && [ ! -e '$CACHEF.failed' ]"
+
+# A cache dir where no marker can be written: the stale cache is still named
+# as old, never as settled or "nothing open".
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"
+chmod 500 "${CACHEF%/*}"
+run_issues
+chmod 700 "${CACHEF%/*}"
+assert "markers unwritable: a stale empty cache is still reported" "[ ! -e '$CACHEF.failed' ] && [ ! -e '$CACHEF.inflight' ] && outgrep 'as of the last good fetch (cached 11 min ago'"
 
 # No digest tool: refused with a warning, never one cache name for every repo.
 mkdir -p "$FX/nohash"

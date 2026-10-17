@@ -51,7 +51,8 @@
 #                              github.com/jckeen/claude-memory; a bare
 #                              owner/name means github.com). Keep it private —
 #                              items name credentials and providers.
-#   OPERATOR_QUEUE_REFRESH_SYNC=1  refresh inline instead of detached (tests).
+#   OPERATOR_QUEUE_REFRESH_SYNC=1  refresh inline instead of detached (tests);
+#                              =never renders the cache and starts no refresh.
 #
 # NEEDS: gh, jq and flock(1) (util-linux; `brew install flock` on macOS) for
 #   the issue source. Without any of them every refresh fails, and the header
@@ -130,11 +131,23 @@ refresh() {
   # is no pid file to race and no stale lock to steal. A refresh that finds
   # the lock still held after five seconds returns: the running one started
   # earlier and writes the cache itself. Because refreshes never overlap, the
-  # last write is always the newest fetch. No flock (stock macOS) counts as a failed refresh, which
-  # the header reports, rather than an unserialised one.
+  # last write is always the newest fetch. No flock (stock macOS) counts as
+  # a failed refresh, which the header reports, rather than an unserialised
+  # one.
   command -v flock >/dev/null 2>&1 || { touch "$FAILED"; return 1; }
   exec 9>> "$LOCK" || { touch "$FAILED"; return 1; }
   flock -w 5 9 || { exec 9>&-; return 0; }
+  # Fetch only while the cache is missing or older than CACHE_TTL, judged
+  # under the lock (a queued refresh finds its predecessor's fresh cache and
+  # stops). So whenever a fetch is under way, every reader already names the
+  # cache as old, and a fresh cache is never one a fetch is replacing: no
+  # window between taking the lock and marking INFLIGHT can make a reader
+  # present a superseded cache as settled.
+  local age
+  if [ -f "$CACHE" ]; then
+    age=$(( $(date +%s) - $(mtime "$CACHE") ))
+    [ "$age" -le "$CACHE_TTL" ] && { exec 9>&-; return 0; }
+  fi
   # Marked before the fetch and cleared only after FAILED is settled, so a
   # refresh killed at any point leaves INFLIGHT behind (see refresh_state).
   # An INFLIGHT already here is a killed predecessor's: record its failure
@@ -232,7 +245,9 @@ else
   # pick the wording, clamped at zero.
   age_of() { local a=$(( now - $(mtime "$1") )); [ "$a" -lt 0 ] && a=0; echo "$a"; }
   if [ ! -f "$CACHE" ] || [ "$(age_of "$CACHE")" -gt "$CACHE_TTL" ]; then
-    if [ "${OPERATOR_QUEUE_REFRESH_SYNC:-}" = "1" ]; then
+    if [ "${OPERATOR_QUEUE_REFRESH_SYNC:-}" = "never" ]; then
+      :
+    elif [ "${OPERATOR_QUEUE_REFRESH_SYNC:-}" = "1" ]; then
       refresh
     elif command -v setsid >/dev/null 2>&1; then
       setsid bash "$0" --refresh < /dev/null > /dev/null 2>&1 &
@@ -260,6 +275,10 @@ else
   trap 'rm -f "$SNAP"' EXIT
   cp -p "$CACHE" "$SNAP" 2>/dev/null; copied=$?
   state="$(refresh_state)"
+  # The clock is read after the copy and the state, so a refresh that
+  # started before these reads judged the cache stale at a time no later
+  # than this one, and this reader judges it stale too.
+  now="$(date +%s)"
   if [ "$copied" -ne 0 ] && [ -f "$CACHE" ]; then
     echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (temp dir full or unreadable cache) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     exit 0
