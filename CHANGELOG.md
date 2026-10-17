@@ -23,8 +23,10 @@
   writes the failure before clearing the in-flight marker, so a refresh
   settling between the reads is never missed. A refresh that finds a killed
   predecessor's marker records that failure before fetching. The hook takes
-  one snapshot of the cache after reading the markers and renders only from
-  it, so a replacement mid-render cannot split the check from the output. Without `flock`
+  one snapshot of the cache, reads the markers after it, and renders only
+  from it: a replacement mid-render cannot split the check from the output,
+  and a refresh that replaced the cache and died is still seen in flight. A
+  snapshot that cannot be taken prints a warning line instead of nothing. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the
   SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
   fits the filesystem's name limit, and case variants of one repo share it.

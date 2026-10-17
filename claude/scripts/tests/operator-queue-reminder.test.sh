@@ -628,6 +628,34 @@ run_issues PATH="$FX/swapbin:$PATH"
 assert "a cache swapped mid-render does not silence the hook" "[ -e '$FX/swapped' ] && outgrep 'dot-issue (#12)'"
 rm -rf "$FX/swapbin" "$FX/swapped"
 
+# A refresh that replaces the cache just before the hook's copy and then dies
+# is seen in flight: the state is read after the copy. A `cp` wrapper injects
+# the replacement at exactly that point.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES"
+mkdir -p "$FX/cpbin"
+cat > "$FX/cpbin/cp" <<SWAP
+#!/usr/bin/env bash
+if [ ! -e "$FX/swapped" ]; then
+  : > "$FX/swapped"
+  touch "$CACHEF.inflight"
+  printf '# Operator-action issues\n' > "$CACHEF.swap" && mv -f "$CACHEF.swap" "$CACHEF"
+fi
+exec "$(command -v cp)" "\$@"
+SWAP
+chmod +x "$FX/cpbin/cp"
+run_issues PATH="$FX/cpbin:$PATH"
+assert "a dead refresh's replacement before the copy is not shown as settled" "[ -e '$FX/swapped' ] && outgrep 'a refresh is running or was interrupted'"
+rm -rf "$FX/cpbin" "$FX/swapped"
+
+# No temp dir for the snapshot: a warning line, never silence over a known
+# failure.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES"
+touch "$CACHEF.failed"
+run_issues TMPDIR="$FX/no-such-dir"
+assert "snapshot allocation failure is reported" "outgrep 'could not snapshot the operator-action cache'"
+
 # The next refresh starting over an orphaned INFLIGHT records its failure
 # first, so readers keep reporting it while the new fetch is still running.
 fresh_home

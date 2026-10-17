@@ -239,14 +239,26 @@ else
     fi
     now="$(date +%s)"
   fi
-  state="$(refresh_state)"
-  # Everything below reads one snapshot, taken after the state: a refresh
-  # replaces the cache by rename, so this copy is one whole cache, and a
-  # replacement mid-render cannot split the check from the output. cp -p
-  # keeps its mtime for the age.
-  SNAP="$(mktemp)" || exit 0
+  # Everything below reads one snapshot: a refresh replaces the cache by
+  # rename, so this copy is one whole cache, and a replacement mid-render
+  # cannot split the check from the output. cp -p keeps its mtime for the
+  # age. The state is read AFTER the copy: a refresh writes the cache before
+  # it settles, so one that replaced the cache before the copy is still in
+  # flight (or failed) when the state is read, and its content is never
+  # shown as settled. One that settles after the copy only makes the copy
+  # moments old.
+  if ! SNAP="$(mktemp 2>/dev/null)"; then
+    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (no writable temp dir) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+    exit 0
+  fi
   trap 'rm -f "$SNAP"' EXIT
-  if ! cp -p "$CACHE" "$SNAP" 2>/dev/null; then
+  cp -p "$CACHE" "$SNAP" 2>/dev/null; copied=$?
+  state="$(refresh_state)"
+  if [ "$copied" -ne 0 ] && [ -f "$CACHE" ]; then
+    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (temp dir full or unreadable cache) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+    exit 0
+  fi
+  if [ "$copied" -ne 0 ]; then
     if [ "$state" = failed ]; then
       echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
