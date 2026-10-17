@@ -67,6 +67,13 @@
  * ~/.claude/skills? does this file exist?) treats an unreadable or malformed
  * input as "report it".
  *
+ * Service selection (issue #425): a plugin whose agent service the operator
+ * deselected (today: `*@openai-codex` when Codex is off) is not install or
+ * scoping drift. The rule lives in lib-services.sh (services_effective +
+ * services_filter_plugins), which this hook runs through bash so it and
+ * sync-plugins.sh cannot disagree. Rule 2 applies: if the selection cannot be
+ * read, every manifest plugin is reported as before, with a note saying so.
+ *
  * TRIGGER: SessionStart
  * EXIT: 0 always (warnings are non-blocking)
  */
@@ -83,6 +90,7 @@ import {
   readSync,
   realpathSync,
 } from 'fs';
+import { spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -101,6 +109,9 @@ const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
 const SKILLS_DIR = join(HOME, '.claude', 'skills');
 const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
 const MAX_JSON_BYTES = 1024 * 1024;
+// Code, so it comes from this hook's own checkout, never from DOTFILES_DIR
+// (which only relocates the manifest) — the same rule as sync-plugins.sh.
+const LIB_SERVICES = join(dirname(HOOK_PATH), '..', '..', 'lib-services.sh');
 
 type JsonRead =
   | { state: 'absent' }
@@ -567,6 +578,41 @@ function emit(warning: string): void {
   process.stdout.write(`<system-reminder>\n${warning}</system-reminder>\n`);
 }
 
+// The manifest plugins the saved agent-service selection manages, or null
+// (with the reason) when it cannot be determined — rule 2: report them all.
+function selectedPlugins(
+  ids: string[],
+): { kept: Set<string> | null; reason: string } {
+  if (!existsSync(LIB_SERVICES)) {
+    return { kept: null, reason: `${shown(LIB_SERVICES)} is missing` };
+  }
+  const result = spawnSync(
+    'bash',
+    [
+      '-c',
+      '. "$1" || exit 3; sel="$(services_effective)" || exit 2; services_filter_plugins "$sel"',
+      'plugin-drift',
+      LIB_SERVICES,
+    ],
+    { input: ids.join('\n') + '\n', encoding: 'utf-8', timeout: 5000 },
+  );
+  if (result.error || result.status !== 0) {
+    const why =
+      result.status === 2
+        ? 'the saved selection is damaged'
+        : result.error
+          ? errorText(result.error)
+          : `exit ${result.status}`;
+    return { kept: null, reason: why };
+  }
+  const kept = new Set(
+    String(result.stdout)
+      .split('\n')
+      .filter((l) => l.length > 0),
+  );
+  return { kept, reason: '' };
+}
+
 function driftWarning(manifest: Manifest): string {
   let warning = '';
   // Dedupe so a plugin duplicated across sections (warned below) doesn't
@@ -587,13 +633,30 @@ function driftWarning(manifest: Manifest): string {
       `keep each plugin in exactly one section:\n${list}\n\n`;
   }
 
+  const selection = selectedPlugins(desired);
+  const managed = (p: string) =>
+    selection.kept === null || selection.kept.has(p);
+  if (selection.kept === null) {
+    warning +=
+      `⚠️  Plugin drift: the agent-service selection could not be read ` +
+      `(${selection.reason}); every manifest plugin is checked. ` +
+      `Fix it with \`setup.sh --select-services\`.\n`;
+  }
+
+  // Every install and scoping list below is built from these filtered lists.
+  // Reverse drift still compares against the whole manifest: a deselected
+  // service's plugin that is installed is declared, not undeclared.
+  const wanted = desired.filter(managed);
+  const wantedGlobal = manifest.global.filter(managed);
+  const wantedPerProject = manifest.perProject.filter(managed);
+
   const installed = readInstalled();
-  const missing = desired.filter((p) => !installed.has(p));
+  const missing = wanted.filter((p) => !installed.has(p));
   const undeclared = [...installed].filter((p) => !desired.includes(p));
   if (missing.length > 0) {
     const list = bullets(missing);
     warning +=
-      `⚠️  Plugin drift: ${missing.length} of ${desired.length} plugins from ` +
+      `⚠️  Plugin drift: ${missing.length} of ${wanted.length} plugins from ` +
       `${shown(MANIFEST)} are not installed:\n${list}\n\n` +
       `Run \`~/.claude/scripts/sync-plugins.sh\` to install them, then restart Claude Code.\n`;
   }
@@ -607,8 +670,8 @@ function driftWarning(manifest: Manifest): string {
 
   const enabled = readGloballyEnabled();
   if (enabled !== null) {
-    const notEnabled = manifest.global.filter((p) => enabled[p] !== true);
-    const overScoped = manifest.perProject.filter((p) => enabled[p] === true);
+    const notEnabled = wantedGlobal.filter((p) => enabled[p] !== true);
+    const overScoped = wantedPerProject.filter((p) => enabled[p] === true);
     if (notEnabled.length > 0) {
       const list = bullets(notEnabled);
       warning +=

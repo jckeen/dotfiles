@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-16 — fix: sync-plugins honours service selection and reconciles removals
+
+- **`claude/scripts/sync-plugins.sh`** (Codex review on #577 and #574): reads
+  the saved agent-service selection the way setup.sh does. It syncs nothing
+  when Claude Code is deselected and skips `*@openai-codex` plugins when Codex
+  is, so the every-launch sync in `cc` no longer reinstalls an opted-out Codex
+  plugin. A damaged selection file is refused rather than read as "all". A new
+  `# removed: <plugin>@<marketplace>` manifest line uninstalls that plugin's
+  user-scope install; a plugin merely absent from the manifest is never
+  touched. `claude/plugins.txt` marks `superpowers@claude-plugins-official`
+  removed, so machines that still carry it drop it on the next fresh launch.
+  When `installed_plugins.json` can't be read (python3 missing, not a regular file or malformed
+  JSON), the script warns, and each pending removal fails with a named
+  diagnostic and exit 1. A pending removal is never skipped silently.
+- **`claude/hooks/PluginDriftCheck.hook.ts`:** applies the same filter. A
+  deselected service's plugin is no longer reported as missing or un-enabled.
+  The rule lives once in `lib-services.sh` (`services_effective`,
+  `services_filter_plugins`), and both the hook and `sync-plugins.sh` call
+  it. An unreadable selection reports every plugin, plus a note saying the
+  selection could not be read.
+- **Tests:** new cases in `plugin-drift.test.sh` (13 failed before the fix,
+  all pass after).
+
 ## 2026-10-16 — fix: PluginDriftCheck mod scan covers in-place and project plugins
 
 - **`claude/hooks/PluginDriftCheck.hook.ts`** (Codex threads on #599 and

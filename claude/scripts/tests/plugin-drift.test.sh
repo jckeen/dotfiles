@@ -56,16 +56,23 @@ die() {
 
 # run_hook <manifest-body> <installed-json> [settings-json]
 # Builds a throwaway DOTFILES_DIR + HOME and captures the hook's stdout and rc.
+# HOOK_SERVICES, when set, is written as the saved agent-service selection
+# under a throwaway XDG_CONFIG_HOME; unset means no saved selection.
 run_hook() {
   local manifest="$1" installed="$2" settings="${3:-}"
   local D H P
   D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
   H="$(mktemp -d)" || die "mktemp -d for HOME"
   P="$(mktemp -d)" || die "mktemp -d for the project dir"
-  mkdir -p "$D/claude" "$H/.claude/plugins" || die "mkdir fixture dirs"
+  mkdir -p "$D/claude" "$H/.claude/plugins" "$H/.config/dotfiles" \
+    || die "mkdir fixture dirs"
   printf '%s\n' "$manifest" > "$D/claude/plugins.txt" || die "write plugins.txt"
   printf '%s\n' "$installed" > "$H/.claude/plugins/installed_plugins.json" \
     || die "write installed_plugins.json"
+  if [[ -n "${HOOK_SERVICES:-}" ]]; then
+    printf '%s\n' "$HOOK_SERVICES" > "$H/.config/dotfiles/services" \
+      || die "write the services file"
+  fi
   # No settings file at all => the scoping checks are skipped, which keeps
   # these assertions about install drift only.
   if [[ -n "$settings" ]]; then
@@ -73,7 +80,8 @@ run_hook() {
   fi
   # The hook scans the project's .claude/skills, so it never runs from (or
   # points at) a real checkout.
-  out="$(cd "$P" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$P" bun "$HOOK" 2>&1 </dev/null)"
+  out="$(cd "$P" && HOME="$H" XDG_CONFIG_HOME="$H/.config" DOTFILES_DIR="$D" \
+    CLAUDE_PROJECT_DIR="$P" bun "$HOOK" 2>&1 </dev/null)"
   rc=$?
   rm -rf "$D" "$H" "$P"
 }
@@ -602,42 +610,80 @@ assert "the hook does not crash on its own error path" '! outgrep "PluginDriftCh
 # project-scoped record as satisfying the manifest, it would exit 0 without
 # installing and the warning would return every session.
 #
-# run_sync <manifest-body> <installed-json> — stubs `claude` on PATH and
-# records the plugins it was asked to install in $sync_installs.
+# run_sync <manifest-body> <installed-json> [services-file-body] — stubs
+# `claude` on PATH and records the plugins it was asked to install in
+# $sync_installs and to uninstall in $sync_uninstalls. The saved service
+# selection (lib-services.sh) lives under a throwaway XDG_CONFIG_HOME; with no
+# third argument there is no saved selection, which means every service.
 sync_out=""
 sync_rc=0
 sync_installs=""
+SYNC_TIMEOUT=()
+if timeout_bin="$(command -v timeout)"; then
+  SYNC_TIMEOUT=("$timeout_bin" 10)
+fi
+sync_uninstalls=""
 run_sync() {
-  local manifest="$1" installed="$2"
+  local manifest="$1" installed="$2" services="${3:-}"
   local D H B
   D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
   H="$(mktemp -d)" || die "mktemp -d for HOME"
   B="$(mktemp -d)" || die "mktemp -d for the stub bin dir"
-  mkdir -p "$D/claude" "$H/.claude/plugins" || die "mkdir fixture dirs"
+  mkdir -p "$D/claude" "$H/.claude/plugins" "$H/.config/dotfiles" \
+    || die "mkdir fixture dirs"
   printf '%s\n' "$manifest" > "$D/claude/plugins.txt" || die "write plugins.txt"
   printf '%s\n' "$installed" > "$H/.claude/plugins/installed_plugins.json" \
     || die "write installed_plugins.json"
+  if [[ -n "$services" ]]; then
+    printf '%s\n' "$services" > "$H/.config/dotfiles/services" \
+      || die "write the services file"
+  fi
   cat > "$B/claude" <<STUB || die "write the claude stub"
 #!/usr/bin/env bash
-# Stub: record 'plugin install <name>' calls, never touch the network.
+# Stub: record 'plugin install|uninstall <name>' calls, never touch the network.
 if [ "\$1" = "plugin" ] && [ "\$2" = "install" ]; then
   echo "\$3" >> "$B/installs"
   echo "installed \$3"
+elif [ "\$1" = "plugin" ] && [ "\$2" = "uninstall" ]; then
+  echo "\$*" >> "$B/uninstalls"
+  echo "uninstalled"
 fi
 exit 0
 STUB
   chmod +x "$B/claude" || die "chmod the claude stub"
   : > "$B/installs" || die "create the stub's install log"
+  : > "$B/uninstalls" || die "create the stub's uninstall log"
   # Isolation guard: if the stub is not what `claude` resolves to, the script
   # under test would reach the real CLI and install plugins for real.
   [[ -x "$B/claude" ]] || die "the claude stub is not executable"
   [[ "$(PATH="$B:$PATH" command -v claude)" == "$B/claude" ]] \
     || die "the claude stub does not shadow the real CLI on PATH"
+  if [[ "$installed" == "<absent>" ]]; then
+    rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+  elif [[ "$installed" == "<dangling>" ]]; then
+    rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+    ln -s "$H/nowhere.json" "$H/.claude/plugins/installed_plugins.json" \
+      || die "link a dangling installed json"
+  elif [[ "$installed" == "<fifo>" || "$installed" == "<fifo-link>" ]]; then
+    rm -f "$H/.claude/plugins/installed_plugins.json" || die "rm installed json"
+    mkfifo "$H/fifo.json" || die "mkfifo"
+    if [[ "$installed" == "<fifo>" ]]; then
+      mv "$H/fifo.json" "$H/.claude/plugins/installed_plugins.json" || die "place fifo"
+    else
+      ln -s "$H/fifo.json" "$H/.claude/plugins/installed_plugins.json" \
+        || die "link the fifo"
+    fi
+  fi
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
-  sync_out="$(HOME="$H" DOTFILES_DIR="$D" PATH="$B:$PATH" "$SYNC" 2>&1)"
+  # A hang (a FIFO read, say) must fail the case, not stall the suite.
+  sync_out="$(HOME="$H" XDG_CONFIG_HOME="$H/.config" DOTFILES_DIR="$D" \
+    PATH="$B:${SYNC_PATH:-$PATH}" ${SYNC_TIMEOUT[@]+"${SYNC_TIMEOUT[@]}"} \
+    env -u DOTFILES_SERVICES "$SYNC" 2>&1)"
   sync_rc=$?
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
   sync_installs="$(cat "$B/installs")"
+  # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+  sync_uninstalls="$(cat "$B/uninstalls")"
   rm -rf "$D" "$H" "$B"
 }
 
@@ -686,6 +732,150 @@ run_sync "$MANIFEST_GLOBAL
   \"typescript-lsp@claude-plugins-official\":[$(entry user)]
 }}"
 assert "sync never installs a mods-ok line" '[ -z "$sync_installs" ]'
+
+# ── sync-plugins.sh honours the saved service selection ─────────────────
+# The Codex plugin drives the Codex CLI. setup.sh skips it when Codex is not a
+# selected service, and the every-launch sync must agree or it reinstalls the
+# opted-out plugin (Codex review on PR #577).
+MANIFEST_CODEX="$MANIFEST_GLOBAL
+codex@openai-codex"
+run_sync "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" "services=claude"
+assert "sync skips the Codex plugin when Codex is deselected" \
+  '! grep -qF "codex@openai-codex" <<<"$sync_installs"'
+assert "sync fast path ignores a deselected service's plugin" \
+  '[ -z "$sync_out" ] && [ $sync_rc -eq 0 ]'
+
+run_sync "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" "services=claude,codex"
+assert "sync installs the Codex plugin when Codex is selected" \
+  'grep -qxF "codex@openai-codex" <<<"$sync_installs"'
+
+# No saved selection manages every service (lib-services.sh migration rule).
+run_sync "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}"
+assert "sync installs the Codex plugin with no saved selection" \
+  'grep -qxF "codex@openai-codex" <<<"$sync_installs"'
+
+# Plugins are Claude Code's: with Claude deselected there is nothing to sync.
+run_sync "$MANIFEST_CODEX" '{"version":2,"plugins":{}}' "services=codex"
+assert "sync installs nothing when Claude Code is deselected" \
+  '[ -z "$sync_installs" ] && [ $sync_rc -eq 0 ]'
+
+# A damaged selection file is refused, as setup.sh refuses it, not guessed at.
+run_sync "$MANIFEST_CODEX" '{"version":2,"plugins":{}}' "services=bogus"
+assert "sync refuses a damaged service selection" \
+  '[ $sync_rc -ne 0 ] && [ -z "$sync_installs" ]'
+
+# ── sync-plugins.sh reconciles explicit removals ────────────────────────
+# Dropping a line from the manifest is not a removal signal: plugins absent
+# from it may be the operator's own. Only a `# removed: <id>` line uninstalls,
+# and only a user-scope install (Codex review on PR #574).
+MANIFEST_REMOVED="$MANIFEST_GLOBAL
+# removed: superpowers@claude-plugins-official"
+run_sync "$MANIFEST_REMOVED" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)],
+  \"superpowers@claude-plugins-official\":[$(entry user)],
+  \"mine@claude-plugins-official\":[$(entry user)]
+}}"
+assert "sync uninstalls a user-scope plugin marked removed" \
+  'grep -qxF "plugin uninstall --scope user superpowers@claude-plugins-official" <<<"$sync_uninstalls"'
+assert "sync never uninstalls a plugin merely absent from the manifest" \
+  '! grep -qF "mine@" <<<"$sync_uninstalls"'
+assert "sync never installs a removed plugin" \
+  '! grep -qF "superpowers@" <<<"$sync_installs"'
+assert "sync exits 0 after uninstalling" "[ $sync_rc -eq 0 ]"
+
+run_sync "$MANIFEST_REMOVED" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)],
+  \"superpowers@claude-plugins-official\":[$(entry project)]
+}}"
+assert "sync leaves a project-scope install of a removed plugin alone" \
+  '[ -z "$sync_uninstalls" ] && [ -z "$sync_out" ]'
+
+run_sync "$MANIFEST_REMOVED
+superpowers@claude-plugins-official" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)],
+  \"superpowers@claude-plugins-official\":[$(entry user)]
+}}"
+assert "an active manifest line outranks a removed line" \
+  '[ -z "$sync_uninstalls" ]'
+
+# Removals that cannot be evaluated fail loudly instead of exiting 0.
+run_sync "$MANIFEST_REMOVED" '{"version":2,"plugins":'
+assert "malformed installed_plugins.json fails a pending removal" \
+  '[ $sync_rc -ne 0 ] && grep -qF "superpowers@claude-plugins-official is marked removed but was not checked" <<<"$sync_out"'
+assert "malformed installed_plugins.json still installs the manifest" \
+  'grep -qxF "typescript-lsp@claude-plugins-official" <<<"$sync_installs"'
+assert "malformed installed_plugins.json uninstalls nothing" \
+  '[ -z "$sync_uninstalls" ]'
+
+# python3 missing: a PATH holding only the tools sync-plugins.sh needs.
+NOPY_BIN="$(mktemp -d)" || die "mktemp -d for the no-python PATH"
+for tool in bash env dirname cat grep tail mktemp rm tr pwd readlink; do
+  tool_path="$(command -v "$tool")" || die "missing tool $tool"
+  ln -s "$tool_path" "$NOPY_BIN/$tool" || die "link $tool"
+done
+SYNC_PATH="$NOPY_BIN" run_sync "$MANIFEST_REMOVED" "{\"version\":2,\"plugins\":{
+  \"superpowers@claude-plugins-official\":[$(entry user)]
+}}"
+assert "missing python3 fails a pending removal" \
+  '[ $sync_rc -ne 0 ] && grep -qF "python3 is not on PATH" <<<"$sync_out"'
+assert "missing python3 uninstalls nothing" '[ -z "$sync_uninstalls" ]'
+rm -rf "$NOPY_BIN"
+
+# A dangling symlink is present but unreadable, not a fresh machine.
+run_sync "$MANIFEST_REMOVED" "<dangling>"
+assert "a dangling installed_plugins.json fails a pending removal" \
+  '[ $sync_rc -ne 0 ] && grep -qF "marked removed but was not checked" <<<"$sync_out"'
+
+# A FIFO (or a link to one) is not a regular file: unreadable, never opened.
+run_sync "$MANIFEST_REMOVED" "<fifo>"
+assert "a FIFO installed_plugins.json fails a pending removal promptly" \
+  '[ $sync_rc -eq 1 ] && grep -qF "is not a regular file" <<<"$sync_out"'
+run_sync "$MANIFEST_REMOVED" "<fifo-link>"
+assert "a symlink to a FIFO fails a pending removal promptly" \
+  '[ $sync_rc -eq 1 ] && grep -qF "is not a regular file" <<<"$sync_out"'
+
+# No installed_plugins.json at all is a fresh machine, not a read failure.
+run_sync "$MANIFEST_REMOVED" "<absent>"
+assert "absent installed_plugins.json is not a removal failure" \
+  '[ $sync_rc -eq 0 ] && [ -z "$sync_uninstalls" ]'
+
+# ── the hook honours the saved service selection too ────────────────────
+# Same filter as sync-plugins.sh (services_filter_plugins in lib-services.sh):
+# a deselected service's plugin is neither missing nor un-enabled drift.
+HOOK_SERVICES="services=claude" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
+assert "hook: a deselected Codex plugin is not reported as drift" '[ -z "$out" ]'
+
+HOOK_SERVICES="services=claude,codex" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
+assert "hook: a selected Codex plugin is still reported missing" \
+  'outgrep "codex@openai-codex"'
+
+# Every install/scoping list is filtered, not only the missing one.
+HOOK_SERVICES="services=claude" run_hook "$MANIFEST_GLOBAL
+# [per-project]
+codex@openai-codex" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true,"codex@openai-codex":true}}'
+assert "hook: a deselected per-project plugin enabled globally is not drift" \
+  '[ -z "$out" ]'
+
+# A damaged selection fails toward reporting: everything, plus a note.
+HOOK_SERVICES="services=bogus" run_hook "$MANIFEST_CODEX" "{\"version\":2,\"plugins\":{
+  \"typescript-lsp@claude-plugins-official\":[$(entry user)]
+}}" '{"enabledPlugins":{"typescript-lsp@claude-plugins-official":true}}'
+assert "hook: a damaged selection still reports the Codex plugin" \
+  'outgrep "codex@openai-codex"'
+assert "hook: a damaged selection is named" \
+  'outgrep "agent-service selection could not be read"'
 
 # ── setup.sh's listing-based match (lib-checks.sh) ──────────────────────
 # setup.sh cannot read installed_plugins.json — it runs before the CLI state

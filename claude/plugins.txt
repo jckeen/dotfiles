@@ -21,6 +21,15 @@
 # <plugin>@<marketplace>, <name>@synced or <name>@skills-dir. It must be a
 # whole-line comment so setup.sh and sync-plugins.sh never try to install it.
 # No plugin is allowlisted today.
+#
+# Removal: deleting a line does NOT uninstall the plugin anywhere — machines
+# may hold plugins the operator installed outside this manifest. To retire a
+# plugin everywhere, replace its line with `# removed: <plugin>@<marketplace>`;
+# sync-plugins.sh (run by cc at every fresh launch) uninstalls its user-scope
+# install. Codex-marketplace plugins install only when Codex is a selected
+# service (lib-services.sh), matching setup.sh.
+
+# removed: superpowers@claude-plugins-official
 
 # [global] — enabled in ~/.claude/settings.json `enabledPlugins`
 typescript-lsp@claude-plugins-official

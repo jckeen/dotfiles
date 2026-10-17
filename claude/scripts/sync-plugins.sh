@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # sync-plugins.sh — Install any plugins listed in the dotfiles plugin manifest
-# that are not currently installed. Idempotent.
+# that are not currently installed, and uninstall any it marks removed.
+# Idempotent.
 #
 # Source of truth: $DOTFILES_DIR/claude/plugins.txt (one
 # `<plugin>@<marketplace>` per line). The manifest stays in the dotfiles repo
@@ -16,6 +17,17 @@
 # user scope. A plugin someone installed with `--scope project` for one repo is
 # that repo's, is deliberately absent from the manifest, and does not count as
 # installed by the fast path below.
+#
+# Service selection (issue #425): plugins are Claude Code's, so nothing is
+# synced when Claude Code is not a selected service, and `*@openai-codex`
+# plugins (which drive the Codex CLI) are skipped when Codex is not. This is
+# the same rule setup.sh §3b applies; an existing install is left as-is.
+#
+# Removal: a plugin dropped from the manifest is NOT uninstalled — the operator
+# may have installed plugins of their own that the manifest never listed. To
+# retire a plugin on every machine, replace its line with a whole-line comment
+# `# removed: <plugin>@<marketplace>`; this script then uninstalls its
+# USER-scope install. An active manifest line for the same id wins.
 
 set -eo pipefail
 
@@ -33,6 +45,50 @@ if [[ ! -f "$MANIFEST" ]]; then
   echo "✘ Manifest not found: $MANIFEST" >&2
   exit 1
 fi
+
+# lib-services.sh is code, so it comes from this script's own checkout, not
+# from a DOTFILES_DIR override (which only relocates the manifest).
+LIB_SERVICES="$SCRIPT_DIR/../../lib-services.sh"
+if [[ ! -f "$LIB_SERVICES" ]]; then
+  echo "✘ lib-services.sh not found: $LIB_SERVICES" >&2
+  exit 1
+fi
+# shellcheck source=lib-services.sh
+. "$LIB_SERVICES"
+
+# The saved selection, or every service when none was saved. A damaged file is
+# refused, not guessed at: "all" would reinstall what the operator opted out of.
+if ! selected_services="$(services_effective)"; then
+  echo "✘ Cannot read the agent service selection; fix it with setup.sh --select-services" >&2
+  exit 1
+fi
+
+# Parse the manifest once. wanted: active lines whose service is selected
+# (services_filter_plugins). removed: ids named by a `# removed:` line.
+# active_all: every active line, selected or not, so an active line always
+# outranks a `# removed:` one.
+removed=()
+active_all=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*removed:[[:space:]]*([^[:space:]]+)[[:space:]]*$ ]]; then
+    removed+=("${BASH_REMATCH[1]}")
+    continue
+  fi
+  p="${line%%#*}"
+  # Strip all whitespace (spaces, tabs, and CR from CRLF line endings)
+  p="${p//[[:space:]]/}"
+  [[ -z "$p" ]] && continue
+  active_all+="$p"$'\n'
+done < "$MANIFEST"
+wanted=()
+while IFS= read -r p; do
+  [[ -n "$p" ]] && wanted+=("$p")
+done < <(printf '%s' "$active_all" | services_filter_plugins "$selected_services")
+# Plugins are Claude Code's: with it deselected there is nothing to manage.
+case ",$selected_services," in
+  *,claude,*) ;;
+  *) exit 0 ;;
+esac
 
 # Fast path: if every manifest plugin already has a USER-scope install, there is
 # nothing to do — exit silently without touching the network. Keys in
@@ -54,10 +110,28 @@ fi
 # Without python3 the fast path is skipped entirely rather than guessed at: the
 # install loop below is idempotent, so the cost is launch latency, not
 # correctness. python3 is already required by the pre-push receipt checker.
+#
+# installed_state says whether $user_scoped can be trusted: "known" (read, or
+# no file at all — nothing installed yet) or the reason it could not be read.
+# An unreadable state is never treated as "nothing installed": installs fall
+# back to the idempotent slow path, and removals fail loudly below.
 INSTALLED_JSON="$HOME/.claude/plugins/installed_plugins.json"
 user_scoped=""
-if [[ -f "$INSTALLED_JSON" ]] && command -v python3 >/dev/null 2>&1; then
-  user_scoped="$(python3 -c '
+installed_state="known"
+#
+# Present means it exists or is a symlink. Only a regular file (after following
+# links) is read: a dangling link, directory, device or FIFO is unreadable — a
+# FIFO would block open() and hang cc's launch. The timeout covers a file
+# swapped for a FIFO after the check, where timeout(1) exists.
+py_timeout=()
+command -v timeout >/dev/null 2>&1 && py_timeout=(timeout 5)
+if [[ ! -e "$INSTALLED_JSON" && ! -L "$INSTALLED_JSON" ]]; then
+  :
+elif [[ ! -f "$INSTALLED_JSON" ]]; then
+  installed_state="$INSTALLED_JSON is not a regular file"
+elif ! command -v python3 >/dev/null 2>&1; then
+  installed_state="python3 is not on PATH, so $INSTALLED_JSON cannot be read"
+elif ! user_scoped="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -c '
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -73,20 +147,37 @@ for name, records in plugins.items():
         for r in records
     ):
         print(name)
-' "$INSTALLED_JSON" 2>/dev/null)" || user_scoped=""
+' "$INSTALLED_JSON" 2>/dev/null)"; then
+  user_scoped=""
+  installed_state="$INSTALLED_JSON is unreadable or not the expected JSON shape"
+fi
+if [[ "$installed_state" != "known" ]]; then
+  echo "⚠ $installed_state; installing every manifest plugin instead of checking" >&2
 fi
 
-if [[ -n "$user_scoped" ]]; then
+# Removals need to know what is installed at user scope. When that state could
+# not be read, each pending removal is reported as a failure (exit 1) instead
+# of being skipped: guessing "installed" could uninstall at the wrong scope.
+to_remove=()
+unevaluated=()
+for p in ${removed[@]+"${removed[@]}"}; do
+  grep -qxF "$p" <<<"$active_all" && continue
+  if [[ "$installed_state" != "known" ]]; then
+    unevaluated+=("$p")
+  elif grep -qxF "$p" <<<"$user_scoped"; then
+    to_remove+=("$p")
+  fi
+done
+
+if [[ -n "$user_scoped" ]] && (( ${#to_remove[@]} == 0 )) \
+  && (( ${#unevaluated[@]} == 0 )); then
   missing=0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    p="${line%%#*}"
-    p="${p//[[:space:]]/}"
-    [[ -z "$p" ]] && continue
+  for p in ${wanted[@]+"${wanted[@]}"}; do
     if ! grep -qxF "$p" <<<"$user_scoped"; then
       missing=1
       break
     fi
-  done < "$MANIFEST"
+  done
   if [[ "$missing" -eq 0 ]]; then
     exit 0
   fi
@@ -98,26 +189,37 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 installed=()
+uninstalled=()
 failed=()
 
-while IFS= read -r line || [[ -n "$line" ]]; do
-  p="${line%%#*}"
-  # Strip all whitespace (spaces, tabs, and CR from CRLF line endings)
-  p="${p//[[:space:]]/}"
-  [[ -z "$p" ]] && continue
+for p in ${wanted[@]+"${wanted[@]}"}; do
   echo "── $p"
   if claude plugin install "$p" 2>&1 | tail -1; then
     installed+=("$p")
   else
     failed+=("$p")
   fi
-done < "$MANIFEST"
+done
+
+for p in ${to_remove[@]+"${to_remove[@]}"}; do
+  echo "── $p (removed from the manifest)"
+  if claude plugin uninstall --scope user "$p" 2>&1 | tail -1; then
+    uninstalled+=("$p")
+  else
+    failed+=("$p")
+  fi
+done
+
+for p in ${unevaluated[@]+"${unevaluated[@]}"}; do
+  echo "✘ $p is marked removed but was not checked: $installed_state" >&2
+  failed+=("$p")
+done
 
 echo
 echo "═══ DONE ═══"
-echo "Processed: ${#installed[@]} ok, ${#failed[@]} failed"
+echo "Processed: ${#installed[@]} installed, ${#uninstalled[@]} uninstalled, ${#failed[@]} failed"
 if (( ${#failed[@]} > 0 )); then
   printf '  ✘ %s\n' "${failed[@]}"
   exit 1
 fi
-echo "Restart Claude Code to load any newly-installed plugins."
+echo "Restart Claude Code to load the plugin changes."
