@@ -71,7 +71,8 @@
 #   MAX_ITEMS project summaries are rendered ("…and N more" for the rest),
 #   each action is cut at MAX_ACTION_CHARS bytes, each item line at
 #   MAX_LINE_CHARS and each summary label at 80, so a grown queue can never
-#   flood session context or stall SessionStart.
+#   flood session context or stall SessionStart. The detached fetch is capped
+#   at FETCH_TIMEOUT seconds where timeout(1) exists.
 # SELF-TEST: claude/scripts/tests/operator-queue-reminder.test.sh
 
 set -uo pipefail
@@ -94,6 +95,7 @@ CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | tr '[:upper:]' '[:lower:]
 FAILED="$CACHE.failed"   # exists = the latest refresh failed (a success removes it)
 LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
+FETCH_TIMEOUT=120
 SOURCE="file"
 CACHE_NOTE=""
 
@@ -124,10 +126,15 @@ refresh() {
   command -v flock >/dev/null 2>&1 || { touch "$FAILED"; return 1; }
   exec 9>> "$LOCK" || { touch "$FAILED"; return 1; }
   flock -n 9 || { exec 9>&-; return 0; }
-  # gh and jq run with fd 9 closed, so nothing they leave behind holds the lock.
+  # gh and jq inherit fd 9, so the lock lives as long as any fetch worker
+  # does: a refresh shell killed mid-fetch cannot free it while its gh still
+  # runs. A hung gh would then hold it for good, so where timeout(1) exists
+  # the fetch is capped (killed, and the refresh fails) at FETCH_TIMEOUT.
+  local tmo=()
+  command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
   raw="$(mktemp "$CACHE.raw.XXXXXX")" && tmp="$(mktemp "$CACHE.new.XXXXXX")" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
-  gh api graphql --hostname "$GH_HOSTNAME" --paginate \
+  ${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
     -f owner="${REPO_PATH%%/*}" -f name="${REPO_PATH#*/}" -f query='
       query($owner: String!, $name: String!, $endCursor: String) {
         repository(owner: $owner, name: $name) {
@@ -135,7 +142,7 @@ refresh() {
             pageInfo { hasNextPage endCursor }
             nodes { number title body createdAt
               labels(first: 100) { nodes { name } }
-              comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null 9>&- &&
+              comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null &&
   jq -rs '
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -158,7 +165,7 @@ refresh() {
         (if $verified != "" then "- verified: \($verified)" else empty end),
         (if $project != "" then "- project: \($project)" else empty end),
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
-        "- action: \($action)" )' "$raw" > "$tmp" 9>&- &&
+        "- action: \($action)" )' "$raw" > "$tmp" &&
   chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
   rm -f "$raw" "${tmp:-}"
   if [ "$rc" -eq 0 ]; then rm -f "$FAILED"; else touch "$FAILED"; fi
@@ -185,9 +192,12 @@ else
   SOURCE="issues"
   QUEUE="$CACHE"
   now="$(date +%s)"
-  cache_age=-1
-  [ -f "$CACHE" ] && cache_age=$(( now - $(mtime "$CACHE") ))
-  if [ "$cache_age" -lt 0 ] || [ "$cache_age" -gt "$CACHE_TTL" ]; then
+  # Presence decides, never an age: a refresh running alongside this hook
+  # can stamp the cache or the failure marker after `now` was read, and a
+  # negative age must not read as "no cache" or "no failure". Ages only
+  # pick the wording, clamped at zero.
+  age_of() { local a=$(( now - $(mtime "$1") )); [ "$a" -lt 0 ] && a=0; echo "$a"; }
+  if [ ! -f "$CACHE" ] || [ "$(age_of "$CACHE")" -gt "$CACHE_TTL" ]; then
     if [ "${OPERATOR_QUEUE_REFRESH_SYNC:-}" = "1" ]; then
       refresh
     elif command -v setsid >/dev/null 2>&1; then
@@ -196,25 +206,20 @@ else
       nohup bash "$0" --refresh < /dev/null > /dev/null 2>&1 &
     fi
     now="$(date +%s)"
-    cache_age=-1
-    [ -f "$CACHE" ] && cache_age=$(( now - $(mtime "$CACHE") ))
   fi
-  failed_age=-1
-  [ -f "$FAILED" ] && failed_age=$(( now - $(mtime "$FAILED") ))
-  if [ "$cache_age" -lt 0 ]; then
-    if [ "$failed_age" -ge 0 ]; then
+  if [ ! -f "$CACHE" ]; then
+    if [ -f "$FAILED" ]; then
       echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
       echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
     fi
     exit 0
   fi
-  # A refresh that failed after the cache was written means GitHub was not
-  # reachable; an old cache without a failure is simply being refreshed.
+  cache_age="$(age_of "$CACHE")"
   # Refreshes are serialised and a success removes FAILED, so its existence
-  # alone means the latest refresh failed; no timestamp comparison (whole
-  # seconds would tie a failure to the success just before it).
-  if [ "$failed_age" -ge 0 ]; then
+  # alone means the latest refresh failed: GitHub unreachable, or a tool
+  # missing. An old cache without it is simply being refreshed.
+  if [ -f "$FAILED" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"

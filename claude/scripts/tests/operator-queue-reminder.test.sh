@@ -471,6 +471,31 @@ run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
 run_issues
 assert "same-second failure after an empty success is not silent" "outgrep 'as of the last good fetch (cached 0 min ago; the last refresh failed'"
 
+# A marker or cache stamped after the hook read the clock (a refresh running
+# alongside it) still counts: presence decides, not a possibly negative age.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch "$CACHEF.failed"; touch -d '+1 minute' "$CACHEF.failed"
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "a future-stamped failure marker is not ignored" "outgrep 'the last refresh failed'"
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES"
+touch -d '+1 minute' "$CACHEF"
+: > "$FX/gh.log"
+run_issues
+assert "a future-stamped cache is a cache, not 'no cache'" "outgrep 'dot-issue (#12)' && ! outgrep 'no cache'"
+
+# Killing the refresh shell mid-fetch does not free the lock while its gh
+# still runs, so no second fetch overlaps it.
+fresh_home
+( cd "$FX/dotfiles" && exec env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=3 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
+victim=$!
+for _ in $(seq 1 60); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
+kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+( cd "$FX/dotfiles" && env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh )
+assert "a killed refresh's live gh still holds the lock" "[ \"\$(grep -c graphql '$FX/gh.log')\" -eq 1 ]"
+for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
+
 # GitHub names are case-insensitive: O/R and o/r share one cache.
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_REPO=JCKEEN/Claude-Memory

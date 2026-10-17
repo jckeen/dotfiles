@@ -18,8 +18,10 @@
   (stock macOS) a refresh fails and the header says so. The cache name is the
   SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
   fits the filesystem's name limit, and case variants of one repo share it.
-  A failure marker that exists means the latest refresh failed, with no
-  timestamp comparison to tie in the same second. The Codex gate found two earlier hand-rolled locks
+  The cache and the failure marker are judged by presence, never by an age
+  that a concurrent refresh could make negative. `gh` and `jq` inherit the
+  lock, so a refresh shell killed mid-fetch cannot free it while its `gh`
+  still runs; where `timeout` exists the fetch is capped at two minutes. The Codex gate found two earlier hand-rolled locks
   racy (pid file, then mtime guard), which is why `flock` replaced them. A slow or stalled
   `gh`/`jq` therefore costs SessionStart nothing. The Codex gate found the
   in-hook fetch's timeout unsound three ways, which is why the fetch moved out
