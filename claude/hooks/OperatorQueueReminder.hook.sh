@@ -240,7 +240,13 @@ else
     now="$(date +%s)"
   fi
   state="$(refresh_state)"
-  if [ ! -f "$CACHE" ]; then
+  # Everything below reads one snapshot, taken after the state: a refresh
+  # replaces the cache by rename, so this copy is one whole cache, and a
+  # replacement mid-render cannot split the check from the output. cp -p
+  # keeps its mtime for the age.
+  SNAP="$(mktemp)" || exit 0
+  trap 'rm -f "$SNAP"' EXIT
+  if ! cp -p "$CACHE" "$SNAP" 2>/dev/null; then
     if [ "$state" = failed ]; then
       echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
@@ -248,7 +254,8 @@ else
     fi
     exit 0
   fi
-  cache_age="$(age_of "$CACHE")"
+  QUEUE="$SNAP"
+  cache_age="$(age_of "$SNAP")"
   # Refreshes are serialised and a success removes FAILED, so its existence
   # alone means the latest refresh failed: GitHub unreachable, or a tool
   # missing. A refresh in flight may yet fail, so the cache is named as
@@ -261,7 +268,7 @@ else
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
   fi
-  if ! grep -q '^## ' "$CACHE" 2>/dev/null; then
+  if ! grep -q '^## ' "$SNAP" 2>/dev/null; then
     # An empty answer is only "nothing open" when it is fresh.
     [ -n "$CACHE_NOTE" ] && echo "Operator action queue: no open operator-action issues in $ISSUE_REPO as of the last good fetch$CACHE_NOTE."
     exit 0

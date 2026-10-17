@@ -607,6 +607,27 @@ run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
 assert "an orphan under a successor's lock is reported, not silent" "outgrep 'a refresh is running or was interrupted'"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 
+# A refresh that swaps in an empty cache and dies after the hook's emptiness
+# check cannot silence it: the hook renders the snapshot it checked. The
+# swap is injected deterministically by a `wc` wrapper (the renderer's first
+# read after the check).
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES"
+mkdir -p "$FX/swapbin"
+cat > "$FX/swapbin/wc" <<SWAP
+#!/usr/bin/env bash
+if [ ! -e "$FX/swapped" ]; then
+  : > "$FX/swapped"
+  printf '# Operator-action issues\n' > "$CACHEF.swap" && mv -f "$CACHEF.swap" "$CACHEF"
+  touch "$CACHEF.inflight"
+fi
+exec "$(command -v wc)" "\$@"
+SWAP
+chmod +x "$FX/swapbin/wc"
+run_issues PATH="$FX/swapbin:$PATH"
+assert "a cache swapped mid-render does not silence the hook" "[ -e '$FX/swapped' ] && outgrep 'dot-issue (#12)'"
+rm -rf "$FX/swapbin" "$FX/swapped"
+
 # The next refresh starting over an orphaned INFLIGHT records its failure
 # first, so readers keep reporting it while the new fetch is still running.
 fresh_home
@@ -670,13 +691,15 @@ fresh_home
 start=$(date +%s)
 run_issues OPERATOR_QUEUE_REFRESH_SYNC=0 FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=2
 assert "async: the hook returns before a slow refresh finishes" "[ \$(( \$(date +%s) - start )) -lt 2 ] && outgrep 'a refresh is running in the background'"
-for _ in $(seq 1 50); do [ -f "$CACHEF" ] && break; sleep 0.1; done
+for _ in $(seq 1 50); do [ -f "$CACHEF" ] && [ ! -e "$CACHEF.inflight" ] && break; sleep 0.1; done
 run_issues OPERATOR_QUEUE_REFRESH_SYNC=0
 assert "async: the detached refresh wrote the cache for the next session" "outgrep 'dot-issue (#12)' && ! outgrep 'cached'"
 touch -d '2 hours ago' "$CACHEF"
 : > "$FX/gh.log"
 run_issues OPERATOR_QUEUE_REFRESH_SYNC=0 FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=2
-assert "async: an old cache renders at once, marked as refreshing" "outgrep 'cached 120 min ago; refreshing in the background' && outgrep 'dot-issue (#12)'"
+# Whether the detached child has marked itself in flight yet is a race; both
+# notes are correct, and neither presents the old cache as current.
+assert "async: an old cache renders at once, marked as refreshing" "{ outgrep 'cached 120 min ago; refreshing in the background' || outgrep 'cached 120 min ago; a refresh is running or was interrupted'; } && outgrep 'dot-issue (#12)'"
 for _ in $(seq 1 50); do [ "$(( $(date +%s) - $(stat -c %Y "$CACHEF") ))" -lt 60 ] && break; sleep 0.1; done
 
 rm -rf "$FAKEBIN"
