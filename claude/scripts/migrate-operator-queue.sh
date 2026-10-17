@@ -54,7 +54,8 @@ done
 # the issues land where the hook will read them.
 case "$REPO" in */*/*) ;; *) REPO="github.com/$REPO" ;; esac
 
-visibility="$(gh repo view "$REPO" --json visibility -q .visibility)" || {
+read -r visibility canonical < <(gh repo view "$REPO" --json visibility,nameWithOwner \
+  -q '"\(.visibility) \(.nameWithOwner)"') && [ -n "${canonical:-}" ] || {
   echo "could not read $REPO's visibility" >&2; exit 1; }
 if [ "$visibility" != "PRIVATE" ]; then
   echo "refusing: $REPO is $visibility — operator items must go to a private repo" >&2
@@ -89,7 +90,9 @@ if [ "$APPLY" -eq 1 ]; then
     echo "refusing: --apply needs flock(1) to keep concurrent runs from duplicating issues" >&2; exit 1; }
   lockdir="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
   mkdir -p "$lockdir"
-  key="$(printf '%s' "$REPO" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-64)"
+  # Keyed on GitHub's own name for the repo, lowercased: o/r, O/R and a
+  # renamed repo's old name all reach one repo, so they must share one lock.
+  key="$(printf '%s/%s' "${REPO%%/*}" "$canonical" | tr '[:upper:]' '[:lower:]' | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-64)"
   exec 9>> "$lockdir/migrate-$key.lock"
   flock -n 9 || { echo "refusing: another --apply for $REPO is running" >&2; exit 1; }
 fi

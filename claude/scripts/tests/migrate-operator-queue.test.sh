@@ -21,7 +21,7 @@ cat > "$FX/bin/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$1 $2" in
-  "repo view")    echo "$FAKE_VIS" ;;
+  "repo view")    echo "$FAKE_VIS ${FAKE_NWO:-o/r}" ;;
   "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n001\t9\n100\t10\n' ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
@@ -119,12 +119,18 @@ assert "no --repo: OPERATOR_QUEUE_REPO is the target" "[ $rc -eq 0 ] && grep -qF
 
 # A second --apply for the same repo refuses while one holds the lock, before
 # any write; a dry run is unaffected.
-key="$(printf '%s' github.com/o/r | sha256sum | cut -c1-64)"
+key="$(printf '%s' github.com/o/r | sha256sum | cut -c1-64)"   # GitHub's lowercased name
 mkdir -p "$XDG_STATE_HOME/operator-queue"
 ( exec 8>> "$XDG_STATE_HOME/operator-queue/migrate-$key.lock"; flock 8; exec sleep 30 ) & holder=$!
 for _ in $(seq 1 50); do flock -n "$XDG_STATE_HOME/operator-queue/migrate-$key.lock" true || break; sleep 0.05; done
 run PRIVATE --apply
 assert "concurrent apply refused with no write" "[ $rc -eq 1 ] && grep -qF 'another --apply for github.com/o/r is running' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE FAKE_NWO=O/R bash "$SCRIPT" --queue "$FX/queue.md" --repo O/R --apply 2>&1)"; rc=$?
+assert "a case variant of the repo shares the lock" "[ $rc -eq 1 ] && grep -qF 'is running' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE FAKE_NWO=o/r bash "$SCRIPT" --queue "$FX/queue.md" --repo o/old-name --apply 2>&1)"; rc=$?
+assert "a renamed repo's old name shares the lock" "[ $rc -eq 1 ] && grep -qF 'is running' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
 run PRIVATE
 assert "dry run ignores the apply lock" "[ $rc -eq 0 ]"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null

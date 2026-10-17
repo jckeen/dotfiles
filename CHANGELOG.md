@@ -16,8 +16,10 @@
   dies. A refresh that finds the lock held makes no fetch, so refreshes never
   overlap and the last write is always the newest fetch. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the
-  SHA-256 of host/owner/repo: fixed-length, so any repo name fits the
-  filesystem's name limit. The Codex gate found two earlier hand-rolled locks
+  SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
+  fits the filesystem's name limit, and case variants of one repo share it.
+  A failure marker that exists means the latest refresh failed, with no
+  timestamp comparison to tie in the same second. The Codex gate found two earlier hand-rolled locks
   racy (pid file, then mtime guard), which is why `flock` replaced them. A slow or stalled
   `gh`/`jq` therefore costs SessionStart nothing. The Codex gate found the
   in-hook fetch's timeout unsound three ways, which is why the fetch moved out
@@ -40,7 +42,8 @@
   and refuses when the existing-title list is too long to be complete. Titles
   match exactly as strings (no awk escape processing or numeric comparison),
   and a title repeated within one queue is created once. The repo defaults to
-  the hook's `OPERATOR_QUEUE_REPO`. `--apply` holds a per-repo `flock` from the
+  the hook's `OPERATOR_QUEUE_REPO`. `--apply` holds a `flock` keyed on GitHub's own lowercased name for the
+  repo (so a case variant or a renamed repo's old name shares it) from the
   existing-title check to the last create, so two applies on one machine never
   duplicate a title.
   On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as

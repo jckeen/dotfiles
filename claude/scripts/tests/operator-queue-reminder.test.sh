@@ -463,6 +463,21 @@ touch -d '2 hours ago' "$CACHEF"
 run_issues
 assert "empty old cache + failed refresh is not silent" "outgrep 'no open operator-action issues in github.com/jckeen/claude-memory as of the last good fetch (cached 120 min ago; the last refresh failed'"
 
+# A failure in the same second as the success before it still shows: the
+# marker's existence, not its timestamp, says the latest refresh failed.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+( cd "$FX/dotfiles" && env -u FAKE_GH_JSON HOME="$IH" "$HOOK" --refresh )
+run_issues
+assert "same-second failure after an empty success is not silent" "outgrep 'as of the last good fetch (cached 0 min ago; the last refresh failed'"
+
+# GitHub names are case-insensitive: O/R and o/r share one cache.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_REPO=JCKEEN/Claude-Memory
+: > "$FX/gh.log"
+run_issues
+assert "a case variant of the repo reuses its cache" "[ -f '$CACHEF' ] && [ ! -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)'"
+
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
 run_issues OPERATOR_QUEUE_REPO=other/queue

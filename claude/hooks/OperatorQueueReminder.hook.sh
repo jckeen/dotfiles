@@ -87,9 +87,11 @@ CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
 # SHA-256 of the full host/owner/repo: a fixed-length name (any repo string
 # fits NAME_MAX) that no two repos share in practice. A character-class
 # substitution or an od dump is neither: od folds repeated rows into "*".
+# Lowercased first: GitHub names are case-insensitive, so O/R and o/r are one
+# repo and share one cache.
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-64; }
-CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | sha256).md"
-FAILED="$CACHE.failed"   # mtime = the last failed refresh
+CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | tr '[:upper:]' '[:lower:]' | sha256).md"
+FAILED="$CACHE.failed"   # exists = the latest refresh failed (a success removes it)
 LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
 SOURCE="file"
@@ -209,7 +211,10 @@ else
   fi
   # A refresh that failed after the cache was written means GitHub was not
   # reachable; an old cache without a failure is simply being refreshed.
-  if [ "$failed_age" -ge 0 ] && [ "$failed_age" -lt "$cache_age" ]; then
+  # Refreshes are serialised and a success removes FAILED, so its existence
+  # alone means the latest refresh failed; no timestamp comparison (whole
+  # seconds would tie a failure to the success just before it).
+  if [ "$failed_age" -ge 0 ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
