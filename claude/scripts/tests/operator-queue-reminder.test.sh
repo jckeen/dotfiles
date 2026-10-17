@@ -41,6 +41,7 @@ cat > "$FAKEBIN/gh" <<'GH'
 # the way comments(last: 1) is. FAKE_GH_SLEEP stalls first (a slow GitHub).
 [ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 [ -n "${FAKE_GH_SLEEP:-}" ] && sleep "$FAKE_GH_SLEEP"
+[ -n "${FAKE_GH_LOG:-}" ] && echo "gh-done" >> "$FAKE_GH_LOG"
 [ -n "${FAKE_GH_JSON:-}" ] || exit 1
 jq '{data: {repository: {issues: {pageInfo: {hasNextPage: false, endCursor: null},
   nodes: [ .[] | .labels = {nodes: (.labels // [])}
@@ -488,13 +489,26 @@ assert "a future-stamped cache is a cache, not 'no cache'" "outgrep 'dot-issue (
 # Killing the refresh shell mid-fetch does not free the lock while its gh
 # still runs, so no second fetch overlaps it.
 fresh_home
-( cd "$FX/dotfiles" && exec env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=3 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
+( cd "$FX/dotfiles" && exec env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=7 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
 victim=$!
 for _ in $(seq 1 60); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
 kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
 ( cd "$FX/dotfiles" && env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh )
 assert "a killed refresh's live gh still holds the lock" "[ \"\$(grep -c graphql '$FX/gh.log')\" -eq 1 ]"
 for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
+
+# A refresh killed mid-fetch whose gh then fails leaves no FAILED, but its
+# INFLIGHT marker with the lock free still reads as a failed refresh.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+: > "$FX/gh.log"
+( cd "$FX/dotfiles" && exec env -u FAKE_GH_JSON HOME="$IH" FAKE_GH_SLEEP=1 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
+victim=$!
+for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
+kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "a killed refresh whose gh failed is reported, not silent" "[ ! -f '$CACHEF.failed' ] && [ -f '$CACHEF.inflight' ] && outgrep 'the last refresh failed'"
 
 # GitHub names are case-insensitive: O/R and o/r share one cache.
 fresh_home
@@ -547,8 +561,8 @@ for _ in $(seq 1 50); do flock -n "$LOCKF" true && break; sleep 0.05; done
 run_issues FAKE_GH_JSON="$ISSUES"
 assert "a dead holder's lock is free again" "[ -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)'"
 
-# Refreshes never overlap: one started while a slow one is fetching makes no
-# gh call, so an older fetch can never land after a newer one.
+# Refreshes never overlap: one started while a slow one is fetching waits for
+# it, then fetches, so the newer fetch is the one that lands.
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
 touch -d '2 hours ago' "$CACHEF"
@@ -559,7 +573,17 @@ for _ in $(seq 1 50); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
 ( cd "$FX/dotfiles" && HOME="$IH" PATH="$FAKEBIN:$PATH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" "$HOOK" --refresh )
 wait "$slow"
 run_issues OPERATOR_QUEUE_SHOW_ALL=1
-assert "a refresh during another one makes no gh call; the running one's result stands" "[ \"\$(grep -c graphql '$FX/gh.log')\" -eq 1 ] && outgrep 'only-in-first (#50)'"
+assert "a refresh during another one waits, then its newer fetch lands" "[ \"\$(grep -oE '^(api graphql|gh-done)' '$FX/gh.log' | cut -c1-6 | tr '\\n' ' ')\" = 'api gr gh-don api gr gh-don ' ] && outgrep 'dot-issue (#12)' && ! outgrep 'only-in-first'"
+
+# No digest tool: refused with a warning, never one cache name for every repo.
+mkdir -p "$FX/nohash"
+for t in bash env cat date mkdir touch rm mv chmod mktemp stat grep sed awk head tr cut sort uniq wc printf jq od seq dirname basename readlink setsid nohup flock timeout; do
+  p="$(command -v "$t" 2>/dev/null)" && [ "${p#/}" != "$p" ] && ln -sf "$p" "$FX/nohash/$t"
+done
+ln -sf "$FAKEBIN/gh" "$FX/nohash/gh"
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES" PATH="$FX/nohash"
+assert "no sha256sum/shasum: refused, no gh call, no shared cache" "outgrep 'cannot name the operator-action cache' && [ ! -s '$FX/gh.log' ] && [ ! -e '$IH/.local/state/operator-queue/issues-.md' ]"
 
 # No flock: the refresh fails and says so, rather than running unserialised.
 mkdir -p "$FX/noflock"

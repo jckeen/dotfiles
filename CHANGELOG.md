@@ -13,11 +13,16 @@
   `comments(last: 1)` for the newest comment. It turns them into the same
   `## <slug>` blocks and replaces the cache atomically. Refreshes run under
   `flock(1)`, which the kernel grants atomically and drops when the holder
-  dies. A refresh that finds the lock held makes no fetch, so refreshes never
-  overlap and the last write is always the newest fetch. Without `flock`
+  dies. A refresh that finds the lock held waits up to five seconds, then
+  gives up without fetching, so refreshes never overlap and the last write is
+  always the newest fetch. A refresh marks itself in flight before fetching;
+  a marker left with the lock free (its shell was killed) reads as a failed
+  refresh. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the
   SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
   fits the filesystem's name limit, and case variants of one repo share it.
+  With no `sha256sum` or `shasum` the hook refuses with one warning line
+  instead of falling back to a name every repo would share.
   The cache and the failure marker are judged by presence, never by an age
   that a concurrent refresh could make negative. `gh` and `jq` inherit the
   lock, so a refresh shell killed mid-fetch cannot free it while its `gh`

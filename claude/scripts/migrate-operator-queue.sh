@@ -92,7 +92,8 @@ if [ "$APPLY" -eq 1 ]; then
   mkdir -p "$lockdir"
   # Keyed on GitHub's own name for the repo, lowercased: o/r, O/R and a
   # renamed repo's old name all reach one repo, so they must share one lock.
-  key="$(printf '%s/%s' "${REPO%%/*}" "$canonical" | tr '[:upper:]' '[:lower:]' | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-64)"
+  key="$(printf '%s/%s' "${REPO%%/*}" "$canonical" | tr '[:upper:]' '[:lower:]' | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } 2>/dev/null | cut -c1-64)" || key=""
+  [ "${#key}" -eq 64 ] || { echo "refusing: --apply needs sha256sum or shasum to name its lock" >&2; exit 1; }
   exec 9>> "$lockdir/migrate-$key.lock"
   flock -n 9 || { echo "refusing: another --apply for $REPO is running" >&2; exit 1; }
 fi

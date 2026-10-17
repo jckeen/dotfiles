@@ -90,9 +90,15 @@ CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
 # substitution or an od dump is neither: od folds repeated rows into "*".
 # Lowercased first: GitHub names are case-insensitive, so O/R and o/r are one
 # repo and share one cache.
-sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-64; }
-CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | tr '[:upper:]' '[:lower:]' | sha256).md"
+# No digest tool means no cache name; that is refused, never defaulted to a
+# name every repo would share.
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi 2>/dev/null | cut -c1-64; }
+KEY="$(printf '%s' "$ISSUE_REPO" | tr '[:upper:]' '[:lower:]' | sha256)"
+case "$KEY" in *[!0-9a-f]*) KEY="" ;; esac
+[ "${#KEY}" -eq 64 ] || KEY=""
+CACHE="$CACHE_DIR/issues-$KEY.md"
 FAILED="$CACHE.failed"   # exists = the latest refresh failed (a success removes it)
+INFLIGHT="$CACHE.inflight"  # exists while a refresh runs; left behind if it dies
 LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
 FETCH_TIMEOUT=120
@@ -115,17 +121,22 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # non-empty body line that is not a field).
 refresh() {
   local raw tmp rc=1
+  [ -n "$KEY" ] || return 1
   mkdir -p "$CACHE_DIR" || return 1
   # One refresh at a time, under flock(1): the kernel grants the lock
   # atomically and drops it when the holder exits, however it dies, so there
   # is no pid file to race and no stale lock to steal. A refresh that finds
-  # the lock held returns: the running one started earlier and writes the
-  # cache itself. Because refreshes never overlap, the last write is always
+  # the lock still held after a short wait (the wait covers a hook's own brief
+  # check, see refresh_died) returns: the running one started earlier and
+  # writes the cache itself. Because refreshes never overlap, the last write is always
   # the newest fetch. No flock (stock macOS) counts as a failed refresh, which
   # the header reports, rather than an unserialised one.
   command -v flock >/dev/null 2>&1 || { touch "$FAILED"; return 1; }
   exec 9>> "$LOCK" || { touch "$FAILED"; return 1; }
-  flock -n 9 || { exec 9>&-; return 0; }
+  flock -w 5 9 || { exec 9>&-; return 0; }
+  # Marked before the fetch and cleared only after FAILED is settled, so a
+  # refresh killed at any point leaves INFLIGHT behind (see refresh_died).
+  touch "$INFLIGHT" || { touch "$FAILED"; exec 9>&-; return 1; }
   # gh and jq inherit fd 9, so the lock lives as long as any fetch worker
   # does: a refresh shell killed mid-fetch cannot free it while its gh still
   # runs. A hung gh would then hold it for good, so where timeout(1) exists
@@ -169,9 +180,20 @@ refresh() {
   chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
   rm -f "$raw" "${tmp:-}"
   if [ "$rc" -eq 0 ]; then rm -f "$FAILED"; else touch "$FAILED"; fi
+  rm -f "$INFLIGHT"
   exec 9>&-
   return "$rc"
 }
+
+# refresh_died — an INFLIGHT marker with the lock free: a refresh was killed
+# before it could record its outcome (the lock outlives its shell only while
+# its gh still runs). Checked under the lock, so a refresh starting at that
+# moment cannot be mistaken for a dead one.
+refresh_died() {
+  command -v flock >/dev/null 2>&1 && [ -f "$INFLIGHT" ] &&
+    flock -n "$LOCK" test -f "$INFLIGHT" 2>/dev/null
+}
+refresh_failed() { [ -f "$FAILED" ] || refresh_died; }
 
 if [ "${1:-}" = "--refresh" ]; then
   refresh
@@ -190,6 +212,10 @@ elif [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'
   QUEUE="$LEGACY"
 else
   SOURCE="issues"
+  if [ -z "$KEY" ]; then
+    echo "Operator action queue: cannot name the operator-action cache for $ISSUE_REPO (no sha256sum or shasum) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+    exit 0
+  fi
   QUEUE="$CACHE"
   now="$(date +%s)"
   # Presence decides, never an age: a refresh running alongside this hook
@@ -208,7 +234,7 @@ else
     now="$(date +%s)"
   fi
   if [ ! -f "$CACHE" ]; then
-    if [ -f "$FAILED" ]; then
+    if refresh_failed; then
       echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
       echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
@@ -219,7 +245,7 @@ else
   # Refreshes are serialised and a success removes FAILED, so its existence
   # alone means the latest refresh failed: GitHub unreachable, or a tool
   # missing. An old cache without it is simply being refreshed.
-  if [ -f "$FAILED" ]; then
+  if refresh_failed; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
