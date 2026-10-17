@@ -11,7 +11,10 @@
   is missing or older than 10 minutes, the hook starts `--refresh` detached.
   That refresh pages the issues through one GraphQL query, using
   `comments(last: 1)` for the newest comment. It turns them into the same
-  `## <slug>` blocks and replaces the cache atomically. A slow or stalled
+  `## <slug>` blocks and replaces the cache atomically. The refresh lock is
+  taken over only when its holder's pid is gone. A refresh never replaces a
+  cache written after its own fetch began. The cache name is the hex of
+  host/owner/repo, so no two repos share it. A slow or stalled
   `gh`/`jq` therefore costs SessionStart nothing. The Codex gate found the
   in-hook fetch's timeout unsound three ways, which is why the fetch moved out
   of the hook. `added` comes from the body's `- added:` line, falling back to

@@ -23,12 +23,12 @@
 # the file by adding the historical banner as its first line; the hook then
 # switches to the issues.
 #
-# Usage: migrate-operator-queue.sh [--apply] [--repo owner/name] [--queue path]
+# Usage: migrate-operator-queue.sh [--apply] [--repo [host/]owner/name] [--queue path]
 # EXIT: 0 ok; 1 a gh call failed or the repo is not private; 2 usage error.
 # SELF-TEST: claude/scripts/tests/migrate-operator-queue.test.sh
 set -euo pipefail
 
-REPO="jckeen/claude-memory"
+REPO="github.com/jckeen/claude-memory"
 QUEUE="$HOME/.claude/operator-queue.md"
 APPLY=0
 while [ $# -gt 0 ]; do
@@ -42,6 +42,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -s "$QUEUE" ] || { echo "no queue at $QUEUE" >&2; exit 2; }
+# Resolve the host exactly as OperatorQueueReminder.hook.sh does: a bare
+# owner/name means github.com, never gh's GH_HOST or configured default, so
+# the issues land where the hook will read them.
+case "$REPO" in */*/*) ;; *) REPO="github.com/$REPO" ;; esac
 
 visibility="$(gh repo view "$REPO" --json visibility -q .visibility)" || {
   echo "could not read $REPO's visibility" >&2; exit 1; }

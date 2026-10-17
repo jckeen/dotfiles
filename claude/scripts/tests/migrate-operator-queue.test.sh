@@ -68,7 +68,7 @@ run() { : > "$FAKE_LOG"; out="$(FAKE_VIS="$1" bash "$SCRIPT" --queue "$FX/queue.
 writes() { grep -cE '^(label|issue) create' "$FAKE_LOG"; }
 
 run PUBLIC
-assert "public repo refused (dry run)" "[ $rc -eq 1 ] && grep -qF 'refusing: o/r is PUBLIC' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
+assert "public repo refused (dry run)" "[ $rc -eq 1 ] && grep -qF 'refusing: github.com/o/r is PUBLIC' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
 run PUBLIC --apply
 assert "public repo refused (apply), nothing written" "[ $rc -eq 1 ] && [ \"\$(writes)\" -eq 0 ]"
 
@@ -82,7 +82,7 @@ assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 alr
 
 run PRIVATE --apply
 assert "apply exits 0" "[ $rc -eq 0 ]"
-assert "apply: missing project labels created, existing operator-action not" "grep -qx 'label create project:dotfiles -R o/r --color C5DEF5' '$FAKE_LOG' && grep -qx 'label create project:stringer -R o/r --color C5DEF5' '$FAKE_LOG' && ! grep -q 'label create operator-action' '$FAKE_LOG'"
+assert "apply: missing project labels created, existing operator-action not" "grep -qx 'label create project:dotfiles -R github.com/o/r --color C5DEF5' '$FAKE_LOG' && grep -qx 'label create project:stringer -R github.com/o/r --color C5DEF5' '$FAKE_LOG' && ! grep -q 'label create operator-action' '$FAKE_LOG'"
 assert "apply: two issues created, none for the existing title" "[ \"\$(grep -c '^issue create' '$FAKE_LOG')\" -eq 2 ] && ! grep -q -- '--title already-there' '$FAKE_LOG'"
 assert "apply: scoped issue carries both labels" "grep -q -- '--title dot-thing --label operator-action --body-file .* --label project:dotfiles' '$FAKE_LOG'"
 assert "apply: unscoped issue carries only operator-action" "grep -- '--title no-project-item' '$FAKE_LOG' | grep -qv 'project:'"
@@ -101,6 +101,8 @@ printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/numeric.md" --repo o/r --apply 2>&1)"; rc=$?
 assert "apply: numeric-looking titles are not matched numerically" "[ $rc -eq 0 ] && grep -q -- '--title 1 --label' '$FAKE_LOG' && grep -q -- '--title 1e2 --label' '$FAKE_LOG'"
+
+assert "a bare owner/name is pinned to github.com for every gh call" "! grep -qE -- '-R o/r( |$)' '$FAKE_LOG' && grep -qF -- 'repo view github.com/o/r' '$FAKE_LOG'"
 
 # A queue with no project anywhere: --apply must not abort on the empty label list.
 printf '## lone\n- added: 2026-09-01\n- action: unscoped only\n' > "$FX/unscoped.md"

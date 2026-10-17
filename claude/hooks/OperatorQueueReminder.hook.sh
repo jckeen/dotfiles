@@ -80,7 +80,9 @@ case "$ISSUE_REPO" in */*/*) ;; *) ISSUE_REPO="github.com/$ISSUE_REPO" ;; esac
 GH_HOSTNAME="${ISSUE_REPO%%/*}"
 REPO_PATH="${ISSUE_REPO#*/}"
 CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
-CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | tr -c 'A-Za-z0-9._-' '_').md"
+# Hex of the full host/owner/repo: an injective name, so no two repos can share
+# a cache (a character-class substitution maps "a_b/c" and "a/b_c" together).
+CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | od -An -tx1 | tr -d ' \n').md"
 FAILED="$CACHE.failed"   # mtime = the last failed refresh
 LOCK="$CACHE.lock"
 CACHE_TTL=600
@@ -103,12 +105,18 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # non-empty body line that is not a field).
 refresh() {
   mkdir -p "$CACHE_DIR" || return 1
-  # One refresh at a time; a lock older than 5 minutes is a crashed run.
+  # One refresh at a time. The lock holds its owner's pid; it is only taken
+  # over when that process is gone, never on age alone (a slow refresh is
+  # still a live one).
   if ! mkdir "$LOCK" 2>/dev/null; then
-    [ $(( $(date +%s) - $(mtime "$LOCK") )) -gt 300 ] || return 0
-    rmdir "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || return 0
+    local holder
+    holder="$(cat "$LOCK/pid" 2>/dev/null)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 0; fi
+    rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || return 0
   fi
-  local raw tmp rc=1
+  echo "$$" > "$LOCK/pid"
+  local raw tmp rc=1 started
+  started="$(date +%s)"
   raw="$(mktemp "$CACHE.raw.XXXXXX")" && tmp="$(mktemp "$CACHE.new.XXXXXX")" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
   gh api graphql --hostname "$GH_HOSTNAME" --paginate \
@@ -143,10 +151,18 @@ refresh() {
         (if $project != "" then "- project: \($project)" else empty end),
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
         "- action: \($action)" )' "$raw" > "$tmp" &&
-  chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
+  chmod 600 "$tmp" && rc=0
+  # Never replace a cache written after this fetch began: it holds newer data.
+  if [ "$rc" -eq 0 ]; then
+    if [ -f "$CACHE" ] && [ "$(mtime "$CACHE")" -gt "$started" ]; then
+      rm -f "$tmp"
+    else
+      mv -f "$tmp" "$CACHE" || rc=1
+    fi
+  fi
   rm -f "$raw" "${tmp:-}"
   if [ "$rc" -eq 0 ]; then rm -f "$FAILED"; else touch "$FAILED"; fi
-  rmdir "$LOCK" 2>/dev/null
+  rm -rf "$LOCK"
   return "$rc"
 }
 
@@ -187,9 +203,9 @@ else
   [ -f "$FAILED" ] && failed_age=$(( now - $(mtime "$FAILED") ))
   if [ "$cache_age" -lt 0 ]; then
     if [ "$failed_age" -ge 0 ]; then
-      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action\`."
+      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
-      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action\` to see them now."
+      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
     fi
     exit 0
   fi
@@ -406,7 +422,7 @@ if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -lt "$total" ]; then
       { extra++ }
       END { if (extra) print "  …and " extra " more projects — see " ENVIRON["OQ_SRC"] }'
   if [ "$SOURCE" = issues ]; then
-    echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action\`, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
+    echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
   else
     echo "Full queue: $QUEUE_SHOWN — read it, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
   fi

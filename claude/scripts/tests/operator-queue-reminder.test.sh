@@ -405,7 +405,8 @@ run_issues() {
     HOME="$IH" FAKE_GH_LOG="$FX/gh.log" OPERATOR_QUEUE_REFRESH_SYNC=1 "$@" "$HOOK" 2>&1)"
   rc=$?
 }
-CACHEF="$IH/.local/state/operator-queue/issues-github.com_jckeen_claude-memory.md"
+hexkey() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+CACHEF="$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md"
 fresh_home() { rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"; }
 
 fresh_home
@@ -416,7 +417,7 @@ assert "issues: header names the issue source; stale count uses body and comment
 assert "issues: project label, body deadline/action, newest comment as verified" "outgrep '[PAST DUE $P3] dot-issue (#12) — approve the dotfiles thing (project: dotfiles, added 45d ago, verified 5d ago)'"
 assert "issues: body project line and first-line action" "outgrep '  stringer: 1 item (oldest 90d)'"
 assert "issues: null body renders a placeholder action, unscoped" "outgrep '  (no project): 1 item (oldest 2d)'"
-assert "issues: footer names the gh command" "outgrep 'gh issue list -R github.com/jckeen/claude-memory --label operator-action'"
+assert "issues: footer names the gh command" "outgrep 'gh issue list -R github.com/jckeen/claude-memory --label operator-action --limit 1000'"
 assert "issues: trailer asks for a comment and close-when-done" "outgrep 'comment on the issue' && outgrep 'close it only when it is done'"
 assert "issues: cache written owner-only" "[ -f '$CACHEF' ] && [ \"\$(stat -c %a '$CACHEF')\" = 600 ]"
 
@@ -468,6 +469,47 @@ run_issues OPERATOR_QUEUE_REPO=other/queue
 assert "cache is per repo: another repo never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list operator-action issues in github.com/other/queue'"
 run_issues OPERATOR_QUEUE_REPO=ghe.example.com/jckeen/claude-memory
 assert "cache is per host: another host never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list' && grep -qF -- '--hostname ghe.example.com' '$FX/gh.log'"
+
+# Names a character substitution would merge get separate caches.
+cat > "$FX/one.json" <<JSON
+[{"number": 50, "title": "only-in-first", "createdAt": "$(iso -1)", "labels": [], "comments": [], "body": "- action: a"}]
+JSON
+fresh_home
+run_issues FAKE_GH_JSON="$FX/one.json" OPERATOR_QUEUE_REPO=mona-cat_octo/queue
+: > "$FX/gh.log"
+run_issues OPERATOR_QUEUE_REPO=mona-cat/octo_queue
+assert "cache key is injective: a_b/c and a/b_c never share a cache" "! outgrep 'only-in-first' && [ -s '$FX/gh.log' ]"
+
+# A live lock holder is never taken over, however old its lock is.
+fresh_home
+mkdir -p "$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock"
+sleep 30 & holder=$!
+echo "$holder" > "$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock/pid"
+touch -d '1 hour ago' "$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock"
+: > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "a live lock holder blocks a second refresh" "[ ! -s '$FX/gh.log' ] && [ ! -f '$CACHEF' ]"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "a dead holder's lock is taken over" "[ -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)'"
+
+# A refresh whose fetch began before a newer cache landed must not replace it.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES"
+cat > "$FAKEBIN/gh-late" <<'GH'
+#!/usr/bin/env bash
+sleep 1.5
+echo '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'
+GH
+chmod +x "$FAKEBIN/gh-late"
+mkdir -p "$FX/late"; ln -sf "$FAKEBIN/gh-late" "$FX/late/gh"
+touch -d '2 hours ago' "$CACHEF"
+( cd "$FX/dotfiles" && HOME="$IH" PATH="$FX/late:$PATH" "$HOOK" --refresh ) &
+late=$!
+sleep 0.5; touch "$CACHEF"   # a newer refresh lands while the slow one is fetching
+wait "$late"
+run_issues
+assert "an older refresh never overwrites a newer cache" "outgrep 'dot-issue (#12)'"
 
 cat > "$FX/multi.json" <<JSON
 [{"number": 30, "title": "shared-item", "createdAt": "$(iso -3)", "comments": [],
