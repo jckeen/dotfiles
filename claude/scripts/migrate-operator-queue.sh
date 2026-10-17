@@ -19,16 +19,23 @@
 # repo must be private: the script refuses, in both modes, when GitHub does not
 # report the repo's visibility as PRIVATE.
 #
+# The repo defaults to OPERATOR_QUEUE_REPO, the hook's own setting, so the
+# issues land where the hook reads them. --apply holds a per-repo flock(1)
+# from the existing-title check to the last create, so two applies on this
+# machine never both create one title; it refuses without flock. Two applies
+# on different machines at once are not serialised — run it from one.
+#
 # This script never edits the queue file. Once the issues are checked, retire
 # the file by adding the historical banner as its first line; the hook then
 # switches to the issues.
 #
 # Usage: migrate-operator-queue.sh [--apply] [--repo [host/]owner/name] [--queue path]
-# EXIT: 0 ok; 1 a gh call failed or the repo is not private; 2 usage error.
+# EXIT: 0 ok; 1 a gh call failed, the repo is not private, or another apply
+#   holds the lock (or flock is missing); 2 usage error.
 # SELF-TEST: claude/scripts/tests/migrate-operator-queue.test.sh
 set -euo pipefail
 
-REPO="github.com/jckeen/claude-memory"
+REPO="${OPERATOR_QUEUE_REPO:-github.com/jckeen/claude-memory}"
 QUEUE="$HOME/.claude/operator-queue.md"
 APPLY=0
 while [ $# -gt 0 ]; do
@@ -36,7 +43,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --repo) REPO="${2:?--repo needs owner/name}"; shift ;;
     --queue) QUEUE="${2:?--queue needs a path}"; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -76,6 +83,16 @@ LC_ALL=C awk -v dir="$work" '
   END { flush() }
 ' "$QUEUE"
 [ -s "$work/index.tsv" ] || { echo "no \"## <slug>\" blocks in $QUEUE" >&2; exit 2; }
+
+if [ "$APPLY" -eq 1 ]; then
+  command -v flock >/dev/null 2>&1 || {
+    echo "refusing: --apply needs flock(1) to keep concurrent runs from duplicating issues" >&2; exit 1; }
+  lockdir="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
+  mkdir -p "$lockdir"
+  key="$(printf '%s' "$REPO" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-64)"
+  exec 9>> "$lockdir/migrate-$key.lock"
+  flock -n 9 || { echo "refusing: another --apply for $REPO is running" >&2; exit 1; }
+fi
 
 # Existing operator-action issues in any state, by exact title.
 gh issue list -R "$REPO" --label operator-action --state all --limit 1000 \

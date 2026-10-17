@@ -405,7 +405,7 @@ run_issues() {
     HOME="$IH" FAKE_GH_LOG="$FX/gh.log" OPERATOR_QUEUE_REFRESH_SYNC=1 "$@" "$HOOK" 2>&1)"
   rc=$?
 }
-hexkey() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+hexkey() { printf '%s' "$1" | sha256sum | cut -c1-64; }
 CACHEF="$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md"
 fresh_home() { rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"; }
 
@@ -480,36 +480,57 @@ run_issues FAKE_GH_JSON="$FX/one.json" OPERATOR_QUEUE_REPO=mona-cat_octo/queue
 run_issues OPERATOR_QUEUE_REPO=mona-cat/octo_queue
 assert "cache key is injective: a_b/c and a/b_c never share a cache" "! outgrep 'only-in-first' && [ -s '$FX/gh.log' ]"
 
-# A live lock holder is never taken over, however old its lock is.
+# Long repo names: the key is fixed-length (a hex dump would pass NAME_MAX),
+# and names sharing a long prefix never share a cache (od folds repeated rows).
+long_a="github.com/o/$(printf 'a%.0s' $(seq 1 200))"
+long_b="github.com/o/$(printf 'a%.0s' $(seq 1 199))b"
 fresh_home
-mkdir -p "$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock"
-sleep 30 & holder=$!
-echo "$holder" > "$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock/pid"
-touch -d '1 hour ago' "$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock"
+run_issues FAKE_GH_JSON="$FX/one.json" OPERATOR_QUEUE_REPO="$long_a" OPERATOR_QUEUE_SHOW_ALL=1
+assert "a 200-char repo name still gets a cache" "outgrep 'only-in-first (#50)'"
+: > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_REPO="$long_b" OPERATOR_QUEUE_SHOW_ALL=1
+assert "long names with a shared prefix never share a cache" "! outgrep 'only-in-first' && outgrep 'dot-issue (#12)' && [ -s '$FX/gh.log' ]"
+
+# A held lock is never taken over, however old it is; once its holder exits
+# the kernel drops it and the next refresh runs.
+LOCKF="$IH/.local/state/operator-queue/issues-$(hexkey github.com/jckeen/claude-memory).md.lock"
+fresh_home
+mkdir -p "${LOCKF%/*}"
+( exec 8>> "$LOCKF"; flock 8; exec sleep 30 ) & holder=$!   # the sleep itself holds the lock
+for _ in $(seq 1 50); do flock -n "$LOCKF" true || break; sleep 0.05; done
+touch -d '1 hour ago' "$LOCKF"
 : > "$FX/gh.log"
 run_issues FAKE_GH_JSON="$ISSUES"
-assert "a live lock holder blocks a second refresh" "[ ! -s '$FX/gh.log' ] && [ ! -f '$CACHEF' ]"
+assert "a held lock blocks a second refresh" "[ ! -s '$FX/gh.log' ] && [ ! -f '$CACHEF' ]"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+for _ in $(seq 1 50); do flock -n "$LOCKF" true && break; sleep 0.05; done
 run_issues FAKE_GH_JSON="$ISSUES"
-assert "a dead holder's lock is taken over" "[ -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)'"
+assert "a dead holder's lock is free again" "[ -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)'"
 
-# A refresh whose fetch began before a newer cache landed must not replace it.
+# Refreshes never overlap: one started while a slow one is fetching makes no
+# gh call, so an older fetch can never land after a newer one.
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
-cat > "$FAKEBIN/gh-late" <<'GH'
-#!/usr/bin/env bash
-sleep 1.5
-echo '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'
-GH
-chmod +x "$FAKEBIN/gh-late"
-mkdir -p "$FX/late"; ln -sf "$FAKEBIN/gh-late" "$FX/late/gh"
 touch -d '2 hours ago' "$CACHEF"
-( cd "$FX/dotfiles" && HOME="$IH" PATH="$FX/late:$PATH" "$HOOK" --refresh ) &
-late=$!
-sleep 0.5; touch "$CACHEF"   # a newer refresh lands while the slow one is fetching
-wait "$late"
-run_issues
-assert "an older refresh never overwrites a newer cache" "outgrep 'dot-issue (#12)'"
+: > "$FX/gh.log"
+( cd "$FX/dotfiles" && HOME="$IH" PATH="$FAKEBIN:$PATH" FAKE_GH_JSON="$FX/one.json" FAKE_GH_SLEEP=1.5 FAKE_GH_LOG="$FX/gh.log" "$HOOK" --refresh ) &
+slow=$!
+for _ in $(seq 1 50); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
+( cd "$FX/dotfiles" && HOME="$IH" PATH="$FAKEBIN:$PATH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" "$HOOK" --refresh )
+wait "$slow"
+run_issues OPERATOR_QUEUE_SHOW_ALL=1
+assert "a refresh during another one makes no gh call; the running one's result stands" "[ \"\$(grep -c graphql '$FX/gh.log')\" -eq 1 ] && outgrep 'only-in-first (#50)'"
+
+# No flock: the refresh fails and says so, rather than running unserialised.
+mkdir -p "$FX/noflock"
+for t in bash env cat date mkdir touch rm mv chmod mktemp stat grep sed awk head tr cut sort uniq wc printf sha256sum jq od seq dirname basename readlink setsid nohup; do
+  p="$(command -v "$t" 2>/dev/null)" && [ "${p#/}" != "$p" ] && ln -sf "$p" "$FX/noflock/$t"
+done
+ln -sf "$FAKEBIN/gh" "$FX/noflock/gh"
+fresh_home
+: > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES" PATH="$FX/noflock"
+assert "no flock: refresh fails loudly, no gh call" "outgrep 'could not list' && outgrep 'flock missing' && [ ! -s '$FX/gh.log' ]"
 
 cat > "$FX/multi.json" <<JSON
 [{"number": 30, "title": "shared-item", "createdAt": "$(iso -3)", "comments": [],

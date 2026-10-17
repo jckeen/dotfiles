@@ -37,6 +37,8 @@ esac
 GH
 chmod +x "$FX/bin/gh"
 export PATH="$FX/bin:$PATH" FAKE_LOG="$FX/gh.log" FAKE_BODIES="$FX/bodies"
+export XDG_STATE_HOME="$FX/state"
+unset OPERATOR_QUEUE_REPO
 
 cat > "$FX/queue.md" <<'Q'
 # Operator-action queue
@@ -109,6 +111,25 @@ printf '## lone\n- added: 2026-09-01\n- action: unscoped only\n' > "$FX/unscoped
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/unscoped.md" --repo o/r --apply 2>&1)"; rc=$?
 assert "apply: all-unscoped queue creates its issue" "[ $rc -eq 0 ] && grep -q -- '--title lone --label operator-action' '$FAKE_LOG'"
+
+# With no --repo, the hook's OPERATOR_QUEUE_REPO is the target.
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE OPERATOR_QUEUE_REPO=o/hook-repo bash "$SCRIPT" --queue "$FX/queue.md" 2>&1)"; rc=$?
+assert "no --repo: OPERATOR_QUEUE_REPO is the target" "[ $rc -eq 0 ] && grep -qF 'repo view github.com/o/hook-repo' '$FAKE_LOG'"
+
+# A second --apply for the same repo refuses while one holds the lock, before
+# any write; a dry run is unaffected.
+key="$(printf '%s' github.com/o/r | sha256sum | cut -c1-64)"
+mkdir -p "$XDG_STATE_HOME/operator-queue"
+( exec 8>> "$XDG_STATE_HOME/operator-queue/migrate-$key.lock"; flock 8; exec sleep 30 ) & holder=$!
+for _ in $(seq 1 50); do flock -n "$XDG_STATE_HOME/operator-queue/migrate-$key.lock" true || break; sleep 0.05; done
+run PRIVATE --apply
+assert "concurrent apply refused with no write" "[ $rc -eq 1 ] && grep -qF 'another --apply for github.com/o/r is running' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
+run PRIVATE
+assert "dry run ignores the apply lock" "[ $rc -eq 0 ]"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+run PRIVATE --apply
+assert "apply runs once the lock is free" "[ $rc -eq 0 ] && [ \"\$(grep -c '^issue create' '$FAKE_LOG')\" -eq 2 ]"
 
 echo ""
 echo "$pass passed, $failed failed"

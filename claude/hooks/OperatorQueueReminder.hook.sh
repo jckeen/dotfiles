@@ -53,6 +53,10 @@
 #                              items name credentials and providers.
 #   OPERATOR_QUEUE_REFRESH_SYNC=1  refresh inline instead of detached (tests).
 #
+# NEEDS: gh, jq and flock(1) (util-linux; `brew install flock` on macOS) for
+#   the issue source. Without any of them every refresh fails, and the header
+#   says so; the file source needs none of them.
+#
 # TRIGGER: SessionStart (after HandoffReminder)
 # EXIT: 0 always (advisory/warn-only, never blocks)
 # FAILURE MODE: open — silent when the file queue is empty or has no parseable
@@ -80,11 +84,13 @@ case "$ISSUE_REPO" in */*/*) ;; *) ISSUE_REPO="github.com/$ISSUE_REPO" ;; esac
 GH_HOSTNAME="${ISSUE_REPO%%/*}"
 REPO_PATH="${ISSUE_REPO#*/}"
 CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
-# Hex of the full host/owner/repo: an injective name, so no two repos can share
-# a cache (a character-class substitution maps "a_b/c" and "a/b_c" together).
-CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | od -An -tx1 | tr -d ' \n').md"
+# SHA-256 of the full host/owner/repo: a fixed-length name (any repo string
+# fits NAME_MAX) that no two repos share in practice. A character-class
+# substitution or an od dump is neither: od folds repeated rows into "*".
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-64; }
+CACHE="$CACHE_DIR/issues-$(printf '%s' "$ISSUE_REPO" | sha256).md"
 FAILED="$CACHE.failed"   # mtime = the last failed refresh
-LOCK="$CACHE.lock"
+LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
 SOURCE="file"
 CACHE_NOTE=""
@@ -104,19 +110,19 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # `- deadline:` / `- action:` lines (the action falls back to the first
 # non-empty body line that is not a field).
 refresh() {
+  local raw tmp rc=1
   mkdir -p "$CACHE_DIR" || return 1
-  # One refresh at a time. The lock holds its owner's pid; it is only taken
-  # over when that process is gone, never on age alone (a slow refresh is
-  # still a live one).
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    local holder
-    holder="$(cat "$LOCK/pid" 2>/dev/null)"
-    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 0; fi
-    rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || return 0
-  fi
-  echo "$$" > "$LOCK/pid"
-  local raw tmp rc=1 started
-  started="$(date +%s)"
+  # One refresh at a time, under flock(1): the kernel grants the lock
+  # atomically and drops it when the holder exits, however it dies, so there
+  # is no pid file to race and no stale lock to steal. A refresh that finds
+  # the lock held returns: the running one started earlier and writes the
+  # cache itself. Because refreshes never overlap, the last write is always
+  # the newest fetch. No flock (stock macOS) counts as a failed refresh, which
+  # the header reports, rather than an unserialised one.
+  command -v flock >/dev/null 2>&1 || { touch "$FAILED"; return 1; }
+  exec 9>> "$LOCK" || { touch "$FAILED"; return 1; }
+  flock -n 9 || { exec 9>&-; return 0; }
+  # gh and jq run with fd 9 closed, so nothing they leave behind holds the lock.
   raw="$(mktemp "$CACHE.raw.XXXXXX")" && tmp="$(mktemp "$CACHE.new.XXXXXX")" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
   gh api graphql --hostname "$GH_HOSTNAME" --paginate \
@@ -127,7 +133,7 @@ refresh() {
             pageInfo { hasNextPage endCursor }
             nodes { number title body createdAt
               labels(first: 100) { nodes { name } }
-              comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null &&
+              comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null 9>&- &&
   jq -rs '
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -150,19 +156,11 @@ refresh() {
         (if $verified != "" then "- verified: \($verified)" else empty end),
         (if $project != "" then "- project: \($project)" else empty end),
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
-        "- action: \($action)" )' "$raw" > "$tmp" &&
-  chmod 600 "$tmp" && rc=0
-  # Never replace a cache written after this fetch began: it holds newer data.
-  if [ "$rc" -eq 0 ]; then
-    if [ -f "$CACHE" ] && [ "$(mtime "$CACHE")" -gt "$started" ]; then
-      rm -f "$tmp"
-    else
-      mv -f "$tmp" "$CACHE" || rc=1
-    fi
-  fi
+        "- action: \($action)" )' "$raw" > "$tmp" 9>&- &&
+  chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
   rm -f "$raw" "${tmp:-}"
   if [ "$rc" -eq 0 ]; then rm -f "$FAILED"; else touch "$FAILED"; fi
-  rm -rf "$LOCK"
+  exec 9>&-
   return "$rc"
 }
 
@@ -203,7 +201,7 @@ else
   [ -f "$FAILED" ] && failed_age=$(( now - $(mtime "$FAILED") ))
   if [ "$cache_age" -lt 0 ]; then
     if [ "$failed_age" -ge 0 ]; then
-      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
       echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
     fi
@@ -212,7 +210,7 @@ else
   # A refresh that failed after the cache was written means GitHub was not
   # reachable; an old cache without a failure is simply being refreshed.
   if [ "$failed_age" -ge 0 ] && [ "$failed_age" -lt "$cache_age" ]; then
-    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable or gh unauthenticated)"
+    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
   fi

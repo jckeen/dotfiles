@@ -11,10 +11,14 @@
   is missing or older than 10 minutes, the hook starts `--refresh` detached.
   That refresh pages the issues through one GraphQL query, using
   `comments(last: 1)` for the newest comment. It turns them into the same
-  `## <slug>` blocks and replaces the cache atomically. The refresh lock is
-  taken over only when its holder's pid is gone. A refresh never replaces a
-  cache written after its own fetch began. The cache name is the hex of
-  host/owner/repo, so no two repos share it. A slow or stalled
+  `## <slug>` blocks and replaces the cache atomically. Refreshes run under
+  `flock(1)`, which the kernel grants atomically and drops when the holder
+  dies. A refresh that finds the lock held makes no fetch, so refreshes never
+  overlap and the last write is always the newest fetch. Without `flock`
+  (stock macOS) a refresh fails and the header says so. The cache name is the
+  SHA-256 of host/owner/repo: fixed-length, so any repo name fits the
+  filesystem's name limit. The Codex gate found two earlier hand-rolled locks
+  racy (pid file, then mtime guard), which is why `flock` replaced them. A slow or stalled
   `gh`/`jq` therefore costs SessionStart nothing. The Codex gate found the
   in-hook fetch's timeout unsound three ways, which is why the fetch moved out
   of the hook. `added` comes from the body's `- added:` line, falling back to
@@ -35,7 +39,10 @@
   so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE,
   and refuses when the existing-title list is too long to be complete. Titles
   match exactly as strings (no awk escape processing or numeric comparison),
-  and a title repeated within one queue is created once.
+  and a title repeated within one queue is created once. The repo defaults to
+  the hook's `OPERATOR_QUEUE_REPO`. `--apply` holds a per-repo `flock` from the
+  existing-title check to the last create, so two applies on one machine never
+  duplicate a title.
   On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as
   new, all bound for the private repo. The handoff skills still write to the
   file; their switch to issues is a separate, operator-reviewed
