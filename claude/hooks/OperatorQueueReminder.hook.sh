@@ -127,7 +127,7 @@ refresh() {
   # atomically and drops it when the holder exits, however it dies, so there
   # is no pid file to race and no stale lock to steal. A refresh that finds
   # the lock still held after a short wait (the wait covers a hook's own brief
-  # check, see refresh_died) returns: the running one started earlier and
+  # check, see refresh_failed) returns: the running one started earlier and
   # writes the cache itself. Because refreshes never overlap, the last write is always
   # the newest fetch. No flock (stock macOS) counts as a failed refresh, which
   # the header reports, rather than an unserialised one.
@@ -135,7 +135,10 @@ refresh() {
   exec 9>> "$LOCK" || { touch "$FAILED"; return 1; }
   flock -w 5 9 || { exec 9>&-; return 0; }
   # Marked before the fetch and cleared only after FAILED is settled, so a
-  # refresh killed at any point leaves INFLIGHT behind (see refresh_died).
+  # refresh killed at any point leaves INFLIGHT behind (see refresh_failed).
+  # An INFLIGHT already here is a killed predecessor's: record its failure
+  # first, so readers keep reporting it while this fetch runs.
+  [ -f "$INFLIGHT" ] && touch "$FAILED"
   touch "$INFLIGHT" || { touch "$FAILED"; exec 9>&-; return 1; }
   # gh and jq inherit fd 9, so the lock lives as long as any fetch worker
   # does: a refresh shell killed mid-fetch cannot free it while its gh still
@@ -185,16 +188,25 @@ refresh() {
   return "$rc"
 }
 
-# refresh_died — an INFLIGHT marker with the lock free: a refresh was killed
-# before it could record its outcome (the lock outlives its shell only while
-# its gh still runs). Checked under a SHARED lock: a refresh (exclusive)
-# starting at that moment cannot be mistaken for a dead one, and readers
-# never contend with each other.
-refresh_died() {
-  command -v flock >/dev/null 2>&1 && [ -f "$INFLIGHT" ] &&
-    flock -s -n "$LOCK" test -f "$INFLIGHT" 2>/dev/null
+# refresh_failed — the latest refresh failed: FAILED exists, or INFLIGHT
+# exists with the lock free (a refresh was killed before it could record its
+# outcome; the lock outlives its shell only while its gh still runs). Both
+# markers are read in one check under a SHARED lock, so no refresh can settle
+# between the two reads and readers never contend with each other. While a
+# refresh holds the lock, FAILED alone answers: the running one has not
+# settled yet, and a killed predecessor's failure was already recorded.
+refresh_failed() {
+  command -v flock >/dev/null 2>&1 || { [ -f "$FAILED" ]; return; }
+  local rc=0
+  flock -s -n -E 75 "$LOCK" sh -c '[ -f "$1" ] || [ -f "$2" ]' _ "$FAILED" "$INFLIGHT" 2>/dev/null || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    75) [ -f "$FAILED" ] ;;
+    # The lock file could not be opened: lean toward reporting a failure.
+    *) [ -f "$FAILED" ] || [ -f "$INFLIGHT" ] ;;
+  esac
 }
-refresh_failed() { [ -f "$FAILED" ] || refresh_died; }
 
 if [ "${1:-}" = "--refresh" ]; then
   refresh

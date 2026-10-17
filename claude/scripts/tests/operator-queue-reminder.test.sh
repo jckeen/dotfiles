@@ -495,7 +495,8 @@ for _ in $(seq 1 60); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
 kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
 ( cd "$FX/dotfiles" && env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh )
 assert "a killed refresh's live gh still holds the lock" "[ \"\$(grep -c graphql '$FX/gh.log')\" -eq 1 ]"
-for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
+# Let the orphaned gh finish before the next case touches the same paths.
+for _ in $(seq 1 200); do grep -q gh-done "$FX/gh.log" && break; sleep 0.05; done
 
 # A refresh killed mid-fetch whose gh then fails leaves no FAILED, but its
 # INFLIGHT marker with the lock free still reads as a failed refresh.
@@ -584,6 +585,21 @@ for _ in $(seq 1 50); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
 wait "$slow"
 run_issues OPERATOR_QUEUE_SHOW_ALL=1
 assert "a refresh during another one waits, then its newer fetch lands" "[ \"\$(grep -oE '^(api graphql|gh-done)' '$FX/gh.log' | cut -c1-6 | tr '\\n' ' ')\" = 'api gr gh-don api gr gh-don ' ] && outgrep 'dot-issue (#12)' && ! outgrep 'only-in-first'"
+
+# The next refresh starting over an orphaned INFLIGHT records its failure
+# first, so readers keep reporting it while the new fetch is still running.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch "$CACHEF.inflight"
+: > "$FX/gh.log"
+( cd "$FX/dotfiles" && exec env HOME="$IH" FAKE_GH_JSON="$FAKEBIN/none.json" FAKE_GH_SLEEP=2 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
+next=$!
+for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "during the next fetch, the killed refresh is still reported" "outgrep 'the last refresh failed'"
+wait "$next"
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "once that fetch succeeds, the failure clears" "[ -z \"\$out\" ] && [ ! -e '$CACHEF.failed' ] && [ ! -e '$CACHEF.inflight' ]"
 
 # No digest tool: refused with a warning, never one cache name for every repo.
 mkdir -p "$FX/nohash"

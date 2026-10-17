@@ -17,8 +17,10 @@
   gives up without fetching, so refreshes never overlap and the last write is
   always the newest fetch. A refresh marks itself in flight before fetching;
   a marker left with the lock free (its shell was killed) reads as a failed
-  refresh. Hooks check that under a shared lock, so sessions starting
-  together never mistake each other for a running refresh. Without `flock`
+  refresh. Hooks read both markers in one check under a shared lock, so
+  sessions starting together never mistake each other for a running refresh
+  and no refresh settles between the two reads. A refresh that finds a
+  killed predecessor's marker records that failure before fetching. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the
   SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
   fits the filesystem's name limit, and case variants of one repo share it.
