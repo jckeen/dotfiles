@@ -88,6 +88,12 @@ assert "apply: unscoped issue carries only operator-action" "grep -- '--title no
 assert "apply: body keeps the field lines verbatim" "grep -qxF -- '- verified: 2026-10-01 (re-checked)' '$FX/bodies/dot-thing' && grep -qxF -- '- added: 2026-07-01' '$FX/bodies/dot-thing' && ! grep -q '^## ' '$FX/bodies/dot-thing'"
 assert "apply: body notes the migration" "grep -q '^Migrated from ~/.claude/operator-queue.md on ' '$FX/bodies/dot-thing'"
 
+# A queue with no project anywhere: --apply must not abort on the empty label list.
+printf '## lone\n- added: 2026-09-01\n- action: unscoped only\n' > "$FX/unscoped.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/unscoped.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: all-unscoped queue creates its issue" "[ $rc -eq 0 ] && grep -q -- '--title lone --label operator-action' '$FAKE_LOG'"
+
 echo ""
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]

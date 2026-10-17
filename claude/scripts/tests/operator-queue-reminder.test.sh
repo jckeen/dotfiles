@@ -397,7 +397,7 @@ run_issues() {
     HOME="$IH" FAKE_GH_LOG="$FX/gh.log" "$@" "$HOOK" 2>&1)"
   rc=$?
 }
-CACHEF="$IH/.local/state/operator-queue/issues.md"
+CACHEF="$IH/.local/state/operator-queue/issues-jckeen_claude-memory.md"
 
 rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"
 run_issues FAKE_GH_JSON="$ISSUES"
@@ -438,6 +438,57 @@ assert "live queue file: stays the source, gh not called" "outgrep 'live-file-it
 rm -rf "$IH"; mkdir -p "$IH"
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
 assert "issues: no open issues is silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
+
+# Gate findings on the first draft, one case each.
+touch -d '2 hours ago' "$CACHEF"
+run_issues
+assert "empty stale cache + unreachable GitHub is not silent" "outgrep 'no open operator-action issues in jckeen/claude-memory as of the last good fetch (GitHub unreachable — cached 120 min ago)'"
+
+mkdir -p "$IH/.claude"
+printf '## live-first\n- added: %s\n- project: dotfiles\n- action: Add the > **Historical** banner to the retired guide.\n' "$D5" > "$IH/.claude/operator-queue.md"
+: > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "a banner mention inside an action does not retire the file" "outgrep 'live-first' && [ ! -s '$FX/gh.log' ]"
+: > "$IH/.claude/operator-queue.md"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "a zero-byte live file stays the source (silent, gh not called)" "[ -z \"\$out\" ] && [ ! -s '$FX/gh.log' ]"
+rm -f "$IH/.claude/operator-queue.md"
+
+rm -rf "$IH"; mkdir -p "$IH"
+run_issues FAKE_GH_JSON="$ISSUES"
+run_issues OPERATOR_QUEUE_REPO=other/queue
+assert "cache is per repo: another repo never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list operator-action issues in other/queue'"
+
+cat > "$FX/multi.json" <<JSON
+[{"number": 30, "title": "shared-item", "createdAt": "$(iso -3)", "comments": [],
+  "labels": [{"name": "operator-action"}, {"name": "project:keen-media"}],
+  "body": "- project: keen-media, operator-commons\n- action: shared between two repos"}]
+JSON
+mkdir -p "$FX/plain/operator-commons"
+rm -rf "$IH"; mkdir -p "$IH"
+run_issues FAKE_GH_JSON="$FX/multi.json" CLAUDE_PROJECT_DIR="$FX/plain/operator-commons"
+assert "secondary project word in the body still matches its session" "outgrep 'shared-item (#30) — shared between two repos (project: keen-media, operator-commons'"
+
+jq -n --arg c "$(iso -1)" '[range(500) | {number: ., title: "bulk-\(.)", createdAt: $c, labels: [], comments: [], body: "- action: bulk"}]' > "$FX/full.json"
+rm -rf "$IH"; mkdir -p "$IH"
+run_issues FAKE_GH_JSON="$FX/full.json"
+assert "a fetch that fills the limit says the list is incomplete" "outgrep '(first 500 only — more are open)'"
+
+# No timeout/gtimeout on PATH: the watchdog fallback still bounds a stalled gh.
+mkdir -p "$FX/notimeout"
+for d in /usr/local/bin /usr/bin /bin; do
+  for f in "$d"/*; do
+    b="${f##*/}"
+    case "$b" in timeout|gtimeout|gh) continue ;; esac
+    [ -e "$FX/notimeout/$b" ] || ln -s "$f" "$FX/notimeout/$b" 2>/dev/null
+  done
+done
+printf '#!/bin/bash\nsleep 30\n' > "$FX/notimeout/gh"; chmod +x "$FX/notimeout/gh"
+rm -rf "$IH"; mkdir -p "$IH"
+# shellcheck disable=SC2034 # read inside the eval-ed assert condition
+start=$(date +%s)
+run_issues PATH="$FX/notimeout" OPERATOR_QUEUE_FETCH_TIMEOUT=1
+assert "no timeout binary: fetch still bounded, failure reported" "[ \$(( \$(date +%s) - start )) -lt 10 ] && outgrep 'could not list operator-action issues'"
 
 rm -rf "$FAKEBIN"
 echo ""

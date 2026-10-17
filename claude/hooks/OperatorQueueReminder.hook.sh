@@ -45,6 +45,7 @@
 #   OPERATOR_QUEUE_REPO=<o/r>  the issue source's repo (default
 #                              jckeen/claude-memory; keep it private — items
 #                              name credentials and providers).
+#   OPERATOR_QUEUE_FETCH_TIMEOUT=<s>  the gh fetch ceiling (default 8).
 #
 # TRIGGER: SessionStart (after HandoffReminder)
 # EXIT: 0 always (advisory/warn-only, never blocks)
@@ -66,19 +67,30 @@ set -uo pipefail
 
 LEGACY="$HOME/.claude/operator-queue.md"
 ISSUE_REPO="${OPERATOR_QUEUE_REPO:-jckeen/claude-memory}"
-CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue/issues.md"
+# One cache per source repo, so switching OPERATOR_QUEUE_REPO never shows the
+# previous repo's items under the new name.
+CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue/issues-$(printf '%s' "$ISSUE_REPO" | tr -c 'A-Za-z0-9._-' '_').md"
 CACHE_TTL=600
-FETCH_TIMEOUT=8
+FETCH_TIMEOUT="${OPERATOR_QUEUE_FETCH_TIMEOUT:-8}"
+FETCH_LIMIT=500
 SOURCE="file"
 CACHE_NOTE=""
 
-# Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
-# without a ceiling rather than hard-fail on macOS.
+# Bounded run: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else a
+# watchdog subshell that kills the command, so the fetch ceiling holds on every
+# path and a stalled gh can never hold SessionStart.
 tmo() {
-  if   command -v timeout  >/dev/null 2>&1; then timeout "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
-  else shift; "$@"
+  local secs="$1"; shift
+  if   command -v timeout  >/dev/null 2>&1; then timeout "$secs" "$@"; return
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return
   fi
+  "$@" & local pid=$!
+  # Children first: one left alive keeps the caller's $(...) pipe open, and the
+  # capture would wait on it past the ceiling.
+  ( sleep "$secs"; pkill -TERM -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 & local dog=$!
+  wait "$pid"; local rc=$?
+  kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
+  return "$rc"
 }
 
 # fetch_issues — open operator-action issues rendered as the same "## <slug>"
@@ -86,20 +98,25 @@ tmo() {
 # body's `- added:` line (migrated items keep their real age), else the issue's
 # creation date. verified is the newer of the body's `- verified:` date and the
 # latest comment, so a re-verify comment bumps it but a label edit does not.
-# project comes from a `project:<name>` label, else the body's `- project:`
-# line; deadline and action from the body's `- deadline:` / `- action:` lines
-# (the action falls back to the first non-empty body line that is not a field).
+# project is the body's full `- project:` value (a migrated "keen-media,
+# operator-commons" item still matches either session), else a
+# `project:<name>` label; deadline and action come from the body's
+# `- deadline:` / `- action:` lines (the action falls back to the first
+# non-empty body line that is not a field). A result that fills FETCH_LIMIT is
+# marked "# truncated" so the header can say the list is incomplete.
 fetch_issues() {
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
   local json
   json="$(tmo "$FETCH_TIMEOUT" gh issue list -R "$ISSUE_REPO" --label operator-action \
-    --state open --limit 200 --json number,title,body,createdAt,labels,comments 2>/dev/null)" || return 1
-  jq -r '
+    --state open --limit "$FETCH_LIMIT" --json number,title,body,createdAt,labels,comments 2>/dev/null)" || return 1
+  jq -r --argjson limit "$FETCH_LIMIT" '
     def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
     "# Operator-action issues",
+    (if length >= $limit then "# truncated" else empty end),
     ( .[] | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
-      | ([ .labels[].name | select(startswith("project:")) | sub("^project:"; "") ][0]
-          // ($lines | field("project"))) as $project
+      | (($lines | field("project")) as $p
+          | if $p != "" then $p
+            else ([ .labels[].name | select(startswith("project:")) | sub("^project:"; "") ][0] // "") end) as $project
       | ($lines | field("deadline")) as $deadline
       | (($lines | field("added")) as $a | if $a != "" then $a else .createdAt[0:10] end) as $added
       | ([ ($lines | field("verified") | .[0:10]), ((.comments // [])[].createdAt[0:10]) ]
@@ -115,12 +132,14 @@ fetch_issues() {
 }
 
 # Source: the file queue is migrating to operator-action issues in the private
-# ISSUE_REPO, which the phone and cloud sessions can read. Until the file carries
-# the historical banner it stays authoritative, so no item goes dark
-# mid-migration. OPERATOR_QUEUE_FILE (test fixtures) always wins.
+# ISSUE_REPO, which the phone and cloud sessions can read. A queue file that
+# exists — even empty — stays authoritative until a line of its first five
+# STARTS with the historical banner (an action merely mentioning the banner
+# does not count), so no item goes dark mid-migration. OPERATOR_QUEUE_FILE
+# (test fixtures) always wins.
 if [ -n "${OPERATOR_QUEUE_FILE:-}" ]; then
   QUEUE="$OPERATOR_QUEUE_FILE"
-elif [ -s "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -qF '> **Historical**'; then
+elif [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'; then
   QUEUE="$LEGACY"
 else
   SOURCE="issues"
@@ -145,7 +164,14 @@ else
       CACHE_NOTE=" (GitHub unreachable — cached $((cache_age / 60)) min ago)"
     fi
   fi
-  grep -q '^## ' "$CACHE" 2>/dev/null || exit 0
+  if grep -qx '# truncated' "$CACHE" 2>/dev/null; then
+    CACHE_NOTE="$CACHE_NOTE (first $FETCH_LIMIT only — more are open)"
+  fi
+  if ! grep -q '^## ' "$CACHE" 2>/dev/null; then
+    # An empty answer is only "nothing open" when it is fresh.
+    [ -n "$CACHE_NOTE" ] && echo "Operator action queue: no open operator-action issues in $ISSUE_REPO as of the last good fetch$CACHE_NOTE."
+    exit 0
+  fi
 fi
 [ -s "$QUEUE" ] || exit 0
 if [ "$SOURCE" = issues ]; then

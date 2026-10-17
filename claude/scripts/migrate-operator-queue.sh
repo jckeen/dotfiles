@@ -76,11 +76,17 @@ LC_ALL=C awk -v dir="$work" '
 # Existing operator-action issues in any state, by exact title.
 gh issue list -R "$REPO" --label operator-action --state all --limit 1000 \
   --json number,title -q '.[] | "\(.title)\t\(.number)"' > "$work/existing.tsv"
+# The dedup is only sound over the complete list: a full page could hide a
+# title past the limit, and its block would be created twice.
+if [ "$(wc -l < "$work/existing.tsv")" -ge 1000 ]; then
+  echo "refusing: $REPO has 1000+ operator-action issues; the existing-title check would be incomplete" >&2
+  exit 1
+fi
 
 # Labels first, so no create below fails on a missing one.
 if [ "$APPLY" -eq 1 ]; then
   gh label list -R "$REPO" --limit 1000 --json name -q '.[].name' > "$work/labels.txt"
-  { echo "operator-action"; cut -f3 "$work/index.tsv" | grep -vx -- '-' | sed 's/^/project:/'; } |
+  { echo "operator-action"; cut -f3 "$work/index.tsv" | { grep -vx -- "-" || true; } | sed 's/^/project:/'; } |
     sort -u > "$work/wanted.txt"
   while read -r l; do
     grep -qxF -- "$l" "$work/labels.txt" && continue

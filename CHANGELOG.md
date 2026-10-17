@@ -14,13 +14,20 @@
   latest comment. Migrated items therefore keep their real age, and a
   re-verify comment, not a label edit, refreshes an item. An unreachable
   GitHub is never silent: the header names the cache's age, or with no cache
-  one line names the `gh` command. The file stays the source until its first
-  lines carry the historical banner, so nothing goes dark mid-migration.
+  one line names the `gh` command, including when the last good answer was
+  empty. A result that fills the 500-issue fetch limit says the list is
+  incomplete. The cache is per source repo. Without `timeout`/`gtimeout`, a
+  watchdog still bounds the fetch. A queue file that exists, even empty, stays
+  the source until a line in its first five *starts* with the historical
+  banner, so nothing goes dark mid-migration. The body's full `- project:`
+  value wins over the `project:` label, so a migrated multi-project item still
+  matches each of its repos.
 - **`claude/scripts/migrate-operator-queue.sh`** (new): dry-run by default,
   one row per block with its `project:<name>` label and target. `--apply`
   creates the missing labels and one issue per block, with the block's field
   lines verbatim in the body; titles that already have an issue are skipped,
-  so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE.
+  so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE,
+  and refuses when the existing-title list is too long to be complete.
   On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as
   new, all bound for the private repo. The handoff skills still write to the
   file; their switch to issues is a separate, operator-reviewed
