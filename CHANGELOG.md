@@ -1,5 +1,84 @@
 # Changelog
 
+## 2026-10-17 — feat: operator-action queue can come from GitHub issues
+
+- **`claude/hooks/OperatorQueueReminder.hook.sh`**: a second source, open
+  issues labelled `operator-action` in the private `OPERATOR_QUEUE_REPO`
+  (default `github.com/jckeen/claude-memory`; the host is always explicit).
+  The phone and cloud sessions can read these; the local
+  `~/.claude/operator-queue.md` cannot reach them. SessionStart only renders
+  an owner-only cache under `~/.local/state/operator-queue/`. When the cache
+  is missing or older than 10 minutes, the hook starts `--refresh` detached.
+  That refresh pages the issues through one GraphQL query, using
+  `comments(last: 1)` for the newest comment. It turns them into the same
+  `## <slug>` blocks and replaces the cache atomically. Refreshes run under
+  `flock(1)`, which the kernel grants atomically and drops when the holder
+  dies. A refresh that finds the lock held waits up to five seconds, then
+  gives up without fetching, so refreshes never overlap and the last write is
+  always the newest fetch. A refresh marks itself in flight before fetching;
+  while that marker exists the header says "a refresh is running or was
+  interrupted" rather than presenting the cache as current. The hook does
+  not try to tell a running refresh from a killed one, so it takes no lock:
+  it reads the in-flight marker before the failure marker, and a refresh
+  writes the failure before clearing the in-flight marker, so a refresh
+  settling between the reads is never missed. A refresh that finds a killed
+  predecessor's marker records that failure before fetching. The hook takes
+  one snapshot of the cache, reads the markers after it, and renders only
+  from it: a replacement mid-render cannot split the check from the output,
+  and a refresh that replaced the cache and died is still seen in flight. A
+  snapshot that cannot be taken prints a warning line instead of nothing. A
+  refresh removes its in-flight marker only after its outcome is recorded.
+  A refresh fetches only if, once it holds the lock, the cache is missing or
+  older than 10 minutes (a queued refresh finds its predecessor's fresh
+  cache and stops), so whenever a fetch is under way every session already
+  names the cache as old.
+  Accepted limit: the output is the state as of the hook's reads; a refresh
+  that starts after them shows in the next session. Without `flock`
+  (stock macOS) a refresh fails and the header says so. The cache name is the
+  SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
+  fits the filesystem's name limit, and case variants of one repo share it.
+  With no `sha256sum` or `shasum` the hook refuses with one warning line
+  instead of falling back to a name every repo would share.
+  The cache and the failure marker are judged by presence, never by an age
+  that a concurrent refresh could make negative. `gh` and `jq` inherit the
+  lock, so a refresh shell killed mid-fetch cannot free it while its `gh`
+  still runs; where `timeout` exists the fetch is capped at two minutes. The Codex gate found two earlier hand-rolled locks
+  racy (pid file, then mtime guard), which is why `flock` replaced them. A slow or stalled
+  `gh`/`jq` therefore costs SessionStart nothing. The Codex gate found the
+  in-hook fetch's timeout unsound three ways, which is why the fetch moved out
+  of the hook. `added` comes from the body's `- added:` line, falling back to
+  the creation date. `verified` is the newer of the body's calendar-valid
+  `- verified:` date and the newest comment, so migrated items keep their
+  real age and a re-verify comment, not a label edit, refreshes an item. The
+  body's full `- project:` value wins over the `project:` label, so a
+  multi-project item matches each of its repos. Nothing reads as "no open
+  items" unless a refresh within 10 minutes said so. The header names an old
+  cache, or one older than a failed refresh. With no cache, one line says a
+  refresh is running or that the last one failed. A queue file that exists,
+  even empty, stays the source until a line in its first five *starts* with
+  the historical banner, so nothing goes dark mid-migration.
+- **`claude/scripts/migrate-operator-queue.sh`** (new): dry-run by default,
+  one row per block with its `project:<name>` label and target. `--apply`
+  creates the missing labels and one issue per block, with the block's field
+  lines verbatim in the body; titles that already have an issue are skipped,
+  so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE,
+  and refuses when the existing-title list is too long to be complete. Titles
+  match exactly as strings (no awk escape processing or numeric comparison),
+  and a title repeated within one queue is created once. The repo defaults to
+  the hook's `OPERATOR_QUEUE_REPO`. `--apply` holds a `flock` keyed on GitHub's own lowercased name for the
+  repo (so a case variant or a renamed repo's old name shares it) from the
+  existing-title check to the last create, so two applies on one machine never
+  duplicate a title.
+  On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as
+  new, all bound for the private repo. The handoff skills still write to the
+  file; their switch to issues is a separate, operator-reviewed
+  instruction-surface change.
+- Tests: `operator-queue-reminder.test.sh` now runs with a fake `gh` first on
+  PATH, because an empty-queue case had been reaching the real GitHub. It adds
+  cases for the issue source: online, fresh cache, stale cache plus offline,
+  no cache plus offline, historical versus live file, and no open issues. The
+  new `migrate-operator-queue.test.sh` is wired into the CI checkers shard.
+
 ## 2026-10-16 — fix: sync-plugins honours service selection and reconciles removals
 
 - **`claude/scripts/sync-plugins.sh`** (Codex review on #577 and #574): reads

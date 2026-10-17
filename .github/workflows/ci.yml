@@ -480,6 +480,10 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh
 
+      - name: operator-queue migration (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/migrate-operator-queue.test.sh
+
       # Drift is measured against user-scope installs only: a `--scope project`
       # plugin is the target project's, not the manifest's.
       - name: plugin drift check (self-test)
