@@ -183,8 +183,10 @@ refresh() {
         "- action: \($action)" )' "$raw" > "$tmp" &&
   chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
   rm -f "$raw" "${tmp:-}"
-  if [ "$rc" -eq 0 ]; then rm -f "$FAILED"; else touch "$FAILED"; fi
-  rm -f "$INFLIGHT"
+  # INFLIGHT goes only once the outcome is recorded: if FAILED cannot be
+  # written (disk or inodes full) the in-flight marker stays as the signal.
+  if [ "$rc" -eq 0 ]; then rm -f "$FAILED" && rm -f "$INFLIGHT"
+  else touch "$FAILED" && rm -f "$INFLIGHT"; fi
   exec 9>&-
   return "$rc"
 }
@@ -247,6 +249,10 @@ else
   # flight (or failed) when the state is read, and its content is never
   # shown as settled. One that settles after the copy only makes the copy
   # moments old.
+  # Design limit (accepted, gate round 14): the output is the state as of
+  # these reads. A refresh that STARTS after them is not reflected in this
+  # session's output; no reader can foresee it, the copy shown is still the
+  # latest settled cache, and the next session sees the new state.
   if ! SNAP="$(mktemp 2>/dev/null)"; then
     echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (no writable temp dir) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     exit 0

@@ -656,6 +656,24 @@ touch "$CACHEF.failed"
 run_issues TMPDIR="$FX/no-such-dir"
 assert "snapshot allocation failure is reported" "outgrep 'could not snapshot the operator-action cache'"
 
+# A failed refresh that cannot write FAILED (disk full) keeps INFLIGHT, so
+# the failure is still signalled. A `touch` wrapper refuses the marker.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '2 hours ago' "$CACHEF"
+mkdir -p "$FX/nofail"
+cat > "$FX/nofail/touch" <<'TOUCH'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in *.failed) exit 1 ;; esac; done
+exec /usr/bin/touch "$@"
+TOUCH
+chmod +x "$FX/nofail/touch"
+( cd "$FX/dotfiles" && env -u FAKE_GH_JSON HOME="$IH" PATH="$FX/nofail:$PATH" bash "$HOOK" --refresh )
+touch "$CACHEF"
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "a failure that cannot be recorded leaves the in-flight signal" "[ ! -e '$CACHEF.failed' ] && [ -e '$CACHEF.inflight' ] && outgrep 'a refresh is running or was interrupted'"
+rm -rf "$FX/nofail"
+
 # The next refresh starting over an orphaned INFLIGHT records its failure
 # first, so readers keep reporting it while the new fetch is still running.
 fresh_home

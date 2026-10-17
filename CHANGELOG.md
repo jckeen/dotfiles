@@ -26,7 +26,10 @@
   one snapshot of the cache, reads the markers after it, and renders only
   from it: a replacement mid-render cannot split the check from the output,
   and a refresh that replaced the cache and died is still seen in flight. A
-  snapshot that cannot be taken prints a warning line instead of nothing. Without `flock`
+  snapshot that cannot be taken prints a warning line instead of nothing. A
+  refresh removes its in-flight marker only after its outcome is recorded.
+  Accepted limit: the output is the state as of the hook's reads; a refresh
+  that starts after them shows in the next session. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the
   SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
   fits the filesystem's name limit, and case variants of one repo share it.
