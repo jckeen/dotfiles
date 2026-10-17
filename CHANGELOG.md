@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-17 — feat: operator-action queue can come from GitHub issues
+
+- **`claude/hooks/OperatorQueueReminder.hook.sh`**: a second source, open
+  issues labelled `operator-action` in the private `OPERATOR_QUEUE_REPO`
+  (default `jckeen/claude-memory`). The phone and cloud sessions can read
+  these; the local `~/.claude/operator-queue.md` cannot reach them. The issues
+  are listed with `gh` (8s ceiling), turned into the same `## <slug>` blocks,
+  and rendered by the unchanged filter, ordering and freshness logic. They are
+  cached owner-only for 10 minutes under `~/.local/state/operator-queue/`.
+  `added` comes from the body's `- added:` line, falling back to the creation
+  date. `verified` is the newer of the body's `- verified:` date and the
+  latest comment. Migrated items therefore keep their real age, and a
+  re-verify comment, not a label edit, refreshes an item. An unreachable
+  GitHub is never silent: the header names the cache's age, or with no cache
+  one line names the `gh` command. The file stays the source until its first
+  lines carry the historical banner, so nothing goes dark mid-migration.
+- **`claude/scripts/migrate-operator-queue.sh`** (new): dry-run by default,
+  one row per block with its `project:<name>` label and target. `--apply`
+  creates the missing labels and one issue per block, with the block's field
+  lines verbatim in the body; titles that already have an issue are skipped,
+  so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE.
+  On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as
+  new, all bound for the private repo. The handoff skills still write to the
+  file; their switch to issues is a separate, operator-reviewed
+  instruction-surface change.
+- Tests: `operator-queue-reminder.test.sh` now runs with a fake `gh` first on
+  PATH, because an empty-queue case had been reaching the real GitHub. It adds
+  cases for the issue source: online, fresh cache, stale cache plus offline,
+  no cache plus offline, historical versus live file, and no open issues. The
+  new `migrate-operator-queue.test.sh` is wired into the CI checkers shard.
+
 ## 2026-10-16 — fix: sync-plugins honours service selection and reconciles removals
 
 - **`claude/scripts/sync-plugins.sh`** (Codex review on #577 and #574): reads

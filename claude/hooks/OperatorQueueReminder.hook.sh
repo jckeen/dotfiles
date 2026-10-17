@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # OperatorQueueReminder.hook.sh — surface open operator-action items at session start.
 #
-# The handoff skills (claude/ and agents/) append USER ACTION items to
-# ~/.claude/operator-queue.md — one "## <slug>" block per item with
-# added/project/deadline/verified/action lines; items are removed only when
-# done. Without a surface, queued items rot the way handoff prose did (each
+# Two sources, one renderer. The handoff skills (claude/ and agents/) record
+# USER ACTION items either as "## <slug>" blocks in ~/.claude/operator-queue.md
+# (added/project/deadline/verified/action lines; removed only when done) or as
+# open issues labelled `operator-action` in the private OPERATOR_QUEUE_REPO,
+# which a phone or a cloud session can read too. The file stays the source
+# until its first lines carry the "> **Historical**" banner; after that the
+# issues are listed with `gh` (bounded by FETCH_TIMEOUT), turned into the same
+# blocks (see fetch_issues) and cached owner-only under
+# ${XDG_STATE_HOME:-~/.local/state}/operator-queue/ for CACHE_TTL seconds.
+# Without a surface, queued items rot the way handoff prose did (each
 # new handoff buries the last). A SessionStart hook's stdout is added to
 # Claude's context, so every session starts knowing what only the operator can
 # unblock: open items print with their age, deadline-carrying items first
@@ -36,12 +42,18 @@
 #   OPERATOR_QUEUE_SHOW_ALL=1  print every item in full (the pre-#558 view).
 #   OPERATOR_QUEUE_FILE=<path> read this queue instead of
 #                              ~/.claude/operator-queue.md (test fixtures).
+#   OPERATOR_QUEUE_REPO=<o/r>  the issue source's repo (default
+#                              jckeen/claude-memory; keep it private — items
+#                              name credentials and providers).
 #
 # TRIGGER: SessionStart (after HandoffReminder)
 # EXIT: 0 always (advisory/warn-only, never blocks)
-# FAILURE MODE: open — silent when the queue is absent, empty, or has no
-#   parseable item blocks; one warning line if the parse itself fails. This
-#   hook only reads, never writes, the queue.
+# FAILURE MODE: open — silent when the file queue is empty or has no parseable
+#   item blocks, or when GitHub answers with no open issues; one warning line
+#   if the parse itself fails. An unreachable GitHub is never silent: the
+#   header says the items come from a cache of a given age, or, with no cache,
+#   one line names the gh command to run. This hook only reads the queue; its
+#   one write is the issue cache.
 # BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits;
 #   at most MAX_ITEMS items (every item under OPERATOR_QUEUE_SHOW_ALL=1) and
 #   MAX_ITEMS project summaries are rendered ("…and N more" for the rest),
@@ -52,13 +64,100 @@
 
 set -uo pipefail
 
-QUEUE="${OPERATOR_QUEUE_FILE:-$HOME/.claude/operator-queue.md}"
+LEGACY="$HOME/.claude/operator-queue.md"
+ISSUE_REPO="${OPERATOR_QUEUE_REPO:-jckeen/claude-memory}"
+CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue/issues.md"
+CACHE_TTL=600
+FETCH_TIMEOUT=8
+SOURCE="file"
+CACHE_NOTE=""
+
+# Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
+# without a ceiling rather than hard-fail on macOS.
+tmo() {
+  if   command -v timeout  >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  else shift; "$@"
+  fi
+}
+
+# fetch_issues — open operator-action issues rendered as the same "## <slug>"
+# blocks the file queue uses, so one renderer serves both sources. added is the
+# body's `- added:` line (migrated items keep their real age), else the issue's
+# creation date. verified is the newer of the body's `- verified:` date and the
+# latest comment, so a re-verify comment bumps it but a label edit does not.
+# project comes from a `project:<name>` label, else the body's `- project:`
+# line; deadline and action from the body's `- deadline:` / `- action:` lines
+# (the action falls back to the first non-empty body line that is not a field).
+fetch_issues() {
+  command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
+  local json
+  json="$(tmo "$FETCH_TIMEOUT" gh issue list -R "$ISSUE_REPO" --label operator-action \
+    --state open --limit 200 --json number,title,body,createdAt,labels,comments 2>/dev/null)" || return 1
+  jq -r '
+    def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
+    "# Operator-action issues",
+    ( .[] | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
+      | ([ .labels[].name | select(startswith("project:")) | sub("^project:"; "") ][0]
+          // ($lines | field("project"))) as $project
+      | ($lines | field("deadline")) as $deadline
+      | (($lines | field("added")) as $a | if $a != "" then $a else .createdAt[0:10] end) as $added
+      | ([ ($lines | field("verified") | .[0:10]), ((.comments // [])[].createdAt[0:10]) ]
+          | map(select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) | max // "") as $verified
+      | (($lines | field("action")) as $a
+          | if $a != "" then $a else ([ $lines[] | select(test("\\S") and (test("^- [a-z]+:") | not)) ][0] // "") end) as $action
+      | "", "## \(.title) (#\(.number))",
+        "- added: \($added)",
+        (if $verified != "" then "- verified: \($verified)" else empty end),
+        (if $project != "" then "- project: \($project)" else empty end),
+        (if $deadline != "" then "- deadline: \($deadline)" else empty end),
+        "- action: \($action)" )' <<<"$json"
+}
+
+# Source: the file queue is migrating to operator-action issues in the private
+# ISSUE_REPO, which the phone and cloud sessions can read. Until the file carries
+# the historical banner it stays authoritative, so no item goes dark
+# mid-migration. OPERATOR_QUEUE_FILE (test fixtures) always wins.
+if [ -n "${OPERATOR_QUEUE_FILE:-}" ]; then
+  QUEUE="$OPERATOR_QUEUE_FILE"
+elif [ -s "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -qF '> **Historical**'; then
+  QUEUE="$LEGACY"
+else
+  SOURCE="issues"
+  QUEUE="$CACHE"
+  cache_age=-1
+  if [ -f "$CACHE" ]; then
+    cache_age=$(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || stat -f %m "$CACHE") ))
+  fi
+  if [ "$cache_age" -lt 0 ] || [ "$cache_age" -gt "$CACHE_TTL" ]; then
+    mkdir -p "$(dirname "$CACHE")"
+    tmp="$(mktemp "$CACHE.XXXXXX")"
+    if fetch_issues > "$tmp"; then
+      chmod 600 "$tmp"; mv -f "$tmp" "$CACHE"
+    else
+      rm -f "$tmp"
+      # A failed fetch must never read as "no open items": say so, and fall
+      # back to the last good cache when there is one.
+      if [ "$cache_age" -lt 0 ]; then
+        echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action\`."
+        exit 0
+      fi
+      CACHE_NOTE=" (GitHub unreachable — cached $((cache_age / 60)) min ago)"
+    fi
+  fi
+  grep -q '^## ' "$CACHE" 2>/dev/null || exit 0
+fi
 [ -s "$QUEUE" ] || exit 0
-if [ "$QUEUE" = "$HOME/.claude/operator-queue.md" ]; then
+if [ "$SOURCE" = issues ]; then
+  QUEUE_SHOWN="operator-action issues in $ISSUE_REPO$CACHE_NOTE"
+  FULL_REF="the issue"
+elif [ "$QUEUE" = "$LEGACY" ]; then
   # shellcheck disable=SC2088 # a display string, deliberately unexpanded
   QUEUE_SHOWN="~/.claude/operator-queue.md"
+  FULL_REF="the queue file"
 else
   QUEUE_SHOWN="$QUEUE"
+  FULL_REF="the queue file"
 fi
 
 MAX_QUEUE_BYTES=65536
@@ -100,7 +199,7 @@ today="$(date +%Y-%m-%d)"
 # Deadline items key "0|<deadline>" (soonest first), the rest "1|<added>"
 # (oldest first). ISO dates sort lexically, so `sort` finishes the ordering.
 records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_mark="$STALE_MARK" \
-  -v repo="$repo" -v show_all="$SHOW_ALL" -v max_action="$MAX_ACTION_CHARS" -v max_line="$MAX_LINE_CHARS" '
+  -v repo="$repo" -v show_all="$SHOW_ALL" -v full_ref="$FULL_REF" -v max_action="$MAX_ACTION_CHARS" -v max_line="$MAX_LINE_CHARS" '
   # days_from_civil — days since 1970-01-01 (Howard Hinnant era algorithm).
   function days_from_civil(y, m, d,    era, yoe, doy, doe) {
     y -= (m <= 2)
@@ -167,7 +266,7 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     if (is_stale) flag = flag stale_mark " "
     if (action == "") action = "(no action line)"
     if (length(action) > max_action) {
-      action = utf8_trim(substr(action, 1, max_action)) "… [truncated; full text in the queue file]"
+      action = utf8_trim(substr(action, 1, max_action)) "… [truncated; full text in " full_ref "]"
     }
     detail = (project != "") ? "project: " project : ""
     if (age != "") detail = (detail != "") ? detail ", " age : age
@@ -240,13 +339,21 @@ if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -lt "$total" ]; then
         if (p in next_dl) extra = ((extra != "") ? extra ", " : "") "next deadline " next_dl[p]
         print "  " p ": " n[p] " item" ((n[p] == 1) ? "" : "s") ((extra != "") ? " (" extra ")" : "")
       }
-    }' | LC_ALL=C sort | awk -v max="$MAX_ITEMS" '
+    }' | LC_ALL=C sort | awk -v max="$MAX_ITEMS" -v src="$QUEUE_SHOWN" '
       # The summary is bounded like the item list: many distinct projects must
       # not flood session context either.
       NR <= max { print; next }
       { extra++ }
-      END { if (extra) print "  …and " extra " more projects — see the queue file" }'
-  echo "Full queue: $QUEUE_SHOWN — read it, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
+      END { if (extra) print "  …and " extra " more projects — see " src }'
+  if [ "$SOURCE" = issues ]; then
+    echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action\`, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
+  else
+    echo "Full queue: $QUEUE_SHOWN — read it, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
+  fi
 fi
-echo "These need the operator, not the agent. When a session touches an item's subject, re-check it against live state and set/bump its \`verified:\` date; remove an item only when it is done."
+if [ "$SOURCE" = issues ]; then
+  echo "These need the operator, not the agent. When a session touches an item's subject, re-check it against live state and comment on the issue with what it found (that bumps its verified date); close it only when it is done."
+else
+  echo "These need the operator, not the agent. When a session touches an item's subject, re-check it against live state and set/bump its \`verified:\` date; remove an item only when it is done."
+fi
 exit 0

@@ -7,8 +7,11 @@
 # and the header's stale count; then the per-project filter (#558): only the
 # session repo's items plus past-due ones print in full, every other project
 # collapses to one summary line, OPERATOR_QUEUE_SHOW_ALL=1 restores the full
-# list, and the repo name falls back to the cwd basename outside git. Run
-# directly; exit 1 on any failure.
+# list, and the repo name falls back to the cwd basename outside git. Then the
+# issue source: with no queue file (or one carrying the historical banner) the
+# hook lists operator-action issues through a fake `gh`, caches them, falls
+# back to the cache when GitHub is unreachable, and says so instead of going
+# silent when there is neither. Run directly; exit 1 on any failure.
 set -uo pipefail
 
 resolve_script_path() {
@@ -26,6 +29,20 @@ HOOK="$SCRIPT_DIR/../../hooks/OperatorQueueReminder.hook.sh"
 pass=0
 failed=0
 out=""
+
+# Hermetic gh: every case runs with a fake `gh` first on PATH, so no test ever
+# reaches the real GitHub. It logs its argv to $FAKE_GH_LOG and prints the
+# file named by $FAKE_GH_JSON, or exits 1 (unreachable) when that is unset.
+FAKEBIN="$(mktemp -d)"
+cat > "$FAKEBIN/gh" <<'GH'
+#!/usr/bin/env bash
+[ -n "${FAKE_GH_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+[ -n "${FAKE_GH_JSON:-}" ] || exit 1
+cat "$FAKE_GH_JSON"
+GH
+chmod +x "$FAKEBIN/gh"
+export PATH="$FAKEBIN:$PATH"
+unset XDG_STATE_HOME FAKE_GH_JSON FAKE_GH_LOG OPERATOR_QUEUE_REPO
 
 # Dates relative to the real today, so the assertions hold on any run date.
 # GNU date (Linux CI + WSL); the hook itself uses only `date +%Y-%m-%d`.
@@ -178,11 +195,13 @@ for valid in 2400-02-29 2404-02-29; do
 done
 
 # ── silence when empty / absent ─────────────────────────────────────────
+FAKE_GH_JSON="$FAKEBIN/none.json"; printf '[]' > "$FAKE_GH_JSON"; export FAKE_GH_JSON
 run_hook ""
-assert "empty queue: silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
+unset FAKE_GH_JSON
+assert "empty queue, no open issues: silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
 H="$(mktemp -d)"
 out="$(env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_FILE HOME="$H" "$HOOK" 2>&1)"; rc=$?
-assert "absent queue: silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
+assert "absent queue, GitHub unreachable, no cache: one warning line" "[ $rc -eq 0 ] && [ \"\$(printf '%s\n' \"\$out\" | wc -l)\" -eq 1 ] && outgrep 'could not list operator-action issues in jckeen/claude-memory'"
 rm -rf "$H"
 
 # ── project filter (#558) ───────────────────────────────────────────────
@@ -355,6 +374,72 @@ run_in "$FX/dotfiles" "## dot-long
 - action: $long_action"
 assert "long action truncated" "line_for dot-long | grep -qF '… [truncated; full text in the queue file]' && [ \"\$(line_for dot-long | wc -c)\" -lt 800 ]"
 
+# ── issue source ────────────────────────────────────────────────────────
+iso() { date -u -d "$1 days" +%Y-%m-%dT%H:%M:%SZ; }
+ISSUES="$FX/issues.json"
+cat > "$ISSUES" <<JSON
+[
+  {"number": 12, "title": "dot-issue", "createdAt": "$(iso -45)", "updatedAt": "$(iso -1)",
+   "labels": [{"name": "operator-action"}, {"name": "project:dotfiles"}],
+   "comments": [{"createdAt": "$(iso -20)"}, {"createdAt": "$(iso -5)"}],
+   "body": "- action: approve the dotfiles thing\r\n- deadline: $P3\r\n\r\nMore context."},
+  {"number": 13, "title": "str-issue", "createdAt": "$(iso -1)", "updatedAt": "$(iso -1)",
+   "labels": [{"name": "operator-action"}], "comments": [],
+   "body": "- added: $D90\n- verified: $(day -60) (owning issue open)\n- project: stringer\nRotate the stringer credential."},
+  {"number": 14, "title": "bare-issue", "createdAt": "$(iso -2)", "updatedAt": "$(iso -2)",
+   "labels": [{"name": "operator-action"}], "body": null}
+]
+JSON
+IH="$FX/ihome"
+# run_issues [VAR=val...] — no OPERATOR_QUEUE_FILE, HOME=$IH, cwd = the dotfiles fixture.
+run_issues() {
+  out="$(cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
+    HOME="$IH" FAKE_GH_LOG="$FX/gh.log" "$@" "$HOOK" 2>&1)"
+  rc=$?
+}
+CACHEF="$IH/.local/state/operator-queue/issues.md"
+
+rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "issues: exits 0" "[ $rc -eq 0 ]"
+assert "issues: gh lists the label in the private repo" "grep -qF 'issue list -R jckeen/claude-memory --label operator-action --state open' '$FX/gh.log'"
+assert "issues: header names the issue source; stale count uses body and comment dates" "outgrep '3 open item(s), 1 stale (>30d since added/verified) in operator-action issues in jckeen/claude-memory:'"
+assert "issues: project label, body deadline/action, newest comment as verified" "outgrep '[PAST DUE $P3] dot-issue (#12) — approve the dotfiles thing (project: dotfiles, added 45d ago, verified 5d ago)'"
+assert "issues: body project line and first-line action" "outgrep '  stringer: 1 item (oldest 90d)'"
+assert "issues: null body renders a placeholder action, unscoped" "outgrep '  (no project): 1 item (oldest 2d)'"
+assert "issues: footer names the gh command" "outgrep 'gh issue list -R jckeen/claude-memory --label operator-action'"
+assert "issues: trailer asks for a comment and close-when-done" "outgrep 'comment on the issue' && outgrep 'close it only when it is done'"
+assert "issues: cache written owner-only" "[ -f '$CACHEF' ] && [ \"\$(stat -c %a '$CACHEF')\" = 600 ]"
+
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_SHOW_ALL=1
+assert "issues: show-all renders the stale body-project item" "outgrep '$STALE str-issue (#13) — Rotate the stringer credential. (project: stringer, added 90d ago, verified 60d ago)'"
+assert "issues: show-all renders the bodiless item, fresh by creation date" "outgrep '  bare-issue (#14) — (no action line) (added 2d ago)'"
+
+: > "$FX/gh.log"
+run_issues
+assert "issues: fresh cache is used without calling gh" "[ ! -s '$FX/gh.log' ] && outgrep 'dot-issue (#12)' && ! outgrep 'unreachable'"
+
+touch -d '2 hours ago' "$CACHEF"
+run_issues
+assert "issues: stale cache + unreachable GitHub says so" "outgrep 'GitHub unreachable — cached 120 min ago' && outgrep 'dot-issue (#12)'"
+touch -d '2 hours ago' "$CACHEF"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "issues: stale cache refreshed when GitHub answers" "! outgrep 'unreachable' && [ \"\$(( \$(date +%s) - \$(stat -c %Y '$CACHEF') ))\" -lt 60 ]"
+
+printf '> **Historical** — point-in-time record (2026-10-17). Do not act on this.\n\n## old-file-item\n- added: %s\n- project: dotfiles\n- action: from the retired file\n' "$D5" > "$IH/.claude/operator-queue.md"
+rm -f "$CACHEF"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "historical queue file: issues are the source" "outgrep 'dot-issue (#12)' && ! outgrep 'old-file-item'"
+printf '# queue\n\n## live-file-item\n- added: %s\n- project: dotfiles\n- action: from the live file\n' "$D5" > "$IH/.claude/operator-queue.md"
+: > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES"
+assert "live queue file: stays the source, gh not called" "outgrep 'live-file-item' && ! outgrep 'dot-issue' && [ ! -s '$FX/gh.log' ]"
+
+rm -rf "$IH"; mkdir -p "$IH"
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "issues: no open issues is silent" "[ -z \"\$out\" ] && [ $rc -eq 0 ]"
+
+rm -rf "$FAKEBIN"
 echo ""
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]
