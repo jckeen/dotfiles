@@ -499,7 +499,7 @@ assert "a killed refresh's live gh still holds the lock" "[ \"\$(grep -c graphql
 for _ in $(seq 1 200); do grep -q gh-done "$FX/gh.log" && break; sleep 0.05; done
 
 # A refresh killed mid-fetch whose gh then fails leaves no FAILED, but its
-# INFLIGHT marker with the lock free still reads as a failed refresh.
+# INFLIGHT marker keeps the empty cache from reading as "nothing open".
 fresh_home
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
 : > "$FX/gh.log"
@@ -509,17 +509,17 @@ for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
 kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
 for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
-assert "a killed refresh whose gh failed is reported, not silent" "[ ! -f '$CACHEF.failed' ] && [ -f '$CACHEF.inflight' ] && outgrep 'the last refresh failed'"
+assert "a killed refresh whose gh failed is reported, not silent" "[ ! -f '$CACHEF.failed' ] && [ -f '$CACHEF.inflight' ] && outgrep 'as of the last good fetch (cached 0 min ago; a refresh is running or was interrupted)'"
 
-# Many sessions starting at once all see the orphaned marker: readers share
-# the lock, so none mistakes another reader for a running refresh.
+# Many sessions starting at once all see the orphaned marker (readers take no
+# lock, so none can mistake another for a running refresh).
 mkdir -p "$FX/readers"
 for i in $(seq 1 24); do
   ( cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
       HOME="$IH" OPERATOR_QUEUE_REFRESH_SYNC=1 "$HOOK" > "$FX/readers/$i" 2>&1 ) &
 done
 wait
-assert "concurrent readers all report the killed refresh" "[ \"\$(grep -l 'the last refresh failed' '$FX'/readers/* | wc -l)\" -eq 24 ]"
+assert "concurrent readers all report the killed refresh" "[ \"\$(grep -l 'a refresh is running or was interrupted' '$FX'/readers/* | wc -l)\" -eq 24 ]"
 
 # GitHub names are case-insensitive: O/R and o/r share one cache.
 fresh_home
@@ -585,6 +585,27 @@ for _ in $(seq 1 50); do [ -s "$FX/gh.log" ] && break; sleep 0.05; done
 wait "$slow"
 run_issues OPERATOR_QUEUE_SHOW_ALL=1
 assert "a refresh during another one waits, then its newer fetch lands" "[ \"\$(grep -oE '^(api graphql|gh-done)' '$FX/gh.log' | cut -c1-6 | tr '\\n' ' ')\" = 'api gr gh-don api gr gh-don ' ] && outgrep 'dot-issue (#12)' && ! outgrep 'only-in-first'"
+
+# While a killed refresh's gh still holds the lock, and while a successor
+# holds it before recording the orphan, the marker is reported at once.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+: > "$FX/gh.log"
+( cd "$FX/dotfiles" && exec env -u FAKE_GH_JSON HOME="$IH" FAKE_GH_SLEEP=3 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
+victim=$!
+for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
+kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "a killed refresh whose gh still runs is reported, not silent" "! flock -n '$CACHEF.lock' true && outgrep 'a refresh is running or was interrupted'"
+for _ in $(seq 1 200); do grep -q gh-done "$FX/gh.log" && break; sleep 0.05; done
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch "$CACHEF.inflight"
+( exec 8>> "$CACHEF.lock"; flock 8; exec sleep 30 ) & holder=$!
+for _ in $(seq 1 50); do flock -n "$CACHEF.lock" true || break; sleep 0.05; done
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+assert "an orphan under a successor's lock is reported, not silent" "outgrep 'a refresh is running or was interrupted'"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 
 # The next refresh starting over an orphaned INFLIGHT records its failure
 # first, so readers keep reporting it while the new fetch is still running.

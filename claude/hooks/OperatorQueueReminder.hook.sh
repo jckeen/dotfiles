@@ -63,8 +63,10 @@
 #   item blocks, or when a fresh cache holds no open issues; one warning line
 #   if the parse itself fails. A cache that is old, or older than a failed
 #   refresh, is named as such in the header; with no cache at all, one line
-#   says a refresh is under way or that the last one failed. Nothing reads as
-#   "no open items" unless a refresh within CACHE_TTL said so. This hook only
+#   says a refresh is under way or that the last one failed. A refresh in
+#   flight (or killed mid-flight) is named in the header too. Nothing reads as
+#   "no open items" unless a refresh within CACHE_TTL said so and none has
+#   started or failed since. This hook only
 #   reads the queue; its writes are the cache and the refresh markers.
 # BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits;
 #   at most MAX_ITEMS items (every item under OPERATOR_QUEUE_SHOW_ALL=1) and
@@ -126,16 +128,15 @@ refresh() {
   # One refresh at a time, under flock(1): the kernel grants the lock
   # atomically and drops it when the holder exits, however it dies, so there
   # is no pid file to race and no stale lock to steal. A refresh that finds
-  # the lock still held after a short wait (the wait covers a hook's own brief
-  # check, see refresh_failed) returns: the running one started earlier and
-  # writes the cache itself. Because refreshes never overlap, the last write is always
-  # the newest fetch. No flock (stock macOS) counts as a failed refresh, which
+  # the lock still held after five seconds returns: the running one started
+  # earlier and writes the cache itself. Because refreshes never overlap, the
+  # last write is always the newest fetch. No flock (stock macOS) counts as a failed refresh, which
   # the header reports, rather than an unserialised one.
   command -v flock >/dev/null 2>&1 || { touch "$FAILED"; return 1; }
   exec 9>> "$LOCK" || { touch "$FAILED"; return 1; }
   flock -w 5 9 || { exec 9>&-; return 0; }
   # Marked before the fetch and cleared only after FAILED is settled, so a
-  # refresh killed at any point leaves INFLIGHT behind (see refresh_failed).
+  # refresh killed at any point leaves INFLIGHT behind (see refresh_state).
   # An INFLIGHT already here is a killed predecessor's: record its failure
   # first, so readers keep reporting it while this fetch runs.
   [ -f "$INFLIGHT" ] && touch "$FAILED"
@@ -188,24 +189,16 @@ refresh() {
   return "$rc"
 }
 
-# refresh_failed — the latest refresh failed: FAILED exists, or INFLIGHT
-# exists with the lock free (a refresh was killed before it could record its
-# outcome; the lock outlives its shell only while its gh still runs). Both
-# markers are read in one check under a SHARED lock, so no refresh can settle
-# between the two reads and readers never contend with each other. While a
-# refresh holds the lock, FAILED alone answers: the running one has not
-# settled yet, and a killed predecessor's failure was already recorded.
-refresh_failed() {
-  command -v flock >/dev/null 2>&1 || { [ -f "$FAILED" ]; return; }
-  local rc=0
-  flock -s -n -E 75 "$LOCK" sh -c '[ -f "$1" ] || [ -f "$2" ]' _ "$FAILED" "$INFLIGHT" 2>/dev/null || rc=$?
-  case "$rc" in
-    0) return 0 ;;
-    1) return 1 ;;
-    75) [ -f "$FAILED" ] ;;
-    # The lock file could not be opened: lean toward reporting a failure.
-    *) [ -f "$FAILED" ] || [ -f "$INFLIGHT" ] ;;
-  esac
+# refresh_state — "failed" (the latest refresh failed), "inflight" (a
+# refresh is running or was killed before it could record its outcome; the
+# hook cannot tell which, and does not try) or "" (the cache is the latest
+# outcome). INFLIGHT is read before FAILED and a refresh writes FAILED before
+# it removes INFLIGHT, so a refresh settling between the two reads is seen
+# either in flight or as failed, never as neither. No lock is taken.
+refresh_state() {
+  local inflight=""
+  [ -f "$INFLIGHT" ] && inflight=inflight
+  if [ -f "$FAILED" ]; then echo failed; else echo "$inflight"; fi
 }
 
 if [ "${1:-}" = "--refresh" ]; then
@@ -246,20 +239,25 @@ else
     fi
     now="$(date +%s)"
   fi
+  state="$(refresh_state)"
   if [ ! -f "$CACHE" ]; then
-    if refresh_failed; then
+    if [ "$state" = failed ]; then
       echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
     else
-      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background; run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
+      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background (or was interrupted); run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
     fi
     exit 0
   fi
   cache_age="$(age_of "$CACHE")"
   # Refreshes are serialised and a success removes FAILED, so its existence
   # alone means the latest refresh failed: GitHub unreachable, or a tool
-  # missing. An old cache without it is simply being refreshed.
-  if refresh_failed; then
+  # missing. A refresh in flight may yet fail, so the cache is named as
+  # possibly superseded, never as current. An old cache without either is
+  # simply being refreshed.
+  if [ "$state" = failed ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing)"
+  elif [ "$state" = inflight ]; then
+    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; a refresh is running or was interrupted)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
   fi

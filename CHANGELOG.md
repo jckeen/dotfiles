@@ -16,11 +16,13 @@
   dies. A refresh that finds the lock held waits up to five seconds, then
   gives up without fetching, so refreshes never overlap and the last write is
   always the newest fetch. A refresh marks itself in flight before fetching;
-  a marker left with the lock free (its shell was killed) reads as a failed
-  refresh. Hooks read both markers in one check under a shared lock, so
-  sessions starting together never mistake each other for a running refresh
-  and no refresh settles between the two reads. A refresh that finds a
-  killed predecessor's marker records that failure before fetching. Without `flock`
+  while that marker exists the header says "a refresh is running or was
+  interrupted" rather than presenting the cache as current. The hook does
+  not try to tell a running refresh from a killed one, so it takes no lock:
+  it reads the in-flight marker before the failure marker, and a refresh
+  writes the failure before clearing the in-flight marker, so a refresh
+  settling between the reads is never missed. A refresh that finds a killed
+  predecessor's marker records that failure before fetching. Without `flock`
   (stock macOS) a refresh fails and the header says so. The cache name is the
   SHA-256 of the lowercased host/owner/repo: fixed-length, so any repo name
   fits the filesystem's name limit, and case variants of one repo share it.
