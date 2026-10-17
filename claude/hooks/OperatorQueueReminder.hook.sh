@@ -187,11 +187,12 @@ refresh() {
 
 # refresh_died — an INFLIGHT marker with the lock free: a refresh was killed
 # before it could record its outcome (the lock outlives its shell only while
-# its gh still runs). Checked under the lock, so a refresh starting at that
-# moment cannot be mistaken for a dead one.
+# its gh still runs). Checked under a SHARED lock: a refresh (exclusive)
+# starting at that moment cannot be mistaken for a dead one, and readers
+# never contend with each other.
 refresh_died() {
   command -v flock >/dev/null 2>&1 && [ -f "$INFLIGHT" ] &&
-    flock -n "$LOCK" test -f "$INFLIGHT" 2>/dev/null
+    flock -s -n "$LOCK" test -f "$INFLIGHT" 2>/dev/null
 }
 refresh_failed() { [ -f "$FAILED" ] || refresh_died; }
 

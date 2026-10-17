@@ -510,6 +510,16 @@ for _ in $(seq 1 80); do flock -n "$CACHEF.lock" true && break; sleep 0.05; done
 run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
 assert "a killed refresh whose gh failed is reported, not silent" "[ ! -f '$CACHEF.failed' ] && [ -f '$CACHEF.inflight' ] && outgrep 'the last refresh failed'"
 
+# Many sessions starting at once all see the orphaned marker: readers share
+# the lock, so none mistakes another reader for a running refresh.
+mkdir -p "$FX/readers"
+for i in $(seq 1 24); do
+  ( cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
+      HOME="$IH" OPERATOR_QUEUE_REFRESH_SYNC=1 "$HOOK" > "$FX/readers/$i" 2>&1 ) &
+done
+wait
+assert "concurrent readers all report the killed refresh" "[ \"\$(grep -l 'the last refresh failed' '$FX'/readers/* | wc -l)\" -eq 24 ]"
+
 # GitHub names are case-insensitive: O/R and o/r share one cache.
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_REPO=JCKEEN/Claude-Memory
