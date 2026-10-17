@@ -104,7 +104,8 @@ printf '%-48s  %-24s  %s\n' "SLUG" "LABEL" "TARGET"
 while IFS=$'\t' read -r n slug group; do
   total=$((total + 1))
   label="project:$group"; [ "$group" = "-" ] && label="(none)"
-  num="$(awk -F'\t' -v t="$slug" '$1 == t { print $2; exit }' "$work/existing.tsv")"
+  # ENVIRON, not -v: awk -v would turn a backslash in the title into an escape.
+  num="$(t="$slug" awk -F'\t' '$1 == ENVIRON["t"] { print $2; exit }' "$work/existing.tsv")"
   if [ -n "$num" ]; then
     existing=$((existing + 1))
     printf '%-48s  %-24s  %s\n' "$slug" "$label" "#$num (exists, skipped)"
@@ -116,7 +117,9 @@ while IFS=$'\t' read -r n slug group; do
   printf '\nMigrated from ~/.claude/operator-queue.md on %s.\n' "$today" >> "$work/$n.body"
   args=(issue create -R "$REPO" --title "$slug" --label operator-action --body-file "$work/$n.body")
   [ "$group" = "-" ] || args+=(--label "$label")
-  gh "${args[@]}" >/dev/null
+  url="$(gh "${args[@]}")"
+  # Record it, so a repeated title later in this same queue is skipped too.
+  printf '%s\t%s\n' "$slug" "${url##*/}" >> "$work/existing.tsv"
 done < "$work/index.tsv"
 
 echo ""

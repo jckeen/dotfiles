@@ -67,30 +67,37 @@ set -uo pipefail
 
 LEGACY="$HOME/.claude/operator-queue.md"
 ISSUE_REPO="${OPERATOR_QUEUE_REPO:-jckeen/claude-memory}"
-# One cache per source repo, so switching OPERATOR_QUEUE_REPO never shows the
-# previous repo's items under the new name.
-CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue/issues-$(printf '%s' "$ISSUE_REPO" | tr -c 'A-Za-z0-9._-' '_').md"
+# One cache per host and source repo, so switching OPERATOR_QUEUE_REPO or
+# GH_HOST never shows another repo's items under the new name.
+CACHE="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue/issues-$(printf '%s' "${GH_HOST:-github.com}/$ISSUE_REPO" | tr -c 'A-Za-z0-9._-' '_').md"
 CACHE_TTL=600
 FETCH_TIMEOUT="${OPERATOR_QUEUE_FETCH_TIMEOUT:-8}"
 FETCH_LIMIT=500
 SOURCE="file"
 CACHE_NOTE=""
 
-# Bounded run: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else a
-# watchdog subshell that kills the command, so the fetch ceiling holds on every
-# path and a stalled gh can never hold SessionStart.
-tmo() {
-  local secs="$1"; shift
-  if   command -v timeout  >/dev/null 2>&1; then timeout "$secs" "$@"; return
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return
+# run_bounded <secs> <outfile> <cmd...> — run cmd with stdout to a file (never a
+# pipe: a descendant that outlives the kill could hold a pipe open and stall the
+# reader) and return 124 once <secs> pass. GNU `timeout` / `gtimeout` escalate
+# to SIGKILL a second later; without either, a poll loop waits on the pid alone,
+# then SIGKILLs it and its children and returns without waiting for any
+# descendant, so the ceiling holds even for a command that ignores SIGTERM.
+run_bounded() {
+  local secs="$1" out="$2"; shift 2
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 1 "$secs" "$@" > "$out" 2>/dev/null; return
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 1 "$secs" "$@" > "$out" 2>/dev/null; return
   fi
-  "$@" & local pid=$!
-  # Children first: one left alive keeps the caller's $(...) pipe open, and the
-  # capture would wait on it past the ceiling.
-  ( sleep "$secs"; pkill -TERM -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 & local dog=$!
-  wait "$pid"; local rc=$?
-  kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
-  return "$rc"
+  "$@" > "$out" 2>/dev/null < /dev/null & local pid=$! ticks=$(( secs * 10 ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$ticks" -le 0 ]; then
+      pkill -KILL -P "$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 0.1; ticks=$(( ticks - 1 ))
+  done
+  wait "$pid"
 }
 
 # fetch_issues — open operator-action issues rendered as the same "## <slug>"
@@ -106,10 +113,16 @@ tmo() {
 # marked "# truncated" so the header can say the list is incomplete.
 fetch_issues() {
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
-  local json
-  json="$(tmo "$FETCH_TIMEOUT" gh issue list -R "$ISSUE_REPO" --label operator-action \
-    --state open --limit "$FETCH_LIMIT" --json number,title,body,createdAt,labels,comments 2>/dev/null)" || return 1
+  local raw rc
+  raw="$(mktemp "${CACHE}.raw.XXXXXX")" || return 1
+  run_bounded "$FETCH_TIMEOUT" "$raw" gh issue list -R "$ISSUE_REPO" --label operator-action \
+    --state open --limit "$FETCH_LIMIT" --json number,title,body,createdAt,labels,comments
+  rc=$?
+  if [ "$rc" -ne 0 ]; then rm -f "$raw"; return 1; fi
   jq -r --argjson limit "$FETCH_LIMIT" '
+    # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
+    def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+      and ((try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .);
     def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
     "# Operator-action issues",
     (if length >= $limit then "# truncated" else empty end),
@@ -120,7 +133,7 @@ fetch_issues() {
       | ($lines | field("deadline")) as $deadline
       | (($lines | field("added")) as $a | if $a != "" then $a else .createdAt[0:10] end) as $added
       | ([ ($lines | field("verified") | .[0:10]), ((.comments // [])[].createdAt[0:10]) ]
-          | map(select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) | max // "") as $verified
+          | map(select(isdate)) | max // "") as $verified
       | (($lines | field("action")) as $a
           | if $a != "" then $a else ([ $lines[] | select(test("\\S") and (test("^- [a-z]+:") | not)) ][0] // "") end) as $action
       | "", "## \(.title) (#\(.number))",
@@ -128,7 +141,10 @@ fetch_issues() {
         (if $verified != "" then "- verified: \($verified)" else empty end),
         (if $project != "" then "- project: \($project)" else empty end),
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
-        "- action: \($action)" )' <<<"$json"
+        "- action: \($action)" )' "$raw"
+  rc=$?
+  rm -f "$raw"
+  return "$rc"
 }
 
 # Source: the file queue is migrating to operator-action issues in the private
@@ -224,8 +240,8 @@ today="$(date +%Y-%m-%d)"
 # or show-all). Empty fields carry the "-" sentinel so no field is ever empty.
 # Deadline items key "0|<deadline>" (soonest first), the rest "1|<added>"
 # (oldest first). ISO dates sort lexically, so `sort` finishes the ordering.
-records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_mark="$STALE_MARK" \
-  -v repo="$repo" -v show_all="$SHOW_ALL" -v full_ref="$FULL_REF" -v max_action="$MAX_ACTION_CHARS" -v max_line="$MAX_LINE_CHARS" '
+records="$(OQ_REPO="$repo" LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_mark="$STALE_MARK" \
+  -v show_all="$SHOW_ALL" -v full_ref="$FULL_REF" -v max_action="$MAX_ACTION_CHARS" -v max_line="$MAX_LINE_CHARS" '
   # days_from_civil — days since 1970-01-01 (Howard Hinnant era algorithm).
   function days_from_civil(y, m, d,    era, yoe, doy, doe) {
     y -= (m <= 2)
@@ -308,7 +324,8 @@ records="$(LC_ALL=C awk -v today="$today" -v stale_days="$STALE_DAYS" -v stale_m
     print key "\t" full "\t" group "\t" age_days "\t" next_dl "\t" line
     slug = added = project = deadline = verified = action = ""
   }
-  BEGIN { today_days = iso_days(today) }
+  # Free-form strings via ENVIRON: awk -v would interpret backslash escapes.
+  BEGIN { today_days = iso_days(today); repo = ENVIRON["OQ_REPO"] }
   # Tolerate CRLF queue files; a tab in any value would shift the TAB-separated
   # record columns (hiding the item), so tabs become spaces on input.
   { sub(/\r$/, ""); gsub(/\t/, " ") }
@@ -365,12 +382,12 @@ if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -lt "$total" ]; then
         if (p in next_dl) extra = ((extra != "") ? extra ", " : "") "next deadline " next_dl[p]
         print "  " p ": " n[p] " item" ((n[p] == 1) ? "" : "s") ((extra != "") ? " (" extra ")" : "")
       }
-    }' | LC_ALL=C sort | awk -v max="$MAX_ITEMS" -v src="$QUEUE_SHOWN" '
+    }' | LC_ALL=C sort | OQ_SRC="$QUEUE_SHOWN" awk -v max="$MAX_ITEMS" '
       # The summary is bounded like the item list: many distinct projects must
       # not flood session context either.
       NR <= max { print; next }
       { extra++ }
-      END { if (extra) print "  …and " extra " more projects — see " src }'
+      END { if (extra) print "  …and " extra " more projects — see " ENVIRON["OQ_SRC"] }'
   if [ "$SOURCE" = issues ]; then
     echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action\`, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
   else

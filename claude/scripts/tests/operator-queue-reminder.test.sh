@@ -42,7 +42,7 @@ cat "$FAKE_GH_JSON"
 GH
 chmod +x "$FAKEBIN/gh"
 export PATH="$FAKEBIN:$PATH"
-unset XDG_STATE_HOME FAKE_GH_JSON FAKE_GH_LOG OPERATOR_QUEUE_REPO
+unset XDG_STATE_HOME FAKE_GH_JSON FAKE_GH_LOG OPERATOR_QUEUE_REPO GH_HOST
 
 # Dates relative to the real today, so the assertions hold on any run date.
 # GNU date (Linux CI + WSL); the hook itself uses only `date +%Y-%m-%d`.
@@ -397,7 +397,7 @@ run_issues() {
     HOME="$IH" FAKE_GH_LOG="$FX/gh.log" "$@" "$HOOK" 2>&1)"
   rc=$?
 }
-CACHEF="$IH/.local/state/operator-queue/issues-jckeen_claude-memory.md"
+CACHEF="$IH/.local/state/operator-queue/issues-github.com_jckeen_claude-memory.md"
 
 rm -rf "$IH"; mkdir -p "$IH/.claude"; : > "$FX/gh.log"
 run_issues FAKE_GH_JSON="$ISSUES"
@@ -474,6 +474,29 @@ rm -rf "$IH"; mkdir -p "$IH"
 run_issues FAKE_GH_JSON="$FX/full.json"
 assert "a fetch that fills the limit says the list is incomplete" "outgrep '(first 500 only — more are open)'"
 
+rm -rf "$IH"; mkdir -p "$IH"
+run_issues FAKE_GH_JSON="$ISSUES"
+run_issues GH_HOST=github.example.com
+assert "cache is per host: another host never shows the first one's items" "! outgrep 'dot-issue' && outgrep 'could not list'"
+
+cat > "$FX/baddate.json" <<JSON
+[{"number": 40, "title": "bad-date", "createdAt": "$(iso -90)", "labels": [],
+  "comments": [{"createdAt": "$(iso -3)"}],
+  "body": "- verified: 2026-99-99\n- action: body date is garbage"}]
+JSON
+rm -rf "$IH"; mkdir -p "$IH"
+run_issues FAKE_GH_JSON="$FX/baddate.json" OPERATOR_QUEUE_SHOW_ALL=1
+assert "an impossible body date does not outrank a real comment" "outgrep 'bad-date (#40) — body date is garbage (added 90d ago, verified 3d ago)' && ! outgrep '$STALE bad-date'"
+
+# A gh that ignores SIGTERM: GNU timeout's -k escalation still ends it.
+printf '#!/bin/bash\ntrap "" TERM\nsleep 30\n' > "$FX/stubborn-gh"; chmod +x "$FX/stubborn-gh"
+mkdir -p "$FX/stubborn"; ln -sf "$FX/stubborn-gh" "$FX/stubborn/gh"
+rm -rf "$IH"; mkdir -p "$IH"
+# shellcheck disable=SC2034 # read inside the eval-ed assert condition
+start=$(date +%s)
+run_issues PATH="$FX/stubborn:$PATH" OPERATOR_QUEUE_FETCH_TIMEOUT=1
+assert "SIGTERM-ignoring gh: bounded by the KILL escalation" "[ \$(( \$(date +%s) - start )) -lt 8 ] && outgrep 'could not list'"
+
 # No timeout/gtimeout on PATH: the watchdog fallback still bounds a stalled gh.
 mkdir -p "$FX/notimeout"
 for d in /usr/local/bin /usr/bin /bin; do
@@ -483,7 +506,9 @@ for d in /usr/local/bin /usr/bin /bin; do
     [ -e "$FX/notimeout/$b" ] || ln -s "$f" "$FX/notimeout/$b" 2>/dev/null
   done
 done
-printf '#!/bin/bash\nsleep 30\n' > "$FX/notimeout/gh"; chmod +x "$FX/notimeout/gh"
+# A wrapper whose grandchild ignores SIGTERM and inherits stdout: the shape that
+# held a pipe open past the ceiling.
+printf '#!/bin/bash\nbash -c "trap \\"\\" TERM; sleep 30"\n' > "$FX/notimeout/gh"; chmod +x "$FX/notimeout/gh"
 rm -rf "$IH"; mkdir -p "$IH"
 # shellcheck disable=SC2034 # read inside the eval-ed assert condition
 start=$(date +%s)

@@ -22,7 +22,7 @@ cat > "$FX/bin/gh" <<'GH'
 printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$1 $2" in
   "repo view")    echo "$FAKE_VIS" ;;
-  "issue list")   printf 'already-there\t7\n' ;;
+  "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n' ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
   "issue create")
@@ -30,7 +30,8 @@ case "$1 $2" in
       if [ "$1" = "--title" ]; then t="$2"; fi
       if [ "$1" = "--body-file" ]; then cp "$2" "$FAKE_BODIES/$t"; fi
       shift
-    done ;;
+    done
+    echo "https://github.com/o/r/issues/$(( $(grep -c '^issue create' "$FAKE_LOG") + 100 ))" ;;
   *) echo "unexpected gh call: $*" >&2; exit 9 ;;
 esac
 GH
@@ -87,6 +88,13 @@ assert "apply: scoped issue carries both labels" "grep -q -- '--title dot-thing 
 assert "apply: unscoped issue carries only operator-action" "grep -- '--title no-project-item' '$FAKE_LOG' | grep -qv 'project:'"
 assert "apply: body keeps the field lines verbatim" "grep -qxF -- '- verified: 2026-10-01 (re-checked)' '$FX/bodies/dot-thing' && grep -qxF -- '- added: 2026-07-01' '$FX/bodies/dot-thing' && ! grep -q '^## ' '$FX/bodies/dot-thing'"
 assert "apply: body notes the migration" "grep -q '^Migrated from ~/.claude/operator-queue.md on ' '$FX/bodies/dot-thing'"
+
+# Same-queue repeats and a backslash title already on GitHub: no duplicate creates.
+printf '## repeated\n- action: one\n\n## repeated\n- action: two\n\n## rotate-\\token\n- action: exists as #8\n' > "$FX/dupes.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/dupes.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: a title repeated in the queue is created once" "[ $rc -eq 0 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +#[0-9]+ \\(exists, skipped\\)$' <<<\"\$out\""
+assert "apply: a backslash title matches its existing issue" "! grep -q -- '--title rotate-' '$FAKE_LOG' && grep -qF '#8 (exists, skipped)' <<<\"\$out\""
 
 # A queue with no project anywhere: --apply must not abort on the empty label list.
 printf '## lone\n- added: 2026-09-01\n- action: unscoped only\n' > "$FX/unscoped.md"

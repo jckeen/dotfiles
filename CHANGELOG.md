@@ -16,8 +16,11 @@
   GitHub is never silent: the header names the cache's age, or with no cache
   one line names the `gh` command, including when the last good answer was
   empty. A result that fills the 500-issue fetch limit says the list is
-  incomplete. The cache is per source repo. Without `timeout`/`gtimeout`, a
-  watchdog still bounds the fetch. A queue file that exists, even empty, stays
+  incomplete. The cache is keyed by GitHub host and repo. The fetch writes to a
+  file, never a pipe a surviving descendant could hold open, and is bounded on
+  every path: `timeout -k` escalates to SIGKILL, and without `timeout` a poll
+  loop kills the process tree and stops waiting. `verified` dates must be real
+  calendar dates. A queue file that exists, even empty, stays
   the source until a line in its first five *starts* with the historical
   banner, so nothing goes dark mid-migration. The body's full `- project:`
   value wins over the `project:` label, so a migrated multi-project item still
@@ -27,7 +30,9 @@
   creates the missing labels and one issue per block, with the block's field
   lines verbatim in the body; titles that already have an issue are skipped,
   so a re-run is safe. It refuses any repo GitHub does not report as PRIVATE,
-  and refuses when the existing-title list is too long to be complete.
+  and refuses when the existing-title list is too long to be complete. Titles
+  match exactly (no awk escape processing), and a title repeated within one
+  queue is created once.
   On 2026-10-17 a dry run against the live queue listed 83 of 83 blocks as
   new, all bound for the private repo. The handoff skills still write to the
   file; their switch to issues is a separate, operator-reviewed
