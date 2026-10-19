@@ -105,7 +105,8 @@ err() {
 }
 
 if [ -d "$FRAG_DIR" ]; then
-  for f in "$FRAG_DIR"/* "$FRAG_DIR"/.[!.]*; do
+  # The three globs cover every name but `.` and `..`, dotfiles included.
+  for f in "$FRAG_DIR"/* "$FRAG_DIR"/.[!.]* "$FRAG_DIR"/..?*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f#"$FRAG_DIR"/}"
     case "$name" in
@@ -132,11 +133,35 @@ elif [ -e "$FRAG_DIR" ]; then
   die "$FRAG_DIR exists but is not a directory"
 fi
 
+# ── Fence tracking, shared by every awk pass ───────────────────────
+# A `#` or `## ` line inside a fenced code block is content, not a heading.
+# CommonMark rules: a fence opens with 3+ backticks or tildes indented at most
+# three spaces, and only a run of the SAME character at least as long, with
+# nothing after it, closes it — so a ```` block may hold ``` lines. Sets
+# `infence`; returns 1 when the line opened or closed a fence.
+# shellcheck disable=SC2016  # awk source: $ and backticks are awk's
+fence_awk='
+function fence_step(line,   s, ch, n, rest) {
+  if (!match(line, /^ ? ? ?(```+|~~~+)/)) return 0
+  s = substr(line, RSTART, RLENGTH); sub(/^ +/, "", s)
+  ch = substr(s, 1, 1); n = length(s); rest = substr(line, RSTART + RLENGTH)
+  if (!infence) {
+    if (ch == "`" && rest ~ /`/) return 0
+    infence = 1; fch = ch; flen = n
+    return 1
+  }
+  if (ch == fch && n >= flen && rest ~ /^[[:space:]]*$/) { infence = 0; return 1 }
+  return 0
+}'
+
 # ── Validate each fragment's shape ─────────────────────────────────
-# Fence-aware: a `#` or `## ` line inside a ``` block is content, not a
-# heading. Emits "<line>\t<message>" per problem.
+# Emits "<line>\t<message>" per problem.
 # shellcheck disable=SC2016  # an awk program: $0 etc. are awk's, not the shell's
 validate_awk='
+function days_in(y, m) {
+  if (m == 2) return (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 29 : 28
+  return (m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31
+}
 BEGIN {
   head_re = "^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — (" types ")(\\([a-z0-9._/-]+\\))?!?: [^[:space:]]"
   entries = 0; seen_content = 0; bullets = 0; infence = 0
@@ -145,7 +170,7 @@ function close_entry() {
   if (entries > 0 && bullets == 0) printf "%d\tentry has no bullet (\"- ...\") under its heading\n", entry_line
 }
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
-/^[[:space:]]*(```|~~~)/ { infence = !infence; if (entries == 0) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }; next }
+fence_step($0) { if (entries == 0 && !seen_content) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }; next }
 infence { next }
 /^# / || /^#$/ { printf "%d\ttop-level \"# \" heading; a fragment holds only ## entries\n", NR; next }
 /^## / {
@@ -154,8 +179,8 @@ infence { next }
   if ($0 !~ head_re) {
     printf "%d\theading must be \"## YYYY-MM-DD — <type>(<scope>)?: <summary>\" (type: %s)\n", NR, types
   } else {
-    m = substr($0, 9, 2) + 0; d = substr($0, 12, 2) + 0
-    if (m < 1 || m > 12 || d < 1 || d > 31) printf "%d\tinvalid date %s\n", NR, substr($0, 4, 10)
+    y = substr($0, 4, 4) + 0; m = substr($0, 9, 2) + 0; d = substr($0, 12, 2) + 0
+    if (m < 1 || m > 12 || d < 1 || d > days_in(y, m)) printf "%d\tinvalid date %s\n", NR, substr($0, 4, 10)
   }
   next
 }
@@ -174,12 +199,18 @@ END {
   if (entries == 0) printf "0\tno \"## YYYY-MM-DD — <type>: <summary>\" entry\n"
 }'
 
+# awk runs in a command substitution, not a process substitution, so a failed
+# read (an unreadable fragment) is an error rather than an empty, clean report.
 for i in "${!FRAGS[@]}"; do
   f="${FRAGS[$i]}"
+  if ! report="$(awk -v types="$TYPES" "$fence_awk $validate_awk" "$f")"; then
+    err "$f — could not be read"
+    continue
+  fi
   while IFS="$(printf '\t')" read -r ln msg; do
     [ -n "$ln" ] || continue
     if [ "$ln" = 0 ]; then err "$f — $msg"; else err "$f:$ln — $msg"; fi
-  done < <(awk -v types="$TYPES" "$validate_awk" "$f")
+  done <<<"$report"
 done
 
 # A fragment heading already present in CHANGELOG.md means it was folded once
@@ -188,12 +219,20 @@ done
 if [ -f "$CHANGELOG" ]; then
   for i in "${!FRAGS[@]}"; do
     f="${FRAGS[$i]}"
+    if ! heads="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print }' "$f")"; then
+      err "$f — could not be read"
+      continue
+    fi
     while IFS= read -r h; do
       [ -n "$h" ] || continue
-      if grep -qxF -- "$h" "$CHANGELOG"; then
+      rc=0
+      grep -qxF -- "$h" "$CHANGELOG" || rc=$?
+      if [ "$rc" -eq 0 ]; then
         err "$f — entry '$h' is already in $CHANGELOG (already assembled? delete the fragment)"
+      elif [ "$rc" -ne 1 ]; then
+        err "$CHANGELOG — could not be read"
       fi
-    done < <(awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } !f && /^## / { print }' "$f")
+    done <<<"$heads"
   done
 fi
 
@@ -245,9 +284,9 @@ tab="$(printf '\t')"
 n=0
 for i in "${!FRAGS[@]}"; do
   f="${FRAGS[$i]}"
-  awk -v out="$TMP/e.$i." -v name="${f#"$FRAG_DIR"/}" '
-    /^[[:space:]]*(```|~~~)/ { fence = !fence }
-    !fence && /^## / { k++; file = out k; printf "%s\t%s\t%d\t%s\n", substr($0, 4, 10), name, k, file >> idx }
+  awk -v out="$TMP/e.$i." -v name="${f#"$FRAG_DIR"/}" "$fence_awk"'
+    { fence_step($0) }
+    !infence && /^## / { k++; file = out k; printf "%s\t%s\t%d\t%s\n", substr($0, 4, 10), name, k, file >> idx }
     k { print > file }
   ' idx="$TMP/index" "$f"
   n=$((n + 1))
@@ -265,7 +304,7 @@ done <"$TMP/sorted"
 
 # Insert above the first top-level `## ` entry (after the title and any
 # preamble); a changelog with no entries gets the block appended.
-first="$(awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } !f && /^## / { print NR; exit }' "$CHANGELOG")"
+first="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print NR; exit }' "$CHANGELOG")"
 {
   if [ -n "$first" ]; then
     head -n "$((first - 1))" "$CHANGELOG" \

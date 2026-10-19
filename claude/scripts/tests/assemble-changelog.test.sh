@@ -159,6 +159,30 @@ run --check
 expect "fence: ## and # inside a fence are content" 0 "1 fragment(s)"
 rm -rf "$R"
 
+# A ```` fence may hold ``` lines; its ## line must not become an entry.
+new_repo
+w changelog.d/long.md "## 2026-10-03 — docs: long fence" "- see:" '````' '```' "## 2026-10-04 — docs: not an entry" '```' '````'
+run
+expect "fence: a longer fence holds a shorter one" 0 "folded 1 entry from 1 fragment(s)"
+grep -c '^## 2026-10-04' "$R/CHANGELOG.md" | grep -qx 1 && sed -n '3p' "$R/CHANGELOG.md" | grep -qF "long fence" \
+  && ok "fence: the fenced ## line stays inside its entry" \
+  || bad "fence: the fenced ## line stays inside its entry" "$(cat "$R/CHANGELOG.md")"
+rm -rf "$R"
+
+# A ``` fence is not closed by ~~~ (or by a shorter run).
+new_repo
+w changelog.d/mismatch.md "## 2026-10-03 — docs: mismatch" "- b" '```' "## 2026-10-04 — docs: inside" '~~~'
+run --check
+expect "fence: a mismatched closer leaves the fence open" 1 "unclosed code fence"
+rm -rf "$R"
+
+# Real calendar dates: Feb 29 only in a leap year, no day 31 in a 30-day month.
+new_repo
+w changelog.d/leap.md "## 2028-02-29 — docs: leap day" "- b"
+run --check
+expect "date: 2028-02-29 is valid" 0 "1 fragment(s)"
+rm -rf "$R"
+
 # ── Malformed fragments are refused and nothing is written ────────────
 malformed() { # <name> <expected output fragment> <fragment line>...
   local name="$1" frag="$2"
@@ -183,6 +207,9 @@ malformed "no type" "heading must be" "## 2026-10-05 — something happened" "- 
 malformed "unknown type" "heading must be" "## 2026-10-05 — feature: x" "- b"
 malformed "hyphen not em dash" "heading must be" "## 2026-10-05 - feat: x" "- b"
 malformed "bad date" "invalid date" "## 2026-13-05 — feat: x" "- b"
+malformed "Feb 30" "invalid date" "## 2026-02-30 — feat: x" "- b"
+malformed "Feb 29 off leap year" "invalid date" "## 2026-02-29 — feat: x" "- b"
+malformed "Apr 31" "invalid date" "## 2026-04-31 — feat: x" "- b"
 malformed "no bullet" "no bullet" "## 2026-10-05 — feat: x" "" "prose only"
 malformed "text before heading" "content before the first ## heading" "intro" "## 2026-10-05 — feat: x" "- b"
 malformed "H1 inside" "top-level" "## 2026-10-05 — feat: x" "- b" "# Changelog"
@@ -201,6 +228,25 @@ w "changelog.d/has space.md" "## 2026-10-05 — feat: x" "- b"
 run --check
 expect "malformed: a fragment name that is not a slug is refused" 1 "fragment name must be"
 rm -rf "$R"
+new_repo
+w "changelog.d/..hidden.md" "## 2026-10-05 — feat: x" "- b"
+run --check
+expect "malformed: a double-dot file in changelog.d/ is seen and refused" 1 "fragment name must be"
+rm -rf "$R"
+
+# An unreadable fragment is an error, never a clean report. (Root reads
+# anything, so the case is meaningless there.)
+if [ "$(id -u)" -ne 0 ]; then
+  new_repo
+  w changelog.d/locked.md "## 2026-10-05 — feat: x" "- b"
+  chmod 000 "$R/changelog.d/locked.md"
+  run --check
+  expect "unreadable: --check refuses an unreadable fragment" 1 "could not be read"
+  run
+  expect "unreadable: assemble refuses an unreadable fragment" 1 "Nothing was written"
+  chmod 644 "$R/changelog.d/locked.md"
+  rm -rf "$R"
+fi
 
 # A fragment whose entry is already in CHANGELOG.md was folded once already.
 new_repo
