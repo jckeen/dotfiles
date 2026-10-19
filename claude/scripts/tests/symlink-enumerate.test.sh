@@ -139,21 +139,28 @@ else
   [ "$(readlink "$H/.claude/skills/demo")" = "$SK" ] && ok=1
   check "SymlinkRepair migrates a legacy per-file skill dir" "$ok"
 
-  # A legacy dir whose links cannot be removed (read-only, mode 0555): the
-  # rename to the private migration name succeeds but the unlink fails, so the
-  # hook must put the dir back rather than leave the skill only under the
-  # hidden .demo.migrating.<pid> name (gate review on #638).
+  # The migration never deletes (issue #638): the old dir is archived whole
+  # under ~/.claude/.migrated-skill-dirs/, links intact, and nothing is left
+  # hidden in skills/. A read-only (0555) legacy dir cannot move to another
+  # parent (rename needs write access to update its ..), so it is reported
+  # and left in place, still reachable, never half-converted.
+  arch=""
+  for d in "$H/.claude/.migrated-skill-dirs"/demo.*; do [ -d "$d" ] && arch="$d"; done
+  ok=0
+  [ -n "$arch" ] && [ "$(readlink "$arch/SKILL.md")" = "$SK/SKILL.md" ] \
+    && [ "$(find "$H/.claude/skills" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && ok=1
+  check "SymlinkRepair archives the legacy dir, links intact" "$ok"
   if [ "$(id -u)" -ne 0 ]; then
     H="$FIX/h-legacy-ro"
     mkdir -p "$H/.claude/skills/demo"
     ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
     chmod 555 "$H/.claude/skills/demo"
-    HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" >/dev/null 2>&1
+    hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" 2>&1)"
     ok=0
-    [ -d "$H/.claude/skills/demo" ] && [ -L "$H/.claude/skills/demo/SKILL.md" ] && ok=1
-    for p in "$H/.claude/skills"/.demo.migrating.*; do [ -e "$p" ] && ok=0; done
-    chmod 755 "$H/.claude/skills/demo" 2>/dev/null
-    check "SymlinkRepair restores a legacy dir it cannot drain" "$ok"
+    [ -d "$H/.claude/skills/demo" ] && [ ! -L "$H/.claude/skills/demo" ] \
+      && [ -f "$H/.claude/skills/demo/SKILL.md" ] && grep -q 'skills/demo' <<<"$hook_out" && ok=1
+    chmod 755 "$H/.claude/skills/demo" "$H/.claude/.migrated-skill-dirs"/demo.* 2>/dev/null
+    check "SymlinkRepair leaves an unmovable legacy dir in place and reports it" "$ok"
   fi
 
   # Real content at the destination: left alone and reported.

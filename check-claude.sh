@@ -133,15 +133,11 @@ echo ""
 # link); without --heal it is named as legacy, not as an unknown directory.
 while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
-  # A migrator that died mid-drain leaves a private dir beside $dst that no
-  # later migration would revisit once $dst is relinked (issue #638).
-  if [ "$HEAL" -eq 1 ] && [ -d "$src" ]; then
-    symlink_reap_stale_migrations "$src" "$dst"
-  fi
   if [ "$HEAL" -eq 1 ] && [ -d "$src" ] && [ -d "$dst" ] && [ ! -L "$dst" ]; then
     # A real directory where a bundle link belongs. A concurrent --heal (two
-    # panes launching cc) may be converting it right now: our rm/rmdir then
-    # fail on entries already gone, and any scan can land mid-drain, even
+    # panes launching cc) may be converting it right now. The migration now
+    # moves the whole dir aside in one rename (issue #638), but a rival
+    # running an older copy drains it in place, so any scan can land mid-drain, even
     # misjudge the directory as foreign when an entry vanishes between its -L
     # and readlink. So every such state goes through one bounded (~5s) settle
     # loop: convert it while it is legacy, wait while its listing is still

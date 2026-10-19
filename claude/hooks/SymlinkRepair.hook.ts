@@ -24,7 +24,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
-  rmdirSync,
+  statSync,
   symlinkSync,
   unlinkSync,
 } from 'fs';
@@ -133,9 +133,9 @@ function linkDir(
 }
 
 // Pre-#592 installs hold ~/.claude/skills/<name>/ as a real directory of
-// per-file links. Remove it only when every entry is a link to exactly
+// per-file links. It is legacy only when every entry is a link to exactly
 // <src>/<same name> (live or dangling) — the same test as lib-symlinks.sh's
-// symlink_is_legacy_skill_dir. Returns false, touching nothing, otherwise.
+// symlink_is_legacy_skill_dir.
 function isLegacySkillDir(src: string, dir: string): boolean {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
@@ -145,51 +145,70 @@ function isLegacySkillDir(src: string, dir: string): boolean {
   return true;
 }
 
-// Unlinking in place races a concurrent check-claude.sh --heal (issue #638):
-// once it swaps dst for the directory link, unlink(dst/x) resolves through it
-// and deletes the real src/x. So rename dst to a private dot-sibling first and
-// drain only that path. It is the same .<name>.migrating.<pid> name that
-// lib-symlinks.sh uses, so its reaper also recovers a leftover from a hook
-// that died mid-drain.
-function migrateLegacySkillDir(src: string, dst: string): boolean {
-  if (!isLegacySkillDir(src, dst)) return false;
-  const priv = join(dirname(dst), `.${basename(dst)}.migrating.${process.pid}`);
-  if (existsSync(priv)) {
-    actions.push({ kind: 'skipped', rel: dst, reason: `${priv} already exists` });
+function lexists(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
     return false;
   }
+}
+
+// Migration never deletes (issue #638): unlinking the per-file links by path
+// raced a concurrent check-claude.sh --heal, whose directory link made
+// unlink(dst/x) delete the real src/x, and Node cannot unlink "only if still a
+// symlink". So the whole dir is renamed into the same archive lib-symlinks.sh
+// uses, ~/.claude/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>. It holds
+// only old symlinks and is safe to delete by hand.
+//   'moved'      dst is gone (archived, or a rival moved it); caller links it
+//   'not-legacy' dst holds other content; touched nothing
+//   'failed'     reported in actions; dst left as found, or kept in the archive
+type MigrateResult = 'moved' | 'not-legacy' | 'failed';
+function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateResult {
+  const archive = join(CLAUDE_DST, '.migrated-skill-dirs');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const dest = join(archive, `${basename(dst)}.${stamp}.${process.pid}`);
   try {
-    renameSync(dst, priv);
-  } catch (e) {
-    actions.push({ kind: 'skipped', rel: dst, reason: `legacy skill dir busy (concurrent migration?): ${e}` });
-    return false;
-  }
-  try {
-    // A rival linked dst between the check and the rename, or content
-    // appeared: put it back untouched.
-    if (lstatSync(priv).isSymbolicLink() || !isLegacySkillDir(src, priv)) {
-      renameSync(priv, dst);
-      return false;
+    if (!isLegacySkillDir(src, dst)) return 'not-legacy';
+    mkdirSync(archive, { recursive: true });
+    // renameSync fails across filesystems rather than copying; say why.
+    if (statSync(dst).dev !== statSync(archive).dev) {
+      actions.push({ kind: 'skipped', rel, reason: `${archive} is on another filesystem` });
+      return 'failed';
     }
-    // Re-check each entry right before unlinking it: a writer that still holds
-    // the directory open can add content after the scan, and that is never
-    // deleted. Any failure (that late content, or an unlink refused on a
-    // read-only dir) restores the remainder to dst so the skill stays reachable.
-    try {
-      for (const name of readdirSync(priv)) {
-        const p = join(priv, name);
-        if (lstatSync(p).isSymbolicLink() && readlinkSync(p) === join(src, name)) unlinkSync(p);
-      }
-      rmdirSync(priv);
-    } catch (e) {
-      renameSync(priv, dst);
-      throw e;
+    if (lexists(dest)) {
+      actions.push({ kind: 'skipped', rel, reason: `${dest} already exists` });
+      return 'failed';
     }
   } catch (e) {
-    actions.push({ kind: 'skipped', rel: dst, reason: `legacy skill dir migration failed: ${e}` });
-    return false;
+    actions.push({ kind: 'skipped', rel, reason: `legacy skill dir check failed: ${e}` });
+    return 'failed';
   }
-  return true;
+  try {
+    renameSync(dst, dest);
+  } catch (e) {
+    // A rival moved it first: nothing to do unless it is still here.
+    if (!lexists(dst)) return 'moved';
+    actions.push({ kind: 'skipped', rel, reason: `legacy skill dir move failed: ${e}` });
+    return 'failed';
+  }
+  try {
+    // A rival's directory link grabbed between the check and the rename stays
+    // in the archive; putting it back could overwrite what appeared at dst.
+    if (lstatSync(dest).isSymbolicLink() || isLegacySkillDir(src, dest)) return 'moved';
+  } catch {
+    // fall through: treat an unreadable result as non-legacy content
+  }
+  // Content appeared mid-flight: back onto a still-absent dst only, never over
+  // something; otherwise it stays in the archive, reported.
+  try {
+    if (lexists(dst)) throw new Error(`${dst} reappeared`);
+    renameSync(dest, dst);
+    actions.push({ kind: 'skipped', rel, reason: 'content appeared during migration; restored' });
+  } catch (e) {
+    actions.push({ kind: 'skipped', rel, reason: `non-legacy content kept at ${dest}: ${e}` });
+  }
+  return 'failed';
 }
 
 function main(): void {
@@ -277,12 +296,19 @@ function main(): void {
         dstSt = null;
       }
       if (dstSt?.isDirectory()) {
-        if (!migrateLegacySkillDir(skillSrc, skillDst)) {
+        const result = migrateLegacySkillDir(skillSrc, skillDst, rel);
+        if (result === 'not-legacy') {
           actions.push({
             kind: 'skipped',
             rel,
             reason: 'real directory present (use setup.sh to back up)',
           });
+          continue;
+        }
+        if (result === 'failed') continue;
+        // A rival may already have relinked it; ensureLink judges that state.
+        if (lexists(skillDst)) {
+          ensureLink(skillSrc, skillDst, rel);
           continue;
         }
         try {

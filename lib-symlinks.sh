@@ -130,47 +130,55 @@ symlink_is_legacy_skill_dir() {
   return 0
 }
 
-# symlink_migrate_legacy_skill_dir <src_dir> <dst> — remove a legacy per-file
-# skill directory (only our own links, re-checked here) so a directory link can
-# replace it. Removes nothing and returns 1 if <dst> is not legacy. The links
-# carry no data: each points into the dotfiles bundle that the directory link
-# restores, so this is a conversion, not a deletion.
+# symlink_migrate_legacy_skill_dir <src_dir> <dst> — move a legacy per-file
+# skill directory (only our own links, checked here) out of the way so a
+# directory link can replace it. Returns 1, touching nothing, if <dst> is not
+# legacy. Returns 0 once <dst> is gone; the caller then creates the link.
 #
-# Concurrency (issue #638): two --heal runs may migrate the same dir. Draining
-# $dst in place is a TOCTOU — once a rival swaps $dst for the directory link,
-# `rm "$dst/x"` resolves through it and deletes the real $src/x. So the run
-# first renames $dst to a private sibling, .<name>.migrating.<pid>, and drains
-# only that path, which no rival can swap. Rename is atomic, so one run owns
-# the dir; a run whose rename fails (a rival took it) returns 0 without action
-# and the caller judges the settled state. The sibling is dot-prefixed so a
-# skill loader does not pick up the half-drained copy.
+# Concurrency (issue #638): it never deletes. Unlinking the links by path
+# raced a concurrent --heal: once a rival swapped $dst for the directory link,
+# `rm "$dst/x"` resolved through it and deleted the real $src/x, and no shell
+# or Node call can unlink "only if still a symlink". So the whole directory is
+# renamed (rename(2), atomic) into the archive
+#   <claude>/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>
+# beside skills/, where no skill loader looks. The archive holds only old
+# symlinks and is kept on purpose; it is safe to delete by hand. A run whose
+# rename fails because a rival already moved or relinked $dst returns 0 and
+# lets the caller judge the settled state.
 symlink_migrate_legacy_skill_dir() {
-  local src="$1" dst="$2" priv
-  priv="${dst%/*}/.${dst##*/}.migrating.${BASHPID:-$$}"
+  local src="$1" dst="$2" name archive dest
+  name="${dst##*/}"
+  archive="${dst%/*/*}/.migrated-skill-dirs"
   symlink_is_legacy_skill_dir "$src" "$dst" || return 1
-  # Only this process creates its own pid's name, so a leftover here is a
-  # dead process with a recycled pid; leave it for a later run to reap.
-  if [ -e "$priv" ] || [ -L "$priv" ]; then
-    echo "symlink_migrate_legacy_skill_dir: $priv already exists" >&2
+  mkdir -p "$archive" || return 1
+  # rename(2) cannot cross filesystems; refuse with a clear message rather
+  # than let anything fall back to a non-atomic copy.
+  if [ "$(_symlink_dev "$dst")" != "$(_symlink_dev "$archive")" ]; then
+    echo "symlink_migrate_legacy_skill_dir: $dst and $archive are on different filesystems" >&2
     return 1
   fi
-  if ! _symlink_rename "$dst" "$priv"; then
-    # A rival renamed it first: nothing to do. Still a real dir means the
-    # rename itself failed (permissions, or a mount point), a real failure.
+  dest="$archive/$name.$(date -u +%Y%m%dT%H%M%SZ).${BASHPID:-$$}"
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    echo "symlink_migrate_legacy_skill_dir: $dest already exists" >&2
+    return 1
+  fi
+  if ! _symlink_rename "$dst" "$dest"; then
+    # A rival moved it first: nothing to do. Still a real dir means the
+    # rename itself failed (permissions), a real failure.
     [ -d "$dst" ] && [ ! -L "$dst" ] && return 1
     return 0
   fi
-  if [ -L "$priv" ]; then
-    # A rival finished between the legacy check and the rename, and we moved
-    # its directory link. Put it back, or drop our copy if $dst was relinked
-    # meanwhile; removing a symlink path never touches its target.
-    _symlink_rename "$priv" "$dst" || rm -f "$priv"
-    return 0
+  # A rival's directory link, grabbed between the check and the rename, is
+  # left in the archive (it is only a link); the caller relinks $dst. Putting
+  # it back could overwrite whatever appeared at $dst meanwhile.
+  [ -L "$dest" ] && return 0
+  symlink_is_legacy_skill_dir "$src" "$dest" && return 0
+  # Content appeared mid-flight: put it back only onto a still-absent $dst,
+  # never over something; otherwise it stays in the archive, reported.
+  if [ ! -e "$dst" ] && [ ! -L "$dst" ] && _symlink_rename "$dest" "$dst"; then
+    return 1
   fi
-  _symlink_drain_legacy "$src" "$priv" && return 0
-  # Not legacy after all (content appeared mid-flight): restore what is left.
-  _symlink_rename "$priv" "$dst" \
-    || echo "symlink_migrate_legacy_skill_dir: left non-legacy content at $priv" >&2
+  echo "symlink_migrate_legacy_skill_dir: non-legacy content kept at $dest" >&2
   return 1
 }
 
@@ -182,45 +190,7 @@ _symlink_rename() {
   perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null
 }
 
-# _symlink_drain_legacy <src_dir> <dir> — remove a private, legacy-only dir:
-# re-check that it holds only our links, unlink them, rmdir it. Returns 1 and
-# removes nothing when it is not legacy. Each entry is re-checked right before
-# its rm, so content added after the scan (by a writer that still holds the
-# directory open) is never deleted; rmdir then fails and the caller restores
-# it. <dir> must be a path no rival renames.
-_symlink_drain_legacy() {
-  local src="$1" dir="$2" entry
-  symlink_is_legacy_skill_dir "$src" "$dir" || return 1
-  for entry in "$dir"/* "$dir"/.*; do
-    case "${entry##*/}" in .|..) continue ;; esac
-    [ -L "$entry" ] || continue
-    [ "$(readlink "$entry")" = "$src/${entry##*/}" ] || continue
-    rm "$entry" || return 1
-  done
-  rmdir "$dir" 2>/dev/null
-}
-
-# symlink_reap_stale_migrations <src_dir> <dst> — a migrator that died
-# mid-drain leaves .<name>.migrating.<pid> beside <dst>, and once <dst> is
-# relinked no migration runs there again, so heal callers invoke this for every
-# skill record. Reap each leftover whose owner is gone and which still holds
-# only our links; the reaper first renames it to its own pid's name so two
-# reapers never drain the same path. Anything holding other content is left in
-# place and reported, never deleted.
-symlink_reap_stale_migrations() {
-  local src="$1" dst="$2" stale owner mine
-  mine="${dst%/*}/.${dst##*/}.migrating.${BASHPID:-$$}"
-  for stale in "${dst%/*}/.${dst##*/}.migrating."*; do
-    [ -d "$stale" ] && [ ! -L "$stale" ] || continue
-    owner="${stale##*.migrating.}"
-    case "$owner" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$owner" 2>/dev/null && continue  # owner alive (or not ours to signal)
-    [ -e "$mine" ] || [ -L "$mine" ] && continue
-    _symlink_rename "$stale" "$mine" || continue  # another reaper took it
-    if ! _symlink_drain_legacy "$src" "$mine"; then
-      _symlink_rename "$mine" "$stale" || stale="$mine"
-      echo "symlink_reap_stale_migrations: $stale holds non-link content; left in place" >&2
-    fi
-  done
-  return 0
+# _symlink_dev <path> — device number of <path> itself (GNU or BSD stat).
+_symlink_dev() {
+  stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null
 }

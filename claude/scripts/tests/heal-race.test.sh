@@ -314,112 +314,120 @@ check "foreign dir: --heal exits 1 with NOT LINKED" \
 check "foreign dir: not held for the full wait" "$([ $((SECONDS - t0)) -lt 3 ] && echo 1 || echo 0)"
 check "foreign dir: content untouched" "$([ -f "$DST/notes.md" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
 
-# A rival that finishes WHILE this run drains the legacy dir must not make an
-# rm resolve through the new directory link into the bundle (issue #638). A
-# fake rm on PATH makes the window deterministic: on its first call it plays
-# the rival (drain $DST if it is still a real dir, then link it to $SRC) and
-# only then runs the real rm on the path it was given. The old in-place loop
-# had already passed `[ -L "$DST/f1" ]`, so its rm "$DST/f1" deleted $SRC/f1.
-new_fixture rmrace
-mkdir -p "$DST"
-for i in 1 2 3; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
-ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
-M="$FIX/rmrace/marks"
-RBIN="$FIX/rmrace/bin"
-mkdir -p "$M" "$RBIN"
+# ── 4b. migration never deletes (issue #638) ─────────────────────────────
+# The legacy dir is renamed whole into <claude>/.migrated-skill-dirs/ rather
+# than drained link by link, so no race can make an rm resolve into $SRC.
+# race_bin <dir> <mode> — a PATH dir whose `rm` and `perl` play a race around
+# the first call of either: mode `rival` first finishes a rival migration
+# (drain $DST if still a real dir, link it to $SRC); `rival-file` also drops a
+# regular file at $DST if the call left it absent; `swap` replaces the archived
+# SKILL.md link with a regular file after the call. Then the real tool's exit
+# status is returned.
+ARCH_REL=".claude/.migrated-skill-dirs"
 REAL_RM="$(command -v rm)"
-cat > "$RBIN/rm" <<FAKE
+REAL_PERL="$(command -v perl)"
+race_bin() {
+  local dir="$1" mode="$2"
+  mkdir -p "$dir"
+  cat > "$dir/rm" <<FAKE
 #!/bin/bash
-if [ ! -e "$M/raced" ]; then
-  : > "$M/raced"
-  if [ -d "$DST" ] && [ ! -L "$DST" ]; then
-    "$REAL_RM" -f "$DST"/* && rmdir "$DST"
-  fi
+case "\${0##*/}" in rm) real="$REAL_RM" ;; *) real="$REAL_PERL" ;; esac
+first=0
+if [ ! -e "$M/raced" ]; then : > "$M/raced"; first=1; fi
+if [ "\$first" -eq 1 ] && [ "$mode" != swap ]; then
+  if [ -d "$DST" ] && [ ! -L "$DST" ]; then "$REAL_RM" -f "$DST"/* && rmdir "$DST"; fi
   [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$SRC" "$DST"
 fi
-exec "$REAL_RM" "\$@"
-FAKE
-chmod +x "$RBIN/rm"
-(
-  PATH="$RBIN:$PATH"
-  # shellcheck source=../../../lib-symlinks.sh
-  . "$R/lib-symlinks.sh"
-  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
-) >/dev/null 2>&1
-check "rm race: the rival fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
-check "rm race: every source file survives" \
-  "$([ -f "$SRC/f1" ] && [ -f "$SRC/f2" ] && [ -f "$SRC/f3" ] && [ -f "$SRC/SKILL.md" ] && echo 1 || echo 0)"
-check "rm race: directory link in place" "$([ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
-leftover=0
-for e in "$H/.claude/skills"/.demo.migrating.*; do [ -e "$e" ] && leftover=1; done
-check "rm race: no private migration dir left behind" "$([ "$leftover" -eq 0 ] && echo 1 || echo 0)"
-
-# A migrator that died mid-drain leaves its private dir behind, and once $DST
-# is relinked no migration runs there again, so --heal reaps it on every pass
-# (gate review on #638). It removes a leftover holding only our own links, and
-# never one that holds anything else, or one whose owner is still alive.
-new_fixture stale
-dead_pid() { sh -c 'exit 0' & local p=$!; wait "$p"; echo "$p"; }
-PARENT="$H/.claude/skills"
-mkdir -p "$PARENT"
-ln -sn "$SRC" "$DST"
-STALE_OK="$PARENT/.demo.migrating.$(dead_pid)"
-mkdir -p "$STALE_OK"
-ln -s "$SRC/gone.md" "$STALE_OK/gone.md"
-STALE_REAL="$PARENT/.demo.migrating.$(dead_pid)"
-mkdir -p "$STALE_REAL"
-ln -s "$SRC/SKILL.md" "$STALE_REAL/SKILL.md"
-printf 'mine\n' > "$STALE_REAL/notes.md"
-LIVE="$PARENT/.demo.migrating.$$"
-mkdir -p "$LIVE"
-ln -s "$SRC/SKILL.md" "$LIVE/SKILL.md"
-out="$(run_check --heal)"; rc=$?
-check "stale migration dir: --heal exits 0 with the link already in place" \
-  "$([ "$rc" -eq 0 ] && [ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
-check "stale migration dir: links-only leftover reaped" \
-  "$([ ! -e "$STALE_OK" ] && [ ! -L "$STALE_OK" ] && echo 1 || echo 0)"
-check "stale migration dir: leftover with real content kept" \
-  "$([ -f "$STALE_REAL/notes.md" ] && [ -L "$STALE_REAL/SKILL.md" ] && echo 1 || echo 0)"
-check "stale migration dir: a live owner's dir is not touched" "$([ -L "$LIVE/SKILL.md" ] && echo 1 || echo 0)"
-check "stale migration dir: source intact" "$([ -f "$SRC/SKILL.md" ] && echo 1 || echo 0)"
-
-# Content that lands in the private dir mid-drain is never deleted, and its
-# restore must not follow a directory link a rival recreated at $DST: mv would
-# move the private dir INTO the bundle (gate review on #638). The fake rm, on
-# its first call, drops a real file into the private dir and relinks $DST.
-new_fixture restore
-mkdir -p "$DST"
-ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
-M="$FIX/restore/marks"
-RBIN="$FIX/restore/bin"
-mkdir -p "$M" "$RBIN"
-cat > "$RBIN/rm" <<FAKE
-#!/bin/bash
-if [ ! -e "$M/raced" ]; then
-  : > "$M/raced"
-  for p in "$H/.claude/skills"/.demo.migrating.*; do printf 'late\\n' > "\$p/late.md"; done
-  ln -sn "$SRC" "$DST"
+"\$real" "\$@"; rc=\$?
+if [ "\$first" -eq 1 ] && [ "$mode" = rival-file ] && [ ! -e "$DST" ] && [ ! -L "$DST" ]; then
+  printf 'user\\n' > "$DST"
 fi
-exec "$REAL_RM" "\$@"
+if [ "\$first" -eq 1 ] && [ "$mode" = swap ]; then
+  for d in "$H/$ARCH_REL"/demo.*; do
+    [ -L "\$d/SKILL.md" ] && "$REAL_RM" "\$d/SKILL.md" && printf 'swapped\\n' > "\$d/SKILL.md"
+  done
+fi
+exit \$rc
 FAKE
-chmod +x "$RBIN/rm"
-(
-  PATH="$RBIN:$PATH"
-  # shellcheck source=../../../lib-symlinks.sh
-  . "$R/lib-symlinks.sh"
-  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
-) >/dev/null 2>&1
-rc=$?
-late=""
-for p in "$H/.claude/skills"/.demo.migrating.*; do [ -f "$p/late.md" ] && late="$p"; done
-nested=0
-for p in "$SRC"/.demo.migrating.*; do [ -e "$p" ] || [ -L "$p" ] && nested=1; done
-check "late content: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
-check "late content: migration reports failure" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
-check "late content: kept, never deleted" "$([ -n "$late" ] && echo 1 || echo 0)"
-check "late content: nothing moved into the bundle" "$([ "$nested" -eq 0 ] && echo 1 || echo 0)"
-check "late content: rival's link and sources intact" \
-  "$([ "$(readlink "$DST")" = "$SRC" ] && [ -f "$SRC/SKILL.md" ] && echo 1 || echo 0)"
+  chmod +x "$dir/rm"
+  cp "$dir/rm" "$dir/perl"
+}
+legacy_fixture() {
+  new_fixture "$1"
+  mkdir -p "$DST"
+  for i in 1 2 3; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
+  ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
+  M="$FIX/$1/marks"
+  mkdir -p "$M"
+}
+# migrate_with <bin dir> — run the fixture's migration with <bin dir> first on
+# PATH; sets rc.
+migrate_with() {
+  (
+    PATH="$1:$PATH"
+    # shellcheck source=../../../lib-symlinks.sh
+    . "$R/lib-symlinks.sh"
+    symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+  ) >/dev/null 2>&1
+  rc=$?
+}
+sources_intact() {
+  [ -f "$SRC/f1" ] && [ -f "$SRC/f2" ] && [ -f "$SRC/f3" ] && [ -f "$SRC/SKILL.md" ]
+}
+
+# A plain conversion: the old dir lands in the archive, links intact, and
+# --heal links the bundle in its place.
+legacy_fixture archive
+out="$(run_check --heal)"; rc=$?
+arch=""
+for d in "$H/$ARCH_REL"/demo.*; do [ -d "$d" ] && arch="$d"; done
+check "archive: --heal exits 0 and links the bundle" \
+  "$([ "$rc" -eq 0 ] && [ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
+check "archive: the old dir is archived with its links" \
+  "$([ -n "$arch" ] && [ "$(readlink "$arch/f1")" = "$SRC/f1" ] && [ -L "$arch/SKILL.md" ] && echo 1 || echo 0)"
+check "archive: name is <skill>.<UTC timestamp>.<pid>" \
+  "$([[ "${arch##*/}" =~ ^demo\.[0-9]{8}T[0-9]{6}Z\.[0-9]+$ ]] && echo 1 || echo 0)"
+check "archive: nothing left in skills/ but the link" \
+  "$([ "$(find "$H/.claude/skills" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && echo 1 || echo 0)"
+
+# A rival that finishes WHILE this run migrates must not cost a source file.
+# The old in-place loop had already passed `[ -L "$DST/f1" ]`, so its rm
+# "$DST/f1" resolved through the rival's link and deleted $SRC/f1.
+legacy_fixture rmrace
+race_bin "$FIX/rmrace/bin" rival
+migrate_with "$FIX/rmrace/bin"
+check "rm race: the rival fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "rm race: every source file survives" "$(sources_intact && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "rm race: a later --heal settles on the directory link" \
+  "$([ "$rc" -eq 0 ] && [ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
+
+# The rename can grab the rival's directory link; a regular file that then
+# appears at $DST must survive (gate review round 3: renaming the link back
+# overwrote it). The link stays in the archive instead.
+legacy_fixture rivalfile
+race_bin "$FIX/rivalfile/bin" rival-file
+migrate_with "$FIX/rivalfile/bin"
+check "file at dst: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "file at dst: the new file survives" \
+  "$([ -f "$DST" ] && [ ! -L "$DST" ] && [ "$(cat "$DST")" = user ] && echo 1 || echo 0)"
+check "file at dst: sources intact" "$(sources_intact && echo 1 || echo 0)"
+
+# A writer that swaps a link in the moved dir for a real file loses nothing,
+# because nothing is deleted (gate review round 3); the dir, no longer legacy,
+# goes back to the still-absent $DST and migration reports failure.
+legacy_fixture swap
+race_bin "$FIX/swap/bin" swap
+migrate_with "$FIX/swap/bin"
+found=0
+for f in "$DST/SKILL.md" "$H/$ARCH_REL"/demo.*/SKILL.md; do
+  [ -f "$f" ] && [ ! -L "$f" ] && [ "$(cat "$f")" = swapped ] && found=1
+done
+check "swapped file: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "swapped file: survives" "$found"
+check "swapped file: restored to dst, migration reports failure" \
+  "$([ "$rc" -ne 0 ] && [ -d "$DST" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
+check "swapped file: sources intact" "$(sources_intact && echo 1 || echo 0)"
 
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools
