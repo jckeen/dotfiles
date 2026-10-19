@@ -541,8 +541,10 @@ STUB
     REAL_TMUX_DIR="$(mktemp -d)"
     printf 'set -g @dotfiles_reload_probe yes\n' > "$REAL_TMUX_HOME/.tmux.conf"
     (
-      export TMUX_TMPDIR="$REAL_TMUX_DIR"
-      tmux -f /dev/null new-session -d -s probe || exit 1
+      export TMUX_TMPDIR="$REAL_TMUX_DIR" HOME="$REAL_TMUX_HOME"
+      # An explicit command, not the default login shell, so no startup file
+      # (the developer's or the throwaway HOME's) ever runs.
+      tmux -f /dev/null new-session -d -s probe 'sleep 60' || exit 1
       HOME_DIR="$REAL_TMUX_HOME" DRY_RUN=0 reload_tmux_config >/dev/null 2>&1
       _probe="$(tmux show-options -gv @dotfiles_reload_probe 2>/dev/null)"
       tmux kill-server 2>/dev/null
