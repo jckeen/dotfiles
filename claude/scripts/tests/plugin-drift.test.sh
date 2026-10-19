@@ -453,9 +453,10 @@ run_mods "$MANIFEST_GLOBAL
 # mods-ok: $(head -n1 <<<"$SURR_KEYS")"
 assert "one surrogate id's key does not silence its look-alike (#648 review)" \
   '[ "$(grep -c "surr_@localmkt" <<<"$out")" -eq 1 ]'
-# A token covers its own id only: another id's key does not clear the long id.
+# A verbatim id is its own key only: its would-be sha256 token, built exactly
+# as the hook would build it, does not clear it.
 run_mods "$MANIFEST_GLOBAL
-# mods-ok: sha256:$(printf '%s@localmkt' "$LONG" | sha256sum | cut -c1-16)"
+# mods-ok: sha256:$(printf '%s@localmkt' "$LONG" | iconv -f UTF-8 -t UTF-16LE | sha256sum | cut -c1-16)"
 assert "a verbatim id is not allowlisted by a sha256 token" 'outline "  • $LONG@localmkt"'
 
 run_mods "$MANIFEST_GLOBAL" cwd
