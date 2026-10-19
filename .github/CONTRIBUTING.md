@@ -79,29 +79,6 @@ chore: bump bun-types
 Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
 `build`, `perf`, `style`, `revert`.
 
-## Changelog Entries
-
-Do not edit `CHANGELOG.md` in a PR. Add one fragment instead, so two open PRs
-never touch the same lines (#626):
-
-- **File:** `changelog.d/<branch-slug>.md`, where the slug is the branch name
-  with every `/` replaced by `-` (branch `feat/foo` → `changelog.d/feat-foo.md`).
-- **Content:** the entry exactly as it will read in `CHANGELOG.md` — a
-  `## YYYY-MM-DD — <type>: <summary>` heading (`<type>(<scope>):` allowed; the
-  commit types above) followed by bullets. Several `## ` entries in one
-  fragment are fine; a second fragment file is not.
-- **Check:** `claude/scripts/assemble-changelog.sh --check` validates every
-  fragment. CI runs it in the required `doc-truth` job, with
-  `--base <PR base> --branch <PR branch>` to also hold a PR to one fragment
-  named after its branch.
-
-Assembly is a separate, manual step at release or handoff time:
-`claude/scripts/assemble-changelog.sh` folds every fragment into
-`CHANGELOG.md` (newest date first) and deletes them; commit both in a
-`docs: assemble changelog fragments` PR. It is not a bot push to `main`,
-because `main`'s required status checks refuse a commit that has not run them.
-Until then, `changelog.d/` is the newest part of the changelog.
-
 ## Questions
 
 Open a GitHub issue and label it `question` (Discussions is not enabled on

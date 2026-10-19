@@ -92,31 +92,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The fragment scope check diffs base...HEAD, which needs history.
-          fetch-depth: 0
 
       - name: Run checker self-tests
         run: claude/scripts/tests/doc-truth.test.sh
 
       - name: Check the dotfiles doc contract
         run: claude/scripts/check-doc-truth.sh
-
-      # Changelog fragments (#626): every changelog.d/*.md must be well-formed,
-      # and a PR adds at most one, named after its branch. Assembly into
-      # CHANGELOG.md is a manual step — see assemble-changelog.sh's header for
-      # why it is not a bot push to main.
-      - name: Changelog fragments (self-test + check)
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          claude/scripts/tests/assemble-changelog.test.sh
-          if [ -n "$BASE_SHA" ]; then
-            claude/scripts/assemble-changelog.sh --check --base "$BASE_SHA" --branch "$HEAD_REF"
-          else
-            claude/scripts/assemble-changelog.sh --check
-          fi
 
   # check-doc-truth.sh is vendored into other repos and holds to a bash 3.2
   # floor — the macOS system bash (#424). The static guards in its self-test are

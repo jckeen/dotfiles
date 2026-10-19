@@ -5,9 +5,12 @@
 # to main made every other open PR conflict on the same lines and re-run the
 # whole review gate (#626). Instead a PR adds one fragment:
 #
-#   changelog.d/<branch-slug>.md      branch name with every `/` turned to `-`
+#   changelog.d/<branch-slug>.md      by convention, the branch name with
+#                                     every `/` turned to `-`
 #
-# holding one entry exactly as it will read in CHANGELOG.md — a
+# The name is a convention only: two branches can share a slug (feat/a-b and
+# feat-a/b), so nothing derives a filename from a branch. Any name of letters,
+# digits, `.`, `_` and `-` ending in `.md` is valid. The fragment holds one entry exactly as it will read in CHANGELOG.md — a
 #   ## YYYY-MM-DD — <type>(<scope>)?!?: <summary>
 # heading (types: the conventional set check-commit-format.sh enforces)
 # followed by at least one bullet. Several `## ` entries in one fragment are
@@ -19,14 +22,15 @@
 # the head of the changelog.
 #
 # Usage:
-#   assemble-changelog.sh            fold every fragment into CHANGELOG.md
-#                                    (newest date first; ties by filename, then
-#                                    order within the file), inserted above the
-#                                    first `## ` entry, then delete the
-#                                    fragments. No fragments: a no-op.
+#   assemble-changelog.sh            fold every fragment into CHANGELOG.md,
+#                                    then delete the fragments. Each entry goes
+#                                    above the first existing entry dated on or
+#                                    before it, so newest-first order holds;
+#                                    entries sharing a date order by filename,
+#                                    then position in the file. No fragments:
+#                                    a no-op.
 #   assemble-changelog.sh --check    validate every fragment; write nothing
-#     [--base REF [--branch NAME]]   also: REF...HEAD adds at most one
-#                                    fragment, and it is named after NAME
+#     [--base REF]                   also: REF...HEAD adds at most one fragment
 #   --root DIR                       repo root (default: git toplevel of cwd)
 #
 # Exit: 0 clean, 1 on any malformed fragment or refused assembly (nothing is
@@ -45,12 +49,11 @@ die() {
 }
 
 usage() {
-  sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
 BASE=""
-BRANCH=""
 ROOT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -58,11 +61,6 @@ while [ "$#" -gt 0 ]; do
     --base)
       [ "$#" -ge 2 ] || die "--base needs a git ref" 2
       BASE="$2"
-      shift
-      ;;
-    --branch)
-      [ "$#" -ge 2 ] || die "--branch needs a branch name" 2
-      BRANCH="$2"
       shift
       ;;
     --root)
@@ -79,9 +77,6 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-if [ -n "$BRANCH" ] && [ -z "$BASE" ]; then
-  die "--branch only applies with --base" 2
-fi
 if [ -n "$BASE" ] && [ "$CHECK" -eq 0 ]; then
   die "--base only applies with --check" 2
 fi
@@ -120,18 +115,18 @@ if [ -d "$FRAG_DIR" ]; then
       .gitkeep) continue ;;
     esac
     if [ -L "$f" ] || [ ! -f "$f" ]; then
-      err "$f — not a regular file; $FRAG_DIR/ holds only <branch-slug>.md fragments"
+      err "$f — not a regular file; $FRAG_DIR/ holds only .md fragments"
       continue
     fi
     case "$name" in
       *.md) ;;
       *)
-        err "$f — not a .md fragment; $FRAG_DIR/ holds only <branch-slug>.md fragments"
+        err "$f — not a .md fragment; $FRAG_DIR/ holds only .md fragments"
         continue
         ;;
     esac
     if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*\.md$'; then
-      err "$f — fragment name must be <branch-slug>.md (letters, digits, '.', '_', '-')"
+      err "$f — fragment name must be letters, digits, '.', '_' or '-', ending in .md"
       continue
     fi
     FRAGS+=("$f")
@@ -179,6 +174,7 @@ function close_entry() {
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
 fence_step($0) { if (entries == 0 && !seen_content) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }; next }
 infence { next }
+/^(   |  | )#+([ \t]|$)/ { printf "%d\tindented heading; start # and ## headings at column 1\n", NR; next }
 /^# / || /^#$/ { printf "%d\ttop-level \"# \" heading; a fragment holds only ## entries\n", NR; next }
 /^## / {
   close_entry()
@@ -198,7 +194,8 @@ infence { next }
     seen_content = 1
     next
   }
-  if ($0 ~ /^[[:space:]]*[-*] /) bullets++
+  # A list item starts within three spaces; four or more is indented code.
+  if ($0 ~ /^ ? ? ?[-*][ \t]/) bullets++
 }
 END {
   if (infence) printf "%d\tunclosed code fence\n", NR
@@ -248,7 +245,25 @@ if [ -e "$CHANGELOG" ]; then
   done
 fi
 
-# ── PR scope: at most one fragment added, named after the branch ───
+# Two pending entries with one heading would fold into indistinguishable
+# sections (and defeat the already-assembled check above).
+if [ "${#FRAGS[@]}" -gt 0 ]; then
+  dups="$(awk "$fence_awk"'
+    FNR == 1 { infence = 0 }
+    fence_step($0) { next }
+    !infence && /^## / {
+      if ($0 in seen) {
+        if (seen[$0] == FILENAME) printf "%s:%d\theading repeated in this fragment: %s\n", FILENAME, FNR, $0
+        else printf "%s:%d\theading also in %s: %s\n", FILENAME, FNR, seen[$0], $0
+      } else seen[$0] = FILENAME
+    }' "${FRAGS[@]}")" || err "could not read every fragment to compare headings"
+  while IFS="$(printf '\t')" read -r where msg; do
+    [ -n "$where" ] || continue
+    err "$where — $msg"
+  done <<<"$dups"
+fi
+
+# ── PR scope: at most one fragment added ───────────────────────────
 if [ -n "$BASE" ]; then
   git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
     || die "--base '$BASE' is not a commit here (fetch it, or fetch-depth: 0 in CI)"
@@ -257,12 +272,8 @@ if [ -n "$BASE" ]; then
   n_added=0
   [ -z "$added" ] || n_added="$(printf '%s\n' "$added" | wc -l | tr -d ' ')"
   if [ "$n_added" -gt 1 ]; then
-    err "this branch adds $n_added fragments; a PR adds exactly one $FRAG_DIR/<branch-slug>.md (several ## entries may share it):
+    err "this branch adds $n_added fragments; a PR adds one fragment file (several ## entries may share it):
 $(printf '%s\n' "$added" | sed 's/^/    /')"
-  elif [ "$n_added" -eq 1 ] && [ -n "$BRANCH" ]; then
-    want="$FRAG_DIR/${BRANCH//\//-}.md"
-    [ "$added" = "$want" ] \
-      || err "fragment '$added' is not named after branch '$BRANCH'; expected '$want'"
   fi
 fi
 
@@ -307,30 +318,38 @@ done
 # Newest date first; ties by fragment name, then position within the fragment.
 sort -t "$tab" -k1,1r -k2,2 -k3,3n "$TMP/index" >"$TMP/sorted"
 
-# Entry bodies with trailing blank lines trimmed, one blank line between.
-: >"$TMP/block"
-while IFS="$tab" read -r _ _ _ efile; do
-  awk '{ lines[NR] = $0 } END { last = NR; while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--; for (j = 1; j <= last; j++) print lines[j] }' "$efile" >>"$TMP/block"
-  echo >>"$TMP/block"
-done <"$TMP/sorted"
-
-# Insert above the first top-level `## ` entry (after the title and any
-# preamble); a changelog with no entries gets the block appended.
-first="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print NR; exit }' "$CHANGELOG")"
-{
-  if [ -n "$first" ]; then
-    head -n "$((first - 1))" "$CHANGELOG" \
-      | awk '{ lines[NR] = $0 } END { last = NR; while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--; for (j = 1; j <= last; j++) print lines[j] }'
-    echo
-    cat "$TMP/block"
-    tail -n "+$first" "$CHANGELOG"
-  else
-    awk '{ lines[NR] = $0 } END { last = NR; while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--; for (j = 1; j <= last; j++) print lines[j] }' "$CHANGELOG"
-    echo
-    # Drop the block's own trailing blank line at end of file.
-    awk '{ lines[NR] = $0 } END { last = NR; while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--; for (j = 1; j <= last; j++) print lines[j] }' "$TMP/block"
-  fi
-} >"$TMP/CHANGELOG.new"
+# Merge by date: before each existing unfenced `## YYYY-MM-DD` entry, emit
+# every pending entry dated on or after it (pending entries are newer than any
+# existing one of the same date). What is left goes at the end. Each entry's
+# trailing blank lines are trimmed; entries are separated by one blank line.
+# A failed read of an entry file exits non-zero rather than dropping it.
+awk -v list="$TMP/sorted" "$fence_awk"'
+function emit(file,   n, l, a, j, last, r) {
+  n = 0
+  while ((r = (getline l < file)) > 0) a[++n] = l
+  if (r < 0) { printf "cannot read %s\n", file > "/dev/stderr"; exit 2 }
+  close(file)
+  last = n; while (last > 0 && a[last] ~ /^[[:space:]]*$/) last--
+  if (!lastblank) print ""
+  for (j = 1; j <= last; j++) print a[j]
+  print ""; lastblank = 1
+}
+BEGIN {
+  while ((r = (getline l < list)) > 0) { split(l, f, "\t"); np++; pd[np] = f[1]; pf[np] = f[4] }
+  if (r < 0) { printf "cannot read %s\n", list > "/dev/stderr"; exit 2 }
+  close(list); p = 1; lastblank = 1
+}
+{ isf = fence_step($0) }
+!isf && !infence && /^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ {
+  d = substr($0, 4, 10)
+  while (p <= np && pd[p] >= d) emit(pf[p++])
+}
+{ print; lastblank = ($0 ~ /^[[:space:]]*$/) }
+END {
+  # Entries older than every existing one; the trim after this awk drops the
+  # blank line the last one leaves at end of file.
+  while (p <= np) emit(pf[p++])
+}' "$CHANGELOG" | awk '{ lines[NR] = $0 } END { last = NR; while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--; for (j = 1; j <= last; j++) print lines[j] }' >"$TMP/CHANGELOG.new"
 
 # Same-directory rename so a failure never leaves a half-written changelog.
 # mktemp creates the staging file exclusively, so a pre-planted name (say, a

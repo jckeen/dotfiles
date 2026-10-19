@@ -24,8 +24,7 @@ Examples:
 
 <!--
 Per .doc-contract: if this PR changes behavior, update the LIVING surfaces
-in the same PR — README.md, ROADMAP.md, CLAUDE-GUIDE.md — and add this PR's
-changelog entry as changelog.d/<branch-slug>.md (never edit CHANGELOG.md).
+in the same PR — README.md, CHANGELOG.md, ROADMAP.md, CLAUDE-GUIDE.md.
 New .md files need a .doc-contract entry (CI enforces this).
 If nothing applies, write "None".
 -->

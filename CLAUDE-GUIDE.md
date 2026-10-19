@@ -73,9 +73,10 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 7. `/changelog` — Log what happened
 8. `/handoff` — If ending the session
 
-> **Changelog in this repo:** a PR adds its entry as
-> `changelog.d/<branch-slug>.md` instead of editing `CHANGELOG.md` — see
-> [CONTRIBUTING](.github/CONTRIBUTING.md#changelog-entries).
+> **Changelog in this repo:** a PR adds its entry as one fragment under
+> `changelog.d/` (named after the branch by convention) instead of editing
+> `CHANGELOG.md` — see `assemble-changelog.sh` in
+> [`claude/scripts/README.md`](claude/scripts/README.md).
 
 > **Push-time Codex gate:** `commit-push-pr` runs a local Codex review
 > (`codex-review-gate.sh` → `codex exec --output-schema`, structured JSON over

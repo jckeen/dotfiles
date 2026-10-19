@@ -1,7 +1,7 @@
 # Changelog
 
-Entries not yet assembled live one per PR in `changelog.d/` and are newer than
-everything below; `claude/scripts/assemble-changelog.sh` folds them in here.
+Entries not yet assembled live one per PR in `changelog.d/`;
+`claude/scripts/assemble-changelog.sh` folds them in here in date order.
 
 ## 2026-10-17 — feat: operator-action queue can come from GitHub issues
 

@@ -132,4 +132,7 @@ echo "$pass passed, $failed failed"
 resolver_rc=0
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$SCRIPT_DIR/../../../claude/scripts/tests/resolve-changelog.test.py" || resolver_rc=$?
-[ "$failed" -eq 0 ] && [ "$resolver_rc" -eq 0 ]
+# The changelog-fragment assembler's suite (#626) rides here the same way.
+assembler_rc=0
+bash "$SCRIPT_DIR/../../../claude/scripts/tests/assemble-changelog.test.sh" || assembler_rc=$?
+[ "$failed" -eq 0 ] && [ "$resolver_rc" -eq 0 ] && [ "$assembler_rc" -eq 0 ]

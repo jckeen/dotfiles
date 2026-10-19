@@ -312,15 +312,16 @@ run --check
 expect "duplicate: an early match in a long changelog is refused" 1 "already in CHANGELOG.md"
 rm -rf "$R"
 
-# ── PR scope (--base/--branch): one fragment, named after the branch ──
+# ── PR scope (--base): at most one fragment added, any valid name ─────
+# The <branch-slug>.md name is a convention, not enforced: distinct branches
+# can share a slug (feat/a-b and feat-a/b), so the check never derives a
+# filename from the branch.
 new_repo
 git -C "$R" switch -q -c feat/one-thing
-w changelog.d/feat-one-thing.md "## 2026-10-06 — feat: one thing" "- b"
+w changelog.d/any-name-at-all.md "## 2026-10-06 — feat: one thing" "- b"
 git -C "$R" add -A && git -C "$R" commit -q -m "feat: one"
-run --check --base main --branch feat/one-thing
-expect "scope: one fragment named after the branch passes" 0 "1 fragment(s)"
-run --check --base main --branch feat/other
-expect "scope: a fragment not named after the branch is refused" 1 "expected 'changelog.d/feat-other.md'"
+run --check --base main
+expect "scope: one fragment with any valid name passes" 0 "1 fragment(s)"
 w changelog.d/feat-second.md "## 2026-10-06 — feat: second" "- b"
 git -C "$R" add -A && git -C "$R" commit -q -m "feat: two"
 run --check --base main
@@ -329,12 +330,56 @@ run --check --base no-such-ref
 expect "scope: an unresolvable base fails closed" 1 "is not a commit here"
 rm -rf "$R"
 
+# ── Date order holds across existing sections ─────────────────────────
+# Each entry goes above the first existing entry dated on or before it, so a
+# fragment older than the current head lands in date order, not on top.
+new_repo
+w CHANGELOG.md "# Changelog" "" "## 2026-10-18 — fix: newest existing" "- n" "" "## 2026-10-01 — fix: oldest existing" "- o"
+w changelog.d/top.md "## 2026-10-20 — feat: newer than all" "- t"
+w changelog.d/mid.md "## 2026-10-05 — feat: between" "- m"
+w changelog.d/same.md "## 2026-10-18 — feat: same day as head" "- s"
+w changelog.d/old.md "## 2026-09-01 — feat: older than all" "- a"
+run
+expect "order: assemble succeeds" 0 "folded 4 entries"
+expect_file "order: every entry lands in date order" CHANGELOG.md \
+  "# Changelog" "" \
+  "## 2026-10-20 — feat: newer than all" "- t" "" \
+  "## 2026-10-18 — feat: same day as head" "- s" "" \
+  "## 2026-10-18 — fix: newest existing" "- n" "" \
+  "## 2026-10-05 — feat: between" "- m" "" \
+  "## 2026-10-01 — fix: oldest existing" "- o" "" \
+  "## 2026-09-01 — feat: older than all" "- a"
+rm -rf "$R"
+
+# ── Duplicate headings among pending fragments ─────────────────────────
+new_repo
+w changelog.d/one.md "## 2026-10-06 — feat: same title" "- a"
+w changelog.d/two.md "## 2026-10-06 — feat: same title" "- b"
+run --check
+expect "duplicate: the same heading in two fragments is refused" 1 "also in changelog.d/one.md"
+rm -rf "$R"
+new_repo
+w changelog.d/one.md "## 2026-10-06 — feat: twice" "- a" "" "## 2026-10-06 — feat: twice" "- b"
+run --check
+expect "duplicate: the same heading twice in one fragment is refused" 1 "repeated"
+rm -rf "$R"
+
+# ── Indented ATX headings and over-indented bullets ────────────────────
+malformed "indented ##" "indented heading" "## 2026-10-05 — feat: x" "- b" "  ## 2026-10-06 — feat: y" "- c"
+malformed "indented #" "indented heading" "## 2026-10-05 — feat: x" "- b" "   # Title"
+malformed "4-space bullet" "no bullet" "## 2026-10-05 — feat: x" "" "    - code, not a list item"
+new_repo
+w changelog.d/ok.md "## 2026-10-05 — feat: x" "   - three spaces is still a bullet" "    ## four spaces is code, not a heading"
+run --check
+expect "indent: 3-space bullet counts, 4-space ## is code" 0 "1 fragment(s)"
+rm -rf "$R"
+
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo
 run --bogus
 expect "usage: unknown argument exits 2" 2 "unknown argument"
 run --check --branch x
-expect "usage: --branch without --base exits 2" 2 "only applies with --base"
+expect "usage: --branch is gone" 2 "unknown argument"
 run --base main
 expect "usage: --base without --check exits 2" 2 "only applies with --check"
 rm -rf "$R"
