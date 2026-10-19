@@ -1,5 +1,8 @@
 # Changelog
 
+Entries not yet assembled live one per PR in `changelog.d/` and are newer than
+everything below; `claude/scripts/assemble-changelog.sh` folds them in here.
+
 ## 2026-10-17 — feat: operator-action queue can come from GitHub issues
 
 - **`claude/hooks/OperatorQueueReminder.hook.sh`**: a second source, open

@@ -8,7 +8,7 @@ How this repo tracks work — the four-layer record model (see
 | **GitHub Issues** | What's next? | [Issues](https://github.com/jckeen/dotfiles/issues) + milestones |
 | **PRs (CI-gated)** | Is this change safe to land? | one PR per issue, CI green = merge |
 | **ADRs** | Why did we decide this? | [`docs/adr/`](docs/adr/) |
-| **CHANGELOG** | What shipped? | [`CHANGELOG.md`](CHANGELOG.md) (current quarter; older quarters in [`docs/changelog/`](docs/changelog/)) |
+| **CHANGELOG** | What shipped? | [`CHANGELOG.md`](CHANGELOG.md) (current quarter; entries not yet assembled in `changelog.d/`; older quarters in [`docs/changelog/`](docs/changelog/)) |
 
 This file is the at-a-glance index of the **current milestone**. Issues are the
 live source of truth; close them via PRs and this list reflects status.
