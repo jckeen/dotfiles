@@ -8,6 +8,8 @@
 # and with any labels, or "new"). Nothing is written. --apply creates the
 # missing labels and one issue per "new" row; rows that already have an issue
 # are skipped, so a re-run after a partial apply only creates what is missing.
+# A matched issue lacking `operator-action` (or the row's project label) gets
+# it, since the hook lists only labelled issues; a failed relabel fails the run.
 #
 # Each issue's title is the slug and its body is the block's own field lines
 # verbatim (`- added:`, `- verified:`, `- project:`, `- deadline:`, `- action:`),
@@ -30,7 +32,7 @@
 # switches to the issues.
 #
 # Usage: migrate-operator-queue.sh [--apply] [--repo [host/]owner/name] [--queue path]
-# EXIT: 0 ok; 1 a gh call failed, the repo is not private, or another apply
+# EXIT: 0 ok; 1 a gh call or relabel failed, the repo is not private, or another apply
 #   holds the lock (or flock is missing); 2 usage error.
 # SELF-TEST: claude/scripts/tests/migrate-operator-queue.test.sh
 set -euo pipefail
@@ -43,7 +45,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --repo) REPO="${2:?--repo needs owner/name}"; shift ;;
     --queue) QUEUE="${2:?--queue needs a path}"; shift ;;
-    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -101,9 +103,11 @@ fi
 # Existing issues in any state and with any labels, by exact title: an
 # issue whose operator-action label was removed (after a partial migration,
 # or one filed by hand) still has the title, and gh's --label would hide it.
+# Columns: title, number, comma-joined labels ("-" for none).
 LIST_LIMIT=10000
-gh issue list -R "$REPO" --state all --limit "$LIST_LIMIT" \
-  --json number,title -q '.[] | "\(.title)\t\(.number)"' > "$work/existing.tsv"
+gh issue list -R "$REPO" --state all --limit "$LIST_LIMIT" --json number,title,labels \
+  -q '.[] | ([.labels[].name] | join(",")) as $l | "\(.title)\t\(.number)\t\(if $l == "" then "-" else $l end)"' \
+  > "$work/existing.tsv"
 # The dedup is only sound over the complete list: a full page could hide a
 # title past the limit, and its block would be created twice.
 if [ "$(wc -l < "$work/existing.tsv")" -ge "$LIST_LIMIT" ]; then
@@ -127,7 +131,7 @@ if [ "$APPLY" -eq 1 ]; then
 fi
 
 today="$(date +%Y-%m-%d)"
-total=0; new=0; existing=0
+total=0; new=0; existing=0; relabel=0; relabel_failed=0
 printf '%-48s  %-24s  %s\n' "SLUG" "LABEL" "TARGET"
 while IFS=$'\t' read -r n slug group; do
   total=$((total + 1))
@@ -135,10 +139,32 @@ while IFS=$'\t' read -r n slug group; do
   # ENVIRON, not -v: awk -v would turn a backslash in the title into an escape.
   # The "" concatenations force a string comparison: awk would otherwise
   # compare numeric-looking titles as numbers ("1" == "001", "1e2" == "100").
-  num="$(t="$slug" awk -F'\t' '($1 "") == (ENVIRON["t"] "") { print $2; exit }' "$work/existing.tsv")"
+  match="$(t="$slug" awk -F'\t' '($1 "") == (ENVIRON["t"] "") { print $2 "\t" $3; exit }' "$work/existing.tsv")"
+  num="${match%%$'\t'*}"
   if [ -n "$num" ]; then
     existing=$((existing + 1))
-    printf '%-48s  %-24s  %s\n' "$slug" "$label" "#$num (exists, skipped)"
+    # The hook lists only operator-action issues: a matched issue lacking the
+    # labels this migration would set drops out of the reminders once the
+    # file is retired, so it gets them rather than counting as migrated.
+    have=",${match#*$'\t'},"
+    missing=""
+    case "$have" in *,operator-action,*) ;; *) missing="operator-action" ;; esac
+    if [ "$group" != "-" ]; then
+      case "$have" in *,"$label",*) ;; *) missing="${missing:+$missing,}$label" ;; esac
+    fi
+    target="#$num (exists, skipped)"
+    if [ -n "$missing" ]; then
+      relabel=$((relabel + 1))
+      if [ "$APPLY" -ne 1 ]; then
+        target="#$num (exists, would relabel #$num: $missing)"
+      elif gh issue edit "$num" -R "$REPO" --add-label "$missing" >/dev/null; then
+        target="#$num (exists, relabelled #$num: $missing)"
+      else
+        relabel_failed=$((relabel_failed + 1))
+        target="#$num (exists, could not relabel #$num: $missing)"
+      fi
+    fi
+    printf '%-48s  %-24s  %s\n' "$slug" "$label" "$target"
     continue
   fi
   new=$((new + 1))
@@ -149,14 +175,19 @@ while IFS=$'\t' read -r n slug group; do
   [ "$group" = "-" ] || args+=(--label "$label")
   url="$(gh "${args[@]}")"
   # Record it, so a repeated title later in this same queue is skipped too.
-  printf '%s\t%s\n' "$slug" "${url##*/}" >> "$work/existing.tsv"
+  labels="operator-action"; [ "$group" = "-" ] || labels="$labels,$label"
+  printf '%s\t%s\t%s\n' "$slug" "${url##*/}" "$labels" >> "$work/existing.tsv"
 done < "$work/index.tsv"
 
 echo ""
 if [ "$APPLY" -eq 1 ]; then
-  echo "$total item(s): $new created, $existing already had an issue."
+  echo "$total item(s): $new created, $existing already had an issue ($relabel relabelled)."
+  if [ "$relabel_failed" -gt 0 ]; then
+    echo "$relabel_failed relabel(s) failed; those issues lack operator-action or their project label, so the hook would not show them. The queue file is still the source." >&2
+    exit 1
+  fi
   echo "Check: gh issue list -R $REPO --label operator-action --state open --limit 1000 | wc -l"
   echo "Then retire the file: put '> **Historical** — point-in-time record ($today). Do not act on this.' as its first line."
 else
-  echo "$total item(s): $new would be created, $existing already have an issue. Dry run — re-run with --apply to create them."
+  echo "$total item(s): $new would be created, $existing already have an issue ($relabel would be relabelled). Dry run — re-run with --apply to create them."
 fi

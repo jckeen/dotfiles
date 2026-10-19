@@ -25,8 +25,10 @@ case "$1 $2" in
   "repo view")    echo "$FAKE_VIS ${FAKE_NWO:-o/r}" ;;
   # gh's --label filters: an issue whose label was removed is listed only
   # by a query without it.
-  "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n001\t9\n100\t10\n'
-                  case " $* " in *" --label "*) ;; *) printf 'unlabelled-dupe\t11\n' ;; esac ;;
+  # Columns: title, number, comma-joined labels ("-" for none).
+  "issue list")   printf 'already-there\t7\toperator-action,project:stringer\nrotate-\\token\t8\toperator-action\n001\t9\toperator-action\n100\t10\toperator-action\n'
+                  case " $* " in *" --label "*) ;; *) printf 'unlabelled-dupe\t11\t-\nhalf-labelled\t12\tproject:dotfiles\n' ;; esac ;;
+  "issue edit")   [ -z "${FAKE_EDIT_FAIL:-}" ] || { echo "HTTP 403" >&2; exit 1; } ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
   "issue create")
@@ -84,7 +86,7 @@ assert "dry run: no write call" "[ \"\$(writes)\" -eq 0 ]"
 assert "dry run: new block with its label" "grep -qE '^dot-thing +project:dotfiles +new$' <<<\"\$out\""
 assert "dry run: existing title skipped" "grep -qE '^already-there +project:stringer +#7 \\(exists, skipped\\)$' <<<\"\$out\""
 assert "dry run: unscoped block has no label" "grep -qE '^no-project-item +\\(none\\) +new$' <<<\"\$out\""
-assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 already have an issue.' <<<\"\$out\""
+assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 already have an issue (0 would be relabelled).' <<<\"\$out\""
 
 run PRIVATE --apply
 assert "apply exits 0" "[ $rc -eq 0 ]"
@@ -104,11 +106,28 @@ assert "apply: a backslash title matches its existing issue" "! grep -q -- '--ti
 
 # A same-title issue without the operator-action label (removed after a
 # partial migration, or filed by hand) is still found: no duplicate, rerun-safe.
-printf '## unlabelled-dupe\n- action: exists as #11, label removed\n' > "$FX/unlabelled.md"
+printf '## unlabelled-dupe\n- project: stringer\n- action: exists as #11, label removed\n' > "$FX/unlabelled.md"
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/unlabelled.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: an unlabelled same-title issue is matched, not duplicated" "[ $rc -eq 0 ] && ! grep -q -- '--title unlabelled-dupe' '$FAKE_LOG' && grep -qF '#11 (exists, skipped)' <<<\"\$out\""
+assert "apply: an unlabelled same-title issue is matched, not duplicated" "[ $rc -eq 0 ] && ! grep -q -- '--title unlabelled-dupe' '$FAKE_LOG' && grep -qF '#11 (exists, relabelled #11: operator-action,project:stringer)' <<<\"\$out\""
 assert "the title check lists issues regardless of label" "grep '^issue list' '$FAKE_LOG' | grep -qv -- '--label'"
+# The hook reads only operator-action issues, so a matched issue lacking the
+# migration's labels gets them: otherwise retiring the file would drop the
+# item silently.
+assert "apply: the matched issue gets operator-action and its project label, pinned host" "grep -qx 'issue edit 11 -R github.com/o/r --add-label operator-action,project:stringer' '$FAKE_LOG'"
+assert "apply: the summary counts the relabel and still offers retirement" "grep -qF '1 relabelled' <<<\"\$out\" && grep -qF 'Then retire the file' <<<\"\$out\""
+printf '## half-labelled\n- project: dotfiles\n- action: has its project label only\n\n## already-there\n- project: stringer\n- action: fully labelled\n' > "$FX/half.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/half.md" --repo o/r 2>&1)"; rc=$?
+assert "dry run: only reports 'would relabel #N', no write" "[ $rc -eq 0 ] && grep -qF 'would relabel #12: operator-action)' <<<\"\$out\" && ! grep -q '^issue edit' '$FAKE_LOG'"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/half.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: only the missing labels are added; a fully labelled issue is left alone" "[ $rc -eq 0 ] && grep -qx 'issue edit 12 -R github.com/o/r --add-label operator-action' '$FAKE_LOG' && ! grep -q '^issue edit 7 ' '$FAKE_LOG'"
+# A relabel that fails is a failed migration: non-zero exit, and no
+# instruction to retire the file over an item the hook would not show.
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE FAKE_EDIT_FAIL=1 bash "$SCRIPT" --queue "$FX/half.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: a failed relabel fails the run and suppresses the retire message" "[ $rc -eq 1 ] && grep -qF 'could not relabel #12' <<<\"\$out\" && ! grep -qF 'retire the file' <<<\"\$out\""
 
 # Numeric-looking titles compare as strings: "1" is not "001", "1e2" is not "100".
 printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"

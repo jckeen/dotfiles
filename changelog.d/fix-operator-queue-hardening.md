@@ -25,7 +25,12 @@
   check now lists issues with any labels (still in every state), so an issue
   whose `operator-action` label was removed still blocks a duplicate create
   and reruns stay safe. The check covers up to 10000 issues and refuses at
-  that limit rather than dedupe over a partial list.
+  that limit rather than dedupe over a partial list. A matched issue that
+  lacks `operator-action` or the row's `project:` label gets the missing
+  labels on `--apply` (`gh issue edit --add-label`, pinned host). The hook
+  lists only labelled issues, so without the labels the item would vanish
+  once the file is retired. The dry run reports "would relabel #N". A failed
+  relabel fails the run and suppresses the retire-the-file message.
 - Tests: fixture cases for the bounded snapshot (an `rm` wrapper measures
   it), recovery cleanup of only pattern-matching files, TERM cleanup,
   unlabelled same-title dedupe, and the status-only trailer. The `cp`-wrapper
