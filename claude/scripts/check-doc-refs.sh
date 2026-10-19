@@ -13,7 +13,8 @@
 # `skills/<name>/` path forms are checked.
 #
 # Historical docs that intentionally name removed files are excluded by path
-# (CHANGELOG.md and its docs/changelog/ archives, SECURITY_FINDINGS_*.md,
+# (CHANGELOG.md, its changelog.d/ fragments and docs/changelog/ archives,
+# SECURITY_FINDINGS_*.md,
 # Plans/). Add more via ALLOWLIST below.
 #
 # Usage:  claude/scripts/check-doc-refs.sh
@@ -37,6 +38,7 @@ HOOKS_DIR="claude/hooks"
 # Matched against the doc path with bash [[ == glob ]].
 ALLOWLIST=(
   "CHANGELOG.md"
+  "changelog.d/*"  # per-PR changelog fragments, folded into CHANGELOG.md (#626)
   "docs/changelog/*"  # quarterly CHANGELOG archives (HISTORICAL, moved verbatim)
   "SECURITY_FINDINGS_*.md"
   "Plans/*"
