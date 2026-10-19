@@ -248,6 +248,51 @@ if [ "$(id -u)" -ne 0 ]; then
   rm -rf "$R"
 fi
 
+# A planted staging-name symlink is never written through.
+new_repo
+victim="$(mktemp)"
+echo "victim" >"$victim"
+ln -s "$victim" "$R/CHANGELOG.md.assemble.tmp"
+w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+run
+expect "staging: assemble succeeds beside a planted symlink" 0 "folded 1 entry"
+[ "$(cat "$victim")" = "victim" ] && [ ! -L "$R/CHANGELOG.md" ] \
+  && grep -qF "feat: x" "$R/CHANGELOG.md" \
+  && ok "staging: the symlink target is untouched and CHANGELOG.md is a real file" \
+  || bad "staging: the symlink target is untouched and CHANGELOG.md is a real file"
+rm -f "$victim"
+rm -rf "$R"
+
+# A symlinked changelog.d (fragments outside the root) is refused.
+new_repo
+outside="$(mktemp -d)"
+printf '%s\n' "## 2026-10-05 — feat: x" "- b" >"$outside/x.md"
+ln -s "$outside" "$R/changelog.d"
+run
+expect "symlink dir: assemble refuses a symlinked changelog.d" 1 "is a symlink"
+[ -e "$outside/x.md" ] && ok "symlink dir: the outside fragment is not deleted" \
+  || bad "symlink dir: the outside fragment is not deleted"
+rm -rf "$outside" "$R"
+
+# An unreadable changelog.d is an error, not an empty directory.
+if [ "$(id -u)" -ne 0 ]; then
+  new_repo
+  w changelog.d/bad.md "not a fragment"
+  chmod 000 "$R/changelog.d"
+  run --check
+  expect "unreadable dir: --check refuses" 1 "is not readable"
+  chmod 755 "$R/changelog.d"
+  rm -rf "$R"
+fi
+
+# A heading quoted inside a fenced example in CHANGELOG.md is not a folded entry.
+new_repo
+w CHANGELOG.md "# Changelog" "" "## 2026-10-01 — docs: example" "- e.g.:" '  ```' "## 2026-10-05 — feat: x" '  ```'
+w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+run --check
+expect "duplicate: a fenced heading in CHANGELOG.md does not count" 0 "1 fragment(s)"
+rm -rf "$R"
+
 # A fragment whose entry is already in CHANGELOG.md was folded once already.
 new_repo
 w changelog.d/dup.md "## 2026-10-01 — fix: an old entry" "- old bullet"

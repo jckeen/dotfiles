@@ -104,7 +104,14 @@ err() {
   errors=$((errors + 1))
 }
 
+# A symlinked changelog.d would make assembly delete files outside the root,
+# and an unreadable one would expand no globs and pass as empty.
+if [ -L "$FRAG_DIR" ]; then
+  die "$FRAG_DIR is a symlink; it must be a real directory in the repo"
+fi
 if [ -d "$FRAG_DIR" ]; then
+  [ -r "$FRAG_DIR" ] && [ -x "$FRAG_DIR" ] \
+    || die "$FRAG_DIR is not readable; cannot list its fragments"
   # The three globs cover every name but `.` and `..`, dotfiles included.
   for f in "$FRAG_DIR"/* "$FRAG_DIR"/.[!.]* "$FRAG_DIR"/..?*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -216,7 +223,14 @@ done
 # A fragment heading already present in CHANGELOG.md means it was folded once
 # and the fragment survived (an interrupted run, or a revert) — folding it again
 # would duplicate the entry.
-if [ -f "$CHANGELOG" ]; then
+# Compared against CHANGELOG.md's own unfenced entry headings, so a heading
+# quoted inside a fenced example there is not mistaken for a folded entry.
+if [ -L "$CHANGELOG" ]; then
+  die "$CHANGELOG is a symlink; refusing to read or replace it"
+fi
+if [ -e "$CHANGELOG" ]; then
+  existing="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print }' "$CHANGELOG")" \
+    || die "$CHANGELOG could not be read"
   for i in "${!FRAGS[@]}"; do
     f="${FRAGS[$i]}"
     if ! heads="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print }' "$f")"; then
@@ -225,12 +239,8 @@ if [ -f "$CHANGELOG" ]; then
     fi
     while IFS= read -r h; do
       [ -n "$h" ] || continue
-      rc=0
-      grep -qxF -- "$h" "$CHANGELOG" || rc=$?
-      if [ "$rc" -eq 0 ]; then
+      if printf '%s\n' "$existing" | grep -qxF -- "$h"; then
         err "$f — entry '$h' is already in $CHANGELOG (already assembled? delete the fragment)"
-      elif [ "$rc" -ne 1 ]; then
-        err "$CHANGELOG — could not be read"
       fi
     done <<<"$heads"
   done
@@ -321,8 +331,14 @@ first="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print NR
 } >"$TMP/CHANGELOG.new"
 
 # Same-directory rename so a failure never leaves a half-written changelog.
-cp "$TMP/CHANGELOG.new" "$CHANGELOG.assemble.tmp"
-mv -f "$CHANGELOG.assemble.tmp" "$CHANGELOG"
+# mktemp creates the staging file exclusively, so a pre-planted name (say, a
+# symlink to some other file) can never be written through.
+stage="$(mktemp "$CHANGELOG.assemble.XXXXXX")" || die "cannot create a staging file beside $CHANGELOG"
+# mktemp makes it 0600; CHANGELOG.md is a tracked non-executable file (0644).
+if ! cat "$TMP/CHANGELOG.new" >"$stage" || ! chmod 644 "$stage" || ! mv -f "$stage" "$CHANGELOG"; then
+  rm -f -- "$stage"
+  die "could not replace $CHANGELOG; fragments were left in place"
+fi
 for i in "${!FRAGS[@]}"; do
   rm -f -- "${FRAGS[$i]}"
 done
