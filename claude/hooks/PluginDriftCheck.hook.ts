@@ -526,7 +526,12 @@ function modsWarning(allowed: string[]): string {
     if (origin !== 'project' && allowed.includes(key)) continue;
     const label =
       shown(id) +
-      (key === id ? '' : ` (sanitized; allowlist key: ${key})`) +
+      // A project mod is always named, so no key would clear it.
+      (key === id
+        ? ''
+        : origin === 'project'
+          ? ' (sanitized)'
+          : ` (sanitized; allowlist key: ${key})`) +
       (origin === 'project' ? ' (project .claude/skills)' : '');
     if (noManifest) {
       unknown.add(label);
