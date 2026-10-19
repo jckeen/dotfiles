@@ -2628,6 +2628,56 @@ for bad_mf in '"two"' '"-"' '""' '0' '2.5' 'null'; do
   fi
 done
 
+# #639: a limit past 2^63-1 wraps in bash's [[ -gt ]], so every non-empty PR
+# would read as oversized. The digit count is capped wherever max_files is
+# parsed — the ledger here, the frontmatter below.
+new_case
+routine alpha false 'repos: all'
+session_line 968 alpha jckeen/dotfiles 1 '99999999999999999999' > "$STATE/dispatch.jsonl"
+completed_with_pr 968 https://github.com/jckeen/dotfiles/pull/968
+pr_fixture 968 '{"state":"OPEN","changedFiles":1,"title":"fix(docs): one","labels":[]}'
+recon_run; rc=$?
+if [[ "$rc" -ne 0 ]] && [[ "$(reconcile_action error)" -eq 1 ]] && [[ ! -s "$FAKE_GH_ARGV" ]]; then
+  ok "a ledger max_files too long to compare safely is refused before any gh call"
+else
+  fail "a 20-digit ledger max_files was acted on (rc=$rc)"
+  sed 's/^/      | /' "$CASE_DIR/out"
+fi
+bad_case "a max_files too long to compare safely is rejected" \
+  "${VALID/max_files: 2/max_files: 99999999999999999999}" "max_files must be a positive integer"
+
+# #639: an earlier partial pass may have labeled the PR before it grew past the
+# limit. The label presents it as a compliant routine result, so it comes off.
+new_case
+routine alpha false 'repos: all'
+session_line 969 alpha jckeen/dotfiles 1 2 > "$STATE/dispatch.jsonl"
+completed_with_pr 969 https://github.com/jckeen/dotfiles/pull/969
+pr_fixture 969 '{"state":"OPEN","changedFiles":3,"title":"chore(alpha): three","labels":[{"name":"jules-routine:alpha"}]}'
+if recon_run && [[ "$(reconcile_action blocked-oversized)" -eq 1 ]] \
+  && ghgrep '--remove-label jules-routine:alpha' && ! ghgrep '--add-label'; then
+  ok "an oversized PR carrying the routine label has the label removed"
+else
+  fail "an oversized PR kept its routine label"
+  sed 's/^/      | /' "$CASE_DIR/out"; sed 's/^/      > /' "$FAKE_GH_ARGV"
+fi
+
+# #639: a PR merged or closed before reconcile ran is still over the limit the
+# session was given, and the ledger and status.json have to say so.
+new_case
+routine alpha false 'repos: all'
+session_line 970 alpha jckeen/dotfiles 1 2 > "$STATE/dispatch.jsonl"
+completed_with_pr 970 https://github.com/jckeen/dotfiles/pull/970
+pr_fixture 970 '{"state":"MERGED","changedFiles":5,"title":"Routine: alpha - five","labels":[]}'
+if recon_run && [[ "$(reconcile_action blocked-oversized)" -eq 1 ]] \
+  && [[ "$(reconcile_action noop)" -eq 0 ]] \
+  && [[ "$(jq -r '.reconcile.oversized' "$STATE/status.json")" == "1" ]] \
+  && ! ghgrep 'pr edit' && ! ghgrep 'pr close'; then
+  ok "a merged PR over its max_files is recorded blocked-oversized, not noop"
+else
+  fail "a merged oversized PR was recorded as a no-op"
+  sed 's/^/      | /' "$CASE_DIR/out"; reconcile_jq -c '.' | sed 's/^/      r /'
+fi
+
 echo "── systemd installer (generalised unit loop) ──"
 
 # install.sh grew from one hardcoded pair to a table, and the script it validates
