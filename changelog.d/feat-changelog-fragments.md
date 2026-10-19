@@ -49,7 +49,6 @@
   commit to `main` cannot pass: `main` requires status checks on every commit,
   including from admins, and a `GITHUB_TOKEN` push never starts them. The
   self-test runs in CI through `doc-refs.test.sh`.
-- **Docs:** `.doc-contract` declares `changelog.d/*.md` as SOURCE, and
-  `check-doc-refs.sh` exempts fragments the same way it exempts
-  `CHANGELOG.md`. `CLAUDE-GUIDE.md`, `ROADMAP.md` and the scripts README
-  describe the new flow. Tests: `claude/scripts/tests/assemble-changelog.test.sh`.
+- **Docs:** `CLAUDE-GUIDE.md`, `ROADMAP.md` and the scripts README describe
+  the new flow. The doc-contract entry for `changelog.d/*.md` landed
+  separately, in #663. Tests: `claude/scripts/tests/assemble-changelog.test.sh`.
