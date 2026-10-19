@@ -3273,6 +3273,87 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             ok=False,
         )
 
+    # ─── #641: a foreign boundary's own config must not steer its listing ───
+
+    def foreign_boundary(self):
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+        boundary.mkdir(parents=True)
+        subprocess.check_output(["git", "init", "-q", str(boundary)], stderr=subprocess.PIPE)
+        (boundary / "index.js").write_text("library code\n")
+        return boundary
+
+    def test_boundary_core_worktree_cannot_list_another_directory(self):
+        """`core.worktree` in the boundary's config pointed `ls-files` at a decoy."""
+        boundary = self.foreign_boundary()
+        decoy = Path(self.tmp.name) / "decoy"
+        decoy.mkdir()
+        (decoy / "index.js").write_text("innocent\n")
+        subprocess.check_call(["git", "-C", str(boundary), "config", "core.worktree", str(decoy)])
+        # The redirect alone is benign: the boundary is still inspected and allowed.
+        self.run_helper(
+            "begin", "--repo", str(self.repo), "--base", "main",
+            "--scope", "committed", "--reviewer", "codex",
+        )
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("vendor/nested/CLAUDE.md", refused.stderr)
+
+    def test_boundary_ignorecase_cannot_mask_an_instruction_file(self):
+        """A tracked `claude.md` masked an untracked `CLAUDE.md` under ignoreCase."""
+        boundary = self.foreign_boundary()
+        (boundary / "claude.md").write_text("ordinary notes\n")
+        subprocess.check_call(["git", "-C", str(boundary), "add", "claude.md"])
+        subprocess.check_call(["git", "-C", str(boundary), "config", "core.ignoreCase", "true"])
+        self.run_helper(
+            "begin", "--repo", str(self.repo), "--base", "main",
+            "--scope", "committed", "--reviewer", "codex",
+        )
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        if sorted(os.listdir(boundary)) != [".git", "CLAUDE.md", "claude.md", "index.js"]:
+            self.skipTest("case-insensitive filesystem")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("vendor/nested/CLAUDE.md", refused.stderr)
+
+    def test_worktree_pointers_are_parsed_as_git_parses_them(self):
+        """Only Git's own delimiters are removed from worktree paths (#541's class)."""
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        directory = Path(self.tmp.name) / "pointer"
+        directory.mkdir()
+        store = Path(self.tmp.name) / "store"
+        for content, expected in (
+            # read_gitfile: exactly "gitdir: ", then trailing CR/LF only.
+            (b"gitdir: " + bytes(store) + b"/wt \n", str(store) + "/wt "),
+            (b"gitdir: " + bytes(store) + b"/wt\t\r\n", str(store) + "/wt\t"),
+            (b"gitdir: " + bytes(store) + b"/wt", str(store) + "/wt"),
+            (b"gitdir:" + bytes(store) + b"/wt\n", None),
+            (b"gitdir:  " + bytes(store) + b"/wt\n", " " + str(store) + "/wt"),
+            (b"junk\ngitdir: " + bytes(store) + b"/wt\n", None),
+        ):
+            with self.subTest(content=content):
+                (directory / ".git").write_bytes(content)
+                got = module.worktree_gitdir(directory)
+                want = None if expected is None else os.path.realpath(
+                    os.path.join(directory, expected)
+                )
+                self.assertEqual(got, want)
+        registration = Path(self.tmp.name) / "registration"
+        registration.mkdir()
+        for content, expected in (
+            (b"/repo/wt /.git\n", "/repo/wt /.git"),
+            (b" /repo/wt/.git\r\n", " /repo/wt/.git"),
+            (b"/repo/wt/.git", "/repo/wt/.git"),
+        ):
+            with self.subTest(registered=content):
+                (registration / "gitdir").write_bytes(content)
+                self.assertEqual(module.registered_worktree(registration), expected)
+        (registration / "gitdir").unlink()
+        self.assertIsNone(module.registered_worktree(registration))
+
     # ─── #514: vendored dependencies under skills/ and scripts/ ───
 
     def vendored_fixture(self, ignored=True, lockfiles=True):

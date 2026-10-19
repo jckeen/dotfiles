@@ -160,17 +160,34 @@ def worktree_gitdir(directory):
     stops at that directory all the same — so the caller checks the target against
     this repository's worktree store. None when the pointer is absent, unreadable
     or malformed, which the caller treats as a foreign boundary (#474).
+
+    Parsed as Git's read_gitfile does: the whole file must start with exactly
+    `gitdir: `, and only trailing CR/LF bytes are removed. Any other byte belongs
+    to the path, so stripping whitespace named a different gitdir (#641, the
+    class #541 fixed).
     """
     try:
         pointer = (directory / ".git").read_bytes()
     except OSError:
         return None
-    for line in pointer.splitlines():
-        if line.startswith(b"gitdir:"):
-            return os.path.realpath(
-                os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
-            )
-    return None
+    if not pointer.startswith(b"gitdir: "):
+        return None
+    target = pointer[len(b"gitdir: ") :].rstrip(b"\r\n")
+    if not target:
+        return None
+    return os.path.realpath(os.path.join(directory, os.fsdecode(target)))
+
+
+def registered_worktree(gitdir):
+    """The `.git` path a worktree store entry registers, or None if unreadable.
+
+    Git writes `<path>/.git` plus a newline; only trailing CR/LF bytes are its
+    delimiters, as in its own prune check (#641).
+    """
+    try:
+        return os.fsdecode((Path(gitdir) / "gitdir").read_bytes().rstrip(b"\r\n"))
+    except OSError:
+        return None
 
 
 def boundary_listing(directory):
@@ -196,11 +213,19 @@ def boundary_listing(directory):
     and with no exclude option git applies no patterns at all, so every untracked
     file is listed. Returns None when the directory is not a usable repository,
     which the caller treats as a refusal rather than as an empty listing.
+
+    For the same reason the boundary's own config must not decide WHERE or HOW
+    git looks (#641). `--work-tree` pins the listing to this directory: a
+    `core.worktree` in the boundary's config otherwise lists another directory,
+    and `-c core.worktree=` does not override it (checked on git 2.43).
+    `core.ignoreCase` is forced off so a tracked `claude.md` cannot mask an
+    untracked `CLAUDE.md` on a case-sensitive filesystem.
     """
     entries = []
+    pinned = ("--work-tree", str(directory), "-c", "core.ignoreCase=false")
     try:
-        staged = git(directory, "ls-files", "-z", "--cached", "--stage")
-        others = git(directory, "ls-files", "-z", "--others")
+        staged = git(directory, *pinned, "ls-files", "-z", "--cached", "--stage")
+        others = git(directory, *pinned, "ls-files", "-z", "--others")
     except (subprocess.SubprocessError, OSError):
         return None
     for record in staged.split(b"\0"):
@@ -796,13 +821,10 @@ def capture(repo, base, scope):
         gitdir = worktree_gitdir(directory)
         if gitdir is None or os.path.dirname(gitdir) != store:
             return False
-        try:
-            registered = (Path(gitdir) / "gitdir").read_bytes()
-        except OSError:
+        registered = registered_worktree(gitdir)
+        if registered is None:
             return False
-        return os.path.realpath(os.fsdecode(registered.strip())) == os.path.realpath(
-            directory / ".git"
-        )
+        return os.path.realpath(registered) == os.path.realpath(directory / ".git")
 
     untracked = {
         os.fsdecode(p)

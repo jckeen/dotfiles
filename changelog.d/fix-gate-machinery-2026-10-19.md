@@ -50,3 +50,18 @@
   invocations now pass `-c approval_policy="never"`. `review-multipart.py`
   refuses any native turn whose recorded `approval_policy` is not `never`,
   alongside the existing read-only sandbox check.
+
+## 2026-10-19 — fix(gates): a foreign boundary's own config cannot hide a CLAUDE.md (#641)
+
+- **`boundary_listing()` pins where and how git looks.** It ran `ls-files`
+  inside a foreign repository boundary under that boundary's own config, so a
+  `core.worktree` there listed a decoy directory, and `core.ignoreCase=true`
+  let a tracked `claude.md` mask an untracked `CLAUDE.md` on a case-sensitive
+  filesystem. Both passed the instruction-surface sweep. The listing now runs
+  with `--work-tree <boundary>` and `-c core.ignoreCase=false`. The suggested
+  `-c core.worktree=` does not override the repository's own setting on git
+  2.43, so `--work-tree` is used.
+- **Worktree pointers are parsed as git parses them.** `worktree_gitdir()`
+  requires the exact `gitdir: ` prefix and removes only trailing CR/LF, and
+  the registered-gitdir read does the same (`registered_worktree()`). Both
+  used to `.strip()` the path, the bug class #541 fixed.
