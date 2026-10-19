@@ -357,6 +357,10 @@ malformed "indented #" "must be" "## 2026-10-05 — feat: x" "- b" "   # Title"
 malformed "####" "must be" "## 2026-10-05 — feat: x" "- b" "#### deep"
 malformed "#word at line start" "must be" "## 2026-10-05 — feat: x" "- b" "  #626 continued"
 malformed "4-space bullet" "no bullet" "## 2026-10-05 — feat: x" "" "    - code, not a list item"
+# Gate repros: a commented-out newer heading was sorted into view (and the
+# closing --> moved above the <!--); an unclosed <!-- hid later entries.
+malformed "balanced HTML comment" "HTML comment" "## 2026-10-05 — feat: x" "- b" "<!--" "## 2026-10-20 — feat: hidden" "- c" "-->"
+malformed "unclosed HTML comment" "HTML comment" "## 2026-10-05 — feat: x" "- b" "<!-- open"
 new_repo
 w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine"
 run
@@ -380,6 +384,19 @@ w CHANGELOG.md "# Changelog" "" "$(printf '##\t2026-10-10 — fix: tabbed')" "- 
 run --check
 expect "changelog: a tab in a ## heading of CHANGELOG.md is refused" 1 "tab"
 rm -rf "$R"
+# Gate repro: loose headings render but are no insertion point, so an
+# October 5 fragment landed below October 1.
+for loose in " ## 2026-10-01 — fix: indented" "##  2026-10-01 — fix: two spaces"; do
+  new_repo
+  w CHANGELOG.md "# Changelog" "" "$loose" "- b"
+  w changelog.d/new.md "## 2026-10-05 — feat: newer" "- b"
+  run --check
+  expect "changelog: --check refuses loose heading '$loose'" 1 "strict form"
+  run
+  expect "changelog: assemble refuses loose heading '$loose'" 1 "strict form"
+  [ -e "$R/changelog.d/new.md" ] && ok "changelog: fragment kept for '$loose'" || bad "changelog: fragment kept for '$loose'"
+  rm -rf "$R"
+done
 
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo

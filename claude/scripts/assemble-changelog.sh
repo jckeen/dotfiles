@@ -21,7 +21,8 @@
 #     (`- ` or `* ` indented at most three spaces);
 #   - optional `### ` subsections at column 0; inline `code` is fine;
 #   - no other line whose first non-blank character is `#`, no code fences
-#     (``` or ~~~), no tab in a heading line, no CRLF.
+#     (``` or ~~~), no HTML comment markers (<!-- or -->), no tab in a
+#     heading line, no CRLF.
 #
 # Assembly is a manual step (release or handoff time), not a bot push to main:
 # main's required status checks refuse a commit that has not run them, and a
@@ -181,6 +182,8 @@ function close_entry() {
   if (entries > 0 && bullets == 0) printf "%d\tentry has no bullet (\"- ...\") under its heading\n", entry_line
 }
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
+# An HTML comment can hide or swallow an entry heading the sort then moves.
+/<!--|-->/ { printf "%d\tHTML comment marker (<!-- or -->); fragments hold no HTML comments\n", NR; next }
 /^ ? ? ?(```|~~~)/ { printf "%d\tcode fence; fragments hold no code blocks (inline `code` is fine)\n", NR; next }
 /^[ \t]*#/ {
   if ($0 ~ /\t/) { printf "%d\ttab in a heading line; use single spaces\n", NR; next }
@@ -240,13 +243,15 @@ if [ -L "$CHANGELOG" ]; then
   die "$CHANGELOG is a symlink; refusing to read or replace it"
 fi
 # CHANGELOG.md is refused, in --check and assembly alike, when it ends inside
-# an open fence (appended entries would render as code) or has a heading line
-# with a tab (`##<TAB>…` renders as a heading but is no insertion point).
+# an open fence (appended entries would render as code) or has an unfenced
+# heading line not in the strict form: column 0, `#`s, one space, no tab.
+# `##<TAB>…`, ` ## …` and `##  …` all render as headings but are no insertion
+# point for the date merge, which matches only the strict form.
 if [ -e "$CHANGELOG" ]; then
   scan="$(awk "$fence_awk"'
     fence_step($0) { next }
     infence { next }
-    /^ ? ? ?#+[ \t]/ && /\t/ { printf "E\t%d\n", NR; next }
+    /^ ? ? ?#+[ \t]/ && (/\t/ || !/^#+ [^ ]/) { printf "E\t%d\n", NR; next }
     /^## / { print "H\t" $0 }
     END { if (infence) print "F\t" NR }' "$CHANGELOG")" \
     || die "$CHANGELOG could not be read"
@@ -255,7 +260,7 @@ if [ -e "$CHANGELOG" ]; then
     case "$kind" in
       H) existing="$existing$rest
 " ;;
-      E) err "$CHANGELOG:$rest — tab in a heading line; use single spaces" ;;
+      E) err "$CHANGELOG:$rest — heading not in strict form (column 0, one space after the #s, no tab); fix it" ;;
       F) err "$CHANGELOG — ends inside an open code fence (opened before line $rest); close it" ;;
     esac
   done <<<"$scan"
