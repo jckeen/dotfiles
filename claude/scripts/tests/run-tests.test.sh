@@ -466,6 +466,32 @@ want "an unresolvable base falls back to every suite" 0 \
   'cannot resolve' 'PASS[[:space:]]+alpha' 'PASS[[:space:]]+gamma'
 rm -rf "$R"
 
+# Changelog fragments are test-free: a branch's own fragment must not widen
+# --changed to every suite, and must not hide a real change beside it. Other
+# Markdown stays unmappable (it widens).
+new_repo
+suite alpha 0
+suite gamma 0
+subject claude/scripts/alpha.sh
+commit_all
+mkdir -p "$R/changelog.d"
+printf '## fragment\n' > "$R/changelog.d/fix-x.md"
+run --changed --base main
+want "a fragment-only change runs no suite" 0 'only changelog fragments changed'
+want_absent "a fragment-only change does not widen" 'PASS|running every suite'
+run --list --changed --base main
+want_absent "--list on a fragment-only change lists nothing" '^(alpha|gamma)$'
+echo '# touched' >> "$R/claude/scripts/alpha.sh"
+run --changed --base main
+want "a fragment plus a script runs that script's suite" 0 'PASS[[:space:]]+alpha'
+want_absent "a fragment plus a script does not widen" 'gamma|running every suite'
+git -C "$R" checkout -q -- claude/scripts/alpha.sh
+printf '# notes\n' > "$R/NOTES.md"
+run --changed --base main
+want "other Markdown still widens to every suite" 0 \
+  "cannot attribute 'NOTES.md'" 'PASS[[:space:]]+gamma'
+rm -rf "$R"
+
 # ── Optional dependency ───────────────────────────────────────────────
 # The *.property.test.py suites import Hypothesis unconditionally and exit with
 # an install command rather than skipping. A fresh clone has no Hypothesis, and

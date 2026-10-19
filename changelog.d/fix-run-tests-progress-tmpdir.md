@@ -26,5 +26,9 @@
   creates (#368), can no longer be discovered from a fixture. An empty
   `/tmp/.git` never confused `git` itself; it tripped `worktree-lifecycle`'s
   own ancestor walk, and #623 already moved those fixtures to a clean root.
+- **`--changed` treats changelog fragments as test-free**: a changed
+  `changelog.d/*.md` selects no suite and no longer widens the run to every
+  suite, and a diff of only fragments runs none. No other Markdown is exempt.
 - `run-tests.test.sh` gains cases for the progress order, the heartbeat, the
-  interval validation, and the ceiling.
+  interval validation, the ceiling, and fragment-only and fragment-plus-script
+  diffs.

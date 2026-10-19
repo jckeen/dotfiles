@@ -290,12 +290,18 @@ elif [ "$CHANGED" -eq 1 ]; then
   else
     build_scan_files
     fallback=""
+    mapped_paths=0
     # EVERY changed path must reach at least one suite on its own. Checking only
     # that the combined selection is non-empty would let one mappable path speak
     # for an unmapped sibling: a change to alpha.sh plus a config nothing tests
     # would have run alpha alone.
     while IFS= read -r path; do
       [ -n "$path" ] || continue
+      # Changelog fragments are dated prose no suite reads; without this every
+      # branch carrying its fragment widened to a full run (~8 extra minutes).
+      # Deliberately this directory only: other Markdown can be test input.
+      case "$path" in changelog.d/*.md) continue ;; esac
+      mapped_paths=$((mapped_paths + 1))
       SEED_HIT=""
       WALK_HIT=""
       if seed_for_path "$path"; then
@@ -307,6 +313,13 @@ elif [ "$CHANGED" -eq 1 ]; then
         break
       fi
     done <<< "$paths"
+    if [ -z "$fallback" ] && [ "$mapped_paths" -eq 0 ]; then
+      # Every changed path is a changelog fragment: nothing to test, which is
+      # an explicit, named outcome rather than an empty selection.
+      [ "$LIST_ONLY" -eq 1 ] && exit 0
+      echo "--changed: only changelog fragments changed against $BASE_REF — no suite to run."
+      exit 0
+    fi
     if [ -n "$fallback" ] || [ "${#SELECTED[@]}" -eq 0 ]; then
       [ -n "$fallback" ] ||
         yellow "--changed: the changed paths map to no suite — running every suite."
