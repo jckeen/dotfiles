@@ -314,6 +314,76 @@ check "foreign dir: --heal exits 1 with NOT LINKED" \
 check "foreign dir: not held for the full wait" "$([ $((SECONDS - t0)) -lt 3 ] && echo 1 || echo 0)"
 check "foreign dir: content untouched" "$([ -f "$DST/notes.md" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
 
+# A rival that finishes WHILE this run drains the legacy dir must not make an
+# rm resolve through the new directory link into the bundle (issue #638). A
+# fake rm on PATH makes the window deterministic: on its first call it plays
+# the rival (drain $DST if it is still a real dir, then link it to $SRC) and
+# only then runs the real rm on the path it was given. The old in-place loop
+# had already passed `[ -L "$DST/f1" ]`, so its rm "$DST/f1" deleted $SRC/f1.
+new_fixture rmrace
+mkdir -p "$DST"
+for i in 1 2 3; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
+ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
+M="$FIX/rmrace/marks"
+RBIN="$FIX/rmrace/bin"
+mkdir -p "$M" "$RBIN"
+REAL_RM="$(command -v rm)"
+cat > "$RBIN/rm" <<FAKE
+#!/bin/bash
+if [ ! -e "$M/raced" ]; then
+  : > "$M/raced"
+  if [ -d "$DST" ] && [ ! -L "$DST" ]; then
+    "$REAL_RM" -f "$DST"/* && rmdir "$DST"
+  fi
+  [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$SRC" "$DST"
+fi
+exec "$REAL_RM" "\$@"
+FAKE
+chmod +x "$RBIN/rm"
+(
+  PATH="$RBIN:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >/dev/null 2>&1
+check "rm race: the rival fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "rm race: every source file survives" \
+  "$([ -f "$SRC/f1" ] && [ -f "$SRC/f2" ] && [ -f "$SRC/f3" ] && [ -f "$SRC/SKILL.md" ] && echo 1 || echo 0)"
+check "rm race: directory link in place" "$([ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
+leftover=0
+for e in "$H/.claude/skills"/.demo.migrating.*; do [ -e "$e" ] && leftover=1; done
+check "rm race: no private migration dir left behind" "$([ "$leftover" -eq 0 ] && echo 1 || echo 0)"
+
+# A migrator that died mid-drain leaves its private dir behind. The next
+# migration reaps it when it holds only our own links, and never deletes one
+# that holds anything else, or one whose owner is still alive.
+new_fixture stale
+dead_pid() { sh -c 'exit 0' & local p=$!; wait "$p"; echo "$p"; }
+PARENT="$H/.claude/skills"
+STALE_OK="$PARENT/.demo.migrating.$(dead_pid)"
+mkdir -p "$DST" "$STALE_OK" "$PARENT/.demo.migrating.$$"
+ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
+ln -s "$SRC/gone.md" "$STALE_OK/gone.md"
+STALE_REAL="$PARENT/.demo.migrating.$(dead_pid)"
+mkdir -p "$STALE_REAL"
+ln -s "$SRC/SKILL.md" "$STALE_REAL/SKILL.md"
+printf 'mine\n' > "$STALE_REAL/notes.md"
+LIVE="$PARENT/.demo.migrating.$$"
+ln -s "$SRC/SKILL.md" "$LIVE/SKILL.md"
+(
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >/dev/null 2>&1
+rc=$?
+check "stale migration dir: migration still succeeds" "$([ "$rc" -eq 0 ] && [ ! -e "$DST" ] && echo 1 || echo 0)"
+check "stale migration dir: links-only leftover reaped" \
+  "$([ ! -e "$STALE_OK" ] && [ ! -L "$STALE_OK" ] && echo 1 || echo 0)"
+check "stale migration dir: leftover with real content kept" \
+  "$([ -f "$STALE_REAL/notes.md" ] && [ -L "$STALE_REAL/SKILL.md" ] && echo 1 || echo 0)"
+check "stale migration dir: a live owner's dir is not touched" "$([ -L "$LIVE/SKILL.md" ] && echo 1 || echo 0)"
+check "stale migration dir: source intact" "$([ -f "$SRC/SKILL.md" ] && echo 1 || echo 0)"
+
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools
 out="$(run_check --heal)"; rc=$?

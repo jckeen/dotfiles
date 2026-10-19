@@ -23,12 +23,13 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmdirSync,
   symlinkSync,
   unlinkSync,
 } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const HOME = homedir();
@@ -135,16 +136,43 @@ function linkDir(
 // per-file links. Remove it only when every entry is a link to exactly
 // <src>/<same name> (live or dangling) — the same test as lib-symlinks.sh's
 // symlink_is_legacy_skill_dir. Returns false, touching nothing, otherwise.
-function migrateLegacySkillDir(src: string, dst: string): boolean {
-  const entries = readdirSync(dst);
-  for (const name of entries) {
-    const p = join(dst, name);
+function isLegacySkillDir(src: string, dir: string): boolean {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
     if (!lstatSync(p).isSymbolicLink()) return false;
     if (readlinkSync(p) !== join(src, name)) return false;
   }
+  return true;
+}
+
+// Unlinking in place races a concurrent check-claude.sh --heal (issue #638):
+// once it swaps dst for the directory link, unlink(dst/x) resolves through it
+// and deletes the real src/x. So rename dst to a private dot-sibling first and
+// drain only that path. It is the same .<name>.migrating.<pid> name that
+// lib-symlinks.sh uses, so its reaper also recovers a leftover from a hook
+// that died mid-drain.
+function migrateLegacySkillDir(src: string, dst: string): boolean {
+  if (!isLegacySkillDir(src, dst)) return false;
+  const priv = join(dirname(dst), `.${basename(dst)}.migrating.${process.pid}`);
+  if (existsSync(priv)) {
+    actions.push({ kind: 'skipped', rel: dst, reason: `${priv} already exists` });
+    return false;
+  }
   try {
-    for (const name of entries) unlinkSync(join(dst, name));
-    rmdirSync(dst);
+    renameSync(dst, priv);
+  } catch (e) {
+    actions.push({ kind: 'skipped', rel: dst, reason: `legacy skill dir busy (concurrent migration?): ${e}` });
+    return false;
+  }
+  try {
+    // A rival linked dst between the check and the rename, or content
+    // appeared: put it back untouched.
+    if (lstatSync(priv).isSymbolicLink() || !isLegacySkillDir(src, priv)) {
+      renameSync(priv, dst);
+      return false;
+    }
+    for (const name of readdirSync(priv)) unlinkSync(join(priv, name));
+    rmdirSync(priv);
   } catch (e) {
     actions.push({ kind: 'skipped', rel: dst, reason: `legacy skill dir migration failed: ${e}` });
     return false;
