@@ -1,7 +1,7 @@
 # Changelog
 
-Entries not yet assembled live one per PR in `changelog.d/`, and
-the script `claude/scripts/assemble-changelog.sh` inserts them here in assembly order.
+Entries not yet folded in live one per PR in `changelog.d/`; they are
+copied here by hand at release time (see `claude/scripts/README.md`).
 
 ## 2026-10-17 — feat: operator-action queue can come from GitHub issues
 

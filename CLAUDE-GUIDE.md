@@ -75,7 +75,8 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 > **Changelog in this repo:** a PR adds its entry as one fragment under
 > `changelog.d/` (named after the branch by convention) instead of editing
-> `CHANGELOG.md` — see `assemble-changelog.sh` in
+> `CHANGELOG.md`. `assemble-changelog.sh --check` validates it before push,
+> and fragments are folded into `CHANGELOG.md` by hand at release time — see
 > [`claude/scripts/README.md`](claude/scripts/README.md).
 
 > **Push-time Codex gate:** `commit-push-pr` runs a local Codex review
