@@ -777,14 +777,25 @@ def delete_released_branch(repo, branch, verified_head):
     if holders:
         git(repo, "update-ref", "--no-deref", branch, verified_head, "0" * len(verified_head))
         return False, f"{branch} was attached by the worktree at {holders[0]}; restored the ref"
+
     # `update-ref -d` leaves branch.<name>.* behind, and a later branch of the
     # same name would inherit its upstream and rebase settings. Match the whole
     # subsection, so branch `a` never claims the section of branch `a.b`.
-    section = b"branch." + branch.removeprefix("refs/heads/").encode()
-    try:
+    # Section names are case-insensitive: `[Branch "x"]` lists as branch.x.*
+    # but `--remove-section branch.x` refuses it, so unset each listed key
+    # (in every casing Git stored) and verify none remain. The name may not be
+    # UTF-8, so encode it the way Git and the subprocess layer do, and inside
+    # the try: the ref is already gone.
+    def section_keys():
         keys = git(repo, "config", "--local", "--null", "--name-only", "--list").split(b"\0")
-        if any(key.rpartition(b".")[0] == section for key in keys):
-            git(repo, "config", "--local", "--remove-section", section.decode())
+        return sorted({key for key in keys if key.rpartition(b".")[0] == section})
+
+    try:
+        section = b"branch." + os.fsencode(branch.removeprefix("refs/heads/"))
+        for key in section_keys():
+            git(repo, "config", "--local", "--unset-all", os.fsdecode(key))
+        if section_keys():
+            raise ValueError(f"{os.fsdecode(section)} keys remain after removal")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         return True, f"deleted, but its branch configuration was not removed: {error}"
     return True, None
@@ -873,19 +884,19 @@ def retire(repo, path, apply, archive_dir, trust_process_manager=False, delete_b
     # exemption any retirement scan observed, so that key never compares.
     volatile = ("files", "retirement_exempt_processes")
     again, _, current = assess(repo, path, trust_process_manager)
-    if {k: v for k, v in current.items() if k not in volatile} != {
-        k: v for k, v in record.items() if k not in volatile
-    } or again != item:
-        raise ValueError(f"worktree changed during archival; retained; archive: {archive}")
     observed = {
         process["pid"]: process
         for process in record["retirement_exempt_processes"]
         + current["retirement_exempt_processes"]
     }
     record["retirement_exempt_processes"] = [observed[pid] for pid in sorted(observed)]
-    # Persist the merged exemptions now: a later check may retain the worktree,
-    # and the retained archive must still name every identity a scan skipped.
+    # Persist the merged exemptions before any check that can retain the
+    # worktree, so the retained archive names every identity a scan skipped.
     (archive / "recovery.json").write_text(json.dumps(record, indent=2) + "\n")
+    if {k: v for k, v in current.items() if k not in volatile} != {
+        k: v for k, v in record.items() if k not in volatile
+    } or again != item:
+        raise ValueError(f"worktree changed during archival; retained; archive: {archive}")
     # A completed writer no longer appears in process evidence. Bind the
     # final source state to the actual saved bytes, including archive hardlinks;
     # ignore access/modify timestamps that do not change recoverable content.
