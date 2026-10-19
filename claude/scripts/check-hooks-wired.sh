@@ -43,7 +43,7 @@ SETTINGS="$HOME/.claude/settings.json"
 
 [ -d "$HOOKS_DIR" ] || { green "no hooks dir — nothing to check"; exit 0; }
 if [ ! -f "$SETTINGS" ]; then
-  yellow "settings.json not found at $SETTINGS — cannot verify hook wiring."
+  yellow "settings.json not found at $SETTINGS — no hook will run. Without claude-memory, copy $REPO_ROOT/claude/settings.example.json there."
   [ "$STRICT" -eq 1 ] && exit 1 || exit 0
 fi
 command -v jq >/dev/null 2>&1 || { yellow "jq not found — skipping hook-wiring check"; exit 0; }
@@ -70,8 +70,9 @@ for f in "$HOOKS_DIR"/*.sh "$HOOKS_DIR"/*.ts; do
 done
 
 if [ "$drift" -ne 0 ]; then
-  echo "  Fix: add them to the .hooks block of $SETTINGS (this lives in the"
-  echo "  private claude-memory repo), or add to OPT_OUT in check-hooks-wired.sh"
+  echo "  Fix: add them to the .hooks block of $SETTINGS (from the private"
+  echo "  claude-memory repo when you have one; claude/settings.example.json"
+  echo "  shows each registration), or add to OPT_OUT in check-hooks-wired.sh"
   echo "  if intentionally disabled."
   [ "$STRICT" -eq 1 ] && exit 1
   exit 0

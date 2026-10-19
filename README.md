@@ -209,7 +209,7 @@ a repair flag is read-only.
 
 > **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions or memories, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI runs secret and personal-data checks on every PR; the canonical required-check policy lives in [docs/BRANCH_PROTECTION.md](docs/BRANCH_PROTECTION.md).
 
-> **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Without it you still get hooks, skills, agents, status line, and dotfiles — the global `claude/CLAUDE.md` is symlinked either way.
+> **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Claude Code only runs hooks and the status line that `settings.json` registers, so without the repo `setup.sh` copies [`claude/settings.example.json`](claude/settings.example.json) (every hook plus the status line, nothing private) to `~/.claude/settings.json`. It never overwrites an existing file. Skills, agents, and the global `claude/CLAUDE.md` are symlinked either way.
 
 > **WSL filesystem rule:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
 
@@ -285,6 +285,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 |------|-------|----------|
 | **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`; generated from `agents/canon/` per ADR-0007 — edit the sources, not the file) |
 | **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
+| **Settings template** | `claude/settings.example.json` | Public `hooks` + `statusLine` registrations; `setup.sh` copies it to `~/.claude/settings.json` when neither that file nor `claude-memory` exists (never symlinked, never overwrites) |
 | **Agent Pack** | `claude/AgentPack.md` | 24-agent pack: review orchestra plus subject-matter experts (loaded on-demand, not symlinked) |
 | **Status line** | `claude/statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `claude/hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
@@ -384,7 +385,7 @@ push-time Codex review gate that blocks on critical findings.
 
 ## The private memory repos
 
-This public dotfiles repo pairs with up to three **separate private repos** — `claude-memory`, plus optional `codex-memory` and `agy-memory` — that hold things that don't belong in public: Claude Code settings, auto-memory, archived personal context, and Codex/Antigravity preferences. All are optional; without them you still get hooks, skills, agents, status line, git config, and `cc`/`cx` scaffolding.
+This public dotfiles repo pairs with up to three **separate private repos** — `claude-memory`, plus optional `codex-memory` and `agy-memory` — that hold things that don't belong in public: Claude Code settings, auto-memory, archived personal context, and Codex/Antigravity preferences. All are optional; without them you still get skills, agents, git config, and `cc`/`cx` scaffolding. The hooks and status line come with a `settings.json` that registers them: without `claude-memory`, `setup.sh` copies the public [`claude/settings.example.json`](claude/settings.example.json) into `~/.claude/settings.json` when no file is there yet.
 
 <details>
 <summary><strong>📁 The <code>claude-memory</code> private repo</strong> — structure, contract, how to create your own</summary>
@@ -423,11 +424,27 @@ This public dotfiles repo pairs with up to three **separate private repos** — 
 mkdir -p ~/dev/claude-memory/dev/memory
 cd ~/dev/claude-memory
 
-# Your Claude Code settings (permissions, MCP servers, plugins)
-touch settings.json
+# Your Claude Code settings: start from the public template, which
+# registers every hook and the status line, then add your own
+# permissions, MCP servers and plugins.
+cp ~/dev/dotfiles/claude/settings.example.json settings.json
 
 # A minimal bootstrap.sh that symlinks settings.json into ~/.claude/
-# (idempotent; re-run safe)
+# (idempotent; re-run safe). It backs up a real file that is already there,
+# such as the copy setup.sh made before this repo existed.
+cat > bootstrap.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+src="$(cd "$(dirname "$0")" && pwd)/settings.json"
+dst="$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude"
+if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+  mv "$dst" "$dst.backup.$(date +%s)"
+fi
+ln -sfn "$src" "$dst"
+echo "linked $dst -> $src"
+EOF
+chmod +x bootstrap.sh
 
 # Publish it private
 git init && git add -A && git commit -m "init: claude memory"

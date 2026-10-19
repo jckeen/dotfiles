@@ -594,6 +594,14 @@ else
   fail "setup-services suite failed (output above)"
 fi
 
+# The public settings template and setup.sh's seed of it (issue #588) run
+# from here too, so the existing CI step covers them.
+if "$REPO_ROOT/claude/scripts/tests/settings-example.test.sh"; then
+  ok "settings-example suite passed"
+else
+  fail "settings-example suite failed (output above)"
+fi
+
 echo ""
 echo "setup-dry-run: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

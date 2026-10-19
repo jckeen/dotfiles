@@ -2500,6 +2500,37 @@ if service_selected claude && [ -f "$BOOTSTRAP_SCRIPT" ]; then
   fi
 fi
 
+# ─── 8b. Public settings.json for a clone without claude-memory (#588) ──
+# Claude Code runs only the hooks registered in ~/.claude/settings.json and
+# shows a status line only when its statusLine key names one, so the linked
+# hooks are inert without that file. Without the private bootstrap nothing
+# else writes it: seed a real file (a copy, not a link, so local edits never
+# land in the repo) from the public example. An existing settings.json —
+# including a dangling symlink — is never touched; the noclobber write
+# refuses one that appears between the check and the copy.
+CLAUDE_SETTINGS="$HOME_DIR/.claude/settings.json"
+SETTINGS_EXAMPLE="$DOTFILES_DIR/claude/settings.example.json"
+SETTINGS_SEEDED=""
+seed_claude_settings() {
+  [ -f "$BOOTSTRAP_SCRIPT" ] && return 0
+  [ -e "$CLAUDE_SETTINGS" ] || [ -L "$CLAUDE_SETTINGS" ] && return 0
+  echo ""
+  echo "--- Claude Code settings.json (no claude-memory bootstrap found) ---"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would create $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
+    SETTINGS_SEEDED="would"
+  elif mkdir -p "$HOME_DIR/.claude" \
+    && (set -C; cat "$SETTINGS_EXAMPLE" > "$CLAUDE_SETTINGS"); then
+    echo "  -> created $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
+    SETTINGS_SEEDED="yes"
+  else
+    echo "  !! WARNING: could not create $CLAUDE_SETTINGS; copy claude/settings.example.json there by hand."
+  fi
+}
+if service_selected claude; then
+  seed_claude_settings
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "=== Setup complete ($PLATFORM) ==="
@@ -2574,6 +2605,18 @@ echo "  Completed in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
 echo "  Symlinks: created=${LINKS_CREATED:-0}  verified=${LINKS_VERIFIED:-0}  broken=${LINKS_BROKEN:-0}"
 if [ "${BOOTSTRAP_RC:-0}" -ne 0 ]; then
   echo "  claude-memory bootstrap: FAILED — re-run manually: $BOOTSTRAP_SCRIPT"
+fi
+case "$SETTINGS_SEEDED" in
+  yes)   echo "  settings.json: created ~/.claude/settings.json from claude/settings.example.json (hooks + status line)" ;;
+  would) echo "  settings.json: would create ~/.claude/settings.json from claude/settings.example.json" ;;
+esac
+# Hooks linked but nothing registering them: say so loudly, since every
+# safety hook is silently off otherwise (#588). A dry-run links nothing, so
+# it only previews the seed above.
+if service_selected claude && [ "${DRY_RUN:-0}" != "1" ] \
+  && [ -e "$HOME_DIR/.claude/hooks" ] && [ ! -e "$CLAUDE_SETTINGS" ]; then
+  echo "  !! WARNING: ~/.claude/settings.json is missing — the linked hooks and status line will NOT run."
+  echo "     Fix: cp $SETTINGS_EXAMPLE ~/.claude/settings.json"
 fi
 if [ "${JULES_INSTALLED:-0}" -eq 1 ]; then
   echo "  jules_installed=1  (routine lane: 'jules login' for the CLI, ~/.config/jules/api-key for dispatch)"

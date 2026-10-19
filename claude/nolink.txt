@@ -4,6 +4,7 @@
 # if this file is missing, setup.sh/check-claude.sh hard-fail and the hook skips
 # top-level linking. One filename per line; # comments and blanks ignored.
 AgentPack.md      # loaded on-demand by CLAUDE.md references
-settings.json     # private — linked from claude-memory by its bootstrap.sh
+settings.json     # private — provided by claude-memory's bootstrap.sh
+settings.example.json  # public template — setup.sh COPIES it to ~/.claude/settings.json only when neither that file nor claude-memory exists
 plugins.txt       # consumed from the repo by setup.sh / sync-plugins.sh
 nolink.txt        # this manifest itself — consumed from the repo
