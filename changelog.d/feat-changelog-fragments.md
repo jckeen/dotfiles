@@ -7,29 +7,38 @@
   PRs no longer touch the same lines. A merge to `main` therefore stops
   forcing a conflict and a full re-gate (about 17 minutes of tests plus a
   Codex review) on every other open PR.
-- **`claude/scripts/assemble-changelog.sh`** merges the fragments into
-  `CHANGELOG.md` by date. Each entry goes above the first existing entry dated
-  on or before it, so newest-first order holds. Entries that share a date are
-  ordered by filename, then by position in the file. The script then deletes
-  the fragments. With no fragments it does nothing, so a second run changes
-  nothing.
-- **Fragments use a strict, line-oriented format**, smaller than Markdown, so
-  what the validator accepts is exactly what assembly splits. A fragment holds
-  `## ` entry headings, optional `### ` subsections and bullets. Inline code
-  is allowed, code fences and HTML comments are not, and no other line may start with `#`.
-- **A malformed fragment is refused and nothing is written.** That covers:
+- **`claude/scripts/assemble-changelog.sh`** inserts every pending entry
+  immediately above the first line in `CHANGELOG.md` that starts with `## `.
+  It then deletes the fragments. Entries appear in assembly order. Within one
+  assembly they run newest date first; entries that share a date are ordered
+  by filename, then by position in the file. Existing history is never parsed
+  or reordered. With no fragments the script does nothing, so a second run
+  changes nothing.
+- **Every fragment line must match an allowed shape**, so the parsed surface
+  is finite. A line must be one of:
+  - blank;
+  - an entry heading;
+  - a `### ` subsection;
+  - a bullet, indented 0–3 spaces;
+  - a continuation line, indented 2+ spaces.
+
+  Bullet and continuation text may not start with `<`, `>`, `|`, `#`, `=` or
+  a fence. It also may not consist only of rule characters (`-`, `*`, `_`,
+  `=`). Code fences, HTML blocks, comments, blockquotes, tables and setext
+  underlines therefore have no line shape that passes. Inline code is fine.
+- **A malformed fragment is refused and nothing is written.** Besides a line
+  of the wrong shape, that covers:
   - a bad heading or calendar date;
-  - an entry with no list item (one indented at most three spaces);
-  - a stray `#` line, or a tab in a heading line;
-  - a code fence, or an HTML comment open or close marker;
+  - an entry with no bullet;
+  - a tab in a heading line;
   - the same heading repeated among pending fragments;
   - CRLF line endings;
   - an unreadable or symlinked input;
-  - an entry that is already in `CHANGELOG.md`.
-- **`CHANGELOG.md` is refused too**, in `--check` and in assembly, when it ends
-  inside an open code fence or has a heading line that is not in the strict
-  form (column 0, one space after the `#`s, no tab). It is the only
-  file read with fence awareness, and only to find insertion points.
+  - an entry whose heading is already a line in `CHANGELOG.md`.
+- **`CHANGELOG.md` is checked only above its first `## ` line.** That region
+  may hold only `# ` titles, blank lines and plain text. A line there that
+  starts with `<`, `>`, `|`, a backtick, `~` or `#` is refused, in `--check`
+  and in assembly.
 - **Flags:** `--check` validates without writing. `--base REF` also holds a PR
   to one fragment file. The filename is never derived from the branch, because
   two branches can share a slug.

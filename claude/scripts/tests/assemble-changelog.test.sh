@@ -187,10 +187,10 @@ malformed "Feb 30" "invalid date" "## 2026-02-30 — feat: x" "- b"
 malformed "Feb 29 off leap year" "invalid date" "## 2026-02-29 — feat: x" "- b"
 malformed "Apr 31" "invalid date" "## 2026-04-31 — feat: x" "- b"
 malformed "no bullet" "no bullet" "## 2026-10-05 — feat: x" "" "prose only"
-malformed "text before heading" "content before the first ## heading" "intro" "## 2026-10-05 — feat: x" "- b"
-malformed "H1 inside" "must be" "## 2026-10-05 — feat: x" "- b" "# Changelog"
+malformed "text before heading" "content before the first ## heading" "- intro" "## 2026-10-05 — feat: x" "- b"
+malformed "H1 inside" "a line must be" "## 2026-10-05 — feat: x" "- b" "# Changelog"
 malformed "empty" "no \"## YYYY-MM-DD" ""
-malformed "unclosed fence" "code fence" "## 2026-10-05 — feat: x" "- b" '```'
+malformed "unclosed fence" "a line must be" "## 2026-10-05 — feat: x" "- b" '```'
 malformed "CRLF" "CRLF" "$(printf '## 2026-10-05 — feat: x\r')" "- b"
 
 # Non-fragment files in changelog.d/ are refused too.
@@ -261,12 +261,13 @@ if [ "$(id -u)" -ne 0 ]; then
   rm -rf "$R"
 fi
 
-# A heading quoted inside a fenced example in CHANGELOG.md is not a folded entry.
+# The duplicate check is an exact match against ANY line of CHANGELOG.md, even
+# one quoted in a fenced example: a false match only refuses, which is safe.
 new_repo
-w CHANGELOG.md "# Changelog" "" "## 2026-10-01 — docs: example" "- e.g.:" '  ```' "## 2026-10-05 — feat: x" '  ```'
+w CHANGELOG.md "# Changelog" "" "## 2026-10-01 — docs: example" "- e.g.:" "" '```' "## 2026-10-05 — feat: x" '```'
 w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
 run --check
-expect "duplicate: a fenced heading in CHANGELOG.md does not count" 0 "1 fragment(s)"
+expect "duplicate: a heading quoted anywhere in CHANGELOG.md refuses" 1 "already in CHANGELOG.md"
 rm -rf "$R"
 
 # A fragment whose entry is already in CHANGELOG.md was folded once already.
@@ -306,25 +307,45 @@ run --check --base no-such-ref
 expect "scope: an unresolvable base fails closed" 1 "is not a commit here"
 rm -rf "$R"
 
-# ── Date order holds across existing sections ─────────────────────────
-# Each entry goes above the first existing entry dated on or before it, so a
-# fragment older than the current head lands in date order, not on top.
+# ── Top insertion: entries appear in assembly order ───────────────────
+# All pending entries go immediately above CHANGELOG.md's first `## ` line,
+# newest date first within this assembly; existing history is never reordered
+# or parsed, so an entry older than the current head still lands on top.
 new_repo
 w CHANGELOG.md "# Changelog" "" "## 2026-10-18 — fix: newest existing" "- n" "" "## 2026-10-01 — fix: oldest existing" "- o"
 w changelog.d/top.md "## 2026-10-20 — feat: newer than all" "- t"
 w changelog.d/mid.md "## 2026-10-05 — feat: between" "- m"
-w changelog.d/same.md "## 2026-10-18 — feat: same day as head" "- s"
 w changelog.d/old.md "## 2026-09-01 — feat: older than all" "- a"
 run
-expect "order: assemble succeeds" 0 "folded 4 entries"
-expect_file "order: every entry lands in date order" CHANGELOG.md \
+expect "order: assemble succeeds" 0 "folded 3 entries"
+expect_file "order: all pending entries on top, newest first; history untouched" CHANGELOG.md \
   "# Changelog" "" \
   "## 2026-10-20 — feat: newer than all" "- t" "" \
-  "## 2026-10-18 — feat: same day as head" "- s" "" \
-  "## 2026-10-18 — fix: newest existing" "- n" "" \
   "## 2026-10-05 — feat: between" "- m" "" \
-  "## 2026-10-01 — fix: oldest existing" "- o" "" \
-  "## 2026-09-01 — feat: older than all" "- a"
+  "## 2026-09-01 — feat: older than all" "- a" "" \
+  "## 2026-10-18 — fix: newest existing" "- n" "" \
+  "## 2026-10-01 — fix: oldest existing" "- o"
+rm -rf "$R"
+
+# Below the first `## ` line nothing is parsed: an HTML comment or fence in
+# old history cannot absorb the inserted entries, which sit above it.
+new_repo
+w CHANGELOG.md "# Changelog" "" "## 2026-10-01 — fix: a" "- a" "<!--" "## 2026-09-01 — fix: commented" "-->" '```'
+w changelog.d/new.md "## 2026-10-05 — feat: new" "- n"
+run
+expect_file "order: markup in history is left alone, entries go above it" CHANGELOG.md \
+  "# Changelog" "" \
+  "## 2026-10-05 — feat: new" "- n" "" \
+  "## 2026-10-01 — fix: a" "- a" "<!--" "## 2026-09-01 — fix: commented" "-->" '```'
+rm -rf "$R"
+
+# No `## ` line at all: the entries are appended after the preamble.
+new_repo
+w CHANGELOG.md "# Changelog" "" "Nothing yet."
+w changelog.d/first.md "## 2026-10-05 — feat: first" "- f"
+run
+expect_file "order: a changelog with no entries gets them appended" CHANGELOG.md \
+  "# Changelog" "" "Nothing yet." "" "## 2026-10-05 — feat: first" "- f"
 rm -rf "$R"
 
 # ── Duplicate headings among pending fragments ─────────────────────────
@@ -340,63 +361,69 @@ run --check
 expect "duplicate: the same heading twice in one fragment is refused" 1 "repeated"
 rm -rf "$R"
 
-# ── Strict line grammar: no fences; every # line is an entry or ### ────
-# Fragments are a line-oriented format, not CommonMark: no code fences at all,
-# and any line starting (after any indentation) with # must be exactly a valid
-# `## ` entry heading or a `### ` subsection, both at column 0, with no tabs.
-malformed "fence \`\`\`" "code fence" "## 2026-10-05 — feat: x" "- b" '```' "## not a heading" '```'
-malformed "fence ~~~" "code fence" "## 2026-10-05 — feat: x" "- b" '~~~'
-malformed "indented fence" "code fence" "## 2026-10-05 — feat: x" "- b" '   ````'
-malformed "tab after ## (gate repro)" "tab" "## 2026-10-05 — feat: x" "- b" "$(printf '##\t2026-10-19 — docs: later')" "- c"
-malformed "tab after #" "tab" "## 2026-10-05 — feat: x" "- b" "$(printf '#\tTitle')"
+# ── Allowlisted line shapes; every old repro stays refused ────────────
+# Each fragment line must be blank, an entry heading, a `### ` subsection, a
+# bullet (indented 0-3), or a continuation (2+ spaces); bullet and
+# continuation text may not open a block construct or be a rule.
+L="a line must be"
+malformed "fence \`\`\`" "$L" "## 2026-10-05 — feat: x" "- b" '```' "## not a heading" '```'
+malformed "fence ~~~" "$L" "## 2026-10-05 — feat: x" "- b" '~~~'
+malformed "indented fence" "$L" "## 2026-10-05 — feat: x" "- b" '   ````'
+malformed "continuation fence" "$L" "## 2026-10-05 — feat: x" "- b" '  ```'
+malformed "tab after ## (gate repro)" "$L" "## 2026-10-05 — feat: x" "- b" "$(printf '##\t2026-10-19 — docs: later')" "- c"
+malformed "tab after #" "$L" "## 2026-10-05 — feat: x" "- b" "$(printf '#\tTitle')"
 malformed "tab in heading text" "tab" "$(printf '## 2026-10-05 — feat: x\ty')" "- b"
 malformed "two spaces after ##" "heading must be" "##  2026-10-05 — feat: x" "- b"
-malformed "indented ##" "must be" "## 2026-10-05 — feat: x" "- b" "  ## 2026-10-06 — feat: y" "- c"
-malformed "4-space ##" "must be" "## 2026-10-05 — feat: x" "- b" "    ## code-looking"
-malformed "indented #" "must be" "## 2026-10-05 — feat: x" "- b" "   # Title"
-malformed "####" "must be" "## 2026-10-05 — feat: x" "- b" "#### deep"
-malformed "#word at line start" "must be" "## 2026-10-05 — feat: x" "- b" "  #626 continued"
+malformed "indented ##" "$L" "## 2026-10-05 — feat: x" "- b" "  ## 2026-10-06 — feat: y" "- c"
+malformed "4-space ##" "$L" "## 2026-10-05 — feat: x" "- b" "    ## code-looking"
+malformed "indented #" "$L" "## 2026-10-05 — feat: x" "- b" "   # Title"
+malformed "####" "$L" "## 2026-10-05 — feat: x" "- b" "#### deep"
+malformed "#word at line start" "$L" "## 2026-10-05 — feat: x" "- b" "  #626 continued"
 malformed "4-space bullet" "no bullet" "## 2026-10-05 — feat: x" "" "    - code, not a list item"
 # Gate repros: a commented-out newer heading was sorted into view (and the
-# closing --> moved above the <!--); an unclosed <!-- hid later entries.
-malformed "balanced HTML comment" "HTML comment" "## 2026-10-05 — feat: x" "- b" "<!--" "## 2026-10-20 — feat: hidden" "- c" "-->"
-malformed "unclosed HTML comment" "HTML comment" "## 2026-10-05 — feat: x" "- b" "<!-- open"
+# closing --> moved above the <!--); an unclosed <!-- hid later entries; a
+# <pre> block did the same.
+malformed "balanced HTML comment" "$L" "## 2026-10-05 — feat: x" "- b" "<!--" "## 2026-10-20 — feat: hidden" "- c" "-->"
+malformed "unclosed HTML comment" "$L" "## 2026-10-05 — feat: x" "- b" "<!-- open"
+malformed "balanced <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "<pre>" "## 2026-10-20 — feat: hidden" "- c" "</pre>"
+malformed "unclosed <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "<pre>"
+malformed "bullet opening <pre>" "$L" "## 2026-10-05 — feat: x" "- <pre>"
+malformed "continuation opening an HTML block" "$L" "## 2026-10-05 — feat: x" "- b" "  <div>"
+malformed "setext === underline" "$L" "## 2026-10-05 — feat: x" "- b" "  ==="
+malformed "setext --- underline" "$L" "## 2026-10-05 — feat: x" "- b" "  ---"
+malformed "thematic break bullet" "$L" "## 2026-10-05 — feat: x" "- b" "* * *"
+malformed "blockquote" "$L" "## 2026-10-05 — feat: x" "- b" "> quoted"
+malformed "indented blockquote" "$L" "## 2026-10-05 — feat: x" "- b" "  > quoted"
+malformed "table row" "$L" "## 2026-10-05 — feat: x" "- b" "  | a | b |"
+malformed "plain column-0 text" "$L" "## 2026-10-05 — feat: x" "- b" "lazy continuation"
+malformed "empty bullet" "$L" "## 2026-10-05 — feat: x" "- b" "- "
+malformed "+ bullet" "$L" "## 2026-10-05 — feat: x" "+ plus"
 new_repo
-w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine"
+w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine" "  continued, with <tags> and | pipes mid-line" "    - nested bullet"
 run
-expect "grammar: ### subsections, 3-space bullets and inline code pass" 0 "folded 1 entry"
+expect "grammar: subsections, bullets, continuations and inline code pass" 0 "folded 1 entry"
 rm -rf "$R"
 
-# ── CHANGELOG.md side: fences only locate insertion points ─────────────
-# An open fence at the end of CHANGELOG.md would swallow appended entries
-# (gate repro: an older pending entry rendered as code).
-new_repo
-w CHANGELOG.md "# Changelog" "" "## 2026-10-10 — fix: x" "- e.g.:" '  ```' "  still code"
-w changelog.d/old.md "## 2026-10-01 — feat: older" "- b"
-run --check
-expect "changelog: --check refuses an open fence at the end of CHANGELOG.md" 1 "ends inside an open code fence"
-run
-expect "changelog: assemble refuses it too" 1 "ends inside an open code fence"
-[ -e "$R/changelog.d/old.md" ] && ok "changelog: the fragment is kept" || bad "changelog: the fragment is kept"
-rm -rf "$R"
-new_repo
-w CHANGELOG.md "# Changelog" "" "$(printf '##\t2026-10-10 — fix: tabbed')" "- b"
-run --check
-expect "changelog: a tab in a ## heading of CHANGELOG.md is refused" 1 "tab"
-rm -rf "$R"
-# Gate repro: loose headings render but are no insertion point, so an
-# October 5 fragment landed below October 1.
-for loose in " ## 2026-10-01 — fix: indented" "##  2026-10-01 — fix: two spaces"; do
+# ── CHANGELOG.md: only the region above the first ## line is checked ──
+# Gate repro: an HTML comment around a dated heading absorbed an inserted
+# entry. Above the insertion point only titles, blanks and plain text pass.
+preamble_refused() { # <name> <line>
   new_repo
-  w CHANGELOG.md "# Changelog" "" "$loose" "- b"
+  w CHANGELOG.md "# Changelog" "" "$2" "## 2026-10-01 — fix: hidden" "-->" "" "## 2026-09-01 — fix: x" "- b"
   w changelog.d/new.md "## 2026-10-05 — feat: newer" "- b"
   run --check
-  expect "changelog: --check refuses loose heading '$loose'" 1 "strict form"
+  expect "preamble ($1): --check refuses" 1 "above the first ## entry"
   run
-  expect "changelog: assemble refuses loose heading '$loose'" 1 "strict form"
-  [ -e "$R/changelog.d/new.md" ] && ok "changelog: fragment kept for '$loose'" || bad "changelog: fragment kept for '$loose'"
+  expect "preamble ($1): assemble refuses" 1 "Nothing was written"
+  [ -e "$R/changelog.d/new.md" ] && ok "preamble ($1): fragment kept" || bad "preamble ($1): fragment kept"
   rm -rf "$R"
-done
+}
+preamble_refused "HTML comment" "<!--"
+preamble_refused "fence" '```'
+preamble_refused "tilde fence" '~~~'
+preamble_refused "blockquote" "> note"
+preamble_refused "table" "| a |"
+preamble_refused "indented heading" "  ## 2026-10-02 — fix: loose"
 
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo

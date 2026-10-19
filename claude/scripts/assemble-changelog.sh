@@ -13,16 +13,21 @@
 # digits, `.`, `_` and `-` ending in `.md` is valid. Two PRs then never touch
 # the same file.
 #
-# A fragment is a strict, line-oriented format, deliberately smaller than
-# Markdown so that what the validator accepts is exactly what assembly splits:
-#   - entries, each a `## YYYY-MM-DD — <type>(<scope>)?!?: <summary>` heading
-#     at column 0 with single spaces (types: the conventional set
-#     check-commit-format.sh enforces), followed by at least one bullet
-#     (`- ` or `* ` indented at most three spaces);
-#   - optional `### ` subsections at column 0; inline `code` is fine;
-#   - no other line whose first non-blank character is `#`, no code fences
-#     (``` or ~~~), no HTML comment markers (<!-- or -->), no tab in a
-#     heading line, no CRLF.
+# A fragment is a strict, line-oriented format. Every line is allowlisted by
+# how it starts, so the parsed surface is finite: no Markdown construct that
+# could reorder, hide or swallow an entry (fences, HTML blocks, comments,
+# blockquotes, tables, setext underlines) has a line shape that passes.
+# Each line is exactly one of:
+#   - blank;
+#   - an entry heading `## YYYY-MM-DD — <type>(<scope>)?!?: <summary>` at
+#     column 0, single spaces, no tab (types: the conventional set
+#     check-commit-format.sh enforces) — each entry needs at least one bullet;
+#   - a `### ` subsection at column 0;
+#   - a bullet: `- ` or `* ` indented 0-3 spaces, then text;
+#   - a continuation: 2+ spaces, then text.
+# Bullet and continuation text may not start with < > | # = or a fence
+# (``` or ~~~), and may not be only - * _ = characters (a thematic break or
+# setext underline). Inline `code` is fine. No CRLF.
 #
 # Assembly is a manual step (release or handoff time), not a bot push to main:
 # main's required status checks refuse a commit that has not run them, and a
@@ -30,13 +35,13 @@
 # the head of the changelog.
 #
 # Usage:
-#   assemble-changelog.sh            fold every fragment into CHANGELOG.md,
-#                                    then delete the fragments. Each entry goes
-#                                    above the first existing entry dated on or
-#                                    before it, so newest-first order holds;
-#                                    entries sharing a date order by filename,
-#                                    then position in the file. No fragments:
-#                                    a no-op.
+#   assemble-changelog.sh            fold every fragment into CHANGELOG.md
+#                                    immediately above its first line starting
+#                                    `## `, then delete the fragments. Entries
+#                                    appear in assembly order: within one
+#                                    assembly, newest date first, ties by
+#                                    filename, then position in the file. No
+#                                    fragments: a no-op.
 #   assemble-changelog.sh --check    validate every fragment; write nothing
 #     [--base REF]                   also: REF...HEAD adds at most one fragment
 #   --root DIR                       repo root (default: git toplevel of cwd)
@@ -57,7 +62,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
@@ -143,30 +148,7 @@ elif [ -e "$FRAG_DIR" ]; then
   die "$FRAG_DIR exists but is not a directory"
 fi
 
-# ── Fence tracking, for CHANGELOG.md only ──────────────────────────
-# Fragments have no fences (the validator refuses them), but CHANGELOG.md's
-# older entries may, and a `## ` line inside one is not an entry heading. So
-# fences matter only when locating CHANGELOG.md's insertion points. CommonMark
-# rules: a fence opens with 3+ backticks or tildes indented at most three
-# spaces, and only a run of the SAME character at least as long, with nothing
-# after it, closes it. Sets `infence`; returns 1 when the line opened or
-# closed a fence.
-# shellcheck disable=SC2016  # awk source: $ and backticks are awk's
-fence_awk='
-function fence_step(line,   s, ch, n, rest) {
-  if (!match(line, /^ ? ? ?(```+|~~~+)/)) return 0
-  s = substr(line, RSTART, RLENGTH); sub(/^ +/, "", s)
-  ch = substr(s, 1, 1); n = length(s); rest = substr(line, RSTART + RLENGTH)
-  if (!infence) {
-    if (ch == "`" && rest ~ /`/) return 0
-    infence = 1; fch = ch; flen = n
-    return 1
-  }
-  if (ch == fch && n >= flen && rest ~ /^[[:space:]]*$/) { infence = 0; return 1 }
-  return 0
-}'
-
-# ── Validate each fragment's shape ─────────────────────────────────
+# ── Validate each fragment, line by line ───────────────────────────
 # Emits "<line>\t<message>" per problem.
 # shellcheck disable=SC2016  # an awk program: $0 etc. are awk's, not the shell's
 validate_awk='
@@ -174,29 +156,30 @@ function days_in(y, m) {
   if (m == 2) return (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 29 : 28
   return (m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31
 }
-BEGIN {
-  head_re = "^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — (" types ")(\\([a-z0-9._/-]+\\))?!?: [^[:space:]]"
-  entries = 0; seen_content = 0; bullets = 0
+# Text after a bullet marker or continuation indent: must not open a block
+# construct (HTML, blockquote, table, heading, setext, fence) or be a rule.
+function bad_text(t) {
+  if (t ~ /^[<>|#=]/ || t ~ /^(```|~~~)/) return 1
+  if (t ~ /^[-*_= ]+$/) return 1
+  return 0
+}
+function before_entry() {
+  if (entries == 0 && !seen_content) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }
 }
 function close_entry() {
   if (entries > 0 && bullets == 0) printf "%d\tentry has no bullet (\"- ...\") under its heading\n", entry_line
 }
+BEGIN {
+  head_re = "^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — (" types ")(\\([a-z0-9._/-]+\\))?!?: [^[:space:]]"
+  shapes = "a line must be blank, a \"## YYYY-MM-DD — <type>: <summary>\" heading, a \"### \" subsection, a bullet (\"- \" or \"* \" indented 0-3 spaces), or a continuation indented 2+ spaces; bullet and continuation text may not start with < > | # = or a fence, or be only - * _ ="
+  entries = 0; seen_content = 0; bullets = 0
+}
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
-# An HTML comment can hide or swallow an entry heading the sort then moves.
-/<!--|-->/ { printf "%d\tHTML comment marker (<!-- or -->); fragments hold no HTML comments\n", NR; next }
-/^ ? ? ?(```|~~~)/ { printf "%d\tcode fence; fragments hold no code blocks (inline `code` is fine)\n", NR; next }
-/^[ \t]*#/ {
-  if ($0 ~ /\t/) { printf "%d\ttab in a heading line; use single spaces\n", NR; next }
-  if ($0 ~ /^### /) {
-    if (entries == 0 && !seen_content) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }
-    next
-  }
-  if ($0 !~ /^## /) {
-    printf "%d\ta line starting with # must be a \"## YYYY-MM-DD — <type>: <summary>\" entry heading or a \"### \" subsection, at column 0\n", NR
-    next
-  }
+/^[ \t]*$/ { next }
+/^## / {
   close_entry()
   entries++; entry_line = NR; bullets = 0
+  if ($0 ~ /\t/) { printf "%d\ttab in a heading line; use single spaces\n", NR; next }
   if ($0 !~ head_re) {
     printf "%d\theading must be \"## YYYY-MM-DD — <type>(<scope>)?: <summary>\" (type: %s)\n", NR, types
   } else {
@@ -205,16 +188,21 @@ function close_entry() {
   }
   next
 }
-/^[[:space:]]*$/ { next }
-{
-  if (entries == 0) {
-    if (!seen_content) printf "%d\tcontent before the first ## heading\n", NR
-    seen_content = 1
-    next
-  }
-  # A list item starts within three spaces; four or more would be code.
-  if ($0 ~ /^ ? ? ?[-*][ \t]/) bullets++
+/^### [^ \t]/ {
+  if ($0 ~ /\t/) { printf "%d\ttab in a heading line; use single spaces\n", NR; next }
+  before_entry(); next
 }
+/^ ? ? ?[-*] / {
+  t = $0; sub(/^ ? ? ?[-*] +/, "", t)
+  if (t == "" || bad_text(t)) { printf "%d\t%s\n", NR, shapes; next }
+  before_entry(); bullets++; next
+}
+/^  / {
+  t = $0; sub(/^ +/, "", t)
+  if (bad_text(t)) { printf "%d\t%s\n", NR, shapes; next }
+  before_entry(); next
+}
+{ printf "%d\t%s\n", NR, shapes }
 END {
   close_entry()
   if (entries == 0) printf "0\tno \"## YYYY-MM-DD — <type>: <summary>\" entry\n"
@@ -234,36 +222,30 @@ for i in "${!FRAGS[@]}"; do
   done <<<"$report"
 done
 
-# A fragment heading already present in CHANGELOG.md means it was folded once
-# and the fragment survived (an interrupted run, or a revert) — folding it again
-# would duplicate the entry.
-# Compared against CHANGELOG.md's own unfenced entry headings, so a heading
-# quoted inside a fenced example there is not mistaken for a folded entry.
+# ── CHANGELOG.md: read as plain lines, not Markdown ────────────────
+# Entries are inserted immediately above the first line starting `## `, so
+# only the region above it (title and pointer lines) is constrained: `# `
+# title lines, blank lines, and plain text whose first non-space character is
+# not < > | ` ~ or #. Nothing below that line is parsed.
 if [ -L "$CHANGELOG" ]; then
   die "$CHANGELOG is a symlink; refusing to read or replace it"
 fi
-# CHANGELOG.md is refused, in --check and assembly alike, when it ends inside
-# an open fence (appended entries would render as code) or has an unfenced
-# heading line not in the strict form: column 0, `#`s, one space, no tab.
-# `##<TAB>…`, ` ## …` and `##  …` all render as headings but are no insertion
-# point for the date merge, which matches only the strict form.
 if [ -e "$CHANGELOG" ]; then
-  scan="$(awk "$fence_awk"'
-    fence_step($0) { next }
-    infence { next }
-    /^ ? ? ?#+[ \t]/ && (/\t/ || !/^#+ [^ ]/) { printf "E\t%d\n", NR; next }
-    /^## / { print "H\t" $0 }
-    END { if (infence) print "F\t" NR }' "$CHANGELOG")" \
+  # shellcheck disable=SC2016  # awk source: the backtick is awk's
+  head_report="$(awk '
+    /^## / { exit }
+    /^# [^ \t]/ || /^[ \t]*$/ { next }
+    { t = $0; sub(/^[ \t]+/, "", t) }
+    t ~ /^[<>|`~#]/ { printf "%d\n", NR }' "$CHANGELOG")" \
     || die "$CHANGELOG could not be read"
-  existing=""
-  while IFS="$(printf '\t')" read -r kind rest; do
-    case "$kind" in
-      H) existing="$existing$rest
-" ;;
-      E) err "$CHANGELOG:$rest — heading not in strict form (column 0, one space after the #s, no tab); fix it" ;;
-      F) err "$CHANGELOG — ends inside an open code fence (opened before line $rest); close it" ;;
-    esac
-  done <<<"$scan"
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    err "$CHANGELOG:$ln — above the first ## entry only \"# \" titles, blank lines and plain text are allowed (no line starting with < > | \` ~ or #)"
+  done <<<"$head_report"
+
+  # A fragment heading already present anywhere in CHANGELOG.md, as an exact
+  # line, means it was folded once and the fragment survived (an interrupted
+  # run, or a revert). A false match only refuses, which is safe.
   for i in "${!FRAGS[@]}"; do
     f="${FRAGS[$i]}"
     if ! heads="$(awk '/^## / { print }' "$f")"; then
@@ -272,10 +254,12 @@ if [ -e "$CHANGELOG" ]; then
     fi
     while IFS= read -r h; do
       [ -n "$h" ] || continue
-      # Here-string, not a pipe: grep -q exits at the first match, and under
-      # pipefail the writer's SIGPIPE would turn that hit into a miss.
-      if grep -qxF -- "$h" <<<"$existing"; then
+      rc=0
+      grep -qxF -- "$h" "$CHANGELOG" || rc=$?
+      if [ "$rc" -eq 0 ]; then
         err "$f — entry '$h' is already in $CHANGELOG (already assembled? delete the fragment)"
+      elif [ "$rc" -ne 1 ]; then
+        err "$CHANGELOG could not be read"
       fi
     done <<<"$heads"
   done
@@ -351,38 +335,28 @@ done
 # Newest date first; ties by fragment name, then position within the fragment.
 sort -t "$tab" -k1,1r -k2,2 -k3,3n "$TMP/index" >"$TMP/sorted"
 
-# Merge by date: before each existing unfenced `## YYYY-MM-DD` entry, emit
-# every pending entry dated on or after it (pending entries are newer than any
-# existing one of the same date). What is left goes at the end. Each entry's
-# trailing blank lines are trimmed; entries are separated by one blank line.
-# A failed read of an entry file exits non-zero rather than dropping it.
-awk -v list="$TMP/sorted" "$fence_awk"'
-function emit(file,   n, l, a, j, last, r) {
-  n = 0
-  while ((r = (getline l < file)) > 0) a[++n] = l
-  if (r < 0) { printf "cannot read %s\n", file > "/dev/stderr"; exit 2 }
-  close(file)
-  last = n; while (last > 0 && a[last] ~ /^[[:space:]]*$/) last--
-  if (!lastblank) print ""
-  for (j = 1; j <= last; j++) print a[j]
-  print ""; lastblank = 1
-}
-BEGIN {
-  while ((r = (getline l < list)) > 0) { split(l, f, "\t"); np++; pd[np] = f[1]; pf[np] = f[4] }
-  if (r < 0) { printf "cannot read %s\n", list > "/dev/stderr"; exit 2 }
-  close(list); p = 1; lastblank = 1
-}
-{ isf = fence_step($0) }
-!isf && !infence && /^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ {
-  d = substr($0, 4, 10)
-  while (p <= np && pd[p] >= d) emit(pf[p++])
-}
-{ print; lastblank = ($0 ~ /^[[:space:]]*$/) }
-END {
-  # Entries older than every existing one; the trim after this awk drops the
-  # blank line the last one leaves at end of file.
-  while (p <= np) emit(pf[p++])
-}' "$CHANGELOG" | awk '{ lines[NR] = $0 } END { last = NR; while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--; for (j = 1; j <= last; j++) print lines[j] }' >"$TMP/CHANGELOG.new"
+# Entry bodies with trailing blank lines trimmed, one blank line between.
+trim() { awk '{ l[NR] = $0 } END { n = NR; while (n > 0 && l[n] ~ /^[[:space:]]*$/) n--; for (j = 1; j <= n; j++) print l[j] }' "$@"; }
+: >"$TMP/block"
+while IFS="$tab" read -r _ _ _ efile; do
+  trim "$efile" >>"$TMP/block"
+  echo >>"$TMP/block"
+done <"$TMP/sorted"
+
+# Insert immediately above the first line starting `## `; with none, append.
+first="$(awk '/^## / { print NR; exit }' "$CHANGELOG")"
+{
+  if [ -n "$first" ]; then
+    head -n "$((first - 1))" "$CHANGELOG" | trim
+    echo
+    cat "$TMP/block"
+    tail -n "+$first" "$CHANGELOG"
+  else
+    trim "$CHANGELOG"
+    echo
+    trim "$TMP/block"
+  fi
+} >"$TMP/CHANGELOG.new"
 
 # Same-directory rename so a failure never leaves a half-written changelog.
 # mktemp creates the staging file exclusively, so a pre-planted name (say, a
