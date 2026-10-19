@@ -227,6 +227,13 @@ run alpha
 want_absent "a fast suite prints no heartbeat at the default interval" 'still running'
 RUN_TESTS_HEARTBEAT=0 run alpha
 want "a non-positive heartbeat interval is refused" 1 'RUN_TESTS_HEARTBEAT must be a positive integer'
+# Bash arithmetic reads a leading zero as octal: `08` would kill the ticker
+# and `00` would spin it with no delay.
+for interval in 08 00 01; do
+  RUN_TESTS_HEARTBEAT="$interval" run alpha
+  want "a leading-zero heartbeat interval ($interval) is refused" 1 \
+    'RUN_TESTS_HEARTBEAT must be a positive integer'
+done
 rm -rf "$R"
 
 # ── Git discovery confinement (#621) ──────────────────────────────────

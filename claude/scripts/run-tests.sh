@@ -400,7 +400,9 @@ done
 # RUN_TESTS_HEARTBEAT seconds (default 30) prints a "still running" line.
 HEARTBEAT="${RUN_TESTS_HEARTBEAT:-30}"
 case "$HEARTBEAT" in
-  '' | *[!0-9]* | 0) echo "error: RUN_TESTS_HEARTBEAT must be a positive integer of seconds" >&2; exit 1 ;;
+  # A leading zero is refused, not stripped: bash arithmetic reads `08` as bad
+  # octal and `00` would make the ticker spin with no delay.
+  '' | *[!0-9]* | 0*) echo "error: RUN_TESTS_HEARTBEAT must be a positive integer of seconds" >&2; exit 1 ;;
 esac
 HB_PID=""
 # A killed runner must not leave its heartbeat printing into the caller's pipe.
