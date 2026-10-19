@@ -22,10 +22,13 @@
   - a bullet, indented 0–3 spaces;
   - a continuation line, indented 2+ spaces.
 
-  Bullet and continuation text may not start with `<`, `>`, `|`, `#`, `=` or
-  a fence. It also may not consist only of rule characters (`-`, `*`, `_`,
-  `=`). Code fences, HTML blocks, comments, blockquotes, tables and setext
-  underlines therefore have no line shape that passes. Inline code is fine.
+  Bullet and continuation text may not start with `<`, `>`, `|`, `#` or `=`.
+  That holds as written and again after every leading list or quote marker
+  is stripped. The text also may not consist only of rule characters (`-`,
+  `*`, `_`, `=`). No line may contain an HTML comment marker, a run of three
+  backticks or a run of three tildes, anywhere. Code fences, HTML blocks, comments, blockquotes, tables and
+  setext underlines therefore have no line shape that passes, nested or not.
+  Inline code is fine.
 - **A malformed fragment is refused and nothing is written.** Besides a line
   of the wrong shape, that covers:
   - a bad heading or calendar date;
@@ -36,9 +39,9 @@
   - an unreadable or symlinked input;
   - an entry whose heading is already a line in `CHANGELOG.md`.
 - **`CHANGELOG.md` is checked only above its first `## ` line.** That region
-  may hold only `# ` titles, blank lines and plain text. A line there that
-  starts with `<`, `>`, `|`, a backtick, `~` or `#` is refused, in `--check`
-  and in assembly.
+  may hold only blank lines, exactly one `# ` title, and the script's own
+  pointer lines verbatim. Anything else there is refused, in `--check` and in
+  assembly.
 - **Flags:** `--check` validates without writing. `--base REF` also holds a PR
   to one fragment file. The filename is never derived from the branch, because
   two branches can share a slug.

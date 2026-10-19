@@ -25,9 +25,13 @@
 #   - a `### ` subsection at column 0;
 #   - a bullet: `- ` or `* ` indented 0-3 spaces, then text;
 #   - a continuation: 2+ spaces, then text.
-# Bullet and continuation text may not start with < > | # = or a fence
-# (``` or ~~~), and may not be only - * _ = characters (a thematic break or
-# setext underline). Inline `code` is fine. No CRLF.
+# Bullet and continuation text may not start with < > | # =, neither as
+# written nor after stripping every leading container prefix (whitespace,
+# `- ` `* ` `+ ` and `1. ` `1) ` list markers, `>`), and may not be only
+# - * _ = characters (a thematic break or setext underline). No line may
+# contain <!--, -->, ``` or ~~~ anywhere. Inline `code` is fine. No CRLF.
+# Above CHANGELOG.md's first `## ` line only blank lines, one `# ` title and
+# the POINTER_1 / POINTER_2 lines below are allowed, verbatim.
 #
 # Assembly is a manual step (release or handoff time), not a bot push to main:
 # main's required status checks refuse a commit that has not run them, and a
@@ -56,13 +60,20 @@ export LC_ALL=C
 
 TYPES='feat|fix|refactor|chore|docs|test|style|perf|build|ci|revert'
 
+# The only text allowed above CHANGELOG.md's first `## ` line, besides blank
+# lines and its one `# ` title: these pointer lines, exactly.
+# shellcheck disable=SC2016  # literal backticks, not command substitution
+POINTER_1='Entries not yet assembled live one per PR in `changelog.d/`, and'
+# shellcheck disable=SC2016
+POINTER_2='the script `claude/scripts/assemble-changelog.sh` inserts them here in assembly order.'
+
 die() {
   printf '✖ assemble-changelog: %s\n' "$1" >&2
   exit "${2:-1}"
 }
 
 usage() {
-  sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
@@ -157,10 +168,18 @@ function days_in(y, m) {
   return (m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31
 }
 # Text after a bullet marker or continuation indent: must not open a block
-# construct (HTML, blockquote, table, heading, setext, fence) or be a rule.
-function bad_text(t) {
-  if (t ~ /^[<>|#=]/ || t ~ /^(```|~~~)/) return 1
-  if (t ~ /^[-*_= ]+$/) return 1
+# construct (HTML, blockquote, table, heading, setext) or be a rule — neither
+# as written nor after stripping every leading container prefix (whitespace,
+# `- ` / `* ` / `+ ` markers, `1. ` / `1) ` markers, `>`), since a nested list
+# or quote puts any of those constructs back at the start of a block.
+function bad_text(t,   prev) {
+  if (t ~ /^[<>|#=]/) return 1
+  if (t ~ /^[-*_= \t]+$/) return 1
+  do {
+    prev = t
+    sub(/^[ \t]+/, "", t); sub(/^[-*+][ \t]/, "", t); sub(/^[0-9]+[.)][ \t]/, "", t); sub(/^>/, "", t)
+  } while (t != prev)
+  if (t == "" || t ~ /^[<>|#=]/) return 1
   return 0
 }
 function before_entry() {
@@ -171,10 +190,14 @@ function close_entry() {
 }
 BEGIN {
   head_re = "^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — (" types ")(\\([a-z0-9._/-]+\\))?!?: [^[:space:]]"
-  shapes = "a line must be blank, a \"## YYYY-MM-DD — <type>: <summary>\" heading, a \"### \" subsection, a bullet (\"- \" or \"* \" indented 0-3 spaces), or a continuation indented 2+ spaces; bullet and continuation text may not start with < > | # = or a fence, or be only - * _ ="
+  shapes = "a line must be blank, a \"## YYYY-MM-DD — <type>: <summary>\" heading, a \"### \" subsection, a bullet (\"- \" or \"* \" indented 0-3 spaces), or a continuation indented 2+ spaces; bullet and continuation text may not start with < > | # =, even after nested list or quote markers, or be only - * _ ="
   entries = 0; seen_content = 0; bullets = 0
 }
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
+# Comment and fence markers are refused anywhere on a line, whatever its shape.
+index($0, "<!--") || index($0, "-->") || index($0, "```") || index($0, "~~~") {
+  printf "%d\tcomment or fence marker (<!--, -->, ``` or ~~~); fragments hold none, anywhere on a line\n", NR; next
+}
 /^[ \t]*$/ { next }
 /^## / {
   close_entry()
@@ -224,23 +247,28 @@ done
 
 # ── CHANGELOG.md: read as plain lines, not Markdown ────────────────
 # Entries are inserted immediately above the first line starting `## `, so
-# only the region above it (title and pointer lines) is constrained: `# `
-# title lines, blank lines, and plain text whose first non-space character is
-# not < > | ` ~ or #. Nothing below that line is parsed.
+# only the region above it is constrained, by an exact allowlist: blank lines,
+# exactly one `# ` title line, and the POINTER_1 / POINTER_2 lines verbatim.
+# Nothing below that line is parsed.
 if [ -L "$CHANGELOG" ]; then
   die "$CHANGELOG is a symlink; refusing to read or replace it"
 fi
 if [ -e "$CHANGELOG" ]; then
-  # shellcheck disable=SC2016  # awk source: the backtick is awk's
-  head_report="$(awk '
+  head_report="$(awk -v p1="$POINTER_1" -v p2="$POINTER_2" '
     /^## / { exit }
-    /^# [^ \t]/ || /^[ \t]*$/ { next }
-    { t = $0; sub(/^[ \t]+/, "", t) }
-    t ~ /^[<>|`~#]/ { printf "%d\n", NR }' "$CHANGELOG")" \
+    /^$/ { next }
+    /^# [^ \t]/ { if (++titles > 1) print NR; next }
+    $0 == p1 || $0 == p2 { next }
+    { print NR }
+    END { if (titles == 0) print 0 }' "$CHANGELOG")" \
     || die "$CHANGELOG could not be read"
   while IFS= read -r ln; do
     [ -n "$ln" ] || continue
-    err "$CHANGELOG:$ln — above the first ## entry only \"# \" titles, blank lines and plain text are allowed (no line starting with < > | \` ~ or #)"
+    if [ "$ln" = 0 ]; then
+      err "$CHANGELOG — above the first ## entry there must be exactly one \"# \" title line"
+    else
+      err "$CHANGELOG:$ln — above the first ## entry only blank lines, exactly one \"# \" title and the script's pointer lines are allowed"
+    fi
   done <<<"$head_report"
 
   # A fragment heading already present anywhere in CHANGELOG.md, as an exact

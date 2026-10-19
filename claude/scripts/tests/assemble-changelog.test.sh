@@ -142,12 +142,15 @@ expect_file "ties: by filename, then position in the fragment" CHANGELOG.md \
 rm -rf "$R"
 
 # ── A preamble under the title stays above the folded entries ─────────
+# The only text allowed above the first ## line is the script's own pointer.
+P1='Entries not yet assembled live one per PR in `changelog.d/`, and'
+P2='the script `claude/scripts/assemble-changelog.sh` inserts them here in assembly order.'
 new_repo
-w CHANGELOG.md "# Changelog" "" "Unreleased entries: changelog.d/." "" "## 2026-10-01 — fix: old" "- o"
+w CHANGELOG.md "# Changelog" "" "$P1" "$P2" "" "## 2026-10-01 — fix: old" "- o"
 w changelog.d/x.md "## 2026-10-02 — feat: new" "- n"
 run
 expect_file "preamble: entries go after it, before the first entry" CHANGELOG.md \
-  "# Changelog" "" "Unreleased entries: changelog.d/." "" \
+  "# Changelog" "" "$P1" "$P2" "" \
   "## 2026-10-02 — feat: new" "- n" "" \
   "## 2026-10-01 — fix: old" "- o"
 rm -rf "$R"
@@ -190,7 +193,7 @@ malformed "no bullet" "no bullet" "## 2026-10-05 — feat: x" "" "prose only"
 malformed "text before heading" "content before the first ## heading" "- intro" "## 2026-10-05 — feat: x" "- b"
 malformed "H1 inside" "a line must be" "## 2026-10-05 — feat: x" "- b" "# Changelog"
 malformed "empty" "no \"## YYYY-MM-DD" ""
-malformed "unclosed fence" "a line must be" "## 2026-10-05 — feat: x" "- b" '```'
+malformed "unclosed fence" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" '```'
 malformed "CRLF" "CRLF" "$(printf '## 2026-10-05 — feat: x\r')" "- b"
 
 # Non-fragment files in changelog.d/ are refused too.
@@ -341,11 +344,11 @@ rm -rf "$R"
 
 # No `## ` line at all: the entries are appended after the preamble.
 new_repo
-w CHANGELOG.md "# Changelog" "" "Nothing yet."
+w CHANGELOG.md "# Changelog" "" "$P1" "$P2"
 w changelog.d/first.md "## 2026-10-05 — feat: first" "- f"
 run
 expect_file "order: a changelog with no entries gets them appended" CHANGELOG.md \
-  "# Changelog" "" "Nothing yet." "" "## 2026-10-05 — feat: first" "- f"
+  "# Changelog" "" "$P1" "$P2" "" "## 2026-10-05 — feat: first" "- f"
 rm -rf "$R"
 
 # ── Duplicate headings among pending fragments ─────────────────────────
@@ -366,10 +369,10 @@ rm -rf "$R"
 # bullet (indented 0-3), or a continuation (2+ spaces); bullet and
 # continuation text may not open a block construct or be a rule.
 L="a line must be"
-malformed "fence \`\`\`" "$L" "## 2026-10-05 — feat: x" "- b" '```' "## not a heading" '```'
-malformed "fence ~~~" "$L" "## 2026-10-05 — feat: x" "- b" '~~~'
-malformed "indented fence" "$L" "## 2026-10-05 — feat: x" "- b" '   ````'
-malformed "continuation fence" "$L" "## 2026-10-05 — feat: x" "- b" '  ```'
+malformed "fence \`\`\`" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" '```' "## not a heading" '```'
+malformed "fence ~~~" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" '~~~'
+malformed "indented fence" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" '   ````'
+malformed "continuation fence" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" '  ```'
 malformed "tab after ## (gate repro)" "$L" "## 2026-10-05 — feat: x" "- b" "$(printf '##\t2026-10-19 — docs: later')" "- c"
 malformed "tab after #" "$L" "## 2026-10-05 — feat: x" "- b" "$(printf '#\tTitle')"
 malformed "tab in heading text" "tab" "$(printf '## 2026-10-05 — feat: x\ty')" "- b"
@@ -383,8 +386,8 @@ malformed "4-space bullet" "no bullet" "## 2026-10-05 — feat: x" "" "    - cod
 # Gate repros: a commented-out newer heading was sorted into view (and the
 # closing --> moved above the <!--); an unclosed <!-- hid later entries; a
 # <pre> block did the same.
-malformed "balanced HTML comment" "$L" "## 2026-10-05 — feat: x" "- b" "<!--" "## 2026-10-20 — feat: hidden" "- c" "-->"
-malformed "unclosed HTML comment" "$L" "## 2026-10-05 — feat: x" "- b" "<!-- open"
+malformed "balanced HTML comment" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" "<!--" "## 2026-10-20 — feat: hidden" "- c" "-->"
+malformed "unclosed HTML comment" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" "<!-- open"
 malformed "balanced <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "<pre>" "## 2026-10-20 — feat: hidden" "- c" "</pre>"
 malformed "unclosed <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "<pre>"
 malformed "bullet opening <pre>" "$L" "## 2026-10-05 — feat: x" "- <pre>"
@@ -398,6 +401,22 @@ malformed "table row" "$L" "## 2026-10-05 — feat: x" "- b" "  | a | b |"
 malformed "plain column-0 text" "$L" "## 2026-10-05 — feat: x" "- b" "lazy continuation"
 malformed "empty bullet" "$L" "## 2026-10-05 — feat: x" "- b" "- "
 malformed "+ bullet" "$L" "## 2026-10-05 — feat: x" "+ plus"
+# Gate round-9 repros: a nested list marker hid a comment opener from the
+# first-character rule. Comment and fence markers are now refused anywhere on
+# a line, and every leading container prefix is stripped before that rule.
+malformed "nested list comment" "comment or fence marker" "## 2026-10-05 — feat: x" "- - <!--"
+malformed "deeper nested comment" "comment or fence marker" "## 2026-10-05 — feat: x" "- * - <!--"
+malformed "tab-prefixed comment" "comment or fence marker" "## 2026-10-05 — feat: x" "$(printf -- '- \t<!--')"
+malformed "comment mid-line" "comment or fence marker" "## 2026-10-05 — feat: x" "- text <!-- hidden"
+malformed "comment closer" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" "  done -->"
+malformed "inline triple backtick" "comment or fence marker" "## 2026-10-05 — feat: x" "- uses \`\`\` inline"
+malformed "inline ~~~" "comment or fence marker" "## 2026-10-05 — feat: x" "- uses ~~~ inline"
+malformed "nested <pre>" "$L" "## 2026-10-05 — feat: x" "- - <pre>"
+malformed "ordered-list <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "  1. <pre>"
+malformed "bullet ordered-list <pre>" "$L" "## 2026-10-05 — feat: x" "- 1) <pre>"
+malformed "quoted <pre>" "$L" "## 2026-10-05 — feat: x" "- > <pre>"
+malformed "tab-nested <pre>" "$L" "## 2026-10-05 — feat: x" "$(printf -- '- \t+ <pre>')"
+malformed "nested heading" "$L" "## 2026-10-05 — feat: x" "- - ## 2026-10-20 — feat: y"
 new_repo
 w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine" "  continued, with <tags> and | pipes mid-line" "    - nested bullet"
 run
@@ -424,6 +443,24 @@ preamble_refused "tilde fence" '~~~'
 preamble_refused "blockquote" "> note"
 preamble_refused "table" "| a |"
 preamble_refused "indented heading" "  ## 2026-10-02 — fix: loose"
+# Gate round-9 repro: a list-prefixed comment opener hid the inserted entries.
+preamble_refused "list-prefixed comment" "- <!--"
+# Exact allowlist: anything but the pointer lines is refused, however plain.
+preamble_refused "plain text" "Some note."
+preamble_refused "second title" "# Another title"
+preamble_refused "pointer line with extra text" "$P1 more"
+new_repo
+w CHANGELOG.md "# Changelog" "" "$P1" "" "$P2" "" "## 2026-10-01 — fix: old" "- o"
+w changelog.d/x.md "## 2026-10-02 — feat: new" "- n"
+run --check
+expect "preamble: the pointer lines, blanks and one title pass" 0 "1 fragment(s)"
+rm -rf "$R"
+new_repo
+w CHANGELOG.md "" "## 2026-10-01 — fix: old" "- o"
+w changelog.d/x.md "## 2026-10-02 — feat: new" "- n"
+run --check
+expect "preamble: a missing title line is refused" 1 "exactly one"
+rm -rf "$R"
 
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo
