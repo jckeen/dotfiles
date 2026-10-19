@@ -171,8 +171,19 @@ function migrateLegacySkillDir(src: string, dst: string): boolean {
       renameSync(priv, dst);
       return false;
     }
-    for (const name of readdirSync(priv)) unlinkSync(join(priv, name));
-    rmdirSync(priv);
+    // Re-check each entry right before unlinking it: a writer that still holds
+    // the directory open can add content after the scan, and that is never
+    // deleted. rmdir then fails on it and the remainder is restored.
+    for (const name of readdirSync(priv)) {
+      const p = join(priv, name);
+      if (lstatSync(p).isSymbolicLink() && readlinkSync(p) === join(src, name)) unlinkSync(p);
+    }
+    try {
+      rmdirSync(priv);
+    } catch (e) {
+      renameSync(priv, dst);
+      throw e;
+    }
   } catch (e) {
     actions.push({ kind: 'skipped', rel: dst, reason: `legacy skill dir migration failed: ${e}` });
     return false;

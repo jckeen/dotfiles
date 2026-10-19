@@ -133,6 +133,11 @@ echo ""
 # link); without --heal it is named as legacy, not as an unknown directory.
 while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
+  # A migrator that died mid-drain leaves a private dir beside $dst that no
+  # later migration would revisit once $dst is relinked (issue #638).
+  if [ "$HEAL" -eq 1 ] && [ -d "$src" ]; then
+    symlink_reap_stale_migrations "$src" "$dst"
+  fi
   if [ "$HEAL" -eq 1 ] && [ -d "$src" ] && [ -d "$dst" ] && [ ! -L "$dst" ]; then
     # A real directory where a bundle link belongs. A concurrent --heal (two
     # panes launching cc) may be converting it right now: our rm/rmdir then
