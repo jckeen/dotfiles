@@ -290,12 +290,18 @@ elif [ "$CHANGED" -eq 1 ]; then
   else
     build_scan_files
     fallback=""
+    mapped_paths=0
     # EVERY changed path must reach at least one suite on its own. Checking only
     # that the combined selection is non-empty would let one mappable path speak
     # for an unmapped sibling: a change to alpha.sh plus a config nothing tests
     # would have run alpha alone.
     while IFS= read -r path; do
       [ -n "$path" ] || continue
+      # Changelog fragments are dated prose no suite reads; without this every
+      # branch carrying its fragment widened to a full run (~8 extra minutes).
+      # Deliberately this directory only: other Markdown can be test input.
+      case "$path" in changelog.d/*.md) continue ;; esac
+      mapped_paths=$((mapped_paths + 1))
       SEED_HIT=""
       WALK_HIT=""
       if seed_for_path "$path"; then
@@ -307,6 +313,13 @@ elif [ "$CHANGED" -eq 1 ]; then
         break
       fi
     done <<< "$paths"
+    if [ -z "$fallback" ] && [ "$mapped_paths" -eq 0 ]; then
+      # Every changed path is a changelog fragment: nothing to test, which is
+      # an explicit, named outcome rather than an empty selection.
+      [ "$LIST_ONLY" -eq 1 ] && exit 0
+      echo "--changed: only changelog fragments changed against $BASE_REF — no suite to run."
+      exit 0
+    fi
     if [ -n "$fallback" ] || [ "${#SELECTED[@]}" -eq 0 ]; then
       [ -n "$fallback" ] ||
         yellow "--changed: the changed paths map to no suite — running every suite."
@@ -362,6 +375,62 @@ for i in "${SELECTED[@]}"; do
   [ "${#SUITE_NAMES[$i]}" -gt "$width" ] && width="${#SUITE_NAMES[$i]}"
 done
 
+# ── Git discovery confinement (#621) ────────────────────────────────
+# Suites build fixtures under the temp dirs and run git in them. Codex's Linux
+# sandbox creates `/tmp/.git` on the host as a mount point (#368), and anything
+# that turns a temp dir into a repository would let a fixture that expects "not
+# a repository" discover it instead. GIT_CEILING_DIRECTORIES stops discovery
+# before it enters any temp root, so the host's temp dirs cannot leak into a
+# suite. Resolved paths, because git compares ceilings against the physical
+# cwd; the repo root itself is never a ceiling, since discovery from one of its
+# subdirectories has to reach it.
+suite_git_ceiling="${GIT_CEILING_DIRECTORIES:-}"
+repo_physical="$(pwd -P)"
+for _ceiling in /tmp /var/tmp "${TMPDIR:-}"; do
+  [ -n "$_ceiling" ] && [ -d "$_ceiling" ] || continue
+  _ceiling="$(cd -P "$_ceiling" && pwd)" || continue
+  [ "$_ceiling" = "$repo_physical" ] && continue
+  suite_git_ceiling="${suite_git_ceiling:+$suite_git_ceiling:}$_ceiling"
+done
+
+# ── Progress (#650) ─────────────────────────────────────────────────
+# Without --verbose a full run used to print nothing between the header and the
+# summary for ~17 minutes, and callers killed it as hung. Each suite now prints
+# its result line as it finishes, and a suite still running after every
+# RUN_TESTS_HEARTBEAT seconds (default 30) prints a "still running" line.
+HEARTBEAT="${RUN_TESTS_HEARTBEAT:-30}"
+case "$HEARTBEAT" in
+  # A leading zero is refused, not stripped: bash arithmetic reads `08` as bad
+  # octal and `00` would make the ticker spin with no delay.
+  '' | *[!0-9]* | 0*) echo "error: RUN_TESTS_HEARTBEAT must be a positive integer of seconds" >&2; exit 1 ;;
+esac
+HB_PID=""
+# A killed runner must not leave its heartbeat printing into the caller's pipe.
+trap '[ -z "$HB_PID" ] || kill "$HB_PID" 2>/dev/null' EXIT
+
+# start_heartbeat <name> — background a ticker for the running suite. Its sleep
+# writes to /dev/null so an orphaned sleep cannot hold the caller's pipe open,
+# and it stops on its own if the runner disappears.
+start_heartbeat() {
+  local name="$1" parent="$$"
+  (
+    ticks=0
+    while sleep "$HEARTBEAT" > /dev/null 2>&1; do
+      kill -0 "$parent" 2> /dev/null || exit 0
+      ticks=$((ticks + HEARTBEAT))
+      printf '… still running: %s (%ss)\n' "$name" "$ticks"
+    done
+  ) &
+  HB_PID=$!
+}
+
+stop_heartbeat() {
+  [ -n "$HB_PID" ] || return 0
+  kill "$HB_PID" 2> /dev/null
+  wait "$HB_PID" 2> /dev/null
+  HB_PID=""
+}
+
 RESULTS=()
 passed=0
 failed=0
@@ -383,10 +452,12 @@ for i in "${SELECTED[@]}"; do
   rc=0
   if [ "$VERBOSE" -eq 1 ]; then
     echo "── $name ──"
-    "${runner[@]}" || rc=$?
+    GIT_CEILING_DIRECTORIES="$suite_git_ceiling" "${runner[@]}" || rc=$?
   else
     # Output is withheld on success: 49 suites of scrollback buries the summary.
-    out="$("${runner[@]}" 2>&1)" || rc=$?
+    start_heartbeat "$name"
+    out="$(GIT_CEILING_DIRECTORIES="$suite_git_ceiling" "${runner[@]}" 2>&1)" || rc=$?
+    stop_heartbeat
   fi
   elapsed=$((SECONDS - suite_start))
   if [ "$rc" -eq 0 ]; then
@@ -401,6 +472,8 @@ for i in "${SELECTED[@]}"; do
       echo ""
     fi
   fi
+  # The progress line is the summary row, printed as the suite finishes.
+  [ "$VERBOSE" -eq 1 ] || printf '%s\n' "${RESULTS[${#RESULTS[@]} - 1]}"
 done
 
 wall=$((SECONDS - run_start))

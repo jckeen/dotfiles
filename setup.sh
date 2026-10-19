@@ -1573,6 +1573,11 @@ elif ! command -v codex &>/dev/null; then
   echo ""
   echo "--- Installing Codex CLI ---"
   run npm install -g @openai/codex || echo "  -> Codex install failed (continuing; install manually and re-run setup.sh)"
+elif [ "${DRY_RUN:-0}" = "1" ]; then
+  # Not even `--version`: every codex invocation (0.163) creates
+  # $CODEX_HOME/tmp/arg0-linux helper links unless CODEX_HOME sits under the
+  # system temp dir, so a dry-run against a $HOME outside /tmp mutated it (#621).
+  echo "Codex CLI already installed (version probe skipped in dry-run: any codex invocation can initialize \$HOME)"
 else
   echo "Codex CLI already installed: $(codex --version 2>/dev/null || echo 'installed')"
 fi
