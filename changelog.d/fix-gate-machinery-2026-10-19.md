@@ -35,3 +35,18 @@
   package's `node_modules` still refuse. `bun.lockb` now also counts for the
   skill and scripts trees.
 - **`review-receipt.py` is executable**, as the review-gates skill invokes it.
+
+## 2026-10-19 — fix(gates): the Codex review cannot escalate out of its read-only sandbox (#651)
+
+- **`-s read-only` was not read-only.** The gate pinned the sandbox but not
+  the approval policy, so it inherited the user's
+  `approval_policy = "on-request"` and `approvals_reviewer = "auto_review"`.
+  A command the sandbox denied could be re-run with
+  `sandbox_permissions = "require_escalated"`, and the automatic reviewer
+  approved it, unattended and unsandboxed. A probe on codex-cli 0.163.0 wrote
+  a file this way under `-s read-only`. During a gate run the reviewer acted on
+  the repro text (`bun install && bun run verify`), installed `node_modules`
+  into the worktree, and `verify --snapshot` refused the run. Both Codex
+  invocations now pass `-c approval_policy="never"`. `review-multipart.py`
+  refuses any native turn whose recorded `approval_policy` is not `never`,
+  alongside the existing read-only sandbox check.

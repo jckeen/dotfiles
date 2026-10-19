@@ -125,6 +125,7 @@ class TransportTests(unittest.TestCase):
                                 "type": "turn_context",
                                 "payload": {
                                     "model": "fixture",
+                                    "approval_policy": "never",
                                     "sandbox_policy": {"type": "read-only"},
                                 },
                             },
@@ -221,7 +222,11 @@ class TransportTests(unittest.TestCase):
             },
             {
                 "type": "turn_context",
-                "payload": {"model": "fixture", "sandbox_policy": {"type": "read-only"}},
+                "payload": {
+                    "model": "fixture",
+                    "approval_policy": "never",
+                    "sandbox_policy": {"type": "read-only"},
+                },
             },
             {
                 "type": "event_msg",
@@ -236,6 +241,17 @@ class TransportTests(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 transport.audit_history(corrupt, ["exact input"], catalog)
+        # A read-only sandbox the model may escalate out of is not read-only: an
+        # auto reviewer approved `bun install` mid-review (#651).
+        for policy in ("on-request", "on-failure", "untrusted", None):
+            with self.subTest(approval_policy=policy):
+                escalatable = json.loads(json.dumps(records))
+                if policy is None:
+                    del escalatable[1]["payload"]["approval_policy"]
+                else:
+                    escalatable[1]["payload"]["approval_policy"] = policy
+                with self.assertRaises(ValueError):
+                    transport.audit_history(escalatable, ["exact input"], catalog)
         records[1]["payload"]["sandbox_policy"] = {"type": "workspace-write"}
         with self.assertRaises(ValueError):
             transport.audit_history(records, ["exact input"], catalog)

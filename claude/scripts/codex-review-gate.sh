@@ -40,8 +40,9 @@
 #
 # Security: the diff is untrusted input (it can carry prompt-injection text).
 # It is fenced with a hash-derived boundary the diff cannot forge, framed as
-# data-never-instructions, and the review runs `-s read-only` so a steered
-# agent cannot write or execute beyond reads.
+# data-never-instructions, and the review runs `-s read-only` with
+# `approval_policy="never"` so a steered agent cannot write or execute beyond
+# reads, nor ask its way out of the sandbox (#651).
 #
 # Degrade-open (exit 0 + loud warning) only when the TOOL cannot run — codex
 # missing, no JSON produced, or the diff exceeds CODEX_GATE_MAX_LINES. Set
@@ -664,8 +665,14 @@ if [[ "$REQUEST_BYTES" -gt 1000000 ]]; then
 fi
 
 # `-s read-only`: the diff is untrusted input; a steered review must not be
-# able to write or execute beyond reads. A nonzero exit is a failed run, even
-# if it left a partial structured result.
+# able to write or execute beyond reads. The sandbox alone does not ensure
+# that: a user config with `approval_policy = "on-request"` lets the model
+# re-run a denied command with escalated permissions, and an
+# `approvals_reviewer = "auto_review"` approves it unattended. That is how
+# `bun install` wrote node_modules into the worktree mid-review and
+# `verify --snapshot` refused (#651). `approval_policy="never"` removes the
+# escalation path; review-multipart.py checks every native turn kept it. A
+# nonzero exit is a failed run, even if it left a partial structured result.
 set +e
 # Leave terminal handling and tool-process cleanup with the native CLI. A
 # signal sent only to Bash is handled after this foreground command returns.
@@ -673,7 +680,7 @@ if [[ -n "$REQUEST_FILE" ]]; then
   REVIEW_SESSION=""
   CODEX_RC=0
   for ((PART_INDEX=1; PART_INDEX<=PART_COUNT; PART_INDEX++)); do
-    PART_ARGS=(exec -s read-only)
+    PART_ARGS=(exec -s read-only -c 'approval_policy="never"')
     if [[ -n "$REVIEW_SESSION" ]]; then
       SUPPORTED_CONTEXT="$(cat "$TRANSPORT_DIR/context-window")"
       PART_ARGS+=(-c "model_context_window=$SUPPORTED_CONTEXT" resume "$REVIEW_SESSION")
@@ -703,7 +710,7 @@ if [[ -n "$REQUEST_FILE" ]]; then
   done
 else
   "$GATE_CLI" exec - \
-    -s read-only \
+    -s read-only -c 'approval_policy="never"' \
     --output-schema "$SCHEMA" \
     -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
   CODEX_RC=$?

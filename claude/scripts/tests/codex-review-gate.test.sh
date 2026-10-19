@@ -88,6 +88,7 @@ index, total, packet = int(m[1]), int(m[2]), m[4]
 fragment = prompt.split("\n" + m[5] + "\n")[1]
 assert hashlib.sha256(fragment.encode()).hexdigest() == m[3]
 assert argv[argv.index("-s") + 1] == "read-only"
+assert argv[argv.index('approval_policy="never"') - 1] == "-c"
 parts = fake / "mp-fragments"
 parts.mkdir(exist_ok=True)
 (parts / str(index)).write_text(fragment)
@@ -104,7 +105,7 @@ records += [
     {"type": "response_item", "payload": {"type": "message", "role": "user",
      "content": [{"type": "input_text", "text": prompt}]}},
     {"type": "turn_context", "payload": {"model": "fixture-model",
-     "sandbox_policy": {"type": "read-only"}}},
+     "approval_policy": "never", "sandbox_policy": {"type": "read-only"}}},
     {"type": "event_msg", "payload": {"type": "token_count",
      "info": {"model_context_window": 258400 if index == 1 else 828400}}},
 ]
@@ -280,6 +281,9 @@ assert "diff absent from codex argv" "! grep -q 'SECRET_MARKER_XYZ' '$CODEX_FAKE
 assert "fence preamble absent from codex argv" "! grep -q 'UNTRUSTED' '$CODEX_FAKE_DIR/argv'"
 assert "structured schema requested" "grep -q -- '--output-schema' '$CODEX_FAKE_DIR/argv'"
 assert "review runs sandboxed read-only" "grep -qx 'read-only' '$CODEX_FAKE_DIR/argv'"
+# -s read-only alone is not read-only when the user's config lets the model
+# request escalation and an auto reviewer approves it (#651).
+assert "review cannot escalate out of the sandbox" "grep -A1 -x -- '-c' '$CODEX_FAKE_DIR/argv' | grep -qx 'approval_policy=\"never\"'"
 rm -rf "$R"
 
 # ── installed runtime preference and explicit override ─────────────────

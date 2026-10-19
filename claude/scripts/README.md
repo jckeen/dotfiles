@@ -82,8 +82,9 @@ characters and never split a character, so a non-ASCII request cannot produce a
 fragment several times the intended size. Intermediate acknowledgments cannot
 authorize a push.
 The helper `review-multipart.py` verifies native persisted inputs, rejects
-compaction, and checks the observed model window against the native bundled
-catalog. Larger context is scoped to the same model's supported capacity. Missing
+compaction, requires every native turn to record the read-only sandbox with
+`approval_policy` `never` (so the model could not escalate out of it, #651), and
+checks the observed model window against the native bundled catalog. Larger context is scoped to the same model's supported capacity. Missing
 or changed history, unsupported CLI metadata, and incomplete reviews fail closed.
 The normal setup links the helper alongside the gate; install them together.
 Gate or helper changes require independent review outside the configured gates.
