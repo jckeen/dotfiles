@@ -44,17 +44,17 @@ config directory; `ccw` points `CLAUDE_CONFIG_DIR` at `~/.claude-work`
 (override with `CLAUDE_WORK_CONFIG_DIR`) and the first run asks you to sign in.
 
 `claude/scripts/link-claude-profile.sh` links the profile's settings, global
-instructions, skills, agents, plugins, transcripts and memory back to
-`~/.claude`, and copies the user-scope MCP servers across. A session started
-under `cc` can be resumed under `ccw` and the other way round, which is the
-way to carry on when one account reaches its limit. The status line shows
-`◆ work` on a `ccw` session.
+instructions, skills, agents, plugins, transcripts, memory, and each
+session's todos and tasks back to `~/.claude`, and copies the user-scope MCP
+servers across. A session started under `cc` can be resumed under `ccw` and
+the other way round, which is the way to carry on when one account reaches
+its limit. The status line shows `◆ work` on a `ccw` session.
 
 What stays with each account: the login, MCP and connector sign-ins, folder
-trust prompts, prompt history, and everything hosted on claude.ai — Remote
-Control sessions, connectors, routines and artifacts appear under whichever
-account the session runs on. Work run through `ccw` is subject to that
-organization's admin and retention settings.
+trust prompts, prompt history, per-session environment (`session-env/`), and
+everything hosted on claude.ai — Remote Control sessions, connectors, routines
+and artifacts appear under whichever account the session runs on. Work run
+through `ccw` is subject to that organization's admin and retention settings.
 
 ---
 
