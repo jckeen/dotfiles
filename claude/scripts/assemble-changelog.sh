@@ -239,7 +239,9 @@ if [ -e "$CHANGELOG" ]; then
     fi
     while IFS= read -r h; do
       [ -n "$h" ] || continue
-      if printf '%s\n' "$existing" | grep -qxF -- "$h"; then
+      # Here-string, not a pipe: grep -q exits at the first match, and under
+      # pipefail the writer's SIGPIPE would turn that hit into a miss.
+      if grep -qxF -- "$h" <<<"$existing"; then
         err "$f — entry '$h' is already in $CHANGELOG (already assembled? delete the fragment)"
       fi
     done <<<"$heads"

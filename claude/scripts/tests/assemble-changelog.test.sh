@@ -300,6 +300,18 @@ run
 expect "duplicate: an already-assembled entry is refused" 1 "already in CHANGELOG.md"
 rm -rf "$R"
 
+# Same, with the match at the top of a long history: an early grep -q exit
+# must still count as a hit (no SIGPIPE-turned-miss).
+new_repo
+{
+  printf '%s\n' "# Changelog" "" "## 2026-10-09 — fix: early match" "- b"
+  for n in $(seq 1 3000); do printf '%s\n' "" "## 2026-01-01 — chore: filler $n" "- f"; done
+} >"$R/CHANGELOG.md"
+w changelog.d/dup.md "## 2026-10-09 — fix: early match" "- b"
+run --check
+expect "duplicate: an early match in a long changelog is refused" 1 "already in CHANGELOG.md"
+rm -rf "$R"
+
 # ── PR scope (--base/--branch): one fragment, named after the branch ──
 new_repo
 git -C "$R" switch -q -c feat/one-thing
