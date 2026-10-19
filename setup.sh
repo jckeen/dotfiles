@@ -765,24 +765,29 @@ for cmd in gh git curl jq tmux; do
   command -v "$cmd" &>/dev/null || MISSING_PKGS="$MISSING_PKGS $cmd"
 done
 
-# Modern CLI stack the Claude config mandates (rg/fd/bat/eza — issue #204):
-# a fresh machine must not violate the guidance it just installed. Package
-# names differ per manager (apt: ripgrep/fd-find/bat/eza; brew: ripgrep/fd/
-# bat/eza), and Ubuntu ships the binaries as fdfind/batcat (shimmed below).
+# Modern CLI stack the Claude config mandates (issue #204): a fresh machine
+# must not violate the guidance it just installed. The tools, their package
+# names per manager, and their Debian binary names all come from
+# CLI_STACK_TOOLS in lib-checks.sh (#636) — the list check-claude.sh warns
+# from. A tool whose Debian binary is already installed (fdfind, batcat) is
+# shimmed below instead of reinstalled. A `?`-marked apt package is installed
+# on its own line (see the list's header comment).
 MISSING_APT=""
+MISSING_APT_OPTIONAL=""
 MISSING_BREW=""
-command -v rg &>/dev/null || { MISSING_APT="$MISSING_APT ripgrep"; MISSING_BREW="$MISSING_BREW ripgrep"; }
-command -v fd &>/dev/null || command -v fdfind &>/dev/null \
-  || { MISSING_APT="$MISSING_APT fd-find"; MISSING_BREW="$MISSING_BREW fd"; }
-command -v bat &>/dev/null || command -v batcat &>/dev/null \
-  || { MISSING_APT="$MISSING_APT bat"; MISSING_BREW="$MISSING_BREW bat"; }
-# eza is installed on its own line below: it's absent from older Ubuntu/Debian
-# apt archives, and one unknown package fails the whole apt install.
-MISSING_EZA=0
-command -v eza &>/dev/null || MISSING_EZA=1
+for _tool in "${CLI_STACK_TOOLS[@]}"; do
+  cli_stack_entry "$_tool"
+  command -v "$CLI_NAME" &>/dev/null && continue
+  [ "$CLI_BIN" != "$CLI_NAME" ] && command -v "$CLI_BIN" &>/dev/null && continue
+  MISSING_BREW="$MISSING_BREW $CLI_BREW"
+  case "$CLI_APT" in
+    \?*) MISSING_APT_OPTIONAL="$MISSING_APT_OPTIONAL ${CLI_APT#\?}" ;;
+    *)   MISSING_APT="$MISSING_APT $CLI_APT" ;;
+  esac
+done
 
-if [ -n "$MISSING_PKGS" ] || [ -n "$MISSING_APT" ] || [ "$MISSING_EZA" -eq 1 ]; then
-  echo "Missing packages:$MISSING_PKGS$MISSING_BREW$([ "$MISSING_EZA" -eq 1 ] && echo ' eza')"
+if [ -n "$MISSING_PKGS" ] || [ -n "$MISSING_BREW" ]; then
+  echo "Missing packages:$MISSING_PKGS$MISSING_BREW"
   if [[ "$PLATFORM" == "macos" ]]; then
     if ! command -v brew &>/dev/null; then
       echo "Homebrew not found. Install it first:"
@@ -791,7 +796,6 @@ if [ -n "$MISSING_PKGS" ] || [ -n "$MISSING_APT" ] || [ "$MISSING_EZA" -eq 1 ]; 
     fi
     ask_yn "Y" "Install via brew? [Y/n] "
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
-    [ "$MISSING_EZA" -eq 1 ] && MISSING_BREW="$MISSING_BREW eza"
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
     run brew install $MISSING_PKGS $MISSING_BREW || true
   else
@@ -799,22 +803,25 @@ if [ -n "$MISSING_PKGS" ] || [ -n "$MISSING_APT" ] || [ "$MISSING_EZA" -eq 1 ]; 
     [[ "${yn:-}" =~ ^[Nn] ]] && { echo "Skipping. Install manually and re-run."; exit 1; }
     # shellcheck disable=SC2086  # word-splitting intentional for pkg list
     run sudo apt update && run sudo apt install -y $MISSING_PKGS $MISSING_APT unzip
-    if [ "$MISSING_EZA" -eq 1 ]; then
-      run sudo apt install -y eza \
-        || echo "  -> eza not in this release's apt archive; install manually (https://eza.rocks)"
-    fi
+    for _pkg in $MISSING_APT_OPTIONAL; do
+      run sudo apt install -y "$_pkg" \
+        || echo "  -> $_pkg not in this release's apt archive; install it manually"
+    done
   fi
 else
   echo "All required packages already installed."
 fi
 
-# Ubuntu/Debian name shims: apt installs the binaries as fdfind (fd-find) and
-# batcat (bat), but the config — and muscle memory — call them fd and bat.
-# Symlink the canonical names into ~/.local/bin (already on PATH via §7).
-# Idempotent (ln -sf) and skipped when the canonical name already resolves.
+# Ubuntu/Debian name shims: apt installs some CLI_STACK_TOOLS binaries under
+# another name (fd-find -> fdfind, bat -> batcat), but the config — and muscle
+# memory — call them fd and bat. Symlink the canonical names into
+# ~/.local/bin (already on PATH via §7). Idempotent (ln -sf) and skipped when
+# the canonical name already resolves.
 if [[ "$PLATFORM" != "macos" ]]; then
-  for _shim in fd:fdfind bat:batcat; do
-    _want="${_shim%%:*}"; _have="${_shim##*:}"
+  for _tool in "${CLI_STACK_TOOLS[@]}"; do
+    cli_stack_entry "$_tool"
+    _want="$CLI_NAME"; _have="$CLI_BIN"
+    [ "$_have" = "$_want" ] && continue
     if ! command -v "$_want" &>/dev/null && command -v "$_have" &>/dev/null; then
       run mkdir -p "$HOME_DIR/.local/bin"
       run ln -sf "$(command -v "$_have")" "$HOME_DIR/.local/bin/$_want"
@@ -2327,6 +2334,24 @@ fi
 # installed in section 1). Symlinked so edits sync with the repo.
 link_file "$DOTFILES_DIR/.tmux.conf" "$HOME_DIR/.tmux.conf"
 echo "  -> .tmux.conf linked"
+
+# reload_tmux_config — a tmux server that is already running read its config
+# once at start, so a newly linked or updated ~/.tmux.conf would not reach it
+# until every session closed (#643). `tmux info` succeeds only when a server
+# answers; then source the managed config into it. Every directive in
+# .tmux.conf is a set/bind, so re-sourcing is idempotent. Dry-run previews.
+reload_tmux_config() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  tmux info >/dev/null 2>&1 || return 0
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would reload $HOME_DIR/.tmux.conf into the running tmux server"
+  elif tmux source-file "$HOME_DIR/.tmux.conf"; then
+    echo "  -> reloaded .tmux.conf into the running tmux server"
+  else
+    echo "  WARNING: could not reload .tmux.conf into the running tmux server; run: tmux source-file ~/.tmux.conf" >&2
+  fi
+}
+reload_tmux_config
 
 # ─── 7c. Verification — login shell can resolve cc ───────────────────
 # Catches regressions before the user hits them. If `bash -li -c 'type cc'`

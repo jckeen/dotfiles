@@ -767,6 +767,12 @@ cct() {
     echo "cct: already inside tmux — use cc here, or detach first (Ctrl-b d)" >&2
     return 1
   fi
+  # A server that is already running keeps the config it started with, so
+  # re-source the managed one before attaching or adding a session (#643).
+  if [ -f "$HOME/.tmux.conf" ] && tmux info >/dev/null 2>&1; then
+    tmux source-file "$HOME/.tmux.conf" \
+      || echo "cct: could not reload ~/.tmux.conf into the running tmux server" >&2
+  fi
   local name dir
   if [ -n "${1:-}" ] && [ -d "$(_dev_dir)/$1" ]; then
     name="$1"
