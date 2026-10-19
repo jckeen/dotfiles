@@ -26,7 +26,7 @@
 - **`claude/hooks/SymlinkRepair.hook.ts`**: the SessionStart mirror had the
   same in-place `unlinkSync(join(dst, name))`. It now renames to the same
   private name, re-checks each entry before unlinking it, and restores the
-  dir if `rmdir` fails. The shell reaper also recovers a hook that died
+  dir if any unlink or the `rmdir` fails (late content, or a read-only dir). The shell reaper also recovers a hook that died
   mid-drain.
 - **`claude/scripts/tests/heal-race.test.sh`**: a fake `rm` on PATH plays the
   rival on its first call. The old code loses `$src/f1`; the new code keeps

@@ -173,12 +173,13 @@ function migrateLegacySkillDir(src: string, dst: string): boolean {
     }
     // Re-check each entry right before unlinking it: a writer that still holds
     // the directory open can add content after the scan, and that is never
-    // deleted. rmdir then fails on it and the remainder is restored.
-    for (const name of readdirSync(priv)) {
-      const p = join(priv, name);
-      if (lstatSync(p).isSymbolicLink() && readlinkSync(p) === join(src, name)) unlinkSync(p);
-    }
+    // deleted. Any failure (that late content, or an unlink refused on a
+    // read-only dir) restores the remainder to dst so the skill stays reachable.
     try {
+      for (const name of readdirSync(priv)) {
+        const p = join(priv, name);
+        if (lstatSync(p).isSymbolicLink() && readlinkSync(p) === join(src, name)) unlinkSync(p);
+      }
       rmdirSync(priv);
     } catch (e) {
       renameSync(priv, dst);
