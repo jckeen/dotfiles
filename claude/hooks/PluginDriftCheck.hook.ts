@@ -53,7 +53,8 @@
  * controls, and the output becomes model context, so each is passed through
  * shown() first. An id shown() prints unchanged is its own allowlist key; any
  * other id (unsafe characters, or over 300 characters) is printed sanitized
- * alongside the key `sha256:<first 16 hex of the raw id's SHA-256>`, and only
+ * alongside the key `sha256:<first 16 hex of the SHA-256 of the raw id's
+ * UTF-16LE code units>`, and only
  * that token allowlists it (#648) — so every printed key clears its warning,
  * and no raw id can match an allowlist line by spelling out a token.
  *
@@ -190,10 +191,14 @@ function shown(text: string): string {
 }
 
 // The one `# mods-ok:` key for an id. A token is never verbatim (`:` is
-// outside SAFE_ID), so a raw id cannot collide with another id's token.
+// outside SAFE_ID), so a raw id cannot collide with another id's token. The
+// hash input is the id's UTF-16 code units, not UTF-8: UTF-8 encoding turns
+// every lone surrogate (valid in a JSON name) into U+FFFD, which would give
+// distinct ids one key.
 function allowKey(id: string): string {
   if (verbatim(id)) return id;
-  return `sha256:${createHash('sha256').update(id).digest('hex').slice(0, 16)}`;
+  const units = Buffer.from(id, 'utf16le');
+  return `sha256:${createHash('sha256').update(units).digest('hex').slice(0, 16)}`;
 }
 
 function bullets(items: string[]): string {
