@@ -4,6 +4,10 @@
 # Living — kept current as a side effect of the merge loop
 LIVING        README.md
 LIVING        CHANGELOG.md
+# Changelog fragments (#626): one per PR, folded into CHANGELOG.md. Same tier
+# and exemptions as CHANGELOG.md (dead links, SOURCE-only bans), since an
+# entry may name files later removed or retired.
+LIVING        changelog.d/*.md
 LIVING        ROADMAP.md
 LIVING        CLAUDE-GUIDE.md
 LIVING        docs/BRANCH_PROTECTION.md

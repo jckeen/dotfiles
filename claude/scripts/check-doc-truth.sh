@@ -200,6 +200,7 @@ for i in "${!FILES[@]}"; do
   f="${FILES[$i]}"
   base="$(basename "$f")"
   [[ "$base" == CHANGELOG* ]] && continue
+  [[ "$f" == changelog.d/* ]] && continue # fragments of CHANGELOG.md (#626)
   dir="$(dirname "$f")"
   stripped="$(strip_code < "$f")"
   while IFS= read -r m; do
