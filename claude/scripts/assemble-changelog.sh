@@ -379,7 +379,17 @@ fi
 [ -w "$FRAG_DIR" ] || die "cannot delete fragments: $FRAG_DIR is not writable; nothing was written"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/assemble-changelog.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+HELD=""
+# Scratch files go; a holding directory that still has fragments in it (a
+# failed restore, or an interruption mid-move) is never deleted, and its path
+# is printed so they can be moved back by hand.
+cleanup() {
+  rm -rf "$TMP"
+  [ -n "$HELD" ] && [ -d "$HELD" ] || return 0
+  if rmdir "$HELD" 2>/dev/null; then return 0; fi
+  printf '✖ assemble-changelog: fragments are preserved in %s; move them back into %s/\n' "$HELD" "$FRAG_DIR" >&2
+}
+trap cleanup EXIT
 
 # Split every fragment into one file per entry plus a sort key:
 #   <date> TAB <fragment name> TAB <index in file> TAB <entry file>
@@ -431,26 +441,30 @@ if ! cat "$TMP/CHANGELOG.new" >"$stage" || ! chmod 644 "$stage"; then
   die "could not stage the new $CHANGELOG; nothing was changed"
 fi
 # Move the fragments aside first, then replace CHANGELOG.md: either step
-# failing puts every fragment back, so the result is all or nothing.
-mkdir "$TMP/held"
-restore() {
-  local g
-  for g in "$TMP/held"/*; do
+# failing puts every fragment back, so the result is all or nothing. The
+# holding directory sits in the repo root (same filesystem, so each move is a
+# rename) and outlives the run whenever it is not empty — see cleanup().
+HELD="$(mktemp -d ".assemble-held.XXXXXX")" || die "cannot create a holding directory; nothing was changed"
+restore() { # returns 1 if any fragment could not be put back
+  local g ok=0
+  for g in "$HELD"/*; do
     [ -e "$g" ] || continue
-    mv -f -- "$g" "$FRAG_DIR/" || printf '✖ could not restore %s from %s\n' "${g##*/}" "$g" >&2
+    mv -- "$g" "$FRAG_DIR/" || ok=1
   done
   rm -f -- "$stage"
+  return "$ok"
+}
+fail_after_hold() { # <what failed>
+  if restore; then
+    die "$1; every fragment was restored and $CHANGELOG is unchanged"
+  fi
+  die "$1; some fragments could not be restored (they are kept in $HELD)"
 }
 for i in "${!FRAGS[@]}"; do
-  if ! mv -- "${FRAGS[$i]}" "$TMP/held/"; then
-    restore
-    die "cannot delete ${FRAGS[$i]}; fragments were restored and $CHANGELOG is unchanged"
-  fi
+  mv -- "${FRAGS[$i]}" "$HELD/" || fail_after_hold "cannot delete ${FRAGS[$i]}"
 done
-if ! mv -f -- "$stage" "$CHANGELOG"; then
-  restore
-  die "could not replace $CHANGELOG; fragments were restored"
-fi
+mv -f -- "$stage" "$CHANGELOG" || fail_after_hold "could not replace $CHANGELOG"
+rm -rf -- "$HELD"
 
 entries="$(wc -l <"$TMP/sorted" | tr -d ' ')"
 echo "assemble-changelog: folded $entries entr$([ "$entries" = 1 ] && echo y || echo ies) from $n fragment(s) into $CHANGELOG"

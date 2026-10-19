@@ -531,6 +531,37 @@ run --check --base main
 expect "scope: adding a fragment and a CHANGELOG.md entry is refused" 1 "also adds an entry to CHANGELOG.md"
 rm -rf "$R"
 
+# Gate finding: when replacing CHANGELOG.md fails AND putting a fragment back
+# fails, the held fragment must survive (it used to sit in a scratch dir the
+# exit trap deleted). Fault injection: a PATH shim makes every mv that targets
+# CHANGELOG.md or changelog.d/ fail, so the hold succeeds and both later
+# steps fail.
+new_repo
+shim="$(mktemp -d)"
+cat >"$shim/mv" <<'SHIM'
+#!/usr/bin/env bash
+last="${!#}"
+case "$last" in
+  CHANGELOG.md | changelog.d/) exit 1 ;;
+esac
+exec /bin/mv "$@"
+SHIM
+chmod +x "$shim/mv"
+w changelog.d/precious.md "## 2026-10-05 — feat: precious" "- keep me"
+before="$(cat "$R/CHANGELOG.md")"
+OUT="$(cd "$R" && PATH="$shim:$PATH" "$SCRIPT" 2>&1)"
+RC=$?
+expect "rollback: a failed replace and a failed restore exit non-zero" 1 "kept in"
+held="$(find "$R" -maxdepth 2 -name precious.md -path '*.assemble-held.*' | head -n 1)"
+if [ -n "$held" ] && grep -qF "keep me" "$held" && [ "$before" = "$(cat "$R/CHANGELOG.md")" ]; then
+  ok "rollback: the fragment survives in the holding dir; CHANGELOG.md unchanged"
+else
+  bad "rollback: the fragment survives in the holding dir; CHANGELOG.md unchanged" "$OUT"
+fi
+grep -qF "fragments are preserved in" <<<"$OUT" && ok "rollback: the holding path is printed" \
+  || bad "rollback: the holding path is printed" "$OUT"
+rm -rf "$shim" "$R"
+
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo
 run --bogus

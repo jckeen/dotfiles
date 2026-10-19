@@ -50,7 +50,9 @@
   fragment, it adds no `## ` entry to `CHANGELOG.md`. The filename is never
   derived from the branch, because two branches can share a slug.
 - **Assembly is all or nothing.** It moves the fragments aside before
-  replacing `CHANGELOG.md`, and puts them back if either step fails.
+  replacing `CHANGELOG.md`, and puts them back if either step fails. A
+  fragment that cannot be put back stays in a holding directory whose path
+  is printed.
 - **Assembly is manual**, at release or handoff time, as an ordinary PR. A bot
   commit to `main` cannot pass: `main` requires status checks on every commit,
   including from admins, and a `GITHUB_TOKEN` push never starts them. The
