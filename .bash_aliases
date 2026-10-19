@@ -769,7 +769,8 @@ cct() {
   fi
   # A server that is already running keeps the config it started with, so
   # re-source the managed one before attaching or adding a session (#643).
-  if [ -f "$HOME/.tmux.conf" ] && tmux info >/dev/null 2>&1; then
+  # list-sessions, not info: info fails when every session is detached.
+  if [ -f "$HOME/.tmux.conf" ] && tmux list-sessions >/dev/null 2>&1; then
     tmux source-file "$HOME/.tmux.conf" \
       || echo "cct: could not reload ~/.tmux.conf into the running tmux server" >&2
   fi

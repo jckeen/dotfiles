@@ -2337,12 +2337,21 @@ echo "  -> .tmux.conf linked"
 
 # reload_tmux_config — a tmux server that is already running read its config
 # once at start, so a newly linked or updated ~/.tmux.conf would not reach it
-# until every session closed (#643). `tmux info` succeeds only when a server
-# answers; then source the managed config into it. Every directive in
-# .tmux.conf is a set/bind, so re-sourcing is idempotent. Dry-run previews.
+# until every session closed (#643). Any tmux client command creates the
+# socket directory, even with no server, and $TMUX_TMPDIR may sit under
+# $HOME, so tmux is not invoked at all unless the server socket already
+# exists. `tmux list-sessions` then confirms a live server; `tmux info` would
+# not, since it fails with only detached sessions. Dry-run previews.
 reload_tmux_config() {
+  local sock
   command -v tmux >/dev/null 2>&1 || return 0
-  tmux info >/dev/null 2>&1 || return 0
+  if [ -n "${TMUX:-}" ]; then
+    sock="${TMUX%%,*}"
+  else
+    sock="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"
+  fi
+  [ -S "$sock" ] || return 0
+  tmux list-sessions >/dev/null 2>&1 || return 0
   if [ "${DRY_RUN:-0}" = "1" ]; then
     echo "  [DRY] would reload $HOME_DIR/.tmux.conf into the running tmux server"
   elif tmux source-file "$HOME_DIR/.tmux.conf"; then
