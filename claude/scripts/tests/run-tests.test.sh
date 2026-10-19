@@ -189,6 +189,73 @@ run --verbose
 want "--verbose streams a passing suite's output" 0 'ran alpha'
 rm -rf "$R"
 
+# ── Progress (#650) ───────────────────────────────────────────────────
+# A full run takes ~17 min; with nothing printed until the summary, callers
+# killed it as hung. Each suite's result line must appear as it finishes —
+# before the summary — and a long suite must print a heartbeat while it runs.
+# line_of <extended regex> — first matching line number of $OUT, or 0.
+line_of() {
+  local n
+  n="$(grep -nE -- "$1" <<<"$OUT" | head -1 | cut -d: -f1)"
+  echo "${n:-0}"
+}
+new_repo
+printf '#!/usr/bin/env bash\nsleep 3\necho "ran slow"\n' > "$R/claude/scripts/tests/slow.test.sh"
+suite alpha 0
+suite gamma 1
+RUN_TESTS_HEARTBEAT=1 run
+want "a slow suite prints heartbeat lines while it runs" 1 \
+  '^… still running: slow \(1s\)$' '^… still running: slow \(2s\)$'
+summary_at="$(line_of '^═══ Test summary')"
+pass_at="$(line_of '^PASS[[:space:]]+alpha')"
+fail_at="$(line_of '^FAIL[[:space:]]+gamma')"
+slow_at="$(line_of '^PASS[[:space:]]+slow')"
+beat_at="$(line_of 'still running: slow')"
+if [ "$summary_at" -gt 0 ] && [ "$pass_at" -gt 0 ] && [ "$pass_at" -lt "$summary_at" ] \
+  && [ "$fail_at" -gt 0 ] && [ "$fail_at" -lt "$summary_at" ] \
+  && [ "$beat_at" -gt 0 ] && [ "$slow_at" -gt "$beat_at" ] && [ "$slow_at" -lt "$summary_at" ]; then
+  pass=$((pass + 1))
+  echo "ok   - per-suite progress lines and heartbeats precede the summary"
+else
+  failed=$((failed + 1))
+  echo "FAIL - progress lines out of order (summary=$summary_at alpha=$pass_at gamma=$fail_at slow=$slow_at beat=$beat_at)"
+  sed 's/^/      | /' <<<"$OUT"
+fi
+want "the summary still lists every suite" 1 '^  PASS[[:space:]]+alpha' \
+  '^  FAIL[[:space:]]+gamma' '^  PASS[[:space:]]+slow' '2 passed, 1 failed'
+run alpha
+want_absent "a fast suite prints no heartbeat at the default interval" 'still running'
+RUN_TESTS_HEARTBEAT=0 run alpha
+want "a non-positive heartbeat interval is refused" 1 'RUN_TESTS_HEARTBEAT must be a positive integer'
+# Bash arithmetic reads a leading zero as octal: `08` would kill the ticker
+# and `00` would spin it with no delay.
+for interval in 08 00 01; do
+  RUN_TESTS_HEARTBEAT="$interval" run alpha
+  want "a leading-zero heartbeat interval ($interval) is refused" 1 \
+    'RUN_TESTS_HEARTBEAT must be a positive integer'
+done
+rm -rf "$R"
+
+# ── Git discovery confinement (#621) ──────────────────────────────────
+# Codex's sandbox creates /tmp/.git on the host (#368); a temp root that has
+# become a repository must not be discovered from a suite's fixture beneath it.
+new_repo
+CEILROOT="$(mktemp -d)"
+git init -q "$CEILROOT"
+cat > "$R/claude/scripts/tests/ceiling.test.sh" <<'EOF'
+#!/usr/bin/env bash
+d="$(mktemp -d)"
+trap 'rm -rf "$d"' EXIT
+if top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "discovered $top"
+  exit 1
+fi
+echo "ran ceiling"
+EOF
+TMPDIR="$CEILROOT" run ceiling
+want "git discovery from a fixture stops at the temp root" 0 'PASS[[:space:]]+ceiling'
+rm -rf "$R" "$CEILROOT"
+
 # ── Selecting a subset by name ────────────────────────────────────────
 new_repo
 suite alpha 0
@@ -404,6 +471,32 @@ commit_all
 run --changed --base no/such/ref
 want "an unresolvable base falls back to every suite" 0 \
   'cannot resolve' 'PASS[[:space:]]+alpha' 'PASS[[:space:]]+gamma'
+rm -rf "$R"
+
+# Changelog fragments are test-free: a branch's own fragment must not widen
+# --changed to every suite, and must not hide a real change beside it. Other
+# Markdown stays unmappable (it widens).
+new_repo
+suite alpha 0
+suite gamma 0
+subject claude/scripts/alpha.sh
+commit_all
+mkdir -p "$R/changelog.d"
+printf '## fragment\n' > "$R/changelog.d/fix-x.md"
+run --changed --base main
+want "a fragment-only change runs no suite" 0 'only changelog fragments changed'
+want_absent "a fragment-only change does not widen" 'PASS|running every suite'
+run --list --changed --base main
+want_absent "--list on a fragment-only change lists nothing" '^(alpha|gamma)$'
+echo '# touched' >> "$R/claude/scripts/alpha.sh"
+run --changed --base main
+want "a fragment plus a script runs that script's suite" 0 'PASS[[:space:]]+alpha'
+want_absent "a fragment plus a script does not widen" 'gamma|running every suite'
+git -C "$R" checkout -q -- claude/scripts/alpha.sh
+printf '# notes\n' > "$R/NOTES.md"
+run --changed --base main
+want "other Markdown still widens to every suite" 0 \
+  "cannot attribute 'NOTES.md'" 'PASS[[:space:]]+gamma'
 rm -rf "$R"
 
 # ── Optional dependency ───────────────────────────────────────────────

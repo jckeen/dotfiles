@@ -383,6 +383,28 @@ else
 fi
 rm -rf "$NODEHOME" "$NODESTUBS" "$NODEFIX" "$NODEOUT"
 
+# Issue #621: any real codex invocation — even `--version` — writes
+# $HOME/.codex/tmp/arg0-linux helper links unless $HOME sits under /tmp, so a
+# dry-run passed with a /tmp HOME and mutated one anywhere else. A stub that
+# records every call makes the contract independent of where mktemp put HOME
+# and of whether the host has Codex installed at all.
+CODEXSTUBS="$(mktemp -d)"
+CODEXOUT="$(mktemp)"
+cat > "$CODEXSTUBS/codex" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/codex-cli-invoked"
+EOF
+chmod +x "$CODEXSTUBS/codex"
+PATH="$CODEXSTUBS:$PATH" HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \
+  "$SETUP" --yes --dry-run > "$CODEXOUT" 2>&1 || true
+if [ ! -e "$TESTHOME/codex-cli-invoked" ] && grep -q 'Codex CLI already installed' "$CODEXOUT"; then
+  ok "dry-run never invokes the codex CLI (not even --version)"
+else
+  fail "dry-run invoked codex: $(tr '\n' ';' < "$TESTHOME/codex-cli-invoked" 2>/dev/null)"
+fi
+rm -f "$TESTHOME/codex-cli-invoked"
+rm -rf "$CODEXSTUBS" "$CODEXOUT"
+
 # Agent-service selection (issue #425) exercises the same dry-run contract per
 # selection; it runs from here so the existing CI step covers it.
 if "$REPO_ROOT/claude/scripts/tests/setup-services.test.sh"; then
