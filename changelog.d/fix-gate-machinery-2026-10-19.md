@@ -65,3 +65,13 @@
   requires the exact `gitdir: ` prefix and removes only trailing CR/LF, and
   the registered-gitdir read does the same (`registered_worktree()`). Both
   used to `.strip()` the path, the bug class #541 fixed.
+
+## 2026-10-19 — fix(gates): review-and-push says why an approved run did not push (#628)
+
+- **No terminal and no `--auto-push` is exit 4 with a message.** Without a
+  terminal, `read -p` printed no prompt and failed at end of input, and
+  `set -e` ended the wrapper with a bare exit 1 right after "Safe to push.".
+  Four agent branches hit this on 2026-10-16 and pushed by hand. The wrapper
+  now prints `approved but not pushed: no terminal to confirm on; re-run with
+  --auto-push, or push <sha> yourself` and exits 4. The script header and
+  `claude/scripts/README.md` document every exit status.
