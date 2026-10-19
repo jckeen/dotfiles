@@ -230,6 +230,11 @@ w .doc-contract 'LIVING CHANGELOG.md'
 w CHANGELOG.md 'removed [old thing](deleted.md) today'
 check "changelog exempt from dead-ref" 0 "doc-truth: OK"
 
+new_repo
+w .doc-contract 'LIVING changelog.d/*.md' 'BANNED:SOURCE,GENERATED FABLE\.md'
+w changelog.d/fix-x.md '- retired FABLE.md; removed [old thing](deleted.md)'
+check "changelog.d fragments: exempt from dead-ref and SOURCE-only bans" 0 "doc-truth: OK"
+
 # ── Cycle 4: BANNED patterns + scopes ──────────────────────────────
 
 new_repo

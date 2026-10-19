@@ -4,6 +4,10 @@
 # Living — kept current as a side effect of the merge loop
 LIVING        README.md
 LIVING        CHANGELOG.md
+# Changelog fragments (#626): one per PR, folded into CHANGELOG.md. Same tier
+# and exemptions as CHANGELOG.md (dead links, SOURCE-only bans), since an
+# entry may name files later removed or retired.
+LIVING        changelog.d/*.md
 LIVING        ROADMAP.md
 LIVING        CLAUDE-GUIDE.md
 LIVING        docs/BRANCH_PROTECTION.md
@@ -28,10 +32,6 @@ SOURCE        agents/skills/*/references/*.md
 SOURCE        antigravity/skills/*/SKILL.md
 SOURCE        .github/ISSUE_TEMPLATE/*.md
 SOURCE        .github/PULL_REQUEST_TEMPLATE.md
-# Changelog fragments (#626): one per PR, the source assemble-changelog.sh
-# folds into CHANGELOG.md. SOURCE, not LIVING: an entry may name files later
-# removed, as CHANGELOG.md itself does (it is exempt from the dead-link rule).
-SOURCE        changelog.d/*.md
 
 # Generated — build artifacts. The instruction files are built from
 # agents/canon/ by claude/scripts/gen-instruction-files.sh (ADR-0007), whose
