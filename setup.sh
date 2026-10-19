@@ -1506,6 +1506,11 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
             && echo "  -> Registered marketplace: $mp" \
             || echo "  -> Failed to register marketplace: $mp (continuing)"
           ;;
+        anthropic-plugin-directory)
+          # Built into Claude Code ("Built in (Anthropic Directory)" in
+          # `marketplace list`): there is nothing to register.
+          echo "  -> Marketplace $mp is built into Claude Code (no registration needed)"
+          ;;
         soundcheck)
           run claude plugin marketplace add github:thejefflarson/soundcheck \
             && echo "  -> Registered marketplace: $mp" \

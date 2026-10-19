@@ -13,4 +13,5 @@
   ([per-project], listing its Supabase projects). Both were installed but not
   in the manifest, which made PluginDriftCheck report reverse drift at every
   SessionStart. The Anthropic Directory marketplace is built into Claude Code,
-  so setup.sh finds it already registered.
+  so `setup.sh` gets a no-op registration arm for it, which
+  `check-install-integrity.sh` requires for every marketplace in the manifest.
