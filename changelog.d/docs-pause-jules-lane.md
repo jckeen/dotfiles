@@ -1,0 +1,16 @@
+## 2026-10-19 — docs: pause the Jules routine lane; add the two drifted plugins to the manifest
+
+- **`docs/adr/0009-jules-routine-lane.md`**: Status changes from Accepted to
+  Paused, with a dated status update. The lane never ran as decided: no timer,
+  two manual dispatches, no weekly report, so the 30% merge-rate rule was never
+  applied (#589, #446). The update states three restart criteria: the #639
+  fixes (already met by #670), an installed timer plus a recorded first weekly report, and web-app
+  PRs recorded in the same ledger. The PR-stage fallback in #606 is declined
+  along with the lane. `agents/README.md`, `README.md` and
+  `claude/scripts/README.md` no longer describe the timer as running.
+- **`claude/plugins.txt`**: adds `frontend-design@anthropic-plugin-directory`
+  ([global], already enabled) and `supabase@anthropic-plugin-directory`
+  ([per-project], listing its Supabase projects). Both were installed but not
+  in the manifest, which made PluginDriftCheck report reverse drift at every
+  SessionStart. The Anthropic Directory marketplace is built into Claude Code,
+  so setup.sh finds it already registered.
