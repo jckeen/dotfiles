@@ -10,11 +10,18 @@
 #
 # The name is a convention only: two branches can share a slug (feat/a-b and
 # feat-a/b), so nothing derives a filename from a branch. Any name of letters,
-# digits, `.`, `_` and `-` ending in `.md` is valid. The fragment holds one entry exactly as it will read in CHANGELOG.md — a
-#   ## YYYY-MM-DD — <type>(<scope>)?!?: <summary>
-# heading (types: the conventional set check-commit-format.sh enforces)
-# followed by at least one bullet. Several `## ` entries in one fragment are
-# allowed. Two PRs then never touch the same file.
+# digits, `.`, `_` and `-` ending in `.md` is valid. Two PRs then never touch
+# the same file.
+#
+# A fragment is a strict, line-oriented format, deliberately smaller than
+# Markdown so that what the validator accepts is exactly what assembly splits:
+#   - entries, each a `## YYYY-MM-DD — <type>(<scope>)?!?: <summary>` heading
+#     at column 0 with single spaces (types: the conventional set
+#     check-commit-format.sh enforces), followed by at least one bullet
+#     (`- ` or `* ` indented at most three spaces);
+#   - optional `### ` subsections at column 0; inline `code` is fine;
+#   - no other line whose first non-blank character is `#`, no code fences
+#     (``` or ~~~), no tab in a heading line, no CRLF.
 #
 # Assembly is a manual step (release or handoff time), not a bot push to main:
 # main's required status checks refuse a commit that has not run them, and a
@@ -49,7 +56,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
@@ -135,12 +142,14 @@ elif [ -e "$FRAG_DIR" ]; then
   die "$FRAG_DIR exists but is not a directory"
 fi
 
-# ── Fence tracking, shared by every awk pass ───────────────────────
-# A `#` or `## ` line inside a fenced code block is content, not a heading.
-# CommonMark rules: a fence opens with 3+ backticks or tildes indented at most
-# three spaces, and only a run of the SAME character at least as long, with
-# nothing after it, closes it — so a ```` block may hold ``` lines. Sets
-# `infence`; returns 1 when the line opened or closed a fence.
+# ── Fence tracking, for CHANGELOG.md only ──────────────────────────
+# Fragments have no fences (the validator refuses them), but CHANGELOG.md's
+# older entries may, and a `## ` line inside one is not an entry heading. So
+# fences matter only when locating CHANGELOG.md's insertion points. CommonMark
+# rules: a fence opens with 3+ backticks or tildes indented at most three
+# spaces, and only a run of the SAME character at least as long, with nothing
+# after it, closes it. Sets `infence`; returns 1 when the line opened or
+# closed a fence.
 # shellcheck disable=SC2016  # awk source: $ and backticks are awk's
 fence_awk='
 function fence_step(line,   s, ch, n, rest) {
@@ -166,17 +175,23 @@ function days_in(y, m) {
 }
 BEGIN {
   head_re = "^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — (" types ")(\\([a-z0-9._/-]+\\))?!?: [^[:space:]]"
-  entries = 0; seen_content = 0; bullets = 0; infence = 0
+  entries = 0; seen_content = 0; bullets = 0
 }
 function close_entry() {
   if (entries > 0 && bullets == 0) printf "%d\tentry has no bullet (\"- ...\") under its heading\n", entry_line
 }
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
-fence_step($0) { if (entries == 0 && !seen_content) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }; next }
-infence { next }
-/^(   |  | )#+([ \t]|$)/ { printf "%d\tindented heading; start # and ## headings at column 1\n", NR; next }
-/^# / || /^#$/ { printf "%d\ttop-level \"# \" heading; a fragment holds only ## entries\n", NR; next }
-/^## / {
+/^ ? ? ?(```|~~~)/ { printf "%d\tcode fence; fragments hold no code blocks (inline `code` is fine)\n", NR; next }
+/^[ \t]*#/ {
+  if ($0 ~ /\t/) { printf "%d\ttab in a heading line; use single spaces\n", NR; next }
+  if ($0 ~ /^### /) {
+    if (entries == 0 && !seen_content) { printf "%d\tcontent before the first ## heading\n", NR; seen_content = 1 }
+    next
+  }
+  if ($0 !~ /^## /) {
+    printf "%d\ta line starting with # must be a \"## YYYY-MM-DD — <type>: <summary>\" entry heading or a \"### \" subsection, at column 0\n", NR
+    next
+  }
   close_entry()
   entries++; entry_line = NR; bullets = 0
   if ($0 !~ head_re) {
@@ -194,11 +209,10 @@ infence { next }
     seen_content = 1
     next
   }
-  # A list item starts within three spaces; four or more is indented code.
+  # A list item starts within three spaces; four or more would be code.
   if ($0 ~ /^ ? ? ?[-*][ \t]/) bullets++
 }
 END {
-  if (infence) printf "%d\tunclosed code fence\n", NR
   close_entry()
   if (entries == 0) printf "0\tno \"## YYYY-MM-DD — <type>: <summary>\" entry\n"
 }'
@@ -207,7 +221,7 @@ END {
 # read (an unreadable fragment) is an error rather than an empty, clean report.
 for i in "${!FRAGS[@]}"; do
   f="${FRAGS[$i]}"
-  if ! report="$(awk -v types="$TYPES" "$fence_awk $validate_awk" "$f")"; then
+  if ! report="$(awk -v types="$TYPES" "$validate_awk" "$f")"; then
     err "$f — could not be read"
     continue
   fi
@@ -225,12 +239,29 @@ done
 if [ -L "$CHANGELOG" ]; then
   die "$CHANGELOG is a symlink; refusing to read or replace it"
 fi
+# CHANGELOG.md is refused, in --check and assembly alike, when it ends inside
+# an open fence (appended entries would render as code) or has a heading line
+# with a tab (`##<TAB>…` renders as a heading but is no insertion point).
 if [ -e "$CHANGELOG" ]; then
-  existing="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print }' "$CHANGELOG")" \
+  scan="$(awk "$fence_awk"'
+    fence_step($0) { next }
+    infence { next }
+    /^ ? ? ?#+[ \t]/ && /\t/ { printf "E\t%d\n", NR; next }
+    /^## / { print "H\t" $0 }
+    END { if (infence) print "F\t" NR }' "$CHANGELOG")" \
     || die "$CHANGELOG could not be read"
+  existing=""
+  while IFS="$(printf '\t')" read -r kind rest; do
+    case "$kind" in
+      H) existing="$existing$rest
+" ;;
+      E) err "$CHANGELOG:$rest — tab in a heading line; use single spaces" ;;
+      F) err "$CHANGELOG — ends inside an open code fence (opened before line $rest); close it" ;;
+    esac
+  done <<<"$scan"
   for i in "${!FRAGS[@]}"; do
     f="${FRAGS[$i]}"
-    if ! heads="$(awk "$fence_awk"' fence_step($0) { next } !infence && /^## / { print }' "$f")"; then
+    if ! heads="$(awk '/^## / { print }' "$f")"; then
       err "$f — could not be read"
       continue
     fi
@@ -248,10 +279,8 @@ fi
 # Two pending entries with one heading would fold into indistinguishable
 # sections (and defeat the already-assembled check above).
 if [ "${#FRAGS[@]}" -gt 0 ]; then
-  dups="$(awk "$fence_awk"'
-    FNR == 1 { infence = 0 }
-    fence_step($0) { next }
-    !infence && /^## / {
+  dups="$(awk '
+    /^## / {
       if ($0 in seen) {
         if (seen[$0] == FILENAME) printf "%s:%d\theading repeated in this fragment: %s\n", FILENAME, FNR, $0
         else printf "%s:%d\theading also in %s: %s\n", FILENAME, FNR, seen[$0], $0
@@ -307,9 +336,8 @@ tab="$(printf '\t')"
 n=0
 for i in "${!FRAGS[@]}"; do
   f="${FRAGS[$i]}"
-  awk -v out="$TMP/e.$i." -v name="${f#"$FRAG_DIR"/}" "$fence_awk"'
-    { fence_step($0) }
-    !infence && /^## / { k++; file = out k; printf "%s\t%s\t%d\t%s\n", substr($0, 4, 10), name, k, file >> idx }
+  awk -v out="$TMP/e.$i." -v name="${f#"$FRAG_DIR"/}" '
+    /^## / { k++; file = out k; printf "%s\t%s\t%d\t%s\n", substr($0, 4, 10), name, k, file >> idx }
     k { print > file }
   ' idx="$TMP/index" "$f"
   n=$((n + 1))

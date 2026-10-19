@@ -13,15 +13,22 @@
   ordered by filename, then by position in the file. The script then deletes
   the fragments. With no fragments it does nothing, so a second run changes
   nothing.
+- **Fragments use a strict, line-oriented format**, smaller than Markdown, so
+  what the validator accepts is exactly what assembly splits. A fragment holds
+  `## ` entry headings, optional `### ` subsections and bullets. Inline code
+  is allowed, code fences are not, and no other line may start with `#`.
 - **A malformed fragment is refused and nothing is written.** That covers:
   - a bad heading or calendar date;
   - an entry with no list item (one indented at most three spaces);
-  - an indented heading;
+  - a stray `#` line, or a tab in a heading line;
+  - a code fence;
   - the same heading repeated among pending fragments;
-  - an unclosed or mismatched fence;
   - CRLF line endings;
   - an unreadable or symlinked input;
   - an entry that is already in `CHANGELOG.md`.
+- **`CHANGELOG.md` is refused too**, in `--check` and in assembly, when it ends
+  inside an open code fence or has a tab in a heading line. It is the only
+  file read with fence awareness, and only to find insertion points.
 - **Flags:** `--check` validates without writing. `--base REF` also holds a PR
   to one fragment file. The filename is never derived from the branch, because
   two branches can share a slug.

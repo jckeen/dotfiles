@@ -152,30 +152,6 @@ expect_file "preamble: entries go after it, before the first entry" CHANGELOG.md
   "## 2026-10-01 — fix: old" "- o"
 rm -rf "$R"
 
-# ── A ## line inside a code fence is content, not a new entry ─────────
-new_repo
-w changelog.d/fenced.md "## 2026-10-03 — docs: fenced" "- see:" "  \`\`\`" "## not a heading" "# nor this" "  \`\`\`"
-run --check
-expect "fence: ## and # inside a fence are content" 0 "1 fragment(s)"
-rm -rf "$R"
-
-# A ```` fence may hold ``` lines; its ## line must not become an entry.
-new_repo
-w changelog.d/long.md "## 2026-10-03 — docs: long fence" "- see:" '````' '```' "## 2026-10-04 — docs: not an entry" '```' '````'
-run
-expect "fence: a longer fence holds a shorter one" 0 "folded 1 entry from 1 fragment(s)"
-grep -c '^## 2026-10-04' "$R/CHANGELOG.md" | grep -qx 1 && sed -n '3p' "$R/CHANGELOG.md" | grep -qF "long fence" \
-  && ok "fence: the fenced ## line stays inside its entry" \
-  || bad "fence: the fenced ## line stays inside its entry" "$(cat "$R/CHANGELOG.md")"
-rm -rf "$R"
-
-# A ``` fence is not closed by ~~~ (or by a shorter run).
-new_repo
-w changelog.d/mismatch.md "## 2026-10-03 — docs: mismatch" "- b" '```' "## 2026-10-04 — docs: inside" '~~~'
-run --check
-expect "fence: a mismatched closer leaves the fence open" 1 "unclosed code fence"
-rm -rf "$R"
-
 # Real calendar dates: Feb 29 only in a leap year, no day 31 in a 30-day month.
 new_repo
 w changelog.d/leap.md "## 2028-02-29 — docs: leap day" "- b"
@@ -212,9 +188,9 @@ malformed "Feb 29 off leap year" "invalid date" "## 2026-02-29 — feat: x" "- b
 malformed "Apr 31" "invalid date" "## 2026-04-31 — feat: x" "- b"
 malformed "no bullet" "no bullet" "## 2026-10-05 — feat: x" "" "prose only"
 malformed "text before heading" "content before the first ## heading" "intro" "## 2026-10-05 — feat: x" "- b"
-malformed "H1 inside" "top-level" "## 2026-10-05 — feat: x" "- b" "# Changelog"
+malformed "H1 inside" "must be" "## 2026-10-05 — feat: x" "- b" "# Changelog"
 malformed "empty" "no \"## YYYY-MM-DD" ""
-malformed "unclosed fence" "unclosed code fence" "## 2026-10-05 — feat: x" "- b" '```'
+malformed "unclosed fence" "code fence" "## 2026-10-05 — feat: x" "- b" '```'
 malformed "CRLF" "CRLF" "$(printf '## 2026-10-05 — feat: x\r')" "- b"
 
 # Non-fragment files in changelog.d/ are refused too.
@@ -364,14 +340,45 @@ run --check
 expect "duplicate: the same heading twice in one fragment is refused" 1 "repeated"
 rm -rf "$R"
 
-# ── Indented ATX headings and over-indented bullets ────────────────────
-malformed "indented ##" "indented heading" "## 2026-10-05 — feat: x" "- b" "  ## 2026-10-06 — feat: y" "- c"
-malformed "indented #" "indented heading" "## 2026-10-05 — feat: x" "- b" "   # Title"
+# ── Strict line grammar: no fences; every # line is an entry or ### ────
+# Fragments are a line-oriented format, not CommonMark: no code fences at all,
+# and any line starting (after any indentation) with # must be exactly a valid
+# `## ` entry heading or a `### ` subsection, both at column 0, with no tabs.
+malformed "fence \`\`\`" "code fence" "## 2026-10-05 — feat: x" "- b" '```' "## not a heading" '```'
+malformed "fence ~~~" "code fence" "## 2026-10-05 — feat: x" "- b" '~~~'
+malformed "indented fence" "code fence" "## 2026-10-05 — feat: x" "- b" '   ````'
+malformed "tab after ## (gate repro)" "tab" "## 2026-10-05 — feat: x" "- b" "$(printf '##\t2026-10-19 — docs: later')" "- c"
+malformed "tab after #" "tab" "## 2026-10-05 — feat: x" "- b" "$(printf '#\tTitle')"
+malformed "tab in heading text" "tab" "$(printf '## 2026-10-05 — feat: x\ty')" "- b"
+malformed "two spaces after ##" "heading must be" "##  2026-10-05 — feat: x" "- b"
+malformed "indented ##" "must be" "## 2026-10-05 — feat: x" "- b" "  ## 2026-10-06 — feat: y" "- c"
+malformed "4-space ##" "must be" "## 2026-10-05 — feat: x" "- b" "    ## code-looking"
+malformed "indented #" "must be" "## 2026-10-05 — feat: x" "- b" "   # Title"
+malformed "####" "must be" "## 2026-10-05 — feat: x" "- b" "#### deep"
+malformed "#word at line start" "must be" "## 2026-10-05 — feat: x" "- b" "  #626 continued"
 malformed "4-space bullet" "no bullet" "## 2026-10-05 — feat: x" "" "    - code, not a list item"
 new_repo
-w changelog.d/ok.md "## 2026-10-05 — feat: x" "   - three spaces is still a bullet" "    ## four spaces is code, not a heading"
+w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine"
+run
+expect "grammar: ### subsections, 3-space bullets and inline code pass" 0 "folded 1 entry"
+rm -rf "$R"
+
+# ── CHANGELOG.md side: fences only locate insertion points ─────────────
+# An open fence at the end of CHANGELOG.md would swallow appended entries
+# (gate repro: an older pending entry rendered as code).
+new_repo
+w CHANGELOG.md "# Changelog" "" "## 2026-10-10 — fix: x" "- e.g.:" '  ```' "  still code"
+w changelog.d/old.md "## 2026-10-01 — feat: older" "- b"
 run --check
-expect "indent: 3-space bullet counts, 4-space ## is code" 0 "1 fragment(s)"
+expect "changelog: --check refuses an open fence at the end of CHANGELOG.md" 1 "ends inside an open code fence"
+run
+expect "changelog: assemble refuses it too" 1 "ends inside an open code fence"
+[ -e "$R/changelog.d/old.md" ] && ok "changelog: the fragment is kept" || bad "changelog: the fragment is kept"
+rm -rf "$R"
+new_repo
+w CHANGELOG.md "# Changelog" "" "$(printf '##\t2026-10-10 — fix: tabbed')" "- b"
+run --check
+expect "changelog: a tab in a ## heading of CHANGELOG.md is refused" 1 "tab"
 rm -rf "$R"
 
 # ── Usage errors ──────────────────────────────────────────────────────
