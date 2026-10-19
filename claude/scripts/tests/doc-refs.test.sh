@@ -135,4 +135,9 @@ PYTHONDONTWRITEBYTECODE=1 \
 # The changelog-fragment assembler's suite (#626) rides here the same way.
 assembler_rc=0
 bash "$SCRIPT_DIR/../../../claude/scripts/tests/assemble-changelog.test.sh" || assembler_rc=$?
+# ...and the checkout's own fragments must be well-formed, so a malformed one
+# fails CI here rather than at assembly. (The one-fragment-per-PR scope check
+# needs the PR base, which this job does not have; that is the operator CI
+# patch's --check --base step.)
+"$SCRIPT_DIR/../assemble-changelog.sh" --check || assembler_rc=$?
 [ "$failed" -eq 0 ] && [ "$resolver_rc" -eq 0 ] && [ "$assembler_rc" -eq 0 ]

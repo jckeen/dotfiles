@@ -462,6 +462,75 @@ run --check
 expect "preamble: a missing title line is refused" 1 "exactly one"
 rm -rf "$R"
 
+# ── Bot review round 2 (#661) ─────────────────────────────────────────
+# A GFM table needs a delimiter row; refuse one with or without outer pipes,
+# and rule-only text after a nested marker.
+malformed "table delimiter without pipes" "$L" "## 2026-10-05 — feat: x" "- b" "  name | value" "  --- | ---" "  one | two"
+malformed "table delimiter with colons" "$L" "## 2026-10-05 — feat: x" "- b" "  :--- | ---:"
+malformed "rule after nested marker" "$L" "## 2026-10-05 — feat: x" "- b" "- - ---"
+
+# --check now applies assembly's own preconditions: CHANGELOG.md must exist
+# and its first line must be the title.
+new_repo
+rm -f "$R/CHANGELOG.md"
+w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+run --check
+expect "precondition: --check refuses a missing CHANGELOG.md" 1 "CHANGELOG.md not found"
+rm -rf "$R"
+new_repo
+w CHANGELOG.md "" "# Changelog" "" "## 2026-10-01 — fix: old" "- o"
+w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+run --check
+expect "precondition: --check refuses a title that is not line 1" 1 "must start with a '# ' title line"
+rm -rf "$R"
+
+# Assembly checks it can delete every fragment before replacing CHANGELOG.md,
+# so a failure never leaves the entries folded and the fragments behind.
+if [ "$(id -u)" -ne 0 ]; then
+  new_repo
+  w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+  before="$(cat "$R/CHANGELOG.md")"
+  chmod 555 "$R/changelog.d"
+  run
+  expect "delete preflight: an undeletable fragment refuses assembly" 1 "cannot delete"
+  [ "$before" = "$(cat "$R/CHANGELOG.md")" ] && ok "delete preflight: CHANGELOG.md untouched" \
+    || bad "delete preflight: CHANGELOG.md untouched"
+  chmod 755 "$R/changelog.d"
+  rm -rf "$R"
+fi
+
+# PR scope: a branch may not modify, rename or (outside assembly) touch
+# another PR's pending fragment, nor prepend an entry to CHANGELOG.md while
+# adding a fragment. Deleting fragments (the assembly PR) stays allowed.
+new_repo
+w changelog.d/theirs.md "## 2026-10-04 — fix: theirs" "- t"
+git -C "$R" add -A && git -C "$R" commit -q -m "fix: theirs"
+git -C "$R" switch -q -c feat/edit-theirs
+w changelog.d/theirs.md "## 2026-10-04 — fix: theirs" "- t" "- edited by someone else"
+git -C "$R" add -A && git -C "$R" commit -q -m "feat: edit"
+run --check --base main
+expect "scope: modifying a pending fragment from the base is refused" 1 "modifies or renames"
+git -C "$R" switch -q main
+git -C "$R" switch -q -c feat/rename-theirs
+git -C "$R" mv changelog.d/theirs.md changelog.d/mine.md
+git -C "$R" commit -q -m "feat: rename"
+run --check --base main
+expect "scope: renaming a pending fragment from the base is refused" 1 "modifies or renames"
+git -C "$R" switch -q main
+git -C "$R" switch -q -c docs/assemble
+run
+git -C "$R" add -A && git -C "$R" commit -q -m "docs: assemble changelog fragments"
+run --check --base main
+expect "scope: an assembly PR (fragments deleted, entries added) passes" 0 "0 fragment(s)"
+git -C "$R" switch -q main
+git -C "$R" switch -q -c feat/both
+w changelog.d/feat-both.md "## 2026-10-06 — feat: both" "- b"
+w CHANGELOG.md "# Changelog" "" "## 2026-10-06 — feat: also prepended" "- p" "" "## 2026-10-01 — fix: an old entry" "" "- old bullet"
+git -C "$R" add -A && git -C "$R" commit -q -m "feat: both"
+run --check --base main
+expect "scope: adding a fragment and a CHANGELOG.md entry is refused" 1 "also adds an entry to CHANGELOG.md"
+rm -rf "$R"
+
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo
 run --bogus

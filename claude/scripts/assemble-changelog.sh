@@ -28,7 +28,8 @@
 # Bullet and continuation text may not start with < > | # =, neither as
 # written nor after stripping every leading container prefix (whitespace,
 # `- ` `* ` `+ ` and `1. ` `1) ` list markers, `>`), and may not be only
-# - * _ = characters (a thematic break or setext underline). No line may
+# - * _ = : | characters (a thematic break, setext underline or table
+# delimiter row). No line may
 # contain <!--, -->, ``` or ~~~ anywhere. Inline `code` is fine. No CRLF.
 # Above CHANGELOG.md's first `## ` line only blank lines, one `# ` title and
 # the POINTER_1 / POINTER_2 lines below are allowed, verbatim.
@@ -47,7 +48,12 @@
 #                                    filename, then position in the file. No
 #                                    fragments: a no-op.
 #   assemble-changelog.sh --check    validate every fragment; write nothing
-#     [--base REF]                   also: REF...HEAD adds at most one fragment
+#     [--base REF]                   also: REF...HEAD adds at most one fragment,
+#                                    modifies or renames none on the base, and
+#                                    adds no `## ` entry to CHANGELOG.md while
+#                                    adding one. --check also checks assembly's
+#                                    preconditions (CHANGELOG.md present, title
+#                                    on line 1).
 #   --root DIR                       repo root (default: git toplevel of cwd)
 #
 # Exit: 0 clean, 1 on any malformed fragment or refused assembly (nothing is
@@ -73,7 +79,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
@@ -171,15 +177,17 @@ function days_in(y, m) {
 # construct (HTML, blockquote, table, heading, setext) or be a rule — neither
 # as written nor after stripping every leading container prefix (whitespace,
 # `- ` / `* ` / `+ ` markers, `1. ` / `1) ` markers, `>`), since a nested list
-# or quote puts any of those constructs back at the start of a block.
+# or quote puts any of those constructs back at the start of a block. Text of
+# only - * _ = : | characters is a thematic break, a setext underline or a
+# GFM table delimiter row (a table needs one, outer pipes or not).
 function bad_text(t,   prev) {
   if (t ~ /^[<>|#=]/) return 1
-  if (t ~ /^[-*_= \t]+$/) return 1
+  if (t ~ /^[-*_=:| \t]+$/) return 1
   do {
     prev = t
     sub(/^[ \t]+/, "", t); sub(/^[-*+][ \t]/, "", t); sub(/^[0-9]+[.)][ \t]/, "", t); sub(/^>/, "", t)
   } while (t != prev)
-  if (t == "" || t ~ /^[<>|#=]/) return 1
+  if (t == "" || t ~ /^[<>|#=]/ || t ~ /^[-*_=:| \t]+$/) return 1
   return 0
 }
 function before_entry() {
@@ -253,7 +261,16 @@ done
 if [ -L "$CHANGELOG" ]; then
   die "$CHANGELOG is a symlink; refusing to read or replace it"
 fi
-if [ -e "$CHANGELOG" ]; then
+# Assembly's own preconditions are checked here, in --check too, so a passing
+# --check means assembly can start.
+if [ ! -e "$CHANGELOG" ]; then
+  err "$CHANGELOG not found in $ROOT"
+elif [ ! -f "$CHANGELOG" ]; then
+  err "$CHANGELOG is not a regular file"
+else
+  if ! head -n 1 "$CHANGELOG" | grep -q '^# '; then
+    err "$CHANGELOG must start with a '# ' title line"
+  fi
   head_report="$(awk -v p1="$POINTER_1" -v p2="$POINTER_2" '
     /^## / { exit }
     /^$/ { next }
@@ -309,7 +326,11 @@ if [ "${#FRAGS[@]}" -gt 0 ]; then
   done <<<"$dups"
 fi
 
-# ── PR scope: at most one fragment added ───────────────────────────
+# ── PR scope: one fragment added, nothing else in the changelog ────
+# A PR adds at most one fragment, modifies or renames no fragment already on
+# the base (another PR's record), and, when it adds one, adds no `## ` entry
+# to CHANGELOG.md. Deleting fragments while adding entries is the assembly
+# PR's shape, and stays allowed.
 if [ -n "$BASE" ]; then
   git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
     || die "--base '$BASE' is not a commit here (fetch it, or fetch-depth: 0 in CI)"
@@ -320,6 +341,20 @@ if [ -n "$BASE" ]; then
   if [ "$n_added" -gt 1 ]; then
     err "this branch adds $n_added fragments; a PR adds one fragment file (several ## entries may share it):
 $(printf '%s\n' "$added" | sed 's/^/    /')"
+  fi
+  touched="$(git diff -M --name-only --diff-filter=MR "$BASE...HEAD" -- "$FRAG_DIR/")" \
+    || die "git diff $BASE...HEAD failed"
+  if [ -n "$touched" ]; then
+    err "this branch modifies or renames pending fragment(s) from the base; a PR adds its own fragment and leaves others alone:
+$(printf '%s\n' "$touched" | sed 's/^/    /')"
+  fi
+  if [ "$n_added" -gt 0 ]; then
+    cl_diff="$(git diff "$BASE...HEAD" -- "$CHANGELOG")" || die "git diff $BASE...HEAD failed"
+    # Here-string, not a pipe: grep -q exits early, and pipefail would read the
+    # writer's SIGPIPE as a miss.
+    if grep -q '^+## ' <<<"$cl_diff"; then
+      err "this branch adds a fragment and also adds an entry to $CHANGELOG; put the entry in the fragment only"
+    fi
   fi
 fi
 
@@ -339,9 +374,9 @@ if [ "${#FRAGS[@]}" -eq 0 ]; then
 fi
 
 # ── Assemble ───────────────────────────────────────────────────────
-[ -f "$CHANGELOG" ] || die "$CHANGELOG not found in $ROOT"
-head -n 1 "$CHANGELOG" | grep -q '^# ' \
-  || die "$CHANGELOG must start with a '# ' title line"
+# Unlinking a fragment needs write access to its directory; check before any
+# write so a failure cannot leave the entries folded and the fragments behind.
+[ -w "$FRAG_DIR" ] || die "cannot delete fragments: $FRAG_DIR is not writable; nothing was written"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/assemble-changelog.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -391,13 +426,31 @@ first="$(awk '/^## / { print NR; exit }' "$CHANGELOG")"
 # symlink to some other file) can never be written through.
 stage="$(mktemp "$CHANGELOG.assemble.XXXXXX")" || die "cannot create a staging file beside $CHANGELOG"
 # mktemp makes it 0600; CHANGELOG.md is a tracked non-executable file (0644).
-if ! cat "$TMP/CHANGELOG.new" >"$stage" || ! chmod 644 "$stage" || ! mv -f "$stage" "$CHANGELOG"; then
+if ! cat "$TMP/CHANGELOG.new" >"$stage" || ! chmod 644 "$stage"; then
   rm -f -- "$stage"
-  die "could not replace $CHANGELOG; fragments were left in place"
+  die "could not stage the new $CHANGELOG; nothing was changed"
 fi
+# Move the fragments aside first, then replace CHANGELOG.md: either step
+# failing puts every fragment back, so the result is all or nothing.
+mkdir "$TMP/held"
+restore() {
+  local g
+  for g in "$TMP/held"/*; do
+    [ -e "$g" ] || continue
+    mv -f -- "$g" "$FRAG_DIR/" || printf '✖ could not restore %s from %s\n' "${g##*/}" "$g" >&2
+  done
+  rm -f -- "$stage"
+}
 for i in "${!FRAGS[@]}"; do
-  rm -f -- "${FRAGS[$i]}"
+  if ! mv -- "${FRAGS[$i]}" "$TMP/held/"; then
+    restore
+    die "cannot delete ${FRAGS[$i]}; fragments were restored and $CHANGELOG is unchanged"
+  fi
 done
+if ! mv -f -- "$stage" "$CHANGELOG"; then
+  restore
+  die "could not replace $CHANGELOG; fragments were restored"
+fi
 
 entries="$(wc -l <"$TMP/sorted" | tr -d ' ')"
 echo "assemble-changelog: folded $entries entr$([ "$entries" = 1 ] && echo y || echo ies) from $n fragment(s) into $CHANGELOG"

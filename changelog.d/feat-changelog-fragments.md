@@ -24,8 +24,9 @@
 
   Bullet and continuation text may not start with `<`, `>`, `|`, `#` or `=`.
   That holds as written and again after every leading list or quote marker
-  is stripped. The text also may not consist only of rule characters (`-`,
-  `*`, `_`, `=`). No line may contain an HTML comment marker, a run of three
+  is stripped. The text also may not consist only of `-`, `*`, `_`, `=`, `:`
+  and `|`, which would make it a rule, a setext underline or a table
+  delimiter row. No line may contain an HTML comment marker, a run of three
   backticks or a run of three tildes, anywhere. Code fences, HTML blocks, comments, blockquotes, tables and
   setext underlines therefore have no line shape that passes, nested or not.
   Inline code is fine.
@@ -42,9 +43,14 @@
   may hold only blank lines, exactly one `# ` title, and the script's own
   pointer lines verbatim. Anything else there is refused, in `--check` and in
   assembly.
-- **Flags:** `--check` validates without writing. `--base REF` also holds a PR
-  to one fragment file. The filename is never derived from the branch, because
-  two branches can share a slug.
+- **Flags:** `--check` validates without writing. It also checks assembly's
+  own preconditions, so a passing check means assembly can start. `--base
+  REF` adds three PR-scope rules. A PR adds at most one fragment file. It
+  modifies or renames no fragment already on the base. While adding a
+  fragment, it adds no `## ` entry to `CHANGELOG.md`. The filename is never
+  derived from the branch, because two branches can share a slug.
+- **Assembly is all or nothing.** It moves the fragments aside before
+  replacing `CHANGELOG.md`, and puts them back if either step fails.
 - **Assembly is manual**, at release or handoff time, as an ordinary PR. A bot
   commit to `main` cannot pass: `main` requires status checks on every commit,
   including from admins, and a `GITHUB_TOKEN` push never starts them. The
