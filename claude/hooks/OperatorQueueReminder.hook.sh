@@ -41,7 +41,7 @@
 # `verified: YYYY-MM-DD` records that check; an item whose newest of
 # verified/added is more than STALE_DAYS old — or that carries no parseable
 # date at all — is marked "[stale — re-verify]" and counted in the header, so
-# a session that touches its subject knows to re-check before acting on it.
+# the output shows which items have gone unchecked longest.
 #
 # ENV:
 #   OPERATOR_QUEUE_SHOW_ALL=1  print every item in full (the pre-#558 view).
@@ -68,8 +68,12 @@
 #   flight (or killed mid-flight) is named in the header too. Nothing reads as
 #   "no open items" unless a refresh within CACHE_TTL said so and none has
 #   started or failed since. This hook only
-#   reads the queue; its writes are the cache and the refresh markers.
-# BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits;
+#   reads the queue; its writes are the cache and the refresh markers, and
+#   a refresh removes the temporaries a killed predecessor left behind.
+#   The output is status only (#652): what the queue holds, its source and
+#   its freshness, never an instruction to act on an item.
+# BOUNDED: a queue over MAX_QUEUE_BYTES prints one warning line and exits
+#   (the issue cache is copied at most MAX_QUEUE_BYTES + 1 bytes to find out);
 #   at most MAX_ITEMS items (every item under OPERATOR_QUEUE_SHOW_ALL=1) and
 #   MAX_ITEMS project summaries are rendered ("…and N more" for the rest),
 #   each action is cut at MAX_ACTION_CHARS bytes, each item line at
@@ -104,6 +108,7 @@ FAILED="$CACHE.failed"   # exists = the latest refresh failed (a success removes
 INFLIGHT="$CACHE.inflight"  # exists while a refresh runs; left behind if it dies
 LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
+MAX_QUEUE_BYTES=65536
 FETCH_TIMEOUT=120
 SOURCE="file"
 CACHE_NOTE=""
@@ -152,15 +157,31 @@ refresh() {
   # refresh killed at any point leaves INFLIGHT behind (see refresh_state).
   # An INFLIGHT already here is a killed predecessor's: record its failure
   # first, so readers keep reporting it while this fetch runs.
-  [ -f "$INFLIGHT" ] && touch "$FAILED"
+  # Its temporaries (this cache's own mktemp names, below) are stale too:
+  # every fetch worker inherits fd 9, so while this refresh holds the lock no
+  # other process can still be writing one.
+  if [ -f "$INFLIGHT" ]; then
+    touch "$FAILED"
+    find "$CACHE_DIR" -maxdepth 1 -type f -user "$(id -u)" \
+      \( -name "issues-$KEY.md.raw.??????" -o -name "issues-$KEY.md.new.??????" \) \
+      -exec rm -f {} + 2>/dev/null
+  fi
   touch "$INFLIGHT" || { touch "$FAILED"; exec 9>&-; return 1; }
+  # A refresh shell that is signalled (TERM, INT, HUP) removes its own
+  # temporaries on the way out; bash runs the trap once the foreground fetch
+  # returns. Only SIGKILL skips it, and the recovery above covers that.
+  # INFLIGHT stays: the outcome was never recorded.
+  OQ_RAW="" OQ_TMP=""
+  trap 'rm -f "${OQ_RAW:-}" "${OQ_TMP:-}"' EXIT
+  trap 'exit 1' INT TERM HUP
   # gh and jq inherit fd 9, so the lock lives as long as any fetch worker
   # does: a refresh shell killed mid-fetch cannot free it while its gh still
   # runs. A hung gh would then hold it for good, so where timeout(1) exists
   # the fetch is capped (killed, and the refresh fails) at FETCH_TIMEOUT.
   local tmo=()
   command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
-  raw="$(mktemp "$CACHE.raw.XXXXXX")" && tmp="$(mktemp "$CACHE.new.XXXXXX")" &&
+  raw="$(mktemp "$CACHE.raw.XXXXXX")" && OQ_RAW="$raw" &&
+  tmp="$(mktemp "$CACHE.new.XXXXXX")" && OQ_TMP="$tmp" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
   ${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
     -f owner="${REPO_PATH%%/*}" -f name="${REPO_PATH#*/}" -f query='
@@ -195,7 +216,10 @@ refresh() {
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
         "- action: \($action)" )' "$raw" > "$tmp" &&
   chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
-  rm -f "$raw" "${tmp:-}"
+  rm -f "${raw:-}" "${tmp:-}"
+  # The inline refresh (OPERATOR_QUEUE_REFRESH_SYNC=1) returns to the hook,
+  # which sets its own EXIT trap; leave it no stale one.
+  trap - EXIT INT TERM HUP
   # INFLIGHT goes only once the outcome is recorded: if FAILED cannot be
   # written (disk or inodes full) the in-flight marker stays as the signal.
   if [ "$rc" -eq 0 ]; then rm -f "$FAILED" && rm -f "$INFLIGHT"
@@ -234,7 +258,7 @@ elif [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'
 else
   SOURCE="issues"
   if [ -z "$KEY" ]; then
-    echo "Operator action queue: cannot name the operator-action cache for $ISSUE_REPO (no sha256sum or shasum) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+    echo "Operator action queue: cannot name the operator-action cache for $ISSUE_REPO (no sha256sum or shasum) — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
     exit 0
   fi
   QUEUE="$CACHE"
@@ -258,9 +282,13 @@ else
   fi
   # Everything below reads one snapshot: a refresh replaces the cache by
   # rename, so this copy is one whole cache, and a replacement mid-render
-  # cannot split the check from the output. cp -p keeps its mtime for the
-  # age. The state is read AFTER the copy: a refresh writes the cache before
-  # it settles, so one that replaced the cache before the copy is still in
+  # cannot split the check from the output. The copy is bounded at one byte
+  # over MAX_QUEUE_BYTES, so an oversized cache costs no more temp space or
+  # time than a renderable one (the size guard below then refuses it). The
+  # cache is opened once, on fd 8: the bytes and the mtime (taken through
+  # /dev/fd/8 for the age) come from that one file even if a refresh renames
+  # a new cache over it mid-copy. The state is read AFTER the copy: a
+  # refresh writes the cache before it settles, so one that replaced the cache before the copy is still in
   # flight (or failed) when the state is read, and its content is never
   # shown as settled. One that settles after the copy only makes the copy
   # moments old.
@@ -269,25 +297,26 @@ else
   # session's output; no reader can foresee it, the copy shown is still the
   # latest settled cache, and the next session sees the new state.
   if ! SNAP="$(mktemp 2>/dev/null)"; then
-    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (no writable temp dir) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (no writable temp dir) — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
     exit 0
   fi
   trap 'rm -f "$SNAP"' EXIT
-  cp -p "$CACHE" "$SNAP" 2>/dev/null; copied=$?
+  { head -c "$((MAX_QUEUE_BYTES + 1))" <&8 > "$SNAP" && touch -r /dev/fd/8 "$SNAP"; } 2>/dev/null 8< "$CACHE"
+  copied=$?
   state="$(refresh_state)"
   # The clock is read after the copy and the state, so a refresh that
   # started before these reads judged the cache stale at a time no later
   # than this one, and this reader judges it stale too.
   now="$(date +%s)"
   if [ "$copied" -ne 0 ] && [ -f "$CACHE" ]; then
-    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (temp dir full or unreadable cache) — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (temp dir full or unreadable cache) — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
     exit 0
   fi
   if [ "$copied" -ne 0 ]; then
     if [ "$state" = failed ]; then
-      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`."
+      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
     else
-      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background (or was interrupted); run \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` to see them now."
+      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background (or was interrupted); \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
     fi
     exit 0
   fi
@@ -305,7 +334,9 @@ else
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; refreshing in the background)"
   fi
-  if ! grep -q '^## ' "$SNAP" 2>/dev/null; then
+  # An oversized (cut) snapshot is never read as empty; the size guard below
+  # reports it.
+  if [ "$(wc -c < "$SNAP")" -le "$MAX_QUEUE_BYTES" ] && ! grep -q '^## ' "$SNAP" 2>/dev/null; then
     # An empty answer is only "nothing open" when it is fresh.
     [ -n "$CACHE_NOTE" ] && echo "Operator action queue: no open operator-action issues in $ISSUE_REPO as of the last good fetch$CACHE_NOTE."
     exit 0
@@ -324,7 +355,6 @@ else
   FULL_REF="the queue file"
 fi
 
-MAX_QUEUE_BYTES=65536
 MAX_ITEMS=20
 MAX_ACTION_CHARS=600
 MAX_LINE_CHARS=1000
@@ -333,9 +363,11 @@ STALE_MARK="[stale — re-verify]"
 SHOW_ALL=0
 [ "${OPERATOR_QUEUE_SHOW_ALL:-}" = "1" ] && SHOW_ALL=1
 
+# The issue snapshot is cut at MAX_QUEUE_BYTES + 1, so the size is named
+# only as over the limit.
 queue_bytes="$(wc -c < "$QUEUE")"
 if [ "$queue_bytes" -gt "$MAX_QUEUE_BYTES" ]; then
-  echo "Operator action queue: $QUEUE_SHOWN is ${queue_bytes} bytes (limit ${MAX_QUEUE_BYTES}) — not rendering; prune done items (see the handoff skill)."
+  echo "Operator action queue: $QUEUE_SHOWN exceeds ${MAX_QUEUE_BYTES} bytes — not rendered."
   exit 0
 fi
 
@@ -461,7 +493,7 @@ records="$(OQ_REPO="$repo" LC_ALL=C awk -v today="$today" -v stale_days="$STALE_
 ' "$QUEUE" | LC_ALL=C sort)"
 parse_rc=$?
 if [ "$parse_rc" -ne 0 ]; then
-  echo "Operator action queue: could not parse $QUEUE_SHOWN (rc $parse_rc) — read it directly."
+  echo "Operator action queue: could not parse $QUEUE_SHOWN (rc $parse_rc) — not rendered."
   exit 0
 fi
 
@@ -511,14 +543,16 @@ if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -lt "$total" ]; then
       { extra++ }
       END { if (extra) print "  …and " extra " more projects — see " ENVIRON["OQ_SRC"] }'
   if [ "$SOURCE" = issues ]; then
-    echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
+    echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`; a session started with OPERATOR_QUEUE_SHOW_ALL=1 renders every item."
   else
-    echo "Full queue: $QUEUE_SHOWN — read it, or start a session with OPERATOR_QUEUE_SHOW_ALL=1, to see every item."
+    echo "Full queue: $QUEUE_SHOWN; a session started with OPERATOR_QUEUE_SHOW_ALL=1 renders every item."
   fi
 fi
+# Status only (#652): what the items are and where their dates come from.
+# How a session acts on an item is the handoff skill's rule, not this hook's.
 if [ "$SOURCE" = issues ]; then
-  echo "These need the operator, not the agent. When a session touches an item's subject, re-check it against live state and comment on the issue with what it found (that bumps its verified date); close it only when it is done."
+  echo "Each item is an action only the operator can take; its verified date is the newer of the issue body's \`verified:\` line and its newest comment."
 else
-  echo "These need the operator, not the agent. When a session touches an item's subject, re-check it against live state and set/bump its \`verified:\` date; remove an item only when it is done."
+  echo "Each item is an action only the operator can take; its verified date is its \`verified:\` line."
 fi
 exit 0

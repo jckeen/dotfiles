@@ -5,7 +5,8 @@
 # modes; the dry run lists one row per block and makes no write call; --apply
 # creates the missing labels and one issue per new block, with the block's
 # field lines verbatim in the body and the project label from the first word
-# of `project:`; a block whose title already has an issue is skipped. Run
+# of `project:`; a block whose title already has an issue (whatever its
+# labels) is skipped. Run
 # directly; exit 1 on any failure.
 set -uo pipefail
 
@@ -22,7 +23,10 @@ cat > "$FX/bin/gh" <<'GH'
 printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$1 $2" in
   "repo view")    echo "$FAKE_VIS ${FAKE_NWO:-o/r}" ;;
-  "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n001\t9\n100\t10\n' ;;
+  # gh's --label filters: an issue whose label was removed is listed only
+  # by a query without it.
+  "issue list")   printf 'already-there\t7\nrotate-\\token\t8\n001\t9\n100\t10\n'
+                  case " $* " in *" --label "*) ;; *) printf 'unlabelled-dupe\t11\n' ;; esac ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
   "issue create")
@@ -97,6 +101,14 @@ printf '## repeated\n- action: one\n\n## repeated\n- action: two\n\n## rotate-\\
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/dupes.md" --repo o/r --apply 2>&1)"; rc=$?
 assert "apply: a title repeated in the queue is created once" "[ $rc -eq 0 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +#[0-9]+ \\(exists, skipped\\)$' <<<\"\$out\""
 assert "apply: a backslash title matches its existing issue" "! grep -q -- '--title rotate-' '$FAKE_LOG' && grep -qF '#8 (exists, skipped)' <<<\"\$out\""
+
+# A same-title issue without the operator-action label (removed after a
+# partial migration, or filed by hand) is still found: no duplicate, rerun-safe.
+printf '## unlabelled-dupe\n- action: exists as #11, label removed\n' > "$FX/unlabelled.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/unlabelled.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: an unlabelled same-title issue is matched, not duplicated" "[ $rc -eq 0 ] && ! grep -q -- '--title unlabelled-dupe' '$FAKE_LOG' && grep -qF '#11 (exists, skipped)' <<<\"\$out\""
+assert "the title check lists issues regardless of label" "grep '^issue list' '$FAKE_LOG' | grep -qv -- '--label'"
 
 # Numeric-looking titles compare as strings: "1" is not "001", "1e2" is not "100".
 printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"

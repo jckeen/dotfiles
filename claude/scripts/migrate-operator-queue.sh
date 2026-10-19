@@ -4,10 +4,10 @@
 # from a phone and from cloud sessions (OperatorQueueReminder.hook.sh lists them).
 #
 # Dry-run by default: prints one row per "## <slug>" block — slug, project
-# label, and the target (an existing issue with the same title in any state, or
-# "new"). Nothing is written. --apply creates the missing labels and one issue
-# per "new" row; rows that already have an issue are skipped, so a re-run after
-# a partial apply only creates what is missing.
+# label, and the target (an existing issue with the same title in any state
+# and with any labels, or "new"). Nothing is written. --apply creates the
+# missing labels and one issue per "new" row; rows that already have an issue
+# are skipped, so a re-run after a partial apply only creates what is missing.
 #
 # Each issue's title is the slug and its body is the block's own field lines
 # verbatim (`- added:`, `- verified:`, `- project:`, `- deadline:`, `- action:`),
@@ -98,13 +98,16 @@ if [ "$APPLY" -eq 1 ]; then
   flock -n 9 || { echo "refusing: another --apply for $REPO is running" >&2; exit 1; }
 fi
 
-# Existing operator-action issues in any state, by exact title.
-gh issue list -R "$REPO" --label operator-action --state all --limit 1000 \
+# Existing issues in any state and with any labels, by exact title: an
+# issue whose operator-action label was removed (after a partial migration,
+# or one filed by hand) still has the title, and gh's --label would hide it.
+LIST_LIMIT=10000
+gh issue list -R "$REPO" --state all --limit "$LIST_LIMIT" \
   --json number,title -q '.[] | "\(.title)\t\(.number)"' > "$work/existing.tsv"
 # The dedup is only sound over the complete list: a full page could hide a
 # title past the limit, and its block would be created twice.
-if [ "$(wc -l < "$work/existing.tsv")" -ge 1000 ]; then
-  echo "refusing: $REPO has 1000+ operator-action issues; the existing-title check would be incomplete" >&2
+if [ "$(wc -l < "$work/existing.tsv")" -ge "$LIST_LIMIT" ]; then
+  echo "refusing: $REPO has $LIST_LIMIT+ issues; the existing-title check would be incomplete" >&2
   exit 1
 fi
 
