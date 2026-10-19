@@ -3388,6 +3388,117 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
         self.assertIn("claude/agents/node_modules/dep/AGENTS.md", refused.stderr)
 
+    # ─── #651: a repo-root node_modules in an ordinary bun/npm project ───
+
+    ROOT_VENDORED = (
+        # Real packages ship these: bun-types a CLAUDE.md, playwright-core skills.
+        "node_modules/bun-types/CLAUDE.md",
+        "node_modules/playwright-core/lib/tools/skills/demo/SKILL.md",
+        "node_modules/some-pkg/AGENTS.md",
+    )
+
+    def root_vendored_fixture(self, ignore="node_modules/\n", lockfile="bun.lock"):
+        paths = []
+        if ignore:
+            (self.repo / ".gitignore").write_text(ignore)
+            paths.append(".gitignore")
+        if lockfile:
+            (self.repo / lockfile).write_text("{}\n")
+            paths.append(lockfile)
+        if paths:
+            self.git("add", "--", *paths)
+            self.git("commit", "-qm", "root vendoring fixture")
+        for vendored in self.ROOT_VENDORED:
+            target = self.repo / vendored
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("a dependency's own instructions\n")
+
+    def test_ignored_locked_root_node_modules_is_vendored(self):
+        start = self.git("rev-parse", "HEAD")
+        for lockfile in ("bun.lock", "bun.lockb", "package-lock.json"):
+            with self.subTest(lockfile=lockfile):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.root_vendored_fixture(lockfile=lockfile)
+                snapshot = self.begin("committed")
+                self.complete(snapshot)
+                self.check()
+
+    def test_root_node_modules_without_a_lockfile_or_not_ignored_still_refuses(self):
+        start = self.git("rev-parse", "HEAD")
+        for ignore, lockfile in (("node_modules/\n", None), (None, "bun.lock"), (None, None)):
+            with self.subTest(ignore=ignore, lockfile=lockfile):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.root_vendored_fixture(ignore=ignore, lockfile=lockfile)
+                refused = self.begin_output()
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("node_modules/bun-types/CLAUDE.md", refused.stderr)
+
+    def test_root_node_modules_fails_closed_like_the_514_trees(self):
+        """Every #514 refusal holds at the root: the tree, not the entry, is ignored."""
+        cases = {
+            # Only the planted files are excluded, not the directory.
+            "planted-only": "".join("/" + p + "\n" for p in self.ROOT_VENDORED),
+            # `node_modules/*` ignores contents whose children can be re-included.
+            "reincluded-child": "/node_modules/*\n!/node_modules/keep.js\n",
+        }
+        start = self.git("rev-parse", "HEAD")
+        for name, exclude in cases.items():
+            with self.subTest(case=name):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.root_vendored_fixture(ignore=None)
+                (self.repo / ".git/info/exclude").write_text(exclude)
+                refused = self.begin_output()
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("node_modules/", refused.stderr)
+        (self.repo / ".git/info/exclude").write_text("")
+        # A lockfile that is a symlink is not evidence of an install.
+        self.git("reset", "-q", "--hard", start)
+        self.git("clean", "-qfdx")
+        self.root_vendored_fixture(lockfile=None)
+        outside = Path(self.tmp.name) / "outside-lock"
+        outside.mkdir()
+        (outside / "bun.lock").write_text("{}\n")
+        (self.repo / "bun.lock").symlink_to(outside / "bun.lock")
+        (self.repo / ".git/info/exclude").write_text("/bun.lock\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("node_modules/bun-types/CLAUDE.md", refused.stderr)
+
+    def test_root_node_modules_symlink_is_not_a_vendored_tree(self):
+        """Git does not descend a symlink, so check the predicate directly."""
+        self.root_vendored_fixture(ignore="node_modules\n")
+        outside = Path(self.tmp.name) / "outside-tree"
+        shutil.move(str(self.repo / "node_modules"), str(outside))
+        (self.repo / "node_modules").symlink_to(outside)
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertFalse(module.vendored_dependency(self.repo, self.ROOT_VENDORED[0]))
+        (self.repo / "node_modules").unlink()
+        shutil.move(str(outside), str(self.repo / "node_modules"))
+        self.assertTrue(module.vendored_dependency(self.repo, self.ROOT_VENDORED[0]))
+
+    def test_root_exemption_is_only_the_repository_root(self):
+        """A lockfile at the root does not vendor a nested `node_modules`."""
+        self.root_vendored_fixture()
+        nested = self.repo / "packages/app/node_modules/dep/AGENTS.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("not exempt\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("packages/app/node_modules/dep/AGENTS.md", refused.stderr)
+
+    def test_helper_is_executable(self):
+        """The review-gates skill invokes the helper directly, not via python3 (#651)."""
+        self.assertTrue(os.access(HELPER, os.X_OK), HELPER)
+        mode = subprocess.check_output(
+            ["git", "-C", str(HELPER.parent), "ls-files", "--stage", "--", HELPER.name]
+        ).split()[0]
+        self.assertEqual(mode, b"100755")
+
     # ─── #581: ignored bytecode caches beside skill and agent sources ───
 
     PYCACHE_SOURCES = (

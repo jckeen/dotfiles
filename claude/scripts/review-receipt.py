@@ -314,19 +314,21 @@ def instruction(path):
 
 
 def vendored_dependency(repo, path, trees=None):
-    """An ignored path inside an installed dependency tree of a skill or scripts dir.
+    """An ignored path inside an installed dependency tree of a skill, scripts dir or root.
 
     The #439 hook-tree exemption, extended to `claude/skills/<name>/node_modules`
-    and `claude/scripts/node_modules` (#514), and deliberately narrower: a
-    dependency tree is exactly where a planted instruction file would hide, so
-    the exemption holds only where installation is the evident explanation. The
-    caller passes only entries `ls-files --ignored` reported, but that proves only
-    the ENTRY is ignored: excluding one planted `AGENTS.md` by name would pass as
-    a vendored tree. So the `node_modules` directory itself — a real directory,
-    never a symlink — must be ignored too, and the directory that owns it must
-    hold a lockfile, checked on disk as a regular file (never a symlink). Everything else — another
-    layout, no lockfile, a tree that is not ignored — stays an instruction
-    surface and fails closed.
+    and `claude/scripts/node_modules` (#514) and to the repository root's own
+    `node_modules`, which every installed bun/npm project has (#651). It is
+    deliberately narrower: a dependency tree is exactly where a planted
+    instruction file would hide, so the exemption holds only where installation
+    is the evident explanation. The caller passes only entries `ls-files
+    --ignored` reported, but that proves only the ENTRY is ignored: excluding one
+    planted `AGENTS.md` by name would pass as a vendored tree. So the
+    `node_modules` directory itself — a real directory, never a symlink — must be
+    ignored too, and the directory that owns it must hold a lockfile, checked on
+    disk as a regular file (never a symlink). Everything else — another layout
+    (a nested package's `node_modules` included), no lockfile, a tree that is not
+    ignored — stays an instruction surface and fails closed.
 
     `trees` memoizes the per-tree verdict for one capture: every file under a
     qualifying tree would otherwise repeat the same lstat and `check-ignore`
@@ -339,6 +341,9 @@ def vendored_dependency(repo, path, trees=None):
         owner = parts[:3]
     elif parts[:2] == ("claude", "scripts") and len(parts) > 3 and parts[2] == "node_modules":
         owner = parts[:2]
+    elif len(parts) > 1 and parts[0] == "node_modules":
+        # The root itself owns the tree: its lockfile sits beside `node_modules`.
+        owner = ()
     else:
         return False
     if trees is None:
@@ -350,7 +355,7 @@ def vendored_dependency(repo, path, trees=None):
 
 def vendored_tree(repo, owner):
     locked = False
-    for lockfile in ("bun.lock", "package-lock.json"):
+    for lockfile in ("bun.lock", "bun.lockb", "package-lock.json"):
         try:
             locked = locked or stat.S_ISREG((repo / Path(*owner) / lockfile).lstat().st_mode)
         except OSError:

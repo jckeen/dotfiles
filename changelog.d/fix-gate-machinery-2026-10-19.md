@@ -21,3 +21,17 @@
   directly inside an ignored `__pycache__` directory when the `.py` it was
   compiled from sits beside that directory; anything else there still counts as
   a dirty instruction surface.
+
+## 2026-10-19 — fix(gates): a repo-root node_modules no longer blocks every gate in a bun/npm project (#651)
+
+- **The #514 vendored-tree rule covers the repository root.** An installed
+  root `node_modules` holds dependencies' own `CLAUDE.md` and `SKILL.md`
+  files (`bun-types`, `playwright-core`), so `lane` and both gates refused
+  every ordinary JS repo as a dirty instruction surface. `review-receipt.py`
+  now leaves out a path under the root `node_modules` when that directory is
+  an ignored real directory and a regular-file `bun.lock`, `bun.lockb` or
+  `package-lock.json` sits beside it. Ignoring only the planted file, a
+  re-included child, a symlinked lockfile, a symlinked tree or a nested
+  package's `node_modules` still refuse. `bun.lockb` now also counts for the
+  skill and scripts trees.
+- **`review-receipt.py` is executable**, as the review-gates skill invokes it.
