@@ -364,9 +364,11 @@ parse_routine() {
   [[ "$FM_SCHEDULE" == "daily" || "$FM_SCHEDULE" == "weekly" ]] \
     || { fm_fail "$file" "schedule must be 'daily' or 'weekly', got '$FM_SCHEDULE'"; return 1; }
   # Leading zeros excluded by the [1-9] anchor: these values reach arithmetic
-  # comparisons, where bash reads a leading zero as octal and errors.
-  [[ "$FM_MAX_PRS" =~ ^[1-9][0-9]*$ ]] || { fm_fail "$file" "max_prs_per_run must be a positive integer with no leading zeros"; return 1; }
-  [[ "$FM_MAX_FILES" =~ ^[1-9][0-9]*$ ]] || { fm_fail "$file" "max_files must be a positive integer with no leading zeros"; return 1; }
+  # comparisons, where bash reads a leading zero as octal and errors. The digit
+  # count is capped too: past 2^63-1 bash wraps the value silently, so a huge
+  # max_files would read every non-empty pull request as oversized (#639).
+  [[ "$FM_MAX_PRS" =~ ^[1-9][0-9]{0,5}$ ]] || { fm_fail "$file" "max_prs_per_run must be a positive integer with no leading zeros, at most 6 digits"; return 1; }
+  [[ "$FM_MAX_FILES" =~ ^[1-9][0-9]{0,5}$ ]] || { fm_fail "$file" "max_files must be a positive integer with no leading zeros, at most 6 digits"; return 1; }
   [[ "$FM_LABEL" == "jules-routine:$FM_NAME" ]] \
     || { fm_fail "$file" "label must be 'jules-routine:$FM_NAME', got '$FM_LABEL'"; return 1; }
   [[ -n "$FM_ACCEPTANCE" ]] || { fm_fail "$file" "acceptance must not be empty"; return 1; }
@@ -1298,9 +1300,40 @@ reconcile_pr() { # session routine repo url
   pr_state="$(jq -r '.state // ""' <<<"$out" 2>/dev/null || true)"
   changed="$(jq -r '.changedFiles // "x"' <<<"$out" 2>/dev/null || true)"
   title="$(jq -r '.title // ""' <<<"$out" 2>/dev/null || true)"
-  if [[ -z "$pr_state" || ! "$changed" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  # Bounded for the same reason as max_files: it reaches [[ -gt ]] (#639).
+  if [[ -z "$pr_state" || ! "$changed" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
     recon_fail "$routine / $repo — gh pr view $num returned no usable state or changedFiles" "$routine" "$repo"
     return 1
+  fi
+
+  # max_files is a hard per-pull-request limit. A pull request over it is left
+  # open for a person, unlabeled and unretitled — labeling it would present it
+  # as a compliant routine result — and recorded as terminal, so the ledger and
+  # status.json say why. Its commits are not read (#530). The check runs before
+  # the closed/merged return, so a pull request merged before reconcile still
+  # counts as oversized and carries that provenance; and a routine label an
+  # earlier partial pass applied is removed, closed or not (#639). An empty
+  # pull request is never over a positive limit, so it still reaches the close.
+  label="jules-routine:$routine"
+  if [[ "$RECON_MAX_FILES" == null ]]; then
+    log "  -- $routine / $repo — the dispatch record carries no max_files; the limit is not checked"
+  elif [[ "$changed" -gt "$RECON_MAX_FILES" ]]; then
+    RECON_SUBJECTS_UNREAD=1
+    if jq -e --arg l "$label" '[(.labels // [])[] | (.name // "")] | index($l) != null'           >/dev/null 2>&1 <<<"$out"; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  [DRY] would remove $label from $owner/$name#$num"
+      elif ! out2="$("$GH_BIN" pr edit "$num" --repo "github.com/$owner/$name" --remove-label "$label" 2>&1)"; then
+        recon_fail "$routine / $repo — gh pr edit --remove-label failed for #$num: $(one_line "$out2")" "$routine" "$repo"
+        return 1
+      fi
+    fi
+    RECON_OVERSIZED=$((RECON_OVERSIZED + 1))
+    log "  !! $routine / $repo — $owner/$name#$num ($pr_state) changes $changed files, over the routine's max_files of $RECON_MAX_FILES;"
+    log "     left unlabeled for a person to decide."
+    record blocked "$routine" "$repo" "PR #$num $changed files changed, max_files $RECON_MAX_FILES"
+    recon_pr_entry "$url" "$num" blocked-oversized \
+      "$changed files changed, over max_files $RECON_MAX_FILES" || return 1
+    return 0
   fi
 
   # Nothing to do, and so nothing read: a closed or merged pull request's commits
@@ -1335,24 +1368,6 @@ reconcile_pr() { # session routine repo url
     return 0
   fi
 
-  # max_files is a hard per-pull-request limit. A pull request over it is left
-  # open for a person, unlabeled and unretitled — labeling it would present it
-  # as a compliant routine result — and recorded as terminal, so the ledger and
-  # status.json say why. Its commits are not read (#530).
-  if [[ "$RECON_MAX_FILES" == null ]]; then
-    log "  -- $routine / $repo — the dispatch record carries no max_files; the limit is not checked"
-  elif [[ "$changed" -gt "$RECON_MAX_FILES" ]]; then
-    RECON_SUBJECTS_UNREAD=1
-    RECON_OVERSIZED=$((RECON_OVERSIZED + 1))
-    log "  !! $routine / $repo — $owner/$name#$num changes $changed files, over the routine's max_files of $RECON_MAX_FILES;"
-    log "     left open and unlabeled for a person to decide."
-    record blocked "$routine" "$repo" "PR #$num $changed files changed, max_files $RECON_MAX_FILES"
-    recon_pr_entry "$url" "$num" blocked-oversized \
-      "$changed files changed, over max_files $RECON_MAX_FILES" || return 1
-    return 0
-  fi
-
-  label="jules-routine:$routine"
   if ! jq -e --arg l "$label" '[(.labels // [])[] | (.name // "")] | index($l) != null' \
         >/dev/null 2>&1 <<<"$out"; then
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -1480,10 +1495,12 @@ reconcile_session() { # session routine repo max_files
     return 1
   fi
   # The limit, too, comes out of an editable file: a value that is not a
-  # positive integer is refused rather than read as "no limit".
+  # positive integer is refused rather than read as "no limit" — and one too
+  # long to compare without wrapping is refused the same way the frontmatter
+  # refuses it (#639).
   if [[ "$max_files" != "-" ]]; then
-    if [[ ! "$max_files" =~ ^=[1-9][0-9]*$ ]]; then
-      recon_fail "$routine / $repo — ledger max_files '$(one_line "${max_files#=}")' for $session is not a positive integer" "$routine" "$repo"
+    if [[ ! "$max_files" =~ ^=[1-9][0-9]{0,5}$ ]]; then
+      recon_fail "$routine / $repo — ledger max_files '$(one_line "${max_files#=}")' for $session is not a positive integer of at most 6 digits" "$routine" "$repo"
       recon_pend "$session" "$routine" "$repo" error "ledger max_files rejected" && recon_flush
       return 1
     fi
