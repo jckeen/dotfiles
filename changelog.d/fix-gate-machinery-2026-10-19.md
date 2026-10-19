@@ -1,4 +1,4 @@
-## 2026-10-19 — fix(gates): verdicts from runs that did not complete, exit 2 only by choice, bytecode caches
+## 2026-10-19 — fix(gates): verdicts from runs that did not complete, exit 2 only by choice, bytecode caches (#515, #579, #581)
 
 - **A failed, timed-out or cancelled Antigravity run is held to the
   completed-run parse (#579).** Its output was searched for anchored P0–P2
