@@ -104,3 +104,11 @@
   base mid-review now completes the review, and the receipt survives. A base
   that absorbed the branch completes too, but `check` then refuses the
   receipt because its merge base no longer matches.
+
+## 2026-10-19 — fix(codex): the read-only profile example cannot escalate out of its sandbox (#659)
+
+- **`codex/readonly.config.toml.example` pins `approval_policy = "never"`.**
+  It used `on-request`. A named profile layers over the user's base config,
+  and an `approvals_reviewer = "auto_review"` there approves escalation out of
+  the read-only sandbox unattended, the same path #659 found in the review
+  gate. `tests/codex-config.test.sh` now refuses `on-request` in the example.

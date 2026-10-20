@@ -20,10 +20,18 @@ fi
 readonly_example="$REPO_ROOT/codex/readonly.config.toml.example"
 if [ -f "$readonly_example" ] \
   && grep -q '^sandbox_mode = "read-only"$' "$readonly_example" \
-  && grep -q '^approval_policy = "on-request"$' "$readonly_example"; then
+  && grep -q '^approval_policy = "never"$' "$readonly_example"; then
   ok "read-only profile example uses supported Codex keys"
 else
   fail "read-only profile example is missing or uses stale keys"
+fi
+# A profile layers over the user's base config. With on-request there, an
+# approvals_reviewer = "auto_review" in the base config approves escalation
+# out of the read-only sandbox unattended (#659), so read-only must pin never.
+if grep -q '^approval_policy = "on-request"$' "$readonly_example"; then
+  fail "read-only profile example lets the model escalate out of its sandbox"
+else
+  ok "read-only profile example cannot escalate out of its sandbox"
 fi
 
 tilde='~'
