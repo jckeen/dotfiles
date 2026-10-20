@@ -154,6 +154,10 @@ selection, handoff payload, and verdict-persistence mechanics: the
   `build`, `ci`, `revert`).
 - Stage specific files — avoid `git add -A` / `git add .` so secrets and
   generated files don't slip in. Never stage `.env`, credentials, tokens, keys.
+- Push once per unit of work, not once per fix. Every push to a PR re-runs the
+  full CI suite and a Codex bot review. Commit locally as often as you like,
+  run lint/types/tests locally, and push when the change is ready for review
+  or CI.
 
 ## Auth at the boundary
 
