@@ -3,8 +3,18 @@
 # about to run, first harvest the GitHub Codex-bot's inline PR review comments into
 # tracked issues, so we never merge PAST the bot's asynchronous findings.
 #
-# TRIGGER (settings.json PreToolUse matcher: "Bash"):
-#   tool_input.command matches /\bgh\s+pr\s+merge\b/
+# TRIGGER (settings.json PreToolUse matcher: "Bash", with "if": "Bash(gh pr merge*)"
+#   in the public template): the WHOLE tool_input.command starts with
+#   `gh pr merge` (after optional VAR=value assignments) — see the match below.
+#   There is no splitting, so quoted text can never trigger it.
+#
+#   Trade-off, deliberate: a merge in a compound command (`cd x && gh pr merge`)
+#   or inside another shell construct (`out=$(gh pr merge …)`,
+#   `if gh pr merge …; then`) is NOT recognised. A
+#   missed pre-merge harvest costs nothing — the harvest-codex-comments
+#   workflow harvests every PR at close anyway — while a false trigger files
+#   a junk issue (the old unanchored match filed #691 from a `sed` command
+#   that merely contained the text). So the match stays anchored.
 #
 # BEHAVIOR:
 #   Runs harvest-codex-comments.sh for the PR being merged (explicit number in the
@@ -35,8 +45,20 @@ command -v jq >/dev/null 2>&1 || exit 0
 cmd="$(jq -r '.tool_input.command // ""' <<<"$raw" 2>/dev/null || true)"
 cwd="$(jq -r '.cwd // ""' <<<"$raw" 2>/dev/null || true)"
 
-# Only act on `gh pr merge`.
-[[ "$cmd" =~ gh[[:space:]]+pr[[:space:]]+merge ]] || exit 0
+# Only act when the whole command IS a `gh pr merge`, after optional
+# whitespace and VAR=value assignments. An unanchored search fired on mere
+# mentions such as `rg 'gh pr merge' .` and ran the issue-writing harvester
+# (#691); splitting the command on separators let quoted text start a
+# "segment" (`printf "%s" "x; gh pr merge 5"`). No splitting at all. An
+# assignment value may hold only plain word characters: quotes, `$`, shell
+# operators or redirections (`NOTE="x gh pr merge 5"`, `NOTE=;: gh pr merge
+# 5`, `NOTE=<<EOF`) would otherwise look like a prefix plus a merge. A
+# command spanning lines (a heredoc body) is never a trigger either. Such
+# commands are simply not recognised: a documented miss, not a trigger.
+case "$cmd" in *$'\n'*) exit 0 ;; esac
+merge_re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:@%+,-]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'
+[[ "$cmd" =~ $merge_re ]] || exit 0
+merge_seg="$cmd"
 
 # cwd is harness-supplied (the session's working dir), not prompt content — but
 # only enter it if it's a real directory, and bail (no-op) rather than run the
@@ -50,7 +72,7 @@ script="$HOME/.claude/scripts/harvest-codex-comments.sh"
 
 # Explicit PR number (`gh pr merge 149 ...`) if given; otherwise the harvester
 # resolves the current branch's PR.
-prnum="$(grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' <<<"$cmd" | grep -oE '[0-9]+$' || true)"
+prnum="$(grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' <<<"$merge_seg" | grep -oE '[0-9]+$' || true)"
 
 # Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
 # without a ceiling rather than hard-fail on macOS.
@@ -70,7 +92,7 @@ else
   out="$(tmo 30 "$script" --quiet 2>&1 || true)"
 fi
 
-if [[ "$cmd" =~ (^|[[:space:]])--auto([[:space:]=]|$) ]]; then
+if [[ "$merge_seg" =~ (^|[[:space:]])--auto([[:space:]=]|$) ]]; then
   out="${out:+$out
 }PreMergeCodexHarvest: --auto arms the merge before the Codex bot has reviewed; the close-time harvest (harvest-codex-comments.yml) will file anything it finds."
 fi
