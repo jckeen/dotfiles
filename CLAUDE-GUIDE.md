@@ -208,7 +208,7 @@ is present but not registered — the drift that once left every hook inert.
 | `SymlinkRepair.hook.ts` | SessionStart (FIRST) | ✅ | Re-links missing dotfiles→`~/.claude/` symlinks (hooks/scripts/agents per file; each skill as one directory link, converting the old per-file layout by moving the old directory whole into `~/.claude/.migrated-skill-dirs/`, never deleting; an archived entry is safe to delete by hand only if `check-claude` does not flag it `KEPT`) every session — incl. **resume** — when new files land and `setup.sh` hasn't re-run; advisory, never clobbers |
 | `StripProjectPermissions.hook.ts` | SessionStart | ✅ | Strips project-level permission overrides that fight global settings |
 | `HygieneStatus.hook.sh` | SessionStart | ✅ | Surfaces branch-hygiene drift from the daily systemd timer |
-| `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. A plugin of a deselected agent service (`lib-services.sh`, shared with `sync-plugins.sh`) is not drift; an unreadable selection reports everything and says so. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule. Also names every installed plugin (cache, relative-path plugins loaded in place from a local-path marketplace, claude.ai synced, `~/.claude/skills` and the project's `.claude/skills`) that ships a **mod** — a `"modules"` key in its `hooks/hooks.json` — unless a `# mods-ok: <id>` line in `plugins.txt` allowlists it (a project `.claude/skills` mod is always named, since a cloned repo could reuse an allowlisted name). A plugin whose `hooks.json`, `plugin.json` or `marketplace.json` exists but can't be parsed (or isn't a regular file of at most 1 MiB) is named as unverifiable rather than skipped. Every local-marketplace catalog entry is scanned, enabled or not, and the project is the hook input's `cwd` (it follows `--worktree`) plus `$CLAUDE_PROJECT_DIR`. A printed id that needed sanitizing (or is over 300 characters) is shown with its allowlist key `sha256:<first 16 hex of the SHA-256 of the raw id's UTF-16LE code units>`, and only that key allowlists it (#648). Best-effort and advisory, not a security boundary (#647) |
+| `PluginDriftCheck.hook.ts` | SessionStart, UserPromptSubmit | SessionStart ✅; UserPromptSubmit: `check-hooks-wired.sh` reports | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. A plugin of a deselected agent service (`lib-services.sh`, shared with `sync-plugins.sh`) is not drift; an unreadable selection reports everything and says so. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule. Also names every installed plugin (cache, relative-path plugins loaded in place from a local-path marketplace, claude.ai synced, `~/.claude/skills` and the project's `.claude/skills`) that ships a **mod** — a `"modules"` key in its `hooks/hooks.json` — unless a `# mods-ok: <id>` line in `plugins.txt` allowlists it (a project `.claude/skills` mod is always named, since a cloned repo could reuse an allowlisted name). A plugin whose `hooks.json`, `plugin.json` or `marketplace.json` exists but can't be parsed (or isn't a regular file of at most 1 MiB) is named as unverifiable rather than skipped. Every local-marketplace catalog entry is scanned, enabled or not, and the project is the hook input's `cwd` (it follows `--worktree`) plus `$CLAUDE_PROJECT_DIR`. A printed id that needed sanitizing (or is over 300 characters) is shown with its allowlist key `sha256:<first 16 hex of the SHA-256 of the raw id's UTF-16LE code units>`, and only that key allowlists it (#648). On UserPromptSubmit it stats every path the last scan read and rescans only when one changed, naming just the mods this session was not yet told about (#618). Best-effort and advisory, not a security boundary — see below |
 | `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
 | `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
 | `HandoffReminder.hook.sh` | SessionStart | ✅ | Surfaces a recent handoff note for the current project into context at session start |
@@ -230,6 +230,22 @@ even a `deny` rule. Before installing or updating a mod, run
 `next`, and `$.process.*`, `$.http.fetch` or `$.env.*` calls each need a
 deliberate yes. Then add `# mods-ok: <id>` to `claude/plugins.txt` so
 `PluginDriftCheck.hook.ts` stops naming it (#594).
+
+**The mod scan is best-effort.** It is a static parse, and loader-differential
+cases (#647) stay open: Claude Code exposes no list of the hook modules it
+loaded. `claude plugin list --json` names plugins and their directories but no
+modules, and no hook event fires on a plugin install, enable or
+`/reload-plugins`. So a `hooks/hooks.json` the loader reads differently from
+`JSON.parse` can hide a mod; a file the hook cannot parse is named as
+unverifiable instead. The mid-session rescan polls file signatures on each
+prompt, so a change is seen at the next prompt, not when it happens (#618).
+`/plugin` shows which mods the session actually loaded; trust
+it over the hook when they disagree. The upstream request for a loaded-modules
+listing or a plugin-reload event is drafted, for the operator to file, in
+`~/.claude/handoffs/2026-10-19-dotfiles-operator-pass/upstream-claude-code-plugin-introspection.md`.
+Plugins relocated by `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_PLUGIN_CACHE_DIR` or
+`CLAUDE_CODE_PLUGIN_DIRS` are not yet covered: the hook, `sync-plugins.sh` and
+`lib-checks.sh` all read `~/.claude`, and #699 moves them together.
 
 ---
 

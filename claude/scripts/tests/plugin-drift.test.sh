@@ -45,6 +45,24 @@ failed=0
 out=""
 rc=0
 
+# The hook is a static scan and never runs the `claude` CLI. This stub on
+# PATH logs any call to $FAKE_BIN/calls, so a case can prove that, and so a
+# regression could never reach the operator's real plugin state.
+FAKE_BIN="$(mktemp -d)" || { echo "FAIL - mktemp -d for the claude stub" >&2; exit 1; }
+trap 'rm -rf "$FAKE_BIN"' EXIT
+cat > "$FAKE_BIN/claude" <<'STUB' || { echo "FAIL - write the claude stub" >&2; exit 1; }
+#!/usr/bin/env bash
+echo "$*" >> "$(dirname "$0")/calls"
+exit 1
+STUB
+chmod +x "$FAKE_BIN/claude" || { echo "FAIL - chmod the claude stub" >&2; exit 1; }
+export PATH="$FAKE_BIN:$PATH"
+# The hook ignores these today (#699 will honour them); unset so a value from
+# the operator's shell (`ccw` sets CLAUDE_CONFIG_DIR) cannot leak in later.
+unset CLAUDE_CONFIG_DIR CLAUDE_CODE_PLUGIN_DIRS CLAUDE_CODE_PLUGIN_CACHE_DIR
+[[ "$(command -v claude)" == "$FAKE_BIN/claude" ]] \
+  || { echo "FAIL - the claude stub does not shadow the real CLI" >&2; exit 1; }
+
 # Fixture setup must fail LOUDLY, never silently. The suite runs without
 # `set -e` so assertions keep going after a failed check, which means an
 # unchecked mktemp/chmod would let run_sync fall through to the real `claude`
@@ -648,6 +666,180 @@ assert "a good entry beside hostile ones is still scanned" 'outline "  • good@
 assert "a known_marketplaces entry with a non-string path is named" \
   'outline "  • marketplace.json@badpath"'
 assert "the hook does not crash on its own error path" '! outgrep "PluginDriftCheck"'
+
+# ── mid-session rescan on UserPromptSubmit (#618) ───────────────────────
+# A plugin installed after SessionStart is named on the next prompt; an
+# unchanged tree costs a stat per watched path and prints nothing.
+# prompt_home — a HOME with one cached mod (modded@mkt) and its DOTFILES_DIR;
+# sets $PD $PH $PP. hook_event <event> [session] runs the hook as Claude Code
+# would, with the event's JSON on stdin.
+prompt_home() {
+  PD="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
+  PH="$(mktemp -d)" || die "mktemp -d for HOME"
+  PP="$(mktemp -d)" || die "mktemp -d for the project dir"
+  mkdir -p "$PD/claude" "$PH/.claude/plugins/cache/mkt/modded/1.0.0/hooks" \
+    || die "mkdir prompt fixture dirs"
+  printf '%s\n' "$MANIFEST_GLOBAL" > "$PD/claude/plugins.txt" || die "write plugins.txt"
+  printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s]}}\n' \
+    "$(entry user)" > "$PH/.claude/plugins/installed_plugins.json" \
+    || die "write installed_plugins.json"
+  printf '%s\n' '{"modules":["./register.js"]}' \
+    > "$PH/.claude/plugins/cache/mkt/modded/1.0.0/hooks/hooks.json" || die "write modded"
+}
+hook_event() {
+  local event="$1" session="${2:-s1}"
+  : > "$FAKE_BIN/calls" || die "reset the stub's call log"
+  out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+    timeout 60 bun "$HOOK" 2>&1 \
+    <<<"{\"hook_event_name\":\"$event\",\"session_id\":\"$session\",\"cwd\":\"$PP\"}")"
+  rc=$?
+}
+add_cached_mod() { # add_cached_mod <name> — a new cached plugin with a mod
+  mkdir -p "$PH/.claude/plugins/cache/mkt/$1/1.0.0/hooks" || die "mkdir $1"
+  printf '%s\n' '{"modules":["./register.js"]}' \
+    > "$PH/.claude/plugins/cache/mkt/$1/1.0.0/hooks/hooks.json" || die "write $1"
+}
+
+prompt_home
+hook_event SessionStart
+assert "rescan: SessionStart names the existing mod" 'outline "  • modded@mkt"'
+assert "rescan: SessionStart writes this session's state" \
+  '[ -f "$PH/.local/state/plugin-drift/s1" ]'
+hook_event UserPromptSubmit
+assert "rescan: an unchanged tree prints nothing" '[ -z "$out" ] && [ $rc -eq 0 ]'
+assert "rescan: the cheap path runs no subprocess" '[ ! -s "$FAKE_BIN/calls" ]'
+add_cached_mod latemod
+hook_event UserPromptSubmit
+assert "rescan: a mod installed after SessionStart is named" 'outline "  • latemod@mkt"'
+assert "rescan: the report says it is a mid-session rescan" 'outgrep "mid-session"'
+assert "rescan: a mod already reported is not repeated" '! outgrep "modded@mkt"'
+assert "rescan: a full rescan never runs the claude CLI" '[ ! -s "$FAKE_BIN/calls" ]'
+hook_event UserPromptSubmit
+assert "rescan: once reported, the new mod is not repeated" '[ -z "$out" ]'
+# A new version of an already-reported plugin changes the tree, not the set.
+mkdir -p "$PH/.claude/plugins/cache/mkt/modded/2.0.0/hooks" || die "mkdir modded 2.0.0"
+printf '%s\n' '{"modules":["./register.js"]}' \
+  > "$PH/.claude/plugins/cache/mkt/modded/2.0.0/hooks/hooks.json" || die "write modded 2.0.0"
+hook_event UserPromptSubmit
+assert "rescan: a change that adds no new mod prints nothing" '[ -z "$out" ]'
+# An in-place edit that turns a plain plugin into a mod (same paths, new
+# content) is caught by the hooks.json's own signature.
+mkdir -p "$PH/.claude/plugins/cache/mkt/turncoat/1.0.0/hooks" || die "mkdir turncoat"
+printf '%s\n' '{"hooks":{}}' > "$PH/.claude/plugins/cache/mkt/turncoat/1.0.0/hooks/hooks.json" \
+  || die "write turncoat"
+hook_event UserPromptSubmit
+assert "rescan: a plain plugin is not reported" '[ -z "$out" ]'
+printf '%s\n' '{"modules":["./register.js"],"hooks":{}}' \
+  > "$PH/.claude/plugins/cache/mkt/turncoat/1.0.0/hooks/hooks.json" || die "rewrite turncoat"
+hook_event UserPromptSubmit
+assert "rescan: a hooks.json edited in place to add a mod is named" \
+  'outline "  • turncoat@mkt"'
+# Another session keeps its own state: s2 never ran SessionStart, so its
+# first prompt is a full rescan that reports everything (rule 2).
+hook_event UserPromptSubmit s2
+assert "rescan: a session without state rescans and reports" \
+  'outline "  • modded@mkt" && outline "  • latemod@mkt"'
+hook_event UserPromptSubmit s1
+assert "rescan: one session's rescan does not consume another's change" '[ -z "$out" ]'
+# A damaged state file is a change, never a silent pass.
+printf 'garbage\n' > "$PH/.local/state/plugin-drift/s1" || die "damage the state file"
+hook_event UserPromptSubmit s1
+assert "rescan: a damaged state file triggers a full report" 'outline "  • modded@mkt"'
+# A state file cut short before its first watched path is damage, not an
+# empty watch list that matches forever (codex gate finding, round 1).
+head -n 2 "$PH/.local/state/plugin-drift/s1" > "$PH/s1.cut" || die "truncate the state"
+mv "$PH/s1.cut" "$PH/.local/state/plugin-drift/s1" || die "place the truncated state"
+add_cached_mod aftercut
+hook_event UserPromptSubmit s1
+assert "rescan: a truncated state file still catches a new mod" 'outline "  • aftercut@mkt"'
+# A cwd change (CwdChanged, a --worktree) moves the project skills dir.
+mkdir -p "$PP/sub/.claude/skills/pk/hooks" "$PP/sub/.claude/skills/pk/.claude-plugin" \
+  || die "mkdir sub project skills-dir"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/sub/.claude/skills/pk/hooks/hooks.json" \
+  || die "write sub project mod"
+printf '%s\n' '{"name":"subproj"}' > "$PP/sub/.claude/skills/pk/.claude-plugin/plugin.json" \
+  || die "write sub project plugin.json"
+: > "$FAKE_BIN/calls" || die "reset the stub's call log"
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 \
+  <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"cwd\":\"$PP/sub\"}")"
+assert "rescan: a new working directory is rescanned" 'outgrep "• subproj@skills-dir"'
+# Codex round 10: another checkout's mod with the same name is not hidden by
+# the first one's report.
+mkdir -p "$PP/sub2/.claude/skills/pk/hooks" "$PP/sub2/.claude/skills/pk/.claude-plugin" \
+  || die "mkdir sub2 project skills-dir"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/sub2/.claude/skills/pk/hooks/hooks.json" \
+  || die "write sub2 project mod"
+printf '%s\n' '{"name":"subproj"}' > "$PP/sub2/.claude/skills/pk/.claude-plugin/plugin.json" \
+  || die "write sub2 project plugin.json"
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 \
+  <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"cwd\":\"$PP/sub2\"}")"
+assert "rescan: a same-named mod in another checkout is still named" \
+  'outgrep "• subproj@skills-dir"'
+# A project .claude/skills that links to ~/.claude/skills is skipped, but
+# still watched: replacing the link with a real directory is a change.
+mkdir -p "$PH/.claude/skills" || die "mkdir home skills"
+mkdir -p "$PP/.claude" || die "mkdir project .claude"
+rm -rf "$PP/.claude/skills" && ln -s "$PH/.claude/skills" "$PP/.claude/skills" \
+  || die "link project skills to home skills"
+hook_event SessionStart s5
+rm "$PP/.claude/skills" || die "unlink project skills"
+mkdir -p "$PP/.claude/skills/lk/hooks" "$PP/.claude/skills/lk/.claude-plugin" \
+  || die "mkdir replaced project skills"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/.claude/skills/lk/hooks/hooks.json" \
+  || die "write lk"
+printf '%s\n' '{"name":"linkmod"}' > "$PP/.claude/skills/lk/.claude-plugin/plugin.json" \
+  || die "write lk plugin.json"
+hook_event UserPromptSubmit s5
+assert "rescan: a project skills link replaced by a directory is rescanned" \
+  'outgrep "• linkmod@skills-dir"'
+# Codex round 6: a dangling hooks.json created mid-session is a change (stat
+# reports ENOENT for it, as for an absent file) and is named unverifiable.
+mkdir -p "$PH/.claude/plugins/cache/mkt/dang/1.0.0/hooks" || die "mkdir dang"
+hook_event SessionStart s11
+ln -s "$PH/nowhere.json" "$PH/.claude/plugins/cache/mkt/dang/1.0.0/hooks/hooks.json" \
+  || die "link a dangling hooks.json"
+hook_event UserPromptSubmit s11
+assert "rescan: a dangling hooks.json created mid-session is named unverifiable" \
+  'unverifiable_section | grep -qxF "  • dang@mkt"'
+# Codex round 7: a permission change is a change. A cache marketplace dir
+# that could not be listed at SessionStart is rescanned once it can be.
+mkdir -p "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks" || die "mkdir permmod"
+printf '%s\n' '{"modules":["./register.js"]}' \
+  > "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks/hooks.json" || die "write permmod"
+chmod 0111 "$PH/.claude/plugins/cache/mktp" || die "chmod mktp"
+hook_event SessionStart s13
+chmod 0755 "$PH/.claude/plugins/cache/mktp" || die "restore mktp"
+hook_event UserPromptSubmit s13
+assert "rescan: a dir made readable mid-session is rescanned" 'outline "  • permmod@mktp"'
+# Codex round 9: DOTFILES_DIR relocates the manifest, so changing it is a
+# change: a mod the old manifest allowlisted is named under the new one.
+PD2="$(mktemp -d)" || die "mktemp -d for a second DOTFILES_DIR"
+mkdir -p "$PD2/claude" || die "mkdir PD2"
+printf '%s\n' "$MANIFEST_GLOBAL
+# mods-ok: dotmod@mkt" > "$PD/claude/plugins.txt" || die "allowlist dotmod"
+printf '%s\n' "$MANIFEST_GLOBAL" > "$PD2/claude/plugins.txt" || die "write PD2 manifest"
+add_cached_mod dotmod
+hook_event SessionStart s14
+assert "rescan: an allowlisted mod is silent under its manifest" '! outgrep "dotmod@mkt"'
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD2" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 \
+  <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s14\",\"cwd\":\"$PP\"}")"
+assert "rescan: a new DOTFILES_DIR is a change and its manifest applies" \
+  'outline "  • dotmod@mkt"'
+printf '%s\n' "$MANIFEST_GLOBAL" > "$PD/claude/plugins.txt" || die "restore PD manifest"
+rm -rf "$PD2"
+# A hostile session id cannot escape the state dir.
+hook_event UserPromptSubmit '../../escape'
+assert "rescan: an unsafe session id falls back to a fixed state file" \
+  '[ -f "$PH/.local/state/plugin-drift/no-session" ] && [ ! -e "$PH/escape" ]'
+# A stale state file from a long-gone session is pruned at SessionStart.
+touch -d '40 days ago' "$PH/.local/state/plugin-drift/s2" || die "age the s2 state"
+hook_event SessionStart s3
+assert "rescan: SessionStart prunes state older than 30 days" \
+  '[ ! -e "$PH/.local/state/plugin-drift/s2" ] && [ -f "$PH/.local/state/plugin-drift/s3" ]'
+rm -rf "$PD" "$PH" "$PP"
 
 # ── sync-plugins.sh agrees with the hook on what "installed" means ──────
 # The hook's remedy is "run sync-plugins.sh". If its fast path treated a
