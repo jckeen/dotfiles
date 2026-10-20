@@ -55,6 +55,24 @@ names the required lane.
   is a verdict and never falls back.
 - `review-and-push.sh` performs the whole selection itself.
 
+## Codex bot threads before merge
+
+A repo running the `codex-review` workflow also runs a GitHub Codex bot that
+reviews every push. Its findings arrive as review threads, often after the
+local gate has approved. Where the ruleset is enforced, each thread must be
+resolved before the PR can merge, and the `codex-findings` label marks PRs that
+still have one. Before merging, or when a PR stalls on that label:
+
+```
+~/.claude/scripts/codex-threads.sh list --pr N
+~/.claude/scripts/codex-threads.sh resolve --thread ID --reply "Fixed in <sha>: ..."
+```
+
+Fix the real findings and push them together. The push gets a fresh bot
+review, so no `@codex review` comment is needed. Reply with where each was
+fixed, or with why it is moot, then resolve. Never resolve a thread without a
+reply.
+
 ## Handoff payload
 
 When handing work to another agent, the note carries the *claim to disprove*
