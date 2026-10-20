@@ -58,6 +58,8 @@
   alone, defer to the bootstrap, and only preview under `--dry-run`.
 - **Docs**: README no longer claims hooks and the status line work without
   `claude-memory`. Its `touch settings.json` recipe (not valid JSON) is now a
-  copy of the example plus a working `bootstrap.sh`. CLAUDE-GUIDE's Hooks
+  copy of the example plus a working `bootstrap.sh`. Its `--check` mode, which
+  `setup.sh`'s health audit calls, only reports and writes nothing; the test
+  suite runs the recipe straight from the README. CLAUDE-GUIDE's Hooks
   section, `claude/scripts/README.md` and `check-hooks-wired.sh`'s hints
   point at the template.

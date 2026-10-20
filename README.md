@@ -431,12 +431,19 @@ cp ~/dev/dotfiles/claude/settings.example.json settings.json
 
 # A minimal bootstrap.sh that symlinks settings.json into ~/.claude/
 # (idempotent; re-run safe). It backs up a real file that is already there,
-# such as the copy setup.sh made before this repo existed.
+# such as the copy setup.sh made before this repo existed. setup.sh's health
+# audit calls it with --check (even under --dry-run), so that mode only
+# reports: exit 0 when the link is in place, 1 otherwise, writing nothing.
 cat > bootstrap.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 src="$(cd "$(dirname "$0")" && pwd)/settings.json"
 dst="$HOME/.claude/settings.json"
+if [ "${1:-}" = "--check" ]; then
+  [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ] && exit 0
+  echo "settings.json is not linked to $src" >&2
+  exit 1
+fi
 mkdir -p "$HOME/.claude"
 if [ -e "$dst" ] && [ ! -L "$dst" ]; then
   mv "$dst" "$dst.backup.$(date +%s)"

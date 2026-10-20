@@ -147,6 +147,43 @@ else
 fi
 rm -rf "$HS_T"
 
+# The README's "Creating your own" bootstrap.sh recipe, extracted verbatim:
+# setup.sh's health audit runs it with --check (also under --dry-run), so that
+# mode must only report (0 linked / 1 not) and write nothing; a plain run
+# links settings.json, backing up a real file first.
+# shellcheck source=claude/scripts/tests/lib-snapshot.sh
+. "$SCRIPT_DIR/lib-snapshot.sh"
+BT="$(mktemp -d)"
+mkdir -p "$BT/hm/.claude" "$BT/memory"
+sed -n "/^cat > bootstrap.sh <<'EOF'\$/,/^EOF\$/p" "$REPO_ROOT/README.md" | sed '1d;$d' > "$BT/memory/bootstrap.sh"
+cp "$EXAMPLE" "$BT/memory/settings.json"
+printf '{"mine": true}\n' > "$BT/hm/.claude/settings.json"
+if grep -q -- '--check' "$BT/memory/bootstrap.sh"; then
+  bt_before="$(snapshot "$BT/hm")"
+  HOME="$BT/hm" bash "$BT/memory/bootstrap.sh" --check >/dev/null 2>&1
+  bt_rc=$?
+  if [ "$bt_rc" -eq 1 ] && [ "$bt_before" = "$(snapshot "$BT/hm")" ]; then
+    ok "README bootstrap recipe: --check on an unlinked settings.json exits 1 and writes nothing"
+  else
+    fail "README bootstrap recipe: --check exited $bt_rc or modified HOME"
+  fi
+  HOME="$BT/hm" bash "$BT/memory/bootstrap.sh" >/dev/null 2>&1
+  if [ -L "$BT/hm/.claude/settings.json" ] && ls "$BT/hm/.claude/settings.json.backup."* >/dev/null 2>&1; then
+    bt_before="$(snapshot "$BT/hm")"
+    if HOME="$BT/hm" bash "$BT/memory/bootstrap.sh" --check >/dev/null 2>&1 \
+      && [ "$bt_before" = "$(snapshot "$BT/hm")" ]; then
+      ok "README bootstrap recipe: links (backing up a real file); --check then exits 0, read-only"
+    else
+      fail "README bootstrap recipe: --check on a correct link failed or wrote"
+    fi
+  else
+    fail "README bootstrap recipe: a plain run did not link settings.json with a backup"
+  fi
+else
+  fail "README bootstrap recipe not found, or it has no --check mode"
+fi
+rm -rf "$BT"
+
 # The reverse: no registration names a hook file that does not exist.
 dangling=""
 while IFS= read -r cmd; do
@@ -208,6 +245,18 @@ else
   fail "check-hooks-wired --strict flags the template's own opt-outs as drift"
   sed 's/^/      | /' "$HW_HOME/out"
 fi
+# Checkout elsewhere (DEV_DIR has no bootstrap) but an unused private repo at
+# ~/dev/claude-memory: setup seeds the template here, so the checker must
+# treat it as a template install too — same condition, no other location.
+mkdir -p "$HW_HOME/dev/claude-memory"
+: > "$HW_HOME/dev/claude-memory/bootstrap.sh"
+if hw "$HW_TPL_DEV"; then
+  ok "checkout elsewhere + unused ~/dev/claude-memory: template opt-outs still apply"
+else
+  fail "checker used a bootstrap location setup.sh does not (false drift on a template install)"
+  sed 's/^/      | /' "$HW_HOME/out"
+fi
+rm -rf "${HW_HOME:?}/dev"
 optout_first="${EXAMPLE_OPT_OUT# }"; optout_first="${optout_first%% *}"
 if [ -n "$optout_first" ] && ! hw "$HW_OWN_DEV" && grep -qF "$optout_first" "$HW_HOME/out"; then
   ok "owner layout (claude-memory bootstrap present): a missing opted-out hook fails --strict"

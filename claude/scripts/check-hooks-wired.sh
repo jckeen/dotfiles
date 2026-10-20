@@ -55,14 +55,14 @@ WIRED_COMMANDS="$(jq -r '.hooks // {} | .. | .command? // empty' "$SETTINGS" 2>/
 # shared with settings-example.test.sh). Applied ONLY on a template install —
 # the condition setup.sh's seed_claude_settings uses: no private
 # claude-memory/bootstrap.sh beside the checkout ($DEV_DIR, default the
-# checkout's parent, as in setup.sh; $HOME/dev is checked too). With the
-# private bootstrap present every hook must be wired, as before. Even then it
-# is only consulted for a hook the live settings do not register; any hook
-# not listed still reports as drift.
+# checkout's parent, exactly as setup.sh derives it — no other location, or
+# a template install beside an unused ~/dev/claude-memory would be told to
+# wire the omitted hooks). With the private bootstrap present every hook must
+# be wired, as before. Even then it is only consulted for a hook the live
+# settings do not register; any hook not listed still reports as drift.
 DEV_DIR="${DEV_DIR:-$(dirname "$REPO_ROOT")}"
 TEMPLATE_OPT_OUT=" "
 if [ ! -f "$DEV_DIR/claude-memory/bootstrap.sh" ] \
-  && [ ! -f "$HOME/dev/claude-memory/bootstrap.sh" ] \
   && [ -f "$REPO_ROOT/claude/settings-optout.txt" ]; then
   TEMPLATE_OPT_OUT=" $(sed 's/#.*//' "$REPO_ROOT/claude/settings-optout.txt" | awk 'NF {printf "%s ", $1}')"
 fi
