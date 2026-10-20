@@ -121,6 +121,10 @@ symlink_enumerate() {
 symlink_is_legacy_skill_dir() {
   local src="$1" dst="$2" entry
   [ -d "$dst" ] && [ ! -L "$dst" ] || return 1
+  # Unreadable (no r): the glob lists nothing, so it would look empty. Not
+  # traversable (no x): every -e/-L fails, so entries would look absent.
+  # Either way we cannot see its content, so it is not legacy (issue #638).
+  [ -r "$dst" ] && [ -x "$dst" ] || return 1
   for entry in "$dst"/* "$dst"/.*; do
     case "${entry##*/}" in .|..) continue ;; esac
     [ -e "$entry" ] || [ -L "$entry" ] || continue  # unmatched glob
@@ -130,18 +134,106 @@ symlink_is_legacy_skill_dir() {
   return 0
 }
 
-# symlink_migrate_legacy_skill_dir <src_dir> <dst> — remove a legacy per-file
-# skill directory (only our own links, re-checked here) so a directory link can
-# replace it. Removes nothing and returns 1 if <dst> is not legacy. The links
-# carry no data: each points into the dotfiles bundle that the directory link
-# restores, so this is a conversion, not a deletion.
+# symlink_migrate_legacy_skill_dir <src_dir> <dst> — move a legacy per-file
+# skill directory (only our own links, checked here) out of the way so a
+# directory link can replace it. Status:
+#   0  <dst> is gone (archived, or a rival already moved or relinked it); the
+#      caller creates the link
+#   1  nothing done: <dst> is a real dir that is not legacy, or the move failed
+#   2  <dst> changed during the move; its content is kept under kept/ (an
+#      error the caller must count, even though <dst> is now free to link)
+#
+# Concurrency (issue #638): it never deletes. Unlinking the links by path
+# raced a concurrent --heal: once a rival swapped $dst for the directory link,
+# `rm "$dst/x"` resolved through it and deleted the real $src/x, and no shell
+# or Node call can unlink "only if still a symlink". So the whole directory is
+# renamed (rename(2), atomic) into the archive
+#   <claude>/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>
+# beside skills/, where no skill loader looks and no link scan reaches. It is
+# kept on purpose. check-claude.sh flags every archived entry that is not
+# only old links (KEPT); an entry is safe to delete by hand only if it is not
+# flagged. Content that changed during a migration goes to kept/. A run whose rename fails because a rival already
+# moved or relinked $dst returns 0 and lets the caller judge the settled state.
 symlink_migrate_legacy_skill_dir() {
-  local src="$1" dst="$2" entry
-  symlink_is_legacy_skill_dir "$src" "$dst" || return 1
-  for entry in "$dst"/* "$dst"/.*; do
-    case "${entry##*/}" in .|..) continue ;; esac
-    [ -L "$entry" ] || continue
-    rm "$entry" || return 1
-  done
-  rmdir "$dst"
+  local src="$1" dst="$2" name archive dest
+  name="${dst##*/}"
+  archive="${dst%/*/*}/.migrated-skill-dirs"
+  if ! symlink_is_legacy_skill_dir "$src" "$dst"; then
+    _symlink_rival_done "$src" "$dst" && return 0
+    return 1
+  fi
+  # mkdir -p accepts a symlink to a dir and the rename would follow it (e.g.
+  # back into skills/, where the copy loads as a duplicate skill), so the
+  # archive must be a real dir (#697).
+  mkdir -p "$archive" 2>/dev/null
+  if [ ! -d "$archive" ] || [ -L "$archive" ]; then
+    echo "symlink_migrate_legacy_skill_dir: $archive is not a real directory; leaving $dst in place" >&2
+    return 1
+  fi
+  # rename(2) cannot cross filesystems; refuse with a clear message rather
+  # than let anything fall back to a non-atomic copy.
+  if [ "$(_symlink_dev "$dst")" != "$(_symlink_dev "$archive")" ]; then
+    # $dst gone, or relinked to exactly $src, means a rival won. Any other
+    # change (a foreign link) is someone's own config: leave it (#697).
+    _symlink_rival_done "$src" "$dst" && return 0
+    { [ -d "$dst" ] && [ ! -L "$dst" ]; } || return 1
+    echo "symlink_migrate_legacy_skill_dir: $dst and $archive are on different filesystems" >&2
+    return 1
+  fi
+  dest="$archive/$name.$(date -u +%Y%m%dT%H%M%SZ).${BASHPID:-$$}"
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    echo "symlink_migrate_legacy_skill_dir: $dest already exists" >&2
+    return 1
+  fi
+  if ! _symlink_rename "$dst" "$dest"; then
+    # A rival moved it first: nothing to do. Anything else still at $dst (the
+    # real dir, permissions; a foreign link) is a failure.
+    _symlink_rival_done "$src" "$dst" && return 0
+    return 1
+  fi
+  # A rival's directory link, grabbed between the check and the rename, is
+  # left in the archive (it is only a link); the caller relinks $dst. Putting
+  # it back could overwrite whatever appeared at $dst meanwhile.
+  # Only exactly the bundle link (readlink == $src, the comparison check_link
+  # makes) is a rival's repair; any other link is someone's own config and
+  # goes to kept/ below.
+  if [ -L "$dest" ]; then
+    [ "$(readlink "$dest")" = "$src" ] && return 0
+  elif symlink_is_legacy_skill_dir "$src" "$dest"; then
+    return 0
+  fi
+  # Content appeared mid-flight (a file in the moved dir, or a file that took
+  # $dst's place before the rename). It is never renamed back: rename(2) cannot
+  # refuse to overwrite, so a check-then-rename could clobber whatever has
+  # since appeared at $dst. It goes to kept/, which check-claude.sh reports.
+  # kept/ must be a real dir too; otherwise the content stays where it is,
+  # inside the archive, and check-claude.sh still reports it.
+  local kept="$archive/kept/${dest##*/}"
+  mkdir -p "$archive/kept" 2>/dev/null
+  if [ -d "$archive/kept" ] && [ ! -L "$archive/kept" ] && _symlink_rename "$dest" "$kept"; then
+    dest="$kept"
+  fi
+  echo "symlink_migrate_legacy_skill_dir: $dst changed during migration; its content is kept at $dest — review it" >&2
+  return 2
+}
+
+# _symlink_rival_done <src_dir> <dst> — 0 when a rival has finished: <dst> is
+# absent, or exactly the bundle link (readlink == <src_dir>, the comparison
+# check_link makes). Anything else at <dst> is not ours to call done.
+_symlink_rival_done() {
+  [ ! -e "$2" ] && [ ! -L "$2" ] && return 0
+  [ -L "$2" ] && [ "$(readlink "$2")" = "$1" ]
+}
+
+# _symlink_rename <from> <to> — rename(2) only. Unlike mv it never moves <from>
+# INTO <to> when <to> is (or links to) a directory, and never falls back to a
+# non-atomic copy across filesystems; it just fails. perl ships with macOS and
+# every Debian/Ubuntu base system.
+_symlink_rename() {
+  perl -e 'rename($ARGV[0], $ARGV[1]) or exit 1' "$1" "$2" 2>/dev/null
+}
+
+# _symlink_dev <path> — device number of <path> itself (GNU or BSD stat).
+_symlink_dev() {
+  stat -c %d "$1" 2>/dev/null || stat -f %d "$1" 2>/dev/null
 }

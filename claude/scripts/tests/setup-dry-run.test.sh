@@ -575,6 +575,35 @@ STUB
       fail "setup.sh did not reload a real server with only detached sessions"
     fi
     rm -rf "$REAL_TMUX_HOME" "$REAL_TMUX_DIR"
+
+    # setup.sh and cct re-source the managed .tmux.conf into a long-lived
+    # server, so sourcing it repeatedly must not grow its array options (#673).
+    # Same private socket dir pattern; only the server started here is killed,
+    # by its own PID.
+    REAL_TMUX_DIR="$(mktemp -d)"
+    _reload_out="$(
+      export TMUX_TMPDIR="$REAL_TMUX_DIR"
+      tmux -f /dev/null new-session -d -s idem 'sleep 60' || exit 1
+      _pid="$(tmux display-message -p '#{pid}')"
+      for _i in 1 2 3; do
+        tmux source-file "$REPO_ROOT/.tmux.conf" || echo "source-failed"
+      done
+      for _opt in terminal-features terminal-overrides; do
+        tmux show-options -sv "$_opt" | sort | uniq -d | sed "s/^/dup $_opt: /"
+      done
+      tmux show-options -sv terminal-features | grep -Fxq 'xterm*:extkeys' \
+        || echo "missing terminal-features xterm*:extkeys"
+      tmux show-options -sv terminal-overrides | grep -Eq '^,?xterm-256color:Tc$' \
+        || echo "missing terminal-overrides xterm-256color:Tc"
+      [ -n "$_pid" ] && kill "$_pid"
+    )"
+    if [ $? -eq 0 ] && [ -z "$_reload_out" ]; then
+      ok "sourcing .tmux.conf three times leaves no duplicate array entries"
+    else
+      fail "re-sourcing .tmux.conf duplicates or drops array entries"
+      printf '%s\n' "$_reload_out" | sed 's/^/      | /'
+    fi
+    rm -rf "$REAL_TMUX_DIR"
   else
     ok "real-tmux detached-session reload skipped (tmux not installed) # SKIP"
   fi

@@ -4,10 +4,14 @@
 # from a phone and from cloud sessions (OperatorQueueReminder.hook.sh lists them).
 #
 # Dry-run by default: prints one row per "## <slug>" block — slug, project
-# label, and the target (an existing issue with the same title in any state, or
-# "new"). Nothing is written. --apply creates the missing labels and one issue
-# per "new" row; rows that already have an issue are skipped, so a re-run after
-# a partial apply only creates what is missing.
+# label, and the target: "new"; "#N (already migrated, skipped)" for a
+# same-title issue (any state) that carries `operator-action` and whose
+# field lines, in order, are exactly the block's; or "needs manual merge: #N"
+# for any other same-title issue (label missing; a field line extra, missing,
+# different or reordered; filed by hand), which is never edited or adopted. Nothing is written. --apply
+# creates the missing labels and one issue per "new" row, so a re-run after a
+# partial apply only creates what is missing; it exits 1, without the
+# retire-the-file line, while any row needs a manual merge.
 #
 # Each issue's title is the slug and its body is the block's own field lines
 # verbatim (`- added:`, `- verified:`, `- project:`, `- deadline:`, `- action:`),
@@ -30,7 +34,8 @@
 # switches to the issues.
 #
 # Usage: migrate-operator-queue.sh [--apply] [--repo [host/]owner/name] [--queue path]
-# EXIT: 0 ok; 1 a gh call failed, the repo is not private, or another apply
+# EXIT: 0 ok; 1 a gh call failed, an --apply row needs a manual merge, the
+#   repo is not private, or another apply
 #   holds the lock (or flock is missing); 2 usage error.
 # SELF-TEST: claude/scripts/tests/migrate-operator-queue.test.sh
 set -euo pipefail
@@ -43,7 +48,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --repo) REPO="${2:?--repo needs owner/name}"; shift ;;
     --queue) QUEUE="${2:?--queue needs a path}"; shift ;;
-    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -98,13 +103,28 @@ if [ "$APPLY" -eq 1 ]; then
   flock -n 9 || { echo "refusing: another --apply for $REPO is running" >&2; exit 1; }
 fi
 
-# Existing operator-action issues in any state, by exact title.
-gh issue list -R "$REPO" --label operator-action --state all --limit 1000 \
-  --json number,title -q '.[] | "\(.title)\t\(.number)"' > "$work/existing.tsv"
+# Existing issues in any state and with any labels, by exact title: an
+# issue whose operator-action label was removed (after a partial migration,
+# or one filed by hand) still has the title, and gh's --label would hide it.
+# TAB-separated typed records, so no line boundary is lost to a join:
+#   T <title> <number> <has operator-action: true|false>  one per issue
+#   F <number> <queue-field body line>                    one per such line
+# Label membership is decided in jq on the label array (GitHub allows commas
+# in label names, so a joined string would let "team,operator-action" pass).
+# Field lines are normalised as the queue split above normalises them (no
+# CR, tabs as spaces), so a body created from a block matches it exactly.
+LIST_LIMIT=10000
+gh issue list -R "$REPO" --state all --limit "$LIST_LIMIT" --json number,title,labels,body \
+  -q '.[] | .number as $n
+      | "T\t\(.title)\t\($n)\t\(any(.labels[]; .name == "operator-action"))",
+        ((.body // "") | gsub("\r"; "") | split("\n")[]
+          | select(test("^- (added|verified|project|deadline|action):"))
+          | gsub("\t"; " ") | "F\t\($n)\t\(.)")' \
+  > "$work/existing.tsv"
 # The dedup is only sound over the complete list: a full page could hide a
 # title past the limit, and its block would be created twice.
-if [ "$(wc -l < "$work/existing.tsv")" -ge 1000 ]; then
-  echo "refusing: $REPO has 1000+ operator-action issues; the existing-title check would be incomplete" >&2
+if [ "$(grep -c '^T' "$work/existing.tsv" || true)" -ge "$LIST_LIMIT" ]; then
+  echo "refusing: $REPO has $LIST_LIMIT+ issues; the existing-title check would be incomplete" >&2
   exit 1
 fi
 
@@ -123,8 +143,23 @@ if [ "$APPLY" -eq 1 ]; then
   done < "$work/wanted.txt"
 fi
 
+# fields_equal <number> <block-body-file> — issue <number>'s F records, in
+# body order, are exactly the block's field lines in order: same lines, same
+# count, same order. Membership alone is not enough: the hook reads a field's
+# first occurrence, so an extra or earlier conflicting line would change what
+# it shows. (ENVIRON, not -v, so backslashes stay literal.)
+fields_equal() {
+  n="$1" awk -F'\t' '
+    NR == FNR {
+      if ($1 == "F" && ($2 "") == (ENVIRON["n"] "")) have[++k] = substr($0, length($1) + length($2) + 3)
+      next
+    }
+    { if (++m > k || have[m] != $0) diff = 1 }
+    END { exit (diff || m != k) }' "$work/existing.tsv" "$2"
+}
+
 today="$(date +%Y-%m-%d)"
-total=0; new=0; existing=0
+total=0; new=0; existing=0; manual=0
 printf '%-48s  %-24s  %s\n' "SLUG" "LABEL" "TARGET"
 while IFS=$'\t' read -r n slug group; do
   total=$((total + 1))
@@ -132,10 +167,22 @@ while IFS=$'\t' read -r n slug group; do
   # ENVIRON, not -v: awk -v would turn a backslash in the title into an escape.
   # The "" concatenations force a string comparison: awk would otherwise
   # compare numeric-looking titles as numbers ("1" == "001", "1e2" == "100").
-  num="$(t="$slug" awk -F'\t' '($1 "") == (ENVIRON["t"] "") { print $2; exit }' "$work/existing.tsv")"
+  match="$(t="$slug" awk -F'\t' '$1 == "T" && ($2 "") == (ENVIRON["t"] "") { print $3 "\t" $4; exit }' "$work/existing.tsv")"
+  num="${match%%$'\t'*}"
   if [ -n "$num" ]; then
-    existing=$((existing + 1))
-    printf '%-48s  %-24s  %s\n' "$slug" "$label" "#$num (exists, skipped)"
+    # Already migrated only if the hook will list it (operator-action) and
+    # its field lines are exactly the block's, in order. Anything else with
+    # this title (label removed; fields extra, missing, changed or
+    # reordered; filed by hand) is never adopted or edited: the operator
+    # merges it by hand.
+    [ -f "$work/$n.body" ] || : > "$work/$n.body"
+    if [ "${match#*$'\t'}" = true ] && fields_equal "$num" "$work/$n.body"; then
+      existing=$((existing + 1))
+      printf '%-48s  %-24s  %s\n' "$slug" "$label" "#$num (already migrated, skipped)"
+    else
+      manual=$((manual + 1))
+      printf '%-48s  %-24s  %s\n' "$slug" "$label" "needs manual merge: #$num"
+    fi
     continue
   fi
   new=$((new + 1))
@@ -146,14 +193,23 @@ while IFS=$'\t' read -r n slug group; do
   [ "$group" = "-" ] || args+=(--label "$label")
   url="$(gh "${args[@]}")"
   # Record it, so a repeated title later in this same queue is skipped too.
-  printf '%s\t%s\n' "$slug" "${url##*/}" >> "$work/existing.tsv"
+  num="${url##*/}"
+  {
+    printf 'T\t%s\t%s\ttrue\n' "$slug" "$num"
+    { grep -E '^- (added|verified|project|deadline|action):' "$work/$n.body" || true; } |
+      while IFS= read -r l; do printf 'F\t%s\t%s\n' "$num" "$l"; done
+  } >> "$work/existing.tsv"
 done < "$work/index.tsv"
 
 echo ""
 if [ "$APPLY" -eq 1 ]; then
-  echo "$total item(s): $new created, $existing already had an issue."
+  echo "$total item(s): $new created, $existing already migrated, $manual need a manual merge."
+  if [ "$manual" -gt 0 ]; then
+    echo "Not fully migrated: $manual item(s) share a title with an issue that is not their exact migration (no operator-action label, or fields missing or different). Merge each by hand; the queue file is still the source." >&2
+    exit 1
+  fi
   echo "Check: gh issue list -R $REPO --label operator-action --state open --limit 1000 | wc -l"
   echo "Then retire the file: put '> **Historical** — point-in-time record ($today). Do not act on this.' as its first line."
 else
-  echo "$total item(s): $new would be created, $existing already have an issue. Dry run — re-run with --apply to create them."
+  echo "$total item(s): $new would be created, $existing already migrated, $manual need a manual merge. Dry run — re-run with --apply to create them."
 fi

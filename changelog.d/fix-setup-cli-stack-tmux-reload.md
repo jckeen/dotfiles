@@ -1,8 +1,8 @@
 ## 2026-10-19 — fix: setup.sh installs the CLI stack from one list, and a running tmux server picks up the managed config
 
 - **`lib-checks.sh`**: each `CLI_STACK_TOOLS` entry now carries everything
-  both consumers need, as `<name>:<Debian binary>:<apt package>:<brew
-  package>` (empty fields default to the name; a `?`-marked apt package is
+  both consumers need, as `NAME:DEBIAN_BINARY:APT_PACKAGE:BREW_PACKAGE`
+  (empty fields default to the name; a `?`-marked apt package is
   installed on its own line because older archives lack it, as with eza).
   `cli_stack_entry` parses one entry; `check_cli_stack` uses it (#636).
 - **`setup.sh`**: the #204 install and shim block loops over

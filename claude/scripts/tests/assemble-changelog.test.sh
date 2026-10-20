@@ -132,7 +132,7 @@ rm -rf "$R"
 
 # ── Allowed shapes pass ────────────────────────────────────────────────
 new_repo
-w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine" "  continued, with <tags> and | pipes mid-line" "    - nested bullet" "" "## 2026-10-04 — fix(scope)!: y" "* star bullet"
+w changelog.d/ok.md "## 2026-10-05 — feat: x" "" "### What changed" "" "   - three spaces is still a bullet" "- inline \`code\` is fine" "  continued, with a < b and | pipes mid-line" "    - nested bullet" "" "## 2026-10-04 — fix(scope)!: y" "* star bullet"
 run --check
 expect "grammar: subsections, bullets, continuations, inline code and several entries pass" 0 "1 fragment(s)"
 rm -rf "$R"
@@ -149,6 +149,9 @@ malformed() { # <name> <expected output fragment> <fragment line>...
   rm -rf "$R"
 }
 L="a line must be"
+# HTML-opening lines are now refused first by the anywhere-on-a-line inline
+# HTML ban (#664 item 10); the line-shape check still sits behind it.
+H="inline HTML"
 malformed "no type" "heading must be" "## 2026-10-05 — something happened" "- b"
 malformed "unknown type" "heading must be" "## 2026-10-05 — feature: x" "- b"
 malformed "hyphen not em dash" "heading must be" "## 2026-10-05 - feat: x" "- b"
@@ -178,10 +181,10 @@ malformed "#word at line start" "$L" "## 2026-10-05 — feat: x" "- b" "  #626 c
 malformed "4-space bullet" "no bullet" "## 2026-10-05 — feat: x" "" "    - code, not a list item"
 malformed "balanced HTML comment" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" "<!--" "## 2026-10-20 — feat: hidden" "- c" "-->"
 malformed "unclosed HTML comment" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" "<!-- open"
-malformed "balanced <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "<pre>" "## 2026-10-20 — feat: hidden" "- c" "</pre>"
-malformed "unclosed <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "<pre>"
-malformed "bullet opening <pre>" "$L" "## 2026-10-05 — feat: x" "- <pre>"
-malformed "continuation opening an HTML block" "$L" "## 2026-10-05 — feat: x" "- b" "  <div>"
+malformed "balanced <pre>" "$H" "## 2026-10-05 — feat: x" "- b" "<pre>" "## 2026-10-20 — feat: hidden" "- c" "</pre>"
+malformed "unclosed <pre>" "$H" "## 2026-10-05 — feat: x" "- b" "<pre>"
+malformed "bullet opening <pre>" "$H" "## 2026-10-05 — feat: x" "- <pre>"
+malformed "continuation opening an HTML block" "$H" "## 2026-10-05 — feat: x" "- b" "  <div>"
 malformed "setext === underline" "$L" "## 2026-10-05 — feat: x" "- b" "  ==="
 malformed "setext --- underline" "$L" "## 2026-10-05 — feat: x" "- b" "  ---"
 malformed "thematic break bullet" "$L" "## 2026-10-05 — feat: x" "- b" "* * *"
@@ -198,15 +201,65 @@ malformed "comment mid-line" "comment or fence marker" "## 2026-10-05 — feat: 
 malformed "comment closer" "comment or fence marker" "## 2026-10-05 — feat: x" "- b" "  done -->"
 malformed "inline triple backtick" "comment or fence marker" "## 2026-10-05 — feat: x" "- uses \`\`\` inline"
 malformed "inline ~~~" "comment or fence marker" "## 2026-10-05 — feat: x" "- uses ~~~ inline"
-malformed "nested <pre>" "$L" "## 2026-10-05 — feat: x" "- - <pre>"
-malformed "ordered-list <pre>" "$L" "## 2026-10-05 — feat: x" "- b" "  1. <pre>"
-malformed "bullet ordered-list <pre>" "$L" "## 2026-10-05 — feat: x" "- 1) <pre>"
-malformed "quoted <pre>" "$L" "## 2026-10-05 — feat: x" "- > <pre>"
-malformed "tab-nested <pre>" "$L" "## 2026-10-05 — feat: x" "$(printf -- '- \t+ <pre>')"
+malformed "nested <pre>" "$H" "## 2026-10-05 — feat: x" "- - <pre>"
+malformed "ordered-list <pre>" "$H" "## 2026-10-05 — feat: x" "- b" "  1. <pre>"
+malformed "bullet ordered-list <pre>" "$H" "## 2026-10-05 — feat: x" "- 1) <pre>"
+malformed "quoted <pre>" "$H" "## 2026-10-05 — feat: x" "- > <pre>"
+malformed "tab-nested <pre>" "$H" "## 2026-10-05 — feat: x" "$(printf -- '- \t+ <pre>')"
+malformed "line-leading < that is not HTML" "$L" "## 2026-10-05 — feat: x" "- - <3 hearts"
 malformed "nested heading" "$L" "## 2026-10-05 — feat: x" "- - ## 2026-10-20 — feat: y"
 malformed "table delimiter without pipes" "$L" "## 2026-10-05 — feat: x" "- b" "  name | value" "  --- | ---" "  one | two"
 malformed "table delimiter with colons" "$L" "## 2026-10-05 — feat: x" "- b" "  :--- | ---:"
 malformed "rule after nested marker" "$L" "## 2026-10-05 — feat: x" "- b" "- - ---"
+
+# ── #664 hardening: each item is a ban, not more Markdown parsing ──────
+# Item 1: rule-only text, re-checked after every container prefix is stripped.
+malformed "rule after ordered marker (#664.1)" "$L" "## 2026-10-05 — feat: x" "- b" "  1. ***"
+malformed "setext after nested marker (#664.1)" "$L" "## 2026-10-05 — feat: x" "- b" "  - ==="
+# Item 2: pipe tables, outer pipes or not, nested or not.
+malformed "table behind nested marker (#664.2)" "$L" "## 2026-10-05 — feat: x" "- a | b" "  - --- | ---"
+malformed "pipe-led row behind nested marker (#664.2)" "$L" "## 2026-10-05 — feat: x" "- - | a | b |"
+# Item 4: a quote marker exposed by a nested list prefix is refused, not stripped.
+malformed "quote behind nested bullet (#664.4)" "$L" "## 2026-10-05 — feat: x" "- - > quoted"
+malformed "quote behind ordered marker (#664.4)" "$L" "## 2026-10-05 — feat: x" "- b" "  1. > quoted"
+malformed "quote behind tab-nested bullet (#664.4)" "$L" "## 2026-10-05 — feat: x" "$(printf -- '- \t* > quoted')"
+# Item 5: link reference definitions vanish from the render.
+malformed "link reference definition (#664.5)" "link reference" "## 2026-10-05 — feat: x" "- b" "" "  [x]: https://example.com"
+malformed "nested link reference definition (#664.5)" "link reference" "## 2026-10-05 — feat: x" "- - [x]: https://example.com"
+malformed "multi-line link label (#664.5)" "link reference" "## 2026-10-05 — feat: x" "- [x" "  y]: https://example.com"
+# Item 6: control bytes (tab aside; CR has its own CRLF message).
+malformed "SOH byte (#664.6)" "control byte" "## 2026-10-05 — feat: x" "$(printf -- '- a\001b')"
+malformed "escape byte (#664.6)" "control byte" "## 2026-10-05 — feat: x" "$(printf -- '- a\033[31mred')"
+malformed "DEL byte (#664.6)" "control byte" "## 2026-10-05 — feat: x" "$(printf -- '- a\177b')"
+malformed "form feed (#664.6)" "control byte" "## 2026-10-05 — feat: x" "- b" "$(printf -- '  a\fb')"
+# Item 8: a heading summary must render as text, not only markup.
+malformed "markup-only summary (#664.8)" "heading must be" "## 2026-10-05 — feat: **" "- b"
+malformed "closing-hashes summary (#664.8)" "heading must be" "## 2026-10-05 — feat: ###" "- b"
+malformed "code-only empty summary (#664.8)" "heading must be" "## 2026-10-05 — feat: \`\` \`\`" "- b"
+# Letters inside markup that renders as nothing (a link destination, an
+# entity name) must not count, so headings hold no [ ] or & at all.
+malformed "empty link label summary (#664.8)" "heading summary" "## 2026-10-05 — feat: [](x)" "- b"
+malformed "entity-only summary (#664.8)" "heading summary" "## 2026-10-05 — feat: &nbsp;" "- b"
+malformed "link in summary (#664.8)" "heading summary" "## 2026-10-05 — feat: see [docs](x)" "- b"
+# Item 10: inline HTML, anywhere on a line.
+malformed "inline tag mid-line (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- text <span hidden>gone</span>"
+malformed "closing tag (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- b" "  done </details>"
+malformed "declaration (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- a <!DOCTYPE x> b"
+malformed "processing instruction (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- a <?php x ?> b"
+malformed "tag inside inline code (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- a \`<name>\` b"
+malformed "tag in a heading (#664.10)" "inline HTML" "## 2026-10-05 — feat: x <b>y</b>" "- b"
+new_repo
+w changelog.d/ok.md "## 2026-10-05 — feat: x" "- a < b, 1 <2, <= and -> are fine"
+run --check
+expect "inline HTML (#664.10): < not followed by a letter, / ! or ? passes" 0 "1 fragment(s)"
+rm -rf "$R"
+# A NUL cannot travel in an argument, so this fragment is written directly.
+new_repo
+mkdir -p "$R/changelog.d"
+printf '## 2026-10-05 — feat: x\n- a\000b\n' >"$R/changelog.d/nul.md"
+run --check
+expect "control bytes (#664.6): a NUL byte is refused" 1 "control byte"
+rm -rf "$R"
 
 # ── Non-fragment files and unreadable or symlinked inputs ──────────────
 new_repo
@@ -223,6 +276,31 @@ new_repo
 w "changelog.d/..hidden.md" "## 2026-10-05 — feat: x" "- b"
 run --check
 expect "files: a double-dot file in changelog.d/ is seen and refused" 1 "fragment name must be"
+rm -rf "$R"
+# Item 7 (#664): the whole name is validated, not each line of it.
+new_repo
+w "changelog.d/$(printf 'bad\nname.md')" "## 2026-10-05 — feat: x" "- b"
+run --check
+expect "files (#664.7): a fragment name with a newline is refused" 1 "fragment name must be"
+rm -rf "$R"
+new_repo
+w "changelog.d/$(printf 'ok.md\nok.md')" "## 2026-10-05 — feat: x" "- b"
+run --check
+expect "files (#664.7): a name whose every line is valid is still refused" 1 "fragment name must be"
+rm -rf "$R"
+# Item 9 (#664): names that differ only in case collide on a case-insensitive
+# checkout (macOS, Windows), where one silently replaces the other.
+new_repo
+w changelog.d/Fix-a.md "## 2026-10-05 — fix: upper" "- b"
+w changelog.d/fix-a.md "## 2026-10-06 — fix: lower" "- b"
+# On a case-insensitive filesystem the second write replaced the first, so
+# there is no collision left to detect.
+if [ "$(find "$R/changelog.d" -type f -name '*.md' | wc -l)" -eq 2 ]; then
+  run --check
+  expect "files (#664.9): names differing only in case are refused" 1 "differ only in case"
+else
+  ok "files (#664.9): case-collision check skipped (case-insensitive filesystem) # SKIP"
+fi
 rm -rf "$R"
 
 # Root reads anything, so the unreadable cases are meaningless there.
