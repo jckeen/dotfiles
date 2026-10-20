@@ -3,7 +3,7 @@
 - **`claude/scripts/run-tests.sh`** (#650): without `--verbose` a full run
   used to print nothing for about 17 minutes, and agents killed it as hung.
   Each suite's `PASS`/`FAIL` row now prints as the suite finishes. A suite
-  that is still running prints `… still running: <name> (Ns)` every
+  that is still running prints `… still running: NAME (Ns)` every
   `RUN_TESTS_HEARTBEAT` seconds (default 30). The final summary is unchanged.
   The heartbeat's `sleep` writes to `/dev/null`, so it cannot hold a caller's
   pipe open, and an EXIT trap stops the heartbeat if the runner dies.
