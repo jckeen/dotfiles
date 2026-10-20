@@ -1404,6 +1404,54 @@ if kind == 'writer':
         # A branch whose name merely extends this one keeps its own section.
         self.assertIn("branch.topic.x.remote", names)
 
+    def test_delete_branch_removes_configuration_git_stored_in_other_casing(self):
+        # Section names are case-insensitive, so `[Branch "spare"]` lists as
+        # branch.spare.*, yet `--remove-section branch.spare` exits 128 on it.
+        module = self.lifecycle_module()
+        self.run_git(self.repo, "branch", "spare", self.head)
+        config = Path(self.run_git(self.repo, "rev-parse", "--git-common-dir").strip())
+        if not config.is_absolute():
+            config = self.repo / config
+        with (config / "config").open("a") as stream:
+            stream.write('[Branch "spare"]\n\tremote = origin\n\tmerge = refs/heads/spare\n')
+            stream.write('[branch "spare"]\n\trebase = true\n')
+        self.assertEqual(
+            module.delete_released_branch(self.repo, "refs/heads/spare", self.head), (True, None)
+        )
+        names = self.run_git(self.repo, "config", "--local", "--name-only", "--list").split()
+        self.assertEqual([name for name in names if name.rpartition(".")[0] == "branch.spare"], [])
+
+    def test_delete_branch_handles_a_non_utf8_branch_name(self):
+        # A branch name Git accepts need not be UTF-8; Python decodes it with
+        # surrogate escapes, and the configuration step must not raise after
+        # the ref is already gone.
+        module = self.lifecycle_module()
+        raw = b"refs/heads/caf\xe9"
+        subprocess.check_output(
+            [b"git", b"-C", os.fsencode(self.repo), b"update-ref", raw, self.head.encode()]
+        )
+        subprocess.check_output(
+            [b"git", b"-C", os.fsencode(self.repo), b"config", b"branch.caf\xe9.remote", b"origin"]
+        )
+        branch = os.fsdecode(raw)
+        self.assertEqual(module.delete_released_branch(self.repo, branch, self.head), (True, None))
+        refs = subprocess.check_output(
+            [b"git", b"-C", os.fsencode(self.repo), b"for-each-ref", raw]
+        )
+        self.assertEqual(refs, b"")
+        names = subprocess.check_output(
+            [
+                b"git",
+                b"-C",
+                os.fsencode(self.repo),
+                b"config",
+                b"--local",
+                b"--name-only",
+                b"--list",
+            ]
+        ).split()
+        self.assertNotIn(b"branch.caf\xe9.remote", names)
+
     def test_delete_branch_restores_a_ref_a_worktree_attached_during_deletion(self):
         module = self.lifecycle_module()
         self.run_git(self.repo, "branch", "spare", self.head)
@@ -2337,6 +2385,38 @@ if kind == 'writer':
             patch.object(lifecycle, "archived_metadata_matches", return_value=False),
         ):
             with self.assertRaisesRegex(ValueError, "metadata changed.*retained.*archive:"):
+                lifecycle.retire(self.repo, self.worktree, True, self.root / "archive")
+        self.assertEqual(len(scans), 2)
+        self.assertTrue(self.worktree.is_dir())
+        (archive,) = (self.root / "archive").iterdir()
+        recovery = json.loads((archive / "recovery.json").read_text())
+        self.assertIn(late, recovery["retirement_exempt_processes"])
+
+    def test_archive_retained_for_a_changed_worktree_records_second_scan_exemptions(self):
+        from functools import partial
+        from unittest.mock import patch
+
+        self.merged()
+        self.assertEqual(self.release().returncode, 0)
+        lifecycle, _ = self.process_fixture()
+        lifecycle.active_processes = partial(lifecycle.active_processes, proc_root=self.proc)
+        original_assess = lifecycle.assess
+        late = {"pid": 778, "comm": "systemd", "ppid": 1}
+        scans = []
+
+        def second_scan_changes_and_exempts_more(repo, path, *args):
+            item, admin, record = original_assess(repo, path, *args)
+            scans.append(path)
+            if len(scans) == 2:
+                record["retirement_exempt_processes"] = [late]
+                record["owner"] = "someone-else"
+            return item, admin, record
+
+        with (
+            patch.dict(os.environ, self.env),
+            patch.object(lifecycle, "assess", second_scan_changes_and_exempts_more),
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during archival.*retained.*archive:"):
                 lifecycle.retire(self.repo, self.worktree, True, self.root / "archive")
         self.assertEqual(len(scans), 2)
         self.assertTrue(self.worktree.is_dir())
