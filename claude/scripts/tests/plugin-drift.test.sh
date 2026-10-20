@@ -871,6 +871,14 @@ hook_event SessionStart s1
 CLAUDE_CODE_PLUGIN_DIRS="$PH/extra" hook_event SessionStart s4
 assert "rescan: a different CLAUDE_CODE_PLUGIN_DIRS misses the listing cache" \
   'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
+# With the same value again, a plugin added under that dir must still be
+# listed (codex round 3): the cache is not trusted while it is set.
+CLAUDE_CODE_PLUGIN_DIRS="$PH/extra" hook_event SessionStart s4
+assert "rescan: CLAUDE_CODE_PLUGIN_DIRS bypasses the listing cache" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
+CLAUDE_CONFIG_DIR="$PH/cfg" hook_event SessionStart s4
+assert "rescan: CLAUDE_CONFIG_DIR bypasses the listing cache" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
 # A failed listing leaves the scan incomplete: the next prompt rescans and,
 # once the CLI recovers, names a mod only the listing reaches.
 mkdir -p "$PH/far/hooks" || die "mkdir far"

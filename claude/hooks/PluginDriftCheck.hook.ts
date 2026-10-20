@@ -666,7 +666,11 @@ function saveListing(key: string[], found: Scanned[]): void {
 function loaderPlugins(): Scanned[] | null {
   for (const path of LISTING_KEYS) watch(path);
   const key = listingKey();
-  const cached = cachedListing(key);
+  // CLAUDE_CONFIG_DIR moves the files the key watches, and
+  // CLAUDE_CODE_PLUGIN_DIRS adds directories whose contents it cannot see,
+  // so with either set the cache is never trusted: the CLI runs every scan.
+  const uncacheable = LISTING_ENV.some((name) => process.env[name] !== undefined);
+  const cached = uncacheable ? null : cachedListing(key);
   if (cached !== null) return cached;
   const found = runListing();
   if (found === null) scanIncomplete = true;
