@@ -73,6 +73,37 @@ rm -rf "$BASE/projects"
 [ ! -e "$BASE/projects" ] && [ ! -e "$BASE/file-history" ] && ok "--check does not create state dirs" \
   || fail "--check does not create state dirs"
 
+# ── session sidecars (#591) ──────────────────────────────────────────────
+# A session resumed on the other account needs its todos and tasks, which are
+# account-neutral; session-env can carry account-bound environment, so it stays
+# per profile.
+new_home sidecars
+mkdir -p "$BASE/todos" "$BASE/tasks" "$BASE/session-env/s1"
+echo '[]' > "$BASE/todos/s1.json"
+"$LINK" "$PROFILE" >/dev/null 2>&1
+[ "$(readlink "$PROFILE/todos" 2>/dev/null)" = "$BASE/todos" ] \
+  && [ "$(readlink "$PROFILE/tasks" 2>/dev/null)" = "$BASE/tasks" ] \
+  && [ -f "$PROFILE/todos/s1.json" ] \
+  && ok "todos and tasks are shared" || fail "todos and tasks are shared"
+[ ! -e "$PROFILE/session-env" ] && [ ! -L "$PROFILE/session-env" ] \
+  && ok "session-env stays per account" || fail "session-env stays per account"
+new_home sidecars-unborn
+"$LINK" "$PROFILE" >/dev/null 2>&1
+[ -d "$BASE/todos" ] && [ -d "$BASE/tasks" ] \
+  && [ "$(readlink "$PROFILE/todos" 2>/dev/null)" = "$BASE/todos" ] \
+  && [ "$(readlink "$PROFILE/tasks" 2>/dev/null)" = "$BASE/tasks" ] \
+  && ok "todos and tasks are created in ~/.claude and linked" \
+  || fail "todos and tasks are created in ~/.claude and linked"
+rm -rf "$BASE/tasks"
+if "$LINK" --check "$PROFILE" >/dev/null 2>&1; then fail "--check reports a removed tasks dir"; else ok "--check reports a removed tasks dir"; fi
+[ ! -e "$BASE/tasks" ] && ok "--check does not recreate tasks" || fail "--check does not recreate tasks"
+new_home sidecars-private
+mkdir -p "$PROFILE/todos"
+echo '[]' > "$PROFILE/todos/own.json"
+if "$LINK" "$PROFILE" >/dev/null 2>&1; then fail "a populated private todos dir is drift"; else ok "a populated private todos dir is drift"; fi
+[ -f "$PROFILE/todos/own.json" ] && [ ! -L "$PROFILE/todos" ] \
+  && ok "a populated private todos dir is kept" || fail "a populated private todos dir is kept"
+
 # ── without jq the MCP servers cannot be compared, so it is not "wired" ──
 new_home nojq
 NOJQ="$ROOT/nojq-bin"
