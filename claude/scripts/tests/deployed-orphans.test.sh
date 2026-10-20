@@ -190,6 +190,19 @@ check "stray file: noted as UNKNOWN" 0 "UNKNOWN stray-debug.log"
 check "stray file: does not fail --strict" 0 "UNKNOWN stray-debug.log" "--strict"
 rm -rf "$(dirname "$F")"
 
+# --- the skill-migration archive is known state (issue #638) -----------------
+new_fixture
+mkdir -p "$F/.migrated-skill-dirs/demo.20261019T000000Z.1"
+out="$(CLAUDE_DIR="$F" "$CHECKER" 2>&1)"
+if grep -qF "UNKNOWN .migrated-skill-dirs" <<<"$out"; then
+  failed=$((failed + 1))
+  echo "FAIL - .migrated-skill-dirs must not be flagged UNKNOWN"
+else
+  pass=$((pass + 1))
+  echo "ok   - .migrated-skill-dirs is known runtime state"
+fi
+rm -rf "$(dirname "$F")"
+
 # --- commands/ with real content is not an orphan -----------------------------
 new_fixture
 mkdir -p "$F/commands"

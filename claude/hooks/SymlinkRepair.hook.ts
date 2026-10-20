@@ -158,11 +158,12 @@ function lexists(p: string): boolean {
 // raced a concurrent check-claude.sh --heal, whose directory link made
 // unlink(dst/x) delete the real src/x, and Node cannot unlink "only if still a
 // symlink". So the whole dir is renamed into the same archive lib-symlinks.sh
-// uses, ~/.claude/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>. It holds
-// only old symlinks and is safe to delete by hand.
-//   'moved'      dst is gone (archived, or a rival moved it); caller links it
+// uses, ~/.claude/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>. Its
+// top-level entries hold only old symlinks and are safe to delete by hand;
+// anything under kept/ is user content that changed mid-migration, to review.
+//   'moved'      dst is gone (archived, kept, or a rival moved it); caller links it
 //   'not-legacy' dst holds other content; touched nothing
-//   'failed'     reported in actions; dst left as found, or kept in the archive
+//   'failed'     reported in actions; dst left as found
 type MigrateResult = 'moved' | 'not-legacy' | 'failed';
 function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateResult {
   const archive = join(CLAUDE_DST, '.migrated-skill-dirs');
@@ -199,16 +200,25 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
   } catch {
     // fall through: treat an unreadable result as non-legacy content
   }
-  // Content appeared mid-flight: back onto a still-absent dst only, never over
-  // something; otherwise it stays in the archive, reported.
+  // Content appeared mid-flight. It is never renamed back: rename cannot refuse
+  // to overwrite, so check-then-rename could clobber whatever has since
+  // appeared at dst. It goes to kept/, which check-claude.sh reports every run;
+  // dst is gone either way, so the caller links the bundle.
+  let keptAt = dest;
   try {
-    if (lexists(dst)) throw new Error(`${dst} reappeared`);
-    renameSync(dest, dst);
-    actions.push({ kind: 'skipped', rel, reason: 'content appeared during migration; restored' });
-  } catch (e) {
-    actions.push({ kind: 'skipped', rel, reason: `non-legacy content kept at ${dest}: ${e}` });
+    const kept = join(archive, 'kept', basename(dest));
+    mkdirSync(join(archive, 'kept'), { recursive: true });
+    renameSync(dest, kept);
+    keptAt = kept;
+  } catch {
+    // stays at dest, still inside the archive and still reported below
   }
-  return 'failed';
+  actions.push({
+    kind: 'skipped',
+    rel,
+    reason: `changed during migration; its content is kept at ${keptAt} — review it`,
+  });
+  return 'moved';
 }
 
 function main(): void {

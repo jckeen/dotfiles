@@ -414,20 +414,47 @@ check "file at dst: the new file survives" \
 check "file at dst: sources intact" "$(sources_intact && echo 1 || echo 0)"
 
 # A writer that swaps a link in the moved dir for a real file loses nothing,
-# because nothing is deleted (gate review round 3); the dir, no longer legacy,
-# goes back to the still-absent $DST and migration reports failure.
+# because nothing is deleted (gate review round 3). Nothing is ever renamed
+# back either, since no rename can refuse to overwrite (round 4): the dir, no
+# longer legacy, goes to the archive's kept/ and the migration says so.
 legacy_fixture swap
 race_bin "$FIX/swap/bin" swap
-migrate_with "$FIX/swap/bin"
+(
+  PATH="$FIX/swap/bin:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >"$M/out" 2>&1
+rc=$?
 found=0
-for f in "$DST/SKILL.md" "$H/$ARCH_REL"/demo.*/SKILL.md; do
+for f in "$H/$ARCH_REL"/kept/demo.*/SKILL.md; do
   [ -f "$f" ] && [ ! -L "$f" ] && [ "$(cat "$f")" = swapped ] && found=1
 done
 check "swapped file: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
-check "swapped file: survives" "$found"
-check "swapped file: restored to dst, migration reports failure" \
-  "$([ "$rc" -ne 0 ] && [ -d "$DST" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
+check "swapped file: survives under kept/" "$found"
+check "swapped file: migration reports failure, names kept/" \
+  "$([ "$rc" -ne 0 ] && grep -q "$ARCH_REL/kept/demo\." "$M/out" && echo 1 || echo 0)"
+check "swapped file: never renamed back over dst" "$([ ! -e "$DST" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
 check "swapped file: sources intact" "$(sources_intact && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "swapped file: --heal links the bundle and warns about kept/" \
+  "$([ "$(readlink "$DST")" = "$SRC" ] && grep -q "KEPT .*kept/demo\." <<<"$out" && echo 1 || echo 0)"
+
+# The archive lives under ~/.claude but outside every link scan: an archived
+# dangling link (a source file since removed) is neither ORPHAN nor BROKEN,
+# and --fix never touches it (gate review round 4).
+legacy_fixture orphan
+ln -s "$SRC/gone.md" "$DST/gone.md"
+out="$(run_check --heal)"; rc=$?
+out2="$(run_check --heal --fix)"; rc2=$?
+arch=""
+for d in "$H/$ARCH_REL"/demo.*; do [ -d "$d" ] && arch="$d"; done
+check "archived dangling link: --heal exits 0 twice" \
+  "$([ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && echo 1 || echo 0)"
+check "archived dangling link: not ORPHAN or BROKEN" \
+  "$(! grep -qE 'ORPHAN|BROKEN|CLEANED' <<<"$out$out2" && echo 1 || echo 0)"
+check "archived dangling link: --fix leaves the archive alone" \
+  "$([ -n "$arch" ] && [ -L "$arch/gone.md" ] && echo 1 || echo 0)"
 
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools

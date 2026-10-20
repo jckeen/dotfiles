@@ -141,10 +141,11 @@ symlink_is_legacy_skill_dir() {
 # or Node call can unlink "only if still a symlink". So the whole directory is
 # renamed (rename(2), atomic) into the archive
 #   <claude>/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>
-# beside skills/, where no skill loader looks. The archive holds only old
-# symlinks and is kept on purpose; it is safe to delete by hand. A run whose
-# rename fails because a rival already moved or relinked $dst returns 0 and
-# lets the caller judge the settled state.
+# beside skills/, where no skill loader looks and no link scan reaches. It is
+# kept on purpose. Its top-level entries hold only old symlinks and are safe
+# to delete by hand; anything under kept/ is user content that changed during
+# a migration, to review. A run whose rename fails because a rival already
+# moved or relinked $dst returns 0 and lets the caller judge the settled state.
 symlink_migrate_legacy_skill_dir() {
   local src="$1" dst="$2" name archive dest
   name="${dst##*/}"
@@ -173,12 +174,15 @@ symlink_migrate_legacy_skill_dir() {
   # it back could overwrite whatever appeared at $dst meanwhile.
   [ -L "$dest" ] && return 0
   symlink_is_legacy_skill_dir "$src" "$dest" && return 0
-  # Content appeared mid-flight: put it back only onto a still-absent $dst,
-  # never over something; otherwise it stays in the archive, reported.
-  if [ ! -e "$dst" ] && [ ! -L "$dst" ] && _symlink_rename "$dest" "$dst"; then
-    return 1
+  # Content appeared mid-flight (a file in the moved dir, or a file that took
+  # $dst's place before the rename). It is never renamed back: rename(2) cannot
+  # refuse to overwrite, so a check-then-rename could clobber whatever has
+  # since appeared at $dst. It goes to kept/, which check-claude.sh reports.
+  local kept="$archive/kept/${dest##*/}"
+  if mkdir -p "$archive/kept" && _symlink_rename "$dest" "$kept"; then
+    dest="$kept"
   fi
-  echo "symlink_migrate_legacy_skill_dir: non-legacy content kept at $dest" >&2
+  echo "symlink_migrate_legacy_skill_dir: $dst changed during migration; its content is kept at $dest — review it" >&2
   return 1
 }
 

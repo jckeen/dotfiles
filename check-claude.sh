@@ -200,6 +200,16 @@ while IFS= read -r link; do
   fi
 done < <(find "$CLAUDE_SRC/skills" -mindepth 2 -maxdepth 2 -type l 2>/dev/null)
 
+# Legacy skill dirs that migration archived (lib-symlinks.sh, issue #638) sit
+# in ~/.claude/.migrated-skill-dirs/. Every scan below prunes it: its links are
+# old by design and --fix must never touch it. Content under kept/ changed
+# mid-migration and may be the user's own work, so it is reported every run.
+for kept in "$CLAUDE_DST/.migrated-skill-dirs/kept"/*; do
+  [ -e "$kept" ] || [ -L "$kept" ] || continue
+  yellow "KEPT    ${kept#$CLAUDE_DST/} (changed during a skill migration — review it, then remove it yourself)"
+  WARNINGS=$((WARNINGS + 1))
+done
+
 # Check for orphaned symlinks — symlinks in ~/.claude/ pointing into dotfiles
 # whose source was removed (e.g., AgentPack.md after we stopped linking it)
 echo ""
@@ -222,7 +232,7 @@ while IFS= read -r link; do
       ERRORS=$((ERRORS + 1))
     fi
   fi
-done < <(find "$CLAUDE_DST" -maxdepth 3 -type l 2>/dev/null)
+done < <(find "$CLAUDE_DST" -maxdepth 3 -path "$CLAUDE_DST/.migrated-skill-dirs" -prune -o -type l -print 2>/dev/null)
 
 # Check for broken symlinks (pointing elsewhere, not into dotfiles)
 echo ""
@@ -233,7 +243,7 @@ while IFS= read -r broken; do
   [[ "$target" == "$DOTFILES_DIR"* ]] && continue
   red "BROKEN  $broken -> $target"
   ERRORS=$((ERRORS + 1))
-done < <(find "$CLAUDE_DST" -maxdepth 3 -xtype l 2>/dev/null)
+done < <(find "$CLAUDE_DST" -maxdepth 3 -path "$CLAUDE_DST/.migrated-skill-dirs" -prune -o -xtype l -print 2>/dev/null)
 
 # Check for stale backup files created by setup.sh's link_file()
 # Only flags .backup files where a working symlink exists for the original
@@ -263,7 +273,7 @@ while IFS= read -r backup; do
       WARNINGS=$((WARNINGS + 1))
     fi
   fi
-done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
+done < <(find "$CLAUDE_DST" -maxdepth 3 -path "$CLAUDE_DST/.migrated-skill-dirs" -prune -o -name "*.backup" -print 2>/dev/null)
 
 # CLI stack the instructions mandate (issue #605; silent if all present).
 # Advisory only: see check_cli_stack in lib-checks.sh.
