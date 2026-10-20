@@ -99,11 +99,9 @@ per issue: the title is the slug, the body holds the fields:
 
 The slug is stable (same action = same slug across sessions); `deadline` and
 `verified` are optional — omit the line if none. **File only if absent** —
-search first with the reminder's own filters, across the target repo's
-owner and the home repo's owner (repeated `--owner` flags match either):
-`gh search issues "<slug>" --match title --label operator-action --state open
---author @me --visibility private --owner <repo-owner> --owner <home-owner>`,
-where `<home-owner>` is the owner part of the home repo. Never file a
+check the reminder's own list first: its footer (`Full queue: …`) prints
+the exact `gh api graphql` search it runs, with its host, owners and filters.
+Run that command and look for the slug among the titles; never file a
 duplicate. A match whose body or title someone else last edited is hidden by
 the reminder, so it doesn't count: file a fresh issue and link the old one. **Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
