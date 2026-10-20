@@ -83,6 +83,11 @@ ln -s "$REPO_ROOT/agents/skills/orchestrate/references/runtime-contracts.md" \
   "$TESTHOME/external-codex-skills/orchestrate/references/runtime-contracts.md"
 ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 
+# A Jules timer from before the ADR-0009 pause (#678): the update path runs
+# setup.sh, so setup.sh must disable it. Under --dry-run that is a preview only.
+mkdir -p "$TESTHOME/.config/systemd/user"
+printf '[Timer]\nOnCalendar=daily\n' > "$TESTHOME/.config/systemd/user/jules-dispatch.timer"
+
 before="$(snapshot "$TESTHOME")"
 
 # --yes so prompts take safe defaults (no stdin); dry-run must exit 0.
@@ -100,6 +105,20 @@ if grep -Fq "[DRY] bash $TESTHOME/codex-memory/bootstrap.sh" "$OUT" \
   ok "Codex private bootstrap is previewed without running in dry-run mode"
 else
   fail "Codex private bootstrap dry-run claimed or performed a live apply"
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  if grep -Fq "[DRY] systemctl --user disable --now jules-dispatch.timer" "$OUT"; then
+    ok "paused Jules lane: a pre-existing timer's disable is previewed in dry-run"
+  else
+    fail "paused Jules lane: setup.sh did not disable a pre-existing jules-dispatch.timer"
+  fi
+else
+  if ! grep -Fq "jules-dispatch.timer" "$OUT"; then
+    ok "paused Jules lane: no systemctl, so no timer step"
+  else
+    fail "paused Jules lane: timer step ran without systemctl"
+  fi
 fi
 
 after="$(snapshot "$TESTHOME")"

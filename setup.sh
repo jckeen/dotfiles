@@ -1668,6 +1668,21 @@ if [ "$JULES_INSTALLED" -eq 1 ]; then
   echo "  skips it unless JULES_LANE_ENABLED=1."
 fi
 
+# The Jules lane is paused (ADR-0009). A timer an earlier install enabled
+# would keep dispatching after an update, and the normal update path runs this
+# script, not claude/systemd/install.sh, so the pause is enforced here too.
+JULES_TIMER_UNIT="$HOME/.config/systemd/user/jules-dispatch.timer"
+if [ "${JULES_LANE_ENABLED:-}" != 1 ] && [ -e "$JULES_TIMER_UNIT" ] \
+   && command -v systemctl &>/dev/null; then
+  echo ""
+  echo "--- Jules routine lane is paused (ADR-0009) ---"
+  if run systemctl --user disable --now jules-dispatch.timer; then
+    echo "  -> jules-dispatch.timer disabled (re-enable later: JULES_LANE_ENABLED=1 bash $DOTFILES_DIR/claude/systemd/install.sh)"
+  else
+    echo "  !! could not disable jules-dispatch.timer; run: systemctl --user disable --now jules-dispatch.timer"
+  fi
+fi
+
 # ─── 3e. Antigravity CLI ────────────────────────────────────────────
 # Official installer for macOS/Linux/WSL, verified against the vendor's
 # antigravity-cli repository and Google codelab. The bootstrapper verifies the

@@ -20,3 +20,7 @@
   and a timer an earlier install enabled is disabled, so re-running setup can't
   restart the lane (Codex bot, #678). `setup.sh` no longer tells the user to
   enable the timer. `tests/jules-dispatch.test.sh` covers both paths.
+- **`setup.sh`** also disables a `jules-dispatch.timer` that an earlier install
+  enabled, unless `JULES_LANE_ENABLED=1`. The normal `dotfiles-update` path
+  runs `setup.sh`, not the systemd installer, so the pause has to be enforced
+  there too (Codex bot, #678). Under `--dry-run` this is only a preview.
