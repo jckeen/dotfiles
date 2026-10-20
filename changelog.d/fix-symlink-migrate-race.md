@@ -39,7 +39,10 @@
   they point into that skill's own source. A link the rename grabs counts as
   a rival's repair only if it is exactly the bundle link (`readlink` equals
   the source, as `check_link` compares). Any other link is someone's own
-  config, so it goes to `kept/` and is reported.
+  config, so it goes to `kept/` and is reported. When content is archived,
+  setup's install path still links the skill and fails only after the whole
+  tree is linked. When the hook's rename fails because a rival already
+  installed exactly the bundle link, that counts as done (#694).
   A `$dst` that a rival moves away during the filesystem check is that
   rival's success, not a cross-filesystem error. This holds in the shell and
   the hook.

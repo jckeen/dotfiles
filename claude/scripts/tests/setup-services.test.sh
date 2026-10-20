@@ -287,6 +287,50 @@ check "--repair: a grabbed foreign link is kept, intact" \
 check "--repair: and counted (FAILED, one more Broken, non-zero exit)" \
   "grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && [ \"\$(broken_count)\" -eq \$((base_broken + 1)) ] && grep -qx 'rc=[1-9][0-9]*' \"$OUT\""
 
+# ── Install path: changed content is kept, the skill still gets linked ──
+# setup.sh's install path used to exit on a failed migration before
+# link_file, leaving the skill absent (PR #682 review). Its claude-tree link
+# block (from `_tree_links=0` to the summary line) runs here in isolation:
+# a fixture repo, stubbed link_file and claude_link_managed, and a fake perl
+# that changes the moved dir right after the rename.
+BLOCK="$ROOT/tree-block.sh"
+awk '/^_tree_links=0$/{on=1} /^if service_selected claude; then$/{if(on) exit} on' "$SETUP" > "$BLOCK"
+check "install path: the tree-link block was extracted" "grep -q 'symlink_migrate_legacy_skill_dir' \"$BLOCK\""
+TR="$ROOT/tree-repo"
+H="$(new_home)"
+mkdir -p "$TR/claude/skills/demo" "$H/.claude/skills/demo"
+printf 'nolink.txt\n' > "$TR/claude/nolink.txt"
+printf -- '---\nname: demo\n---\n' > "$TR/claude/skills/demo/SKILL.md"
+ln -s "$TR/claude/skills/demo/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+TSWAP="$ROOT/treeswap"
+mkdir -p "$TSWAP"
+cat > "$TSWAP/perl" <<FAKE
+#!/bin/bash
+"$REAL_PERL" "\$@"; rc=\$?
+if [ "\$rc" -eq 0 ] && [ "\$3" = "$H/.claude/skills/demo" ] && [ -L "\$4/SKILL.md" ]; then
+  rm "\$4/SKILL.md" && printf 'mine\\n' > "\$4/SKILL.md"
+fi
+exit \$rc
+FAKE
+chmod +x "$TSWAP/perl"
+(
+  PATH="$TSWAP:$PATH"
+  DOTFILES_DIR="$TR" HOME_DIR="$H" DRY_RUN=0
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$REPO_ROOT/lib-symlinks.sh"
+  claude_link_managed() { return 0; }
+  link_file() { [ -e "$2" ] || [ -L "$2" ] || ln -sn "$1" "$2"; }
+  # shellcheck disable=SC1090
+  . "$BLOCK"
+) > "$OUT" 2>&1
+tree_rc=$?
+check "install path: the bundle is linked despite the changed content" \
+  "[ \"\$(readlink \"$H/.claude/skills/demo\")\" = \"$TR/claude/skills/demo\" ]"
+check "install path: the changed content is in kept/" \
+  "grep -qx mine \"$H\"/.claude/.migrated-skill-dirs/kept/demo.*/SKILL.md"
+check "install path: the error is reported and the exit is non-zero" \
+  "[ \"$tree_rc\" -ne 0 ] && grep -q 'ERROR: .*changed during migration.*skills/demo' \"$OUT\""
+
 echo ""
 echo "setup-services: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

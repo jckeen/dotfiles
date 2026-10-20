@@ -179,6 +179,33 @@ SHIM
     && grep -q 'skills/demo.*kept' <<<"$hook_out" && ok=1
   check "SymlinkRepair keeps and reports a foreign link grabbed by its rename" "$ok"
 
+  # A rename that fails because a rival already installed exactly the bundle
+  # link is that rival's completed repair, not a failure (#694). The shim
+  # plays the rival, then fails the rename.
+  H="$FIX/h-rivaldone"
+  mkdir -p "$H/.claude/skills/demo"
+  ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+  cat > "$FIX/rival-shim.ts" <<SHIM
+import fs from 'fs';
+let fired = false;
+const real = fs.renameSync;
+fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+  if (!fired && String(from) === '$H/.claude/skills/demo') {
+    fired = true;
+    fs.unlinkSync('$H/.claude/skills/demo/SKILL.md');
+    fs.rmdirSync('$H/.claude/skills/demo');
+    fs.symlinkSync('$SK', '$H/.claude/skills/demo');
+    throw Object.assign(new Error('EBUSY: rival in the way'), { code: 'EBUSY' });
+  }
+  return real(from, to);
+}) as typeof fs.renameSync;
+SHIM
+  hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun --preload "$FIX/rival-shim.ts" "$HOOK" 2>&1)"
+  ok=0
+  [ "$(readlink "$H/.claude/skills/demo")" = "$SK" ] \
+    && ! grep -q 'skills/demo' <<<"$hook_out" && ok=1
+  check "SymlinkRepair treats a rival's finished link after a failed rename as done" "$ok"
+
   if [ "$(id -u)" -ne 0 ]; then
     H="$FIX/h-legacy-ro"
     mkdir -p "$H/.claude/skills/demo"

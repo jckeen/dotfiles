@@ -206,8 +206,16 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
   try {
     fs.renameSync(dst, dest);
   } catch (e) {
-    // A rival moved it first: nothing to do unless it is still here.
+    // A rival moved it first: nothing to do unless it is still here. A rival
+    // that already put exactly the bundle link there (readlink === src, as
+    // ensureLink compares) has finished the repair (#694).
     if (!lexists(dst)) return 'moved';
+    try {
+      if (lstatSync(dst).isSymbolicLink() && readlinkSync(dst) === src) return 'moved';
+    } catch {
+      // vanished meanwhile: still a rival's move
+      if (!lexists(dst)) return 'moved';
+    }
     actions.push({ kind: 'skipped', rel, reason: `legacy skill dir move failed: ${e}` });
     return 'failed';
   }
