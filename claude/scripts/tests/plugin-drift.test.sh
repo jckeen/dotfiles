@@ -56,6 +56,7 @@ cat > "$FAKE_BIN/claude" <<'STUB' || { echo "FAIL - write the claude stub" >&2; 
 #!/usr/bin/env bash
 echo "$*" >> "$(dirname "$0")/calls"
 if [ "$1 $2 $3" = "plugin list --json" ]; then
+  [ -n "${FAKE_LIST_SLEEP:-}" ] && sleep "$FAKE_LIST_SLEEP"
   printf '%s\n' "${FAKE_LIST:-[]}"
   exit "${FAKE_LIST_RC:-0}"
 fi
@@ -65,7 +66,8 @@ chmod +x "$FAKE_BIN/claude" || { echo "FAIL - chmod the claude stub" >&2; exit 1
 export PATH="$FAKE_BIN:$PATH"
 # The hook honours these the way Claude Code does; a value inherited from the
 # operator's shell would point cases at the real config.
-unset CLAUDE_CONFIG_DIR CLAUDE_CODE_PLUGIN_DIRS
+unset CLAUDE_CONFIG_DIR CLAUDE_CODE_PLUGIN_DIRS CLAUDE_CODE_PLUGIN_CACHE_DIR \
+  PLUGIN_DRIFT_LIST_BUDGET_MS
 [[ "$(command -v claude)" == "$FAKE_BIN/claude" ]] \
   || { echo "FAIL - the claude stub does not shadow the real CLI" >&2; exit 1; }
 
@@ -813,8 +815,8 @@ hook_event UserPromptSubmit
 assert "rescan: a mod installed after SessionStart is named" 'outline "  • latemod@mkt"'
 assert "rescan: the report says it is a mid-session rescan" 'outgrep "mid-session"'
 assert "rescan: a mod already reported is not repeated" '! outgrep "modded@mkt"'
-assert "rescan: the listing is reused while its key files are unchanged" \
-  '[ ! -s "$FAKE_BIN/calls" ]'
+assert "rescan: a changed tree asks the loader again" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
 hook_event UserPromptSubmit
 assert "rescan: once reported, the new mod is not repeated" '[ -z "$out" ]'
 # An install rewrites installed_plugins.json: the listing is asked again.
@@ -824,13 +826,6 @@ printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s],"x
 hook_event UserPromptSubmit
 assert "rescan: a changed install registry asks the loader again" \
   'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
-# A cached listing still only adds: a forged cache naming nothing cannot
-# hide a mod the static scan finds.
-add_cached_mod hidden
-printf 'plugin-drift-listing v1\n' > "$PH/.local/state/plugin-drift/listing.cache" \
-  || die "forge the listing cache"
-hook_event UserPromptSubmit
-assert "rescan: a forged listing cache cannot hide a mod" 'outline "  • hidden@mkt"'
 # A new version of an already-reported plugin changes the tree, not the set.
 mkdir -p "$PH/.claude/plugins/cache/mkt/modded/2.0.0/hooks" || die "mkdir modded 2.0.0"
 printf '%s\n' '{"modules":["./register.js"]}' \
@@ -867,13 +862,6 @@ mv "$PH/s1.cut" "$PH/.local/state/plugin-drift/s1" || die "place the truncated s
 add_cached_mod aftercut
 hook_event UserPromptSubmit s1
 assert "rescan: a truncated state file still catches a new mod" 'outline "  • aftercut@mkt"'
-# The same for a listing cache cut short: its last entries are not lost.
-grep -v '^end$' "$PH/.local/state/plugin-drift/listing.cache" > "$PH/cache.cut" \
-  || die "truncate the listing cache"
-mv "$PH/cache.cut" "$PH/.local/state/plugin-drift/listing.cache" || die "place the cut cache"
-hook_event SessionStart s1
-assert "rescan: a listing cache without its end line is a miss" \
-  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
 # A cwd change (CwdChanged, a --worktree) moves the project skills dir.
 mkdir -p "$PP/sub/.claude/skills/pk/hooks" "$PP/sub/.claude/skills/pk/.claude-plugin" \
   || die "mkdir sub project skills-dir"
@@ -886,20 +874,6 @@ out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
   timeout 60 bun "$HOOK" 2>&1 \
   <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"cwd\":\"$PP/sub\"}")"
 assert "rescan: a new working directory is rescanned" 'outgrep "• subproj@skills-dir"'
-# The loader's environment is part of the listing key (codex round 2): a
-# session with extra plugin dirs must not reuse another session's listing.
-hook_event SessionStart s1
-CLAUDE_CODE_PLUGIN_DIRS="$PH/extra" hook_event SessionStart s4
-assert "rescan: a different CLAUDE_CODE_PLUGIN_DIRS misses the listing cache" \
-  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
-# With the same value again, a plugin added under that dir must still be
-# listed (codex round 3): the cache is not trusted while it is set.
-CLAUDE_CODE_PLUGIN_DIRS="$PH/extra" hook_event SessionStart s4
-assert "rescan: CLAUDE_CODE_PLUGIN_DIRS bypasses the listing cache" \
-  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
-CLAUDE_CONFIG_DIR="$PH/cfg" hook_event SessionStart s4
-assert "rescan: CLAUDE_CONFIG_DIR bypasses the listing cache" \
-  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
 # A failed listing leaves the scan incomplete: the next prompt rescans and,
 # once the CLI recovers, names a mod only the listing reaches.
 mkdir -p "$PH/far/hooks" || die "mkdir far"
@@ -931,35 +905,73 @@ hook_event UserPromptSubmit s5
 assert "rescan: a project skills link replaced by a directory is rescanned" \
   'outgrep "• linkmod@skills-dir"'
 # Codex round 4: a plugin added under an unchanged CLAUDE_CODE_PLUGIN_DIRS is
-# seen on the next prompt, and a changed loader variable is a change.
+# seen on the next prompt (by the static scan alone: the stub lists nothing),
+# and a changed loader variable is a change.
 mkdir -p "$PH/pdirs" || die "mkdir pdirs"
 CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" hook_event SessionStart s6
 mkdir -p "$PH/pdirs/inl/hooks" "$PH/pdirs/inl/.claude-plugin" || die "mkdir inl"
 printf '%s\n' '{"modules":["./register.js"]}' > "$PH/pdirs/inl/hooks/hooks.json" || die "write inl"
 printf '%s\n' '{"name":"inl"}' > "$PH/pdirs/inl/.claude-plugin/plugin.json" || die "write inl manifest"
-CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" \
-  FAKE_LIST="[{\"id\":\"inl@inline\",\"scope\":\"session\",\"installPath\":\"$PH/pdirs/inl\"}]" \
-  hook_event UserPromptSubmit s6
+CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" hook_event UserPromptSubmit s6
 assert "rescan: a plugin added under CLAUDE_CODE_PLUGIN_DIRS is named on the next prompt" \
   'outline "  • inl@inline"'
 CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" CLAUDE_CONFIG_DIR="$PH/.claude" \
   hook_event UserPromptSubmit s6
 assert "rescan: a changed loader variable forces a rescan" \
   'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
-# A listed plugin's manifest is part of the listing cache: renaming it is a
-# miss, so the cached (stale) id cannot outlive the rename.
-mkdir -p "$PH/.claude/skills/rn/.claude-plugin" || die "mkdir rn"
-printf '%s\n' '{"name":"oldname"}' > "$PH/.claude/skills/rn/.claude-plugin/plugin.json" \
-  || die "write rn manifest"
-FAKE_LIST="[{\"id\":\"oldname@skills-dir\",\"scope\":\"user\",\"installPath\":\"$PH/.claude/skills/rn\"}]" \
-  hook_event SessionStart s7
-hook_event SessionStart s7
-assert "rescan: an unchanged listed manifest reuses the cache" '[ ! -s "$FAKE_BIN/calls" ]'
-printf '%s\n' '{"name":"newname!"}' > "$PH/.claude/skills/rn/.claude-plugin/plugin.json" \
-  || die "rename rn"
-hook_event SessionStart s7
-assert "rescan: renaming a listed plugin's manifest misses the listing cache" \
-  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
+# Round 5: a leading ~ in CLAUDE_CODE_PLUGIN_DIRS is the home directory, as
+# the loader reads it; a relative entry is skipped, as the loader skips it.
+mkdir -p "$PH/tdir" "$PP/reldir/rp/hooks" "$PP/reldir/rp/.claude-plugin" || die "mkdir tilde fixtures"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/reldir/rp/hooks/hooks.json" || die "write rp"
+printf '%s\n' '{"name":"relmod"}' > "$PP/reldir/rp/.claude-plugin/plugin.json" || die "write rp manifest"
+# shellcheck disable=SC2088  # The literal ~ is the point: the hook expands it.
+CLAUDE_CODE_PLUGIN_DIRS="~/tdir:reldir" hook_event SessionStart s8
+assert "plugin dirs: a relative entry is not scanned" '! outgrep "relmod@"'
+mkdir -p "$PH/tdir/tp/hooks" "$PH/tdir/tp/.claude-plugin" || die "mkdir tp"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PH/tdir/tp/hooks/hooks.json" || die "write tp"
+printf '%s\n' '{"name":"tildemod"}' > "$PH/tdir/tp/.claude-plugin/plugin.json" || die "write tp manifest"
+# shellcheck disable=SC2088  # The literal ~ is the point: the hook expands it.
+CLAUDE_CODE_PLUGIN_DIRS="~/tdir:reldir" hook_event UserPromptSubmit s8
+assert "plugin dirs: a plugin added under a ~/ entry is named on the next prompt" \
+  'outline "  • tildemod@inline"'
+# Round 5: CLAUDE_CODE_PLUGIN_CACHE_DIR is the plugins root (registry,
+# marketplaces, cache); claude.ai synced plugins stay under the config dir.
+PC="$PH/altroot"
+mkdir -p "$PC/cache/mkt2/altmod/1.0.0/hooks" "$PH/.claude/plugins/synced/b/sy/hooks" \
+  "$PH/.claude/plugins/synced/b/sy/.claude-plugin" || die "mkdir plugin-root fixtures"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PC/cache/mkt2/altmod/1.0.0/hooks/hooks.json" \
+  || die "write altmod"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PH/.claude/plugins/synced/b/sy/hooks/hooks.json" \
+  || die "write synced"
+printf '%s\n' '{"name":"symod"}' > "$PH/.claude/plugins/synced/b/sy/.claude-plugin/plugin.json" \
+  || die "write synced manifest"
+CLAUDE_CODE_PLUGIN_CACHE_DIR="$PC" hook_event SessionStart s9
+assert "plugin root: a mod cached under CLAUDE_CODE_PLUGIN_CACHE_DIR is named" \
+  'outline "  • altmod@mkt2"'
+assert "plugin root: the default plugins root is not read when it is moved" \
+  '! outgrep "modded@mkt"'
+assert "plugin root: synced plugins are still read from the config dir" 'outline "  • symod@synced"'
+mkdir -p "$PC/cache/mkt2/latealt/1.0.0/hooks" || die "mkdir latealt"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PC/cache/mkt2/latealt/1.0.0/hooks/hooks.json" \
+  || die "write latealt"
+CLAUDE_CODE_PLUGIN_CACHE_DIR="$PC" hook_event UserPromptSubmit s9
+assert "plugin root: an install under the moved root is seen on the next prompt" \
+  'outline "  • latealt@mkt2"'
+# Round 6: the listing runs under a time budget. A CLI slower than it is
+# abandoned, the static scan stands alone, and the next prompt tries again.
+mkdir -p "$PH/slow/hooks" || die "mkdir slow"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PH/slow/hooks/hooks.json" || die "write slow"
+start=$SECONDS
+PLUGIN_DRIFT_LIST_BUDGET_MS=300 FAKE_LIST_SLEEP=5 \
+  FAKE_LIST="[{\"id\":\"slow@x\",\"scope\":\"user\",\"installPath\":\"$PH/slow\"}]" \
+  hook_event SessionStart s10
+elapsed=$((SECONDS - start))
+assert "budget: a listing over budget does not hold the hook" "[ $elapsed -lt 4 ]"
+assert "budget: a listing over budget is ignored" '! outgrep "slow@x"'
+assert "budget: the static scan stands without the listing" 'outline "  • modded@mkt"'
+FAKE_LIST="[{\"id\":\"slow@x\",\"scope\":\"user\",\"installPath\":\"$PH/slow\"}]" \
+  hook_event UserPromptSubmit s10
+assert "budget: the next prompt retries the listing and names its mod" 'outline "  • slow@x"'
 # A hostile session id cannot escape the state dir.
 hook_event UserPromptSubmit '../../escape'
 assert "rescan: an unsafe session id falls back to a fixed state file" \

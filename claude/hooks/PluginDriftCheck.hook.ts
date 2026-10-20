@@ -122,7 +122,7 @@ import {
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
-import { basename, delimiter, dirname, join } from 'path';
+import { basename, delimiter, dirname, isAbsolute, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const HOME = homedir();
@@ -136,18 +136,33 @@ const MANIFEST = join(DOTFILES_DIR, 'claude', 'plugins.txt');
 // Claude Code reads every ~/.claude path under $CLAUDE_CONFIG_DIR when it is
 // set (https://code.claude.com/docs/en/claude-directory), so the scan does too.
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude');
-const INSTALLED = join(CLAUDE_DIR, 'plugins', 'installed_plugins.json');
+// A leading `~` is the home directory, as the loader reads these variables.
+function expandHome(path: string): string {
+  return path === '~' ? HOME : path.startsWith('~/') ? join(HOME, path.slice(2)) : path;
+}
+// CLAUDE_CODE_PLUGIN_CACHE_DIR moves the plugins root: registry, marketplaces
+// and cache (https://code.claude.com/docs/en/env-vars). claude.ai synced
+// plugins stay under the config dir (checked against the CLI).
+const PLUGINS_ROOT = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR
+  ? expandHome(process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR)
+  : join(CLAUDE_DIR, 'plugins');
+const SYNCED_ROOT = join(CLAUDE_DIR, 'plugins', 'synced');
+const INSTALLED = join(PLUGINS_ROOT, 'installed_plugins.json');
 const SETTINGS = join(CLAUDE_DIR, 'settings.json');
-const PLUGINS_ROOT = join(CLAUDE_DIR, 'plugins');
 const SKILLS_DIR = join(CLAUDE_DIR, 'skills');
 const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
 const MAX_JSON_BYTES = 1024 * 1024;
 // Per-session rescan state (#618). Pruned at SessionStart after STATE_TTL_MS.
 const STATE_DIR = join(HOME, '.local', 'state', 'plugin-drift');
 const STATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-// `claude plugin list --json` measured ~1 s; the cap keeps a wedged CLI from
-// holding the session start.
-const LIST_TIMEOUT_MS = 10_000;
+// `claude plugin list --json` measured ~1 s. Past this budget the CLI is
+// killed and the static scan stands alone (the next prompt retries). The
+// override exists for tests; it is clamped so it cannot disable the listing
+// or hold a session start.
+const LIST_BUDGET_MS = Math.min(
+  10_000,
+  Math.max(50, Number(process.env.PLUGIN_DRIFT_LIST_BUDGET_MS) || 2_500),
+);
 // Code, so it comes from this hook's own checkout, never from DOTFILES_DIR
 // (which only relocates the manifest) — the same rule as sync-plugins.sh.
 const LIB_SERVICES = join(dirname(HOOK_PATH), '..', '..', 'lib-services.sh');
@@ -563,7 +578,7 @@ function runListing(): Scanned[] | null {
     encoding: 'utf-8',
     maxBuffer: MAX_JSON_BYTES,
     stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: LIST_TIMEOUT_MS,
+    timeout: LIST_BUDGET_MS,
   });
   if (result.error || result.status !== 0) return null;
   let listing: unknown;
@@ -600,123 +615,56 @@ function runListing(): Scanned[] | null {
   return found;
 }
 
-// The listing costs ~1 s, so its result is cached across sessions, keyed on
-// the files it is derived from and the directory it ran in. The cache can only
-// ADD directories to the scan (the static enumeration always runs), so a
-// stale or forged cache cannot hide a plugin; a cache that is absent, damaged
-// or keyed differently is a miss and the CLI runs again.
-//   K <sig> <path>        a key file and its signature when listed
-//   C <dir>               the directory the listing ran in
-//   L <origin> <id> <dir> one listed plugin; dir `-` is unverifiable
-//   M <sig> <path>        a listed plugin's plugin.json, whose name is its id
-//   end                   the last line; without it the cache is a miss
-// Every path and id is enc()-encoded.
-// The `.` keeps it apart from every per-session file (statePath's charset).
-const LISTING_CACHE = join(STATE_DIR, 'listing.cache');
+// Files and environment the CLI's answer depends on. The prompt path watches
+// the files and compares the variables, so a change to either rescans.
 // SKILLS_DIR's own mtime changes when a skills-dir plugin is added or removed.
-const LISTING_KEYS = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS, SKILLS_DIR];
-// Environment the CLI's answer depends on: extra plugin dirs, and where it
-// looks for its config.
-const LISTING_ENV = ['CLAUDE_CODE_PLUGIN_DIRS', 'CLAUDE_CONFIG_DIR'];
-
-function listingKey(): string[] {
-  return [
-    ...LISTING_KEYS.map((path) => `K ${signature(path)} ${enc(path)}`),
-    `C ${enc(PROJECT_DIRS[0] ?? '')}`,
-    ...envLines(),
-  ];
-}
-
-function cachedListing(key: string[]): Scanned[] | null {
-  try {
-    const st = statSync(LISTING_CACHE);
-    if (!st.isFile() || st.size > MAX_JSON_BYTES) return null;
-    const lines = readFileSync(LISTING_CACHE, 'utf-8').split('\n');
-    if (lines[0] !== 'plugin-drift-listing v1') return null;
-    if (lines.slice(1, 1 + key.length).join('\n') !== key.join('\n')) return null;
-    const body = lines.slice(1 + key.length);
-    if (body.pop() !== '' || body.pop() !== END) return null;
-    const found: Scanned[] = [];
-    for (const line of body) {
-      const [tag, origin, id, dir, extra] = line.split(' ');
-      // A renamed plugin changes its manifest: the cached id is stale.
-      if (tag === 'M' && dir === undefined && id !== undefined) {
-        if (signature(dec(id)) !== origin) return null;
-        continue;
-      }
-      if (tag !== 'L' || extra !== undefined || id === undefined || dir === undefined)
-        return null;
-      if (origin !== 'installed' && origin !== 'project') return null;
-      const plugin = dec(id);
-      found.push(
-        dir === '-'
-          ? unverifiable(plugin, origin)
-          : { id: plugin, dir: dec(dir), origin },
-      );
-    }
-    return found;
-  } catch {
-    return null;
-  }
-}
-
-function saveListing(key: string[], found: Scanned[]): void {
-  const lines = ['plugin-drift-listing v1', ...key];
-  for (const { id, dir, origin, unverifiable: bad } of found)
-    lines.push(
-      `L ${origin} ${enc(id)} ${bad ? '-' : enc(dir)}`,
-    );
-  for (const path of listedManifests(found))
-    lines.push(`M ${signature(path)} ${enc(path)}`);
-  lines.push(END);
-  atomicWrite(LISTING_CACHE, lines);
-}
-
-function listedManifests(found: Scanned[]): string[] {
-  return found
-    .filter((p) => !p.unverifiable)
-    .map((p) => join(p.dir, '.claude-plugin', 'plugin.json'));
-}
-
-// CLAUDE_CODE_PLUGIN_DIRS holds plugin dirs or folders of them; watching each
-// and its children (and their manifests) lets the prompt path see a plugin
-// added under one.
-function watchPluginDirs(): void {
-  for (const dir of (process.env.CLAUDE_CODE_PLUGIN_DIRS ?? '')
-    .split(delimiter)
-    .filter((d) => d.length > 0)) {
-    watch(join(dir, '.claude-plugin', 'plugin.json'));
-    for (const child of subdirs(dir)) {
-      watch(child);
-      watch(join(child, '.claude-plugin', 'plugin.json'));
-    }
-  }
-}
+const LOADER_FILES = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS, SKILLS_DIR];
+const LOADER_ENV = [
+  'CLAUDE_CODE_PLUGIN_DIRS',
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CODE_PLUGIN_CACHE_DIR',
+];
 
 function loaderPlugins(): Scanned[] | null {
-  for (const path of LISTING_KEYS) watch(path);
-  watchPluginDirs();
-  const key = listingKey();
-  // CLAUDE_CONFIG_DIR moves the files the key watches, and
-  // CLAUDE_CODE_PLUGIN_DIRS adds directories whose contents it cannot see,
-  // so with either set the cache is never trusted: the CLI runs every scan.
-  const uncacheable = LISTING_ENV.some((name) => process.env[name] !== undefined);
-  const cached = uncacheable ? null : cachedListing(key);
-  if (cached !== null) {
-    for (const path of listedManifests(cached)) watch(path);
-    return cached;
-  }
+  for (const path of LOADER_FILES) watch(path);
   const found = runListing();
-  if (found === null) scanIncomplete = true;
-  else for (const path of listedManifests(found)) watch(path);
-  // A failed listing is not cached, and it marks the scan incomplete so the
-  // next prompt rescans instead of trusting this result. Caching is
-  // a convenience: a throw there must not lose the listing itself.
-  if (found !== null) {
+  // A failed or over-budget listing marks the scan incomplete, so the next
+  // prompt rescans instead of trusting the static result alone.
+  if (found === null) {
+    scanIncomplete = true;
+    return null;
+  }
+  // A listed plugin's manifest names it: a rename is a change.
+  for (const p of found)
+    if (!p.unverifiable) watch(join(p.dir, '.claude-plugin', 'plugin.json'));
+  return found;
+}
+
+// CLAUDE_CODE_PLUGIN_DIRS: each entry loads like --plugin-dir, as a plugin
+// dir or a folder whose child dirs are plugins; ids are `<name>@inline`. A
+// relative entry is skipped, as the loader skips it; an archive cannot be
+// read here, so it is unverifiable (rule 2).
+function inlinePlugins(): Scanned[] {
+  const found: Scanned[] = [];
+  for (const raw of (process.env.CLAUDE_CODE_PLUGIN_DIRS ?? '').split(delimiter)) {
+    const dir = expandHome(raw);
+    if (!isAbsolute(dir)) continue;
     try {
-      saveListing(key, found);
+      if (/\.zip$/i.test(dir)) {
+        if (present(dir)) found.push(unverifiable(`${basename(dir)}@inline`, 'installed'));
+        continue;
+      }
+      const self = scanPlugin('installed', dir, undefined, '@inline');
+      if (self) {
+        found.push(self);
+        continue;
+      }
+      for (const child of subdirs(dir)) {
+        const scanned = scanPlugin('installed', child, undefined, '@inline');
+        if (scanned) found.push(scanned);
+      }
     } catch {
-      // The next scan runs the CLI again.
+      found.push(unverifiable(`${basename(dir)}@inline`, 'installed'));
     }
   }
   return found;
@@ -733,7 +681,7 @@ function pluginDirs(): Scanned[] {
     for (const plugin of subdirs(market))
       for (const dir of subdirs(plugin))
         found.push({ id: `${basename(plugin)}@${basename(market)}`, dir, origin });
-  for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
+  for (const bucket of subdirs(SYNCED_ROOT))
     for (const dir of subdirs(bucket)) {
       const scanned = scanPlugin(origin, dir, undefined, '@synced');
       if (scanned) found.push(scanned);
@@ -769,6 +717,7 @@ function pluginDirs(): Scanned[] {
       }
     }
   }
+  found.push(...inlinePlugins());
   // Rule 1: nothing the listing does can cost the static results above.
   try {
     found.push(...(loaderPlugins() ?? []));
@@ -1129,7 +1078,7 @@ function reportedKeys({ mods, unknown }: ModFindings): Set<string> {
 
 // The cheap path: true when nothing the last scan read has changed.
 function envLines(): string[] {
-  return LISTING_ENV.map((name) => {
+  return LOADER_ENV.map((name) => {
     const value = process.env[name];
     return `E ${enc(name)} ${value === undefined ? '-' : enc(value)}`;
   });
