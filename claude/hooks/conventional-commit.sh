@@ -30,17 +30,17 @@ deny() {
 
 # Only inspect git commit commands (not amend, merge, rebase). POSIX classes,
 # not GNU `\s`: the public settings template enables this hook on macOS too.
-if ! printf '%s\n' "$COMMAND" | grep -qE 'git[[:space:]]+commit[[:space:]]'; then
+if ! grep -qE 'git[[:space:]]+commit[[:space:]]' <<<"$COMMAND"; then
   exit 0
 fi
 
 # Skip if --amend (amending existing message)
-if printf '%s\n' "$COMMAND" | grep -qE -- '--amend'; then
+if grep -qE -- '--amend' <<<"$COMMAND"; then
   exit 0
 fi
 
 # Skip if no -m flag (interactive editor — user controls the message)
-if ! printf '%s\n' "$COMMAND" | grep -qE '[[:space:]]-m[[:space:]]'; then
+if ! grep -qE '[[:space:]]-m[[:space:]]' <<<"$COMMAND"; then
   exit 0
 fi
 
@@ -50,12 +50,15 @@ fi
 # failed extraction was masked and the commit went through unchecked.
 # Heredoc only when the -m argument itself is a `$(cat <<…` substitution —
 # a literal "cat <<EOF" inside an inline message is just text.
-if printf '%s\n' "$COMMAND" | grep -qE -- "-m[[:space:]]+\"?\\\$\\(cat[[:space:]]+<<"; then
+if grep -qE -- "-m[[:space:]]+\"?\\\$\\(cat[[:space:]]+<<" <<<"$COMMAND"; then
   # Heredoc style: git commit -m "$(cat <<'EOF' ... EOF )"
   # Extract content between the heredoc markers
   # `|| MSG=""`: an empty extraction must reach the fail-closed deny below,
   # not end the hook through `set -e` (a hook error lets the commit run).
-  MSG=$(printf '%s\n' "$COMMAND" | sed -n "/cat <<.*EOF/,/EOF/p" | grep -v 'cat <<' | grep -v '^[[:space:]]*EOF' | grep -v '^[[:space:]]*$' | head -1 | sed 's/^[[:space:]]*//') || MSG=""
+  # The final awk reads ALL of its input: an early-exiting `head -1` could
+  # SIGPIPE its writer under pipefail and wipe a correctly extracted subject.
+  MSG=$(printf '%s\n' "$COMMAND" | sed -n "/cat <<.*EOF/,/EOF/p" | grep -v 'cat <<' | grep -v '^[[:space:]]*EOF' \
+    | awk 'NF && !d { sub(/^[[:space:]]+/, ""); print; d = 1 }') || MSG=""
 else
   # Inline style: the first `-m` argument — "double", 'single' or bare word.
   # The whole command is ONE awk record (RS is a control byte that never
@@ -87,7 +90,7 @@ fi
 # leading blank/whitespace-only lines
 # so the conventional-commit regex check applies to the FIRST NON-BLANK line —
 # which is the real subject — instead of erroring on a leading blank.
-FIRST_LINE=$(printf '%s\n' "$MSG" | grep -v -m1 '^[[:space:]]*$' || true)
+FIRST_LINE=$(awk 'NF && !d { print; d = 1 }' <<<"$MSG")
 
 # Validate: first non-blank line must match  type(scope)?!?: description
 # Type list and subject regex are kept identical to the CI backstop
@@ -95,7 +98,7 @@ FIRST_LINE=$(printf '%s\n' "$MSG" | grep -v -m1 '^[[:space:]]*$' || true)
 # fail the other. Update both together.
 VALID_TYPES="feat|fix|refactor|chore|docs|test|style|perf|build|ci|revert"
 SUBJECT_RE="^(${VALID_TYPES})(\([a-z0-9._/-]+\))?!?: .+"
-if ! printf '%s' "$FIRST_LINE" | grep -qE "$SUBJECT_RE"; then
+if ! grep -qE "$SUBJECT_RE" <<<"$FIRST_LINE"; then
   deny "Commit message must start with a conventional type: ${VALID_TYPES//|/, } (optionally with (scope) and/or ! before the colon). Got: '$(printf '%s' "$FIRST_LINE" | cut -c1-60)'"
 fi
 

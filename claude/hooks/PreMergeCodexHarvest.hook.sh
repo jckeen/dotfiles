@@ -50,10 +50,13 @@ cwd="$(jq -r '.cwd // ""' <<<"$raw" 2>/dev/null || true)"
 # mentions such as `rg 'gh pr merge' .` and ran the issue-writing harvester
 # (#691); splitting the command on separators let quoted text start a
 # "segment" (`printf "%s" "x; gh pr merge 5"`). No splitting at all. An
-# assignment value may not contain quotes, `$` or backticks: a quoted value
-# (`NOTE="x gh pr merge 5"`) would otherwise look like a prefix plus a merge.
-# Such a command is simply not recognised (a documented miss, not a trigger).
-merge_re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]"'"'"'`$]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'
+# assignment value may hold only plain word characters: quotes, `$`, shell
+# operators or redirections (`NOTE="x gh pr merge 5"`, `NOTE=;: gh pr merge
+# 5`, `NOTE=<<EOF`) would otherwise look like a prefix plus a merge. A
+# command spanning lines (a heredoc body) is never a trigger either. Such
+# commands are simply not recognised: a documented miss, not a trigger.
+case "$cmd" in *$'\n'*) exit 0 ;; esac
+merge_re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./:@%+,-]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'
 [[ "$cmd" =~ $merge_re ]] || exit 0
 merge_seg="$cmd"
 

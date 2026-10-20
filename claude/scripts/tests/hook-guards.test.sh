@@ -84,6 +84,17 @@ denied "$(cc "$multi_bad")" \
 [ -z "$(cc 'git commit -m "docs: document cat <<EOF syntax"')" ] \
   && ok "commit-msg: literal heredoc text inside an inline message is just text" \
   || fail "commit-msg: inline message mentioning a heredoc denied"
+# A long heredoc body: `head -1` under pipefail could SIGPIPE its writer and
+# wipe a correctly extracted subject. Run it repeatedly; every run must allow.
+long_body="$(seq 1 4000 | sed 's/^/body line /')"
+heredoc_long="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' 'feat: long heredoc subject' '' "$long_body" 'EOF' ')"')"
+long_denials=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -z "$(cc "$heredoc_long")" ] || long_denials=$((long_denials + 1))
+done
+[ "$long_denials" -eq 0 ] \
+  && ok "commit-msg: a long valid heredoc is never denied (no SIGPIPE race)" \
+  || fail "commit-msg: long valid heredoc denied in $long_denials of 10 runs"
 heredoc_blank="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' '' 'fix: heredoc subject after a blank line' '' 'body' 'EOF' ')"')"
 [ -z "$(cc "$heredoc_blank")" ] \
   && ok "commit-msg: a heredoc message with a leading blank line is allowed" \
@@ -170,6 +181,17 @@ grep -q -- '--pr 9' <<<"$(pm "$MERGE 9 --auto")" \
 [ -z "$(pm "NOTE=\"x $MERGE 5\"")" ] \
   && ok "pre-merge: a quoted assignment value holding the merge text does not run the harvester" \
   || fail "pre-merge: quoted assignment value ran the harvester"
+[ -z "$(pm "NOTE=<<EOF
+$MERGE 5
+EOF")" ] \
+  && ok "pre-merge: merge text inside a heredoc after an assignment does not run the harvester" \
+  || fail "pre-merge: heredoc-held merge text ran the harvester"
+[ -z "$(pm "NOTE=;: $MERGE 5")" ] \
+  && ok "pre-merge: an assignment value holding a shell operator does not run the harvester" \
+  || fail "pre-merge: operator in an assignment value ran the harvester"
+grep -q -- '--pr 6' <<<"$(pm "GH_REPO=org/repo-name.x GH_HOST=github.com $MERGE 6")" \
+  && ok "pre-merge: plain-word assignments before the merge are still recognised" \
+  || fail "pre-merge: plain-word assignment prefix no longer recognised"
 # Quoted text can never trigger it: there is no splitting at all.
 [ -z "$(pm "printf \"%s\\n\" \"\$HOME; $MERGE 5\"")" ] \
   && ok "pre-merge: merge text inside a quoted printf argument does not run the harvester" \

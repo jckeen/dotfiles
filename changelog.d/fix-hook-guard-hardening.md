@@ -27,11 +27,14 @@
   - reads a quoted message that spans lines;
   - takes the first non-blank line of a heredoc, and treats a message as a
     heredoc only when the `-m` argument is a `$(cat` substitution;
-  - denies a commit whose message it cannot read.
+  - denies a commit whose message it cannot read;
+  - has no early-exiting reader (`head`, a piped `grep -q`) under pipefail,
+    so a long heredoc can no longer SIGPIPE its own extraction into a
+    denial.
 - **`claude/hooks/PreMergeCodexHarvest.hook.sh`**: runs the harvester only
   when the whole command starts with the merge command, after `VAR=value`
-  assignments whose values hold no quotes or `$`. There is no splitting, so
-  a search, an echo, quoted text or a quoted assignment value never fires
-  it. The old unanchored match filed #691 from a `sed` command.
+  assignments whose values are plain words, on a single line. There is no
+  splitting, so a search, an echo, quoted text, an assignment value holding
+  quotes or operators, or a heredoc body never fires it. The old unanchored match filed #691 from a `sed` command.
   A merge in a compound command or inside `$(…)` is a documented miss: the
   close-time workflow harvests every PR anyway.
