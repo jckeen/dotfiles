@@ -51,8 +51,12 @@
  *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
- * shown() first. An id that needed sanitizing is marked as not allowlistable,
- * since the allowlist matches the raw id.
+ * shown() first. An id shown() prints unchanged is its own allowlist key; any
+ * other id (unsafe characters, or over 300 characters) is printed sanitized
+ * alongside the key `sha256:<first 16 hex of the SHA-256 of the raw id's
+ * UTF-16LE code units>`, and only
+ * that token allowlists it (#648) — so every printed key clears its warning,
+ * and no raw id can match an allowlist line by spelling out a token.
  *
  * Two rules govern everything read from a marketplace, a project or settings:
  *
@@ -91,6 +95,7 @@ import {
   realpathSync,
 } from 'fs';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -183,6 +188,17 @@ function shown(text: string): string {
   if (verbatim(text)) return text;
   const safe = text.replace(/[^A-Za-z0-9._@/-]/g, '_');
   return safe.length > 100 ? `${safe.slice(0, 100)}...` : safe;
+}
+
+// The one `# mods-ok:` key for an id. A token is never verbatim (`:` is
+// outside SAFE_ID), so a raw id cannot collide with another id's token. The
+// hash input is the id's UTF-16 code units, not UTF-8: UTF-8 encoding turns
+// every lone surrogate (valid in a JSON name) into U+FFFD, which would give
+// distinct ids one key.
+function allowKey(id: string): string {
+  if (verbatim(id)) return id;
+  const units = Buffer.from(id, 'utf16le');
+  return `sha256:${createHash('sha256').update(units).digest('hex').slice(0, 16)}`;
 }
 
 function bullets(items: string[]): string {
@@ -506,10 +522,16 @@ function modsWarning(allowed: string[]): string {
   const mods = new Set<string>();
   const unknown = new Set<string>();
   for (const { id, dir, origin, unverifiable: noManifest } of pluginDirs()) {
-    if (origin !== 'project' && allowed.includes(id)) continue;
+    const key = allowKey(id);
+    if (origin !== 'project' && allowed.includes(key)) continue;
     const label =
       shown(id) +
-      (verbatim(id) ? '' : ' (sanitized: cannot be allowlisted)') +
+      // A project mod is always named, so no key would clear it.
+      (key === id
+        ? ''
+        : origin === 'project'
+          ? ' (sanitized)'
+          : ` (sanitized; allowlist key: ${key})`) +
       (origin === 'project' ? ' (project .claude/skills)' : '');
     if (noManifest) {
       unknown.add(label);
@@ -547,7 +569,8 @@ function modsWarning(allowed: string[]): string {
     `in hooks/hooks.json) — in-session code that can approve tool calls past ` +
     `\`ask\` rules and the settings hooks (issue #594):\n${list}\n\n` +
     `Review each with \`claude plugin validate <dir>\` (CLAUDE-GUIDE.md, Hooks), ` +
-    `then allowlist it with a \`# mods-ok: <id>\` line in ${shown(MANIFEST)}, or uninstall it. ` +
+    `then allowlist it with a \`# mods-ok: <id>\` line in ${shown(MANIFEST)} ` +
+    `(for a sanitized id, the \`sha256:\` key shown), or uninstall it. ` +
     `A project .claude/skills mod is always named: the allowlist cannot vouch ` +
     `for a repo's copy.\n`
   );
