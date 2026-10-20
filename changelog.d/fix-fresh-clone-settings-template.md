@@ -26,6 +26,26 @@
   `bash --posix`, and `$STATUSLINE_BASH3` when that names a bash 3.x. The
   bash 3.2.57 case was verified locally; wiring it into CI's
   `doc-truth (bash 3.2)` job waits on an operator-reviewed workflow patch.
+- **`claude/statusline.sh` cache format**: the git-info cache uses the
+  0x1F unit separator instead of tabs, in a `.v2` file. A tab-separated read
+  collapsed an empty field, such as no `origin` remote, and shifted every
+  later column, so cached renders showed a repo named `0` and wrong
+  counters.
+- **Bash hooks the template enables** (new
+  `claude/scripts/tests/hook-guards.test.sh`, run from
+  `setup-dry-run.test.sh`):
+  - `worktree-guard.sh` checks every segment of a compound command. `&&`,
+    `||`, `;`, `|`, `&`, `$(…)`, backticks and newlines all split segments.
+    Only the `git worktree` invocation itself is exempt. Before,
+    `git worktree list && git switch -c x` bypassed the guard.
+  - `conventional-commit.sh` extracts `-m` messages with POSIX `awk`/`sed`
+    instead of `grep -P`, which macOS grep lacks. It denies a commit whose
+    message it cannot read. Before, the masked error let unvalidated
+    messages through.
+  - `PreMergeCodexHarvest.hook.sh` runs the harvester only for a command
+    segment that starts with the merge command, after `VAR=value`
+    assignments. The template also gives it `"if": "Bash(gh pr merge*)"`.
+    Before, a search such as `rg` for the text filed issues.
 - **`claude/hooks/HygieneStatus.hook.sh`**: finds `hygiene-status.sh` at
   setup's `~/.local/bin` link, then through its own symlink back to the
   checkout, instead of a fixed `~/dev/dotfiles` path. It exits 0 silently

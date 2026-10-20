@@ -134,7 +134,12 @@ else
   CACHE_KEY=$(printf '%s\n' "$PWD" | cksum | cut -d' ' -f1)
 fi
 [ -n "$CACHE_KEY" ] || CACHE_KEY="default"
-CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
+# Fields are separated by the ASCII unit separator (0x1F), not tabs: tab is
+# whitespace to `read`, which collapses an empty field (no origin remote, a
+# detached HEAD) and shifts every column after it (#681). The .v2 suffix keeps
+# a stale tab-format cache from an older script out of the read.
+US=$'\037'
+CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}.v2"
 NOW=$(date +%s)
 NEED_REFRESH=1
 
@@ -175,13 +180,13 @@ if [ "$NEED_REFRESH" -eq 1 ] && git rev-parse --is-inside-work-tree &>/dev/null;
   # Stash count
   STASH_COUNT=$(git stash list 2>/dev/null | wc -l)
 
-  # Write cache (tab-delimited data, no executable code)
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  # Write cache (0x1F-delimited data, no executable code)
+  printf "%s${US}%s${US}%s${US}%s${US}%s${US}%s${US}%s${US}%s${US}%s\n" \
     "$BRANCH" "$REMOTE_URL" "$STAGED" "$MODIFIED" "$UNTRACKED" \
     "$CONFLICTS" "$AHEAD" "$BEHIND" "$STASH_COUNT" \
     > "$CACHE_FILE" 2>/dev/null
 elif [ -f "$CACHE_FILE" ]; then
-  IFS=$'\t' read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
+  IFS="$US" read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
   IN_GIT_REPO=1
 fi
 

@@ -101,6 +101,25 @@ else
   fail "cache keys collided without md5sum ($_keys cache files for 2 dirs)"
 fi
 
+# A cached render must match the fresh one even with an empty field: $T/proj
+# has no origin remote, so the cached REMOTE_URL is empty. A whitespace-IFS
+# read collapsed it and shifted every later column (a repo named "0", wrong
+# counters). One untracked file gives the status counters something to show.
+: > "$T/proj/untracked.txt"
+render_cached() {
+  printf '%s' "$INPUT" | HOME="$T/hm" XDG_RUNTIME_DIR="$T/run-cache" bash "$STATUSLINE" 2>/dev/null
+}
+fresh="$(render_cached)"
+cached="$(render_cached)"
+rm -f "$T/proj/untracked.txt"
+if [ -n "$fresh" ] && [ "$fresh" = "$cached" ] && [ -n "$(find "$T/run-cache/claude-statusline" -type f 2>/dev/null)" ]; then
+  ok "a cached render with an empty origin keeps every column aligned"
+else
+  fail "cached render differs from the fresh one (empty field collapsed?)"
+  printf '%s\n' "$fresh" | sed 's/^/      | fresh:  /'
+  printf '%s\n' "$cached" | sed 's/^/      | cached: /'
+fi
+
 # Bash 4+ only: readarray/mapfile (4.0), printf %(fmt)T (4.2), associative
 # arrays and namerefs (4.0/4.3), case-modifying expansions (4.0), |& and &>>.
 if grep -nE '\b(readarray|mapfile)\b|%\([^)]*\)T|declare -[A-Za-z]*A|local -n|\$\{[A-Za-z_]+(,,|\^\^)|\|&|&>>' \

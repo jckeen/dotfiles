@@ -42,7 +42,8 @@
           },
           {
             "type": "command",
-            "command": "\"$HOME/.claude/hooks/PreMergeCodexHarvest.hook.sh\""
+            "command": "\"$HOME/.claude/hooks/PreMergeCodexHarvest.hook.sh\"",
+            "if": "Bash(gh pr merge*)"
           }
         ]
       },
