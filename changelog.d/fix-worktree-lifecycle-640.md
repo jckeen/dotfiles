@@ -4,7 +4,7 @@
   branch name with `os.fsencode`, inside the error handler, so a non-UTF-8
   name no longer raises after the ref has already been deleted.
 - Branch configuration is now removed by unsetting every listed
-  `branch.<name>.*` key and then checking that none remain. A section Git
+  `branch.NAME.*` key and then checking that none remain. A section Git
   stored as `[Branch "x"]`, which `--remove-section branch.x` refuses, no
   longer survives.
 - Retirement now merges the second scan's process exemptions and writes them

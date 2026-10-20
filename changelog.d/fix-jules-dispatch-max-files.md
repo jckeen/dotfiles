@@ -9,7 +9,7 @@
   or closed before reconcile ran but over its session's limit is recorded
   `blocked-oversized` and counted in `reconcile.oversized`, not `noop`.
 - An oversized PR that an earlier partial pass labeled
-  `jules-routine:<routine>` has that label removed, so it no longer passes
+  `jules-routine:ROUTINE` has that label removed, so it no longer passes
   as a compliant routine result.
 - Tests: three new cases in `claude/scripts/tests/jules-dispatch.test.sh`,
   covering a 20-digit limit in the ledger and the frontmatter, label removal,

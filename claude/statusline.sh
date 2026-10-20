@@ -12,7 +12,12 @@ if ! command -v jq &>/dev/null; then echo "?"; exit 0; fi
 input=$(cat)
 
 # --- Parse JSON (single jq call, one field per line to preserve empties) ---
-readarray -t _fields < <(echo "$input" | jq -r '
+# Bash 3.2 floor (macOS system bash runs this when settings say `bash …`):
+# a read loop, not readarray, and `date`, not printf's %(…)T (#588).
+_fields=()
+while IFS= read -r _line; do
+  _fields+=("$_line")
+done < <(echo "$input" | jq -r '
   (.model.display_name // "?"),
   (.context_window.used_percentage // 0 | floor | tostring),
   (.context_window.total_input_tokens // 0 | tostring),
@@ -30,7 +35,8 @@ readarray -t _fields < <(echo "$input" | jq -r '
   (.cost.total_lines_added // 0 | tostring),
   (.cost.total_lines_removed // 0 | tostring),
   (.transcript_path // "")
-' 2>/dev/null) || { echo "?"; exit 0; }
+' 2>/dev/null)
+[ "${#_fields[@]}" -gt 0 ] || { echo "?"; exit 0; }
 
 MODEL="${_fields[0]}"
 PCT="${_fields[1]}"
@@ -117,9 +123,24 @@ fmt_tokens() {
 # --- Git info (cached 5s) ---
 CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/claude-statusline"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
-CACHE_KEY=$(echo "$PWD" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "default")
-CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
-printf -v NOW '%(%s)T' -1
+# One cache file per directory. macOS has no md5sum (its `md5 -q` prints the
+# bare digest), so fall back through md5 to POSIX cksum; a key that collapsed
+# to one value would share one repo's git status across every directory.
+if command -v md5sum >/dev/null 2>&1; then
+  CACHE_KEY=$(printf '%s\n' "$PWD" | md5sum | cut -d' ' -f1)
+elif command -v md5 >/dev/null 2>&1; then
+  CACHE_KEY=$(printf '%s\n' "$PWD" | md5 -q)
+else
+  CACHE_KEY=$(printf '%s\n' "$PWD" | cksum | cut -d' ' -f1)
+fi
+[ -n "$CACHE_KEY" ] || CACHE_KEY="default"
+# Fields are separated by the ASCII unit separator (0x1F), not tabs: tab is
+# whitespace to `read`, which collapses an empty field (no origin remote, a
+# detached HEAD) and shifts every column after it (#681). The .v2 suffix keeps
+# a stale tab-format cache from an older script out of the read.
+US=$'\037'
+CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}.v2"
+NOW=$(date +%s)
 NEED_REFRESH=1
 
 if [ -f "$CACHE_FILE" ]; then
@@ -159,13 +180,13 @@ if [ "$NEED_REFRESH" -eq 1 ] && git rev-parse --is-inside-work-tree &>/dev/null;
   # Stash count
   STASH_COUNT=$(git stash list 2>/dev/null | wc -l)
 
-  # Write cache (tab-delimited data, no executable code)
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  # Write cache (0x1F-delimited data, no executable code)
+  printf "%s${US}%s${US}%s${US}%s${US}%s${US}%s${US}%s${US}%s${US}%s\n" \
     "$BRANCH" "$REMOTE_URL" "$STAGED" "$MODIFIED" "$UNTRACKED" \
     "$CONFLICTS" "$AHEAD" "$BEHIND" "$STASH_COUNT" \
     > "$CACHE_FILE" 2>/dev/null
 elif [ -f "$CACHE_FILE" ]; then
-  IFS=$'\t' read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
+  IFS="$US" read -r BRANCH REMOTE_URL STAGED MODIFIED UNTRACKED CONFLICTS AHEAD BEHIND STASH_COUNT < "$CACHE_FILE" 2>/dev/null || true
   IN_GIT_REPO=1
 fi
 
@@ -267,7 +288,7 @@ if [ -n "${COST_USD:-}" ] && [ "$COST_USD" != "0" ]; then
   if [ -n "${SESSION_ID:-}" ]; then
     LEDGER_DIR="$HOME/.claude/ledger"
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
-    printf '%(%Y-%m-%d)T\t%s\t%s\t%s\n' -1 "$(basename "$PWD")" "$COST_USD" "$(( ${DUR_MS:-0} / 60000 ))" \
+    printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%d)" "$(basename "$PWD")" "$COST_USD" "$(( ${DUR_MS:-0} / 60000 ))" \
       > "$LEDGER_DIR/${SESSION_ID}.tsv" 2>/dev/null || true
   fi
 fi

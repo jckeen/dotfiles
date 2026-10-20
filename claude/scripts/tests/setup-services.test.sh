@@ -196,6 +196,141 @@ check "--repair does not touch a deselected service's config or credentials" \
 check "--repair skips Claude-only links when Claude is deselected" \
   '[ ! -e "$H/.claude/CLAUDE.md" ] && [ -L "$H/.claude/scripts/codex-review-gate.sh" ]'
 
+# ── --repair counts a migration that archived changed content (#638) ──
+# A legacy per-file skill dir whose content changes under the migration is
+# moved to .migrated-skill-dirs/kept/ and the migration returns 1; alink then
+# relinks the bundle, but the audit must still count the failure. A fake perl
+# swaps the archived SKILL.md link for a real file right after the rename.
+SKILL_NAME="$(cd "$REPO_ROOT/claude/skills" && for d in */; do [ -f "$d/SKILL.md" ] && { echo "${d%/}"; break; }; done)"
+repair_legacy() {
+  local h="$1" bin="$2"
+  seed_saved "$h" "claude"
+  mkdir -p "$h/.claude/skills/$SKILL_NAME"
+  ln -s "$REPO_ROOT/claude/skills/$SKILL_NAME/SKILL.md" "$h/.claude/skills/$SKILL_NAME/SKILL.md"
+  PATH="$bin:$PATH" HOME="$h" "$SETUP" --repair > "$OUT" 2>&1
+  echo "rc=$?" >> "$OUT"
+}
+broken_count() { sed -n 's/^  Broken: *\([0-9]*\)$/\1/p' "$OUT" | tail -1; }
+H="$(new_home)"
+mkdir -p "$ROOT/nobin"
+repair_legacy "$H" "$ROOT/nobin"
+base_broken="$(broken_count)"
+base_rc="$(tail -1 "$OUT")"
+check "--repair converts a clean legacy skill dir" \
+  "[ \"\$(readlink \"$H/.claude/skills/$SKILL_NAME\")\" = \"$REPO_ROOT/claude/skills/$SKILL_NAME\" ]"
+H="$(new_home)"
+SWAP="$ROOT/swapbin"
+mkdir -p "$SWAP"
+REAL_PERL="$(command -v perl)"
+cat > "$SWAP/perl" <<FAKE
+#!/bin/bash
+"$REAL_PERL" "\$@"; rc=\$?
+if [ "\$rc" -eq 0 ] && [ "\$3" = "$H/.claude/skills/$SKILL_NAME" ] && [ -L "\$4/SKILL.md" ]; then
+  rm "\$4/SKILL.md" && printf 'mine\\n' > "\$4/SKILL.md"
+fi
+exit \$rc
+FAKE
+chmod +x "$SWAP/perl"
+repair_legacy "$H" "$SWAP"
+check "--repair reports the changed migration as FAILED and where it was kept" \
+  "grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && grep -q '.migrated-skill-dirs/kept/$SKILL_NAME\.' \"$OUT\""
+check "--repair counts it: one more broken than the clean run, non-zero exit" \
+  "[ \"\$(broken_count)\" -eq \$((base_broken + 1)) ] && grep -qx 'rc=[1-9][0-9]*' \"$OUT\""
+check "--repair keeps the changed content" \
+  "grep -qx mine \"$H\"/.claude/.migrated-skill-dirs/kept/$SKILL_NAME.*/SKILL.md"
+
+# A rival that relinks the bundle between --repair's outer legacy check and
+# the migration's own re-check has finished the repair: nothing was archived,
+# so it is no error (PR #682 review). A fake readlink plays the rival on the
+# second readlink of the legacy entry (the first is the outer check).
+H="$(new_home)"
+RIVAL="$ROOT/rivalbin"
+mkdir -p "$RIVAL"
+REAL_READLINK="$(command -v readlink)"
+LEG="$H/.claude/skills/$SKILL_NAME"
+cat > "$RIVAL/readlink" <<FAKE
+#!/bin/bash
+if [ "\$1" = "$LEG/SKILL.md" ]; then
+  n=\$(( \$(cat "$ROOT/rival-calls" 2>/dev/null || echo 0) + 1 ))
+  echo "\$n" > "$ROOT/rival-calls"
+  if [ "\$n" -eq 2 ]; then
+    rm "$LEG/SKILL.md" && rmdir "$LEG" && ln -sn "$REPO_ROOT/claude/skills/$SKILL_NAME" "$LEG"
+  fi
+fi
+exec "$REAL_READLINK" "\$@"
+FAKE
+chmod +x "$RIVAL/readlink"
+repair_legacy "$H" "$RIVAL"
+check "--repair: the rival relinked between the checks" \
+  "[ \"\$(cat \"$ROOT/rival-calls\")\" -ge 2 ] && [ \"\$(readlink \"$LEG\")\" = \"$REPO_ROOT/claude/skills/$SKILL_NAME\" ]"
+check "--repair: a rival-completed migration is no error (same Broken as a clean run)" \
+  "[ \"\$(broken_count)\" -eq \"$base_broken\" ] && ! grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && [ ! -e \"$H/.claude/.migrated-skill-dirs\" ]"
+check "--repair: a clean legacy run exits 0" "[ \"$base_rc\" = rc=0 ]"
+
+# A foreign link swapped in just before the rename is someone's own config,
+# not a rival's repair: it is archived under kept/ and counted (round 10).
+H="$(new_home)"
+FOREIGN="$ROOT/foreignbin"
+mkdir -p "$FOREIGN" "$ROOT/my-own-skill"
+LEG="$H/.claude/skills/$SKILL_NAME"
+cat > "$FOREIGN/perl" <<FAKE
+#!/bin/bash
+if [ "\$3" = "$LEG" ] && [ -d "$LEG" ] && [ ! -L "$LEG" ]; then
+  rm "$LEG"/* && rmdir "$LEG" && ln -sn "$ROOT/my-own-skill" "$LEG"
+fi
+exec "$REAL_PERL" "\$@"
+FAKE
+chmod +x "$FOREIGN/perl"
+repair_legacy "$H" "$FOREIGN"
+check "--repair: a grabbed foreign link is kept, intact" \
+  "[ \"\$(readlink \"$H\"/.claude/.migrated-skill-dirs/kept/$SKILL_NAME.*)\" = \"$ROOT/my-own-skill\" ]"
+check "--repair: and counted (FAILED, one more Broken, non-zero exit)" \
+  "grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && [ \"\$(broken_count)\" -eq \$((base_broken + 1)) ] && grep -qx 'rc=[1-9][0-9]*' \"$OUT\""
+
+# ── Install path: changed content is kept, the skill still gets linked ──
+# setup.sh's install path used to exit on a failed migration before
+# link_file, leaving the skill absent (PR #682 review). Its claude-tree link
+# block (from `_tree_links=0` to the summary line) runs here in isolation:
+# a fixture repo, stubbed link_file and claude_link_managed, and a fake perl
+# that changes the moved dir right after the rename.
+BLOCK="$ROOT/tree-block.sh"
+awk '/^_tree_links=0$/{on=1} /^if service_selected claude; then$/{if(on) exit} on' "$SETUP" > "$BLOCK"
+check "install path: the tree-link block was extracted" "grep -q 'symlink_migrate_legacy_skill_dir' \"$BLOCK\""
+TR="$ROOT/tree-repo"
+H="$(new_home)"
+mkdir -p "$TR/claude/skills/demo" "$H/.claude/skills/demo"
+printf 'nolink.txt\n' > "$TR/claude/nolink.txt"
+printf -- '---\nname: demo\n---\n' > "$TR/claude/skills/demo/SKILL.md"
+ln -s "$TR/claude/skills/demo/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+TSWAP="$ROOT/treeswap"
+mkdir -p "$TSWAP"
+cat > "$TSWAP/perl" <<FAKE
+#!/bin/bash
+"$REAL_PERL" "\$@"; rc=\$?
+if [ "\$rc" -eq 0 ] && [ "\$3" = "$H/.claude/skills/demo" ] && [ -L "\$4/SKILL.md" ]; then
+  rm "\$4/SKILL.md" && printf 'mine\\n' > "\$4/SKILL.md"
+fi
+exit \$rc
+FAKE
+chmod +x "$TSWAP/perl"
+(
+  PATH="$TSWAP:$PATH"
+  DOTFILES_DIR="$TR" HOME_DIR="$H" DRY_RUN=0
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$REPO_ROOT/lib-symlinks.sh"
+  claude_link_managed() { return 0; }
+  link_file() { [ -e "$2" ] || [ -L "$2" ] || ln -sn "$1" "$2"; }
+  # shellcheck disable=SC1090
+  . "$BLOCK"
+) > "$OUT" 2>&1
+tree_rc=$?
+check "install path: the bundle is linked despite the changed content" \
+  "[ \"\$(readlink \"$H/.claude/skills/demo\")\" = \"$TR/claude/skills/demo\" ]"
+check "install path: the changed content is in kept/" \
+  "grep -qx mine \"$H\"/.claude/.migrated-skill-dirs/kept/demo.*/SKILL.md"
+check "install path: the error is reported and the exit is non-zero" \
+  "[ \"$tree_rc\" -ne 0 ] && grep -q 'ERROR: .*changed during migration.*skills/demo' \"$OUT\""
+
 echo ""
 echo "setup-services: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

@@ -13,7 +13,9 @@
 #
 # The name is a convention only: two branches can share a slug (feat/a-b and
 # feat-a/b), so nothing derives a filename from a branch. Any name of letters,
-# digits, `.`, `_` and `-` ending in `.md` is valid. Two PRs then never touch
+# digits, `.`, `_` and `-` ending in `.md` is valid, checked as a whole string
+# (an embedded newline is refused), and no two names may differ only in case,
+# since they collide on a case-insensitive checkout. Two PRs then never touch
 # the same file.
 #
 # A fragment is a strict, line-oriented format. Every line is allowlisted by
@@ -22,18 +24,23 @@
 # blockquotes, tables, setext underlines) has a line shape that passes.
 # Each line is exactly one of:
 #   - blank;
-#   - an entry heading `## YYYY-MM-DD — <type>(<scope>)?!?: <summary>` at
+#   - an entry heading `## YYYY-MM-DD — TYPE(SCOPE)?!?: SUMMARY` at
 #     column 0, single spaces, no tab (types: the conventional set
-#     check-commit-format.sh enforces) — each entry needs at least one bullet;
+#     check-commit-format.sh enforces), its summary holding no [ ] & and at least one
+#     letter or digit — each entry needs at least one bullet;
 #   - a `### ` subsection at column 0;
 #   - a bullet: `- ` or `* ` indented 0-3 spaces, then text;
 #   - a continuation: 2+ spaces, then text.
 # Bullet and continuation text may not start with < > | # =, neither as
-# written nor after stripping every leading container prefix (whitespace,
-# `- ` `* ` `+ ` and `1. ` `1) ` list markers, `>`), and may not be only
-# - * _ = : | characters (a thematic break, setext underline or table
-# delimiter row). No line may
-# contain <!--, -->, ``` or ~~~ anywhere. Inline `code` is fine. No CRLF.
+# written nor after stripping every leading list prefix (whitespace,
+# `- ` `* ` `+ ` and `1. ` `1) ` markers), so a `>` quote marker behind a
+# nested list marker is refused too, and may not be only - * _ = : |
+# characters (a thematic break, setext underline or table delimiter row).
+# No line may contain, anywhere: <!--, -->, ``` or ~~~; `<` followed by a
+# letter, `/`, `!` or `?` (inline HTML, which can hide text, even inside
+# inline code); `]:` (a link reference definition, which renders as
+# nothing); or a control byte other than tab. Inline `code` is otherwise
+# fine. No CRLF.
 # Above CHANGELOG.md's first `## ` line only blank lines, one `# ` title and
 # the POINTER_1 / POINTER_2 lines below are allowed, verbatim.
 #
@@ -80,7 +87,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,62p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,69p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
@@ -150,11 +157,28 @@ if [ -d "$FRAG_DIR" ]; then
         continue
         ;;
     esac
-    if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*\.md$'; then
-      err "$f — fragment name must be letters, digits, '.', '_' or '-', ending in .md"
-      continue
-    fi
+    # A case pattern matches the whole string; grep would accept a name
+    # with an embedded newline whenever any one of its lines matched.
+    case "$name" in
+      [!A-Za-z0-9]* | *[!A-Za-z0-9._-]*)
+        err "$f — fragment name must be letters, digits, '.', '_' or '-', ending in .md"
+        continue
+        ;;
+    esac
     FRAGS+=("$f")
+  done
+  # Names differing only in case collide on a case-insensitive filesystem
+  # (macOS, Windows), where one fragment silently replaces the other.
+  lowers=()
+  for i in "${!FRAGS[@]}"; do
+    lowers+=("$(printf '%s' "${FRAGS[$i]}" | tr '[:upper:]' '[:lower:]')")
+    j=0
+    while [ "$j" -lt "$i" ]; do
+      if [ "${lowers[$j]}" = "${lowers[$i]}" ]; then
+        err "${FRAGS[$i]} — differ only in case from ${FRAGS[$j]}; they collide on a case-insensitive checkout"
+      fi
+      j=$((j + 1))
+    done
   done
 elif [ -e "$FRAG_DIR" ]; then
   die "$FRAG_DIR exists but is not a directory"
@@ -170,9 +194,10 @@ function days_in(y, m) {
 }
 # Text after a bullet marker or continuation indent: must not open a block
 # construct (HTML, blockquote, table, heading, setext) or be a rule — neither
-# as written nor after stripping every leading container prefix (whitespace,
-# `- ` / `* ` / `+ ` markers, `1. ` / `1) ` markers, `>`), since a nested list
-# or quote puts any of those constructs back at the start of a block. Text of
+# as written nor after stripping every leading list prefix (whitespace,
+# `- ` / `* ` / `+ ` markers, `1. ` / `1) ` markers), since a nested list puts
+# any of those constructs back at the start of a block. A `>` is refused
+# there, not stripped: a quote nested in a list is a blockquote. Text of
 # only - * _ = : | characters is a thematic break, a setext underline or a
 # GFM table delimiter row (a table needs one, outer pipes or not).
 function bad_text(t,   prev) {
@@ -180,7 +205,7 @@ function bad_text(t,   prev) {
   if (t ~ /^[-*_=:| \t]+$/) return 1
   do {
     prev = t
-    sub(/^[ \t]+/, "", t); sub(/^[-*+][ \t]/, "", t); sub(/^[0-9]+[.)][ \t]/, "", t); sub(/^>/, "", t)
+    sub(/^[ \t]+/, "", t); sub(/^[-*+][ \t]/, "", t); sub(/^[0-9]+[.)][ \t]/, "", t)
   } while (t != prev)
   if (t == "" || t ~ /^[<>|#=]/ || t ~ /^[-*_=:| \t]+$/) return 1
   return 0
@@ -193,13 +218,20 @@ function close_entry() {
 }
 BEGIN {
   head_re = "^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — (" types ")(\\([a-z0-9._/-]+\\))?!?: [^[:space:]]"
-  shapes = "a line must be blank, a \"## YYYY-MM-DD — <type>: <summary>\" heading, a \"### \" subsection, a bullet (\"- \" or \"* \" indented 0-3 spaces), or a continuation indented 2+ spaces; bullet and continuation text may not start with < > | # =, even after nested list or quote markers, or be only - * _ ="
+  shapes = "a line must be blank, a \"## YYYY-MM-DD — <type>: <summary>\" heading, a \"### \" subsection, a bullet (\"- \" or \"* \" indented 0-3 spaces), or a continuation indented 2+ spaces; bullet and continuation text may not start with < > | # =, even after nested list markers, or be only - * _ ="
   entries = 0; seen_content = 0; bullets = 0
 }
 /\r/ { printf "%d\tCRLF line ending; use LF\n", NR; next }
 # Comment and fence markers are refused anywhere on a line, whatever its shape.
 index($0, "<!--") || index($0, "-->") || index($0, "```") || index($0, "~~~") {
   printf "%d\tcomment or fence marker (<!--, -->, ``` or ~~~); fragments hold none, anywhere on a line\n", NR; next
+}
+# Banned anywhere, whatever the line shape, so no parse of code spans is needed.
+/<[A-Za-z\/!?]/ {
+  printf "%d\tinline HTML (< followed by a letter, /, ! or ?); fragments hold none, anywhere on a line, inline code included\n", NR; next
+}
+index($0, "]:") {
+  printf "%d\tlink reference definition marker ]: (it renders as nothing); fragments hold none, anywhere on a line\n", NR; next
 }
 /^[ \t]*$/ { next }
 /^## / {
@@ -211,6 +243,12 @@ index($0, "<!--") || index($0, "-->") || index($0, "```") || index($0, "~~~") {
   } else {
     y = substr($0, 4, 4) + 0; m = substr($0, 9, 2) + 0; d = substr($0, 12, 2) + 0
     if (m < 1 || m > 12 || d < 1 || d > days_in(y, m)) printf "%d\tinvalid date %s\n", NR, substr($0, 4, 10)
+    # The summary must render as text: markup alone (**, ###, `` ``) does not.
+    summary = $0; sub(/^[^:]*: /, "", summary)
+    # Letters inside a link destination or entity name render as nothing,
+    # so a summary holds no [ ] & at all rather than having them parsed.
+    if (summary ~ /[][&]/) printf "%d\theading summary may not hold [ ] or & (a link or entity can render as nothing)\n", NR
+    else if (summary !~ /[A-Za-z0-9]/) printf "%d\theading must be \"## YYYY-MM-DD — TYPE: SUMMARY\" with a summary of at least one letter or digit\n", NR
   }
   next
 }
@@ -238,6 +276,16 @@ END {
 # read (an unreadable fragment) is an error rather than an empty, clean report.
 for i in "${!FRAGS[@]}"; do
   f="${FRAGS[$i]}"
+  # Control bytes (tab, LF and CR aside; CR has its own CRLF message) are
+  # counted outside awk, which not every implementation reads NUL through.
+  if ! ctl="$(tr -d '\t\n\r\040-\176\200-\377' <"$f" | wc -c)"; then
+    err "$f — could not be read"
+    continue
+  fi
+  ctl=$((ctl))
+  if [ "$ctl" -gt 0 ]; then
+    err "$f — contains $ctl control byte(s); fragments hold printable text, tab and LF only"
+  fi
   if ! report="$(awk -v types="$TYPES" "$validate_awk" "$f")"; then
     err "$f — could not be read"
     continue
