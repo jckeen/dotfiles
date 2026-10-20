@@ -122,7 +122,7 @@ import {
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
-import { basename, dirname, join } from 'path';
+import { basename, delimiter, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const HOME = homedir();
@@ -608,11 +608,13 @@ function runListing(): Scanned[] | null {
 //   K <sig> <path>        a key file and its signature when listed
 //   C <dir>               the directory the listing ran in
 //   L <origin> <id> <dir> one listed plugin; dir `-` is unverifiable
+//   M <sig> <path>        a listed plugin's plugin.json, whose name is its id
 //   end                   the last line; without it the cache is a miss
 // Every path and id is enc()-encoded.
 // The `.` keeps it apart from every per-session file (statePath's charset).
 const LISTING_CACHE = join(STATE_DIR, 'listing.cache');
-const LISTING_KEYS = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS];
+// SKILLS_DIR's own mtime changes when a skills-dir plugin is added or removed.
+const LISTING_KEYS = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS, SKILLS_DIR];
 // Environment the CLI's answer depends on: extra plugin dirs, and where it
 // looks for its config.
 const LISTING_ENV = ['CLAUDE_CODE_PLUGIN_DIRS', 'CLAUDE_CONFIG_DIR'];
@@ -621,10 +623,7 @@ function listingKey(): string[] {
   return [
     ...LISTING_KEYS.map((path) => `K ${signature(path)} ${enc(path)}`),
     `C ${enc(PROJECT_DIRS[0] ?? '')}`,
-    ...LISTING_ENV.map((name) => {
-      const value = process.env[name];
-      return `E ${enc(name)} ${value === undefined ? '-' : enc(value)}`;
-    }),
+    ...envLines(),
   ];
 }
 
@@ -640,6 +639,11 @@ function cachedListing(key: string[]): Scanned[] | null {
     const found: Scanned[] = [];
     for (const line of body) {
       const [tag, origin, id, dir, extra] = line.split(' ');
+      // A renamed plugin changes its manifest: the cached id is stale.
+      if (tag === 'M' && dir === undefined && id !== undefined) {
+        if (signature(dec(id)) !== origin) return null;
+        continue;
+      }
       if (tag !== 'L' || extra !== undefined || id === undefined || dir === undefined)
         return null;
       if (origin !== 'installed' && origin !== 'project') return null;
@@ -662,21 +666,49 @@ function saveListing(key: string[], found: Scanned[]): void {
     lines.push(
       `L ${origin} ${enc(id)} ${bad ? '-' : enc(dir)}`,
     );
+  for (const path of listedManifests(found))
+    lines.push(`M ${signature(path)} ${enc(path)}`);
   lines.push(END);
   atomicWrite(LISTING_CACHE, lines);
 }
 
+function listedManifests(found: Scanned[]): string[] {
+  return found
+    .filter((p) => !p.unverifiable)
+    .map((p) => join(p.dir, '.claude-plugin', 'plugin.json'));
+}
+
+// CLAUDE_CODE_PLUGIN_DIRS holds plugin dirs or folders of them; watching each
+// and its children (and their manifests) lets the prompt path see a plugin
+// added under one.
+function watchPluginDirs(): void {
+  for (const dir of (process.env.CLAUDE_CODE_PLUGIN_DIRS ?? '')
+    .split(delimiter)
+    .filter((d) => d.length > 0)) {
+    watch(join(dir, '.claude-plugin', 'plugin.json'));
+    for (const child of subdirs(dir)) {
+      watch(child);
+      watch(join(child, '.claude-plugin', 'plugin.json'));
+    }
+  }
+}
+
 function loaderPlugins(): Scanned[] | null {
   for (const path of LISTING_KEYS) watch(path);
+  watchPluginDirs();
   const key = listingKey();
   // CLAUDE_CONFIG_DIR moves the files the key watches, and
   // CLAUDE_CODE_PLUGIN_DIRS adds directories whose contents it cannot see,
   // so with either set the cache is never trusted: the CLI runs every scan.
   const uncacheable = LISTING_ENV.some((name) => process.env[name] !== undefined);
   const cached = uncacheable ? null : cachedListing(key);
-  if (cached !== null) return cached;
+  if (cached !== null) {
+    for (const path of listedManifests(cached)) watch(path);
+    return cached;
+  }
   const found = runListing();
   if (found === null) scanIncomplete = true;
+  else for (const path of listedManifests(found)) watch(path);
   // A failed listing is not cached, and it marks the scan incomplete so the
   // next prompt rescans instead of trusting this result. Caching is
   // a convenience: a throw there must not lose the listing itself.
@@ -974,10 +1006,12 @@ function driftWarning(manifest: Manifest): string {
 //   W <sig> <path>      a watched path and its signature at scan time
 //   M|U <label>         a mod / unverifiable label already reported
 //   I                   the scan was incomplete: the next prompt rescans
+//   E <name> <value>    a loader environment variable at scan time (`-` unset)
 //   end                 the last line; without it the state is damaged
 // Paths are enc()-encoded so a newline in an untrusted path cannot forge a
 // record; labels went through shown(), which leaves no newline.
 interface ScanState {
+  env: string[];
   incomplete: boolean;
   projects: string[];
   watched: [string, string][];
@@ -1004,6 +1038,7 @@ function readState(): ScanState | null {
     const body = lines.slice(1);
     if (body.pop() !== '' || body.pop() !== END) return null;
     const state: ScanState = {
+      env: [],
       incomplete: false,
       projects: [],
       watched: [],
@@ -1012,6 +1047,10 @@ function readState(): ScanState | null {
     for (const line of body) {
       if (line === 'I') {
         state.incomplete = true;
+        continue;
+      }
+      if (line.startsWith('E ')) {
+        state.env.push(line);
         continue;
       }
       const tag = line.slice(0, 2);
@@ -1059,6 +1098,7 @@ function writeState(reported: Set<string>): void {
 function writeStateLines(reported: Set<string>): void {
   const lines = ['plugin-drift-state v1'];
   if (scanIncomplete) lines.push('I');
+  lines.push(...envLines());
   for (const dir of PROJECT_DIRS) lines.push(`P ${enc(dir)}`);
   for (const [path, sig] of watched) lines.push(`W ${sig} ${enc(path)}`);
   lines.push(...reported, END);
@@ -1088,8 +1128,16 @@ function reportedKeys({ mods, unknown }: ModFindings): Set<string> {
 }
 
 // The cheap path: true when nothing the last scan read has changed.
+function envLines(): string[] {
+  return LISTING_ENV.map((name) => {
+    const value = process.env[name];
+    return `E ${enc(name)} ${value === undefined ? '-' : enc(value)}`;
+  });
+}
+
 function unchanged(state: ScanState | null): boolean {
   if (state === null || state.incomplete) return false;
+  if (state.env.join('\n') !== envLines().join('\n')) return false;
   if (state.projects.join('\n') !== PROJECT_DIRS.join('\n')) return false;
   return state.watched.every(([path, sig]) => signature(path) === sig);
 }

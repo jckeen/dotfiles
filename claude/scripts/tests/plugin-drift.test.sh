@@ -930,6 +930,36 @@ printf '%s\n' '{"name":"linkmod"}' > "$PP/.claude/skills/lk/.claude-plugin/plugi
 hook_event UserPromptSubmit s5
 assert "rescan: a project skills link replaced by a directory is rescanned" \
   'outgrep "• linkmod@skills-dir"'
+# Codex round 4: a plugin added under an unchanged CLAUDE_CODE_PLUGIN_DIRS is
+# seen on the next prompt, and a changed loader variable is a change.
+mkdir -p "$PH/pdirs" || die "mkdir pdirs"
+CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" hook_event SessionStart s6
+mkdir -p "$PH/pdirs/inl/hooks" "$PH/pdirs/inl/.claude-plugin" || die "mkdir inl"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PH/pdirs/inl/hooks/hooks.json" || die "write inl"
+printf '%s\n' '{"name":"inl"}' > "$PH/pdirs/inl/.claude-plugin/plugin.json" || die "write inl manifest"
+CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" \
+  FAKE_LIST="[{\"id\":\"inl@inline\",\"scope\":\"session\",\"installPath\":\"$PH/pdirs/inl\"}]" \
+  hook_event UserPromptSubmit s6
+assert "rescan: a plugin added under CLAUDE_CODE_PLUGIN_DIRS is named on the next prompt" \
+  'outline "  • inl@inline"'
+CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" CLAUDE_CONFIG_DIR="$PH/.claude" \
+  hook_event UserPromptSubmit s6
+assert "rescan: a changed loader variable forces a rescan" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
+# A listed plugin's manifest is part of the listing cache: renaming it is a
+# miss, so the cached (stale) id cannot outlive the rename.
+mkdir -p "$PH/.claude/skills/rn/.claude-plugin" || die "mkdir rn"
+printf '%s\n' '{"name":"oldname"}' > "$PH/.claude/skills/rn/.claude-plugin/plugin.json" \
+  || die "write rn manifest"
+FAKE_LIST="[{\"id\":\"oldname@skills-dir\",\"scope\":\"user\",\"installPath\":\"$PH/.claude/skills/rn\"}]" \
+  hook_event SessionStart s7
+hook_event SessionStart s7
+assert "rescan: an unchanged listed manifest reuses the cache" '[ ! -s "$FAKE_BIN/calls" ]'
+printf '%s\n' '{"name":"newname!"}' > "$PH/.claude/skills/rn/.claude-plugin/plugin.json" \
+  || die "rename rn"
+hook_event SessionStart s7
+assert "rescan: renaming a listed plugin's manifest misses the listing cache" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
 # A hostile session id cannot escape the state dir.
 hook_event UserPromptSubmit '../../escape'
 assert "rescan: an unsafe session id falls back to a fixed state file" \
