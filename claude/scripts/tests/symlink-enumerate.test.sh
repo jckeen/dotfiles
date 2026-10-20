@@ -179,6 +179,44 @@ SHIM
     && grep -q 'skills/demo.*kept' <<<"$hook_out" && ok=1
   check "SymlinkRepair keeps and reports a foreign link grabbed by its rename" "$ok"
 
+  # A symlinked archive root is refused: renaming through it could drop the
+  # archived copy back into skills/ as a duplicate skill (#697).
+  H="$FIX/h-archlink"
+  mkdir -p "$H/.claude/skills/demo"
+  ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+  ln -sn "$H/.claude/skills" "$H/.claude/.migrated-skill-dirs"
+  hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" 2>&1)"
+  dupes=0
+  for d in "$H/.claude/skills"/demo.*; do [ -e "$d" ] && dupes=1; done
+  ok=0
+  [ -d "$H/.claude/skills/demo" ] && [ ! -L "$H/.claude/skills/demo" ] && [ "$dupes" -eq 0 ] \
+    && grep -q 'skills/demo.*not a real directory' <<<"$hook_out" && ok=1
+  check "SymlinkRepair refuses a symlinked archive root" "$ok"
+
+  # A symlinked kept/ is never followed: changed content stays in the archive.
+  H="$FIX/h-keptlink"
+  mkdir -p "$H/.claude/skills/demo" "$H/.claude/.migrated-skill-dirs" "$FIX/kept-elsewhere"
+  ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+  ln -sn "$FIX/kept-elsewhere" "$H/.claude/.migrated-skill-dirs/kept"
+  cat > "$FIX/change-shim.ts" <<SHIM
+import fs from 'fs';
+const real = fs.renameSync;
+fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+  real(from, to);
+  if (String(from) === '$H/.claude/skills/demo') {
+    fs.unlinkSync(String(to) + '/SKILL.md');
+    fs.writeFileSync(String(to) + '/SKILL.md', 'mine\n');
+  }
+}) as typeof fs.renameSync;
+SHIM
+  hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun --preload "$FIX/change-shim.ts" "$HOOK" 2>&1)"
+  found=0
+  for f in "$H/.claude/.migrated-skill-dirs"/demo.*/SKILL.md; do [ -f "$f" ] && [ ! -L "$f" ] && found=1; done
+  ok=0
+  [ "$found" -eq 1 ] && [ -z "$(ls -A "$FIX/kept-elsewhere")" ] \
+    && grep -q 'skills/demo.*changed during migration' <<<"$hook_out" && ok=1
+  check "SymlinkRepair never follows a symlinked kept/" "$ok"
+
   # A rename that fails because a rival already installed exactly the bundle
   # link is that rival's completed repair, not a failure (#694). The shim
   # plays the rival, then fails the rename.
