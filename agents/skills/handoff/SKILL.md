@@ -77,16 +77,14 @@ private.
 
 Anything only the operator can do (rotate a token, click an approval, decide
 on a purchase) becomes an open GitHub issue labelled `operator-action` —
-handoff prose gets buried by the next handoff; an issue does not. **File it in
-the repo it concerns** when that repo is private
-(`gh repo view --json visibility` says `PRIVATE`), sits on the same GitHub
-host as the home repo, and its owner is one the SessionStart reminder
-searches (`$OPERATOR_QUEUE_OWNERS`, default
-`jckeen Keen-Media therealnewsnetwork`; an issue anywhere else never shows
-up). Anything else — a public repo, another owner or host, work spanning
-several repos — goes to the private home repo (`$OPERATOR_QUEUE_REPO`,
-default `jckeen/claude-memory`) instead — items name credentials, providers and
-pending decisions, so never file one in a public repo. Create the `operator-action` label first if the repo lacks it. One item
+handoff prose gets buried by the next handoff; an issue does not. Ask the
+SessionStart reminder where it looks — `~/.claude/hooks/OperatorQueueReminder.hook.sh --scope`
+prints its `host`, `home` repo and `owners`. **File it in the repo it
+concerns** when that repo is private (`gh repo view --json visibility` says
+`PRIVATE`) and on that host under one of those owners; anything else — a
+public repo, another owner or host, work spanning several repos — goes to the
+`home` repo, since items name credentials, providers and pending decisions.
+Create the `operator-action` label first if the repo lacks it. One item
 per issue: the title is the slug, the body holds the fields:
 
 ```markdown
@@ -99,27 +97,15 @@ per issue: the title is the slug, the body holds the fields:
 
 The slug is stable (same action = same slug across sessions); `deadline` and
 `verified` are optional — omit the line if none. **File only if absent** —
-run the reminder's own search for the slug first, and never file a
-duplicate. `<host>` and `<home>` come from the home repo (`[host/]owner/name`;
-host defaults to `github.com`), plus one `user:<o>` per
-`$OPERATOR_QUEUE_OWNERS` entry (none when it is empty):
-
-```bash
-gh api graphql --hostname <host> --paginate -f q='is:issue is:open is:private author:@me label:operator-action in:title "<slug>" repo:<home> user:<o> ...' \
-  -f query='query($q: String!, $endCursor: String) { search(query: $q, type: ISSUE, first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { ... on Issue { url title } } } }' \
-  --jq '.data.search.nodes[] | select(.title == "<slug>") | .url'
-```
-
-Any URL it prints is an existing item. The search stops at 1000 results;
-if `gh api graphql --hostname <host> -f q='<same q>' -f query='query($q: String!) { search(query: $q, type: ISSUE) { issueCount } }' --jq .data.search.issueCount`
-is over 1000, an empty result proves nothing: don't file, flag it in the
-handoff instead. A match whose body or title someone else last edited is hidden by
-the reminder, so it doesn't count: file a fresh issue and link the old one. **Close the issue only when the action is actually
+`~/.claude/hooks/OperatorQueueReminder.hook.sh --find <slug>` prints the URL of each open item
+the reminder lists under that slug. Exit 0 with no URL means none exists;
+exit 2 means it could not tell (offline, result cut short, or a live
+`~/.claude/operator-queue.md`) — don't file, flag it in the handoff instead.
+**Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
-`~/.claude/operator-queue.md` is retired: never append to it. While that
-file exists without the `> **Historical**` banner in its first lines, the
-reminder reads it instead of the issues — so on a machine where it is still
-live, move its items into issues and add the banner before filing new ones.
+`~/.claude/operator-queue.md` is retired: never append to it. On a machine
+where it lacks the `> **Historical**` banner it is still the live queue, so
+move its items into issues and add the banner before filing new ones.
 
 `verified` records the last time the item was checked against live state
 (the PR, the env var, the dashboard — not the previous handoff). **When a

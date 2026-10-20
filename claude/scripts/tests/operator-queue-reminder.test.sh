@@ -57,6 +57,7 @@ jq --argjson extra "${FAKE_GH_EXTRA_COUNT:-0}" '{data: {search: {pageInfo: {hasN
                 | .lastEditedAt = (if has("editor") then "2026-01-01T00:00:00Z" else null end)
                 | .editor = (if has("editor") and .editor != null then {login: .editor} else null end)
                 | .timelineItems = {nodes: (if has("renamedBy") then [{actor: {login: .renamedBy}}] else [] end)}
+                | .url = (.url // "https://github.com/\(.repo // "jckeen/claude-memory")/issues/\(.number)")
                 | del(.repo, .private, .mine, .renamedBy)
                 | .comments = {nodes: ((.comments // []) | .[-1:])} ]}}}' "$FAKE_GH_JSON"
 GH
@@ -422,9 +423,12 @@ IH="$FX/ihome"
 # run_issues [VAR=val...] — no OPERATOR_QUEUE_FILE, HOME=$IH, cwd = the dotfiles
 # fixture, refresh inline (OPERATOR_QUEUE_REFRESH_SYNC=1) unless a case
 # overrides it, so each assertion sees the refresh's result.
+# Arguments after a literal -- go to the hook itself.
 run_issues() {
+  local vars=() args=()
+  while [ $# -gt 0 ]; do [ "$1" = -- ] && { shift; args=("$@"); break; }; vars+=("$1"); shift; done
   out="$(cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
-    HOME="$IH" FAKE_GH_LOG="$FX/gh.log" OPERATOR_QUEUE_REFRESH_SYNC=1 "$@" "$HOOK" 2>&1)"
+    HOME="$IH" FAKE_GH_LOG="$FX/gh.log" OPERATOR_QUEUE_REFRESH_SYNC=1 ${vars[@]+"${vars[@]}"} "$HOOK" ${args[@]+"${args[@]}"} 2>&1)"
   rc=$?
 }
 IDENT0="$(printf '%s\0' "" "" "" "" | sha256sum | cut -c1-64)"
@@ -935,6 +939,35 @@ many="$(for i in $(seq 1 1500); do printf 'owner%04d ' "$i"; done)"
 fresh_home
 run_issues OPERATOR_QUEUE_OWNERS="$many"
 assert "a huge owner list keeps the output bounded" "[ \"\${#out}\" -lt 2000 ] && outgrep 'owner0010' && ! outgrep 'owner0011'"
+
+# --scope / --find: the handoff skills ask the hook where it searches and
+# whether an item exists, instead of rebuilding its search by hand.
+fresh_home
+run_issues OPERATOR_QUEUE_OWNERS="Keen-Media, jckeen" OPERATOR_QUEUE_REPO=ghe.example.com/me/home -- --scope
+assert "--scope: prints host, home repo and normalised owners" "[ $rc -eq 0 ] && [ \"\$out\" = \"\$(printf 'host ghe.example.com\nhome me/home\nowners jckeen keen-media')\" ]"
+run_issues OPERATOR_QUEUE_REPO='me/home repo:x/y' -- --scope
+assert "--scope: a bad repo value is refused" "[ $rc -eq 2 ]"
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES" -- --find dot-issue
+assert "--find: an existing item prints its URL, exit 0" "[ $rc -eq 0 ] && [ \"\$out\" = 'https://github.com/jckeen/claude-memory/issues/12' ]"
+assert "--find: searches the hook's own query plus the quoted title" "grep -qF -- '-f q=is:issue is:open is:private author:@me label:operator-action repo:jckeen/claude-memory in:title \"dot-issue\" -f query=' '$FX/gh.log' && [ ! -e '$CACHEF' ]"
+run_issues FAKE_GH_JSON="$ISSUES" -- --find dot
+assert "--find: a title that only contains the slug is no match" "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+run_issues FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_OWNERS=jckeen -- --find edit-plant
+assert "--find: an item the reminder hides (edited by someone else) is no match" "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+run_issues -- --find dot-issue
+assert "--find: GitHub unreachable is inconclusive (exit 2)" "[ $rc -eq 2 ] && outgrep 'search failed'"
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_EXTRA_COUNT=1 -- --find dot-issue
+assert "--find: a search cut at the cap is inconclusive" "[ $rc -eq 2 ] && outgrep 'cut short'"
+: > "$FX/gh.log"
+run_issues FAKE_GH_JSON="$ISSUES" -- --find 'x" repo:evil/y'
+assert "--find: a slug that could add a qualifier is refused, never queried" "[ $rc -eq 2 ] && [ ! -s '$FX/gh.log' ]"
+printf '## legacy-item\n- added: 2026-01-01\n- action: x\n' > "$IH/.claude/operator-queue.md"
+run_issues FAKE_GH_JSON="$ISSUES" -- --find dot-issue
+assert "--find: a live queue file is inconclusive (it is still the queue)" "[ $rc -eq 2 ] && outgrep 'still the live queue' && [ ! -s '$FX/gh.log' ]"
+printf '> **Historical** — retired.\n\n## legacy-item\n' > "$IH/.claude/operator-queue.md"
+run_issues FAKE_GH_JSON="$ISSUES" -- --find dot-issue
+assert "--find: a bannered queue file defers to the issues" "[ $rc -eq 0 ] && outgrep 'issues/12'"
 
 rm -rf "$FAKEBIN" "$GH_CONFIG_DIR"
 echo ""

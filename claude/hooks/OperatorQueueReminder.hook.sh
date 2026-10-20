@@ -67,6 +67,11 @@
 #   the issue source. Without any of them every refresh fails, and the header
 #   says so; the file source needs none of them.
 #
+# MODES (for the handoff skills; neither reads or writes the cache):
+#   --scope        print `host`, `home` and `owners` lines: where it searches.
+#   --find <slug>  print the URL of each open item it would list titled <slug>;
+#                  exit 0 = conclusive, 2 = cannot tell (see find_item).
+#
 # TRIGGER: SessionStart (after HandoffReminder)
 # EXIT: 0 always (advisory/warn-only, never blocks)
 # FAILURE MODE: open — silent when the file queue is empty or has no parseable
@@ -132,6 +137,37 @@ fi
 # the hook searched (`gh search issues --repo X --owner Y` would AND them on gh
 # versions using advanced search, and `gh issue list` drops the filters).
 LIST_CMD="gh api graphql --hostname $GH_HOSTNAME --paginate -f q='$SEARCH_Q' -f query='query(\$q: String!, \$endCursor: String) { search(query: \$q, type: ISSUE, first: 100, after: \$endCursor) { pageInfo { hasNextPage endCursor } nodes { ... on Issue { url title } } } }' --jq '.data.search.nodes[] | .url + \"  \" + .title'"
+# The fetch, shared by the refresh and --find so both see the same issues.
+GQL='query($q: String!, $endCursor: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
+    pageInfo { hasNextPage endCursor } issueCount
+    nodes { ... on Issue { id number url title body createdAt viewerDidAuthor
+      author { login } editor { login } lastEditedAt
+      timelineItems(itemTypes: [RENAMED_TITLE_EVENT], last: 1) {
+        nodes { ... on RenamedTitleEvent { actor { login } } } }
+      repository { nameWithOwner isPrivate }
+      labels(first: 100) { nodes { name } }
+      comments(last: 1) { nodes { createdAt } } } } } }'
+# What counts as an item, shared by the refresh and --find (jq -s over pages).
+# complete: GitHub search stops at 1000 results however far it pages; a cut
+# list would drop items silently, so it errors instead. Distinct issues are
+# counted by node id (a rename or transfer mid-paging changes repo and number,
+# never id): pages that overlap while results shift must not let a repeat
+# stand in for a missing item.
+# counted: only text the operator wrote counts: their issue, in a private
+# repo, with the body last edited and the title last renamed by them (editor
+# does not track renames). A null editor on an edited body is a deleted
+# account, so it counts only when the body was never edited.
+JQ_DEFS='
+  def complete:
+    if ([ .[].data.search.nodes[] | select(.number != null) | .id ] | unique | length)
+       < ([ .[].data.search.issueCount ] | max // 0)
+    then error("search truncated") else empty end;
+  def counted:
+    [ .[].data.search.nodes[] | select(.number != null and .viewerDidAuthor == true and .repository.isPrivate == true
+      and (if .editor == null then .lastEditedAt == null else .editor.login == .author.login end)
+      and (.author.login as $a | (.timelineItems.nodes // []) | all(.actor.login? == $a))) ] | unique_by(.id) | .[];
+'
 CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
 # SHA-256 of the full host/owner/repo: a fixed-length name (any repo string
 # fits NAME_MAX) that no two repos share in practice. A character-class
@@ -237,38 +273,15 @@ refresh() {
   tmp="$(mktemp "$CACHE.new.XXXXXX")" && OQ_TMP="$tmp" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
   ${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
-    -f q="$SEARCH_Q" -f query='
-      query($q: String!, $endCursor: String) {
-        search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
-          pageInfo { hasNextPage endCursor } issueCount
-          nodes { ... on Issue { id number title body createdAt viewerDidAuthor
-            author { login } editor { login } lastEditedAt
-            timelineItems(itemTypes: [RENAMED_TITLE_EVENT], last: 1) {
-              nodes { ... on RenamedTitleEvent { actor { login } } } }
-            repository { nameWithOwner isPrivate }
-            labels(first: 100) { nodes { name } }
-            comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null &&
-  jq -rs --arg home "$(printf '%s' "$REPO_PATH" | tr '[:upper:]' '[:lower:]')" '
+    -f q="$SEARCH_Q" -f query="$GQL" > "$raw" 2>/dev/null &&
+  jq -rs --arg home "$(printf '%s' "$REPO_PATH" | tr '[:upper:]' '[:lower:]')" "$JQ_DEFS"'
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
       and ((try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .);
     def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
-    # GitHub search stops at 1000 results however far it pages; a cut list
-    # would drop items silently, so the refresh fails instead.
-    # Distinct issues are counted by node id (a rename or transfer mid-paging
-    # changes repo and number, never id): pages that overlap while results
-    # shift must not let a repeat stand in for a missing item.
-    if ([ .[].data.search.nodes[] | select(.number != null) | .id ] | unique | length)
-       < ([ .[].data.search.issueCount ] | max // 0)
-    then error("search truncated") else empty end,
+    complete,
     "# Operator-action issues",
-    # Only text the operator wrote renders: their issue, in a private repo, with
-    # the body last edited and the title last renamed by them (editor does not
-    # track renames). A null editor on an edited body is a deleted account, so
-    # it counts only when the body was never edited.
-    ( [ .[].data.search.nodes[] | select(.number != null and .viewerDidAuthor == true and .repository.isPrivate == true
-        and (if .editor == null then .lastEditedAt == null else .editor.login == .author.login end)
-        and (.author.login as $a | (.timelineItems.nodes // []) | all(.actor.login? == $a))) ] | unique_by(.id) | .[]
+    ( counted
       | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
       | ((.repository.nameWithOwner // "") | split("/") | .[-1]) as $repo
       # The home repo holds items for other repos, so its name names no project.
@@ -320,10 +333,38 @@ refresh_state() {
   if [ -f "$FAILED" ]; then echo failed; else echo "$inflight"; fi
 }
 
-if [ "${1:-}" = "--refresh" ]; then
-  refresh
-  exit
-fi
+# --scope and --find are for the handoff skills, so they file items where this
+# hook looks and never file one it already lists. Neither touches the cache.
+# --scope prints where the search looks: `host <h>`, `home <owner/name>` and
+# `owners <o>...` (empty = the home repo only).
+# --find <slug> prints the URL of each open item titled exactly <slug> that
+# this hook would list, and exits 0 when the search was complete (no URL =
+# no such item). Exit 2 = it could not tell: GitHub unreachable, gh or jq
+# missing, the result cut at 1000, a bad slug or repo, or a live queue file
+# (that file, not the issues, is the queue until it carries the banner).
+find_item() {
+  local slug="${1:-}" raw
+  if ! [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+    echo "--find: the slug must be letters, digits, '.', '_' or '-'" >&2; return 2
+  fi
+  [ "$REPO_OK" -eq 1 ] || { echo "--find: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name" >&2; return 2; }
+  if [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'; then
+    echo "--find: $LEGACY is still the live queue; move its items into issues and add the historical banner first" >&2; return 2
+  fi
+  command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "--find: needs gh and jq" >&2; return 2; }
+  raw="$(gh api graphql --hostname "$GH_HOSTNAME" --paginate \
+    -f q="$SEARCH_Q in:title \"$slug\"" -f query="$GQL")" || { echo "--find: the search failed" >&2; return 2; }
+  printf '%s' "$raw" | jq -rs --arg slug "$slug" "$JQ_DEFS"'complete, (counted | select(.title == $slug) | .url)' ||
+    { echo "--find: the search was cut short or unreadable" >&2; return 2; }
+}
+
+case "${1:-}" in
+  --refresh) refresh; exit ;;
+  --scope)
+    [ "$REPO_OK" -eq 1 ] || { echo "--scope: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name" >&2; exit 2; }
+    printf 'host %s\nhome %s\nowners %s\n' "$GH_HOSTNAME" "$REPO_PATH" "$OWNERS"; exit 0 ;;
+  --find) find_item "${2:-}"; exit ;;
+esac
 
 # Source: the file queue is migrating to operator-action issues in the private
 # ISSUE_REPO, which the phone and cloud sessions can read. A queue file that
