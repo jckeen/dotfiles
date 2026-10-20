@@ -11,53 +11,39 @@ How this repo tracks work — the four-layer record model (see
 | **CHANGELOG** | What shipped? | [`CHANGELOG.md`](CHANGELOG.md) (current quarter; entries not yet folded in, in `changelog.d/`; older quarters in [`docs/changelog/`](docs/changelog/)) |
 
 This file is the at-a-glance index of the **current milestone**. Issues are the
-live source of truth; close them via PRs and this list reflects status.
+live source of truth; close them via PRs and the milestone reflects status.
 
 ---
 
-## Milestone: Coding setup hardening — 2026-06
+## Milestone: Operator pass — 2026-10
 
-Fix doc drift, bring skills to Anthropic's authoring spec, make verification
-first-class, and adopt agent-native compounding. Grounded in Boris Cherny /
-Code w/ Claude 2026 best practices.
+The 2026-10-19/20 backlog burn-down shipped every change an agent could land on
+its own. What remains is the work the repo's own rules keep in the operator
+lane: gate machinery, instruction surfaces, and `.github/` workflows. Each is
+prepared as a reviewed, tested patch with its apply order in the operator-pass
+handoff README, and every issue it closes is on the
+[Operator pass — 2026-10](https://github.com/jckeen/dotfiles/milestone/2)
+milestone.
 
-### Tier 1 — Fix drift
-- [x] [#69](https://github.com/jckeen/dotfiles/issues/69) Scrub phantom-hook references and reconcile hooks docs
-- [x] [#70](https://github.com/jckeen/dotfiles/issues/70) Surface CI status in `commit-push-pr` (Codex-review-inside model)
-- [x] [#80](https://github.com/jckeen/dotfiles/issues/80) Make dotfiles CLAUDE.md portable — move personal identity to claude-memory
+- **Gate machinery**: review-receipt false positives, a pinned review base, and
+  a read-only sandbox for both reviewers, plus the Antigravity default model pin.
+- **Instruction surfaces**: the claude.dev audit fixes, the handoff skills
+  filing operator actions as issues, and changelog-fragment guidance.
+- **`.github/` workflows**: the changelog-fragment CI checks, late Codex-review
+  harvesting, and the bash 3.2 status-line run.
+- **Then**: enforce the `codex-review` ruleset (#615) once the review-gates
+  thread-resolution line has landed.
 
-### Tier 2 — Skills to spec (so the agent auto-invokes; fewer commands to memorize)
-- [x] [#71](https://github.com/jckeen/dotfiles/issues/71) Rewrite weak skill descriptions to Anthropic spec
-- [x] [#72](https://github.com/jckeen/dotfiles/issues/72) Resolve `user_invocable` field + consolidate review/simplify duplicates
+Follow-ups that need no operator review are ordinary open issues; the
+[issue list](https://github.com/jckeen/dotfiles/issues) is the tracker.
 
-### Tier 3 — Verification first-class + drift-guard
-- [x] [#73](https://github.com/jckeen/dotfiles/issues/73) Make verification first-class in the workflow
-- [x] [#74](https://github.com/jckeen/dotfiles/issues/74) Add deterministic doc-reference drift-guard to CI
+## Past milestones
 
-### Tier 4 — Agent-native / compounding
-- [x] [#75](https://github.com/jckeen/dotfiles/issues/75) `session-retro` self-improving-skills skill
-- [x] [#76](https://github.com/jckeen/dotfiles/issues/76) `jujutsu` (jj) skill
-- [x] [#77](https://github.com/jckeen/dotfiles/issues/77) Evaluate Every's compound-engineering plugin — verified verdict in [ADR-0006](docs/adr/0006-compound-engineering-verified-assessment.md) (amends [ADR-0004](docs/adr/0004-compound-engineering-evaluation.md)); follow-up adoption items are their own issues
-- [x] [#78](https://github.com/jckeen/dotfiles/issues/78) Establish ADR practice (`docs/adr/` + template + backfill)
-- [x] [#79](https://github.com/jckeen/dotfiles/issues/79) ROADMAP.md index linking the milestone
-
----
-
-## Follow-up: Enforcement hardening — 2026-06
-
-Closed the gap between stated policy and enforced policy (audit follow-up to the
-milestone above). Shipped: gitleaks `secret-scan`, a real local Codex review
-gate on push (`codex-review-gate.sh`, ADR-0003 made concrete), a Claude/Codex
-rule `agent-parity` guard, a server-side `commit-format` lint, and broadened
-`check-doc-refs.sh`. Auto-memory now syncs into the private `claude-memory` repo.
-Details in [`docs/changelog/CHANGELOG-2026-Q2.md`](docs/changelog/CHANGELOG-2026-Q2.md)
-(the 2026-06-09 enforcement-hardening entry).
-
-- **Done 2026-07 (#203):** `smoke-install.yml` flipped to gating early —
-  `continue-on-error` removed and the workflow made always-run so it can be a
-  required check. Its platform checks are required by branch protection;
-  see [the protection contract](docs/BRANCH_PROTECTION.md) for the current
-  required contexts and the command to verify the live rule.
+- [Coding setup hardening — 2026-06](https://github.com/jckeen/dotfiles/milestone/1?closed=1):
+  doc drift fixed, skills brought to the authoring spec, verification made
+  first-class, the ADR practice established, and the enforcement-hardening
+  follow-up (secret scan, a local Codex gate on push, commit-format and
+  agent-parity CI). Details are in the 2026 Q2 changelog archive.
 
 ---
 
