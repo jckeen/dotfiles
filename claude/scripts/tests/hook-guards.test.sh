@@ -261,6 +261,18 @@ grep -q -- '--pr 6' <<<"$(pm "GH_REPO=org/repo-name.x GH_HOST=github.com $MERGE 
   && ok "pre-merge: a merge inside \$(…) is left to the close-time harvest (documented)" \
   || fail "pre-merge: construct handling changed; update the hook header and this test"
 
+# The public template (#681) gates this hook with "if": "Bash(gh pr merge*)".
+# The hook's own anchored match must never fire where that filter would not:
+# it only accepts commands that START with the merge command (after plain
+# VAR=value words), which is a subset of what the filter admits.
+EXAMPLE="$REPO_ROOT/claude/settings.example.json"
+if [ -f "$EXAMPLE" ]; then
+  pm_if="$(jq -r '.hooks.PreToolUse[] | .hooks[] | select(.command | contains("PreMergeCodexHarvest")) | .if // empty' "$EXAMPLE")"
+  [ "$pm_if" = "Bash($MERGE*)" ] \
+    && ok "pre-merge: the template's if-filter is Bash($MERGE*), matching the hook's anchor" \
+    || fail "pre-merge: template if-filter is '$pm_if', not Bash($MERGE*)"
+fi
+
 echo ""
 echo "hook-guards: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1
