@@ -336,7 +336,11 @@ first=0
 if [ ! -e "$M/raced" ]; then : > "$M/raced"; first=1; fi
 if [ "\$first" -eq 1 ] && case "$mode" in rival*) true ;; *) false ;; esac; then
   if [ -d "$DST" ] && [ ! -L "$DST" ]; then "$REAL_RM" -f "$DST"/* && rmdir "$DST"; fi
-  [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$SRC" "$DST"
+  if [ "$mode" = rival-foreign ]; then
+    [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$FIX/my-own-skill" "$DST"
+  else
+    [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$SRC" "$DST"
+  fi
 fi
 "\$real" "\$@"; rc=\$?
 if [ "\$first" -eq 1 ] && [ "$mode" = rival-file ] && [ ! -e "$DST" ] && [ ! -L "$DST" ]; then
@@ -417,6 +421,30 @@ check "file at dst: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
 check "file at dst: the new file survives" \
   "$([ -f "$DST" ] && [ ! -L "$DST" ] && [ "$(cat "$DST")" = user ] && echo 1 || echo 0)"
 check "file at dst: sources intact" "$(sources_intact && echo 1 || echo 0)"
+
+# A link the rename grabs counts as a rival's repair only if it is exactly
+# the bundle link (readlink == $SRC, as check_link compares). A foreign link
+# swapped in just before the rename is someone's own config: it goes to
+# kept/, status 2, reported (gate review round 10).
+legacy_fixture foreignlink
+race_bin "$FIX/foreignlink/bin" rival-foreign
+(
+  PATH="$FIX/foreignlink/bin:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >"$M/out" 2>&1
+rc=$?
+kept_link=""
+for k in "$H/$ARCH_REL"/kept/demo.*; do [ -L "$k" ] && kept_link="$k"; done
+check "foreign rival link: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "foreign rival link: archived under kept/, intact" \
+  "$([ -n "$kept_link" ] && [ "$(readlink "$kept_link")" = "$FIX/my-own-skill" ] && echo 1 || echo 0)"
+check "foreign rival link: migration returns 2 and names kept/" \
+  "$([ "$rc" -eq 2 ] && grep -q "$ARCH_REL/kept/demo\." "$M/out" && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "foreign rival link: --heal flags it KEPT and exits non-zero" \
+  "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*kept/demo\.' <<<"$out" && echo 1 || echo 0)"
 
 # A foreign symlink swapped in mid-migration also lands in kept/, and kept/
 # is always flagged: it is there because it changed, links or not (PR #682

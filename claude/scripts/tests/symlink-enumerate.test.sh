@@ -150,6 +150,35 @@ else
   [ -n "$arch" ] && [ "$(readlink "$arch/SKILL.md")" = "$SK/SKILL.md" ] \
     && [ "$(find "$H/.claude/skills" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && ok=1
   check "SymlinkRepair archives the legacy dir, links intact" "$ok"
+  # A foreign link swapped in just before the hook's rename is someone's own
+  # config, not a rival's repair: it goes to kept/ and is reported, never
+  # passed off as a clean conversion (gate review on #638). A --preload shim
+  # makes the window deterministic by wrapping fs.renameSync.
+  H="$FIX/h-foreign"
+  mkdir -p "$H/.claude/skills/demo" "$FIX/my-own-skill"
+  ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+  cat > "$FIX/rename-shim.ts" <<SHIM
+import fs from 'fs';
+const real = fs.renameSync;
+let fired = false;
+fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+  if (!fired && String(from) === '$H/.claude/skills/demo') {
+    fired = true;
+    fs.unlinkSync('$H/.claude/skills/demo/SKILL.md');
+    fs.rmdirSync('$H/.claude/skills/demo');
+    fs.symlinkSync('$FIX/my-own-skill', '$H/.claude/skills/demo');
+  }
+  return real(from, to);
+}) as typeof fs.renameSync;
+SHIM
+  hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun --preload "$FIX/rename-shim.ts" "$HOOK" 2>&1)"
+  kept_link=""
+  for k in "$H/.claude/.migrated-skill-dirs/kept"/demo.*; do [ -L "$k" ] && kept_link="$k"; done
+  ok=0
+  [ -n "$kept_link" ] && [ "$(readlink "$kept_link")" = "$FIX/my-own-skill" ] \
+    && grep -q 'skills/demo.*kept' <<<"$hook_out" && ok=1
+  check "SymlinkRepair keeps and reports a foreign link grabbed by its rename" "$ok"
+
   if [ "$(id -u)" -ne 0 ]; then
     H="$FIX/h-legacy-ro"
     mkdir -p "$H/.claude/skills/demo"

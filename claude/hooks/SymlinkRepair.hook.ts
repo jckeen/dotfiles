@@ -28,6 +28,10 @@ import {
   symlinkSync,
   unlinkSync,
 } from 'fs';
+// The migration's claiming rename goes through the fs object so a test's
+// --preload shim can interpose on it (symlink-enumerate.test.sh); a named
+// import is bound before the shim runs.
+import fs from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -200,7 +204,7 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
     return 'failed';
   }
   try {
-    renameSync(dst, dest);
+    fs.renameSync(dst, dest);
   } catch (e) {
     // A rival moved it first: nothing to do unless it is still here.
     if (!lexists(dst)) return 'moved';
@@ -210,7 +214,13 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
   try {
     // A rival's directory link grabbed between the check and the rename stays
     // in the archive; putting it back could overwrite what appeared at dst.
-    if (lstatSync(dest).isSymbolicLink() || isLegacySkillDir(src, dest)) return 'moved';
+    // Only exactly the bundle link (readlink === src, as ensureLink compares)
+    // is a rival's repair; any other link is someone's own config -> kept/.
+    if (lstatSync(dest).isSymbolicLink()) {
+      if (readlinkSync(dest) === src) return 'moved';
+    } else if (isLegacySkillDir(src, dest)) {
+      return 'moved';
+    }
   } catch {
     // fall through: treat an unreadable result as non-legacy content
   }

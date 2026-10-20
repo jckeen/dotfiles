@@ -36,7 +36,10 @@
   `setup.sh --repair` counts only a `2` as broken, even after it relinks the
   bundle; a rival that finished the repair is no error. Everything under
   `kept/` is always `KEPT`. Top-level archive links count as old only when
-  they point into that skill's own source.
+  they point into that skill's own source. A link the rename grabs counts as
+  a rival's repair only if it is exactly the bundle link (`readlink` equals
+  the source, as `check_link` compares). Any other link is someone's own
+  config, so it goes to `kept/` and is reported.
   A `$dst` that a rival moves away during the filesystem check is that
   rival's success, not a cross-filesystem error. This holds in the shell and
   the hook.

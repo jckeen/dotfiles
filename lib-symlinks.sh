@@ -186,8 +186,14 @@ symlink_migrate_legacy_skill_dir() {
   # A rival's directory link, grabbed between the check and the rename, is
   # left in the archive (it is only a link); the caller relinks $dst. Putting
   # it back could overwrite whatever appeared at $dst meanwhile.
-  [ -L "$dest" ] && return 0
-  symlink_is_legacy_skill_dir "$src" "$dest" && return 0
+  # Only exactly the bundle link (readlink == $src, the comparison check_link
+  # makes) is a rival's repair; any other link is someone's own config and
+  # goes to kept/ below.
+  if [ -L "$dest" ]; then
+    [ "$(readlink "$dest")" = "$src" ] && return 0
+  elif symlink_is_legacy_skill_dir "$src" "$dest"; then
+    return 0
+  fi
   # Content appeared mid-flight (a file in the moved dir, or a file that took
   # $dst's place before the rename). It is never renamed back: rename(2) cannot
   # refuse to overwrite, so a check-then-rename could clobber whatever has

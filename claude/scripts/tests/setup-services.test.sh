@@ -267,6 +267,26 @@ check "--repair: a rival-completed migration is no error (same Broken as a clean
   "[ \"\$(broken_count)\" -eq \"$base_broken\" ] && ! grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && [ ! -e \"$H/.claude/.migrated-skill-dirs\" ]"
 check "--repair: a clean legacy run exits 0" "[ \"$base_rc\" = rc=0 ]"
 
+# A foreign link swapped in just before the rename is someone's own config,
+# not a rival's repair: it is archived under kept/ and counted (round 10).
+H="$(new_home)"
+FOREIGN="$ROOT/foreignbin"
+mkdir -p "$FOREIGN" "$ROOT/my-own-skill"
+LEG="$H/.claude/skills/$SKILL_NAME"
+cat > "$FOREIGN/perl" <<FAKE
+#!/bin/bash
+if [ "\$3" = "$LEG" ] && [ -d "$LEG" ] && [ ! -L "$LEG" ]; then
+  rm "$LEG"/* && rmdir "$LEG" && ln -sn "$ROOT/my-own-skill" "$LEG"
+fi
+exec "$REAL_PERL" "\$@"
+FAKE
+chmod +x "$FOREIGN/perl"
+repair_legacy "$H" "$FOREIGN"
+check "--repair: a grabbed foreign link is kept, intact" \
+  "[ \"\$(readlink \"$H\"/.claude/.migrated-skill-dirs/kept/$SKILL_NAME.*)\" = \"$ROOT/my-own-skill\" ]"
+check "--repair: and counted (FAILED, one more Broken, non-zero exit)" \
+  "grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && [ \"\$(broken_count)\" -eq \$((base_broken + 1)) ] && grep -qx 'rc=[1-9][0-9]*' \"$OUT\""
+
 echo ""
 echo "setup-services: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1
