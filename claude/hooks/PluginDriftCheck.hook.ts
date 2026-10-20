@@ -48,9 +48,7 @@
  *
  * Best-effort and advisory, not a security boundary: this is a static parse,
  * and Claude Code exposes no list of the hook modules it loaded, so a file
- * its loader reads differently from JSON.parse can hide a mod (#647). Paths
- * resolve as the loader resolves them: CLAUDE_CONFIG_DIR,
- * CLAUDE_CODE_PLUGIN_CACHE_DIR and CLAUDE_CODE_PLUGIN_DIRS.
+ * its loader reads differently from JSON.parse can hide a mod (#647).
  *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
@@ -116,7 +114,7 @@ import {
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
-import { basename, delimiter, dirname, isAbsolute, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const HOME = homedir();
@@ -127,23 +125,10 @@ const HOOK_PATH = realpathSync(fileURLToPath(import.meta.url));
 const DOTFILES_DIR =
   process.env.DOTFILES_DIR ?? join(dirname(HOOK_PATH), '..', '..');
 const MANIFEST = join(DOTFILES_DIR, 'claude', 'plugins.txt');
-// Claude Code reads every ~/.claude path under $CLAUDE_CONFIG_DIR when it is
-// set (https://code.claude.com/docs/en/claude-directory), so the scan does too.
-const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude');
-// A leading `~` is the home directory, as the loader reads these variables.
-function expandHome(path: string): string {
-  return path === '~' ? HOME : path.startsWith('~/') ? join(HOME, path.slice(2)) : path;
-}
-// CLAUDE_CODE_PLUGIN_CACHE_DIR moves the plugins root: registry, marketplaces
-// and cache (https://code.claude.com/docs/en/env-vars). claude.ai synced
-// plugins stay under the config dir (checked against the CLI).
-const PLUGINS_ROOT = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR
-  ? expandHome(process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR)
-  : join(CLAUDE_DIR, 'plugins');
-const SYNCED_ROOT = join(CLAUDE_DIR, 'plugins', 'synced');
-const INSTALLED = join(PLUGINS_ROOT, 'installed_plugins.json');
-const SETTINGS = join(CLAUDE_DIR, 'settings.json');
-const SKILLS_DIR = join(CLAUDE_DIR, 'skills');
+const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
+const SETTINGS = join(HOME, '.claude', 'settings.json');
+const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
+const SKILLS_DIR = join(HOME, '.claude', 'skills');
 const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
 const MAX_JSON_BYTES = 1024 * 1024;
 // Per-session rescan state (#618). Pruned at SessionStart after STATE_TTL_MS.
@@ -558,47 +543,9 @@ function localMarketplacePlugins(): Scanned[] {
   return found;
 }
 
-// Environment that moves what the scan reads. The prompt path compares it,
-// so a change rescans.
-const STATE_ENV = [
-  'CLAUDE_CODE_PLUGIN_DIRS',
-  'CLAUDE_CONFIG_DIR',
-  'CLAUDE_CODE_PLUGIN_CACHE_DIR',
-];
-
-// CLAUDE_CODE_PLUGIN_DIRS: each entry loads like --plugin-dir, as a plugin
-// dir or a folder whose child dirs are plugins; ids are `<name>@inline`. A
-// relative entry is skipped, as the loader skips it; an archive cannot be
-// read here, so it is unverifiable (rule 2).
-function inlinePlugins(): Scanned[] {
-  const found: Scanned[] = [];
-  for (const raw of (process.env.CLAUDE_CODE_PLUGIN_DIRS ?? '').split(delimiter)) {
-    const dir = expandHome(raw);
-    if (!isAbsolute(dir)) continue;
-    try {
-      if (/\.zip$/i.test(dir)) {
-        if (present(dir)) found.push(unverifiable(`${basename(dir)}@inline`, 'installed'));
-        continue;
-      }
-      const self = scanPlugin('installed', dir, undefined, '@inline');
-      if (self) {
-        found.push(self);
-        continue;
-      }
-      // A plugin needs no manifest: one without loads under its directory
-      // name. Children of a folder entry still need plugin.json to load.
-      if (present(join(dir, 'hooks')))
-        found.push({ id: `${basename(dir)}@inline`, dir, origin: 'installed' });
-      for (const child of subdirs(dir)) {
-        const scanned = scanPlugin('installed', child, undefined, '@inline');
-        if (scanned) found.push(scanned);
-      }
-    } catch {
-      found.push(unverifiable(`${basename(dir)}@inline`, 'installed'));
-    }
-  }
-  return found;
-}
+// Environment that moves what the scan reads (DOTFILES_DIR relocates the
+// manifest). The prompt path compares it, so a change rescans.
+const STATE_ENV = ['DOTFILES_DIR'];
 
 // Every plugin on disk, ids in the `enabledPlugins` forms
 // (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
@@ -611,7 +558,7 @@ function pluginDirs(): Scanned[] {
     for (const plugin of subdirs(market))
       for (const dir of subdirs(plugin))
         found.push({ id: `${basename(plugin)}@${basename(market)}`, dir, origin });
-  for (const bucket of subdirs(SYNCED_ROOT))
+  for (const bucket of subdirs(join(PLUGINS_ROOT, 'synced')))
     for (const dir of subdirs(bucket)) {
       const scanned = scanPlugin(origin, dir, undefined, '@synced');
       if (scanned) found.push(scanned);
@@ -647,7 +594,6 @@ function pluginDirs(): Scanned[] {
       }
     }
   }
-  found.push(...inlinePlugins());
   return found;
 }
 

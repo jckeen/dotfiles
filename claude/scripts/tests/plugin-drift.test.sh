@@ -57,8 +57,8 @@ exit 1
 STUB
 chmod +x "$FAKE_BIN/claude" || { echo "FAIL - chmod the claude stub" >&2; exit 1; }
 export PATH="$FAKE_BIN:$PATH"
-# The hook honours these the way Claude Code does; a value inherited from the
-# operator's shell would point cases at the real config.
+# The hook ignores these today (#699 will honour them); unset so a value from
+# the operator's shell (`ccw` sets CLAUDE_CONFIG_DIR) cannot leak in later.
 unset CLAUDE_CONFIG_DIR CLAUDE_CODE_PLUGIN_DIRS CLAUDE_CODE_PLUGIN_CACHE_DIR
 [[ "$(command -v claude)" == "$FAKE_BIN/claude" ]] \
   || { echo "FAIL - the claude stub does not shadow the real CLI" >&2; exit 1; }
@@ -667,46 +667,6 @@ assert "a known_marketplaces entry with a non-string path is named" \
   'outline "  • marketplace.json@badpath"'
 assert "the hook does not crash on its own error path" '! outgrep "PluginDriftCheck"'
 
-# ── CLAUDE_CONFIG_DIR (#647: paths resolve as the loader resolves them) ──
-# run_home — HOME holds one cached mod (modded@mkt), the control that must
-# NOT be read when the config dir moves.
-run_home() {
-  local D H P
-  D="$(mktemp -d)" || die "mktemp -d for DOTFILES_DIR"
-  H="$(mktemp -d)" || die "mktemp -d for HOME"
-  P="$(mktemp -d)" || die "mktemp -d for the project dir"
-  mkdir -p "$D/claude" "$H/.claude/plugins/cache/mkt/modded/1.0.0/hooks" \
-    || die "mkdir home fixture dirs"
-  printf '%s\n' "$MANIFEST_GLOBAL" > "$D/claude/plugins.txt" || die "write plugins.txt"
-  printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s]}}\n' \
-    "$(entry user)" > "$H/.claude/plugins/installed_plugins.json" \
-    || die "write installed_plugins.json"
-  printf '%s\n' '{"modules":["./register.js"]}' \
-    > "$H/.claude/plugins/cache/mkt/modded/1.0.0/hooks/hooks.json" || die "write modded"
-  out="$(cd "$P" && HOME="$H" DOTFILES_DIR="$D" CLAUDE_PROJECT_DIR="$P" \
-    timeout 60 bun "$HOOK" 2>&1 </dev/null)"
-  rc=$?
-  rm -rf "$D" "$H" "$P"
-}
-
-# CLAUDE_CONFIG_DIR relocates every ~/.claude path for Claude Code, so the
-# static scan reads it there: a mod cached only under it is named.
-CD="$(mktemp -d)" || die "mktemp -d for CLAUDE_CONFIG_DIR"
-mkdir -p "$CD/plugins/cache/mkt/cfgmod/1.0.0/hooks" "$CD/skills/cs/hooks" \
-  "$CD/skills/cs/.claude-plugin" || die "mkdir config-dir fixtures"
-printf '%s\n' '{"modules":["./register.js"]}' > "$CD/plugins/cache/mkt/cfgmod/1.0.0/hooks/hooks.json" \
-  || die "write cfgmod"
-printf '%s\n' '{"modules":["./register.js"]}' > "$CD/skills/cs/hooks/hooks.json" || die "write cs"
-printf '%s\n' '{"name":"cfgskill"}' > "$CD/skills/cs/.claude-plugin/plugin.json" \
-  || die "write cs plugin.json"
-CLAUDE_CONFIG_DIR="$CD" run_home
-assert "config dir: a mod cached under CLAUDE_CONFIG_DIR is named" 'outline "  • cfgmod@mkt"'
-assert "config dir: a skills-dir mod under CLAUDE_CONFIG_DIR is named" \
-  'outline "  • cfgskill@skills-dir"'
-assert "config dir: ~/.claude is not read when CLAUDE_CONFIG_DIR is set" \
-  '! outgrep "modded@mkt"'
-rm -rf "$CD"
-
 # ── mid-session rescan on UserPromptSubmit (#618) ───────────────────────
 # A plugin installed after SessionStart is named on the next prompt; an
 # unchanged tree costs a stat per watched path and prints nothing.
@@ -821,62 +781,6 @@ printf '%s\n' '{"name":"linkmod"}' > "$PP/.claude/skills/lk/.claude-plugin/plugi
 hook_event UserPromptSubmit s5
 assert "rescan: a project skills link replaced by a directory is rescanned" \
   'outgrep "• linkmod@skills-dir"'
-# Codex round 4: a plugin added under an unchanged CLAUDE_CODE_PLUGIN_DIRS is
-# seen on the next prompt,
-# and a changed loader variable is a change.
-mkdir -p "$PH/pdirs" || die "mkdir pdirs"
-CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" hook_event SessionStart s6
-mkdir -p "$PH/pdirs/inl/hooks" "$PH/pdirs/inl/.claude-plugin" || die "mkdir inl"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PH/pdirs/inl/hooks/hooks.json" || die "write inl"
-printf '%s\n' '{"name":"inl"}' > "$PH/pdirs/inl/.claude-plugin/plugin.json" || die "write inl manifest"
-CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" hook_event UserPromptSubmit s6
-assert "rescan: a plugin added under CLAUDE_CODE_PLUGIN_DIRS is named on the next prompt" \
-  'outline "  • inl@inline"'
-# shellcheck disable=SC2034  # Read by assert's evaluated condition.
-before_state="$(cat "$PH/.local/state/plugin-drift/s6")"
-CLAUDE_CODE_PLUGIN_DIRS="$PH/pdirs" CLAUDE_CONFIG_DIR="$PH/.claude" \
-  hook_event UserPromptSubmit s6
-# A rescan rewrites the state with the new variable; the cheap path would not.
-assert "rescan: a changed loader variable forces a rescan" \
-  '[ "$(cat "$PH/.local/state/plugin-drift/s6")" != "$before_state" ]'
-# Round 5: a leading ~ in CLAUDE_CODE_PLUGIN_DIRS is the home directory, as
-# the loader reads it; a relative entry is skipped, as the loader skips it.
-mkdir -p "$PH/tdir" "$PP/reldir/rp/hooks" "$PP/reldir/rp/.claude-plugin" || die "mkdir tilde fixtures"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PP/reldir/rp/hooks/hooks.json" || die "write rp"
-printf '%s\n' '{"name":"relmod"}' > "$PP/reldir/rp/.claude-plugin/plugin.json" || die "write rp manifest"
-# shellcheck disable=SC2088  # The literal ~ is the point: the hook expands it.
-CLAUDE_CODE_PLUGIN_DIRS="~/tdir:reldir" hook_event SessionStart s8
-assert "plugin dirs: a relative entry is not scanned" '! outgrep "relmod@"'
-mkdir -p "$PH/tdir/tp/hooks" "$PH/tdir/tp/.claude-plugin" || die "mkdir tp"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PH/tdir/tp/hooks/hooks.json" || die "write tp"
-printf '%s\n' '{"name":"tildemod"}' > "$PH/tdir/tp/.claude-plugin/plugin.json" || die "write tp manifest"
-# shellcheck disable=SC2088  # The literal ~ is the point: the hook expands it.
-CLAUDE_CODE_PLUGIN_DIRS="~/tdir:reldir" hook_event UserPromptSubmit s8
-assert "plugin dirs: a plugin added under a ~/ entry is named on the next prompt" \
-  'outline "  • tildemod@inline"'
-# Round 5: CLAUDE_CODE_PLUGIN_CACHE_DIR is the plugins root (registry,
-# marketplaces, cache); claude.ai synced plugins stay under the config dir.
-PC="$PH/altroot"
-mkdir -p "$PC/cache/mkt2/altmod/1.0.0/hooks" "$PH/.claude/plugins/synced/b/sy/hooks" \
-  "$PH/.claude/plugins/synced/b/sy/.claude-plugin" || die "mkdir plugin-root fixtures"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PC/cache/mkt2/altmod/1.0.0/hooks/hooks.json" \
-  || die "write altmod"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PH/.claude/plugins/synced/b/sy/hooks/hooks.json" \
-  || die "write synced"
-printf '%s\n' '{"name":"symod"}' > "$PH/.claude/plugins/synced/b/sy/.claude-plugin/plugin.json" \
-  || die "write synced manifest"
-CLAUDE_CODE_PLUGIN_CACHE_DIR="$PC" hook_event SessionStart s9
-assert "plugin root: a mod cached under CLAUDE_CODE_PLUGIN_CACHE_DIR is named" \
-  'outline "  • altmod@mkt2"'
-assert "plugin root: the default plugins root is not read when it is moved" \
-  '! outgrep "modded@mkt"'
-assert "plugin root: synced plugins are still read from the config dir" 'outline "  • symod@synced"'
-mkdir -p "$PC/cache/mkt2/latealt/1.0.0/hooks" || die "mkdir latealt"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PC/cache/mkt2/latealt/1.0.0/hooks/hooks.json" \
-  || die "write latealt"
-CLAUDE_CODE_PLUGIN_CACHE_DIR="$PC" hook_event UserPromptSubmit s9
-assert "plugin root: an install under the moved root is seen on the next prompt" \
-  'outline "  • latealt@mkt2"'
 # Codex round 6: a dangling hooks.json created mid-session is a change (stat
 # reports ENOENT for it, as for an absent file) and is named unverifiable.
 mkdir -p "$PH/.claude/plugins/cache/mkt/dang/1.0.0/hooks" || die "mkdir dang"
@@ -886,13 +790,6 @@ ln -s "$PH/nowhere.json" "$PH/.claude/plugins/cache/mkt/dang/1.0.0/hooks/hooks.j
 hook_event UserPromptSubmit s11
 assert "rescan: a dangling hooks.json created mid-session is named unverifiable" \
   'unverifiable_section | grep -qxF "  • dang@mkt"'
-# Codex round 7: a manifest-less plugin dir in CLAUDE_CODE_PLUGIN_DIRS loads
-# under its directory name, so its mod is named as NAME@inline.
-mkdir -p "$PH/bare/hooks" || die "mkdir bare"
-printf '%s\n' '{"modules":["./register.js"]}' > "$PH/bare/hooks/hooks.json" || die "write bare"
-CLAUDE_CODE_PLUGIN_DIRS="$PH/bare" hook_event SessionStart s12
-assert "plugin dirs: a manifest-less plugin dir is named by its directory" \
-  'outline "  • bare@inline"'
 # Codex round 7: a permission change is a change. A cache marketplace dir
 # that could not be listed at SessionStart is rescanned once it can be.
 mkdir -p "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks" || die "mkdir permmod"
@@ -903,6 +800,23 @@ hook_event SessionStart s13
 chmod 0755 "$PH/.claude/plugins/cache/mktp" || die "restore mktp"
 hook_event UserPromptSubmit s13
 assert "rescan: a dir made readable mid-session is rescanned" 'outline "  • permmod@mktp"'
+# Codex round 9: DOTFILES_DIR relocates the manifest, so changing it is a
+# change: a mod the old manifest allowlisted is named under the new one.
+PD2="$(mktemp -d)" || die "mktemp -d for a second DOTFILES_DIR"
+mkdir -p "$PD2/claude" || die "mkdir PD2"
+printf '%s\n' "$MANIFEST_GLOBAL
+# mods-ok: dotmod@mkt" > "$PD/claude/plugins.txt" || die "allowlist dotmod"
+printf '%s\n' "$MANIFEST_GLOBAL" > "$PD2/claude/plugins.txt" || die "write PD2 manifest"
+add_cached_mod dotmod
+hook_event SessionStart s14
+assert "rescan: an allowlisted mod is silent under its manifest" '! outgrep "dotmod@mkt"'
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD2" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 \
+  <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s14\",\"cwd\":\"$PP\"}")"
+assert "rescan: a new DOTFILES_DIR is a change and its manifest applies" \
+  'outline "  • dotmod@mkt"'
+printf '%s\n' "$MANIFEST_GLOBAL" > "$PD/claude/plugins.txt" || die "restore PD manifest"
+rm -rf "$PD2"
 # A hostile session id cannot escape the state dir.
 hook_event UserPromptSubmit '../../escape'
 assert "rescan: an unsafe session id falls back to a fixed state file" \
