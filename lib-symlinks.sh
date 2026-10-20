@@ -136,8 +136,12 @@ symlink_is_legacy_skill_dir() {
 
 # symlink_migrate_legacy_skill_dir <src_dir> <dst> — move a legacy per-file
 # skill directory (only our own links, checked here) out of the way so a
-# directory link can replace it. Returns 1, touching nothing, if <dst> is not
-# legacy. Returns 0 once <dst> is gone; the caller then creates the link.
+# directory link can replace it. Status:
+#   0  <dst> is gone (archived, or a rival already moved or relinked it); the
+#      caller creates the link
+#   1  nothing done: <dst> is a real dir that is not legacy, or the move failed
+#   2  <dst> changed during the move; its content is kept under kept/ (an
+#      error the caller must count, even though <dst> is now free to link)
 #
 # Concurrency (issue #638): it never deletes. Unlinking the links by path
 # raced a concurrent --heal: once a rival swapped $dst for the directory link,
@@ -154,7 +158,11 @@ symlink_migrate_legacy_skill_dir() {
   local src="$1" dst="$2" name archive dest
   name="${dst##*/}"
   archive="${dst%/*/*}/.migrated-skill-dirs"
-  symlink_is_legacy_skill_dir "$src" "$dst" || return 1
+  if ! symlink_is_legacy_skill_dir "$src" "$dst"; then
+    # No longer a real dir: a rival already moved or relinked it (success).
+    [ -d "$dst" ] && [ ! -L "$dst" ] && return 1
+    return 0
+  fi
   mkdir -p "$archive" || return 1
   # rename(2) cannot cross filesystems; refuse with a clear message rather
   # than let anything fall back to a non-atomic copy.
@@ -189,7 +197,7 @@ symlink_migrate_legacy_skill_dir() {
     dest="$kept"
   fi
   echo "symlink_migrate_legacy_skill_dir: $dst changed during migration; its content is kept at $dest — review it" >&2
-  return 1
+  return 2
 }
 
 # _symlink_rename <from> <to> — rename(2) only. Unlike mv it never moves <from>

@@ -204,18 +204,29 @@ done < <(find "$CLAUDE_SRC/skills" -mindepth 2 -maxdepth 2 -type l 2>/dev/null)
 # in ~/.claude/.migrated-skill-dirs/. Every scan below skips it: its links are
 # old by design and --fix must never touch it. The skip is a quoted `case`
 # prefix match, never `find -path`, which would read glob characters in $HOME
-# as a pattern. Each top-level entry that is not links-only (a link, or a
-# readable dir holding only links) may be the user's own work, wherever it
-# landed (kept/ or the archive root), so it is reported every run.
+# as a pattern. Everything under kept/ is reported every run: it is there
+# because it changed mid-migration. A top-level entry <name>.<UTC>.<pid> is
+# quiet only while it is old links into that skill's own source: a link to
+# claude/skills/<name> (a rival's link the migration grabbed), or a readable
+# dir whose every entry is a link to claude/skills/<name>/<same name>.
+# Anything else may be the user's own work, so it is reported too.
 ARCHIVE="$CLAUDE_DST/.migrated-skill-dirs"
 in_archive() { case "$1" in "$ARCHIVE"|"$ARCHIVE"/*) return 0 ;; esac; return 1; }
-archive_links_only() {
-  local e="$1" x
-  [ -L "$e" ] && return 0
+archive_old_links() {
+  local e="$1" base src x
+  base="${e##*/}"
+  src="$CLAUDE_SRC/skills/${base%.*.*}"
+  if [ -L "$e" ]; then
+    [ "$(readlink "$e")" = "$src" ]
+    return
+  fi
   [ -d "$e" ] && [ -r "$e" ] && [ -x "$e" ] || return 1
   for x in "$e"/* "$e"/.*; do
     case "${x##*/}" in .|..) continue ;; esac
-    [ -L "$x" ] && continue
+    if [ -L "$x" ]; then
+      [ "$(readlink "$x")" = "$src/${x##*/}" ] || return 1
+      continue
+    fi
     [ -e "$x" ] && return 1  # unmatched globs do not exist
   done
   return 0
@@ -235,8 +246,11 @@ for entry in "$ARCHIVE"/* "$ARCHIVE"/.* "$ARCHIVE/kept"/* "$ARCHIVE/kept"/.*; do
   # traversable dir; a file, link or unreadable dir there is flagged.
   if [ "$entry" = "$ARCHIVE/kept" ]; then
     [ -d "$entry" ] && [ ! -L "$entry" ] && [ -r "$entry" ] && [ -x "$entry" ] && continue
-  elif archive_links_only "$entry"; then
-    continue
+  else
+    case "$entry" in
+      "$ARCHIVE/kept"/*) ;;  # changed mid-migration: always reported
+      *) archive_old_links "$entry" && continue ;;
+    esac
   fi
   yellow "KEPT    ${entry#"$CLAUDE_DST"/} (not only old links: may be your own work — review it, then remove it yourself)"
   WARNINGS=$((WARNINGS + 1))

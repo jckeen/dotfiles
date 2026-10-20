@@ -215,6 +215,7 @@ H="$(new_home)"
 mkdir -p "$ROOT/nobin"
 repair_legacy "$H" "$ROOT/nobin"
 base_broken="$(broken_count)"
+base_rc="$(tail -1 "$OUT")"
 check "--repair converts a clean legacy skill dir" \
   "[ \"\$(readlink \"$H/.claude/skills/$SKILL_NAME\")\" = \"$REPO_ROOT/claude/skills/$SKILL_NAME\" ]"
 H="$(new_home)"
@@ -237,6 +238,34 @@ check "--repair counts it: one more broken than the clean run, non-zero exit" \
   "[ \"\$(broken_count)\" -eq \$((base_broken + 1)) ] && grep -qx 'rc=[1-9][0-9]*' \"$OUT\""
 check "--repair keeps the changed content" \
   "grep -qx mine \"$H\"/.claude/.migrated-skill-dirs/kept/$SKILL_NAME.*/SKILL.md"
+
+# A rival that relinks the bundle between --repair's outer legacy check and
+# the migration's own re-check has finished the repair: nothing was archived,
+# so it is no error (PR #682 review). A fake readlink plays the rival on the
+# second readlink of the legacy entry (the first is the outer check).
+H="$(new_home)"
+RIVAL="$ROOT/rivalbin"
+mkdir -p "$RIVAL"
+REAL_READLINK="$(command -v readlink)"
+LEG="$H/.claude/skills/$SKILL_NAME"
+cat > "$RIVAL/readlink" <<FAKE
+#!/bin/bash
+if [ "\$1" = "$LEG/SKILL.md" ]; then
+  n=\$(( \$(cat "$ROOT/rival-calls" 2>/dev/null || echo 0) + 1 ))
+  echo "\$n" > "$ROOT/rival-calls"
+  if [ "\$n" -eq 2 ]; then
+    rm "$LEG/SKILL.md" && rmdir "$LEG" && ln -sn "$REPO_ROOT/claude/skills/$SKILL_NAME" "$LEG"
+  fi
+fi
+exec "$REAL_READLINK" "\$@"
+FAKE
+chmod +x "$RIVAL/readlink"
+repair_legacy "$H" "$RIVAL"
+check "--repair: the rival relinked between the checks" \
+  "[ \"\$(cat \"$ROOT/rival-calls\")\" -ge 2 ] && [ \"\$(readlink \"$LEG\")\" = \"$REPO_ROOT/claude/skills/$SKILL_NAME\" ]"
+check "--repair: a rival-completed migration is no error (same Broken as a clean run)" \
+  "[ \"\$(broken_count)\" -eq \"$base_broken\" ] && ! grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && [ ! -e \"$H/.claude/.migrated-skill-dirs\" ]"
+check "--repair: a clean legacy run exits 0" "[ \"$base_rc\" = rc=0 ]"
 
 echo ""
 echo "setup-services: $pass passed, $failed failed"

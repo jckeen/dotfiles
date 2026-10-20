@@ -31,8 +31,12 @@
   it is reported and left in place, still reachable. A dir the migrator
   cannot read or traverse is never judged legacy, since its content cannot
   be seen.
-- **Callers see every outcome**: `setup.sh --repair` counts a migration that
-  archived changed content as broken, even after it relinks the bundle.
+- **Callers see every outcome**: the migration returns `2` when it archived
+  changed content, and `0` when a rival already moved or relinked `$dst`.
+  `setup.sh --repair` counts only a `2` as broken, even after it relinks the
+  bundle; a rival that finished the repair is no error. Everything under
+  `kept/` is always `KEPT`. Top-level archive links count as old only when
+  they point into that skill's own source.
   A `$dst` that a rival moves away during the filesystem check is that
   rival's success, not a cross-filesystem error. This holds in the shell and
   the hook.

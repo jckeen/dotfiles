@@ -161,7 +161,7 @@ run_health_audit() {
     printf '  \033[31mFATAL\033[0m claude/nolink.txt missing at %s — cannot audit\n' "$CLAUDE_SRC/nolink.txt"
     errors=$((errors + 1))
   else
-    local _src _dst _label _flags
+    local _src _dst _label _flags _mrc
     while IFS=$'\t' read -r _src _dst _label _flags; do
       [ -n "$_src" ] || continue
       claude_link_managed "$_label" || continue
@@ -170,12 +170,17 @@ run_health_audit() {
       # names it rather than calling it an unknown directory.
       if symlink_is_legacy_skill_dir "$_src" "$_dst"; then
         if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-          # A failure still counts after alink relinks $dst: the migration may
-          # have archived content that changed under it (lib-symlinks.sh
-          # prints where), which needs review (issue #638).
-          if ! symlink_migrate_legacy_skill_dir "$_src" "$_dst"; then
-            printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
+          # Status 2: content changed under the migration and was archived
+          # (lib-symlinks.sh prints where). It counts even though alink then
+          # relinks $dst (issue #638). Status 1 leaves $dst a real dir, which
+          # alink reports itself; 0 includes a rival that finished first.
+          _mrc=0
+          symlink_migrate_legacy_skill_dir "$_src" "$_dst" || _mrc=$?
+          if [ "$_mrc" -eq 2 ]; then
+            printf '  \033[31mFAILED\033[0m  %s (changed during migration; content kept in .migrated-skill-dirs/kept — review it)\n' "$_label"
             errors=$((errors + 1))
+          elif [ "$_mrc" -ne 0 ]; then
+            printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
           fi
         else
           printf '  \033[33mLEGACY\033[0m  %s (per-file links from before #592; --repair converts to a directory link)\n' "$_label"

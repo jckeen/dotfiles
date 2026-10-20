@@ -334,7 +334,7 @@ race_bin() {
 case "\${0##*/}" in rm) real="$REAL_RM" ;; *) real="$REAL_PERL" ;; esac
 first=0
 if [ ! -e "$M/raced" ]; then : > "$M/raced"; first=1; fi
-if [ "\$first" -eq 1 ] && [ "$mode" != swap ]; then
+if [ "\$first" -eq 1 ] && case "$mode" in rival*) true ;; *) false ;; esac; then
   if [ -d "$DST" ] && [ ! -L "$DST" ]; then "$REAL_RM" -f "$DST"/* && rmdir "$DST"; fi
   [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$SRC" "$DST"
 fi
@@ -345,6 +345,11 @@ fi
 if [ "\$first" -eq 1 ] && [ "$mode" = swap ]; then
   for d in "$H/$ARCH_REL"/demo.*; do
     [ -L "\$d/SKILL.md" ] && "$REAL_RM" "\$d/SKILL.md" && printf 'swapped\\n' > "\$d/SKILL.md"
+  done
+fi
+if [ "\$first" -eq 1 ] && [ "$mode" = swaplink ]; then
+  for d in "$H/$ARCH_REL"/demo.*; do
+    [ -L "\$d/SKILL.md" ] && "$REAL_RM" "\$d/SKILL.md" && ln -s "$FIX/foreign-target" "\$d/SKILL.md"
   done
 fi
 exit \$rc
@@ -413,6 +418,32 @@ check "file at dst: the new file survives" \
   "$([ -f "$DST" ] && [ ! -L "$DST" ] && [ "$(cat "$DST")" = user ] && echo 1 || echo 0)"
 check "file at dst: sources intact" "$(sources_intact && echo 1 || echo 0)"
 
+# A foreign symlink swapped in mid-migration also lands in kept/, and kept/
+# is always flagged: it is there because it changed, links or not (PR #682
+# review). The migration says so with status 2, not 1.
+legacy_fixture swaplink
+race_bin "$FIX/swaplink/bin" swaplink
+migrate_with "$FIX/swaplink/bin"
+check "foreign link: migration returns 2 (content archived)" "$([ "$rc" -eq 2 ] && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "foreign link: kept/ entry flagged KEPT" \
+  "$([ "$rc" -ne 0 ] && grep -q "KEPT .*kept/demo\." <<<"$out" && echo 1 || echo 0)"
+
+# Top-level archive links must point into the skill's own source tree; one
+# pointing anywhere else is flagged.
+legacy_fixture foreigntop
+out="$(run_check --heal)"
+mkdir -p "$H/$ARCH_REL/demo.20261019T000000Z.7"
+ln -s "$FIX/foreign-target" "$H/$ARCH_REL/demo.20261019T000000Z.7/SKILL.md"
+ln -s "$FIX/elsewhere-dir" "$H/$ARCH_REL/demo.20261019T000000Z.8"
+out="$(run_check --heal)"; rc=$?
+check "archive audit: a dir of foreign links is KEPT" \
+  "$(grep -q 'KEPT .*demo\.20261019T000000Z\.7' <<<"$out" && echo 1 || echo 0)"
+check "archive audit: a top-level foreign link is KEPT" \
+  "$(grep -q 'KEPT .*demo\.20261019T000000Z\.8' <<<"$out" && echo 1 || echo 0)"
+check "archive audit: the real archived dir is not flagged" \
+  "$([ "$(grep -c 'KEPT' <<<"$out")" -eq 2 ] && echo 1 || echo 0)"
+
 # A writer that swaps a link in the moved dir for a real file loses nothing,
 # because nothing is deleted (gate review round 3). Nothing is ever renamed
 # back either, since no rename can refuse to overwrite (round 4): the dir, no
@@ -432,8 +463,8 @@ for f in "$H/$ARCH_REL"/kept/demo.*/SKILL.md; do
 done
 check "swapped file: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
 check "swapped file: survives under kept/" "$found"
-check "swapped file: migration reports failure, names kept/" \
-  "$([ "$rc" -ne 0 ] && grep -q "$ARCH_REL/kept/demo\." "$M/out" && echo 1 || echo 0)"
+check "swapped file: migration returns 2, names kept/" \
+  "$([ "$rc" -eq 2 ] && grep -q "$ARCH_REL/kept/demo\." "$M/out" && echo 1 || echo 0)"
 check "swapped file: never renamed back over dst" "$([ ! -e "$DST" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
 check "swapped file: sources intact" "$(sources_intact && echo 1 || echo 0)"
 out="$(run_check --heal)"; rc=$?
@@ -498,10 +529,12 @@ ln -s "$SRC/SKILL.md" "$arch/x"
 ln -s "$SRC/f1" "$arch/x.backup"
 out="$(run_check --heal)"; rc=$?
 out2="$(run_check --heal --fix)"; rc2=$?
-check "glob chars in HOME: --heal exits 0 twice" \
-  "$([ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && echo 1 || echo 0)"
-check "glob chars in HOME: archive in no scan (ORPHAN/BROKEN/STALE/CLEANED/KEPT)" \
-  "$(! grep -qE 'ORPHAN|BROKEN|STALE|CLEANED|KEPT' <<<"$out$out2" && echo 1 || echo 0)"
+# The planted links are foreign to the skill, so only the archive audit
+# speaks (KEPT); no link scan reaches the archive.
+check "glob chars in HOME: only the archive audit reports it" \
+  "$(grep -q "KEPT .*${arch##*/}" <<<"$out" && [ "$rc2" -eq "$rc" ] && echo 1 || echo 0)"
+check "glob chars in HOME: archive in no scan (ORPHAN/BROKEN/STALE/CLEANED)" \
+  "$(! grep -qE 'ORPHAN|BROKEN|STALE|CLEANED' <<<"$out$out2" && echo 1 || echo 0)"
 check "glob chars in HOME: --fix leaves every archived entry" \
   "$([ -L "$arch/gone.md" ] && [ -L "$arch/elsewhere" ] && [ -L "$arch/x.backup" ] && echo 1 || echo 0)"
 
