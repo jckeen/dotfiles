@@ -131,7 +131,7 @@ else:
                     hits.append(path)
             except OSError:
                 continue
-        assert len(hits) == 1, "request file not found"
+        assert len(hits) == 1, f"expected one request file, found {len(hits)}"
         with open(hits[0], "a") as request:
             request.write("mutated mid-run\n")
         (fake / "mp-request-mutated").touch()
@@ -1655,7 +1655,7 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
   rm -rf "$R"
 done
 
-for mutation in head index worktree untracked base; do
+for mutation in head index worktree untracked; do
   new_repo
   git -C "$R" checkout -qb feature
   echo committed >> "$R/code.txt"
@@ -1665,10 +1665,37 @@ for mutation in head index worktree untracked base; do
     index) printf 'echo staged >> code.txt; git add code.txt; git checkout -- code.txt\n' > "$CODEX_FAKE_DIR/mutate" ;;
     worktree) printf 'echo concurrent >> code.txt\n' > "$CODEX_FAKE_DIR/mutate" ;;
     untracked) printf 'echo concurrent > new.txt\n' > "$CODEX_FAKE_DIR/mutate" ;;
-    base) printf 'git update-ref refs/heads/main HEAD\n' > "$CODEX_FAKE_DIR/mutate" ;;
   esac
   approve_clean
   check "$mutation changed during review blocks" 2 "changed during review" --no-issues
+  rm -rf "$R"
+done
+
+# The base is pinned when the run begins (#680). A sibling moving it mid-review
+# is not this branch changing: the review completes, and the receipt holds as
+# long as it covers the current merge base. A base that has absorbed the branch
+# no longer has that merge base, so the push check refuses it.
+for base_move in sibling absorbed; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  case "$base_move" in
+    sibling) printf '%s\n' 'git update-ref refs/heads/main "$(git commit-tree -p main -m sibling "main^{tree}")"' > "$CODEX_FAKE_DIR/mutate" ;;
+    absorbed) printf 'git update-ref refs/heads/main HEAD\n' > "$CODEX_FAKE_DIR/mutate" ;;
+  esac
+  approve_clean
+  check "base moved by a $base_move change mid-review still completes the review" 0 "Codex review passed" --committed --no-issues --require
+  assert "the base moved during that review ($base_move)" \
+    "[ \"\$(git -C '$R' rev-parse main)\" != \"\$(jq -r .artifact.base.commit '$R/.git/review-receipts/codex.json')\" ]"
+  if [[ "$base_move" == sibling ]]; then
+    assert "a receipt survives a sibling moving the base" \
+      "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  else
+    assert "a base that absorbed the branch no longer matches the receipt" \
+      "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  fi
+  rm -f "$CODEX_FAKE_DIR/mutate"
   rm -rf "$R"
 done
 
@@ -2122,6 +2149,13 @@ import sys
 # limit, under its default line cap, and split by review-multipart.py.
 open(sys.argv[1], "a").write(("multipart😀" * 160 + "\n") * 1000)
 PY
+# A per-run nonce makes this run's request bytes unique (#680, #679). The
+# mid-run mutation finds the gate's request file under the shared /tmp by its
+# digest. Without the nonce, every concurrent run of this suite (other agents'
+# review-and-push test steps) built a byte-identical request, the stub found
+# two files, its `len(hits) == 1` assertion failed, codex exited 1 and the case
+# degraded to rc 3. That was a collision between runs, not a timing race.
+printf 'run nonce %s\n' "$R" >> "$R/code.txt"
 git -C "$R" commit -qam "large ahead"
 blocking_output() {
   printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"

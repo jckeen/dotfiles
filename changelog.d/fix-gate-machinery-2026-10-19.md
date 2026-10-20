@@ -90,3 +90,17 @@
   `merge_base..HEAD`, so a receipt stays valid while the base tip moves on.
   It still refuses when the merge base differs: a receipt taken with a
   narrower `--base`, or a branch the base has since absorbed.
+
+## 2026-10-19 — test(gates): the multipart request-changed case no longer collides with concurrent runs (#680)
+
+- **The flake was a collision, not a timing race.** The mid-run mutation
+  finds the gate's request file under the shared `/tmp` by its digest. Every
+  concurrent run of `codex-review-gate.test.sh` built a byte-identical
+  request, so the stub found two files and its single-hit assertion failed.
+  Codex then exited 1 and the case degraded to rc 3 instead of the rc 2
+  verdict (#679). Four runs in parallel failed 4 of 4 before the fix. The
+  fixture now adds a per-run nonce, so each run's request is unique.
+- **The base-mutation cases follow the pinned base.** A sibling moving the
+  base mid-review now completes the review, and the receipt survives. A base
+  that absorbed the branch completes too, but `check` then refuses the
+  receipt because its merge base no longer matches.
