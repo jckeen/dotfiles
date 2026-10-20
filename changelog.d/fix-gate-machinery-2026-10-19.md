@@ -112,3 +112,14 @@
   and an `approvals_reviewer = "auto_review"` there approves escalation out of
   the read-only sandbox unattended, the same path #659 found in the review
   gate. `tests/codex-config.test.sh` now refuses `on-request` in the example.
+
+## 2026-10-19 — docs(adr): ADR-0008 records #613 as considered and declined
+
+- **Item 1, comment-only risk-path downgrade, is declined.** It was built
+  and then removed before landing. Comments are not provably inert: programs
+  read their own source, verbose shells print comments, and aliases, heredocs
+  and directive comments turn comment-shaped lines into code. Two security
+  reviews and a differential fuzz kept finding bypasses, so a risk-path diff
+  always requires `codex`.
+- **Item 2, merge-then-verify, is declined.** Main is effectively deployed
+  through the `~/.claude` symlinks, so every change keeps a pre-merge gate.
