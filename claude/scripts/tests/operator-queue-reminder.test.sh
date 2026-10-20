@@ -992,6 +992,8 @@ assert "--find: no digest tool is inconclusive (switch detection would be blind)
 rm -rf "$NODIGEST"
 run_issues FAKE_GH_JSON="$ISSUES" -- --fnd dot-issue
 assert "a mistyped mode exits 2 and never renders the queue" "[ $rc -eq 2 ] && ! outgrep 'dot-issue (' && outgrep 'unknown argument'"
+run_issues FAKE_GH_JSON="$ISSUES" -- find dot-issue
+assert "a mode typed without dashes exits 2 too" "[ $rc -eq 2 ] && outgrep 'unknown argument'"
 
 rm -rf "$FAKEBIN" "$GH_CONFIG_DIR"
 echo ""

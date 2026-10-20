@@ -380,9 +380,9 @@ case "${1:-}" in
     [ "$REPO_OK" -eq 1 ] || { echo "--scope: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name" >&2; exit 2; }
     printf 'host %s\nhome %s\nowners %s\n' "$GH_HOSTNAME" "$REPO_PATH" "$OWNERS"; exit 0 ;;
   --find) find_item "${2:-}"; exit ;;
-  # A mistyped mode must not fall through to the rendered queue, which a
-  # caller could misread as a conclusive answer.
-  -*) echo "unknown argument: $1 (modes: --refresh, --scope, --find SLUG)" >&2; exit 2 ;;
+  # Any other argument (a mistyped mode, dashes or not) must not fall
+  # through to the rendered queue, which a caller could misread as an answer.
+  ?*) echo "unknown argument: $1 (modes: --refresh, --scope, --find SLUG)" >&2; exit 2 ;;
 esac
 
 # Source: the file queue is migrating to operator-action issues in the private
