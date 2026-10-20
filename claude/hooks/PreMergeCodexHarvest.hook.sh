@@ -7,6 +7,13 @@
 #   in the public template): a segment of tool_input.command starts with
 #   `gh pr merge` (after optional VAR=value assignments) — see the match below.
 #
+#   Trade-off, deliberate: a merge inside another shell construct
+#   (`out=$(gh pr merge …)`, `if gh pr merge …; then`) is NOT recognised. A
+#   missed pre-merge harvest costs nothing — the harvest-codex-comments
+#   workflow harvests every PR at close anyway — while a false trigger files
+#   a junk issue (the old unanchored match filed #691 from a `sed` command
+#   that merely contained the text). So the match stays anchored.
+#
 # BEHAVIOR:
 #   Runs harvest-codex-comments.sh for the PR being merged (explicit number in the
 #   command if present, else the current branch's PR). That script files one deduped

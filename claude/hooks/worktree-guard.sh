@@ -9,16 +9,20 @@
 #
 # Policy (smart / contention-gated):
 #   - Only branch CREATE/SWITCH ops are guarded (`checkout -b/-B/--orphan`,
-#     any `git switch`). `git worktree ...` is the fix, not the problem, and is
-#     never guarded — but only that one git invocation is exempt: the command
-#     is split into segments on `&&`, `||`, `;`, `|`, `&`, newlines, `$(`,
-#     backticks and parentheses, and EVERY segment is checked, so
-#     `git worktree list && git switch -c x` is still caught (#681).
-#   - Quote characters are stripped before matching, so `bash -c "git switch x"`
-#     counts too. That is deliberately conservative: a quoted mention of a
-#     branch switch (say, in a commit message) is treated as one. Constructs
-#     the splitter does not model (`eval`, heredocs) fall back to a whole-text
-#     match, so an unparseable command fails closed.
+#     any `git switch`). The command is split into segments on `&&`, `||`,
+#     `;`, `|`, `&`, newlines, `$(`, backticks and parentheses, and EVERY
+#     segment is checked, so `git worktree list && git switch -c x` is still
+#     caught (#681).
+#   - Fail closed: a segment is guarded when its raw text (quotes kept)
+#     matches a broad branch-op pattern, so quoted global options
+#     (`git -c 'user.name=A B' switch …`) cannot hide the subcommand, and a
+#     quoted mention (`bash -c "git switch x"`, a commit message) counts too.
+#     The only exemption is a segment that is plainly `git worktree …` — the
+#     fix, not the problem. `git -C dir worktree add -b switch …` is therefore
+#     a known false positive, which is safe. After `--`, checkout arguments
+#     are pathspecs (`git checkout -- -backup` is allowed). Constructs the
+#     splitter does not model (`eval`, heredocs) fall back to a whole-text
+#     match.
 #   - Allow freely when run from a linked worktree (.../worktrees/<name>).
 #   - In the PRIMARY checkout, DENY only when >1 worktree exists (a parallel
 #     session is likely active). Solo work (1 worktree) is never blocked.
@@ -61,7 +65,10 @@ segment_is_branch_op() {
         checkout)
           j=$((j + 1))
           while [ "$j" -lt "$n" ]; do
-            case "${toks[$j]}" in -b|-B|--orphan|-b*|-B*) return 0 ;; esac
+            case "${toks[$j]}" in
+              --) break ;;  # pathspecs follow: `checkout -- -backup` is a file (#695)
+              -b|-B|--orphan|-b*|-B*) return 0 ;;
+            esac
             j=$((j + 1))
           done
           ;;
@@ -72,15 +79,28 @@ segment_is_branch_op() {
   return 1
 }
 
+# Broad branch-op text, matched on a segment's RAW text (quotes kept): a git
+# word followed anywhere later by `switch` or `checkout … -b/-B/--orphan`.
+# Quoted global options (`git -c 'user.name=A B' switch …`, `-C "dir x"`)
+# cannot hide the subcommand from this, unlike a word-split parse.
+BROAD_RE='(^|[^[:alnum:]_-])git([[:space:]].*)?[[:space:]](switch([[:space:]]|$)|checkout[[:space:]]+(-[^-[:space:]]*[bB]|--orphan))'
+
 is_branch_op() {
-  local cmd="$1" seg flat
-  # Strip quotes, then turn every separator character into a newline: this
-  # splits `&&`, `||`, `;`, `|`, `&`, `$(…)`, `(…)` and backticks alike
-  # (a leftover `$` only sticks to the previous token).
-  flat="$(printf '%s' "$cmd" | tr -d "\"'" | tr ';|&()`' '\n\n\n\n\n\n')"
+  local cmd="$1" seg
+  # Turn every separator character into a newline: this splits `&&`, `||`,
+  # `;`, `|`, `&`, `$(…)`, `(…)` and backticks alike. Quotes are kept.
   while IFS= read -r seg; do
-    segment_is_branch_op "$seg" && return 0
-  done <<<"$flat"
+    # Exempt only a segment that is plainly `git worktree …` (how you
+    # comply). Anything fancier before the subcommand is not exempt, so
+    # `git -C x worktree add -b switch …` is a known, safe false positive.
+    if printf '%s\n' "$seg" | grep -qE '^[[:space:]]*git[[:space:]]+worktree([[:space:]]|$)'; then
+      continue
+    fi
+    printf '%s\n' "$seg" | grep -qE "$BROAD_RE" && return 0
+    # The word-level parse adds forms the regex misses (`checkout main -b x`);
+    # it can only add blocks, never exempt.
+    segment_is_branch_op "$(printf '%s' "$seg" | tr -d "\"'")" && return 0
+  done < <(printf '%s\n' "$cmd" | tr ';|&()`' '\n\n\n\n\n\n')
   # Fail closed on constructs the splitter does not model.
   if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_])eval([[:space:]]|$)|<<'; then
     printf '%s' "$cmd" | grep -qE 'git[[:space:]].*(checkout[[:space:]]+-|switch([[:space:]]|$))' && return 0

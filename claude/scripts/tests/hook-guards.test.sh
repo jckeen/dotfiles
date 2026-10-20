@@ -68,6 +68,14 @@ denied "$(cc "git commit -m 'oops no type'")" \
 denied "$(cc 'git commit -m "feat: never closed')" \
   && ok "commit-msg: an unextractable message fails closed" \
   || fail "commit-msg: unextractable message allowed"
+multi_ok="$(printf '%s\n' 'git commit -m "feat: subject line' '' 'Body paragraph."')"
+[ -z "$(cc "$multi_ok")" ] \
+  && ok "commit-msg: a valid multi-line quoted -m message is allowed" \
+  || fail "commit-msg: valid multi-line quoted -m message denied"
+multi_bad="$(printf '%s\n' 'git commit -m "no type here' '' 'feat: not the subject"')"
+denied "$(cc "$multi_bad")" \
+  && ok "commit-msg: a multi-line message is validated on its first line" \
+  || fail "commit-msg: multi-line message with a bad first line allowed"
 heredoc_ok="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' 'docs: heredoc subject' '' 'body' 'EOF' ')"')"
 [ -z "$(cc "$heredoc_ok")" ] \
   && ok "commit-msg: a valid heredoc message is allowed" \
@@ -92,12 +100,19 @@ for blocked in \
 git switch w" \
   'git -C . switch main' \
   'bash -c "git checkout -B v"' \
-  'git worktree list || git switch -c u'; do
+  'git worktree list || git switch -c u' \
+  "git -c 'user.name=Review User' switch -c feature" \
+  'git -C "dir with space" switch -c feature' \
+  'git -C "" switch -c feature' \
+  'git -C . worktree add -b switch ../p2'; do
   denied "$(wg "$blocked")" \
     && ok "worktree-guard blocks: $(tr '\n' ' ' <<<"$blocked")" \
     || fail "worktree-guard let through: $(tr '\n' ' ' <<<"$blocked")"
 done
-for allowed in 'git worktree add ../p -b q' 'git worktree list' 'git status && git log -1' 'git checkout -- file.txt'; do
+# The last blocked case above is the documented safe false positive: only a
+# segment that is plainly `git worktree …` is exempt.
+for allowed in 'git worktree add ../p -b q' 'git worktree list' 'git status && git log -1' \
+  'git checkout -- file.txt' 'git checkout -- -backup' 'git worktree add -b switch ../p3'; do
   [ -z "$(wg "$allowed")" ] \
     && ok "worktree-guard allows: $allowed" \
     || fail "worktree-guard blocked: $allowed"
@@ -131,6 +146,11 @@ grep -q -- '--pr 7' <<<"$(pm "GH_REPO=a/b $MERGE 7")" \
 grep -q -- '--pr 9' <<<"$(pm "cd x && $MERGE 9 --auto")" \
   && ok "pre-merge: a merge as a later segment of a compound command is caught" \
   || fail "pre-merge: compound-command merge missed"
+# Deliberate trade-off (hook header): a merge inside another construct is not
+# recognised — the close-time workflow harvests every PR anyway.
+[ -z "$(pm "out=\$($MERGE 3 --squash)")" ] \
+  && ok "pre-merge: a merge inside \$(…) is left to the close-time harvest (documented)" \
+  || fail "pre-merge: construct handling changed; update the hook header and this test"
 
 echo ""
 echo "hook-guards: $pass passed, $failed failed"

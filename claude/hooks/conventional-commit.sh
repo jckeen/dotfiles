@@ -56,7 +56,10 @@ if printf '%s\n' "$COMMAND" | grep -q 'cat <<'; then
   MSG=$(printf '%s\n' "$COMMAND" | sed -n "/cat <<.*EOF/,/EOF/p" | grep -v 'cat <<' | grep -v '^[[:space:]]*EOF' | head -1 | sed 's/^[[:space:]]*//') || MSG=""
 else
   # Inline style: the first `-m` argument — "double", 'single' or bare word.
-  MSG=$(printf '%s\n' "$COMMAND" | awk '
+  # The whole command is ONE awk record (RS is a control byte that never
+  # appears), so a quoted message whose closing quote sits on a later line —
+  # subject, blank line, body — is read whole; its first line is validated.
+  MSG=$(printf '%s\n' "$COMMAND" | awk 'BEGIN { RS = "\001" }
     match($0, /[[:space:]]-m[[:space:]]+/) {
       rest = substr($0, RSTART + RLENGTH)
       q = substr(rest, 1, 1)
