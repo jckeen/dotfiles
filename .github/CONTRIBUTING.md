@@ -79,6 +79,38 @@ chore: bump bun-types
 Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
 `build`, `perf`, `style`, `revert`.
 
+## Changelog Entries
+
+Do not edit `CHANGELOG.md` in a PR. Add one fragment instead, so two open PRs
+never touch the same lines (#626):
+
+- **File:** one file under `changelog.d/`, named by convention after the
+  branch with every `/` replaced by `-` (branch `feat/foo` →
+  `changelog.d/feat-foo.md`). Only the convention ties the name to the branch;
+  any name of letters, digits, `.`, `_` and `-` ending in `.md` is valid.
+- **Content:** the entry exactly as it will read in `CHANGELOG.md` — a
+  `## YYYY-MM-DD — <type>: <summary>` heading (`<type>(<scope>):` allowed; the
+  commit types above), at column 0 with single spaces, followed by bullets.
+  The format is stricter than Markdown. Every line must be blank, such a
+  heading, a `### ` subsection, a bullet (`- ` or `* `, indented 0–3
+  spaces), or a continuation indented 2+ spaces. Bullet and continuation
+  text may not start with `<`, `>`, `|`, `#`, `=` or a code fence. Inline
+  code is fine. Several `## ` entries in one fragment are fine; a second
+  fragment file is not. `--check` names the allowed shapes when a line
+  fails.
+- **Check:** `claude/scripts/assemble-changelog.sh --check` validates every
+  fragment's content without running git. CI runs it in the required
+  `doc-truth` job. A separate step in that job enforces the PR scope: a PR
+  adds at most one fragment, leaves fragments already on `main` alone, and
+  adds no `## ` entry to `CHANGELOG.md` alongside a fragment.
+
+Folding is a separate, reviewed manual step at release or handoff time, in a
+`docs: fold changelog fragments` PR: copy each fragment's entries above the
+first `## ` entry in `CHANGELOG.md`, newest date first, then `git rm` the
+fragments. It is not a bot push to `main`, because `main`'s required status
+checks refuse a commit that has not run them.
+Until then, `changelog.d/` is the newest part of the changelog.
+
 ## Questions
 
 Open a GitHub issue and label it `question` (Discussions is not enabled on

@@ -92,12 +92,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The changelog fragment scope step diffs base...HEAD, which needs history.
+          fetch-depth: 0
 
       - name: Run checker self-tests
         run: claude/scripts/tests/doc-truth.test.sh
 
       - name: Check the dotfiles doc contract
         run: claude/scripts/check-doc-truth.sh
+
+      # Changelog fragments (#626). The content check (fragment grammar,
+      # CHANGELOG.md preamble) is assemble-changelog.sh --check, which runs no
+      # git. The PR scope rule needs the PR diff, so it is this step: a PR
+      # adds at most one changelog.d/ file, modifies, renames or retypes no
+      # fragment already on the base, and, while adding one, adds no `## `
+      # entry to CHANGELOG.md. Folding (fragments removed, entries added) is
+      # unaffected. --name-status with no path filter, so a rename out of
+      # changelog.d/ still shows as R; the CHANGELOG.md rule compares file
+      # contents, not diff text, so no diff setting can hide an entry.
+      - name: Changelog fragments (content check)
+        run: claude/scripts/assemble-changelog.sh --check
+
+      - name: Changelog fragments (PR scope)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          g() { git -c color.ui=never -c color.diff=never -c core.quotePath=false -c diff.renames=true "$@"; }
+          status="$(g diff --no-color --no-ext-diff --no-textconv --text -M --name-status "$BASE_SHA...HEAD")"
+          fail=0
+          added="$(awk -F'\t' '$1 == "A" && $2 ~ /^changelog\.d\// { n++ } END { print n + 0 }' <<<"$status")"
+          if [ "$added" -gt 1 ]; then
+            echo "::error::this PR adds $added changelog.d/ files; a PR adds one fragment"
+            fail=1
+          fi
+          if awk -F'\t' '($1 ~ /^[MT]/ && $2 ~ /^changelog\.d\//) || ($1 ~ /^[RC]/ && ($2 ~ /^changelog\.d\// || $3 ~ /^changelog\.d\//)) { hit = 1 } END { exit !hit }' <<<"$status"; then
+            echo "::error::this PR modifies, renames or copies a changelog fragment already on the base"
+            fail=1
+          fi
+          if [ "$added" -ge 1 ]; then
+            base_h="$(g cat-file blob "$BASE_SHA:CHANGELOG.md" | grep '^## ' || true)"
+            head_h="$(grep '^## ' CHANGELOG.md || true)"
+            if [ -n "$(comm -13 <(sort <<<"$base_h") <(sort <<<"$head_h"))" ]; then
+              echo "::error::this PR adds a changelog fragment and also adds a ## entry to CHANGELOG.md"
+              fail=1
+            fi
+          fi
+          exit "$fail"
 
   # check-doc-truth.sh is vendored into other repos and holds to a bash 3.2
   # floor — the macOS system bash (#424). The static guards in its self-test are
