@@ -266,7 +266,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `tmux` | Detachable sessions for the opt-in `cct` launcher | Homebrew / apt |
 | `claude` | Claude Code CLI | SHA-256-pinned official native installer |
 | `codex` | OpenAI Codex CLI | npm |
-| `jules` | Google Jules CLI — the cloud routine lane (ADR-0009); `jules login` for interactive use, an API key file for the daily dispatcher | npm |
+| `jules` | Google Jules CLI — the cloud routine lane (ADR-0009, paused 2026-10-19); `jules login` for interactive use, an API key file for the daily dispatcher | npm |
 | `agy` | Google Antigravity CLI (Gemini agent runtime) | SHA-256-pinned official installer; release payload checksum-verified by the vendor installer |
 | `bun` | Runtime for `*.hook.ts` hooks | Pinned GitHub release (`BUN_VERSION` in `setup.sh`), SHA-256-verified against the release's `SHASUMS256.txt` |
 

@@ -2714,8 +2714,11 @@ sys_home() {
   printf '%s' "$h"
 }
 
+# The Jules lane is paused (ADR-0009): install.sh skips its unit unless the
+# operator opts in. These mechanics tests opt in; the pause has its own cases.
 run_installer() { # <home> <installer's repo> <log>
   PATH="$SYSBIN:$PATH" HOME="$1" SYSTEMCTL_LOG="$3" \
+    JULES_LANE_ENABLED="${JULES_LANE_ENABLED-1}" \
     bash "$2/claude/systemd/install.sh" > "$WORK/install.out" 2>&1
 }
 
@@ -2744,6 +2747,32 @@ if run_installer "$SYSHOME" "$REPO_ROOT" "$WORK/systemctl.log"; then
 else
   fail "install.sh exited non-zero with both scripts reachable"
   sed 's/^/      | /' "$WORK/install.out"
+fi
+
+# Paused lane (ADR-0009, #678): without the opt-in, install.sh must not install
+# or start the Jules timer, and must disable one an earlier install enabled.
+SYSHOMEP="$(sys_home syshomep "$REPO_ROOT")"
+: > "$WORK/systemctlp.log"
+if JULES_LANE_ENABLED='' run_installer "$SYSHOMEP" "$REPO_ROOT" "$WORK/systemctlp.log" \
+   && [[ -f "$SYSHOMEP/.config/systemd/user/git-hygiene.timer" ]] \
+   && [[ ! -f "$SYSHOMEP/.config/systemd/user/jules-dispatch.timer" ]] \
+   && ! grep -Fq 'jules-dispatch' "$WORK/systemctlp.log" \
+   && grep -Fq 'jules-dispatch.timer skipped' "$WORK/install.out"; then
+  ok "paused lane: install.sh skips the Jules timer without JULES_LANE_ENABLED=1"
+else
+  fail "paused lane: install.sh installed or touched the Jules timer"
+  sed 's/^/      | /' "$WORK/install.out"; sed 's/^/      s /' "$WORK/systemctlp.log"
+fi
+mkdir -p "$SYSHOMEP/.config/systemd/user"
+cp "$REPO_ROOT/claude/systemd/jules-dispatch.timer" "$SYSHOMEP/.config/systemd/user/"
+: > "$WORK/systemctlp2.log"
+if JULES_LANE_ENABLED='' run_installer "$SYSHOMEP" "$REPO_ROOT" "$WORK/systemctlp2.log" \
+   && grep -Fq 'disable --now jules-dispatch.timer' "$WORK/systemctlp2.log" \
+   && ! grep -Fq 'enable --now jules-dispatch.timer' "$WORK/systemctlp2.log"; then
+  ok "paused lane: an already-installed Jules timer is disabled, not re-enabled"
+else
+  fail "paused lane: an installed Jules timer was not disabled"
+  sed 's/^/      | /' "$WORK/install.out"; sed 's/^/      s /' "$WORK/systemctlp2.log"
 fi
 
 # The script a unit runs must be checked at the path the unit names, not at a

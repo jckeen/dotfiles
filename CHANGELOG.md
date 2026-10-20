@@ -1,5 +1,8 @@
 # Changelog
 
+Entries not yet folded in live one per PR in `changelog.d/`; they are
+copied here by hand at release time (see `claude/scripts/README.md`).
+
 ## 2026-10-17 — feat: operator-action queue can come from GitHub issues
 
 - **`claude/hooks/OperatorQueueReminder.hook.sh`**: a second source, open

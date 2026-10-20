@@ -52,8 +52,9 @@ project context belong in the private memory repos (`codex-memory`,
 
 Each file in `agents/routines/` is one standing prompt for the cloud routine
 lane (ADR-0009). `claude/scripts/jules-dispatch.sh` turns the catalog into one
-Jules session per routine per repository per day; a daily systemd timer fires
-it, and `--dry-run` shows what a day would dispatch without creating anything.
+Jules session per routine per repository per day. The lane is paused (ADR-0009,
+2026-10-19): no timer is installed, so nothing fires it on a schedule.
+`--dry-run` shows what a day would dispatch without creating anything.
 
 The frontmatter is a contract, not documentation — the dispatcher parses it
 strictly and refuses to dispatch a routine whose header does not validate. An
