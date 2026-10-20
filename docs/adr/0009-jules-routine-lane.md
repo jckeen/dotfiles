@@ -518,6 +518,6 @@ The Decision above is therefore paused, not reversed. `jules-dispatch.sh`, the r
 
 **Restart criteria**, all required before the Status returns to Accepted:
 1. The #639 `max_files` fixes are on main. (Met 2026-10-19, #670.)
-2. `claude/systemd/jules-dispatch.timer` is installed, and the first week's `--report --post` is recorded on a tracker issue.
+2. `claude/systemd/jules-dispatch.timer` is installed (`JULES_LANE_ENABLED=1 bash claude/systemd/install.sh`; without the opt-in the installer skips the unit and disables a copy an earlier install enabled), and the first week's `--report --post` is recorded on a tracker issue.
 3. Web-app Jules PRs either stop or are recorded in the same ledger, so the daily cap and the merge-rate rule cover them.
 

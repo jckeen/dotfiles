@@ -1657,7 +1657,8 @@ if [ "$JULES_INSTALLED" -eq 1 ]; then
   echo "  Jules web app under Settings, then store it mode 0600:"
   echo "    install -d -m 700 ~/.config/jules"
   echo "    install -m 600 /dev/null ~/.config/jules/api-key   # then paste the key in"
-  echo "  Enable the daily timer with: bash $DOTFILES_DIR/claude/systemd/install.sh"
+  echo "  The daily dispatch timer is paused (ADR-0009): claude/systemd/install.sh"
+  echo "  skips it unless JULES_LANE_ENABLED=1."
 fi
 
 # ─── 3e. Antigravity CLI ────────────────────────────────────────────

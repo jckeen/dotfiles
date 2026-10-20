@@ -15,3 +15,8 @@
   SessionStart. The Anthropic Directory marketplace is built into Claude Code,
   so `setup.sh` gets a no-op registration arm for it, which
   `check-install-integrity.sh` requires for every marketplace in the manifest.
+- **`claude/systemd/install.sh`** enforces the pause. The Jules unit is
+  installed only with `JULES_LANE_ENABLED=1`. Without it the unit is skipped,
+  and a timer an earlier install enabled is disabled, so re-running setup can't
+  restart the lane (Codex bot, #678). `setup.sh` no longer tells the user to
+  enable the timer. `tests/jules-dispatch.test.sh` covers both paths.
