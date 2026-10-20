@@ -152,12 +152,12 @@
         ]
       },
       "operator-queue-persists": {
-        "description": "Unfinished operator actions retain their queue blocks.",
+        "description": "Unfinished operator actions keep their open issues.",
         "claude": [
-          "remove the block only when done"
+          "close it only when done"
         ],
         "agents": [
-          "remove the block only when done"
+          "close it only when done"
         ]
       }
     },
