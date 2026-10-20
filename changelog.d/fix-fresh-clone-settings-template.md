@@ -71,3 +71,7 @@
   suite runs the recipe straight from the README. CLAUDE-GUIDE's Hooks
   section, `claude/scripts/README.md` and `check-hooks-wired.sh`'s hints
   point at the template.
+- **`setup.sh`**: the seed copies the template into a temp file beside the
+  target, checks it is complete, then installs it with `ln`, which is atomic
+  and refuses an existing file. A failed or partial read leaves no
+  settings.json behind for later runs to skip (Codex bot, #681).

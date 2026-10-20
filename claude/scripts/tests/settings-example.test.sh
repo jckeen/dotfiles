@@ -333,6 +333,7 @@ fi
 # seed_claude_settings, extracted from setup.sh and run against a throwaway
 # HOME with no claude-memory bootstrap.
 eval "$(sed -n '/^seed_claude_settings()/,/^}/p' "$SETUP")"
+eval "$(sed -n '/^seed_claude_settings_atomic()/,/^}/p' "$SETUP")"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 HOME_DIR="$T"
@@ -347,6 +348,19 @@ if [ ! -e "$T/.claude" ] && [ "$SETTINGS_SEEDED" = would ] && grep -q '\[DRY\] w
 else
   fail "dry-run seed wrote to HOME or printed no preview"
 fi
+
+# A failed read must leave no settings.json (not an empty or truncated one,
+# which every later run would skip) and no seed temp file (#681 review).
+DRY_RUN=0 SETTINGS_SEEDED=""
+SETTINGS_EXAMPLE="$T/missing-example.json"
+seed_claude_settings > "$T.out" 2>&1
+if [ ! -e "$CLAUDE_SETTINGS" ] && [ -z "$SETTINGS_SEEDED" ] \
+  && [ -z "$(find "$T/.claude" -mindepth 1 -print 2>/dev/null)" ] && grep -q 'WARNING: could not create' "$T.out"; then
+  ok "a failed template read leaves no settings.json and no temp file"
+else
+  fail "a failed template read left a settings.json or temp file: $(find "$T/.claude" -mindepth 1 2>/dev/null | tr '\n' ' ')"
+fi
+SETTINGS_EXAMPLE="$EXAMPLE"
 
 DRY_RUN=0 SETTINGS_SEEDED=""
 seed_claude_settings > "$T.out" 2>&1

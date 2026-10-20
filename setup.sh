@@ -1385,13 +1385,28 @@ seed_claude_settings() {
   if [ "${DRY_RUN:-0}" = "1" ]; then
     echo "  [DRY] would create $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
     SETTINGS_SEEDED="would"
-  elif mkdir -p "$HOME_DIR/.claude" \
-    && (set -C; cat "$SETTINGS_EXAMPLE" > "$CLAUDE_SETTINGS"); then
+  elif seed_claude_settings_atomic; then
     echo "  -> created $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
     SETTINGS_SEEDED="yes"
   else
     echo "  !! WARNING: could not create $CLAUDE_SETTINGS; copy claude/settings.example.json there by hand."
   fi
+}
+# Copy into a temp file beside the target, check it is complete, then install
+# it with `ln`, which is atomic and refuses an existing target (the noclobber
+# guarantee). A failed or partial read never leaves a truncated settings.json,
+# which every later run would otherwise skip at the existence check above.
+seed_claude_settings_atomic() {
+  local tmp
+  mkdir -p "$HOME_DIR/.claude" || return 1
+  tmp="$(mktemp "$HOME_DIR/.claude/.settings.json.seed.XXXXXX")" || return 1
+  if cat "$SETTINGS_EXAMPLE" > "$tmp" && cmp -s "$SETTINGS_EXAMPLE" "$tmp" \
+    && ln "$tmp" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
 }
 if service_selected claude; then
   seed_claude_settings
