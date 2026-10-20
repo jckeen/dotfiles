@@ -63,6 +63,9 @@ exit 1
 STUB
 chmod +x "$FAKE_BIN/claude" || { echo "FAIL - chmod the claude stub" >&2; exit 1; }
 export PATH="$FAKE_BIN:$PATH"
+# The hook honours these the way Claude Code does; a value inherited from the
+# operator's shell would point cases at the real config.
+unset CLAUDE_CONFIG_DIR CLAUDE_CODE_PLUGIN_DIRS
 [[ "$(command -v claude)" == "$FAKE_BIN/claude" ]] \
   || { echo "FAIL - the claude stub does not shadow the real CLI" >&2; exit 1; }
 
@@ -735,6 +738,24 @@ run_listed '[{"id":"surr\ud800@far","scope":"user","installPath":"@H@/elsewhere/
 assert "listed: a lone-surrogate id does not abort the scan" \
   'outline "  • modded@mkt" && outgrep "surr_@far"'
 assert "listed: the scan around a lone-surrogate id still exits 0" "[ $rc -eq 0 ]"
+
+# CLAUDE_CONFIG_DIR relocates every ~/.claude path for Claude Code, so the
+# static scan reads it there: a mod cached only under it is named.
+CD="$(mktemp -d)" || die "mktemp -d for CLAUDE_CONFIG_DIR"
+mkdir -p "$CD/plugins/cache/mkt/cfgmod/1.0.0/hooks" "$CD/skills/cs/hooks" \
+  "$CD/skills/cs/.claude-plugin" || die "mkdir config-dir fixtures"
+printf '%s\n' '{"modules":["./register.js"]}' > "$CD/plugins/cache/mkt/cfgmod/1.0.0/hooks/hooks.json" \
+  || die "write cfgmod"
+printf '%s\n' '{"modules":["./register.js"]}' > "$CD/skills/cs/hooks/hooks.json" || die "write cs"
+printf '%s\n' '{"name":"cfgskill"}' > "$CD/skills/cs/.claude-plugin/plugin.json" \
+  || die "write cs plugin.json"
+CLAUDE_CONFIG_DIR="$CD" run_listed '[]'
+assert "config dir: a mod cached under CLAUDE_CONFIG_DIR is named" 'outline "  • cfgmod@mkt"'
+assert "config dir: a skills-dir mod under CLAUDE_CONFIG_DIR is named" \
+  'outline "  • cfgskill@skills-dir"'
+assert "config dir: ~/.claude is not read when CLAUDE_CONFIG_DIR is set" \
+  '! outgrep "modded@mkt"'
+rm -rf "$CD"
 
 run_listed 'not json at all'
 assert "listed: a garbage listing falls back to the static scan" \

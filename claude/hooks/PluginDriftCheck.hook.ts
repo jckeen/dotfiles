@@ -133,10 +133,13 @@ const HOOK_PATH = realpathSync(fileURLToPath(import.meta.url));
 const DOTFILES_DIR =
   process.env.DOTFILES_DIR ?? join(dirname(HOOK_PATH), '..', '..');
 const MANIFEST = join(DOTFILES_DIR, 'claude', 'plugins.txt');
-const INSTALLED = join(HOME, '.claude', 'plugins', 'installed_plugins.json');
-const SETTINGS = join(HOME, '.claude', 'settings.json');
-const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
-const SKILLS_DIR = join(HOME, '.claude', 'skills');
+// Claude Code reads every ~/.claude path under $CLAUDE_CONFIG_DIR when it is
+// set (https://code.claude.com/docs/en/claude-directory), so the scan does too.
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude');
+const INSTALLED = join(CLAUDE_DIR, 'plugins', 'installed_plugins.json');
+const SETTINGS = join(CLAUDE_DIR, 'settings.json');
+const PLUGINS_ROOT = join(CLAUDE_DIR, 'plugins');
+const SKILLS_DIR = join(CLAUDE_DIR, 'skills');
 const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
 const MAX_JSON_BYTES = 1024 * 1024;
 // Per-session rescan state (#618). Pruned at SessionStart after STATE_TTL_MS.
