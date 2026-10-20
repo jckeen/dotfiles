@@ -511,6 +511,28 @@ if [ "$(id -u)" -ne 0 ]; then
   chmod 755 "$H/$ARCH_REL"
   check "archive audit: unreadable archive root is KEPT, check fails" \
     "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*\.migrated-skill-dirs ' <<<"$out" && echo 1 || echo 0)"
+  # kept is skipped only as a real, readable, traversable dir; anything else
+  # at that name is flagged (gate review round 7: a regular file there was
+  # silently skipped and the check said "All good").
+  "$REAL_RM" -rf "$H/$ARCH_REL/kept"
+  printf 'mine\n' > "$H/$ARCH_REL/kept"
+  out="$(run_check --heal)"; rc=$?
+  check "archive audit: a regular file named kept is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/kept ' <<<"$out" && echo 1 || echo 0)"
+  "$REAL_RM" -f "$H/$ARCH_REL/kept"
+  mkdir -p "$FIX/keptperm/elsewhere"
+  printf 'mine\n' > "$FIX/keptperm/elsewhere/notes.md"
+  ln -s "$FIX/keptperm/elsewhere" "$H/$ARCH_REL/kept"
+  out="$(run_check --heal)"; rc=$?
+  check "archive audit: a symlink named kept is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/kept ' <<<"$out" && echo 1 || echo 0)"
+  "$REAL_RM" -f "$H/$ARCH_REL/kept"
+  new_fixture archfile
+  printf 'mine\n' > "$H/$ARCH_REL"
+  out="$(run_check --heal)"; rc=$?
+  check "archive audit: a regular file at the archive root is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*\.migrated-skill-dirs ' <<<"$out" && echo 1 || echo 0)"
+  R="$FIX/keptperm/dotfiles" H="$FIX/keptperm/home"
   chmod 300 "$H/$ARCH_REL"/demo.2*Z.[0-9]*
   out="$(run_check --heal)"; rc=$?
   chmod 755 "$H/$ARCH_REL"/demo.2*Z.[0-9]*

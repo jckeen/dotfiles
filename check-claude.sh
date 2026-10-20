@@ -220,19 +220,24 @@ archive_links_only() {
   done
   return 0
 }
-# Can't see inside, so it isn't safe to delete: an archive root or kept/ this
-# check cannot read and traverse hides its entries from the loop below.
-for dir in "$ARCHIVE" "$ARCHIVE/kept"; do
-  [ -d "$dir" ] && [ ! -L "$dir" ] || continue
-  [ -r "$dir" ] && [ -x "$dir" ] && continue
-  yellow "KEPT    ${dir#"$CLAUDE_DST"/} (cannot be read, so its content cannot be checked — review it, then remove it yourself)"
+# Can't see inside, so it isn't safe to delete: an archive root that is not a
+# real dir this check can read and traverse hides its entries from the loop
+# below (kept/ gets the same test inside the loop).
+if { [ -e "$ARCHIVE" ] || [ -L "$ARCHIVE" ]; } \
+  && ! { [ -d "$ARCHIVE" ] && [ ! -L "$ARCHIVE" ] && [ -r "$ARCHIVE" ] && [ -x "$ARCHIVE" ]; }; then
+  yellow "KEPT    ${ARCHIVE#"$CLAUDE_DST"/} (cannot be read as a directory, so its content cannot be checked — review it, then remove it yourself)"
   WARNINGS=$((WARNINGS + 1))
-done
+fi
 for entry in "$ARCHIVE"/* "$ARCHIVE"/.* "$ARCHIVE/kept"/* "$ARCHIVE/kept"/.*; do
   case "${entry##*/}" in .|..) continue ;; esac
   [ -e "$entry" ] || [ -L "$entry" ] || continue
-  [ "$entry" = "$ARCHIVE/kept" ] && continue
-  archive_links_only "$entry" && continue
+  # kept/ is skipped (its children are audited) only as a real, readable,
+  # traversable dir; a file, link or unreadable dir there is flagged.
+  if [ "$entry" = "$ARCHIVE/kept" ]; then
+    [ -d "$entry" ] && [ ! -L "$entry" ] && [ -r "$entry" ] && [ -x "$entry" ] && continue
+  elif archive_links_only "$entry"; then
+    continue
+  fi
   yellow "KEPT    ${entry#"$CLAUDE_DST"/} (not only old links: may be your own work — review it, then remove it yourself)"
   WARNINGS=$((WARNINGS + 1))
 done
