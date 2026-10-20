@@ -73,6 +73,12 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 7. `/changelog` — Log what happened
 8. `/handoff` — If ending the session
 
+> **Changelog in this repo:** a PR adds its entry as one fragment under
+> `changelog.d/` (named after the branch by convention) instead of editing
+> `CHANGELOG.md`. `assemble-changelog.sh --check` validates it before push,
+> and fragments are folded into `CHANGELOG.md` by hand at release time — see
+> [`claude/scripts/README.md`](claude/scripts/README.md).
+
 > **Push-time Codex gate:** `commit-push-pr` runs a local Codex review
 > (`codex-review-gate.sh` → `codex exec --output-schema`, structured JSON over
 > a gate-computed, injection-fenced diff) between staging and commit. It
