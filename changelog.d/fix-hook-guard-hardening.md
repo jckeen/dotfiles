@@ -34,7 +34,8 @@
   - reads a quoted message that spans lines;
   - takes the first non-blank line of a heredoc, and treats a message as a
     heredoc only when the `-m` argument is a `$(cat` substitution, with any
-    whitespace or newline between `$(` and `cat`;
+    whitespace or newline between `$(` and `cat`, ignoring CRLF line
+    endings when it looks for the first non-blank line;
   - denies a commit whose message it cannot read;
   - has no early-exiting reader (`head`, a piped `grep -q`) under pipefail,
     so a long heredoc can no longer SIGPIPE its own extraction into a

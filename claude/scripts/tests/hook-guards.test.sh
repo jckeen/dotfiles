@@ -107,6 +107,10 @@ heredoc_space_bad="$(printf '%s\n' 'git commit -m "$( cat <<'"'"'EOF'"'"'' 'no t
 denied "$(cc "$heredoc_space_bad")" \
   && ok "commit-msg: an invalid \$( cat heredoc message is still denied" \
   || fail "commit-msg: invalid \$( cat heredoc message allowed"
+heredoc_crlf="$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\n\r\nfix: valid subject after a CRLF blank line\r\n\r\nbody\r\nEOF\n)"\n')"
+[ -z "$(cc "$heredoc_crlf")" ] \
+  && ok "commit-msg: a heredoc whose leading blank line is CRLF is allowed" \
+  || fail "commit-msg: CRLF-leading heredoc message denied"
 heredoc_blank="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' '' 'fix: heredoc subject after a blank line' '' 'body' 'EOF' ')"')"
 [ -z "$(cc "$heredoc_blank")" ] \
   && ok "commit-msg: a heredoc message with a leading blank line is allowed" \

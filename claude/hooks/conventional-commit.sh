@@ -62,7 +62,7 @@ if grep -qE -- "-m[[:space:]]+\"?\\\$\\([[:space:]]*cat[[:space:]]+<<" <<<"$FOLD
   # The final awk reads ALL of its input: an early-exiting `head -1` could
   # SIGPIPE its writer under pipefail and wipe a correctly extracted subject.
   MSG=$(printf '%s\n' "$COMMAND" | sed -n "/cat <<.*EOF/,/EOF/p" | grep -v 'cat <<' | grep -v '^[[:space:]]*EOF' \
-    | awk 'NF && !d { sub(/^[[:space:]]+/, ""); print; d = 1 }') || MSG=""
+    | awk '{ sub(/\r$/, "") } NF && !d { sub(/^[[:space:]]+/, ""); print; d = 1 }') || MSG=""
 else
   # Inline style: the first `-m` argument — "double", 'single' or bare word.
   # The whole command is ONE awk record (RS is a control byte that never
@@ -94,7 +94,7 @@ fi
 # leading blank/whitespace-only lines
 # so the conventional-commit regex check applies to the FIRST NON-BLANK line —
 # which is the real subject — instead of erroring on a leading blank.
-FIRST_LINE=$(awk 'NF && !d { print; d = 1 }' <<<"$MSG")
+FIRST_LINE=$(awk '{ sub(/\r$/, "") } NF && !d { print; d = 1 }' <<<"$MSG")
 
 # Validate: first non-blank line must match  type(scope)?!?: description
 # Type list and subject regex are kept identical to the CI backstop
