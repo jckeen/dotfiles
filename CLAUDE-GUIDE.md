@@ -147,7 +147,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `check-antigravity.sh` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
-| `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
+| `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). A tmux server that is already running gets `~/.tmux.conf` re-sourced first, as `setup.sh` also does, so config edits reach it. Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
 | `ccw [cc args]` | `cc` on a second (work) Claude account: separate login and usage, shared settings, skills, plugins, memory and transcripts. See [A second account](#a-second-account-ccw) |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
 | `projects` | List projects in the dev dir |
