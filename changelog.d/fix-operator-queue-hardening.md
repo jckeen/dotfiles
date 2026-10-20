@@ -30,7 +30,13 @@
   labels on `--apply` (`gh issue edit --add-label`, pinned host). The hook
   lists only labelled issues, so without the labels the item would vanish
   once the file is retired. The dry run reports "would relabel #N". A failed
-  relabel fails the run and suppresses the retire-the-file message.
+  relabel fails the run and suppresses the retire-the-file message. Label
+  membership is decided in jq on the label array, never on a comma-joined
+  string, so a label named `team,operator-action` doesn't count. A matched
+  issue whose body lacks the block's `- action:` line (hand-filed, or a
+  repeated queue title with a different action) is reported as "needs
+  manual merge: #N" and left unmigrated. The apply then exits 1 without the
+  retire-the-file message.
 - Tests: fixture cases for the bounded snapshot (an `rm` wrapper measures
   it), recovery cleanup of only pattern-matching files, TERM cleanup,
   unlabelled same-title dedupe, and the status-only trailer. The `cp`-wrapper

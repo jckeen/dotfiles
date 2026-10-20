@@ -23,11 +23,10 @@ cat > "$FX/bin/gh" <<'GH'
 printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$1 $2" in
   "repo view")    echo "$FAKE_VIS ${FAKE_NWO:-o/r}" ;;
-  # gh's --label filters: an issue whose label was removed is listed only
-  # by a query without it.
-  # Columns: title, number, comma-joined labels ("-" for none).
-  "issue list")   printf 'already-there\t7\toperator-action,project:stringer\nrotate-\\token\t8\toperator-action\n001\t9\toperator-action\n100\t10\toperator-action\n'
-                  case " $* " in *" --label "*) ;; *) printf 'unlabelled-dupe\t11\t-\nhalf-labelled\t12\tproject:dotfiles\n' ;; esac ;;
+  # The script's -q program emits typed records (see the fixtures below);
+  # gh's --label filters, so the second set is listed only without it.
+  "issue list")   cat "$FAKE_ISSUES_LABELLED"
+                  case " $* " in *" --label "*) ;; *) cat "$FAKE_ISSUES_OTHER" ;; esac ;;
   "issue edit")   [ -z "${FAKE_EDIT_FAIL:-}" ] || { echo "HTTP 403" >&2; exit 1; } ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
@@ -42,6 +41,25 @@ case "$1 $2" in
 esac
 GH
 chmod +x "$FX/bin/gh"
+# Existing issues as the script's -q program renders them: "T title number
+# has-operator-action", one "L number label" per label and one "A number
+# line" per `- action:` body line, TAB-separated.
+rec() { local IFS=$'\t'; printf '%s\n' "$*"; }
+{
+  rec T already-there 7 true; rec L 7 operator-action; rec L 7 project:stringer; rec A 7 '- action: exists as #7'
+  rec T 'rotate-\token' 8 true; rec L 8 operator-action; rec A 8 '- action: exists as #8'
+  rec T 001 9 true; rec L 9 operator-action
+  rec T 100 10 true; rec L 10 operator-action
+} > "$FX/issues-labelled"
+{
+  rec T unlabelled-dupe 11 false; rec A 11 '- action: exists as #11, label removed'
+  rec T half-labelled 12 false; rec L 12 project:dotfiles; rec A 12 '- action: has its project label only'
+  # One label whose name contains a comma: not the operator-action label.
+  rec T comma-label 13 false; rec L 13 'team,operator-action'; rec A 13 '- action: comma label only'
+  # Filed by hand: labelled, but no queue fields in its body.
+  rec T hand-filed 14 true; rec L 14 operator-action
+} > "$FX/issues-other"
+export FAKE_ISSUES_LABELLED="$FX/issues-labelled" FAKE_ISSUES_OTHER="$FX/issues-other"
 export PATH="$FX/bin:$PATH" FAKE_LOG="$FX/gh.log" FAKE_BODIES="$FX/bodies"
 export XDG_STATE_HOME="$FX/state"
 unset OPERATOR_QUEUE_REPO
@@ -86,7 +104,7 @@ assert "dry run: no write call" "[ \"\$(writes)\" -eq 0 ]"
 assert "dry run: new block with its label" "grep -qE '^dot-thing +project:dotfiles +new$' <<<\"\$out\""
 assert "dry run: existing title skipped" "grep -qE '^already-there +project:stringer +#7 \\(exists, skipped\\)$' <<<\"\$out\""
 assert "dry run: unscoped block has no label" "grep -qE '^no-project-item +\\(none\\) +new$' <<<\"\$out\""
-assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 already have an issue (0 would be relabelled).' <<<\"\$out\""
+assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 already have an issue (0 would be relabelled, 0 need a manual merge).' <<<\"\$out\""
 
 run PRIVATE --apply
 assert "apply exits 0" "[ $rc -eq 0 ]"
@@ -101,7 +119,9 @@ assert "apply: body notes the migration" "grep -q '^Migrated from ~/.claude/oper
 printf '## repeated\n- action: one\n\n## repeated\n- action: two\n\n## rotate-\\token\n- action: exists as #8\n' > "$FX/dupes.md"
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/dupes.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: a title repeated in the queue is created once" "[ $rc -eq 0 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +#[0-9]+ \\(exists, skipped\\)$' <<<\"\$out\""
+# The second "repeated" block has a different action, so it is not adopted
+# into the first one's issue (its action would be lost): manual merge, rc 1.
+assert "apply: a title repeated in the queue is created once" "[ $rc -eq 1 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +needs manual merge: #[0-9]+ ' <<<\"\$out\""
 assert "apply: a backslash title matches its existing issue" "! grep -q -- '--title rotate-' '$FAKE_LOG' && grep -qF '#8 (exists, skipped)' <<<\"\$out\""
 
 # A same-title issue without the operator-action label (removed after a
@@ -116,7 +136,7 @@ assert "the title check lists issues regardless of label" "grep '^issue list' '$
 # item silently.
 assert "apply: the matched issue gets operator-action and its project label, pinned host" "grep -qx 'issue edit 11 -R github.com/o/r --add-label operator-action,project:stringer' '$FAKE_LOG'"
 assert "apply: the summary counts the relabel and still offers retirement" "grep -qF '1 relabelled' <<<\"\$out\" && grep -qF 'Then retire the file' <<<\"\$out\""
-printf '## half-labelled\n- project: dotfiles\n- action: has its project label only\n\n## already-there\n- project: stringer\n- action: fully labelled\n' > "$FX/half.md"
+printf '## half-labelled\n- project: dotfiles\n- action: has its project label only\n\n## already-there\n- project: stringer\n- action: exists as #7\n' > "$FX/half.md"
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/half.md" --repo o/r 2>&1)"; rc=$?
 assert "dry run: only reports 'would relabel #N', no write" "[ $rc -eq 0 ] && grep -qF 'would relabel #12: operator-action)' <<<\"\$out\" && ! grep -q '^issue edit' '$FAKE_LOG'"
@@ -128,6 +148,22 @@ assert "apply: only the missing labels are added; a fully labelled issue is left
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE FAKE_EDIT_FAIL=1 bash "$SCRIPT" --queue "$FX/half.md" --repo o/r --apply 2>&1)"; rc=$?
 assert "apply: a failed relabel fails the run and suppresses the retire message" "[ $rc -eq 1 ] && grep -qF 'could not relabel #12' <<<\"\$out\" && ! grep -qF 'retire the file' <<<\"\$out\""
+
+# Label boundaries: a label named "team,operator-action" is not operator-action.
+printf '## comma-label\n- action: comma label only\n' > "$FX/comma.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/comma.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: a comma-containing label does not count as operator-action" "[ $rc -eq 0 ] && grep -qx 'issue edit 13 -R github.com/o/r --add-label operator-action' '$FAKE_LOG'"
+
+# A hand-filed same-title issue without the block's action line is never
+# adopted: reported for a manual merge, left unmigrated, run fails on apply.
+printf '## hand-filed\n- deadline: 2026-12-01\n- action: do the hand-filed thing\n' > "$FX/hand.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/hand.md" --repo o/r 2>&1)"; rc=$?
+assert "dry run: a hand-filed match is reported as needing a manual merge" "[ $rc -eq 0 ] && grep -qF 'needs manual merge: #14' <<<\"\$out\" && ! grep -q '^issue edit' '$FAKE_LOG'"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/hand.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: a hand-filed match fails the run, is not edited or recreated, no retire message" "[ $rc -eq 1 ] && grep -qF 'needs manual merge: #14' <<<\"\$out\" && ! grep -qE '^issue (edit|create)' '$FAKE_LOG' && ! grep -qF 'retire the file' <<<\"\$out\""
 
 # Numeric-looking titles compare as strings: "1" is not "001", "1e2" is not "100".
 printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"

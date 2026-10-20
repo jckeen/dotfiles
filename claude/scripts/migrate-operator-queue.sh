@@ -10,6 +10,8 @@
 # are skipped, so a re-run after a partial apply only creates what is missing.
 # A matched issue lacking `operator-action` (or the row's project label) gets
 # it, since the hook lists only labelled issues; a failed relabel fails the run.
+# A matched issue whose body lacks the block's `- action:` line (hand-filed)
+# is reported "needs manual merge: #N" and left alone; an apply then fails.
 #
 # Each issue's title is the slug and its body is the block's own field lines
 # verbatim (`- added:`, `- verified:`, `- project:`, `- deadline:`, `- action:`),
@@ -32,7 +34,8 @@
 # switches to the issues.
 #
 # Usage: migrate-operator-queue.sh [--apply] [--repo [host/]owner/name] [--queue path]
-# EXIT: 0 ok; 1 a gh call or relabel failed, the repo is not private, or another apply
+# EXIT: 0 ok; 1 a gh call or relabel failed, an item needs a manual merge, the
+#   repo is not private, or another apply
 #   holds the lock (or flock is missing); 2 usage error.
 # SELF-TEST: claude/scripts/tests/migrate-operator-queue.test.sh
 set -euo pipefail
@@ -45,7 +48,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=1 ;;
     --repo) REPO="${2:?--repo needs owner/name}"; shift ;;
     --queue) QUEUE="${2:?--queue needs a path}"; shift ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -103,14 +106,24 @@ fi
 # Existing issues in any state and with any labels, by exact title: an
 # issue whose operator-action label was removed (after a partial migration,
 # or one filed by hand) still has the title, and gh's --label would hide it.
-# Columns: title, number, comma-joined labels ("-" for none).
+# TAB-separated typed records, so no label or line boundary is ever lost to
+# a join (GitHub allows commas in label names):
+#   T <title> <number> <has operator-action: true|false>  one per issue
+#   L <number> <label>                                    one per label
+#   A <number> <body line starting "- action:">           one per such line
+# Membership in operator-action is decided in jq on the label array; the
+# project label and the action line are exact whole-record matches below.
 LIST_LIMIT=10000
-gh issue list -R "$REPO" --state all --limit "$LIST_LIMIT" --json number,title,labels \
-  -q '.[] | ([.labels[].name] | join(",")) as $l | "\(.title)\t\(.number)\t\(if $l == "" then "-" else $l end)"' \
+gh issue list -R "$REPO" --state all --limit "$LIST_LIMIT" --json number,title,labels,body \
+  -q '.[] | .number as $n
+      | "T\t\(.title)\t\($n)\t\(any(.labels[]; .name == "operator-action"))",
+        ("L\t\($n)\t\(.labels[].name)"),
+        ((.body // "") | gsub("\r"; "") | split("\n")[] | select(startswith("- action:"))
+          | gsub("\t"; " ") | "A\t\($n)\t\(.)")' \
   > "$work/existing.tsv"
 # The dedup is only sound over the complete list: a full page could hide a
 # title past the limit, and its block would be created twice.
-if [ "$(wc -l < "$work/existing.tsv")" -ge "$LIST_LIMIT" ]; then
+if [ "$(grep -c '^T' "$work/existing.tsv" || true)" -ge "$LIST_LIMIT" ]; then
   echo "refusing: $REPO has $LIST_LIMIT+ issues; the existing-title check would be incomplete" >&2
   exit 1
 fi
@@ -130,8 +143,17 @@ if [ "$APPLY" -eq 1 ]; then
   done < "$work/wanted.txt"
 fi
 
+# has_rec <type> <number> <value> — an exact "<type> TAB <number> TAB <value>"
+# record exists (ENVIRON, not -v, so backslashes stay literal).
+has_rec() {
+  k="$1" n="$2" v="$3" awk -F'\t' '
+    $1 == ENVIRON["k"] && ($2 "") == (ENVIRON["n"] "") &&
+    substr($0, length($1) + length($2) + 3) == ENVIRON["v"] { f = 1; exit }
+    END { exit !f }' "$work/existing.tsv"
+}
+
 today="$(date +%Y-%m-%d)"
-total=0; new=0; existing=0; relabel=0; relabel_failed=0
+total=0; new=0; existing=0; relabel=0; relabel_failed=0; manual=0
 printf '%-48s  %-24s  %s\n' "SLUG" "LABEL" "TARGET"
 while IFS=$'\t' read -r n slug group; do
   total=$((total + 1))
@@ -139,18 +161,27 @@ while IFS=$'\t' read -r n slug group; do
   # ENVIRON, not -v: awk -v would turn a backslash in the title into an escape.
   # The "" concatenations force a string comparison: awk would otherwise
   # compare numeric-looking titles as numbers ("1" == "001", "1e2" == "100").
-  match="$(t="$slug" awk -F'\t' '($1 "") == (ENVIRON["t"] "") { print $2 "\t" $3; exit }' "$work/existing.tsv")"
+  match="$(t="$slug" awk -F'\t' '$1 == "T" && ($2 "") == (ENVIRON["t"] "") { print $3 "\t" $4; exit }' "$work/existing.tsv")"
   num="${match%%$'\t'*}"
   if [ -n "$num" ]; then
     existing=$((existing + 1))
+    # A same-title issue whose body lacks this block's action line (filed by
+    # hand, or edited since) is not the migrated item; adopting it would
+    # retire the block's action, deadline and dates. It is left for the
+    # operator to merge, and an apply then fails.
+    action_line="$(grep -m1 '^- action:' "$work/$n.body" 2>/dev/null || true)"
+    if [ -n "$action_line" ] && ! has_rec A "$num" "$action_line"; then
+      manual=$((manual + 1))
+      printf '%-48s  %-24s  %s\n' "$slug" "$label" "needs manual merge: #$num (its body lacks this block's action line)"
+      continue
+    fi
     # The hook lists only operator-action issues: a matched issue lacking the
     # labels this migration would set drops out of the reminders once the
     # file is retired, so it gets them rather than counting as migrated.
-    have=",${match#*$'\t'},"
     missing=""
-    case "$have" in *,operator-action,*) ;; *) missing="operator-action" ;; esac
-    if [ "$group" != "-" ]; then
-      case "$have" in *,"$label",*) ;; *) missing="${missing:+$missing,}$label" ;; esac
+    [ "${match#*$'\t'}" = true ] || missing="operator-action"
+    if [ "$group" != "-" ] && ! has_rec L "$num" "$label"; then
+      missing="${missing:+$missing,}$label"
     fi
     target="#$num (exists, skipped)"
     if [ -n "$missing" ]; then
@@ -175,19 +206,25 @@ while IFS=$'\t' read -r n slug group; do
   [ "$group" = "-" ] || args+=(--label "$label")
   url="$(gh "${args[@]}")"
   # Record it, so a repeated title later in this same queue is skipped too.
-  labels="operator-action"; [ "$group" = "-" ] || labels="$labels,$label"
-  printf '%s\t%s\t%s\n' "$slug" "${url##*/}" "$labels" >> "$work/existing.tsv"
+  num="${url##*/}"
+  {
+    printf 'T\t%s\t%s\ttrue\n' "$slug" "$num"
+    [ "$group" = "-" ] || printf 'L\t%s\t%s\n' "$num" "$label"
+    grep '^- action:' "$work/$n.body" | while IFS= read -r l; do printf 'A\t%s\t%s\n' "$num" "$l"; done || true
+  } >> "$work/existing.tsv"
 done < "$work/index.tsv"
 
 echo ""
 if [ "$APPLY" -eq 1 ]; then
-  echo "$total item(s): $new created, $existing already had an issue ($relabel relabelled)."
-  if [ "$relabel_failed" -gt 0 ]; then
-    echo "$relabel_failed relabel(s) failed; those issues lack operator-action or their project label, so the hook would not show them. The queue file is still the source." >&2
+  echo "$total item(s): $new created, $existing already had an issue ($relabel relabelled, $manual need a manual merge)."
+  if [ "$relabel_failed" -gt 0 ] || [ "$manual" -gt 0 ]; then
+    [ "$relabel_failed" -eq 0 ] || echo "$relabel_failed relabel(s) failed; those issues lack operator-action or their project label, so the hook would not show them." >&2
+    [ "$manual" -eq 0 ] || echo "$manual item(s) match an issue whose body lacks the block's action line; merge each block into its issue by hand." >&2
+    echo "Not fully migrated: the queue file is still the source." >&2
     exit 1
   fi
   echo "Check: gh issue list -R $REPO --label operator-action --state open --limit 1000 | wc -l"
   echo "Then retire the file: put '> **Historical** — point-in-time record ($today). Do not act on this.' as its first line."
 else
-  echo "$total item(s): $new would be created, $existing already have an issue ($relabel would be relabelled). Dry run — re-run with --apply to create them."
+  echo "$total item(s): $new would be created, $existing already have an issue ($relabel would be relabelled, $manual need a manual merge). Dry run — re-run with --apply to create them."
 fi
