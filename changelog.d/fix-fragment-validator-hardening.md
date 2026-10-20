@@ -15,7 +15,7 @@
   already refused on `main`; regression tests now pin them. Item 3 (one
   preamble code path) and the PR-scope rule belong to the operator CI patch,
   not this content-only script.
-- Six fragments already on `main` wrote placeholders in angle brackets
+- Seven fragments already on `main` wrote placeholders in angle brackets
   inside inline code; they now use `NAME`-style placeholders so they pass.
 - **`claude/scripts/tests/assemble-changelog.test.sh`**: one test per case.
   HTML-opening lines that were refused by line shape are now refused first
