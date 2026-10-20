@@ -21,12 +21,17 @@
   Only a plain `git worktree …` is exempt, and a fancier worktree call that
   contains branch-op text is a safe false positive. After `--`, checkout
   arguments are pathspecs, so `git checkout -- -backup` is allowed (#695).
+  Cheap exits run first: a command with neither `switch` nor `checkout`
+  (every blocked pattern has one) costs one grep, and the linked-worktree
+  and contention checks run before any parsing, so a 4000-line commit
+  command is allowed in milliseconds instead of about 20 seconds.
 - **`claude/hooks/conventional-commit.sh`**: extracts `-m` messages with
   POSIX `awk`/`sed` instead of `grep -P`, which macOS grep lacks. Before,
   the error was masked and `-m` messages went unchecked. It now:
   - reads a quoted message that spans lines;
   - takes the first non-blank line of a heredoc, and treats a message as a
-    heredoc only when the `-m` argument is a `$(cat` substitution;
+    heredoc only when the `-m` argument is a `$(cat` substitution, with any
+    whitespace or newline between `$(` and `cat`;
   - denies a commit whose message it cannot read;
   - has no early-exiting reader (`head`, a piped `grep -q`) under pipefail,
     so a long heredoc can no longer SIGPIPE its own extraction into a

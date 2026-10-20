@@ -95,6 +95,18 @@ done
 [ "$long_denials" -eq 0 ] \
   && ok "commit-msg: a long valid heredoc is never denied (no SIGPIPE race)" \
   || fail "commit-msg: long valid heredoc denied in $long_denials of 10 runs"
+heredoc_space="$(printf '%s\n' 'git commit -m "$( cat <<'"'"'EOF'"'"'' 'docs: spaced substitution' 'EOF' ')"')"
+[ -z "$(cc "$heredoc_space")" ] \
+  && ok "commit-msg: a \$( cat <<EOF heredoc is recognised" \
+  || fail "commit-msg: \$( cat <<EOF heredoc denied"
+heredoc_nl="$(printf '%s\n' 'git commit -m "$(' 'cat <<'"'"'EOF'"'"'' 'docs: newline before cat' 'EOF' ')"')"
+[ -z "$(cc "$heredoc_nl")" ] \
+  && ok "commit-msg: a heredoc with a newline before cat is recognised" \
+  || fail "commit-msg: heredoc with a newline before cat denied"
+heredoc_space_bad="$(printf '%s\n' 'git commit -m "$( cat <<'"'"'EOF'"'"'' 'no type here' 'EOF' ')"')"
+denied "$(cc "$heredoc_space_bad")" \
+  && ok "commit-msg: an invalid \$( cat heredoc message is still denied" \
+  || fail "commit-msg: invalid \$( cat heredoc message allowed"
 heredoc_blank="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' '' 'fix: heredoc subject after a blank line' '' 'body' 'EOF' ')"')"
 [ -z "$(cc "$heredoc_blank")" ] \
   && ok "commit-msg: a heredoc message with a leading blank line is allowed" \
@@ -140,6 +152,10 @@ git switch w" \
   denied "$(wg "$blocked")" \
     && ok "worktree-guard blocks: $(tr '\n' ' ' <<<"$blocked")" \
     || fail "worktree-guard let through: $(tr '\n' ' ' <<<"$blocked")"
+  # The hook's cheap exit skips any command with neither word; every blocked
+  # pattern must therefore contain one, or that exit would hide a block.
+  grep -qE 'switch|checkout' <<<"$blocked" \
+    || fail "cheap-exit invariant broken: a blocked case has neither switch nor checkout"
 done
 # The last blocked case above is the documented safe false positive: only a
 # segment that is plainly `git worktree …` is exempt.
@@ -151,6 +167,24 @@ for allowed in 'git worktree add ../p -b q' 'git worktree list' 'git status && g
 done
 [ -z "$(wg 'git switch -c feature' "$T/linked")" ] \
   && ok "worktree-guard never blocks inside a linked worktree" \
+  || fail "worktree-guard blocked a branch op inside a linked worktree"
+# Latency: a 4000-line commit command (a long heredoc body) must be allowed
+# fast — in the contended primary checkout, in a linked worktree, and when
+# the body mentions neither branch-op word. Bound ~1s, with slack for CI.
+big_body="$(seq 1 4000 | sed 's/^/line /')"
+big_cmd="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' 'feat: big' '' "$big_body" 'EOF' ')"')"
+TIMEFORMAT=%R
+for where in "$PRIMARY" "$T/linked"; do
+  secs="$( { time wg "$big_cmd" "$where" >"$T/wg-out"; } 2>&1 )"
+  if [ ! -s "$T/wg-out" ] && awk -v s="$secs" 'BEGIN { exit !(s < 2.0) }'; then
+    ok "worktree-guard allows a 4000-line commit command in ${secs}s (${where##*/})"
+  else
+    fail "worktree-guard on a 4000-line command: ${secs}s or not allowed (${where##*/})"
+  fi
+done
+unset TIMEFORMAT
+[ -z "$(wg 'git switch -c feature' "$T/linked")" ] \
+  && ok "worktree-guard: linked worktree still allowed after the latency cases" \
   || fail "worktree-guard blocked a branch op inside a linked worktree"
 
 # ── PreMergeCodexHarvest.hook.sh: anchored match ─────────────────────────

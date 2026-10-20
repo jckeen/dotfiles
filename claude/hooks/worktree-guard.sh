@@ -96,6 +96,9 @@ is_branch_op() {
   # Turn every separator character into a newline: this splits `&&`, `||`,
   # `;`, `|`, `&`, `$(…)`, `(…)` and backticks alike. Quotes are kept.
   while IFS= read -r seg; do
+    # A segment with neither word cannot be a branch op on its own (the
+    # whole-command fallback below still sees it); skip it without forking.
+    case "$seg" in *switch*|*checkout*) ;; *) continue ;; esac
     # Exempt only a segment that is plainly `git worktree …` (how you
     # comply). Anything fancier before the subcommand is not exempt, so
     # `git -C x worktree add -b switch …` is a known, safe false positive.
@@ -154,15 +157,22 @@ is_branch_op() {
   return 1
 }
 
-is_branch_op "$CMD" || exit 0
+# Cheap exits first, so a huge command (a long heredoc body) costs one grep,
+# not a parse per line.
+# 1. Every pattern this guard blocks contains the word `switch` or
+#    `checkout` (asserted in hook-guards.test.sh), so a command with neither
+#    can never be a block.
+grep -qE 'switch|checkout' <<<"$CMD" || exit 0
 
-# Linked worktree? Its git dir lives under .../worktrees/<name>. Allow.
+# 2. Linked worktree? Its git dir lives under .../worktrees/<name>. Allow.
 gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
 case "$gitdir" in */worktrees/*) exit 0 ;; esac
 
-# Primary checkout. Only guard when another worktree exists (contention).
+# 3. Primary checkout. Only guard when another worktree exists (contention).
 wt=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
 [ "${wt:-1}" -le 1 ] && exit 0
+
+is_branch_op "$CMD" || exit 0
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$PWD"
 reason="Worktree guard: you're in the PRIMARY checkout and ${wt} worktrees exist — another session may be active, and creating/switching a branch here can switch it out from under them. Work in an isolated worktree instead:  git worktree add ../$(basename "$root")-<branch> -b <branch>  then cd there. ('git worktree add' is always allowed; branch ops inside any linked worktree are never blocked.)"

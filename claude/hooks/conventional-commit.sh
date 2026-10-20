@@ -50,7 +50,11 @@ fi
 # failed extraction was masked and the commit went through unchecked.
 # Heredoc only when the -m argument itself is a `$(cat <<…` substitution —
 # a literal "cat <<EOF" inside an inline message is just text.
-if grep -qE -- "-m[[:space:]]+\"?\\\$\\(cat[[:space:]]+<<" <<<"$COMMAND"; then
+# Newlines are folded first so `$(` and `cat` may sit on different lines, and
+# whitespace is allowed between them (`$( cat <<'EOF'`): bash builds the
+# same argument from every spelling.
+FOLDED="${COMMAND//$'\n'/ }"
+if grep -qE -- "-m[[:space:]]+\"?\\\$\\([[:space:]]*cat[[:space:]]+<<" <<<"$FOLDED"; then
   # Heredoc style: git commit -m "$(cat <<'EOF' ... EOF )"
   # Extract content between the heredoc markers
   # `|| MSG=""`: an empty extraction must reach the fail-closed deny below,
