@@ -1361,6 +1361,57 @@ if [ ! -e "$HOME/.bun/bin/bun" ]; then
   echo "  -> WARNING: ~/.bun/bin/bun is missing; TypeScript hooks may not run until bun is installed"
 fi
 
+# ─── 2c. Public settings.json for a clone without claude-memory (#588) ──
+# Claude Code runs only the hooks registered in ~/.claude/settings.json and
+# shows a status line only when its statusLine key names one, so the linked
+# hooks are inert without that file. Without the private bootstrap nothing
+# else writes it: seed a real file (a copy, not a link, so local edits never
+# land in the repo) from the public example. An existing settings.json —
+# including a dangling symlink — is never touched; the noclobber write
+# refuses one that appears between the check and the copy.
+#
+# This runs BEFORE the Claude CLI install, auth and plugin steps (§3–3b):
+# a user-scope plugin install creates settings.json holding only
+# enabledPlugins, and seeding after it would find the file and skip, leaving
+# every hook unregistered. Claude then merges enabledPlugins into this file.
+CLAUDE_SETTINGS="$HOME_DIR/.claude/settings.json"
+SETTINGS_EXAMPLE="$DOTFILES_DIR/claude/settings.example.json"
+SETTINGS_SEEDED=""
+seed_claude_settings() {
+  [ -f "$BOOTSTRAP_SCRIPT" ] && return 0
+  [ -e "$CLAUDE_SETTINGS" ] || [ -L "$CLAUDE_SETTINGS" ] && return 0
+  echo ""
+  echo "--- Claude Code settings.json (no claude-memory bootstrap found) ---"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would create $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
+    SETTINGS_SEEDED="would"
+  elif seed_claude_settings_atomic; then
+    echo "  -> created $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
+    SETTINGS_SEEDED="yes"
+  else
+    echo "  !! WARNING: could not create $CLAUDE_SETTINGS; copy claude/settings.example.json there by hand."
+  fi
+}
+# Copy into a temp file beside the target, check it is complete, then install
+# it with `ln`, which is atomic and refuses an existing target (the noclobber
+# guarantee). A failed or partial read never leaves a truncated settings.json,
+# which every later run would otherwise skip at the existence check above.
+seed_claude_settings_atomic() {
+  local tmp
+  mkdir -p "$HOME_DIR/.claude" || return 1
+  tmp="$(mktemp "$HOME_DIR/.claude/.settings.json.seed.XXXXXX")" || return 1
+  if cat "$SETTINGS_EXAMPLE" > "$tmp" && cmp -s "$SETTINGS_EXAMPLE" "$tmp" \
+    && ln "$tmp" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+if service_selected claude; then
+  seed_claude_settings
+fi
+
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
 # Official native installer (verified against https://code.claude.com/docs/en/setup
 # 2026-07-10): https://claude.ai/install.sh for macOS, Linux, and WSL.
@@ -2621,6 +2672,35 @@ echo "  Completed in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
 echo "  Symlinks: created=${LINKS_CREATED:-0}  verified=${LINKS_VERIFIED:-0}  broken=${LINKS_BROKEN:-0}"
 if [ "${BOOTSTRAP_RC:-0}" -ne 0 ]; then
   echo "  claude-memory bootstrap: FAILED — re-run manually: $BOOTSTRAP_SCRIPT"
+fi
+case "$SETTINGS_SEEDED" in
+  yes)   echo "  settings.json: created ~/.claude/settings.json from claude/settings.example.json (hooks + status line)" ;;
+  would) echo "  settings.json: would create ~/.claude/settings.json from claude/settings.example.json" ;;
+esac
+# Hooks linked but nothing registering them: say so loudly, since every
+# safety hook is silently off otherwise (#588). A dry-run links nothing, so
+# it only previews the seed above.
+# A settings.json that exists but lacks the dotfiles registrations (e.g. one a
+# plugin install wrote before the seed existed, or one with only custom hooks)
+# is judged by check-hooks-wired.sh itself — the same template-aware rule the
+# `cc` launch check applies — rather than a second copy of that logic here.
+warn_unwired_hooks() {
+  [ -e "$HOME_DIR/.claude/hooks" ] || return 0
+  if [ ! -e "$CLAUDE_SETTINGS" ]; then
+    echo "  !! WARNING: ~/.claude/settings.json is missing — the linked hooks and status line will NOT run."
+    echo "     Fix: cp $SETTINGS_EXAMPLE ~/.claude/settings.json"
+    return 0
+  fi
+  local hw_out
+  if ! hw_out="$(HOME="$HOME_DIR" \
+    "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" --strict --quiet 2>&1)"; then
+    echo "  !! WARNING: ~/.claude/settings.json does not register every dotfiles hook — those will NOT run:"
+    printf '%s\n' "$hw_out" | sed 's/^/     /'
+    echo "     Fix: merge the matching entries from $SETTINGS_EXAMPLE into it."
+  fi
+}
+if service_selected claude && [ "${DRY_RUN:-0}" != "1" ]; then
+  warn_unwired_hooks
 fi
 if [ "${JULES_INSTALLED:-0}" -eq 1 ]; then
   echo "  jules_installed=1  (routine lane: 'jules login' for the CLI, ~/.config/jules/api-key for dispatch)"

@@ -43,7 +43,7 @@ SETTINGS="$HOME/.claude/settings.json"
 
 [ -d "$HOOKS_DIR" ] || { green "no hooks dir — nothing to check"; exit 0; }
 if [ ! -f "$SETTINGS" ]; then
-  yellow "settings.json not found at $SETTINGS — cannot verify hook wiring."
+  yellow "settings.json not found at $SETTINGS — no hook will run. Without claude-memory, copy $REPO_ROOT/claude/settings.example.json there."
   [ "$STRICT" -eq 1 ] && exit 1 || exit 0
 fi
 command -v jq >/dev/null 2>&1 || { yellow "jq not found — skipping hook-wiring check"; exit 0; }
@@ -51,9 +51,24 @@ command -v jq >/dev/null 2>&1 || { yellow "jq not found — skipping hook-wiring
 # All command strings referenced anywhere under .hooks (recursive).
 WIRED_COMMANDS="$(jq -r '.hooks // {} | .. | .command? // empty' "$SETTINGS" 2>/dev/null || true)"
 
+# Hooks the public template deliberately leaves out (claude/settings-optout.txt,
+# shared with settings-example.test.sh). They apply unless the live settings
+# opt in to requiring every hook with `"env": {"CHECK_HOOKS_REQUIRE_ALL": "1"}`
+# — a full private setup does. The opt-in is read from the settings file
+# itself, never the process environment, so every shell gets the same answer;
+# whether a private repo or bootstrap exists says nothing about which hooks
+# its settings expect. The list is only consulted for a hook the live
+# settings do not register; any hook not listed still reports as drift.
+REQUIRE_ALL="$(jq -r '.env.CHECK_HOOKS_REQUIRE_ALL // empty' "$SETTINGS" 2>/dev/null || true)"
+TEMPLATE_OPT_OUT=" "
+if [ "$REQUIRE_ALL" != "1" ] && [ -f "$REPO_ROOT/claude/settings-optout.txt" ]; then
+  TEMPLATE_OPT_OUT=" $(sed 's/#.*//' "$REPO_ROOT/claude/settings-optout.txt" | awk 'NF {printf "%s ", $1}')"
+fi
+
 is_opted_out() {
   local name="$1" o
-  for o in "${OPT_OUT[@]}"; do [ "$name" = "$o" ] && return 0; done
+  case "$TEMPLATE_OPT_OUT" in *" $name "*) return 0 ;; esac
+  for o in ${OPT_OUT[@]+"${OPT_OUT[@]}"}; do [ "$name" = "$o" ] && return 0; done
   return 1
 }
 
@@ -61,8 +76,8 @@ drift=0
 for f in "$HOOKS_DIR"/*.sh "$HOOKS_DIR"/*.ts; do
   [ -e "$f" ] || continue
   name="$(basename "$f")"
-  is_opted_out "$name" && continue
   if ! printf '%s\n' "$WIRED_COMMANDS" | grep -qF "$name"; then
+    is_opted_out "$name" && continue
     [ "$drift" -eq 0 ] && yellow "Hook files present but NOT wired in settings.json (they will not run):"
     drift=$((drift + 1))
     printf '    - %s\n' "$name"
@@ -70,8 +85,9 @@ for f in "$HOOKS_DIR"/*.sh "$HOOKS_DIR"/*.ts; do
 done
 
 if [ "$drift" -ne 0 ]; then
-  echo "  Fix: add them to the .hooks block of $SETTINGS (this lives in the"
-  echo "  private claude-memory repo), or add to OPT_OUT in check-hooks-wired.sh"
+  echo "  Fix: add them to the .hooks block of $SETTINGS (from the private"
+  echo "  claude-memory repo when you have one; claude/settings.example.json"
+  echo "  shows each registration), or add to OPT_OUT in check-hooks-wired.sh"
   echo "  if intentionally disabled."
   [ "$STRICT" -eq 1 ] && exit 1
   exit 0
