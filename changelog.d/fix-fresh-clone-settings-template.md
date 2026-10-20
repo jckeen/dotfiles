@@ -6,9 +6,20 @@
   `$HOME` path, so a home directory with spaces still works. It holds no
   permissions, MCP servers or env. Listed in `claude/nolink.txt`, so the
   symlink pass never deploys it (#588).
-  `StripProjectPermissions.hook.ts` is left out on purpose: it deletes a
+  Two hooks are left out on purpose, listed with their reasons in the new
+  `claude/settings-optout.txt`. `StripProjectPermissions.hook.ts` deletes a
   project's whole `permissions` block, deny rules included, which is only
   safe beside a global allowlist the template does not ship.
+  `OperatorQueueReminder.hook.sh` defaults to the owner's private queue
+  repo. `check-hooks-wired.sh` reads the same list, so it does not ask a
+  template install to wire them. Any other missing hook still reports as
+  drift.
+- **`claude/statusline.sh`**: runs on bash 3.2. The template runs it as
+  `bash …`, which is system bash on macOS. A read loop replaces `readarray`,
+  and `date` replaces printf's `%(…)T`. The new
+  `claude/scripts/tests/statusline.test.sh` renders it under the default
+  bash, `bash --posix`, and the bash 3.2.57 build in CI's
+  `doc-truth (bash 3.2)` job.
 - **`setup.sh`**: when Claude Code is selected and neither
   `~/.claude/settings.json` (a dangling symlink counts) nor
   `claude-memory/bootstrap.sh` exists, `seed_claude_settings` copies the
@@ -22,8 +33,9 @@
   while every hook and the status line were inert.
 - **`claude/scripts/tests/settings-example.test.sh`** (new; run from
   `setup-dry-run.test.sh`): the public counterpart of
-  `check-hooks-wired.sh`. Every hook file must be registered unless its
-  documented opt-out says why not. Every registration must name a real file
+  `check-hooks-wired.sh`. Every hook file must be registered unless
+  `settings-optout.txt` lists it with a reason. The checker must pass
+  `--strict` on the template and still flag an unlisted missing hook. Every registration must name a real file
   and run under `sh -c` when `HOME` contains a space. The status line must
   run `statusline.sh`, the template must carry no private keys, and the
   symlink pass must never link it. The seed must run before the plugin

@@ -1,0 +1,11 @@
+# Hooks deliberately NOT registered in claude/settings.example.json, the
+# public settings template. One filename per line, each with its reason; #
+# comments and blanks are ignored. Read by:
+#   - claude/scripts/tests/settings-example.test.sh, which asserts every other
+#     hook is in the template and none of these is;
+#   - claude/scripts/check-hooks-wired.sh, which skips a hook listed here
+#     when the live settings do not register it, so a template install is
+#     not told to wire them. Any hook NOT listed is still reported as drift.
+# Opting in is fine: register the hook in your own settings.json.
+StripProjectPermissions.hook.ts  # deletes a project's whole permissions block (deny and ask rules too); only safe beside a global allowlist, which the template does not ship
+OperatorQueueReminder.hook.sh    # defaults to the owner's private queue repo; set OPERATOR_QUEUE_REPO and add it yourself

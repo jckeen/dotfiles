@@ -14,10 +14,6 @@
           },
           {
             "type": "command",
-            "command": "\"$HOME/.claude/hooks/OperatorQueueReminder.hook.sh\""
-          },
-          {
-            "type": "command",
             "command": "\"$HOME/.claude/hooks/HygieneStatus.hook.sh\""
           },
           {

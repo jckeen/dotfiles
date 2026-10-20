@@ -12,7 +12,12 @@ if ! command -v jq &>/dev/null; then echo "?"; exit 0; fi
 input=$(cat)
 
 # --- Parse JSON (single jq call, one field per line to preserve empties) ---
-readarray -t _fields < <(echo "$input" | jq -r '
+# Bash 3.2 floor (macOS system bash runs this when settings say `bash …`):
+# a read loop, not readarray, and `date`, not printf's %(…)T (#588).
+_fields=()
+while IFS= read -r _line; do
+  _fields+=("$_line")
+done < <(echo "$input" | jq -r '
   (.model.display_name // "?"),
   (.context_window.used_percentage // 0 | floor | tostring),
   (.context_window.total_input_tokens // 0 | tostring),
@@ -30,7 +35,8 @@ readarray -t _fields < <(echo "$input" | jq -r '
   (.cost.total_lines_added // 0 | tostring),
   (.cost.total_lines_removed // 0 | tostring),
   (.transcript_path // "")
-' 2>/dev/null) || { echo "?"; exit 0; }
+' 2>/dev/null)
+[ "${#_fields[@]}" -gt 0 ] || { echo "?"; exit 0; }
 
 MODEL="${_fields[0]}"
 PCT="${_fields[1]}"
@@ -119,7 +125,7 @@ CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/claude-statusline"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 CACHE_KEY=$(echo "$PWD" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "default")
 CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
-printf -v NOW '%(%s)T' -1
+NOW=$(date +%s)
 NEED_REFRESH=1
 
 if [ -f "$CACHE_FILE" ]; then
@@ -267,7 +273,7 @@ if [ -n "${COST_USD:-}" ] && [ "$COST_USD" != "0" ]; then
   if [ -n "${SESSION_ID:-}" ]; then
     LEDGER_DIR="$HOME/.claude/ledger"
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
-    printf '%(%Y-%m-%d)T\t%s\t%s\t%s\n' -1 "$(basename "$PWD")" "$COST_USD" "$(( ${DUR_MS:-0} / 60000 ))" \
+    printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%d)" "$(basename "$PWD")" "$COST_USD" "$(( ${DUR_MS:-0} / 60000 ))" \
       > "$LEDGER_DIR/${SESSION_ID}.tsv" 2>/dev/null || true
   fi
 fi

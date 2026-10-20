@@ -34,13 +34,24 @@ else
   fail "settings.example.json is not valid JSON"
 fi
 
-# Hooks deliberately NOT in the public template, each with its reason. A hook
-# here must also stay out of the template (asserted below).
-#   StripProjectPermissions.hook.ts — deletes the whole `permissions` key
-#   (deny and ask rules included) from a project's settings.local.json. That
-#   is only safe beside a global allowlist that replaces it, which the
-#   template deliberately does not ship.
-EXAMPLE_OPT_OUT=" StripProjectPermissions.hook.ts "
+# Hooks deliberately NOT in the public template, with their reasons, live in
+# claude/settings-optout.txt — the same list check-hooks-wired.sh reads. A
+# hook listed there must also stay out of the template (asserted below), and
+# every entry must carry a reason and name a real hook.
+OPTOUT_FILE="$REPO_ROOT/claude/settings-optout.txt"
+EXAMPLE_OPT_OUT=" $(sed 's/#.*//' "$OPTOUT_FILE" | awk 'NF {printf "%s ", $1}')"
+bad_optout=""
+while IFS= read -r line; do
+  entry="$(sed 's/#.*//' <<<"$line" | awk 'NF {print $1}')"
+  [ -n "$entry" ] || continue
+  [ -e "$REPO_ROOT/claude/hooks/$entry" ] || bad_optout="$bad_optout $entry(no such hook)"
+  grep -qE '#[[:space:]]*[^[:space:]]' <<<"$line" || bad_optout="$bad_optout $entry(no reason)"
+done < "$OPTOUT_FILE"
+if [ -z "$bad_optout" ]; then
+  ok "every settings-optout.txt entry names a real hook and gives a reason"
+else
+  fail "settings-optout.txt entries wrong:$bad_optout"
+fi
 
 # Same extraction as check-hooks-wired.sh: every command string under .hooks.
 commands="$(jq -r '.hooks // {} | .. | .command? // empty' "$EXAMPLE" 2>/dev/null)"
@@ -124,11 +135,36 @@ fi
 # shellcheck source=lib-symlinks.sh
 . "$REPO_ROOT/lib-symlinks.sh"
 if symlink_enumerate "$REPO_ROOT/claude" "/dst" | cut -f2 \
-  | grep -qE '^/dst/settings(\.example)?\.json$'; then
+  | grep -qE '^/dst/settings(\.example\.json|\.json|-optout\.txt)$'; then
   fail "symlink pass would link the settings template into ~/.claude"
 else
-  ok "symlink pass never links settings.json or settings.example.json"
+  ok "symlink pass never links settings.json, settings.example.json or settings-optout.txt"
 fi
+
+# check-hooks-wired.sh against live settings in a throwaway HOME: the template
+# itself passes --strict (its opt-outs are not drift), but a hook missing that
+# the opt-out list does NOT name is still flagged — real drift in the owner's
+# settings must not hide behind the template's list.
+CHECKER="$REPO_ROOT/claude/scripts/check-hooks-wired.sh"
+HW_HOME="$(mktemp -d)"
+mkdir -p "$HW_HOME/.claude"
+cp "$EXAMPLE" "$HW_HOME/.claude/settings.json"
+if HOME="$HW_HOME" "$CHECKER" --strict >"$HW_HOME/out" 2>&1; then
+  ok "check-hooks-wired --strict passes on the unmodified template"
+else
+  fail "check-hooks-wired --strict flags the template's own opt-outs as drift"
+  sed 's/^/      | /' "$HW_HOME/out"
+fi
+jq 'del(.hooks.PreToolUse[0].hooks[] | select(.command | contains("conventional-commit.sh")))' \
+  "$EXAMPLE" > "$HW_HOME/.claude/settings.json"
+if ! HOME="$HW_HOME" "$CHECKER" --strict >"$HW_HOME/out" 2>&1 \
+  && grep -q 'conventional-commit.sh' "$HW_HOME/out"; then
+  ok "check-hooks-wired --strict still flags a missing hook the opt-out list does not name"
+else
+  fail "check-hooks-wired hid real drift (conventional-commit.sh unwired)"
+  sed 's/^/      | /' "$HW_HOME/out"
+fi
+rm -rf "$HW_HOME"
 
 # A user-scope plugin install creates settings.json (enabledPlugins only), so
 # the seed must run before setup's Claude CLI, auth and plugin steps, or it
