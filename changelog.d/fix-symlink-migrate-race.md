@@ -9,7 +9,7 @@
   still a symlink". So the migration no longer deletes anything.
 - **Move aside, then link**: the whole legacy dir is renamed (`rename(2)`
   through `perl`, atomic) into
-  `~/.claude/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>`, and
+  `~/.claude/.migrated-skill-dirs/NAME.UTC-TIMESTAMP.PID`, and
   `check_link` then creates the directory link. A rename that would cross
   filesystems is refused, never copied. A run whose rename fails because a
   rival already moved the dir returns success and lets `check_link` judge.
