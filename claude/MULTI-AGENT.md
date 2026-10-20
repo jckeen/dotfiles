@@ -73,8 +73,9 @@ Not every diff earns the full adversarial tax. Both review gates
 changed-path match against risk surfaces — before dispatching any reviewer:
 
 - **Tier 1 (reduced):** docs-only diffs at or under BOTH captured ceilings — 200
-  lines (`GATE_TIER1_MAX_LINES`) and 65536 bytes, because one 200,000-byte line
-  is a 1-line diff. The byte ceiling has no environment knob on purpose: every
+  lines (`GATE_TIER1_MAX_LINES`) and the byte ceiling `TIER1_MAX_BYTES` in
+  `claude/scripts/review-receipt.py`, because one 200,000-byte line is a
+  1-line diff. The byte ceiling has no environment knob on purpose: every
   caller inherits `review-receipt.py`'s default, so the gates and the shipping
   wrapper cannot disagree about it. The gate may skip, logging a `tier-1 skip`
   line. Force the full pass anyway with `GATE_FORCE_FULL=1`.
