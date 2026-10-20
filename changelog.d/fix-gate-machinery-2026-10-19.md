@@ -58,7 +58,7 @@
   `core.worktree` there listed a decoy directory, and `core.ignoreCase=true`
   let a tracked `claude.md` mask an untracked `CLAUDE.md` on a case-sensitive
   filesystem. Both passed the instruction-surface sweep. The listing now runs
-  with `--work-tree <boundary>` and `-c core.ignoreCase=false`. The suggested
+  with `--work-tree BOUNDARY` and `-c core.ignoreCase=false`. The suggested
   `-c core.worktree=` does not override the repository's own setting on git
   2.43, so `--work-tree` is used.
 - **Worktree pointers are parsed as git parses them.** `worktree_gitdir()`
@@ -73,7 +73,7 @@
   `set -e` ended the wrapper with a bare exit 1 right after "Safe to push.".
   Four agent branches hit this on 2026-10-16 and pushed by hand. The wrapper
   now prints `approved but not pushed: no terminal to confirm on; re-run with
-  --auto-push, or push <sha> yourself` and exits 4. The script header and
+  --auto-push, or push SHA yourself` and exits 4. The script header and
   `claude/scripts/README.md` document every exit status.
 
 ## 2026-10-19 — fix(gates): a sibling moving origin/main no longer voids a review in flight (#680)
