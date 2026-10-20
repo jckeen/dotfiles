@@ -573,6 +573,16 @@ fi
 if [[ $RC -eq 124 ]]; then
   degrade "agy review timed out after ${PRINT_TIMEOUT_SECS}s."
 fi
+# A pin agy does not offer is a configuration error, not an outage (#696).
+# agy 1.4.x refuses it before reviewing ("invalid model selection … not
+# recognized as a known model"). That read as "agy review session failed" and
+# degraded quietly on every run, so name the pin and the override instead.
+# Matched on agy's own stderr only, like the timeout guard above.
+if [[ $RC -ne 0 && -n "$MODEL" ]] \
+  && grep -qE 'invalid model selection|not recognized as a known model' "$AGY_ERR_FILE"; then
+  red "✖ agy rejected the pinned model \"$MODEL\"; set ANTIGRAVITY_GATE_MODEL (or --model) to a label from \`agy models\`."
+  degrade "the pinned model is not one agy offers — a configuration error, not an outage."
+fi
 if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
   # head reads first, sed second (#422): the other order writes a long report
   # into a pipe head has already closed, and the SIGPIPE that kills sed ends

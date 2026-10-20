@@ -489,15 +489,43 @@ check "propagated label matches the default pin" 0 "model pin verified" --uncomm
 assert "pinned label forwarded on agy argv" "grep -q 'Gemini 4 Argon (High)' '$AGY_FAKE_DIR/argv'"
 assert "log capture requested on agy argv" "grep -q -- '--log-file' '$AGY_FAKE_DIR/argv'"
 check "DB spot-check finds the label in the records" 0 "records the requested label" --uncommitted
+# agy 1.4.x records the model's slug, not its display label (#696).
+printf 'model_enum gemini-4-argon-high MODEL_TIER_PRO\n' > "$AGY_DB_DIR/conv.db"
+check "DB spot-check accepts the label's slug form" 0 "records the requested label" --uncommitted
+# A real record is large: grep -q stops at the early match and strings dies of
+# SIGPIPE, which pipefail used to turn into a miss (#696).
+{ printf 'model_enum gemini-4-argon-high\n'; head -c 2000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$AGY_DB_DIR/conv.db"
+check "DB spot-check finds an early match in a large record" 0 "records the requested label" --uncommitted
+printf 'model_enum gemini-3.8-flash-high\n' > "$AGY_DB_DIR/conv.db"
+check "DB spot-check still flags a record naming another model" 0 "none of the newest conversation records" --uncommitted
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R" "$AGY_DB_DIR"
+
+# ── #696: a pin agy rejects is a configuration error, said loudly ─────
+# agy 1.4.2 exits 1 before reviewing when the label is not one it offers.
+# That used to read as an ordinary outage ("agy review session failed") and
+# degrade quietly; it must name the pin and the override instead.
+new_repo
+echo "change" >> "$R/code.txt"
+: > "$AGY_FAKE_DIR/output"
+printf '%s\n' 'error: invalid model selection (--model "Gemini 3.1 Pro (High)" --effort ""): model Gemini 3.1 Pro (High) is not recognized as a known model or custom model in settings' \
+  'Available models:' '  Gemini 4 Argon (High)' > "$AGY_FAKE_DIR/stderr"
+echo 1 > "$AGY_FAKE_DIR/exit"
+ANTIGRAVITY_GATE_MODEL="Gemini 3.1 Pro (High)" \
+  check "#696: a rejected pin names the pin and the override" 0 'agy rejected the pinned model "Gemini 3.1 Pro (High)"; set ANTIGRAVITY_GATE_MODEL' --uncommitted
+assert "#696: the rejected pin is not reported as an ordinary session failure" \
+  "! (cd '$R' && ANTIGRAVITY_GATE_MODEL='Gemini 3.1 Pro (High)' '$GATE' --uncommitted 2>&1) | grep -qF 'agy review session failed'"
+ANTIGRAVITY_GATE_MODEL="Gemini 3.1 Pro (High)" \
+  check "#696: a rejected pin fails closed with --require" 3 "agy rejected the pinned model" --uncommitted --require
+assert "#696: a rejected pin mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_BAD" > "$AGY_FAKE_DIR/log"
 check "propagated-label mismatch fails hard WITHOUT --require" 2 "MODEL PIN FAILED" --uncommitted
-check "propagated-label mismatch fails hard with an explicit --model" 2 "MODEL PIN FAILED" --uncommitted --model "Gemini 3.1 Pro (High)"
+check "propagated-label mismatch fails hard with an explicit --model" 2 "MODEL PIN FAILED" --uncommitted --model "Gemini 4 Argon (High)"
 rm -rf "$R"
 
 new_repo

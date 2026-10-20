@@ -410,9 +410,20 @@ gate_verify_agy_model() {
     yellow "⚠ model DB spot-check: 'strings' not found — cannot inspect the conversation records (warning only)."
     return 0
   fi
+  # agy 1.4.x records the model's slug (`agy models` prints it beside the
+  # label: "gemini-4-argon-high	Gemini 4 Argon (High)"), not the label
+  # (#696). Accept either. The slug is the label lowercased, with parentheses
+  # dropped and spaces as dashes; Claude slugs also turn dots into dashes.
+  local slug dotless
+  slug="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '()' | tr -s ' ' '-')"
+  dotless="${slug//./-}"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    if strings "$f" 2>/dev/null | grep -qF "$want"; then
+    # `grep -q` exits at the first match and `strings` then dies of SIGPIPE.
+    # Under the gates' `set -o pipefail` that made a MATCH read as a miss on
+    # any record large enough to still be streaming (#696), so the reader's
+    # status is discarded and only grep's decides.
+    if { strings "$f" 2>/dev/null || true; } | grep -qF -e "$want" -e "$slug" -e "$dotless"; then
       green "✓ model DB spot-check: $(basename "$f") records the requested label '$want'."
       return 0
     fi

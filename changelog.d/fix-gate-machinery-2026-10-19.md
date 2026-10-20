@@ -123,3 +123,19 @@
   always requires `codex`.
 - **Item 2, merge-then-verify, is declined.** Main is effectively deployed
   through the `~/.claude` symlinks, so every change keeps a pre-merge gate.
+
+## 2026-10-22 — fix(gates): the Antigravity gate names a rejected model pin, and its DB spot-check works (#696 follow-up)
+
+- **Scope.** #714 already moved the default pin to `Gemini 4 Argon (High)`.
+  These are the parts of #696 it left open.
+
+- **A rejected pin is reported as a configuration error, not an outage.**
+  When agy's stderr says the model selection is invalid, the gate prints
+  `agy rejected the pinned model "LABEL"; set ANTIGRAVITY_GATE_MODEL (or
+  --model) to a label from agy models`. It still degrades, and exits 3
+  under `--require`.
+- **The model DB spot-check works again.** The check ran `strings | grep
+  -q`. On a large record grep stopped at the first match, `strings` died of
+  SIGPIPE, and under `set -o pipefail` the match read as a miss. That
+  happened on every real run. The check now discards the reader's status. It also accepts the slug agy 1.4.x records
+  (`gemini-4-argon-high`) beside the display label.
