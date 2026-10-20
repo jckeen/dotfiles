@@ -19,3 +19,6 @@
   no `## ` entry added to `CHANGELOG.md` beside a fragment (#626).
 - `.github/CONTRIBUTING.md` gains a Changelog Entries section, and the PR
   template asks for a fragment instead of a `CHANGELOG.md` edit.
+- The `doc-truth (bash 3.2)` job runs `tests/statusline.test.sh` with
+  `STATUSLINE_BASH3` set to its bash 3.2.57 build, so `claude/statusline.sh`
+  is rendered under the shell the macOS settings template invokes (#588).
