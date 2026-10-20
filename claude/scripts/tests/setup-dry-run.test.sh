@@ -601,6 +601,13 @@ if "$REPO_ROOT/claude/scripts/tests/settings-example.test.sh"; then
 else
   fail "settings-example suite failed (output above)"
 fi
+# The template runs statusline.sh with `bash`; its renderer suite rides here
+# too. The bash 3.2 case runs only when STATUSLINE_BASH3 names one.
+if "$REPO_ROOT/claude/scripts/tests/statusline.test.sh"; then
+  ok "statusline suite passed"
+else
+  fail "statusline suite failed (output above)"
+fi
 
 echo ""
 echo "setup-dry-run: $pass passed, $failed failed"

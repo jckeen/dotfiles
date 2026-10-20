@@ -101,6 +101,52 @@ else
   fail "commands that break on a HOME with a space:$broken"
 fi
 
+# The REAL HygieneStatus hook and hygiene-status.sh, run through the
+# template's own command from a checkout outside ~/dev: the hook must find its
+# helper via ~/.local/bin or its own symlink, never a fixed ~/dev/dotfiles
+# path, and stay silent (exit 0) when neither resolves. A seeded expirable
+# retired-worktree summary makes the real helper print a line.
+HS_CMD="$(jq -r '.hooks | .. | .command? // empty' "$EXAMPLE" | grep -F 'HygieneStatus.hook.sh' | head -1)"
+HS_T="$(mktemp -d)"
+HS_REPO="$HS_T/code/dot files"
+mkdir -p "$HS_REPO/claude/hooks"
+cp "$REPO_ROOT/hygiene-status.sh" "$HS_REPO/hygiene-status.sh"
+cp "$REPO_ROOT/claude/hooks/HygieneStatus.hook.sh" "$HS_REPO/claude/hooks/HygieneStatus.hook.sh"
+chmod +x "$HS_REPO/hygiene-status.sh" "$HS_REPO/claude/hooks/HygieneStatus.hook.sh"
+hs_home() {
+  rm -rf "${HS_T:?}/hm"
+  mkdir -p "$HS_T/hm/.claude/hooks" "$HS_T/hm/.local/state/hygiene"
+  printf '{"retired":2,"oldest_days":30,"expirable":1}\n' \
+    > "$HS_T/hm/.local/state/hygiene/retired-worktrees.json"
+}
+hs_run() { HOME="$HS_T/hm" sh -c "$HS_CMD" </dev/null 2>&1; }
+
+hs_home
+ln -s "$HS_REPO/claude/hooks/HygieneStatus.hook.sh" "$HS_T/hm/.claude/hooks/HygieneStatus.hook.sh"
+if out="$(hs_run)" && grep -q 'retired worktrees: 2' <<<"$out"; then
+  ok "HygieneStatus finds hygiene-status.sh through its own symlink (checkout outside ~/dev)"
+else
+  fail "HygieneStatus failed from a checkout outside ~/dev: $out"
+fi
+
+hs_home
+cp "$HS_REPO/claude/hooks/HygieneStatus.hook.sh" "$HS_T/hm/.claude/hooks/HygieneStatus.hook.sh"
+mkdir -p "$HS_T/hm/.local/bin"
+ln -s "$HS_REPO/hygiene-status.sh" "$HS_T/hm/.local/bin/hygiene-status.sh"
+if out="$(hs_run)" && grep -q 'retired worktrees: 2' <<<"$out"; then
+  ok "HygieneStatus prefers setup's ~/.local/bin/hygiene-status.sh link"
+else
+  fail "HygieneStatus ignored ~/.local/bin/hygiene-status.sh: $out"
+fi
+
+rm "$HS_T/hm/.local/bin/hygiene-status.sh"
+if out="$(hs_run)" && [ -z "$out" ]; then
+  ok "HygieneStatus exits 0 silently when no hygiene-status.sh resolves"
+else
+  fail "HygieneStatus was not silent with no helper: rc/out=$out"
+fi
+rm -rf "$HS_T"
+
 # The reverse: no registration names a hook file that does not exist.
 dangling=""
 while IFS= read -r cmd; do

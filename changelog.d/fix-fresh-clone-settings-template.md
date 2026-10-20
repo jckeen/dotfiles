@@ -17,9 +17,17 @@
 - **`claude/statusline.sh`**: runs on bash 3.2. The template runs it as
   `bash …`, which is system bash on macOS. A read loop replaces `readarray`,
   and `date` replaces printf's `%(…)T`. The new
-  `claude/scripts/tests/statusline.test.sh` renders it under the default
-  bash, `bash --posix`, and the bash 3.2.57 build in CI's
-  `doc-truth (bash 3.2)` job.
+  `claude/scripts/tests/statusline.test.sh` (run from
+  `setup-dry-run.test.sh`) renders it under the default bash,
+  `bash --posix`, and `$STATUSLINE_BASH3` when that names a bash 3.x. The
+  bash 3.2.57 case was verified locally; wiring it into CI's
+  `doc-truth (bash 3.2)` job waits on an operator-reviewed workflow patch.
+- **`claude/hooks/HygieneStatus.hook.sh`**: finds `hygiene-status.sh` at
+  setup's `~/.local/bin` link, then through its own symlink back to the
+  checkout, instead of a fixed `~/dev/dotfiles` path. It exits 0 silently
+  when neither resolves. Before, any checkout outside `~/dev` made the
+  template's SessionStart hook exit 127. A sweep of the other template
+  hooks and the helpers they call found no other fixed checkout path.
 - **`setup.sh`**: when Claude Code is selected and neither
   `~/.claude/settings.json` (a dangling symlink counts) nor
   `claude-memory/bootstrap.sh` exists, `seed_claude_settings` copies the

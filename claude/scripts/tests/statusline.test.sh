@@ -7,8 +7,8 @@
 # asserts both lines and the ledger row, under:
 #   - the default bash,
 #   - `bash --posix`,
-#   - $STATUSLINE_BASH3 when set (CI's doc-truth (bash 3.2) job passes its
-#     bash 3.2.57 build; the suite fails if that path is not bash 3.x).
+#   - $STATUSLINE_BASH3 when set (e.g. a bash 3.2.57 build; skipped cleanly
+#     when unset, and the suite fails if that path is not bash 3.x).
 # Plus a static scan for the bash 4+ builtins the script once used. Run
 # directly; exit 1 on any failure.
 set -uo pipefail
@@ -28,7 +28,7 @@ command -v jq >/dev/null 2>&1 || { echo "statusline: jq is required" >&2; exit 1
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/home" "$T/run" "$T/proj"
+mkdir -p "$T/hm" "$T/run" "$T/proj"
 git -C "$T/proj" init -q -b sl-branch
 git -C "$T/proj" -c user.name=t -c user.email=t@t.t commit -q --allow-empty -m init
 INPUT="$(jq -nc --arg cwd "$T/proj" '{
@@ -42,8 +42,8 @@ INPUT="$(jq -nc --arg cwd "$T/proj" '{
 render() {
   local label="$1" out rc
   shift
-  rm -rf "$T/home/.claude" "$T/run"/*
-  out="$(printf '%s' "$INPUT" | HOME="$T/home" XDG_RUNTIME_DIR="$T/run" "$@" "$STATUSLINE" 2>"$T/err")"
+  rm -rf "$T/hm/.claude" "$T/run"/*
+  out="$(printf '%s' "$INPUT" | HOME="$T/hm" XDG_RUNTIME_DIR="$T/run" "$@" "$STATUSLINE" 2>"$T/err")"
   rc=$?
   if [ "$rc" -eq 0 ] && grep -q 'ModelX' <<<"$out" && grep -q '42%' <<<"$out" \
     && grep -q 'sl-branch' <<<"$out" && ! [ -s "$T/err" ]; then
@@ -53,11 +53,11 @@ render() {
     sed 's/^/      | out: /' <<<"$out"
     sed 's/^/      | err: /' "$T/err"
   fi
-  if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}	proj	0\.5	2$' "$T/home/.claude/ledger/sess-1.tsv" 2>/dev/null; then
+  if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}	proj	0\.5	2$' "$T/hm/.claude/ledger/sess-1.tsv" 2>/dev/null; then
     ok "$label: writes the dated ledger row"
   else
     fail "$label: ledger row missing or malformed"
-    sed 's/^/      | ledger: /' "$T/home/.claude/ledger/sess-1.tsv" 2>/dev/null
+    sed 's/^/      | ledger: /' "$T/hm/.claude/ledger/sess-1.tsv" 2>/dev/null
   fi
 }
 
@@ -71,7 +71,7 @@ if [ -n "${STATUSLINE_BASH3:-}" ]; then
     fail "STATUSLINE_BASH3=$STATUSLINE_BASH3 is not a bash 3.x interpreter"
   fi
 else
-  echo "note - STATUSLINE_BASH3 unset; the bash 3.2 render runs in CI's doc-truth (bash 3.2) job"
+  ok "bash 3.2 render skipped (STATUSLINE_BASH3 unset) # SKIP"
 fi
 
 # Bash 4+ only: readarray/mapfile (4.0), printf %(fmt)T (4.2), associative

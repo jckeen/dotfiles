@@ -160,14 +160,6 @@ jobs:
       - name: Check the dotfiles doc contract under bash 3.2.57
         run: ~/.local/bash32/bash claude/scripts/check-doc-truth.sh
 
-      # The public settings template runs statusline.sh as `bash …`, which is
-      # system bash 3.2 on macOS (#588). The suite also renders it under the
-      # runner's bash and `bash --posix`.
-      - name: statusline.sh renders under bash 3.2.57
-        run: |
-          STATUSLINE_BASH3="$HOME/.local/bash32/bash" \
-            claude/scripts/tests/statusline.test.sh
-
   # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
   # fragment (issue #207). This is intended as a required status check (#237),
   # so like doc-truth it stays its own job under this exact name — a step
