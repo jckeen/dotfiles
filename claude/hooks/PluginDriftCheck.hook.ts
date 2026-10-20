@@ -902,7 +902,9 @@ function readState(): ScanState | null {
   try {
     const path = statePath();
     const st = statSync(path);
-    if (!st.isFile() || st.size > MAX_JSON_BYTES) return null;
+    // Our own file, and hex paths make a large cache pass 1 MiB; this cap
+    // only refuses something no scan would write.
+    if (!st.isFile() || st.size > 64 * MAX_JSON_BYTES) return null;
     const lines = readFileSync(path, 'utf-8').split('\n');
     if (lines[0] !== 'plugin-drift-state v1') return null;
     const body = lines.slice(1);
@@ -1009,8 +1011,8 @@ function unchanged(state: ScanState | null): boolean {
 function rescan(): void {
   const state = readState();
   if (unchanged(state)) return;
+  watch(MANIFEST); // Signed before it is read, so a swap in between is a change.
   const manifest = readManifest();
-  watch(MANIFEST);
   const before = state?.reported ?? new Set<string>();
   let found: ModFindings | null = null;
   section('plugin mods', () => {
@@ -1030,8 +1032,8 @@ function main(): void {
     rescan();
     return;
   }
+  watch(MANIFEST); // Signed before it is read, so a swap in between is a change.
   const manifest = readManifest();
-  watch(MANIFEST);
   let found: ModFindings | null = null;
   section('plugin mods', () => {
     found = findMods(manifest.modsOk);
