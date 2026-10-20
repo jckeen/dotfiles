@@ -141,7 +141,6 @@
       "read_file(~/.zshrc)",
       "read_file(~/dev/)",
       "write_file(~/.claude/handoffs/)",
-      "write_file(~/.claude/operator-queue.md)",
       "write_file(~/dev/)"
     ],
     "ask": [
