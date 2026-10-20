@@ -47,6 +47,8 @@
   While adding a fragment, it adds no `## ` entry to `CHANGELOG.md`. The
   filename is never derived from the branch, because two branches can share
   a slug.
+  Every git call pins the config that could change what is parsed (colour,
+  path quoting, diff prefixes, rename detection).
 - **In CI**, `doc-refs.test.sh` runs the script's self-test and `--check` on
   the checkout's own fragments.
 - **Docs:** `CLAUDE-GUIDE.md`, `ROADMAP.md`, the scripts README and the

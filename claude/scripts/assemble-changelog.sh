@@ -71,6 +71,20 @@ POINTER_1='Entries not yet folded in live one per PR in `changelog.d/`; they are
 # shellcheck disable=SC2016
 POINTER_2='copied here by hand at release time (see `claude/scripts/README.md`).'
 
+# Every git call goes through gitq, which pins the config that could change
+# what this script parses: colour (ANSI escapes would hide `+## `), path
+# quoting, diff prefixes, relative paths and rename detection.
+gitq() {
+  git -c color.ui=never -c color.diff=never -c core.quotePath=false \
+    -c diff.noprefix=false -c diff.mnemonicPrefix=false -c diff.relative=false \
+    -c diff.renames=true "$@"
+}
+# gdiff: gitq diff, also with no colour, external diff or textconv filter,
+# and rename detection on, whatever the flags' config defaults.
+gdiff() {
+  gitq diff --no-color --no-ext-diff --no-textconv -M "$@"
+}
+
 die() {
   printf '✖ assemble-changelog: %s\n' "$1" >&2
   exit "${2:-1}"
@@ -88,6 +102,9 @@ while [ "$#" -gt 0 ]; do
     --check) CHECK=1 ;;
     --base)
       [ "$#" -ge 2 ] || die "--base needs a git ref" 2
+      # A ref is never an option; one starting with - would reach git as one
+      # (e.g. git diff --output=FILE, a write).
+      case "$2" in -*) die "--base ref may not start with '-': $2" 2 ;; esac
       BASE="$2"
       shift
       ;;
@@ -112,7 +129,7 @@ if [ "$CHECK" -eq 0 ]; then
 fi
 
 if [ -z "$ROOT" ]; then
-  ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  ROOT="$(gitq rev-parse --show-toplevel 2>/dev/null)" \
     || die "not inside a git repository (pass --root DIR)"
 fi
 [ -d "$ROOT" ] || die "root '$ROOT' is not a directory"
@@ -331,9 +348,9 @@ fi
 # to CHANGELOG.md. Deleting fragments while adding entries is the fold PR's
 # shape, and stays allowed.
 if [ -n "$BASE" ]; then
-  git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
+  gitq rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
     || die "--base '$BASE' is not a commit here (fetch it, or fetch-depth: 0 in CI)"
-  added="$(git diff --name-only --diff-filter=A "$BASE...HEAD" -- "$FRAG_DIR/")" \
+  added="$(gdiff --name-only --diff-filter=A "$BASE...HEAD" -- "$FRAG_DIR/")" \
     || die "git diff $BASE...HEAD failed"
   n_added=0
   [ -z "$added" ] || n_added="$(printf '%s\n' "$added" | wc -l | tr -d ' ')"
@@ -341,14 +358,14 @@ if [ -n "$BASE" ]; then
     err "this branch adds $n_added fragments; a PR adds one fragment file (several ## entries may share it):
 $(printf '%s\n' "$added" | sed 's/^/    /')"
   fi
-  touched="$(git diff -M --name-only --diff-filter=MR "$BASE...HEAD" -- "$FRAG_DIR/")" \
+  touched="$(gdiff --name-only --diff-filter=MR "$BASE...HEAD" -- "$FRAG_DIR/")" \
     || die "git diff $BASE...HEAD failed"
   if [ -n "$touched" ]; then
     err "this branch modifies or renames pending fragment(s) from the base; a PR adds its own fragment and leaves others alone:
 $(printf '%s\n' "$touched" | sed 's/^/    /')"
   fi
   if [ "$n_added" -gt 0 ]; then
-    cl_diff="$(git diff "$BASE...HEAD" -- "$CHANGELOG")" || die "git diff $BASE...HEAD failed"
+    cl_diff="$(gdiff "$BASE...HEAD" -- "$CHANGELOG")" || die "git diff $BASE...HEAD failed"
     # Here-string, not a pipe: grep -q exits early, and pipefail would read the
     # writer's SIGPIPE as a miss.
     if grep -q '^+## ' <<<"$cl_diff"; then

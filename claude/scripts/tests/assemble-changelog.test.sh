@@ -399,6 +399,31 @@ run --check --base main
 expect "scope: adding a fragment and a CHANGELOG.md entry is refused" 1 "also adds an entry to CHANGELOG.md"
 rm -rf "$R"
 
+# Gate finding: with color.ui=always the `+## ` scan saw ANSI escapes and a
+# fragment plus a CHANGELOG.md entry passed. Every git call now pins colour,
+# path quoting, prefixes, renames and external diff/textconv, so the user's
+# config cannot change what the scope check parses.
+new_repo
+for kv in color.ui=always color.diff=always diff.noprefix=true diff.mnemonicPrefix=true \
+  diff.renames=false diff.relative=true core.quotePath=true; do
+  git -C "$R" config "${kv%%=*}" "${kv#*=}"
+done
+w changelog.d/theirs.md "## 2026-10-04 — fix: theirs" "- t"
+git -C "$R" add -A && git -C "$R" commit -q -m "fix: theirs"
+git -C "$R" switch -q -c feat/both-colored
+w changelog.d/feat-both.md "## 2026-10-06 — feat: both" "- b"
+w CHANGELOG.md "# Changelog" "" "## 2026-10-06 — feat: also prepended" "- p" "" "## 2026-10-01 — fix: an old entry" "" "- old bullet"
+git -C "$R" add -A && git -C "$R" commit -q -m "feat: both"
+run --check --base main
+expect "config: colour/prefix config cannot hide a CHANGELOG.md entry" 1 "also adds an entry to CHANGELOG.md"
+git -C "$R" switch -q main
+git -C "$R" switch -q -c feat/rename-colored
+git -C "$R" mv changelog.d/theirs.md changelog.d/mine.md
+git -C "$R" commit -q -m "feat: rename"
+run --check --base main
+expect "config: diff.renames=false cannot turn a rename into an add" 1 "modifies or renames"
+rm -rf "$R"
+
 # ── Usage errors ──────────────────────────────────────────────────────
 new_repo
 run --bogus
@@ -407,6 +432,8 @@ run --check --branch x
 expect "usage: --branch is gone" 2 "unknown argument"
 run --base main
 expect "usage: --base without --check exits 2" 2 "only applies with --check"
+run --check --base --output=planted.txt
+expect "usage: a --base ref that looks like an option is refused" 2 "may not start with"
 rm -rf "$R"
 
 echo ""
