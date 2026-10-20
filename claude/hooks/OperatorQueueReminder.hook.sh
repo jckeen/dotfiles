@@ -359,6 +359,9 @@ find_item() {
   command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
   raw="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
     -f q="$SEARCH_Q in:title \"$slug\"" -f query="$GQL")" || { echo "--find: the search failed" >&2; return 2; }
+  # author:@me depends on the gh account: one switched mid-search answered
+  # for someone else (refresh() makes the same check before writing).
+  [ "$(gh_ident)" = "$IDENT" ] || { echo "--find: the gh account changed mid-search" >&2; return 2; }
   printf '%s' "$raw" | jq -rs --arg slug "$slug" "$JQ_DEFS"'complete, (counted | select((.title | ascii_downcase) == ($slug | ascii_downcase)) | .url)' ||
     { echo "--find: the search was cut short or unreadable" >&2; return 2; }
 }

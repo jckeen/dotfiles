@@ -84,6 +84,8 @@ concerns** when that repo is private (`gh repo view --json visibility` says
 `PRIVATE`) and on that host under one of those owners; anything else — a
 public repo, another owner or host, work spanning several repos — goes to the
 `home` repo, since items name credentials, providers and pending decisions.
+Check `home` is `PRIVATE` the same way; if it is not, file nothing and flag
+it in the handoff.
 Create the `operator-action` label first if the repo lacks it. One item
 per issue: the title is the slug, the body holds the fields:
 
@@ -95,8 +97,9 @@ per issue: the title is the slug, the body holds the fields:
 - action: <one line: what the operator must do>
 ```
 
-The slug is stable (same action = same slug across sessions), lowercase
-letters, digits, `.`, `_` or `-`, at most 100 characters; `deadline` and
+The slug is stable (same action = same slug across sessions): lowercase
+letters, digits, `.`, `_` or `-`, starting with a letter or digit, at most
+100 characters; `deadline` and
 `verified` are optional — omit the line if none. **File only if absent** —
 `~/.claude/hooks/OperatorQueueReminder.hook.sh --find <slug>` prints the URL of each open item
 the reminder lists under that slug. Only exit 0 with nothing but URL lines is

@@ -978,6 +978,9 @@ run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_EMPTY=1 -- --find dot-issue
 assert "--find: a reply with no result count is inconclusive" "[ $rc -eq 2 ]"
 run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_FILE="$FX/none.md" -- --find dot-issue
 assert "--find: OPERATOR_QUEUE_FILE set (that file is the queue) is inconclusive" "[ $rc -eq 2 ]"
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_SWITCH=1 -- --find dot-issue
+assert "--find: an account switched mid-search is inconclusive" "[ $rc -eq 2 ] && outgrep 'account changed'"
+rm -f "$GH_CONFIG_DIR/hosts.yml"
 run_issues FAKE_GH_JSON="$ISSUES" -- --fnd dot-issue
 assert "a mistyped mode exits 2 and never renders the queue" "[ $rc -eq 2 ] && ! outgrep 'dot-issue (' && outgrep 'unknown argument'"
 
