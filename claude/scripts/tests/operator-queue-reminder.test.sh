@@ -384,7 +384,10 @@ run_in "$FX/dotfiles" "## dot-long
 assert "long action truncated" "line_for dot-long | grep -qF '… [truncated; full text in the queue file]' && [ \"\$(line_for dot-long | wc -c)\" -lt 800 ]"
 
 # ── issue source ────────────────────────────────────────────────────────
-iso() { date -u -d "$1 days" +%Y-%m-%dT%H:%M:%SZ; }
+# The local calendar day at a fixed time: the hook takes createdAt[0:10] and
+# ages it against the local today, so a UTC day (a day ahead on a US evening)
+# would shift every expected age by one.
+iso() { date -d "$1 days" +%Y-%m-%dT12:00:00Z; }
 ISSUES="$FX/issues.json"
 cat > "$ISSUES" <<JSON
 [
