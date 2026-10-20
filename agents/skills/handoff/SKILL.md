@@ -79,12 +79,13 @@ Anything only the operator can do (rotate a token, click an approval, decide
 on a purchase) becomes an open GitHub issue labelled `operator-action` —
 handoff prose gets buried by the next handoff; an issue does not. **File it in
 the repo it concerns** when that repo is private
-(`gh repo view --json visibility` says `PRIVATE`) and its owner is one the
-SessionStart reminder searches (`$OPERATOR_QUEUE_OWNERS`, default
-`jckeen Keen-Media therealnewsnetwork`; an issue under any other owner never
-shows up). Items for a public repo, an unsearched owner, or work spanning
-several repos go to the private home repo `jckeen/claude-memory`
-(`$OPERATOR_QUEUE_REPO`) instead — items name credentials, providers and
+(`gh repo view --json visibility` says `PRIVATE`), sits on the same GitHub
+host as the home repo, and its owner is one the SessionStart reminder
+searches (`$OPERATOR_QUEUE_OWNERS`, default
+`jckeen Keen-Media therealnewsnetwork`; an issue anywhere else never shows
+up). Anything else — a public repo, another owner or host, work spanning
+several repos — goes to the private home repo (`$OPERATOR_QUEUE_REPO`,
+default `jckeen/claude-memory`) instead — items name credentials, providers and
 pending decisions, so never file one in a public repo. Create the `operator-action` label first if the repo lacks it. One item
 per issue: the title is the slug, the body holds the fields:
 
@@ -98,11 +99,13 @@ per issue: the title is the slug, the body holds the fields:
 
 The slug is stable (same action = same slug across sessions); `deadline` and
 `verified` are optional — omit the line if none. **File only if absent** —
-search open `operator-action` issues by title first, across both the
-target repo's owner and the home repo's owner (`gh search issues "<slug>"
---match title --label operator-action --state open --owner <repo-owner>
---owner jckeen` — repeated `--owner` flags match either), and never file a
-duplicate. **Close the issue only when the action is actually
+search first with the reminder's own filters, across the target repo's
+owner and the home repo's owner (repeated `--owner` flags match either):
+`gh search issues "<slug>" --match title --label operator-action --state open
+--author @me --visibility private --owner <repo-owner> --owner <home-owner>`,
+where `<home-owner>` is the owner part of the home repo. Never file a
+duplicate. A match whose body or title someone else last edited is hidden by
+the reminder, so it doesn't count: file a fresh issue and link the old one. **Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
 `~/.claude/operator-queue.md` is retired: never append to it. While that
 file exists without the `> **Historical**` banner in its first lines, the
