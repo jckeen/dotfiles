@@ -25,19 +25,19 @@
   check now lists issues with any labels (still in every state), so an issue
   whose `operator-action` label was removed still blocks a duplicate create
   and reruns stay safe. The check covers up to 10000 issues and refuses at
-  that limit rather than dedupe over a partial list. A matched issue that
-  lacks `operator-action` or the row's `project:` label gets the missing
-  labels on `--apply` (`gh issue edit --add-label`, pinned host). The hook
-  lists only labelled issues, so without the labels the item would vanish
-  once the file is retired. The dry run reports "would relabel #N". A failed
-  relabel fails the run and suppresses the retire-the-file message. Label
-  membership is decided in jq on the label array, never on a comma-joined
-  string, so a label named `team,operator-action` doesn't count. A matched
-  issue whose body lacks the block's `- action:` line (hand-filed, or a
-  repeated queue title with a different action) is reported as "needs
-  manual merge: #N" and left unmigrated. The apply then exits 1 without the
-  retire-the-file message.
+  that limit rather than dedupe over a partial list. A same-title issue is
+  skipped as already migrated only when it carries the `operator-action`
+  label and its body has every one of the block's field lines exactly. The
+  label is checked in jq on the label array, not a comma-joined string, so
+  a label named `team,operator-action` doesn't count. Any other same-title
+  issue is reported as "needs manual merge: #N" and never edited or
+  adopted: a removed label, missing or different fields, a hand-filed
+  issue, or a repeated queue title with a different action. `--apply` then
+  exits 1 without the retire-the-file message, so retiring the file can
+  never hide an item from the hook or drop its deadline and dates.
 - Tests: fixture cases for the bounded snapshot (an `rm` wrapper measures
-  it), recovery cleanup of only pattern-matching files, TERM cleanup,
-  unlabelled same-title dedupe, and the status-only trailer. The `cp`-wrapper
+  it), recovery cleanup of only pattern-matching files, TERM cleanup, exact
+  prior migrations versus manual-merge matches (missing label, comma label,
+  hand-filed, action-only, a different duplicate), and the status-only
+  trailer. The `cp`-wrapper
   race case now wraps `head`, the snapshot's new reader.

@@ -5,9 +5,10 @@
 # modes; the dry run lists one row per block and makes no write call; --apply
 # creates the missing labels and one issue per new block, with the block's
 # field lines verbatim in the body and the project label from the first word
-# of `project:`; a block whose title already has an issue (whatever its
-# labels) is skipped. Run
-# directly; exit 1 on any failure.
+# of `project:`; a block whose title has an exact prior migration (the
+# operator-action label, checked on the label array, and every field line)
+# is skipped, and any other same-title issue is "needs manual merge: #N",
+# never edited, and fails --apply. Run directly; exit 1 on any failure.
 set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/migrate-operator-queue.sh"
@@ -27,7 +28,6 @@ case "$1 $2" in
   # gh's --label filters, so the second set is listed only without it.
   "issue list")   cat "$FAKE_ISSUES_LABELLED"
                   case " $* " in *" --label "*) ;; *) cat "$FAKE_ISSUES_OTHER" ;; esac ;;
-  "issue edit")   [ -z "${FAKE_EDIT_FAIL:-}" ] || { echo "HTTP 403" >&2; exit 1; } ;;
   "label list")   printf 'operator-action\n' ;;
   "label create") : ;;
   "issue create")
@@ -42,22 +42,25 @@ esac
 GH
 chmod +x "$FX/bin/gh"
 # Existing issues as the script's -q program renders them: "T title number
-# has-operator-action", one "L number label" per label and one "A number
-# line" per `- action:` body line, TAB-separated.
+# has-operator-action" and one "F number line" per queue-field body line
+# (`- added|verified|project|deadline|action:`), TAB-separated.
 rec() { local IFS=$'\t'; printf '%s\n' "$*"; }
 {
-  rec T already-there 7 true; rec L 7 operator-action; rec L 7 project:stringer; rec A 7 '- action: exists as #7'
-  rec T 'rotate-\token' 8 true; rec L 8 operator-action; rec A 8 '- action: exists as #8'
-  rec T 001 9 true; rec L 9 operator-action
-  rec T 100 10 true; rec L 10 operator-action
+  # Exact prior migrations: labelled, every field line of their block present.
+  rec T already-there 7 true; rec F 7 '- added: 2026-08-01'; rec F 7 '- project: stringer'; rec F 7 '- action: exists as #7'
+  rec T 'rotate-\token' 8 true; rec F 8 '- action: exists as #8'
+  rec T 001 9 true
+  rec T 100 10 true
 } > "$FX/issues-labelled"
 {
-  rec T unlabelled-dupe 11 false; rec A 11 '- action: exists as #11, label removed'
-  rec T half-labelled 12 false; rec L 12 project:dotfiles; rec A 12 '- action: has its project label only'
+  # Fields all present, but the operator-action label was removed.
+  rec T unlabelled-dupe 11 false; rec F 11 '- project: stringer'; rec F 11 '- action: exists as #11, label removed'
   # One label whose name contains a comma: not the operator-action label.
-  rec T comma-label 13 false; rec L 13 'team,operator-action'; rec A 13 '- action: comma label only'
+  rec T comma-label 13 false; rec F 13 '- action: comma label only'
   # Filed by hand: labelled, but no queue fields in its body.
-  rec T hand-filed 14 true; rec L 14 operator-action
+  rec T hand-filed 14 true
+  # Labelled, but only the action line: the block's dates and deadline are not there.
+  rec T action-only 15 true; rec F 15 '- action: only the action'
 } > "$FX/issues-other"
 export FAKE_ISSUES_LABELLED="$FX/issues-labelled" FAKE_ISSUES_OTHER="$FX/issues-other"
 export PATH="$FX/bin:$PATH" FAKE_LOG="$FX/gh.log" FAKE_BODIES="$FX/bodies"
@@ -102,9 +105,9 @@ run PRIVATE
 assert "dry run exits 0" "[ $rc -eq 0 ]"
 assert "dry run: no write call" "[ \"\$(writes)\" -eq 0 ]"
 assert "dry run: new block with its label" "grep -qE '^dot-thing +project:dotfiles +new$' <<<\"\$out\""
-assert "dry run: existing title skipped" "grep -qE '^already-there +project:stringer +#7 \\(exists, skipped\\)$' <<<\"\$out\""
+assert "dry run: an exact prior migration is skipped" "grep -qE '^already-there +project:stringer +#7 \\(already migrated, skipped\\)$' <<<\"\$out\""
 assert "dry run: unscoped block has no label" "grep -qE '^no-project-item +\\(none\\) +new$' <<<\"\$out\""
-assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 already have an issue (0 would be relabelled, 0 need a manual merge).' <<<\"\$out\""
+assert "dry run: summary counts" "grep -qF '3 item(s): 2 would be created, 1 already migrated, 0 need a manual merge.' <<<\"\$out\""
 
 run PRIVATE --apply
 assert "apply exits 0" "[ $rc -eq 0 ]"
@@ -115,55 +118,37 @@ assert "apply: unscoped issue carries only operator-action" "grep -- '--title no
 assert "apply: body keeps the field lines verbatim" "grep -qxF -- '- verified: 2026-10-01 (re-checked)' '$FX/bodies/dot-thing' && grep -qxF -- '- added: 2026-07-01' '$FX/bodies/dot-thing' && ! grep -q '^## ' '$FX/bodies/dot-thing'"
 assert "apply: body notes the migration" "grep -q '^Migrated from ~/.claude/operator-queue.md on ' '$FX/bodies/dot-thing'"
 
-# Same-queue repeats and a backslash title already on GitHub: no duplicate creates.
+# Same-queue repeats and a backslash title already on GitHub: no duplicate
+# creates. The second "repeated" block has a different action, so it is not
+# the issue the first one created: needs a manual merge, and the apply fails.
 printf '## repeated\n- action: one\n\n## repeated\n- action: two\n\n## rotate-\\token\n- action: exists as #8\n' > "$FX/dupes.md"
 : > "$FAKE_LOG"
 out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/dupes.md" --repo o/r --apply 2>&1)"; rc=$?
-# The second "repeated" block has a different action, so it is not adopted
-# into the first one's issue (its action would be lost): manual merge, rc 1.
-assert "apply: a title repeated in the queue is created once" "[ $rc -eq 1 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +needs manual merge: #[0-9]+ ' <<<\"\$out\""
-assert "apply: a backslash title matches its existing issue" "! grep -q -- '--title rotate-' '$FAKE_LOG' && grep -qF '#8 (exists, skipped)' <<<\"\$out\""
-
-# A same-title issue without the operator-action label (removed after a
-# partial migration, or filed by hand) is still found: no duplicate, rerun-safe.
-printf '## unlabelled-dupe\n- project: stringer\n- action: exists as #11, label removed\n' > "$FX/unlabelled.md"
+assert "apply: a duplicate title with a different action is created once, then flagged" "[ $rc -eq 1 ] && [ \"\$(grep -c -- '--title repeated' '$FAKE_LOG')\" -eq 1 ] && grep -qE '^repeated +\\(none\\) +needs manual merge: #[0-9]+$' <<<\"\$out\""
+assert "apply: a backslash title matches its exact prior migration" "! grep -q -- '--title rotate-' '$FAKE_LOG' && grep -qF '#8 (already migrated, skipped)' <<<\"\$out\""
+printf '## twice\n- action: same\n\n## twice\n- action: same\n' > "$FX/twice.md"
 : > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/unlabelled.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: an unlabelled same-title issue is matched, not duplicated" "[ $rc -eq 0 ] && ! grep -q -- '--title unlabelled-dupe' '$FAKE_LOG' && grep -qF '#11 (exists, relabelled #11: operator-action,project:stringer)' <<<\"\$out\""
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/twice.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: an identical repeated block is created once and then skipped" "[ $rc -eq 0 ] && [ \"\$(grep -c -- '--title twice' '$FAKE_LOG')\" -eq 1 ] && grep -qF '(already migrated, skipped)' <<<\"\$out\""
+
+# Only an exact prior migration (operator-action label AND every field line
+# of the block in the body) is skipped. Any other same-title match is never
+# adopted, relabelled or recreated: "needs manual merge: #N", and an apply
+# exits 1 without telling the operator to retire the file.
+assert_manual() {  # <name> <queue-block> <issue-number>
+  printf '%s\n' "$2" > "$FX/manual.md"
+  : > "$FAKE_LOG"
+  out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/manual.md" --repo o/r 2>&1)"; rc=$?
+  assert "dry run: $1 is reported as needing a manual merge" "[ $rc -eq 0 ] && grep -qF 'needs manual merge: #$3' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
+  : > "$FAKE_LOG"
+  out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/manual.md" --repo o/r --apply 2>&1)"; rc=$?
+  assert "apply: $1 fails the run, no edit or create, no retire message" "[ $rc -eq 1 ] && grep -qF 'needs manual merge: #$3' <<<\"\$out\" && ! grep -qE '^issue (edit|create)' '$FAKE_LOG' && ! grep -qF 'retire the file' <<<\"\$out\""
+}
+assert_manual "a match missing the operator-action label" $'## unlabelled-dupe\n- project: stringer\n- action: exists as #11, label removed' 11
+assert_manual "a match whose only label is 'team,operator-action'" $'## comma-label\n- action: comma label only' 13
+assert_manual "a hand-filed match with no queue fields" $'## hand-filed\n- deadline: 2026-12-01\n- action: do the hand-filed thing' 14
+assert_manual "an action-line-only match" $'## action-only\n- added: 2026-09-01\n- deadline: 2026-12-01\n- action: only the action' 15
 assert "the title check lists issues regardless of label" "grep '^issue list' '$FAKE_LOG' | grep -qv -- '--label'"
-# The hook reads only operator-action issues, so a matched issue lacking the
-# migration's labels gets them: otherwise retiring the file would drop the
-# item silently.
-assert "apply: the matched issue gets operator-action and its project label, pinned host" "grep -qx 'issue edit 11 -R github.com/o/r --add-label operator-action,project:stringer' '$FAKE_LOG'"
-assert "apply: the summary counts the relabel and still offers retirement" "grep -qF '1 relabelled' <<<\"\$out\" && grep -qF 'Then retire the file' <<<\"\$out\""
-printf '## half-labelled\n- project: dotfiles\n- action: has its project label only\n\n## already-there\n- project: stringer\n- action: exists as #7\n' > "$FX/half.md"
-: > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/half.md" --repo o/r 2>&1)"; rc=$?
-assert "dry run: only reports 'would relabel #N', no write" "[ $rc -eq 0 ] && grep -qF 'would relabel #12: operator-action)' <<<\"\$out\" && ! grep -q '^issue edit' '$FAKE_LOG'"
-: > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/half.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: only the missing labels are added; a fully labelled issue is left alone" "[ $rc -eq 0 ] && grep -qx 'issue edit 12 -R github.com/o/r --add-label operator-action' '$FAKE_LOG' && ! grep -q '^issue edit 7 ' '$FAKE_LOG'"
-# A relabel that fails is a failed migration: non-zero exit, and no
-# instruction to retire the file over an item the hook would not show.
-: > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE FAKE_EDIT_FAIL=1 bash "$SCRIPT" --queue "$FX/half.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: a failed relabel fails the run and suppresses the retire message" "[ $rc -eq 1 ] && grep -qF 'could not relabel #12' <<<\"\$out\" && ! grep -qF 'retire the file' <<<\"\$out\""
-
-# Label boundaries: a label named "team,operator-action" is not operator-action.
-printf '## comma-label\n- action: comma label only\n' > "$FX/comma.md"
-: > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/comma.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: a comma-containing label does not count as operator-action" "[ $rc -eq 0 ] && grep -qx 'issue edit 13 -R github.com/o/r --add-label operator-action' '$FAKE_LOG'"
-
-# A hand-filed same-title issue without the block's action line is never
-# adopted: reported for a manual merge, left unmigrated, run fails on apply.
-printf '## hand-filed\n- deadline: 2026-12-01\n- action: do the hand-filed thing\n' > "$FX/hand.md"
-: > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/hand.md" --repo o/r 2>&1)"; rc=$?
-assert "dry run: a hand-filed match is reported as needing a manual merge" "[ $rc -eq 0 ] && grep -qF 'needs manual merge: #14' <<<\"\$out\" && ! grep -q '^issue edit' '$FAKE_LOG'"
-: > "$FAKE_LOG"
-out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/hand.md" --repo o/r --apply 2>&1)"; rc=$?
-assert "apply: a hand-filed match fails the run, is not edited or recreated, no retire message" "[ $rc -eq 1 ] && grep -qF 'needs manual merge: #14' <<<\"\$out\" && ! grep -qE '^issue (edit|create)' '$FAKE_LOG' && ! grep -qF 'retire the file' <<<\"\$out\""
 
 # Numeric-looking titles compare as strings: "1" is not "001", "1e2" is not "100".
 printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"
