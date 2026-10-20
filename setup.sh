@@ -1513,6 +1513,11 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
             && echo "  -> Registered marketplace: $mp" \
             || echo "  -> Failed to register marketplace: $mp (continuing)"
           ;;
+        anthropic-plugin-directory)
+          # Built into Claude Code ("Built in (Anthropic Directory)" in
+          # `marketplace list`): there is nothing to register.
+          echo "  -> Marketplace $mp is built into Claude Code (no registration needed)"
+          ;;
         soundcheck)
           run claude plugin marketplace add github:thejefflarson/soundcheck \
             && echo "  -> Registered marketplace: $mp" \
@@ -1659,7 +1664,23 @@ if [ "$JULES_INSTALLED" -eq 1 ]; then
   echo "  Jules web app under Settings, then store it mode 0600:"
   echo "    install -d -m 700 ~/.config/jules"
   echo "    install -m 600 /dev/null ~/.config/jules/api-key   # then paste the key in"
-  echo "  Enable the daily timer with: bash $DOTFILES_DIR/claude/systemd/install.sh"
+  echo "  The daily dispatch timer is paused (ADR-0009): claude/systemd/install.sh"
+  echo "  skips it unless JULES_LANE_ENABLED=1."
+fi
+
+# The Jules lane is paused (ADR-0009). A timer an earlier install enabled
+# would keep dispatching after an update, and the normal update path runs this
+# script, not claude/systemd/install.sh, so the pause is enforced here too.
+JULES_TIMER_UNIT="$HOME/.config/systemd/user/jules-dispatch.timer"
+if [ "${JULES_LANE_ENABLED:-}" != 1 ] && [ -e "$JULES_TIMER_UNIT" ] \
+   && command -v systemctl &>/dev/null; then
+  echo ""
+  echo "--- Jules routine lane is paused (ADR-0009) ---"
+  if run systemctl --user disable --now jules-dispatch.timer; then
+    echo "  -> jules-dispatch.timer disabled (re-enable later: JULES_LANE_ENABLED=1 bash $DOTFILES_DIR/claude/systemd/install.sh)"
+  else
+    echo "  !! could not disable jules-dispatch.timer; run: systemctl --user disable --now jules-dispatch.timer"
+  fi
 fi
 
 # ─── 3e. Antigravity CLI ────────────────────────────────────────────

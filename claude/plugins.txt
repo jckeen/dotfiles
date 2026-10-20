@@ -37,6 +37,8 @@ typescript-lsp@claude-plugins-official
 context7@claude-plugins-official
 codex@openai-codex
 security-guidance@claude-plugins-official
+# Anthropic Directory marketplace (built into Claude Code; needs no registration).
+frontend-design@anthropic-plugin-directory
 
 # [per-project] — installed everywhere, enabled only via a project's
 # .claude/settings.json `enabledPlugins`. Target projects (from dependency/
@@ -59,6 +61,10 @@ posthog@claude-plugins-official
 # PluginDriftCheck.hook.ts ignores project-scoped installs in both directions,
 # so an opt-in plugin like this one is not reverse drift and must not be added
 # back here to silence a warning.
+
+# supabase → TRNN, clarity-engine, operator-commons, stringer, allora-engine
+#            (each has a supabase/ project dir); Anthropic Directory marketplace
+supabase@anthropic-plugin-directory
 
 # Third-party (not the official marketplace). soundcheck adds automatic
 # background security triage on generated code — the one review capability the
