@@ -188,18 +188,19 @@ function readJsonFile(path: string): JsonRead {
 // Every path a full scan reads or lists, with its signature taken BEFORE the
 // read, so a change that lands during the scan still trips the next rescan.
 const watched = new Map<string, string>();
-// One stat: size, mtime, inode, or the error code. Never opens the file, so a
-// FIFO or device costs no more than a regular file.
+// One stat: size, mtime, inode, mode and ctime (a chmod changes only the last
+// two), or the error code. Never opens the file, so a FIFO or device costs no
+// more than a regular file.
 function signature(path: string): string {
   try {
     const st = statSync(path);
-    return `${st.size}:${st.mtimeMs}:${st.ino}`;
+    return `${st.size}:${st.mtimeMs}:${st.ino}:${st.mode}:${st.ctimeMs}`;
   } catch (err) {
     // stat says ENOENT for a dangling symlink too: sign the link itself, so
     // creating one is a change (the scan names it unverifiable).
     try {
       const link = lstatSync(path);
-      return `L${link.size}:${link.mtimeMs}:${link.ino}`;
+      return `L${link.size}:${link.mtimeMs}:${link.ino}:${link.mode}:${link.ctimeMs}`;
     } catch {
       // Nothing there at all.
     }
@@ -584,6 +585,10 @@ function inlinePlugins(): Scanned[] {
         found.push(self);
         continue;
       }
+      // A plugin needs no manifest: one without loads under its directory
+      // name. Children of a folder entry still need plugin.json to load.
+      if (present(join(dir, 'hooks')))
+        found.push({ id: `${basename(dir)}@inline`, dir, origin: 'installed' });
       for (const child of subdirs(dir)) {
         const scanned = scanPlugin('installed', child, undefined, '@inline');
         if (scanned) found.push(scanned);

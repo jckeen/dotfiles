@@ -886,6 +886,23 @@ ln -s "$PH/nowhere.json" "$PH/.claude/plugins/cache/mkt/dang/1.0.0/hooks/hooks.j
 hook_event UserPromptSubmit s11
 assert "rescan: a dangling hooks.json created mid-session is named unverifiable" \
   'unverifiable_section | grep -qxF "  • dang@mkt"'
+# Codex round 7: a manifest-less plugin dir in CLAUDE_CODE_PLUGIN_DIRS loads
+# under its directory name, so its mod is named as NAME@inline.
+mkdir -p "$PH/bare/hooks" || die "mkdir bare"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PH/bare/hooks/hooks.json" || die "write bare"
+CLAUDE_CODE_PLUGIN_DIRS="$PH/bare" hook_event SessionStart s12
+assert "plugin dirs: a manifest-less plugin dir is named by its directory" \
+  'outline "  • bare@inline"'
+# Codex round 7: a permission change is a change. A cache marketplace dir
+# that could not be listed at SessionStart is rescanned once it can be.
+mkdir -p "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks" || die "mkdir permmod"
+printf '%s\n' '{"modules":["./register.js"]}' \
+  > "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks/hooks.json" || die "write permmod"
+chmod 0111 "$PH/.claude/plugins/cache/mktp" || die "chmod mktp"
+hook_event SessionStart s13
+chmod 0755 "$PH/.claude/plugins/cache/mktp" || die "restore mktp"
+hook_event UserPromptSubmit s13
+assert "rescan: a dir made readable mid-session is rescanned" 'outline "  • permmod@mktp"'
 # A hostile session id cannot escape the state dir.
 hook_event UserPromptSubmit '../../escape'
 assert "rescan: an unsafe session id falls back to a fixed state file" \
