@@ -224,54 +224,75 @@ else
   ok "symlink pass never links settings.json, settings.example.json or settings-optout.txt"
 fi
 
-# check-hooks-wired.sh against live settings in a throwaway HOME: the template
-# itself passes --strict (its opt-outs are not drift), but a hook missing that
-# the opt-out list does NOT name is still flagged — real drift in the owner's
-# settings must not hide behind the template's list.
-# The opt-outs apply only on a template install (no claude-memory bootstrap
-# under DEV_DIR); with the private bootstrap present — the owner's layout —
-# an opted-out hook missing from settings is drift again.
+# check-hooks-wired.sh against live settings in a throwaway HOME. The
+# template's opt-outs apply unless the live settings file itself opts in with
+# "env": {"CHECK_HOOKS_REQUIRE_ALL": "1"} (a full private setup does); the
+# process environment is never consulted, and whether a private repo or
+# bootstrap exists does not matter. A missing hook the list does not name is
+# drift either way.
 CHECKER="$REPO_ROOT/claude/scripts/check-hooks-wired.sh"
 HW_HOME="$(mktemp -d)"
-HW_TPL_DEV="$HW_HOME/dev-template"
-HW_OWN_DEV="$HW_HOME/dev-owner"
-mkdir -p "$HW_HOME/.claude" "$HW_TPL_DEV" "$HW_OWN_DEV/claude-memory"
-: > "$HW_OWN_DEV/claude-memory/bootstrap.sh"
-hw() { HOME="$HW_HOME" DEV_DIR="$1" "$CHECKER" --strict >"$HW_HOME/out" 2>&1; }
+mkdir -p "$HW_HOME/.claude"
+hw() { HOME="$HW_HOME" "$CHECKER" --strict >"$HW_HOME/out" 2>&1; }
+require_all() { jq '.env = ((.env // {}) + {"CHECK_HOOKS_REQUIRE_ALL": "1"})' "$1"; }
+drop_commit_hook() { jq 'del(.hooks.PreToolUse[0].hooks[] | select(.command | contains("conventional-commit.sh")))' "$1"; }
+
 cp "$EXAMPLE" "$HW_HOME/.claude/settings.json"
-if hw "$HW_TPL_DEV"; then
-  ok "check-hooks-wired --strict passes on the unmodified template (template install)"
+if hw; then
+  ok "check-hooks-wired --strict passes on the unmodified template"
 else
   fail "check-hooks-wired --strict flags the template's own opt-outs as drift"
   sed 's/^/      | /' "$HW_HOME/out"
 fi
-# Checkout elsewhere (DEV_DIR has no bootstrap) but an unused private repo at
-# ~/dev/claude-memory: setup seeds the template here, so the checker must
-# treat it as a template install too — same condition, no other location.
+if HOME="$HW_HOME" CHECK_HOOKS_REQUIRE_ALL=1 "$CHECKER" --strict >"$HW_HOME/out" 2>&1; then
+  ok "CHECK_HOOKS_REQUIRE_ALL in the process environment is ignored (the settings file decides)"
+else
+  fail "check-hooks-wired read CHECK_HOOKS_REQUIRE_ALL from the process environment"
+fi
+
+require_all "$EXAMPLE" > "$HW_HOME/.claude/settings.json"
+missing_optouts=""
+hw && missing_optouts=" (exit 0)"
+for _o in $EXAMPLE_OPT_OUT; do
+  grep -qF -- "- $_o" "$HW_HOME/out" || missing_optouts="$missing_optouts $_o"
+done
+if [ -z "$missing_optouts" ]; then
+  ok "template + env CHECK_HOOKS_REQUIRE_ALL=1 fails --strict on every opted-out hook"
+else
+  fail "CHECK_HOOKS_REQUIRE_ALL=1 did not require the opted-out hooks:$missing_optouts"
+  sed 's/^/      | /' "$HW_HOME/out"
+fi
+
+# The README "Creating your own" layout: a private repo with bootstrap.sh and
+# a copy of the template as its settings.json, linked into ~/.claude. Without
+# the key it is still a template-shaped install and passes.
 mkdir -p "$HW_HOME/dev/claude-memory"
 : > "$HW_HOME/dev/claude-memory/bootstrap.sh"
-if hw "$HW_TPL_DEV"; then
-  ok "checkout elsewhere + unused ~/dev/claude-memory: template opt-outs still apply"
+cp "$EXAMPLE" "$HW_HOME/dev/claude-memory/settings.json"
+rm -f "$HW_HOME/.claude/settings.json"
+ln -s "$HW_HOME/dev/claude-memory/settings.json" "$HW_HOME/.claude/settings.json"
+if hw; then
+  ok "README private-repo recipe layout without the key passes --strict"
 else
-  fail "checker used a bootstrap location setup.sh does not (false drift on a template install)"
+  fail "README private-repo recipe layout is told to wire the template's opt-outs"
   sed 's/^/      | /' "$HW_HOME/out"
 fi
-rm -rf "${HW_HOME:?}/dev"
-optout_first="${EXAMPLE_OPT_OUT# }"; optout_first="${optout_first%% *}"
-if [ -n "$optout_first" ] && ! hw "$HW_OWN_DEV" && grep -qF "$optout_first" "$HW_HOME/out"; then
-  ok "owner layout (claude-memory bootstrap present): a missing opted-out hook fails --strict"
-else
-  fail "owner layout let the template opt-outs hide an unwired $optout_first"
-  sed 's/^/      | /' "$HW_HOME/out"
-fi
-jq 'del(.hooks.PreToolUse[0].hooks[] | select(.command | contains("conventional-commit.sh")))' \
-  "$EXAMPLE" > "$HW_HOME/.claude/settings.json"
-if ! hw "$HW_TPL_DEV" && grep -q 'conventional-commit.sh' "$HW_HOME/out"; then
-  ok "check-hooks-wired --strict still flags a missing hook the opt-out list does not name"
-else
-  fail "check-hooks-wired hid real drift (conventional-commit.sh unwired)"
-  sed 's/^/      | /' "$HW_HOME/out"
-fi
+rm -rf "${HW_HOME:?}/dev" "$HW_HOME/.claude/settings.json"
+
+for _mode in plain require-all; do
+  if [ "$_mode" = plain ]; then
+    drop_commit_hook "$EXAMPLE" > "$HW_HOME/.claude/settings.json"
+  else
+    drop_commit_hook "$EXAMPLE" > "$HW_HOME/tmp.json"
+    require_all "$HW_HOME/tmp.json" > "$HW_HOME/.claude/settings.json"
+  fi
+  if ! hw && grep -q 'conventional-commit.sh' "$HW_HOME/out"; then
+    ok "check-hooks-wired --strict flags an unlisted missing hook ($_mode)"
+  else
+    fail "check-hooks-wired hid real drift: conventional-commit.sh unwired ($_mode)"
+    sed 's/^/      | /' "$HW_HOME/out"
+  fi
+done
 
 # setup.sh's summary warning (warn_unwired_hooks) delegates to the checker, so
 # a settings.json with only an unrelated custom hook still warns, and the
@@ -280,7 +301,7 @@ eval "$(sed -n '/^warn_unwired_hooks()/,/^}/p' "$SETUP")"
 mkdir -p "$HW_HOME/.claude/hooks"
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo custom"}]}]}}\n' \
   > "$HW_HOME/.claude/settings.json"
-warn_out="$(HOME_DIR="$HW_HOME" DEV_DIR="$HW_TPL_DEV" DOTFILES_DIR="$REPO_ROOT" \
+warn_out="$(HOME_DIR="$HW_HOME" DOTFILES_DIR="$REPO_ROOT" \
   CLAUDE_SETTINGS="$HW_HOME/.claude/settings.json" SETTINGS_EXAMPLE="$EXAMPLE" warn_unwired_hooks)"
 if grep -q 'does not register every dotfiles hook' <<<"$warn_out" \
   && grep -q 'conventional-commit.sh' <<<"$warn_out"; then
@@ -289,7 +310,7 @@ else
   fail "setup summary missed unwired dotfiles hooks behind a custom hook: $warn_out"
 fi
 cp "$EXAMPLE" "$HW_HOME/.claude/settings.json"
-warn_out="$(HOME_DIR="$HW_HOME" DEV_DIR="$HW_TPL_DEV" DOTFILES_DIR="$REPO_ROOT" \
+warn_out="$(HOME_DIR="$HW_HOME" DOTFILES_DIR="$REPO_ROOT" \
   CLAUDE_SETTINGS="$HW_HOME/.claude/settings.json" SETTINGS_EXAMPLE="$EXAMPLE" warn_unwired_hooks)"
 if [ -z "$warn_out" ]; then
   ok "setup summary stays quiet on the unmodified template"

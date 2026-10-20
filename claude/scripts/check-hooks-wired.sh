@@ -52,18 +52,16 @@ command -v jq >/dev/null 2>&1 || { yellow "jq not found — skipping hook-wiring
 WIRED_COMMANDS="$(jq -r '.hooks // {} | .. | .command? // empty' "$SETTINGS" 2>/dev/null || true)"
 
 # Hooks the public template deliberately leaves out (claude/settings-optout.txt,
-# shared with settings-example.test.sh). Applied ONLY on a template install —
-# the condition setup.sh's seed_claude_settings uses: no private
-# claude-memory/bootstrap.sh beside the checkout ($DEV_DIR, default the
-# checkout's parent, exactly as setup.sh derives it — no other location, or
-# a template install beside an unused ~/dev/claude-memory would be told to
-# wire the omitted hooks). With the private bootstrap present every hook must
-# be wired, as before. Even then it is only consulted for a hook the live
+# shared with settings-example.test.sh). They apply unless the live settings
+# opt in to requiring every hook with `"env": {"CHECK_HOOKS_REQUIRE_ALL": "1"}`
+# — a full private setup does. The opt-in is read from the settings file
+# itself, never the process environment, so every shell gets the same answer;
+# whether a private repo or bootstrap exists says nothing about which hooks
+# its settings expect. The list is only consulted for a hook the live
 # settings do not register; any hook not listed still reports as drift.
-DEV_DIR="${DEV_DIR:-$(dirname "$REPO_ROOT")}"
+REQUIRE_ALL="$(jq -r '.env.CHECK_HOOKS_REQUIRE_ALL // empty' "$SETTINGS" 2>/dev/null || true)"
 TEMPLATE_OPT_OUT=" "
-if [ ! -f "$DEV_DIR/claude-memory/bootstrap.sh" ] \
-  && [ -f "$REPO_ROOT/claude/settings-optout.txt" ]; then
+if [ "$REQUIRE_ALL" != "1" ] && [ -f "$REPO_ROOT/claude/settings-optout.txt" ]; then
   TEMPLATE_OPT_OUT=" $(sed 's/#.*//' "$REPO_ROOT/claude/settings-optout.txt" | awk 'NF {printf "%s ", $1}')"
 fi
 

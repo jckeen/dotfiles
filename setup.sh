@@ -2651,7 +2651,7 @@ warn_unwired_hooks() {
     return 0
   fi
   local hw_out
-  if ! hw_out="$(HOME="$HOME_DIR" DEV_DIR="$DEV_DIR" \
+  if ! hw_out="$(HOME="$HOME_DIR" \
     "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" --strict --quiet 2>&1)"; then
     echo "  !! WARNING: ~/.claude/settings.json does not register every dotfiles hook — those will NOT run:"
     printf '%s\n' "$hw_out" | sed 's/^/     /'

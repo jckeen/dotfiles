@@ -11,12 +11,11 @@
   project's whole `permissions` block, deny rules included, which is only
   safe beside a global allowlist the template does not ship.
   `OperatorQueueReminder.hook.sh` defaults to the owner's private queue
-  repo. `check-hooks-wired.sh` reads the same list, but only on a template
-  install: with no `claude-memory/bootstrap.sh` beside the checkout, which
-  is the condition the seed uses, it does not ask the user to wire them.
-  With the private bootstrap present, every hook must still be wired. Any
-  other missing hook still reports as
-  drift.
+  repo. `check-hooks-wired.sh` reads the same list and does not ask for
+  those hooks, unless the live settings file opts in with
+  `"env": {"CHECK_HOOKS_REQUIRE_ALL": "1"}`, as a full private setup does.
+  Then every hook is required. The key is read from the file, never the
+  process environment. Any other missing hook still reports as drift.
 - **`claude/statusline.sh`**: runs on bash 3.2. The template runs it as
   `bash …`, which is system bash on macOS. A read loop replaces `readarray`,
   and `date` replaces printf's `%(…)T`. The per-directory git cache key falls

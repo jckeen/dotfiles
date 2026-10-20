@@ -285,7 +285,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 |------|-------|----------|
 | **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`; generated from `agents/canon/` per ADR-0007 — edit the sources, not the file) |
 | **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
-| **Settings template** | `claude/settings.example.json` | Public `hooks` + `statusLine` registrations; `setup.sh` copies it to `~/.claude/settings.json` when neither that file nor `claude-memory` exists (never symlinked, never overwrites) |
+| **Settings template** | `claude/settings.example.json` | Public `hooks` + `statusLine` registrations; `setup.sh` copies it to `~/.claude/settings.json` when neither that file nor `claude-memory` exists (never symlinked, never overwrites). The hooks it omits are listed in `claude/settings-optout.txt`; a full private setup adds `"CHECK_HOOKS_REQUIRE_ALL": "1"` to its settings `env` to require every hook |
 | **Agent Pack** | `claude/AgentPack.md` | 24-agent pack: review orchestra plus subject-matter experts (loaded on-demand, not symlinked) |
 | **Status line** | `claude/statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `claude/hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
