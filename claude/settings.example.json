@@ -6,27 +6,23 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/SymlinkRepair.hook.ts"
+            "command": "\"$HOME/.claude/hooks/SymlinkRepair.hook.ts\""
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/HandoffReminder.hook.sh"
+            "command": "\"$HOME/.claude/hooks/HandoffReminder.hook.sh\""
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/OperatorQueueReminder.hook.sh"
+            "command": "\"$HOME/.claude/hooks/OperatorQueueReminder.hook.sh\""
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/StripProjectPermissions.hook.ts"
+            "command": "\"$HOME/.claude/hooks/HygieneStatus.hook.sh\""
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/HygieneStatus.hook.sh"
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/PluginDriftCheck.hook.ts"
+            "command": "\"$HOME/.claude/hooks/PluginDriftCheck.hook.ts\""
           }
         ]
       }
@@ -37,20 +33,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/conventional-commit.sh"
+            "command": "\"$HOME/.claude/hooks/conventional-commit.sh\""
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/PrePushStaleSHACheck.hook.ts"
+            "command": "\"$HOME/.claude/hooks/PrePushStaleSHACheck.hook.ts\""
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/worktree-guard.sh",
+            "command": "\"$HOME/.claude/hooks/worktree-guard.sh\"",
             "if": "Bash(git *)"
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/PreMergeCodexHarvest.hook.sh"
+            "command": "\"$HOME/.claude/hooks/PreMergeCodexHarvest.hook.sh\""
           }
         ]
       },
@@ -59,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/ntfy-awaiting-input.sh"
+            "command": "\"$HOME/.claude/hooks/ntfy-awaiting-input.sh\""
           }
         ]
       }
@@ -70,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/format-on-edit.sh"
+            "command": "\"$HOME/.claude/hooks/format-on-edit.sh\""
           }
         ]
       }
@@ -78,6 +74,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash $HOME/.claude/statusline.sh"
+    "command": "bash \"$HOME/.claude/statusline.sh\""
   }
 }

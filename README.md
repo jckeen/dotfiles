@@ -209,7 +209,7 @@ a repair flag is read-only.
 
 > **Public repo safety:** this dotfiles repo is public. Don't commit Codex/Claude auth tokens, generated sessions or memories, sqlite state, logs, caches, private memory, account IDs, private MCP endpoints, personal identity notes, or client/project details. Private state lives in `claude-memory` and `codex-memory` (separate private repos — see below). CI runs secret and personal-data checks on every PR; the canonical required-check policy lives in [docs/BRANCH_PROTECTION.md](docs/BRANCH_PROTECTION.md).
 
-> **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Claude Code only runs hooks and the status line that `settings.json` registers, so without the repo `setup.sh` copies [`claude/settings.example.json`](claude/settings.example.json) (every hook plus the status line, nothing private) to `~/.claude/settings.json`. It never overwrites an existing file. Skills, agents, and the global `claude/CLAUDE.md` are symlinked either way.
+> **Private memory (optional):** if you keep a private `claude-memory` repo under `~/dev/`, `setup.sh` calls its `bootstrap.sh` to symlink your Claude Code `settings.json` (MCP servers, permissions, plugins) into `~/.claude/`. Claude Code only runs hooks and the status line that `settings.json` registers, so without the repo `setup.sh` copies [`claude/settings.example.json`](claude/settings.example.json) (the hooks and the status line, nothing private) to `~/.claude/settings.json`. It never overwrites an existing file. Skills, agents, and the global `claude/CLAUDE.md` are symlinked either way.
 
 > **WSL filesystem rule:** Always clone repos under `~/dev` (Linux filesystem), **not** `/mnt/c/` (Windows mount). File I/O on the native Linux filesystem is ~10x faster. The setup script auto-configures your shell to `cd ~/dev` on startup.
 
@@ -425,7 +425,7 @@ mkdir -p ~/dev/claude-memory/dev/memory
 cd ~/dev/claude-memory
 
 # Your Claude Code settings: start from the public template, which
-# registers every hook and the status line, then add your own
+# registers the hooks and the status line, then add your own
 # permissions, MCP servers and plugins.
 cp ~/dev/dotfiles/claude/settings.example.json settings.json
 

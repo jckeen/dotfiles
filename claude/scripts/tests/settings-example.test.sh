@@ -34,25 +34,67 @@ else
   fail "settings.example.json is not valid JSON"
 fi
 
+# Hooks deliberately NOT in the public template, each with its reason. A hook
+# here must also stay out of the template (asserted below).
+#   StripProjectPermissions.hook.ts — deletes the whole `permissions` key
+#   (deny and ask rules included) from a project's settings.local.json. That
+#   is only safe beside a global allowlist that replaces it, which the
+#   template deliberately does not ship.
+EXAMPLE_OPT_OUT=" StripProjectPermissions.hook.ts "
+
 # Same extraction as check-hooks-wired.sh: every command string under .hooks.
 commands="$(jq -r '.hooks // {} | .. | .command? // empty' "$EXAMPLE" 2>/dev/null)"
 unwired=""
+optout_wired=""
 for f in "$REPO_ROOT"/claude/hooks/*.sh "$REPO_ROOT"/claude/hooks/*.ts; do
   [ -e "$f" ] || continue
   name="$(basename "$f")"
+  case "$EXAMPLE_OPT_OUT" in
+    *" $name "*)
+      grep -qF "/.claude/hooks/$name" <<<"$commands" && optout_wired="$optout_wired $name"
+      continue ;;
+  esac
   grep -qF "/.claude/hooks/$name" <<<"$commands" || unwired="$unwired $name"
 done
 if [ -z "$unwired" ]; then
-  ok "every claude/hooks/* hook is registered in settings.example.json"
+  ok "every claude/hooks/* hook (minus the documented opt-outs) is registered in settings.example.json"
 else
   fail "hooks missing from settings.example.json:$unwired"
+fi
+if [ -z "$optout_wired" ]; then
+  ok "opted-out hooks stay out of the public template"
+else
+  fail "opted-out hooks registered in settings.example.json:$optout_wired"
+fi
+
+# Every command quotes its $HOME path, so a HOME with spaces still runs it:
+# run each command under `sh -c` (how Claude Code runs them) with HOME set to
+# a dir containing a space and stub hooks that record they ran.
+SPACE_HOME="$(mktemp -d)/home with space"
+mkdir -p "$SPACE_HOME/.claude/hooks"
+for f in "$REPO_ROOT"/claude/hooks/*.sh "$REPO_ROOT"/claude/hooks/*.ts "$REPO_ROOT"/claude/statusline.sh; do
+  [ -e "$f" ] || continue
+  case "$f" in */statusline.sh) stub="$SPACE_HOME/.claude/statusline.sh" ;; *) stub="$SPACE_HOME/.claude/hooks/${f##*/}" ;; esac
+  printf '#!/bin/sh\necho ran\n' > "$stub"
+  chmod +x "$stub"
+done
+broken=""
+while IFS= read -r cmd; do
+  [ -n "$cmd" ] || continue
+  [ "$(HOME="$SPACE_HOME" sh -c "$cmd" </dev/null 2>/dev/null)" = ran ] || broken="$broken [$cmd]"
+done < <(jq -r '(.hooks // {} | .. | .command? // empty), (.statusLine.command // empty)' "$EXAMPLE")
+rm -rf "${SPACE_HOME%/home with space}"
+if [ -z "$broken" ]; then
+  ok "every hook and status-line command runs when HOME contains a space"
+else
+  fail "commands that break on a HOME with a space:$broken"
 fi
 
 # The reverse: no registration names a hook file that does not exist.
 dangling=""
 while IFS= read -r cmd; do
   [ -n "$cmd" ] || continue
-  hook="$(grep -oE '/\.claude/hooks/[^ ]+' <<<"$cmd" | head -1)"
+  hook="$(grep -oE '/\.claude/hooks/[^ "]+' <<<"$cmd" | head -1)"
   [ -n "$hook" ] || { dangling="$dangling [$cmd]"; continue; }
   [ -e "$REPO_ROOT/claude/hooks/${hook##*/}" ] || dangling="$dangling ${hook##*/}"
 done <<<"$commands"
@@ -86,6 +128,17 @@ if symlink_enumerate "$REPO_ROOT/claude" "/dst" | cut -f2 \
   fail "symlink pass would link the settings template into ~/.claude"
 else
   ok "symlink pass never links settings.json or settings.example.json"
+fi
+
+# A user-scope plugin install creates settings.json (enabledPlugins only), so
+# the seed must run before setup's Claude CLI, auth and plugin steps, or it
+# would find that file and skip, leaving every hook unregistered.
+seed_line="$(grep -n '^  seed_claude_settings$' "$SETUP" | head -1 | cut -d: -f1)"
+cli_line="$(grep -n '^# ─── 3\. Claude Code CLI' "$SETUP" | head -1 | cut -d: -f1)"
+if [ -n "$seed_line" ] && [ -n "$cli_line" ] && [ "$seed_line" -lt "$cli_line" ]; then
+  ok "setup.sh seeds settings.json before installing Claude Code and its plugins"
+else
+  fail "setup.sh seeds settings.json after the Claude CLI/plugin steps (seed=${seed_line:-?}, cli=${cli_line:-?})"
 fi
 
 # seed_claude_settings, extracted from setup.sh and run against a throwaway

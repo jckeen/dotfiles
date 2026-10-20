@@ -1351,6 +1351,42 @@ if [ ! -e "$HOME/.bun/bin/bun" ]; then
   echo "  -> WARNING: ~/.bun/bin/bun is missing; TypeScript hooks may not run until bun is installed"
 fi
 
+# ─── 2c. Public settings.json for a clone without claude-memory (#588) ──
+# Claude Code runs only the hooks registered in ~/.claude/settings.json and
+# shows a status line only when its statusLine key names one, so the linked
+# hooks are inert without that file. Without the private bootstrap nothing
+# else writes it: seed a real file (a copy, not a link, so local edits never
+# land in the repo) from the public example. An existing settings.json —
+# including a dangling symlink — is never touched; the noclobber write
+# refuses one that appears between the check and the copy.
+#
+# This runs BEFORE the Claude CLI install, auth and plugin steps (§3–3b):
+# a user-scope plugin install creates settings.json holding only
+# enabledPlugins, and seeding after it would find the file and skip, leaving
+# every hook unregistered. Claude then merges enabledPlugins into this file.
+CLAUDE_SETTINGS="$HOME_DIR/.claude/settings.json"
+SETTINGS_EXAMPLE="$DOTFILES_DIR/claude/settings.example.json"
+SETTINGS_SEEDED=""
+seed_claude_settings() {
+  [ -f "$BOOTSTRAP_SCRIPT" ] && return 0
+  [ -e "$CLAUDE_SETTINGS" ] || [ -L "$CLAUDE_SETTINGS" ] && return 0
+  echo ""
+  echo "--- Claude Code settings.json (no claude-memory bootstrap found) ---"
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  [DRY] would create $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
+    SETTINGS_SEEDED="would"
+  elif mkdir -p "$HOME_DIR/.claude" \
+    && (set -C; cat "$SETTINGS_EXAMPLE" > "$CLAUDE_SETTINGS"); then
+    echo "  -> created $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
+    SETTINGS_SEEDED="yes"
+  else
+    echo "  !! WARNING: could not create $CLAUDE_SETTINGS; copy claude/settings.example.json there by hand."
+  fi
+}
+if service_selected claude; then
+  seed_claude_settings
+fi
+
 # ─── 3. Claude Code CLI ──────────────────────────────────────────────
 # Official native installer (verified against https://code.claude.com/docs/en/setup
 # 2026-07-10): https://claude.ai/install.sh for macOS, Linux, and WSL.
@@ -2500,37 +2536,6 @@ if service_selected claude && [ -f "$BOOTSTRAP_SCRIPT" ]; then
   fi
 fi
 
-# ─── 8b. Public settings.json for a clone without claude-memory (#588) ──
-# Claude Code runs only the hooks registered in ~/.claude/settings.json and
-# shows a status line only when its statusLine key names one, so the linked
-# hooks are inert without that file. Without the private bootstrap nothing
-# else writes it: seed a real file (a copy, not a link, so local edits never
-# land in the repo) from the public example. An existing settings.json —
-# including a dangling symlink — is never touched; the noclobber write
-# refuses one that appears between the check and the copy.
-CLAUDE_SETTINGS="$HOME_DIR/.claude/settings.json"
-SETTINGS_EXAMPLE="$DOTFILES_DIR/claude/settings.example.json"
-SETTINGS_SEEDED=""
-seed_claude_settings() {
-  [ -f "$BOOTSTRAP_SCRIPT" ] && return 0
-  [ -e "$CLAUDE_SETTINGS" ] || [ -L "$CLAUDE_SETTINGS" ] && return 0
-  echo ""
-  echo "--- Claude Code settings.json (no claude-memory bootstrap found) ---"
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    echo "  [DRY] would create $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
-    SETTINGS_SEEDED="would"
-  elif mkdir -p "$HOME_DIR/.claude" \
-    && (set -C; cat "$SETTINGS_EXAMPLE" > "$CLAUDE_SETTINGS"); then
-    echo "  -> created $CLAUDE_SETTINGS from claude/settings.example.json (hooks + status line)"
-    SETTINGS_SEEDED="yes"
-  else
-    echo "  !! WARNING: could not create $CLAUDE_SETTINGS; copy claude/settings.example.json there by hand."
-  fi
-}
-if service_selected claude; then
-  seed_claude_settings
-fi
-
 # ─── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "=== Setup complete ($PLATFORM) ==="
@@ -2617,6 +2622,12 @@ if service_selected claude && [ "${DRY_RUN:-0}" != "1" ] \
   && [ -e "$HOME_DIR/.claude/hooks" ] && [ ! -e "$CLAUDE_SETTINGS" ]; then
   echo "  !! WARNING: ~/.claude/settings.json is missing — the linked hooks and status line will NOT run."
   echo "     Fix: cp $SETTINGS_EXAMPLE ~/.claude/settings.json"
+elif service_selected claude && [ "${DRY_RUN:-0}" != "1" ] \
+  && [ -e "$HOME_DIR/.claude/hooks" ] && [ -f "$CLAUDE_SETTINGS" ] \
+  && command -v jq &>/dev/null && ! jq -e '.hooks | length > 0' "$CLAUDE_SETTINGS" &>/dev/null; then
+  # e.g. a settings.json a plugin install wrote before this seed existed.
+  echo "  !! WARNING: ~/.claude/settings.json registers no hooks — the linked hooks will NOT run."
+  echo "     Fix: merge the hooks and statusLine blocks of $SETTINGS_EXAMPLE into it."
 fi
 if [ "${JULES_INSTALLED:-0}" -eq 1 ]; then
   echo "  jules_installed=1  (routine lane: 'jules login' for the CLI, ~/.config/jules/api-key for dispatch)"

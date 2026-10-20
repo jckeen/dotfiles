@@ -181,9 +181,12 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 Hooks only run if they're **registered in `settings.json`** (the `hooks` block).
 The owner's lives in the private `claude-memory` repo. The public
 [`claude/settings.example.json`](claude/settings.example.json) registers every
-hook below plus the status line, and `setup.sh` copies it to
-`~/.claude/settings.json` when neither that file nor `claude-memory` exists
-(`settings-example.test.sh` fails CI when a hook file is missing from it). The
+hook below except `StripProjectPermissions.hook.ts`, plus the status line.
+That hook deletes a project's whole `permissions` block, deny rules included,
+which is only safe beside a global allowlist the template does not ship.
+`setup.sh` copies the template to `~/.claude/settings.json` when neither that
+file nor `claude-memory` exists (`settings-example.test.sh` fails CI when a
+hook file is missing from it without a documented opt-out). The
 hook *files* below ship in
 `claude/hooks/`; the **Wired** column is the source of truth for what's actually
 active. `check-hooks-wired.sh` runs at every `cc` launch and warns if a hook file
