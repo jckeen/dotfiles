@@ -288,8 +288,14 @@ rm -rf "$R"
 new_repo
 w changelog.d/Fix-a.md "## 2026-10-05 — fix: upper" "- b"
 w changelog.d/fix-a.md "## 2026-10-06 — fix: lower" "- b"
-run --check
-expect "files (#664.9): names differing only in case are refused" 1 "differ only in case"
+# On a case-insensitive filesystem the second write replaced the first, so
+# there is no collision left to detect.
+if [ "$(find "$R/changelog.d" -type f -name '*.md' | wc -l)" -eq 2 ]; then
+  run --check
+  expect "files (#664.9): names differing only in case are refused" 1 "differ only in case"
+else
+  ok "files (#664.9): case-collision check skipped (case-insensitive filesystem) # SKIP"
+fi
 rm -rf "$R"
 
 # Root reads anything, so the unreadable cases are meaningless there.
