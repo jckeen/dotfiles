@@ -95,12 +95,16 @@ per issue: the title is the slug, the body holds the fields:
 - action: <one line: what the operator must do>
 ```
 
-The slug is stable (same action = same slug across sessions); `deadline` and
+The slug is stable (same action = same slug across sessions), lowercase
+letters, digits, `.`, `_` or `-`, at most 100 characters; `deadline` and
 `verified` are optional — omit the line if none. **File only if absent** —
 `~/.claude/hooks/OperatorQueueReminder.hook.sh --find <slug>` prints the URL of each open item
-the reminder lists under that slug. Exit 0 with no URL means none exists;
-exit 2 means it could not tell (offline, result cut short, or a live
-`~/.claude/operator-queue.md`) — don't file, flag it in the handoff instead.
+the reminder lists under that slug. Only exit 0 with nothing but URL lines is
+an answer (no output = none exists). Anything else — exit 2 (offline, gh or
+jq missing, result cut short, bad slug or repo, a live
+`~/.claude/operator-queue.md`), a missing hook, or other output from an
+older copy — means it could not tell: fix a bad slug and retry; otherwise
+don't file, flag it in the handoff instead.
 **Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
 `~/.claude/operator-queue.md` is retired: never append to it. On a machine

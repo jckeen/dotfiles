@@ -73,7 +73,8 @@
 #                  exit 0 = conclusive, 2 = cannot tell (see find_item).
 #
 # TRIGGER: SessionStart (after HandoffReminder)
-# EXIT: 0 always (advisory/warn-only, never blocks)
+# EXIT: 0 always (advisory/warn-only, never blocks); --scope/--find/an unknown
+#   flag exit 2 when they cannot answer
 # FAILURE MODE: open — silent when the file queue is empty or has no parseable
 #   item blocks, or when a fresh cache holds no open issues; one warning line
 #   if the parse itself fails. A cache that is old, or older than a failed
@@ -160,7 +161,8 @@ GQL='query($q: String!, $endCursor: String) {
 # account, so it counts only when the body was never edited.
 JQ_DEFS='
   def complete:
-    if ([ .[].data.search.nodes[] | select(.number != null) | .id ] | unique | length)
+    if length == 0 or any(.[]; (.data.search.issueCount | type) != "number") then error("no result count")
+    elif ([ .[].data.search.nodes[] | select(.number != null) | .id ] | unique | length)
        < ([ .[].data.search.issueCount ] | max // 0)
     then error("search truncated") else empty end;
   def counted:
@@ -338,7 +340,7 @@ refresh_state() {
 # --scope prints where the search looks: `host <h>`, `home <owner/name>` and
 # `owners <o>...` (empty = the home repo only).
 # --find <slug> prints the URL of each open item titled exactly <slug> that
-# this hook would list, and exits 0 when the search was complete (no URL =
+# this hook would list (titles compare case-insensitively), and exits 0 when the search was complete (no URL =
 # no such item). Exit 2 = it could not tell: GitHub unreachable, gh or jq
 # missing, the result cut at 1000, a bad slug or repo, or a live queue file
 # (that file, not the issues, is the queue until it carries the banner).
@@ -347,14 +349,17 @@ find_item() {
   if ! [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
     echo "--find: the slug must be letters, digits, '.', '_' or '-'" >&2; return 2
   fi
+  [ -z "${OPERATOR_QUEUE_FILE:-}" ] || { echo "--find: OPERATOR_QUEUE_FILE is set, so that file is the queue" >&2; return 2; }
   [ "$REPO_OK" -eq 1 ] || { echo "--find: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name" >&2; return 2; }
   if [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'; then
     echo "--find: $LEGACY is still the live queue; move its items into issues and add the historical banner first" >&2; return 2
   fi
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "--find: needs gh and jq" >&2; return 2; }
-  raw="$(gh api graphql --hostname "$GH_HOSTNAME" --paginate \
+  local tmo=()
+  command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
+  raw="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
     -f q="$SEARCH_Q in:title \"$slug\"" -f query="$GQL")" || { echo "--find: the search failed" >&2; return 2; }
-  printf '%s' "$raw" | jq -rs --arg slug "$slug" "$JQ_DEFS"'complete, (counted | select(.title == $slug) | .url)' ||
+  printf '%s' "$raw" | jq -rs --arg slug "$slug" "$JQ_DEFS"'complete, (counted | select((.title | ascii_downcase) == ($slug | ascii_downcase)) | .url)' ||
     { echo "--find: the search was cut short or unreadable" >&2; return 2; }
 }
 
@@ -364,6 +369,9 @@ case "${1:-}" in
     [ "$REPO_OK" -eq 1 ] || { echo "--scope: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name" >&2; exit 2; }
     printf 'host %s\nhome %s\nowners %s\n' "$GH_HOSTNAME" "$REPO_PATH" "$OWNERS"; exit 0 ;;
   --find) find_item "${2:-}"; exit ;;
+  # A mistyped mode must not fall through to the rendered queue, which a
+  # caller could misread as a conclusive answer.
+  -*) echo "unknown argument: $1 (modes: --refresh, --scope, --find SLUG)" >&2; exit 2 ;;
 esac
 
 # Source: the file queue is migrating to operator-action issues in the private

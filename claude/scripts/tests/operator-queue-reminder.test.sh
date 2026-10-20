@@ -45,6 +45,8 @@ cat > "$FAKEBIN/gh" <<'GH'
 [ -n "${FAKE_GH_SLEEP:-}" ] && sleep "$FAKE_GH_SLEEP"
 [ -n "${FAKE_GH_LOG:-}" ] && echo "gh-done" >> "$FAKE_GH_LOG"
 [ -n "${FAKE_GH_JSON:-}" ] || exit 1
+# FAKE_GH_EMPTY: gh succeeds but prints nothing (no page, no result count).
+[ -n "${FAKE_GH_EMPTY:-}" ] && exit 0
 # FAKE_GH_SWITCH: the active gh account changes while the fetch runs.
 [ -n "${FAKE_GH_SWITCH:-}" ] && printf 'github.com:\n    user: switched\n' > "$GH_CONFIG_DIR/hosts.yml"
 jq --argjson extra "${FAKE_GH_EXTRA_COUNT:-0}" '{data: {search: {pageInfo: {hasNextPage: false, endCursor: null},
@@ -968,6 +970,16 @@ assert "--find: a live queue file is inconclusive (it is still the queue)" "[ $r
 printf '> **Historical** — retired.\n\n## legacy-item\n' > "$IH/.claude/operator-queue.md"
 run_issues FAKE_GH_JSON="$ISSUES" -- --find dot-issue
 assert "--find: a bannered queue file defers to the issues" "[ $rc -eq 0 ] && outgrep 'issues/12'"
+
+rm -f "$IH/.claude/operator-queue.md"
+run_issues FAKE_GH_JSON="$ISSUES" -- --find DOT-Issue
+assert "--find: titles compare case-insensitively (GitHub search does)" "[ $rc -eq 0 ] && outgrep 'issues/12'"
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_EMPTY=1 -- --find dot-issue
+assert "--find: a reply with no result count is inconclusive" "[ $rc -eq 2 ]"
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_FILE="$FX/none.md" -- --find dot-issue
+assert "--find: OPERATOR_QUEUE_FILE set (that file is the queue) is inconclusive" "[ $rc -eq 2 ]"
+run_issues FAKE_GH_JSON="$ISSUES" -- --fnd dot-issue
+assert "a mistyped mode exits 2 and never renders the queue" "[ $rc -eq 2 ] && ! outgrep 'dot-issue (' && outgrep 'unknown argument'"
 
 rm -rf "$FAKEBIN" "$GH_CONFIG_DIR"
 echo ""
