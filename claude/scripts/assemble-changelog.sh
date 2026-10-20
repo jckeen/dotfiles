@@ -48,12 +48,14 @@
 #   assemble-changelog.sh --check    validate every fragment, and that
 #                                    CHANGELOG.md is present with its title on
 #                                    line 1 and an allowed preamble
-#     [--base REF]                   also the PR scope: REF...HEAD adds at most
-#                                    one fragment, modifies or renames none on
-#                                    the base, and adds no `## ` entry to
-#                                    CHANGELOG.md while adding one
-#   --root DIR                       repo root (default: git toplevel of cwd)
+#   --root DIR                       repo root (default: the current directory)
 #   With no --check: print this usage and exit 2.
+#
+# A pure content validator: it reads changelog.d/*.md and the top of
+# CHANGELOG.md from the working tree, runs no git and writes nothing. The PR
+# scope rule (one added fragment, no edits to another PR's fragment, no direct
+# CHANGELOG.md entry beside a fragment) needs the PR's diff, so it is not
+# here; it belongs to CI, in the operator's workflow patch.
 #
 # Exit: 0 clean, 1 on any problem, 2 on a usage error. Never writes.
 # Bash 3.2-safe; no fd/rg.
@@ -71,43 +73,20 @@ POINTER_1='Entries not yet folded in live one per PR in `changelog.d/`; they are
 # shellcheck disable=SC2016
 POINTER_2='copied here by hand at release time (see `claude/scripts/README.md`).'
 
-# Every git call goes through gitq, which pins the config that could change
-# what this script parses: colour (ANSI escapes would hide `+## `), path
-# quoting, diff prefixes, relative paths and rename detection.
-gitq() {
-  git -c color.ui=never -c color.diff=never -c core.quotePath=false \
-    -c diff.noprefix=false -c diff.mnemonicPrefix=false -c diff.relative=false \
-    -c diff.renames=true "$@"
-}
-# gdiff: gitq diff, also with no colour, external diff or textconv filter,
-# and rename detection on, whatever the flags' config defaults.
-gdiff() {
-  gitq diff --no-color --no-ext-diff --no-textconv -M "$@"
-}
-
 die() {
   printf '✖ assemble-changelog: %s\n' "$1" >&2
   exit "${2:-1}"
 }
 
 usage() {
-  sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,61p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
-BASE=""
 ROOT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check) CHECK=1 ;;
-    --base)
-      [ "$#" -ge 2 ] || die "--base needs a git ref" 2
-      # A ref is never an option; one starting with - would reach git as one
-      # (e.g. git diff --output=FILE, a write).
-      case "$2" in -*) die "--base ref may not start with '-': $2" 2 ;; esac
-      BASE="$2"
-      shift
-      ;;
     --root)
       [ "$#" -ge 2 ] || die "--root needs a directory" 2
       ROOT="$2"
@@ -123,15 +102,13 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$CHECK" -eq 0 ]; then
-  if [ -n "$BASE" ]; then die "--base only applies with --check" 2; fi
   usage >&2
   exit 2
 fi
 
-if [ -z "$ROOT" ]; then
-  ROOT="$(gitq rev-parse --show-toplevel 2>/dev/null)" \
-    || die "not inside a git repository (pass --root DIR)"
-fi
+# No git: the root is the current directory unless --root names one. A wrong
+# directory fails closed below, since CHANGELOG.md must be present.
+[ -n "$ROOT" ] || ROOT="."
 [ -d "$ROOT" ] || die "root '$ROOT' is not a directory"
 cd "$ROOT"
 
@@ -318,7 +295,7 @@ else
       rc=0
       grep -qxF -- "$h" "$CHANGELOG" || rc=$?
       if [ "$rc" -eq 0 ]; then
-        err "$f — entry '$h' is already in $CHANGELOG (already folded? git rm the fragment)"
+        err "$f — entry '$h' is already in $CHANGELOG (already folded? remove the fragment)"
       elif [ "$rc" -ne 1 ]; then
         err "$CHANGELOG could not be read"
       fi
@@ -340,38 +317,6 @@ if [ "${#FRAGS[@]}" -gt 0 ]; then
     [ -n "$where" ] || continue
     err "$where — $msg"
   done <<<"$dups"
-fi
-
-# ── PR scope: one fragment added, nothing else in the changelog ────
-# A PR adds at most one fragment, modifies or renames no fragment already on
-# the base (another PR's record), and, when it adds one, adds no `## ` entry
-# to CHANGELOG.md. Deleting fragments while adding entries is the fold PR's
-# shape, and stays allowed.
-if [ -n "$BASE" ]; then
-  gitq rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
-    || die "--base '$BASE' is not a commit here (fetch it, or fetch-depth: 0 in CI)"
-  added="$(gdiff --name-only --diff-filter=A "$BASE...HEAD" -- "$FRAG_DIR/")" \
-    || die "git diff $BASE...HEAD failed"
-  n_added=0
-  [ -z "$added" ] || n_added="$(printf '%s\n' "$added" | wc -l | tr -d ' ')"
-  if [ "$n_added" -gt 1 ]; then
-    err "this branch adds $n_added fragments; a PR adds one fragment file (several ## entries may share it):
-$(printf '%s\n' "$added" | sed 's/^/    /')"
-  fi
-  touched="$(gdiff --name-only --diff-filter=MR "$BASE...HEAD" -- "$FRAG_DIR/")" \
-    || die "git diff $BASE...HEAD failed"
-  if [ -n "$touched" ]; then
-    err "this branch modifies or renames pending fragment(s) from the base; a PR adds its own fragment and leaves others alone:
-$(printf '%s\n' "$touched" | sed 's/^/    /')"
-  fi
-  if [ "$n_added" -gt 0 ]; then
-    cl_diff="$(gdiff "$BASE...HEAD" -- "$CHANGELOG")" || die "git diff $BASE...HEAD failed"
-    # Here-string, not a pipe: grep -q exits early, and pipefail would read the
-    # writer's SIGPIPE as a miss.
-    if grep -q '^+## ' <<<"$cl_diff"; then
-      err "this branch adds a fragment and also adds an entry to $CHANGELOG; put the entry in the fragment only"
-    fi
-  fi
 fi
 
 if [ "$errors" -gt 0 ]; then

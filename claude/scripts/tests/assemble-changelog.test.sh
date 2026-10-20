@@ -350,78 +350,30 @@ preamble_refused "plain text" "Some note."
 preamble_refused "second title" "# Another title"
 preamble_refused "pointer line with extra text" "$P1 more"
 
-# ── PR scope (--base) ──────────────────────────────────────────────────
-# One added fragment, any valid name: <branch-slug>.md is a convention, not
-# enforced, because distinct branches can share a slug.
+# ── A pure content validator: no git at all ────────────────────────────
+# PR scope (one added fragment, no edits to others) needs the PR diff and lives
+# in the operator CI patch. Here a git that fails and leaves a marker proves
+# --check never runs git.
 new_repo
-git -C "$R" switch -q -c feat/one-thing
-w changelog.d/any-name-at-all.md "## 2026-10-06 — feat: one thing" "- b"
-git -C "$R" add -A && git -C "$R" commit -q -m "feat: one"
-run --check --base main
-expect "scope: one fragment with any valid name passes" 0 "1 fragment(s)"
-w changelog.d/feat-second.md "## 2026-10-06 — feat: second" "- b"
-git -C "$R" add -A && git -C "$R" commit -q -m "feat: two"
-run --check --base main
-expect "scope: two fragments added by one branch are refused" 1 "adds 2 fragments"
-run --check --base no-such-ref
-expect "scope: an unresolvable base fails closed" 1 "is not a commit here"
-rm -rf "$R"
-# No modifying or renaming another PR's pending fragment, and no CHANGELOG.md
-# entry alongside a new fragment. The fold PR (fragments deleted, entries
-# added) passes.
+w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+shim="$(mktemp -d)"
+printf '%s\n' '#!/usr/bin/env bash' "touch '$shim/git-was-called'" 'exit 99' >"$shim/git"
+chmod +x "$shim/git"
+OUT="$(cd "$R" && PATH="$shim:$PATH" "$SCRIPT" --check 2>&1)"
+RC=$?
+expect "no git: --check passes with a failing git first on PATH" 0 "1 fragment(s)"
+[ ! -e "$shim/git-was-called" ] && ok "no git: git is never invoked" || bad "no git: git is never invoked"
+rm -rf "$shim" "$R"
+# --root names the repo; without it the current directory is used, and a
+# directory without CHANGELOG.md fails closed.
 new_repo
-w changelog.d/theirs.md "## 2026-10-04 — fix: theirs" "- t"
-git -C "$R" add -A && git -C "$R" commit -q -m "fix: theirs"
-git -C "$R" switch -q -c feat/edit-theirs
-w changelog.d/theirs.md "## 2026-10-04 — fix: theirs" "- t" "- edited by someone else"
-git -C "$R" add -A && git -C "$R" commit -q -m "feat: edit"
-run --check --base main
-expect "scope: modifying a pending fragment from the base is refused" 1 "modifies or renames"
-git -C "$R" switch -q main
-git -C "$R" switch -q -c feat/rename-theirs
-git -C "$R" mv changelog.d/theirs.md changelog.d/mine.md
-git -C "$R" commit -q -m "feat: rename"
-run --check --base main
-expect "scope: renaming a pending fragment from the base is refused" 1 "modifies or renames"
-git -C "$R" switch -q main
-git -C "$R" switch -q -c docs/fold
-w CHANGELOG.md "# Changelog" "" "## 2026-10-04 — fix: theirs" "- t" "" "## 2026-10-01 — fix: an old entry" "" "- old bullet"
-git -C "$R" rm -q changelog.d/theirs.md
-git -C "$R" add -A && git -C "$R" commit -q -m "docs: fold changelog fragments"
-run --check --base main
-expect "scope: a fold PR (fragments removed, entries added) passes" 0 "0 fragment(s)"
-git -C "$R" switch -q main
-git -C "$R" switch -q -c feat/both
-w changelog.d/feat-both.md "## 2026-10-06 — feat: both" "- b"
-w CHANGELOG.md "# Changelog" "" "## 2026-10-06 — feat: also prepended" "- p" "" "## 2026-10-01 — fix: an old entry" "" "- old bullet"
-git -C "$R" add -A && git -C "$R" commit -q -m "feat: both"
-run --check --base main
-expect "scope: adding a fragment and a CHANGELOG.md entry is refused" 1 "also adds an entry to CHANGELOG.md"
-rm -rf "$R"
-
-# Gate finding: with color.ui=always the `+## ` scan saw ANSI escapes and a
-# fragment plus a CHANGELOG.md entry passed. Every git call now pins colour,
-# path quoting, prefixes, renames and external diff/textconv, so the user's
-# config cannot change what the scope check parses.
-new_repo
-for kv in color.ui=always color.diff=always diff.noprefix=true diff.mnemonicPrefix=true \
-  diff.renames=false diff.relative=true core.quotePath=true; do
-  git -C "$R" config "${kv%%=*}" "${kv#*=}"
-done
-w changelog.d/theirs.md "## 2026-10-04 — fix: theirs" "- t"
-git -C "$R" add -A && git -C "$R" commit -q -m "fix: theirs"
-git -C "$R" switch -q -c feat/both-colored
-w changelog.d/feat-both.md "## 2026-10-06 — feat: both" "- b"
-w CHANGELOG.md "# Changelog" "" "## 2026-10-06 — feat: also prepended" "- p" "" "## 2026-10-01 — fix: an old entry" "" "- old bullet"
-git -C "$R" add -A && git -C "$R" commit -q -m "feat: both"
-run --check --base main
-expect "config: colour/prefix config cannot hide a CHANGELOG.md entry" 1 "also adds an entry to CHANGELOG.md"
-git -C "$R" switch -q main
-git -C "$R" switch -q -c feat/rename-colored
-git -C "$R" mv changelog.d/theirs.md changelog.d/mine.md
-git -C "$R" commit -q -m "feat: rename"
-run --check --base main
-expect "config: diff.renames=false cannot turn a rename into an add" 1 "modifies or renames"
+w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
+OUT="$("$SCRIPT" --check --root "$R" 2>&1)"
+RC=$?
+expect "root: --root DIR checks that tree from anywhere" 0 "1 fragment(s)"
+OUT="$(cd "$R/changelog.d" && "$SCRIPT" --check 2>&1)"
+RC=$?
+expect "root: the wrong directory fails closed" 1 "CHANGELOG.md not found"
 rm -rf "$R"
 
 # ── Usage errors ──────────────────────────────────────────────────────
@@ -430,10 +382,8 @@ run --bogus
 expect "usage: unknown argument exits 2" 2 "unknown argument"
 run --check --branch x
 expect "usage: --branch is gone" 2 "unknown argument"
-run --base main
-expect "usage: --base without --check exits 2" 2 "only applies with --check"
-run --check --base --output=planted.txt
-expect "usage: a --base ref that looks like an option is refused" 2 "may not start with"
+run --check --base main
+expect "usage: --base is gone (scope moved to CI)" 2 "unknown argument"
 rm -rf "$R"
 
 echo ""

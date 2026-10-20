@@ -42,13 +42,12 @@
   - a `CHANGELOG.md` that is missing, lacks its title on line 1, or holds
     anything above its first `## ` line besides blank lines, the title and
     the script's own pointer lines.
-- **`--check --base REF` adds the PR-scope rules.** A PR adds at most one
-  fragment file. It modifies or renames no fragment already on the base.
-  While adding a fragment, it adds no `## ` entry to `CHANGELOG.md`. The
-  filename is never derived from the branch, because two branches can share
-  a slug.
-  Every git call pins the config that could change what is parsed (colour,
-  path quoting, diff prefixes, rename detection).
+- **The script is a pure content validator.** It reads the working tree,
+  runs no git and writes nothing. The PR-scope rule needs the PR's diff, so
+  it is not part of the script. That rule is: a PR adds at most one
+  fragment, modifies or renames none already on `main`, and adds no `## `
+  entry to `CHANGELOG.md` alongside a fragment. The filename is never
+  derived from the branch, because two branches can share a slug.
 - **In CI**, `doc-refs.test.sh` runs the script's self-test and `--check` on
   the checkout's own fragments.
 - **Docs:** `CLAUDE-GUIDE.md`, `ROADMAP.md`, the scripts README and the
