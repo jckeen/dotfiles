@@ -982,7 +982,7 @@ run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_SWITCH=1 -- --find dot-issue
 assert "--find: an account switched mid-search is inconclusive" "[ $rc -eq 2 ] && outgrep 'account changed'"
 rm -f "$GH_CONFIG_DIR/hosts.yml"
 run_issues FAKE_GH_JSON="$ISSUES" -- --find dot-issue extra
-assert "--find: a trailing argument is refused" "[ $rc -eq 2 ] && outgrep 'wrong argument count'"
+assert "--find: a trailing argument is refused" "[ $rc -eq 2 ] && outgrep 'usage:'"
 NODIGEST="$(mktemp -d)"
 for t in bash env gh jq cat head grep sed tr sort cut date mkdir rm stat id printf; do
   p="$(command -v "$t")" && [ "${p#/}" != "$p" ] && ln -s "$p" "$NODIGEST/$t"; done
@@ -991,9 +991,13 @@ out="$(cd "$FX/dotfiles" && env -u OPERATOR_QUEUE_FILE HOME="$IH" PATH="$NODIGES
 assert "--find: no digest tool is inconclusive (switch detection would be blind)" "[ $rc -eq 2 ] && outgrep 'no sha256sum'"
 rm -rf "$NODIGEST"
 run_issues FAKE_GH_JSON="$ISSUES" -- --fnd dot-issue
-assert "a mistyped mode exits 2 and never renders the queue" "[ $rc -eq 2 ] && ! outgrep 'dot-issue (' && outgrep 'unknown argument'"
+assert "a mistyped mode exits 2 and never renders the queue" "[ $rc -eq 2 ] && ! outgrep 'dot-issue (' && outgrep 'usage:'"
+run_issues FAKE_GH_JSON="$ISSUES" -- '' dot-issue
+assert "an empty first argument exits 2 too" "[ $rc -eq 2 ] && outgrep 'usage:'"
+run_issues FAKE_GH_JSON="$ISSUES" -- --scope extra
+assert "--scope: an extra argument exits 2" "[ $rc -eq 2 ]"
 run_issues FAKE_GH_JSON="$ISSUES" -- find dot-issue
-assert "a mode typed without dashes exits 2 too" "[ $rc -eq 2 ] && outgrep 'unknown argument'"
+assert "a mode typed without dashes exits 2 too" "[ $rc -eq 2 ] && outgrep 'usage:'"
 
 rm -rf "$FAKEBIN" "$GH_CONFIG_DIR"
 echo ""
