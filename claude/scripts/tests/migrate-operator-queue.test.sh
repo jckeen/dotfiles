@@ -61,6 +61,16 @@ rec() { local IFS=$'\t'; printf '%s\n' "$*"; }
   rec T hand-filed 14 true
   # Labelled, but only the action line: the block's dates and deadline are not there.
   rec T action-only 15 true; rec F 15 '- action: only the action'
+  # The block's exact lines, but after a conflicting earlier action/deadline
+  # (the hook reads the first occurrence).
+  rec T conflicting 16 true; rec F 16 '- action: old thing'; rec F 16 '- deadline: 2026-01-01'
+  rec F 16 '- action: new thing'; rec F 16 '- deadline: 2026-12-01'
+  # The block's lines plus an extra trailing field.
+  rec T extra-field 17 true; rec F 17 '- action: extra base'; rec F 17 '- deadline: 2026-12-01'
+  # The block's lines in another order.
+  rec T reordered 18 true; rec F 18 '- deadline: 2026-12-01'; rec F 18 '- action: reorder me'
+  # An exact migration of a two-field block.
+  rec T exact-two 19 true; rec F 19 '- action: exact pair'; rec F 19 '- deadline: 2026-12-01'
 } > "$FX/issues-other"
 export FAKE_ISSUES_LABELLED="$FX/issues-labelled" FAKE_ISSUES_OTHER="$FX/issues-other"
 export PATH="$FX/bin:$PATH" FAKE_LOG="$FX/gh.log" FAKE_BODIES="$FX/bodies"
@@ -149,6 +159,18 @@ assert_manual "a match whose only label is 'team,operator-action'" $'## comma-la
 assert_manual "a hand-filed match with no queue fields" $'## hand-filed\n- deadline: 2026-12-01\n- action: do the hand-filed thing' 14
 assert_manual "an action-line-only match" $'## action-only\n- added: 2026-09-01\n- deadline: 2026-12-01\n- action: only the action' 15
 assert "the title check lists issues regardless of label" "grep '^issue list' '$FAKE_LOG' | grep -qv -- '--label'"
+# Exact ordered equality: the issue's field lines, in body order, must be the
+# block's field lines in order — no extra, missing, conflicting or reordered.
+assert_manual "a conflicting earlier action/deadline before the exact lines" $'## conflicting\n- action: new thing\n- deadline: 2026-12-01' 16
+assert_manual "an extra trailing field" $'## extra-field\n- action: extra base' 17
+assert_manual "reordered fields" $'## reordered\n- action: reorder me\n- deadline: 2026-12-01' 18
+printf '## exact-two\n- action: exact pair\n- deadline: 2026-12-01\n' > "$FX/exact.md"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/exact.md" --repo o/r 2>&1)"; rc=$?
+assert "dry run: an exact ordered match is skipped" "[ $rc -eq 0 ] && grep -qF '#19 (already migrated, skipped)' <<<\"\$out\" && [ \"\$(writes)\" -eq 0 ]"
+: > "$FAKE_LOG"
+out="$(FAKE_VIS=PRIVATE bash "$SCRIPT" --queue "$FX/exact.md" --repo o/r --apply 2>&1)"; rc=$?
+assert "apply: an exact ordered match is skipped and the file can be retired" "[ $rc -eq 0 ] && grep -qF '#19 (already migrated, skipped)' <<<\"\$out\" && ! grep -qE '^issue (edit|create)' '$FAKE_LOG' && grep -qF 'Then retire the file' <<<\"\$out\""
 
 # Numeric-looking titles compare as strings: "1" is not "001", "1e2" is not "100".
 printf '## 1\n- action: one\n\n## 1e2\n- action: hundred\n' > "$FX/numeric.md"

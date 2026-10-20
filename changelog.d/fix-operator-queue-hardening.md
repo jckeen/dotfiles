@@ -27,7 +27,9 @@
   and reruns stay safe. The check covers up to 10000 issues and refuses at
   that limit rather than dedupe over a partial list. A same-title issue is
   skipped as already migrated only when it carries the `operator-action`
-  label and its body has every one of the block's field lines exactly. The
+  label and its field lines, in body order, are exactly the block's (same
+  lines, same count, same order; the hook reads a field's first occurrence,
+  so an extra or earlier conflicting line would change what it shows). The
   label is checked in jq on the label array, not a comma-joined string, so
   a label named `team,operator-action` doesn't count. Any other same-title
   issue is reported as "needs manual merge: #N" and never edited or
@@ -38,6 +40,7 @@
 - Tests: fixture cases for the bounded snapshot (an `rm` wrapper measures
   it), recovery cleanup of only pattern-matching files, TERM cleanup, exact
   prior migrations versus manual-merge matches (missing label, comma label,
-  hand-filed, action-only, a different duplicate), and the status-only
+  hand-filed, action-only, a conflicting earlier field, an extra trailing
+  field, reordered fields, a different duplicate), and the status-only
   trailer. The `cp`-wrapper
   race case now wraps `head`, the snapshot's new reader.

@@ -5,10 +5,10 @@
 #
 # Dry-run by default: prints one row per "## <slug>" block — slug, project
 # label, and the target: "new"; "#N (already migrated, skipped)" for a
-# same-title issue (any state) that carries `operator-action` and every one
-# of the block's field lines exactly; or "needs manual merge: #N" for any
-# other same-title issue (label missing, fields missing or different, filed
-# by hand), which is never edited or adopted. Nothing is written. --apply
+# same-title issue (any state) that carries `operator-action` and whose
+# field lines, in order, are exactly the block's; or "needs manual merge: #N"
+# for any other same-title issue (label missing; a field line extra, missing,
+# different or reordered; filed by hand), which is never edited or adopted. Nothing is written. --apply
 # creates the missing labels and one issue per "new" row, so a re-run after a
 # partial apply only creates what is missing; it exits 1, without the
 # retire-the-file line, while any row needs a manual merge.
@@ -143,17 +143,19 @@ if [ "$APPLY" -eq 1 ]; then
   done < "$work/wanted.txt"
 fi
 
-# has_all_fields <number> <block-body-file> — issue <number> has an F record
-# for every line of the block's field file, compared as whole strings
-# (ENVIRON, not -v, so backslashes stay literal).
-has_all_fields() {
+# fields_equal <number> <block-body-file> — issue <number>'s F records, in
+# body order, are exactly the block's field lines in order: same lines, same
+# count, same order. Membership alone is not enough: the hook reads a field's
+# first occurrence, so an extra or earlier conflicting line would change what
+# it shows. (ENVIRON, not -v, so backslashes stay literal.)
+fields_equal() {
   n="$1" awk -F'\t' '
     NR == FNR {
-      if ($1 == "F" && ($2 "") == (ENVIRON["n"] "")) have[substr($0, length($1) + length($2) + 3)] = 1
+      if ($1 == "F" && ($2 "") == (ENVIRON["n"] "")) have[++k] = substr($0, length($1) + length($2) + 3)
       next
     }
-    !($0 in have) { miss = 1 }
-    END { exit miss }' "$work/existing.tsv" "$2"
+    { if (++m > k || have[m] != $0) diff = 1 }
+    END { exit (diff || m != k) }' "$work/existing.tsv" "$2"
 }
 
 today="$(date +%Y-%m-%d)"
@@ -169,11 +171,12 @@ while IFS=$'\t' read -r n slug group; do
   num="${match%%$'\t'*}"
   if [ -n "$num" ]; then
     # Already migrated only if the hook will list it (operator-action) and
-    # its body carries every field this block would retire. Anything else
-    # with this title (label removed, fields missing or changed, filed by
-    # hand) is never adopted or edited: the operator merges it by hand.
+    # its field lines are exactly the block's, in order. Anything else with
+    # this title (label removed; fields extra, missing, changed or
+    # reordered; filed by hand) is never adopted or edited: the operator
+    # merges it by hand.
     [ -f "$work/$n.body" ] || : > "$work/$n.body"
-    if [ "${match#*$'\t'}" = true ] && has_all_fields "$num" "$work/$n.body"; then
+    if [ "${match#*$'\t'}" = true ] && fields_equal "$num" "$work/$n.body"; then
       existing=$((existing + 1))
       printf '%-48s  %-24s  %s\n' "$slug" "$label" "#$num (already migrated, skipped)"
     else
