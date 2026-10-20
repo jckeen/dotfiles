@@ -121,6 +121,10 @@ git switch w" \
   "git -c 'user.name=A (B)' checkout main -b newbranch" \
   "git -c x=y 'switch' -c quoted-sub" \
   'git checkout -q --orphan=newbranch' \
+  'git checkout -bfoo' \
+  'ls -- x && git switch -c after-dashdash' \
+  "echo 'a -- b' && git -c 'n=(q)' switch -c quoted-after-dashdash" \
+  "git checkout -- f; git -c 'a (b)' checkout main -b split-after-pathspec" \
   'git -C . worktree add -b switch ../p2'; do
   denied "$(wg "$blocked")" \
     && ok "worktree-guard blocks: $(tr '\n' ' ' <<<"$blocked")" \

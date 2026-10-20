@@ -22,11 +22,13 @@
 #     a known false positive, which is safe. After `--`, checkout arguments
 #     are pathspecs (`git checkout -- -backup` is allowed).
 #   - Whole-command fallback: the splitter is not quote-aware, so the entire
-#     command (quotes removed) is also checked word by word, order-free: a
-#     `git` word plus `switch`, or plus `checkout` and a -b/-B-style flag or
-#     --orphan[=…] before any `--`. It is blocked unless it is a single plain
-#     `git worktree …` with no separators. A splitter mistake (a `(` or `;`
-#     inside quotes) can only add blocks.
+#     command is also checked, and any of these blocks it: the original
+#     whole-text matcher, the broad pattern on the raw text, or a word-based,
+#     order-free check with quotes removed (a `git` word plus `switch`, or a
+#     -b/-B-prefixed flag or --orphan[=…] after any `checkout` word and
+#     before that checkout's own `--`). It is allowed only when it is a single
+#     plain `git worktree …` with no separators. A splitter mistake (a `(` or
+#     `;` inside quotes) can only add blocks.
 #   - Allow freely when run from a linked worktree (.../worktrees/<name>).
 #   - In the PRIMARY checkout, DENY only when >1 worktree exists (a parallel
 #     session is likely active). Solo work (1 worktree) is never blocked.
@@ -115,12 +117,33 @@ is_branch_op() {
   # exempt. A splitter mistake can therefore only add blocks; the cost is
   # false positives (a commit message saying "switch") in a contended
   # primary checkout, which is the safe direction.
-  local flat w='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)'
-  flat="$(printf '%s' "$cmd" | tr -d "\"'" | tr '\n' ' ')"
-  if printf '%s' "$flat" | grep -qE "${w}git${e}" \
-    && { printf '%s' "$flat" | grep -qE "${w}switch${e}" \
-      || { printf '%s' "$flat" | grep -qE "${w}checkout${e}" \
-        && printf '%s' "${flat%% -- *}" | grep -qE '(^|[[:space:]])(-[A-Za-z]*[bB][A-Za-z]*|--orphan)([=[:space:]]|$)'; }; }; then
+  local flat raw w='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)' hit=0
+  raw="$(printf '%s' "$cmd" | tr '\n' ' ')"
+  flat="$(printf '%s' "$raw" | tr -d "\"'")"
+  # (a) main's original whole-text matcher and the per-segment broad pattern,
+  # on the raw text: the new checks below may only ADD blocks to these.
+  if printf '%s' "$raw" | grep -qE 'git[[:space:]].*(checkout[[:space:]]+-[bB]|switch[[:space:]])' \
+    || printf '%s' "$raw" | grep -qE "$BROAD_RE"; then
+    hit=1
+  fi
+  # (b) word-based, order-free: a `git` word plus a `switch` word, or plus a
+  # branch flag that follows ANY `checkout` word before that checkout's own
+  # `--` (a `--` elsewhere never hides a later flag). Flags are a prefix
+  # match, so clusters such as -bfoo or -qb count.
+  if [ "$hit" -eq 0 ] && printf '%s' "$flat" | grep -qE "${w}git${e}"; then
+    if printf '%s' "$flat" | grep -qE "${w}switch${e}"; then
+      hit=1
+    elif printf '%s\n' "$flat" | awk '{
+        for (i = 1; i <= NF; i++) {
+          if ($i == "checkout") co = 1
+          else if ($i == "--") co = 0
+          else if (co && $i ~ /^(-[A-Za-z]*[bB]|--orphan)/) { found = 1; exit }
+        }
+      } END { exit found ? 0 : 1 }'; then
+      hit=1
+    fi
+  fi
+  if [ "$hit" -eq 1 ]; then
     if printf '%s' "$cmd" | grep -qE '^[[:space:]]*git[[:space:]]+worktree([[:space:]]|$)' \
       && ! printf '%s' "$cmd" | grep -q '[;|&()`$]' \
       && [ "$(printf '%s\n' "$cmd" | wc -l | tr -d ' ')" -le 1 ]; then
