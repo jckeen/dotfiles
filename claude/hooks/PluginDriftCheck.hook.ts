@@ -46,17 +46,11 @@
  * refuses anything but a regular file of at most 1 MiB, so a FIFO cannot hang
  * the hook and /dev/zero cannot exhaust memory.
  *
- * Loader listing (#647): `claude plugin list --json` is Claude Code's own
- * account of every installed plugin and the directory it loads from
- * (`readFromFolder`, else `installPath`). Each listed directory is scanned IN
- * ADDITION to the static enumeration above — a union, never a replacement, so
- * a plugin either side misses is still read. The listing names no hook
- * modules, so whether a directory ships a mod is still this hook's own parse
- * of hooks.json. When the CLI is missing, fails, or prints something that is
- * not a JSON array, the static scan runs alone, as before.
- *
- * Best-effort and advisory, not a security boundary: a parser differential
- * with Claude Code's loader is still possible for hooks.json itself; see #647.
+ * Best-effort and advisory, not a security boundary: this is a static parse,
+ * and Claude Code exposes no list of the hook modules it loaded, so a file
+ * its loader reads differently from JSON.parse can hide a mod (#647). Paths
+ * resolve as the loader resolves them: CLAUDE_CONFIG_DIR,
+ * CLAUDE_CODE_PLUGIN_CACHE_DIR and CLAUDE_CODE_PLUGIN_DIRS.
  *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
@@ -155,14 +149,6 @@ const MAX_JSON_BYTES = 1024 * 1024;
 // Per-session rescan state (#618). Pruned at SessionStart after STATE_TTL_MS.
 const STATE_DIR = join(HOME, '.local', 'state', 'plugin-drift');
 const STATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-// `claude plugin list --json` measured ~1 s. Past this budget the CLI is
-// killed and the static scan stands alone (the next prompt retries). The
-// override exists for tests; it is clamped so it cannot disable the listing
-// or hold a session start.
-const LIST_BUDGET_MS = Math.min(
-  10_000,
-  Math.max(50, Number(process.env.PLUGIN_DRIFT_LIST_BUDGET_MS) || 2_500),
-);
 // Code, so it comes from this hook's own checkout, never from DOTFILES_DIR
 // (which only relocates the manifest) — the same rule as sync-plugins.sh.
 const LIB_SERVICES = join(dirname(HOOK_PATH), '..', '..', 'lib-services.sh');
@@ -202,10 +188,6 @@ function readJsonFile(path: string): JsonRead {
 // Every path a full scan reads or lists, with its signature taken BEFORE the
 // read, so a change that lands during the scan still trips the next rescan.
 const watched = new Map<string, string>();
-// Set when part of the scan (today: the loader listing) could not run; the
-// state then records it, and the next prompt rescans rather than trusting it.
-let scanIncomplete = false;
-
 // One stat: size, mtime, inode, or the error code. Never opens the file, so a
 // FIFO or device costs no more than a regular file.
 function signature(path: string): string {
@@ -213,6 +195,14 @@ function signature(path: string): string {
     const st = statSync(path);
     return `${st.size}:${st.mtimeMs}:${st.ino}`;
   } catch (err) {
+    // stat says ENOENT for a dangling symlink too: sign the link itself, so
+    // creating one is a change (the scan names it unverifiable).
+    try {
+      const link = lstatSync(path);
+      return `L${link.size}:${link.mtimeMs}:${link.ino}`;
+    } catch {
+      // Nothing there at all.
+    }
     const code = (err as { code?: unknown } | null)?.code;
     return `-${typeof code === 'string' ? code : 'ERR'}`;
   }
@@ -567,78 +557,13 @@ function localMarketplacePlugins(): Scanned[] {
   return found;
 }
 
-// The plugins Claude Code's loader reports (#647), or null when the listing is
-// unavailable. Rule 1 per entry; an entry naming no usable directory is
-// unverifiable. A skills-dir plugin that is not user scope comes from a
-// project's .claude/skills, so it gets that origin and the allowlist never
-// covers it; an unknown scope counts as a project's (rule 2).
-function runListing(): Scanned[] | null {
-  const result = spawnSync('claude', ['plugin', 'list', '--json'], {
-    cwd: PROJECT_DIRS[0],
-    encoding: 'utf-8',
-    maxBuffer: MAX_JSON_BYTES,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: LIST_BUDGET_MS,
-  });
-  if (result.error || result.status !== 0) return null;
-  let listing: unknown;
-  try {
-    listing = JSON.parse(String(result.stdout));
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(listing)) return null;
-  const found: Scanned[] = [];
-  listing.forEach((entry: unknown, index: number) => {
-    try {
-      const id = isRecord(entry) ? entry.id : undefined;
-      if (typeof id !== 'string') {
-        found.push(unverifiable(`listed-${index}@plugin-list`, 'installed'));
-        return;
-      }
-      const scope = isRecord(entry) ? entry.scope : undefined;
-      const origin: Origin =
-        id.endsWith('@skills-dir') && scope !== 'user' ? 'project' : 'installed';
-      const folder = isRecord(entry) ? entry.readFromFolder : undefined;
-      const install = isRecord(entry) ? entry.installPath : undefined;
-      const dir =
-        typeof folder === 'string' && folder
-          ? folder
-          : typeof install === 'string' && install
-            ? install
-            : null;
-      found.push(dir === null ? unverifiable(id, origin) : { id, dir, origin });
-    } catch {
-      found.push(unverifiable(`listed-${index}@plugin-list`, 'installed'));
-    }
-  });
-  return found;
-}
-
-// Files and environment the CLI's answer depends on. The prompt path watches
-// the files and compares the variables, so a change to either rescans.
-// SKILLS_DIR's own mtime changes when a skills-dir plugin is added or removed.
-const LOADER_FILES = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS, SKILLS_DIR];
-const LOADER_ENV = [
+// Environment that moves what the scan reads. The prompt path compares it,
+// so a change rescans.
+const STATE_ENV = [
   'CLAUDE_CODE_PLUGIN_DIRS',
   'CLAUDE_CONFIG_DIR',
   'CLAUDE_CODE_PLUGIN_CACHE_DIR',
 ];
-
-function loaderPlugins(): Scanned[] | null {
-  for (const path of LOADER_FILES) watch(path);
-  const found = runListing();
-  // A failed or over-budget listing marks the scan incomplete, so the next
-  // prompt rescans instead of trusting the static result alone.
-  if (found === null) {
-    scanIncomplete = true;
-    return null;
-  }
-  // A listed plugin's manifest names it: a rename is a change.
-  for (const p of found)
-    if (!p.unverifiable) watch(join(p.dir, '.claude-plugin', 'plugin.json'));
-  return found;
-}
 
 // CLAUDE_CODE_PLUGIN_DIRS: each entry loads like --plugin-dir, as a plugin
 // dir or a folder whose child dirs are plugins; ids are `<name>@inline`. A
@@ -718,13 +643,6 @@ function pluginDirs(): Scanned[] {
     }
   }
   found.push(...inlinePlugins());
-  // Rule 1: nothing the listing does can cost the static results above.
-  try {
-    found.push(...(loaderPlugins() ?? []));
-  } catch {
-    scanIncomplete = true;
-    found.push(unverifiable('claude-plugin-list', 'installed'));
-  }
   return found;
 }
 
@@ -954,14 +872,12 @@ function driftWarning(manifest: Manifest): string {
 //   P <project dir>     a project dir the scan read (a cwd change is a change)
 //   W <sig> <path>      a watched path and its signature at scan time
 //   M|U <label>         a mod / unverifiable label already reported
-//   I                   the scan was incomplete: the next prompt rescans
 //   E <name> <value>    a loader environment variable at scan time (`-` unset)
 //   end                 the last line; without it the state is damaged
 // Paths are enc()-encoded so a newline in an untrusted path cannot forge a
 // record; labels went through shown(), which leaves no newline.
 interface ScanState {
   env: string[];
-  incomplete: boolean;
   projects: string[];
   watched: [string, string][];
   reported: Set<string>;
@@ -988,16 +904,11 @@ function readState(): ScanState | null {
     if (body.pop() !== '' || body.pop() !== END) return null;
     const state: ScanState = {
       env: [],
-      incomplete: false,
       projects: [],
       watched: [],
       reported: new Set(),
     };
     for (const line of body) {
-      if (line === 'I') {
-        state.incomplete = true;
-        continue;
-      }
       if (line.startsWith('E ')) {
         state.env.push(line);
         continue;
@@ -1046,7 +957,6 @@ function writeState(reported: Set<string>): void {
 
 function writeStateLines(reported: Set<string>): void {
   const lines = ['plugin-drift-state v1'];
-  if (scanIncomplete) lines.push('I');
   lines.push(...envLines());
   for (const dir of PROJECT_DIRS) lines.push(`P ${enc(dir)}`);
   for (const [path, sig] of watched) lines.push(`W ${sig} ${enc(path)}`);
@@ -1078,14 +988,14 @@ function reportedKeys({ mods, unknown }: ModFindings): Set<string> {
 
 // The cheap path: true when nothing the last scan read has changed.
 function envLines(): string[] {
-  return LOADER_ENV.map((name) => {
+  return STATE_ENV.map((name) => {
     const value = process.env[name];
     return `E ${enc(name)} ${value === undefined ? '-' : enc(value)}`;
   });
 }
 
 function unchanged(state: ScanState | null): boolean {
-  if (state === null || state.incomplete) return false;
+  if (state === null) return false;
   if (state.env.join('\n') !== envLines().join('\n')) return false;
   if (state.projects.join('\n') !== PROJECT_DIRS.join('\n')) return false;
   return state.watched.every(([path, sig]) => signature(path) === sig);
