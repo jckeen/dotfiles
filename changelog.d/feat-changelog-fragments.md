@@ -46,9 +46,11 @@
   runs no git and writes nothing. The PR-scope rule needs the PR's diff, so
   it is not part of the script. That rule is: a PR adds at most one
   fragment, modifies or renames none already on `main`, and adds no `## `
-  entry to `CHANGELOG.md` alongside a fragment. The filename is never
+  entry to `CHANGELOG.md` alongside a fragment. **It is not enforced yet.**
+  Reviewers check it by hand until the operator applies the CI patch
+  `~/.claude/handoffs/2026-10-19-dotfiles-operator-pass/ci-changelog-check.patch`. The filename is never
   derived from the branch, because two branches can share a slug.
-- **In CI**, `doc-refs.test.sh` runs the script's self-test and `--check` on
+- **In CI today**, `doc-refs.test.sh` runs the script's self-test and `--check` on
   the checkout's own fragments.
 - **Docs:** `CLAUDE-GUIDE.md`, `ROADMAP.md`, the scripts README and the
   pointer lines under the `CHANGELOG.md` title describe the flow. The

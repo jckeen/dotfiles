@@ -55,7 +55,8 @@
 # CHANGELOG.md from the working tree, runs no git and writes nothing. The PR
 # scope rule (one added fragment, no edits to another PR's fragment, no direct
 # CHANGELOG.md entry beside a fragment) needs the PR's diff, so it is not
-# here; it belongs to CI, in the operator's workflow patch.
+# here. It is not enforced yet: reviewers check it by hand until the operator
+# applies the CI patch that adds it as a workflow step.
 #
 # Exit: 0 clean, 1 on any problem, 2 on a usage error. Never writes.
 # Bash 3.2-safe; no fd/rg.
@@ -79,7 +80,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,61p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,62p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 CHECK=0
