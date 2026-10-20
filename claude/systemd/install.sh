@@ -6,7 +6,10 @@
 # Adding a timer means adding one row to UNITS below — nothing else in this
 # script is per-unit. A row is "<unit base>|<state dir, $HOME-relative>"; the
 # state dir is created before the timer is enabled so the first firing has
-# somewhere to write.
+# somewhere to write. An optional third field names an opt-in variable: the
+# unit is installed only when that variable is 1. Otherwise it is skipped, and
+# a copy an earlier run installed is disabled, so a re-run cannot quietly
+# restart a paused lane.
 #
 # The script each timer runs is NOT listed here: it is read out of the unit's own
 # ExecStart line, because that is the path systemd will actually execute. A
@@ -32,7 +35,9 @@ REPO_DIR="$(cd "$SRC_DIR/../.." && pwd)"
 
 UNITS=(
   "git-hygiene|.local/state/hygiene"
-  "jules-dispatch|.local/state/jules"
+  # Paused (ADR-0009): opt in with JULES_LANE_ENABLED=1 once the restart
+  # criteria in the ADR are met.
+  "jules-dispatch|.local/state/jules|JULES_LANE_ENABLED"
 )
 
 # Resolve a unit's ExecStart to a real path: systemd expands %h to the user's
@@ -57,9 +62,23 @@ failed=0
 installed=()
 
 for row in "${UNITS[@]}"; do
-    IFS='|' read -r base state <<< "$row"
+    IFS='|' read -r base state optin <<< "$row"
     service="$base.service"
     timer="$base.timer"
+
+    if [ -n "${optin:-}" ] && [ "${!optin:-}" != 1 ]; then
+        if [ -e "$DEST_DIR/$timer" ]; then
+            if systemctl --user disable --now "$timer" >/dev/null 2>&1; then
+                yell "! $timer disabled: paused until $optin=1 (an earlier install had enabled it)"
+            else
+                red "X $timer is installed but could not be disabled — run: systemctl --user disable --now $timer"
+                failed=$((failed + 1))
+            fi
+        else
+            info "==> $timer skipped: paused until $optin=1"
+        fi
+        continue
+    fi
 
     info "==> Installing $timer"
     if [ ! -f "$SRC_DIR/$service" ] || [ ! -f "$SRC_DIR/$timer" ]; then

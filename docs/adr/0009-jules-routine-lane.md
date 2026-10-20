@@ -1,6 +1,6 @@
 # 0009. Jules as the daily-routine lane
 
-- **Status:** Accepted (2026-09-19, after the first live dispatch)
+- **Status:** Paused (2026-10-19). Previously Accepted (2026-09-19, after the first live dispatch); see [Status update](#status-update-2026-10-19-paused).
 - **Date:** 2026-09-18
 
 ## Context
@@ -187,7 +187,9 @@ Adopt Jules as the routine lane.
    it would present it as a compliant routine result — with the count in
    `status.json`'s `reconcile.oversized`; a record written before the limit was
    persisted skips the check and its reconcile record carries `max_files: null`
-   (#530). `reconcile.blocked_subjects` counts rejected subjects, not the pull
+   (#530). Since #670 (2026-10-19), an oversized pull request also loses a
+   `jules-routine:` label an earlier partial pass applied, and one already
+   closed or merged is checked and counted too, rather than recorded as a noop. `reconcile.blocked_subjects` counts rejected subjects, not the pull
    requests carrying them (#529). And `--reconcile` no longer requires the
    catalog: its sessions come from the ledger and outlive their routine files,
    so a routine removed from the catalog, or an emptied catalog, must not strand
@@ -502,3 +504,20 @@ change:
   judgement about what qualifies, which is exactly what a prompt expresses and a
   script cannot. The contract that must be mechanical — limits, labels,
   acceptance — is the frontmatter, and that *is* enforced by code.
+
+## Status update 2026-10-19: paused
+
+The lane never ran as decided. As of 2026-10-01 (#589):
+- no `jules-dispatch` timer is installed;
+- there have been two manual dispatches (2026-09-19 and 2026-09-22) and no merged routine PR;
+- the weekly `--report --post` has never run, so the 30% merge-rate rule that makes the lane safe has never been applied (#446).
+
+The Jules PRs that did appear (28 in operator-commons on 2026-09-25) came from the Jules web app, outside this lane's cap and ledger.
+
+The Decision above is therefore paused, not reversed. `jules-dispatch.sh`, the routine catalog and the unit files stay in the repo, but nothing runs them on a schedule. The PR-stage review fallback proposed in #606 is declined along with the lane.
+
+**Restart criteria**, all required before the Status returns to Accepted:
+1. The #639 `max_files` fixes are on main. (Met 2026-10-19, #670.)
+2. `claude/systemd/jules-dispatch.timer` is installed (`JULES_LANE_ENABLED=1 bash claude/systemd/install.sh`; without the opt-in the installer skips the unit and disables a copy an earlier install enabled), and the first week's `--report --post` is recorded on a tracker issue.
+3. Web-app Jules PRs either stop or are recorded in the same ledger, so the daily cap and the merge-rate rule cover them.
+
