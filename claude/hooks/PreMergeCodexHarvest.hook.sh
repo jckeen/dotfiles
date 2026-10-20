@@ -3,16 +3,8 @@
 # about to run, first harvest the GitHub Codex-bot's inline PR review comments into
 # tracked issues, so we never merge PAST the bot's asynchronous findings.
 #
-# TRIGGER (settings.json PreToolUse matcher: "Bash", with "if": "Bash(gh pr merge*)"
-#   in the public template): a segment of tool_input.command starts with
-#   `gh pr merge` (after optional VAR=value assignments) — see the match below.
-#
-#   Trade-off, deliberate: a merge inside another shell construct
-#   (`out=$(gh pr merge …)`, `if gh pr merge …; then`) is NOT recognised. A
-#   missed pre-merge harvest costs nothing — the harvest-codex-comments
-#   workflow harvests every PR at close anyway — while a false trigger files
-#   a junk issue (the old unanchored match filed #691 from a `sed` command
-#   that merely contained the text). So the match stays anchored.
+# TRIGGER (settings.json PreToolUse matcher: "Bash"):
+#   tool_input.command matches /\bgh\s+pr\s+merge\b/
 #
 # BEHAVIOR:
 #   Runs harvest-codex-comments.sh for the PR being merged (explicit number in the
@@ -43,18 +35,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 cmd="$(jq -r '.tool_input.command // ""' <<<"$raw" 2>/dev/null || true)"
 cwd="$(jq -r '.cwd // ""' <<<"$raw" 2>/dev/null || true)"
 
-# Only act on an executed `gh pr merge`: some segment of the command (split
-# on && || ; | & and newlines) must START with it, after optional whitespace
-# and VAR=value assignments. An unanchored search fired on mere mentions such
-# as `rg 'gh pr merge' .` and ran the issue-writing harvester (#681).
-merge_seg=""
-while IFS= read -r _seg; do
-  if [[ "$_seg" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$) ]]; then
-    merge_seg="$_seg"
-    break
-  fi
-done < <(printf '%s\n' "$cmd" | tr ';|&' '\n\n\n')
-[[ -n "$merge_seg" ]] || exit 0
+# Only act on `gh pr merge`.
+[[ "$cmd" =~ gh[[:space:]]+pr[[:space:]]+merge ]] || exit 0
 
 # cwd is harness-supplied (the session's working dir), not prompt content — but
 # only enter it if it's a real directory, and bail (no-op) rather than run the
@@ -68,7 +50,7 @@ script="$HOME/.claude/scripts/harvest-codex-comments.sh"
 
 # Explicit PR number (`gh pr merge 149 ...`) if given; otherwise the harvester
 # resolves the current branch's PR.
-prnum="$(grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' <<<"$merge_seg" | grep -oE '[0-9]+$' || true)"
+prnum="$(grep -oE 'gh[[:space:]]+pr[[:space:]]+merge[[:space:]]+[0-9]+' <<<"$cmd" | grep -oE '[0-9]+$' || true)"
 
 # Portable timeout: GNU `timeout` (Linux), `gtimeout` (macOS coreutils), else run
 # without a ceiling rather than hard-fail on macOS.
@@ -88,7 +70,7 @@ else
   out="$(tmo 30 "$script" --quiet 2>&1 || true)"
 fi
 
-if [[ "$merge_seg" =~ (^|[[:space:]])--auto([[:space:]=]|$) ]]; then
+if [[ "$cmd" =~ (^|[[:space:]])--auto([[:space:]=]|$) ]]; then
   out="${out:+$out
 }PreMergeCodexHarvest: --auto arms the merge before the Codex bot has reviewed; the close-time harvest (harvest-codex-comments.yml) will file anything it finds."
 fi

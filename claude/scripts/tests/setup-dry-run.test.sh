@@ -627,12 +627,6 @@ if "$REPO_ROOT/claude/scripts/tests/statusline.test.sh"; then
 else
   fail "statusline suite failed (output above)"
 fi
-# Command parsing in the Bash hooks the template enables also rides here.
-if "$REPO_ROOT/claude/scripts/tests/hook-guards.test.sh"; then
-  ok "hook-guards suite passed"
-else
-  fail "hook-guards suite failed (output above)"
-fi
 
 echo ""
 echo "setup-dry-run: $pass passed, $failed failed"

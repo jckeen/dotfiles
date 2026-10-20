@@ -28,56 +28,33 @@ deny() {
   exit 0
 }
 
-# Only inspect git commit commands (not amend, merge, rebase). POSIX classes,
-# not GNU `\s`: the public settings template enables this hook on macOS too.
-if ! printf '%s\n' "$COMMAND" | grep -qE 'git[[:space:]]+commit[[:space:]]'; then
+# Only inspect git commit commands (not amend, merge, rebase)
+if ! echo "$COMMAND" | grep -qE 'git\s+commit\s'; then
   exit 0
 fi
 
 # Skip if --amend (amending existing message)
-if printf '%s\n' "$COMMAND" | grep -qE -- '--amend'; then
+if echo "$COMMAND" | grep -qE '\-\-amend'; then
   exit 0
 fi
 
 # Skip if no -m flag (interactive editor — user controls the message)
-if ! printf '%s\n' "$COMMAND" | grep -qE '[[:space:]]-m[[:space:]]'; then
+if ! echo "$COMMAND" | grep -qE '\s-m\s'; then
   exit 0
 fi
 
 # Extract the commit message — handle both heredoc (cat <<) and inline -m "..."
-# With POSIX tools only (no `grep -P`, absent from macOS grep). A message that
-# cannot be extracted fails closed below, like an invalid one — before, a
-# failed extraction was masked and the commit went through unchecked.
-if printf '%s\n' "$COMMAND" | grep -q 'cat <<'; then
+if echo "$COMMAND" | grep -q 'cat <<'; then
   # Heredoc style: git commit -m "$(cat <<'EOF' ... EOF )"
   # Extract content between the heredoc markers
-  # `|| MSG=""`: an empty extraction must reach the fail-closed deny below,
-  # not end the hook through `set -e` (a hook error lets the commit run).
-  MSG=$(printf '%s\n' "$COMMAND" | sed -n "/cat <<.*EOF/,/EOF/p" | grep -v 'cat <<' | grep -v '^[[:space:]]*EOF' | head -1 | sed 's/^[[:space:]]*//') || MSG=""
+  MSG=$(echo "$COMMAND" | sed -n "/cat <<.*EOF/,/EOF/p" | grep -v 'cat <<' | grep -v '^[[:space:]]*EOF' | head -1 | sed 's/^[[:space:]]*//')
 else
-  # Inline style: the first `-m` argument — "double", 'single' or bare word.
-  # The whole command is ONE awk record (RS is a control byte that never
-  # appears), so a quoted message whose closing quote sits on a later line —
-  # subject, blank line, body — is read whole; its first line is validated.
-  MSG=$(printf '%s\n' "$COMMAND" | awk 'BEGIN { RS = "\001" }
-    match($0, /[[:space:]]-m[[:space:]]+/) {
-      rest = substr($0, RSTART + RLENGTH)
-      q = substr(rest, 1, 1)
-      if (q == "\"" || q == "\047") {
-        rest = substr(rest, 2)
-        end = index(rest, q)
-        if (end == 0) exit
-        print substr(rest, 1, end - 1)
-      } else {
-        match(rest, /^[^[:space:]]+/)
-        if (RLENGTH > 0) print substr(rest, 1, RLENGTH)
-      }
-      exit
-    }') || MSG=""
+  # Inline style: git commit -m "message"
+  MSG=$(echo "$COMMAND" | grep -oP '(?<=-m\s)["\x27]?\K[^"\x27]*' | head -1 || true)
 fi
 
 if [ -z "$MSG" ]; then
-  deny "Could not read the commit message from this command to check its conventional-commit format. Pass the subject as -m \"type: description\" (or a -m \"\$(cat <<'EOF' … EOF)\" heredoc)."
+  exit 0
 fi
 
 # Heredoc-constructed commit bodies frequently open with a blank line before the

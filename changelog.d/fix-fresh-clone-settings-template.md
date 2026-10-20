@@ -31,29 +31,10 @@
   collapsed an empty field, such as no `origin` remote, and shifted every
   later column, so cached renders showed a repo named `0` and wrong
   counters.
-- **Bash hooks the template enables** (new
-  `claude/scripts/tests/hook-guards.test.sh`, run from
-  `setup-dry-run.test.sh`):
-  - `worktree-guard.sh` checks every segment of a compound command. `&&`,
-    `||`, `;`, `|`, `&`, `$(…)`, backticks and newlines all split segments.
-    It fails closed: each segment's raw text, quotes kept, is matched
-    against a broad branch-op pattern, so quoted options such as
-    `git -c 'user.name=A B' switch` cannot hide the subcommand. Only a
-    segment that is plainly `git worktree …` is exempt. After `--`, checkout
-    arguments are pathspecs (#695). Before, `git worktree list && git switch
-    -c x` bypassed the guard.
-  - `conventional-commit.sh` extracts `-m` messages with POSIX `awk`/`sed`
-    instead of `grep -P`, which macOS grep lacks. It reads a quoted message
-    that spans lines and validates its first line. It denies a commit whose
-    message it cannot read. Before, the masked error let unvalidated
-    messages through.
-  - `PreMergeCodexHarvest.hook.sh` runs the harvester only for a command
-    segment that starts with the merge command, after `VAR=value`
-    assignments. The template also gives it `"if": "Bash(gh pr merge*)"`.
-    Before, a search such as `rg` for the text filed issues. A merge inside
-    `$(…)` or `if …; then` is deliberately not recognised: the close-time
-    workflow harvests every PR anyway, while a false trigger files a junk
-    issue.
+- **Template `if` filter**: the template registers
+  `PreMergeCodexHarvest.hook.sh` with `"if": "Bash(gh pr merge*)"`, so the
+  hook only spawns for merge commands. Hardening the parsing in that hook,
+  `worktree-guard.sh` and `conventional-commit.sh` is a separate PR.
 - **`claude/hooks/HygieneStatus.hook.sh`**: finds `hygiene-status.sh` at
   setup's `~/.local/bin` link, then through its own symlink back to the
   checkout, instead of a fixed `~/dev/dotfiles` path. It exits 0 silently
