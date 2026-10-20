@@ -236,6 +236,11 @@ malformed "form feed (#664.6)" "control byte" "## 2026-10-05 — feat: x" "- b" 
 malformed "markup-only summary (#664.8)" "heading must be" "## 2026-10-05 — feat: **" "- b"
 malformed "closing-hashes summary (#664.8)" "heading must be" "## 2026-10-05 — feat: ###" "- b"
 malformed "code-only empty summary (#664.8)" "heading must be" "## 2026-10-05 — feat: \`\` \`\`" "- b"
+# Letters inside markup that renders as nothing (a link destination, an
+# entity name) must not count, so headings hold no [ ] or & at all.
+malformed "empty link label summary (#664.8)" "heading summary" "## 2026-10-05 — feat: [](x)" "- b"
+malformed "entity-only summary (#664.8)" "heading summary" "## 2026-10-05 — feat: &nbsp;" "- b"
+malformed "link in summary (#664.8)" "heading summary" "## 2026-10-05 — feat: see [docs](x)" "- b"
 # Item 10: inline HTML, anywhere on a line.
 malformed "inline tag mid-line (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- text <span hidden>gone</span>"
 malformed "closing tag (#664.10)" "inline HTML" "## 2026-10-05 — feat: x" "- b" "  done </details>"

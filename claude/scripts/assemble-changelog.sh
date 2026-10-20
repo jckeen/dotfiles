@@ -26,7 +26,7 @@
 #   - blank;
 #   - an entry heading `## YYYY-MM-DD — TYPE(SCOPE)?!?: SUMMARY` at
 #     column 0, single spaces, no tab (types: the conventional set
-#     check-commit-format.sh enforces), its summary holding at least one
+#     check-commit-format.sh enforces), its summary holding no [ ] & and at least one
 #     letter or digit — each entry needs at least one bullet;
 #   - a `### ` subsection at column 0;
 #   - a bullet: `- ` or `* ` indented 0-3 spaces, then text;
@@ -245,7 +245,10 @@ index($0, "]:") {
     if (m < 1 || m > 12 || d < 1 || d > days_in(y, m)) printf "%d\tinvalid date %s\n", NR, substr($0, 4, 10)
     # The summary must render as text: markup alone (**, ###, `` ``) does not.
     summary = $0; sub(/^[^:]*: /, "", summary)
-    if (summary !~ /[A-Za-z0-9]/) printf "%d\theading must be \"## YYYY-MM-DD — TYPE: SUMMARY\" with a summary of at least one letter or digit\n", NR
+    # Letters inside a link destination or entity name render as nothing,
+    # so a summary holds no [ ] & at all rather than having them parsed.
+    if (summary ~ /[][&]/) printf "%d\theading summary may not hold [ ] or & (a link or entity can render as nothing)\n", NR
+    else if (summary !~ /[A-Za-z0-9]/) printf "%d\theading must be \"## YYYY-MM-DD — TYPE: SUMMARY\" with a summary of at least one letter or digit\n", NR
   }
   next
 }

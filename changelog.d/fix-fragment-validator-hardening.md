@@ -10,12 +10,14 @@
   - any control byte but tab, NUL included, counted outside awk;
   - a fragment name with an embedded newline (the name is now matched as a
     whole string, not per line), and two names that differ only in case;
-  - an entry heading whose summary has no letter or digit (`feat: **`).
+  - an entry heading whose summary has no letter or digit (`feat: **`), or
+    holds a bracket or ampersand, since a link or entity can render as
+    nothing while its destination or name supplies the letters.
 - Items 1 and 2 (rule-only text after the prefix strip, pipe tables) were
   already refused on `main`; regression tests now pin them. Item 3 (one
   preamble code path) and the PR-scope rule belong to the operator CI patch,
   not this content-only script.
-- Seven fragments already on `main` wrote placeholders in angle brackets
+- Eight fragments already on `main` wrote placeholders in angle brackets
   inside inline code; they now use `NAME`-style placeholders so they pass.
 - **`claude/scripts/tests/assemble-changelog.test.sh`**: one test per case.
   HTML-opening lines that were refused by line shape are now refused first
