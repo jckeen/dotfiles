@@ -156,6 +156,14 @@ git switch w" \
   'ls -- x && git switch -c after-dashdash' \
   "echo 'a -- b' && git -c 'n=(q)' switch -c quoted-after-dashdash" \
   "git checkout -- f; git -c 'a (b)' checkout main -b split-after-pathspec" \
+  "git worktree list
+git sw\\itch -c escaped" \
+  "git worktree list
+git che\\ckout -b escaped-co" \
+  'git worktree list; git sw\itch -c escaped-semi' \
+  "git worktree list
+git sw''itch -c quote-split-nl" \
+  'git worktree add -b switch ../p3' \
   'git -C . worktree add -b switch ../p2'; do
   denied "$(wg "$blocked")" \
     && ok "worktree-guard blocks: $(tr '\n' ' ' <<<"$blocked")" \
@@ -166,10 +174,14 @@ git switch w" \
   tr -d "\"'\\\\" <<<"$blocked" | tr '\n' ' ' | grep -qE 'switch|checkout' \
     || fail "cheap-exit invariant broken: a blocked case has neither switch nor checkout"
 done
-# The last blocked case above is the documented safe false positive: only a
-# segment that is plainly `git worktree …` is exempt.
+# The last two blocked cases above are documented safe false positives: a
+# `git worktree …` command is exempt only when its normalized text holds no
+# `switch`/`checkout` word at all (the worktree --checkout/--no-checkout flags
+# aside), so any mix of worktree and a branch-op word is left to the real
+# checks — that exemption was the bypass three times.
 for allowed in 'git worktree add ../p -b q' 'git worktree list' 'git status && git log -1' \
-  'git checkout -- file.txt' 'git checkout -- -backup' 'git worktree add -b switch ../p3'; do
+  'git checkout -- file.txt' 'git checkout -- -backup' \
+  'git worktree add --no-checkout ../x' 'git worktree add --checkout ../y' 'git worktree add -b feat ../x'; do
   [ -z "$(wg "$allowed")" ] \
     && ok "worktree-guard allows: $allowed" \
     || fail "worktree-guard blocked: $allowed"

@@ -18,8 +18,10 @@
     `-b`-style flag or `--orphan[=…]` before any `--`. A separator inside a
     quoted argument (`git -c 'user.name=A (B)' checkout main -b x`) can no
     longer cut `git` from its subcommand.
-  Only a plain `git worktree …` is exempt, and a fancier worktree call that
-  contains branch-op text is a safe false positive. After `--`, checkout
+  There is no `git worktree` exemption: a worktree command without a
+  `switch`/`checkout` word is allowed by the cheap exit, and one that
+  contains such a word (`git worktree add -b switch …`) is judged like any
+  other, a safe false positive. After `--`, checkout
   arguments are pathspecs, so `git checkout -- -backup` is allowed (#695).
   Cheap exits run first: a command whose text, with quotes and backslashes
   removed, has neither `switch` nor `checkout` (every blocked pattern has

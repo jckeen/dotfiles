@@ -17,18 +17,22 @@
 #     matches a broad branch-op pattern, so quoted global options
 #     (`git -c 'user.name=A B' switch …`) cannot hide the subcommand, and a
 #     quoted mention (`bash -c "git switch x"`, a commit message) counts too.
-#     The only exemption is a segment that is plainly `git worktree …` — the
-#     fix, not the problem. `git -C dir worktree add -b switch …` is therefore
-#     a known false positive, which is safe. After `--`, checkout arguments
-#     are pathspecs (`git checkout -- -backup` is allowed).
+#     There is no `git worktree` exemption (it was the bypass three times):
+#     a worktree command with no `switch`/`checkout` word is allowed by the
+#     cheap exit, `--checkout`/`--no-checkout` match no branch-op check, and
+#     one that does contain such a word is judged like any other, so
+#     `git worktree add -b switch …` is a known, safe false positive. After
+#     `--`, checkout arguments are pathspecs (`git checkout -- -backup` is
+#     allowed).
 #   - Whole-command fallback: the splitter is not quote-aware, so the entire
 #     command is also checked, and any of these blocks it: the original
 #     whole-text matcher, the broad pattern on the raw text, or a word-based,
 #     order-free check with quotes removed (a `git` word plus `switch`, or a
 #     -b/-B-prefixed flag or --orphan[=…] after any `checkout` word and
-#     before that checkout's own `--`). It is allowed only when it is a single
-#     plain `git worktree …` with no separators. A splitter mistake (a `(` or
-#     `;` inside quotes) can only add blocks.
+#     before that checkout's own `--`). A splitter mistake (a `(` or `;`
+#     inside quotes) can only add blocks.
+#   - Every check runs on the raw text and on a normalized copy (quotes and
+#     backslashes removed, newlines KEPT as separators), OR'd.
 #   - Allow freely when run from a linked worktree (.../worktrees/<name>).
 #   - In the PRIMARY checkout, DENY only when >1 worktree exists (a parallel
 #     session is likely active). Solo work (1 worktree) is never blocked.
@@ -102,12 +106,12 @@ is_branch_op() {
     # so `sw''itch` or `sw\itch` cannot hide the word.
     seg_n="${seg//\'/}"; seg_n="${seg_n//\"/}"; seg_n="${seg_n//\\/}"
     case "$seg_n" in *switch*|*checkout*) ;; *) continue ;; esac
-    # Exempt only a segment that is plainly `git worktree …` (how you
-    # comply). Anything fancier before the subcommand is not exempt, so
-    # `git -C x worktree add -b switch …` is a known, safe false positive.
-    if printf '%s\n' "$seg" | grep -qE '^[[:space:]]*git[[:space:]]+worktree([[:space:]]|$)'; then
-      continue
-    fi
+    # There is deliberately NO `git worktree` exemption here or below (it was
+    # the bypass three times). None is needed: a worktree command without a
+    # `switch`/`checkout` word never reaches this point, and `--checkout` /
+    # `--no-checkout` match none of the branch-op checks. A worktree command
+    # that does contain such a word is judged like any other — so
+    # `git worktree add -b switch …` is a known, safe false positive.
     printf '%s\n' "$seg" | grep -qE "$BROAD_RE" && return 0
     # The word-level parse adds forms the regex misses (`checkout main -b x`);
     # it can only add blocks, never exempt.
@@ -119,8 +123,7 @@ is_branch_op() {
   # subcommand. So look at the entire command, quotes removed and newlines
   # folded, word by word and order-free: a `git` word plus a `switch` word,
   # or plus a `checkout` word and any -b/-B-style flag or --orphan[=…].
-  # Only a single, plain `git worktree …` command (no separators at all) is
-  # exempt. A splitter mistake can therefore only add blocks; the cost is
+  # Nothing is exempt. A splitter mistake can therefore only add blocks; the cost is
   # false positives (a commit message saying "switch") in a contended
   # primary checkout, which is the safe direction.
   local flat raw w='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)' hit=0
@@ -149,15 +152,7 @@ is_branch_op() {
       hit=1
     fi
   fi
-  if [ "$hit" -eq 1 ]; then
-    if printf '%s' "$cmd" | grep -qE '^[[:space:]]*git[[:space:]]+worktree([[:space:]]|$)' \
-      && ! printf '%s' "$cmd" | grep -q '[;|&()`$]' \
-      && [ "$(printf '%s\n' "$cmd" | wc -l | tr -d ' ')" -le 1 ]; then
-      return 1
-    fi
-    return 0
-  fi
-  return 1
+  [ "$hit" -eq 1 ]
 }
 
 # Cheap exits first, so a huge command (a long heredoc body) costs one grep,
@@ -167,8 +162,12 @@ is_branch_op() {
 #    hook-guards.test.sh), so a command whose NORMALIZED text has neither can
 #    never be a block. Normalizing first means quote-splitting or escaping
 #    (`git sw''itch`, `git sw\itch`) cannot hide the word from this exit.
-STRIPPED="$(printf '%s' "$CMD" | tr -d "\"'\\\\" | tr '\n' ' ')"
-grep -qE 'switch|checkout' <<<"$STRIPPED" || exit 0
+#    Two normalized copies: STRIPPED_FOLDED (newlines folded) feeds only this
+#    grep; STRIPPED keeps newlines, because they are command separators and
+#    folding them merged `git worktree list⏎git sw\itch …` into one command.
+STRIPPED="$(printf '%s' "$CMD" | tr -d "\"'\\\\")"
+STRIPPED_FOLDED="$(printf '%s' "$STRIPPED" | tr '\n' ' ')"
+grep -qE 'switch|checkout' <<<"$STRIPPED_FOLDED" || exit 0
 
 # 2. Linked worktree? Its git dir lives under .../worktrees/<name>. Allow.
 gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
