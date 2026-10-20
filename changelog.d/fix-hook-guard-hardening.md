@@ -13,9 +13,11 @@
   fails closed:
   - each segment's raw text, quotes kept, is matched against a broad
     branch-op pattern;
-  - the whole command is matched too, so a separator inside a quoted
-    argument (`git -c 'user.name=A (B)' switch …`) cannot cut `git` from
-    `switch`.
+  - the whole command, quotes removed, is also checked word by word and
+    order-free: `git` plus `switch`, or `git` plus `checkout` plus a
+    `-b`-style flag or `--orphan[=…]` before any `--`. A separator inside a
+    quoted argument (`git -c 'user.name=A (B)' checkout main -b x`) can no
+    longer cut `git` from its subcommand.
   Only a plain `git worktree …` is exempt, and a fancier worktree call that
   contains branch-op text is a safe false positive. After `--`, checkout
   arguments are pathspecs, so `git checkout -- -backup` is allowed (#695).
@@ -23,11 +25,13 @@
   POSIX `awk`/`sed` instead of `grep -P`, which macOS grep lacks. Before,
   the error was masked and `-m` messages went unchecked. It now:
   - reads a quoted message that spans lines;
-  - takes the first non-blank line of a heredoc;
+  - takes the first non-blank line of a heredoc, and treats a message as a
+    heredoc only when the `-m` argument is a `$(cat` substitution;
   - denies a commit whose message it cannot read.
 - **`claude/hooks/PreMergeCodexHarvest.hook.sh`**: runs the harvester only
   when the whole command starts with the merge command, after `VAR=value`
-  assignments. There is no splitting, so a search, an echo or quoted text
-  never fires it. The old unanchored match filed #691 from a `sed` command.
+  assignments whose values hold no quotes or `$`. There is no splitting, so
+  a search, an echo, quoted text or a quoted assignment value never fires
+  it. The old unanchored match filed #691 from a `sed` command.
   A merge in a compound command or inside `$(…)` is a documented miss: the
   close-time workflow harvests every PR anyway.

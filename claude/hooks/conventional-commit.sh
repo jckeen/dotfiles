@@ -48,7 +48,9 @@ fi
 # With POSIX tools only (no `grep -P`, absent from macOS grep). A message that
 # cannot be extracted fails closed below, like an invalid one — before, a
 # failed extraction was masked and the commit went through unchecked.
-if printf '%s\n' "$COMMAND" | grep -q 'cat <<'; then
+# Heredoc only when the -m argument itself is a `$(cat <<…` substitution —
+# a literal "cat <<EOF" inside an inline message is just text.
+if printf '%s\n' "$COMMAND" | grep -qE -- "-m[[:space:]]+\"?\\\$\\(cat[[:space:]]+<<"; then
   # Heredoc style: git commit -m "$(cat <<'EOF' ... EOF )"
   # Extract content between the heredoc markers
   # `|| MSG=""`: an empty extraction must reach the fail-closed deny below,

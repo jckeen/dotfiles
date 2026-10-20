@@ -22,9 +22,11 @@
 #     a known false positive, which is safe. After `--`, checkout arguments
 #     are pathspecs (`git checkout -- -backup` is allowed).
 #   - Whole-command fallback: the splitter is not quote-aware, so the entire
-#     raw command is also matched against the broad pattern, and blocked
-#     unless it is a single plain `git worktree …` with no separators. A
-#     splitter mistake (a `(` or `;` inside quotes) can only add blocks.
+#     command (quotes removed) is also checked word by word, order-free: a
+#     `git` word plus `switch`, or plus `checkout` and a -b/-B-style flag or
+#     --orphan[=…] before any `--`. It is blocked unless it is a single plain
+#     `git worktree …` with no separators. A splitter mistake (a `(` or `;`
+#     inside quotes) can only add blocks.
 #   - Allow freely when run from a linked worktree (.../worktrees/<name>).
 #   - In the PRIMARY checkout, DENY only when >1 worktree exists (a parallel
 #     session is likely active). Solo work (1 worktree) is never blocked.
@@ -69,7 +71,7 @@ segment_is_branch_op() {
           while [ "$j" -lt "$n" ]; do
             case "${toks[$j]}" in
               --) break ;;  # pathspecs follow: `checkout -- -backup` is a file (#695)
-              -b|-B|--orphan|-b*|-B*) return 0 ;;
+              -b|-B|--orphan|--orphan=*|-b*|-B*|-[!-]*[bB]*) return 0 ;;
             esac
             j=$((j + 1))
           done
@@ -105,11 +107,20 @@ is_branch_op() {
   done < <(printf '%s\n' "$cmd" | tr ';|&()`' '\n\n\n\n\n\n')
   # Whole-command fail-closed fallback: the splitter above does not know
   # about quotes, so a separator inside a quoted argument
-  # (`git -c 'user.name=A (B)' switch …`) can cut `git` from `switch`. Match
-  # the entire raw command, newlines folded, against the same broad pattern;
-  # only a single, plain `git worktree …` command (no separators at all) is
-  # exempt. A splitter mistake can therefore only add blocks.
-  if printf '%s' "$cmd" | tr '\n' ' ' | grep -qE "$BROAD_RE"; then
+  # (`git -c 'user.name=A (B)' checkout main -b x`) can cut `git` from its
+  # subcommand. So look at the entire command, quotes removed and newlines
+  # folded, word by word and order-free: a `git` word plus a `switch` word,
+  # or plus a `checkout` word and any -b/-B-style flag or --orphan[=…].
+  # Only a single, plain `git worktree …` command (no separators at all) is
+  # exempt. A splitter mistake can therefore only add blocks; the cost is
+  # false positives (a commit message saying "switch") in a contended
+  # primary checkout, which is the safe direction.
+  local flat w='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)'
+  flat="$(printf '%s' "$cmd" | tr -d "\"'" | tr '\n' ' ')"
+  if printf '%s' "$flat" | grep -qE "${w}git${e}" \
+    && { printf '%s' "$flat" | grep -qE "${w}switch${e}" \
+      || { printf '%s' "$flat" | grep -qE "${w}checkout${e}" \
+        && printf '%s' "${flat%% -- *}" | grep -qE '(^|[[:space:]])(-[A-Za-z]*[bB][A-Za-z]*|--orphan)([=[:space:]]|$)'; }; }; then
     if printf '%s' "$cmd" | grep -qE '^[[:space:]]*git[[:space:]]+worktree([[:space:]]|$)' \
       && ! printf '%s' "$cmd" | grep -q '[;|&()`$]' \
       && [ "$(printf '%s\n' "$cmd" | wc -l | tr -d ' ')" -le 1 ]; then

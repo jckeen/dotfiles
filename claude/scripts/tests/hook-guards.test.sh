@@ -81,6 +81,9 @@ multi_bad="$(printf '%s\n' 'git commit -m "no type here' '' 'feat: not the subje
 denied "$(cc "$multi_bad")" \
   && ok "commit-msg: a multi-line message is validated on its first line" \
   || fail "commit-msg: multi-line message with a bad first line allowed"
+[ -z "$(cc 'git commit -m "docs: document cat <<EOF syntax"')" ] \
+  && ok "commit-msg: literal heredoc text inside an inline message is just text" \
+  || fail "commit-msg: inline message mentioning a heredoc denied"
 heredoc_blank="$(printf '%s\n' 'git commit -m "$(cat <<'"'"'EOF'"'"'' '' 'fix: heredoc subject after a blank line' '' 'body' 'EOF' ')"')"
 [ -z "$(cc "$heredoc_blank")" ] \
   && ok "commit-msg: a heredoc message with a leading blank line is allowed" \
@@ -115,6 +118,9 @@ git switch w" \
   'git -C "" switch -c feature' \
   "git -c 'user.name=Review (Bot)' switch -c feature" \
   "git -c 'user.name=a;b' switch -c feature" \
+  "git -c 'user.name=A (B)' checkout main -b newbranch" \
+  "git -c x=y 'switch' -c quoted-sub" \
+  'git checkout -q --orphan=newbranch' \
   'git -C . worktree add -b switch ../p2'; do
   denied "$(wg "$blocked")" \
     && ok "worktree-guard blocks: $(tr '\n' ' ' <<<"$blocked")" \
@@ -157,6 +163,9 @@ grep -q -- '--pr 7' <<<"$(pm "GH_REPO=a/b $MERGE 7")" \
 grep -q -- '--pr 9' <<<"$(pm "$MERGE 9 --auto")" \
   && ok "pre-merge: an --auto merge runs the harvester" \
   || fail "pre-merge: --auto merge did not run the harvester"
+[ -z "$(pm "NOTE=\"x $MERGE 5\"")" ] \
+  && ok "pre-merge: a quoted assignment value holding the merge text does not run the harvester" \
+  || fail "pre-merge: quoted assignment value ran the harvester"
 # Quoted text can never trigger it: there is no splitting at all.
 [ -z "$(pm "printf \"%s\\n\" \"\$HOME; $MERGE 5\"")" ] \
   && ok "pre-merge: merge text inside a quoted printf argument does not run the harvester" \
