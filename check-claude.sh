@@ -135,8 +135,9 @@ while IFS=$'\t' read -r src dst label _flags; do
   [ -n "$src" ] || continue
   if [ "$HEAL" -eq 1 ] && [ -d "$src" ] && [ -d "$dst" ] && [ ! -L "$dst" ]; then
     # A real directory where a bundle link belongs. A concurrent --heal (two
-    # panes launching cc) may be converting it right now: our rm/rmdir then
-    # fail on entries already gone, and any scan can land mid-drain, even
+    # panes launching cc) may be converting it right now. The migration now
+    # moves the whole dir aside in one rename (issue #638), but a rival
+    # running an older copy drains it in place, so any scan can land mid-drain, even
     # misjudge the directory as foreign when an entry vanishes between its -L
     # and readlink. So every such state goes through one bounded (~5s) settle
     # loop: convert it while it is legacy, wait while its listing is still
@@ -183,7 +184,7 @@ echo "Checking for self-links in skill bundles..."
 while IFS= read -r link; do
   bundle="$(dirname "$link")"
   [ "$(readlink "$link")" = "$bundle" ] || continue
-  label="${link#$CLAUDE_SRC/}"
+  label="${link#"$CLAUDE_SRC"/}"
   if [ "$FIX" -eq 1 ]; then
     # set +e: a failed rm (read-only bundle) must not print CLEANED.
     if rm "$link" 2>/dev/null; then
@@ -199,15 +200,72 @@ while IFS= read -r link; do
   fi
 done < <(find "$CLAUDE_SRC/skills" -mindepth 2 -maxdepth 2 -type l 2>/dev/null)
 
+# Legacy skill dirs that migration archived (lib-symlinks.sh, issue #638) sit
+# in ~/.claude/.migrated-skill-dirs/. Every scan below skips it: its links are
+# old by design and --fix must never touch it. The skip is a quoted `case`
+# prefix match, never `find -path`, which would read glob characters in $HOME
+# as a pattern. Everything under kept/ is reported every run: it is there
+# because it changed mid-migration. A top-level entry <name>.<UTC>.<pid> is
+# quiet only while it is old links into that skill's own source: a link to
+# claude/skills/<name> (a rival's link the migration grabbed), or a readable
+# dir whose every entry is a link to claude/skills/<name>/<same name>.
+# Anything else may be the user's own work, so it is reported too.
+ARCHIVE="$CLAUDE_DST/.migrated-skill-dirs"
+in_archive() { case "$1" in "$ARCHIVE"|"$ARCHIVE"/*) return 0 ;; esac; return 1; }
+archive_old_links() {
+  local e="$1" base src x
+  base="${e##*/}"
+  src="$CLAUDE_SRC/skills/${base%.*.*}"
+  if [ -L "$e" ]; then
+    [ "$(readlink "$e")" = "$src" ]
+    return
+  fi
+  [ -d "$e" ] && [ -r "$e" ] && [ -x "$e" ] || return 1
+  for x in "$e"/* "$e"/.*; do
+    case "${x##*/}" in .|..) continue ;; esac
+    if [ -L "$x" ]; then
+      [ "$(readlink "$x")" = "$src/${x##*/}" ] || return 1
+      continue
+    fi
+    [ -e "$x" ] && return 1  # unmatched globs do not exist
+  done
+  return 0
+}
+# Can't see inside, so it isn't safe to delete: an archive root that is not a
+# real dir this check can read and traverse hides its entries from the loop
+# below (kept/ gets the same test inside the loop).
+if { [ -e "$ARCHIVE" ] || [ -L "$ARCHIVE" ]; } \
+  && ! { [ -d "$ARCHIVE" ] && [ ! -L "$ARCHIVE" ] && [ -r "$ARCHIVE" ] && [ -x "$ARCHIVE" ]; }; then
+  yellow "KEPT    ${ARCHIVE#"$CLAUDE_DST"/} (cannot be read as a directory, so its content cannot be checked — review it, then remove it yourself)"
+  WARNINGS=$((WARNINGS + 1))
+fi
+for entry in "$ARCHIVE"/* "$ARCHIVE"/.* "$ARCHIVE/kept"/* "$ARCHIVE/kept"/.*; do
+  case "${entry##*/}" in .|..) continue ;; esac
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  # kept/ is skipped (its children are audited) only as a real, readable,
+  # traversable dir; a file, link or unreadable dir there is flagged.
+  if [ "$entry" = "$ARCHIVE/kept" ]; then
+    [ -d "$entry" ] && [ ! -L "$entry" ] && [ -r "$entry" ] && [ -x "$entry" ] && continue
+  else
+    case "$entry" in
+      "$ARCHIVE/kept"/*) ;;  # changed mid-migration: always reported
+      *) archive_old_links "$entry" && continue ;;
+    esac
+  fi
+  yellow "KEPT    ${entry#"$CLAUDE_DST"/} (not only old links: may be your own work — review it, then remove it yourself)"
+  WARNINGS=$((WARNINGS + 1))
+done
+
 # Check for orphaned symlinks — symlinks in ~/.claude/ pointing into dotfiles
 # whose source was removed (e.g., AgentPack.md after we stopped linking it)
 echo ""
 echo "Checking for orphaned symlinks..."
 while IFS= read -r link; do
+  in_archive "$link" && continue
   target="$(readlink "$link")"
   # Only check symlinks that point into our dotfiles repo
   if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
-    label="${link#$CLAUDE_DST/}"
+    label="${link#"$CLAUDE_DST"/}"
     if [ "$FIX" -eq 1 ]; then
       if rm "$link" 2>/dev/null; then
         green "CLEANED  $label (removed orphaned link -> $target)"
@@ -227,6 +285,7 @@ done < <(find "$CLAUDE_DST" -maxdepth 3 -type l 2>/dev/null)
 echo ""
 echo "Checking for broken symlinks..."
 while IFS= read -r broken; do
+  in_archive "$broken" && continue
   target="$(readlink "$broken")"
   # Skip dotfiles-managed links (already handled above)
   [[ "$target" == "$DOTFILES_DIR"* ]] && continue
@@ -239,6 +298,7 @@ done < <(find "$CLAUDE_DST" -maxdepth 3 -xtype l 2>/dev/null)
 echo ""
 echo "Checking for stale backups..."
 while IFS= read -r backup; do
+  in_archive "$backup" && continue
   original="${backup%.backup}"
   # Only flag if the non-backup version exists and is a working symlink
   # (meaning setup.sh already replaced it successfully)

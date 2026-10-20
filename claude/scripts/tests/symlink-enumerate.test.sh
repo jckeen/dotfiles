@@ -139,6 +139,102 @@ else
   [ "$(readlink "$H/.claude/skills/demo")" = "$SK" ] && ok=1
   check "SymlinkRepair migrates a legacy per-file skill dir" "$ok"
 
+  # The migration never deletes (issue #638): the old dir is archived whole
+  # under ~/.claude/.migrated-skill-dirs/, links intact, and nothing is left
+  # hidden in skills/. A legacy dir that cannot be moved (its parent skills/
+  # is read-only, which is what blocks rename(2) on every platform) is
+  # reported and left in place, still reachable, never half-converted.
+  arch=""
+  for d in "$H/.claude/.migrated-skill-dirs"/demo.*; do [ -d "$d" ] && arch="$d"; done
+  ok=0
+  [ -n "$arch" ] && [ "$(readlink "$arch/SKILL.md")" = "$SK/SKILL.md" ] \
+    && [ "$(find "$H/.claude/skills" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && ok=1
+  check "SymlinkRepair archives the legacy dir, links intact" "$ok"
+  # A foreign link swapped in just before the hook's rename is someone's own
+  # config, not a rival's repair: it goes to kept/ and is reported, never
+  # passed off as a clean conversion (gate review on #638). A --preload shim
+  # makes the window deterministic by wrapping fs.renameSync.
+  H="$FIX/h-foreign"
+  mkdir -p "$H/.claude/skills/demo" "$FIX/my-own-skill"
+  ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+  cat > "$FIX/rename-shim.ts" <<SHIM
+import fs from 'fs';
+const real = fs.renameSync;
+let fired = false;
+fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+  if (!fired && String(from) === '$H/.claude/skills/demo') {
+    fired = true;
+    fs.unlinkSync('$H/.claude/skills/demo/SKILL.md');
+    fs.rmdirSync('$H/.claude/skills/demo');
+    fs.symlinkSync('$FIX/my-own-skill', '$H/.claude/skills/demo');
+  }
+  return real(from, to);
+}) as typeof fs.renameSync;
+SHIM
+  hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun --preload "$FIX/rename-shim.ts" "$HOOK" 2>&1)"
+  kept_link=""
+  for k in "$H/.claude/.migrated-skill-dirs/kept"/demo.*; do [ -L "$k" ] && kept_link="$k"; done
+  ok=0
+  [ -n "$kept_link" ] && [ "$(readlink "$kept_link")" = "$FIX/my-own-skill" ] \
+    && grep -q 'skills/demo.*kept' <<<"$hook_out" && ok=1
+  check "SymlinkRepair keeps and reports a foreign link grabbed by its rename" "$ok"
+
+  # A rename that fails because a rival already installed exactly the bundle
+  # link is that rival's completed repair, not a failure (#694). The shim
+  # plays the rival, then fails the rename.
+  H="$FIX/h-rivaldone"
+  mkdir -p "$H/.claude/skills/demo"
+  ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+  cat > "$FIX/rival-shim.ts" <<SHIM
+import fs from 'fs';
+let fired = false;
+const real = fs.renameSync;
+fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+  if (!fired && String(from) === '$H/.claude/skills/demo') {
+    fired = true;
+    fs.unlinkSync('$H/.claude/skills/demo/SKILL.md');
+    fs.rmdirSync('$H/.claude/skills/demo');
+    fs.symlinkSync('$SK', '$H/.claude/skills/demo');
+    throw Object.assign(new Error('EBUSY: rival in the way'), { code: 'EBUSY' });
+  }
+  return real(from, to);
+}) as typeof fs.renameSync;
+SHIM
+  hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun --preload "$FIX/rival-shim.ts" "$HOOK" 2>&1)"
+  ok=0
+  [ "$(readlink "$H/.claude/skills/demo")" = "$SK" ] \
+    && ! grep -q 'skills/demo' <<<"$hook_out" && ok=1
+  check "SymlinkRepair treats a rival's finished link after a failed rename as done" "$ok"
+
+  if [ "$(id -u)" -ne 0 ]; then
+    H="$FIX/h-legacy-ro"
+    mkdir -p "$H/.claude/skills/demo"
+    ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
+    # Archive parent (~/.claude) stays writable; only skills/ is locked.
+    chmod 555 "$H/.claude/skills"
+    hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" 2>&1)"
+    chmod 755 "$H/.claude/skills"
+    ok=0
+    [ -d "$H/.claude/skills/demo" ] && [ ! -L "$H/.claude/skills/demo" ] \
+      && [ -L "$H/.claude/skills/demo/SKILL.md" ] \
+      && grep -q 'skills/demo.*legacy skill dir move failed' <<<"$hook_out" && ok=1
+    check "SymlinkRepair leaves an unmovable legacy dir in place and reports it" "$ok"
+    # A dir it cannot read (0300) or traverse (0600) is never judged legacy,
+    # so user content in it is never archived as "only old links".
+    for mode in 300 600; do
+      H="$FIX/h-perm$mode"
+      mkdir -p "$H/.claude/skills/demo"
+      printf 'mine\n' > "$H/.claude/skills/demo/notes.md"
+      chmod "$mode" "$H/.claude/skills/demo"
+      HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" >/dev/null 2>&1
+      chmod 755 "$H/.claude/skills/demo"
+      ok=0
+      [ -d "$H/.claude/skills/demo" ] && [ ! -L "$H/.claude/skills/demo" ] \
+        && [ -f "$H/.claude/skills/demo/notes.md" ] && [ ! -e "$H/.claude/.migrated-skill-dirs" ] && ok=1
+      check "SymlinkRepair leaves an unreadable ($mode) dir untouched" "$ok"
+    done
+  fi
+
   # Real content at the destination: left alone and reported.
   H="$FIX/h-real"
   mkdir -p "$H"

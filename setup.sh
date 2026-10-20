@@ -161,7 +161,7 @@ run_health_audit() {
     printf '  \033[31mFATAL\033[0m claude/nolink.txt missing at %s — cannot audit\n' "$CLAUDE_SRC/nolink.txt"
     errors=$((errors + 1))
   else
-    local _src _dst _label _flags
+    local _src _dst _label _flags _mrc
     while IFS=$'\t' read -r _src _dst _label _flags; do
       [ -n "$_src" ] || continue
       claude_link_managed "$_label" || continue
@@ -170,8 +170,18 @@ run_health_audit() {
       # names it rather than calling it an unknown directory.
       if symlink_is_legacy_skill_dir "$_src" "$_dst"; then
         if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-          symlink_migrate_legacy_skill_dir "$_src" "$_dst" \
-            || printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
+          # Status 2: content changed under the migration and was archived
+          # (lib-symlinks.sh prints where). It counts even though alink then
+          # relinks $dst (issue #638). Status 1 leaves $dst a real dir, which
+          # alink reports itself; 0 includes a rival that finished first.
+          _mrc=0
+          symlink_migrate_legacy_skill_dir "$_src" "$_dst" || _mrc=$?
+          if [ "$_mrc" -eq 2 ]; then
+            printf '  \033[31mFAILED\033[0m  %s (changed during migration; content kept in .migrated-skill-dirs/kept — review it)\n' "$_label"
+            errors=$((errors + 1))
+          elif [ "$_mrc" -ne 0 ]; then
+            printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
+          fi
         else
           printf '  \033[33mLEGACY\033[0m  %s (per-file links from before #592; --repair converts to a directory link)\n' "$_label"
           errors=$((errors + 1))
@@ -1914,7 +1924,9 @@ if ! symlink_require_manifest "$DOTFILES_DIR/claude"; then
   echo "  !! FATAL: claude/nolink.txt is missing — cannot determine which files to skip." >&2
   exit 1
 fi
+# BEGIN claude-tree-link (run in isolation by setup-services.test.sh)
 _tree_links=0
+_tree_kept=""
 while IFS=$'\t' read -r _src _dst _label _flags; do
   [ -n "$_src" ] || continue
   claude_link_managed "$_label" || continue
@@ -1934,11 +1946,20 @@ while IFS=$'\t' read -r _src _dst _label _flags; do
       _tree_links=$((_tree_links + 1))
       continue
     fi
-    if ! symlink_migrate_legacy_skill_dir "$_src" "$_dst"; then
+    # Status 2: content changed under the migration and is kept under
+    # .migrated-skill-dirs/kept (lib-symlinks.sh prints where). $dst is free,
+    # so link the bundle first, and fail only after the whole tree is linked;
+    # exiting here would leave the skill absent (issue #638).
+    _mrc=0
+    symlink_migrate_legacy_skill_dir "$_src" "$_dst" || _mrc=$?
+    if [ "$_mrc" -eq 1 ]; then
       echo "ERROR: could not convert legacy per-file skill links in $_dst" >&2
       exit 1
+    elif [ "$_mrc" -eq 2 ]; then
+      _tree_kept="$_tree_kept $_label"
+    else
+      echo "  -> converted per-file links in $_dst to a directory link"
     fi
-    echo "  -> converted per-file links in $_dst to a directory link"
   fi
   link_file "$_src" "$_dst"
   if [ "$_flags" = "executable" ] && [ "${DRY_RUN:-0}" != "1" ]; then
@@ -1946,6 +1967,11 @@ while IFS=$'\t' read -r _src _dst _label _flags; do
   fi
   _tree_links=$((_tree_links + 1))
 done < <(symlink_enumerate "$DOTFILES_DIR/claude" "$HOME_DIR/.claude")
+if [ -n "$_tree_kept" ]; then
+  echo "ERROR: these skills changed during migration; they are linked, and what changed is kept in $HOME_DIR/.claude/.migrated-skill-dirs/kept — review it:$_tree_kept" >&2
+  exit 1
+fi
+# END claude-tree-link
 if service_selected claude; then
   echo "  -> Claude tree linked ($_tree_links entries: config, hooks, skills, agents, scripts, chrome)"
 else

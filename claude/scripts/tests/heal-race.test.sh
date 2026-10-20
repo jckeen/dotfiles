@@ -314,6 +314,335 @@ check "foreign dir: --heal exits 1 with NOT LINKED" \
 check "foreign dir: not held for the full wait" "$([ $((SECONDS - t0)) -lt 3 ] && echo 1 || echo 0)"
 check "foreign dir: content untouched" "$([ -f "$DST/notes.md" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
 
+# ── 4b. migration never deletes (issue #638) ─────────────────────────────
+# The legacy dir is renamed whole into <claude>/.migrated-skill-dirs/ rather
+# than drained link by link, so no race can make an rm resolve into $SRC.
+# race_bin <dir> <mode> — a PATH dir whose `rm` and `perl` play a race around
+# the first call of either: mode `rival` first finishes a rival migration
+# (drain $DST if still a real dir, link it to $SRC); `rival-file` also drops a
+# regular file at $DST if the call left it absent; `swap` replaces the archived
+# SKILL.md link with a regular file after the call. Then the real tool's exit
+# status is returned.
+ARCH_REL=".claude/.migrated-skill-dirs"
+REAL_RM="$(command -v rm)"
+REAL_PERL="$(command -v perl)"
+race_bin() {
+  local dir="$1" mode="$2"
+  mkdir -p "$dir"
+  cat > "$dir/rm" <<FAKE
+#!/bin/bash
+case "\${0##*/}" in rm) real="$REAL_RM" ;; *) real="$REAL_PERL" ;; esac
+first=0
+if [ ! -e "$M/raced" ]; then : > "$M/raced"; first=1; fi
+if [ "\$first" -eq 1 ] && case "$mode" in rival*) true ;; *) false ;; esac; then
+  if [ -d "$DST" ] && [ ! -L "$DST" ]; then "$REAL_RM" -f "$DST"/* && rmdir "$DST"; fi
+  if [ "$mode" = rival-foreign ]; then
+    [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$FIX/my-own-skill" "$DST"
+  else
+    [ -e "$DST" ] || [ -L "$DST" ] || ln -sn "$SRC" "$DST"
+  fi
+fi
+"\$real" "\$@"; rc=\$?
+if [ "\$first" -eq 1 ] && [ "$mode" = rival-file ] && [ ! -e "$DST" ] && [ ! -L "$DST" ]; then
+  printf 'user\\n' > "$DST"
+fi
+if [ "\$first" -eq 1 ] && [ "$mode" = swap ]; then
+  for d in "$H/$ARCH_REL"/demo.*; do
+    [ -L "\$d/SKILL.md" ] && "$REAL_RM" "\$d/SKILL.md" && printf 'swapped\\n' > "\$d/SKILL.md"
+  done
+fi
+if [ "\$first" -eq 1 ] && [ "$mode" = swaplink ]; then
+  for d in "$H/$ARCH_REL"/demo.*; do
+    [ -L "\$d/SKILL.md" ] && "$REAL_RM" "\$d/SKILL.md" && ln -s "$FIX/foreign-target" "\$d/SKILL.md"
+  done
+fi
+exit \$rc
+FAKE
+  chmod +x "$dir/rm"
+  cp "$dir/rm" "$dir/perl"
+}
+legacy_fixture() {
+  new_fixture "$1"
+  mkdir -p "$DST"
+  for i in 1 2 3; do printf 'x\n' > "$SRC/f$i"; ln -s "$SRC/f$i" "$DST/f$i"; done
+  ln -s "$SRC/SKILL.md" "$DST/SKILL.md"
+  M="$FIX/$1/marks"
+  mkdir -p "$M"
+}
+# migrate_with <bin dir> — run the fixture's migration with <bin dir> first on
+# PATH; sets rc.
+migrate_with() {
+  (
+    PATH="$1:$PATH"
+    # shellcheck source=../../../lib-symlinks.sh
+    . "$R/lib-symlinks.sh"
+    symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+  ) >/dev/null 2>&1
+  rc=$?
+}
+sources_intact() {
+  [ -f "$SRC/f1" ] && [ -f "$SRC/f2" ] && [ -f "$SRC/f3" ] && [ -f "$SRC/SKILL.md" ]
+}
+
+# A plain conversion: the old dir lands in the archive, links intact, and
+# --heal links the bundle in its place.
+legacy_fixture archive
+out="$(run_check --heal)"; rc=$?
+arch=""
+for d in "$H/$ARCH_REL"/demo.*; do [ -d "$d" ] && arch="$d"; done
+check "archive: --heal exits 0 and links the bundle" \
+  "$([ "$rc" -eq 0 ] && [ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
+check "archive: the old dir is archived with its links" \
+  "$([ -n "$arch" ] && [ "$(readlink "$arch/f1")" = "$SRC/f1" ] && [ -L "$arch/SKILL.md" ] && echo 1 || echo 0)"
+check "archive: name is <skill>.<UTC timestamp>.<pid>" \
+  "$([[ "${arch##*/}" =~ ^demo\.[0-9]{8}T[0-9]{6}Z\.[0-9]+$ ]] && echo 1 || echo 0)"
+check "archive: nothing left in skills/ but the link" \
+  "$([ "$(find "$H/.claude/skills" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] && echo 1 || echo 0)"
+
+# A rival that finishes WHILE this run migrates must not cost a source file.
+# The old in-place loop had already passed `[ -L "$DST/f1" ]`, so its rm
+# "$DST/f1" resolved through the rival's link and deleted $SRC/f1.
+legacy_fixture rmrace
+race_bin "$FIX/rmrace/bin" rival
+migrate_with "$FIX/rmrace/bin"
+check "rm race: the rival fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "rm race: every source file survives" "$(sources_intact && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "rm race: a later --heal settles on the directory link" \
+  "$([ "$rc" -eq 0 ] && [ "$(readlink "$DST")" = "$SRC" ] && echo 1 || echo 0)"
+
+# The rename can grab the rival's directory link; a regular file that then
+# appears at $DST must survive (gate review round 3: renaming the link back
+# overwrote it). The link stays in the archive instead.
+legacy_fixture rivalfile
+race_bin "$FIX/rivalfile/bin" rival-file
+migrate_with "$FIX/rivalfile/bin"
+check "file at dst: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "file at dst: the new file survives" \
+  "$([ -f "$DST" ] && [ ! -L "$DST" ] && [ "$(cat "$DST")" = user ] && echo 1 || echo 0)"
+check "file at dst: sources intact" "$(sources_intact && echo 1 || echo 0)"
+
+# A link the rename grabs counts as a rival's repair only if it is exactly
+# the bundle link (readlink == $SRC, as check_link compares). A foreign link
+# swapped in just before the rename is someone's own config: it goes to
+# kept/, status 2, reported (gate review round 10).
+legacy_fixture foreignlink
+race_bin "$FIX/foreignlink/bin" rival-foreign
+(
+  PATH="$FIX/foreignlink/bin:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >"$M/out" 2>&1
+rc=$?
+kept_link=""
+for k in "$H/$ARCH_REL"/kept/demo.*; do [ -L "$k" ] && kept_link="$k"; done
+check "foreign rival link: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "foreign rival link: archived under kept/, intact" \
+  "$([ -n "$kept_link" ] && [ "$(readlink "$kept_link")" = "$FIX/my-own-skill" ] && echo 1 || echo 0)"
+check "foreign rival link: migration returns 2 and names kept/" \
+  "$([ "$rc" -eq 2 ] && grep -q "$ARCH_REL/kept/demo\." "$M/out" && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "foreign rival link: --heal flags it KEPT and exits non-zero" \
+  "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*kept/demo\.' <<<"$out" && echo 1 || echo 0)"
+
+# A foreign symlink swapped in mid-migration also lands in kept/, and kept/
+# is always flagged: it is there because it changed, links or not (PR #682
+# review). The migration says so with status 2, not 1.
+legacy_fixture swaplink
+race_bin "$FIX/swaplink/bin" swaplink
+migrate_with "$FIX/swaplink/bin"
+check "foreign link: migration returns 2 (content archived)" "$([ "$rc" -eq 2 ] && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "foreign link: kept/ entry flagged KEPT" \
+  "$([ "$rc" -ne 0 ] && grep -q "KEPT .*kept/demo\." <<<"$out" && echo 1 || echo 0)"
+
+# Top-level archive links must point into the skill's own source tree; one
+# pointing anywhere else is flagged.
+legacy_fixture foreigntop
+out="$(run_check --heal)"
+mkdir -p "$H/$ARCH_REL/demo.20261019T000000Z.7"
+ln -s "$FIX/foreign-target" "$H/$ARCH_REL/demo.20261019T000000Z.7/SKILL.md"
+ln -s "$FIX/elsewhere-dir" "$H/$ARCH_REL/demo.20261019T000000Z.8"
+out="$(run_check --heal)"; rc=$?
+check "archive audit: a dir of foreign links is KEPT" \
+  "$(grep -q 'KEPT .*demo\.20261019T000000Z\.7' <<<"$out" && echo 1 || echo 0)"
+check "archive audit: a top-level foreign link is KEPT" \
+  "$(grep -q 'KEPT .*demo\.20261019T000000Z\.8' <<<"$out" && echo 1 || echo 0)"
+check "archive audit: the real archived dir is not flagged" \
+  "$([ "$(grep -c 'KEPT' <<<"$out")" -eq 2 ] && echo 1 || echo 0)"
+
+# A writer that swaps a link in the moved dir for a real file loses nothing,
+# because nothing is deleted (gate review round 3). Nothing is ever renamed
+# back either, since no rename can refuse to overwrite (round 4): the dir, no
+# longer legacy, goes to the archive's kept/ and the migration says so.
+legacy_fixture swap
+race_bin "$FIX/swap/bin" swap
+(
+  PATH="$FIX/swap/bin:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >"$M/out" 2>&1
+rc=$?
+found=0
+for f in "$H/$ARCH_REL"/kept/demo.*/SKILL.md; do
+  [ -f "$f" ] && [ ! -L "$f" ] && [ "$(cat "$f")" = swapped ] && found=1
+done
+check "swapped file: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "swapped file: survives under kept/" "$found"
+check "swapped file: migration returns 2, names kept/" \
+  "$([ "$rc" -eq 2 ] && grep -q "$ARCH_REL/kept/demo\." "$M/out" && echo 1 || echo 0)"
+check "swapped file: never renamed back over dst" "$([ ! -e "$DST" ] && [ ! -L "$DST" ] && echo 1 || echo 0)"
+check "swapped file: sources intact" "$(sources_intact && echo 1 || echo 0)"
+out="$(run_check --heal)"; rc=$?
+check "swapped file: --heal links the bundle and warns about kept/" \
+  "$([ "$(readlink "$DST")" = "$SRC" ] && grep -q "KEPT .*kept/demo\." <<<"$out" && echo 1 || echo 0)"
+
+# A rival that moves $dst away during the device check has won: that is the
+# rival-completed path (return 0), not a cross-filesystem error (PR #682
+# review). A fake stat plays the rival's rename on its first call.
+legacy_fixture devrace
+mkdir -p "$FIX/devrace/bin" "$FIX/devrace/rival"
+REAL_STAT="$(command -v stat)"
+cat > "$FIX/devrace/bin/stat" <<FAKE
+#!/bin/bash
+if [ ! -e "$M/raced" ]; then
+  : > "$M/raced"
+  "$REAL_PERL" -e 'rename(\$ARGV[0], \$ARGV[1]) or exit 1' "$DST" "$FIX/devrace/rival/demo"
+fi
+exec "$REAL_STAT" "\$@"
+FAKE
+chmod +x "$FIX/devrace/bin/stat"
+(
+  PATH="$FIX/devrace/bin:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >"$M/out" 2>&1
+rc=$?
+check "device-check race: the rival fired" "$([ -e "$M/raced" ] && [ -d "$FIX/devrace/rival/demo" ] && echo 1 || echo 0)"
+check "device-check race: treated as the rival's success" \
+  "$([ "$rc" -eq 0 ] && ! grep -q 'different filesystems' "$M/out" && echo 1 || echo 0)"
+
+# The archive lives under ~/.claude but outside every link scan: an archived
+# dangling link (a source file since removed) is neither ORPHAN nor BROKEN,
+# and --fix never touches it (gate review round 4).
+legacy_fixture orphan
+ln -s "$SRC/gone.md" "$DST/gone.md"
+out="$(run_check --heal)"; rc=$?
+out2="$(run_check --heal --fix)"; rc2=$?
+arch=""
+for d in "$H/$ARCH_REL"/demo.*; do [ -d "$d" ] && arch="$d"; done
+check "archived dangling link: --heal exits 0 twice" \
+  "$([ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && echo 1 || echo 0)"
+check "archived dangling link: not ORPHAN or BROKEN" \
+  "$(! grep -qE 'ORPHAN|BROKEN|CLEANED' <<<"$out$out2" && echo 1 || echo 0)"
+check "archived dangling link: --fix leaves the archive alone" \
+  "$([ -n "$arch" ] && [ -L "$arch/gone.md" ] && echo 1 || echo 0)"
+
+# The same with glob characters in every path (HOME and the dotfiles copy
+# under "glob[x]"): `find -path` read the archive path as a pattern, so it was
+# not pruned and --fix deleted archived links (gate review round 5). All three
+# scans: orphan (dangling link into dotfiles), broken (dangling link
+# elsewhere) and stale backup (x.backup beside a working link x).
+legacy_fixture "glob[x]"
+ln -s "$SRC/gone.md" "$DST/gone.md"
+out="$(run_check --heal)"; rc=$?
+arch=""
+for d in "$H/$ARCH_REL"/demo.*; do [ -d "$d" ] && arch="$d"; done
+ln -s "$FIX/nowhere" "$arch/elsewhere"
+ln -s "$SRC/SKILL.md" "$arch/x"
+# A link, so the entry stays links-only (not KEPT) yet matches *.backup.
+ln -s "$SRC/f1" "$arch/x.backup"
+out="$(run_check --heal)"; rc=$?
+out2="$(run_check --heal --fix)"; rc2=$?
+# The planted links are foreign to the skill, so only the archive audit
+# speaks (KEPT); no link scan reaches the archive.
+check "glob chars in HOME: only the archive audit reports it" \
+  "$(grep -q "KEPT .*${arch##*/}" <<<"$out" && [ "$rc2" -eq "$rc" ] && echo 1 || echo 0)"
+check "glob chars in HOME: archive in no scan (ORPHAN/BROKEN/STALE/CLEANED)" \
+  "$(! grep -qE 'ORPHAN|BROKEN|STALE|CLEANED' <<<"$out$out2" && echo 1 || echo 0)"
+check "glob chars in HOME: --fix leaves every archived entry" \
+  "$([ -L "$arch/gone.md" ] && [ -L "$arch/elsewhere" ] && [ -L "$arch/x.backup" ] && echo 1 || echo 0)"
+
+# Every top-level archive entry that is not links-only is flagged KEPT,
+# wherever it landed (round 5: content left at the archive root when the move
+# into kept/ failed went unreported).
+legacy_fixture keptroot
+mkdir -p "$H/$ARCH_REL/demo.20261019T000000Z.1"
+ln -s "$SRC/SKILL.md" "$H/$ARCH_REL/demo.20261019T000000Z.1/SKILL.md"
+mkdir -p "$H/$ARCH_REL/demo.20261019T000000Z.2"
+printf 'mine\n' > "$H/$ARCH_REL/demo.20261019T000000Z.2/notes.md"
+out="$(run_check --heal)"; rc=$?
+check "archive audit: content at the archive root is KEPT" \
+  "$(grep -q 'KEPT .*demo\.20261019T000000Z\.2' <<<"$out" && echo 1 || echo 0)"
+check "archive audit: a links-only entry is not flagged" \
+  "$(! grep -q 'KEPT .*demo\.20261019T000000Z\.1' <<<"$out" && echo 1 || echo 0)"
+
+# Can't see inside, so it isn't safe to delete: a kept/ or archive root the
+# checker cannot read and traverse is itself flagged KEPT, never "All good"
+# (gate review round 6).
+if [ "$(id -u)" -ne 0 ]; then
+  legacy_fixture keptperm
+  out="$(run_check --heal)"
+  mkdir -p "$H/$ARCH_REL/kept/demo.20261019T000000Z.3"
+  printf 'mine\n' > "$H/$ARCH_REL/kept/demo.20261019T000000Z.3/notes.md"
+  chmod 300 "$H/$ARCH_REL/kept"
+  out="$(run_check --heal)"; rc=$?
+  chmod 755 "$H/$ARCH_REL/kept"
+  check "archive audit: unreadable kept/ is KEPT, check fails" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/kept ' <<<"$out" && echo 1 || echo 0)"
+  chmod 300 "$H/$ARCH_REL"
+  out="$(run_check --heal)"; rc=$?
+  chmod 755 "$H/$ARCH_REL"
+  check "archive audit: unreadable archive root is KEPT, check fails" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*\.migrated-skill-dirs ' <<<"$out" && echo 1 || echo 0)"
+  # kept is skipped only as a real, readable, traversable dir; anything else
+  # at that name is flagged (gate review round 7: a regular file there was
+  # silently skipped and the check said "All good").
+  "$REAL_RM" -rf "$H/$ARCH_REL/kept"
+  printf 'mine\n' > "$H/$ARCH_REL/kept"
+  out="$(run_check --heal)"; rc=$?
+  check "archive audit: a regular file named kept is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/kept ' <<<"$out" && echo 1 || echo 0)"
+  "$REAL_RM" -f "$H/$ARCH_REL/kept"
+  mkdir -p "$FIX/keptperm/elsewhere"
+  printf 'mine\n' > "$FIX/keptperm/elsewhere/notes.md"
+  ln -s "$FIX/keptperm/elsewhere" "$H/$ARCH_REL/kept"
+  out="$(run_check --heal)"; rc=$?
+  check "archive audit: a symlink named kept is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/kept ' <<<"$out" && echo 1 || echo 0)"
+  "$REAL_RM" -f "$H/$ARCH_REL/kept"
+  new_fixture archfile
+  printf 'mine\n' > "$H/$ARCH_REL"
+  out="$(run_check --heal)"; rc=$?
+  check "archive audit: a regular file at the archive root is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*\.migrated-skill-dirs ' <<<"$out" && echo 1 || echo 0)"
+  R="$FIX/keptperm/dotfiles" H="$FIX/keptperm/home"
+  chmod 300 "$H/$ARCH_REL"/demo.2*Z.[0-9]*
+  out="$(run_check --heal)"; rc=$?
+  chmod 755 "$H/$ARCH_REL"/demo.2*Z.[0-9]*
+  check "archive audit: an unreadable archived dir is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/demo\.' <<<"$out" && echo 1 || echo 0)"
+fi
+
+# A dir the migrator cannot read (0300) or traverse (0600) is never judged
+# legacy: its listing looks empty or its entries look absent, so it would be
+# archived as "only old links" (round 5). It is left in place, untouched.
+if [ "$(id -u)" -ne 0 ]; then
+  for mode in 300 600; do
+    new_fixture "perm$mode"
+    mkdir -p "$DST"
+    printf 'mine\n' > "$DST/notes.md"
+    chmod "$mode" "$DST"
+    out="$(run_check --heal)"; rc=$?
+    chmod 755 "$DST"
+    check "unreadable dir ($mode): left in place with its content" \
+      "$([ -d "$DST" ] && [ ! -L "$DST" ] && [ -f "$DST/notes.md" ] && [ ! -e "$H/$ARCH_REL" ] && echo 1 || echo 0)"
+  done
+fi
+
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools
 out="$(run_check --heal)"; rc=$?

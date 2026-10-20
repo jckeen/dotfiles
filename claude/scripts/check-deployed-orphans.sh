@@ -88,6 +88,9 @@ CLAUDE_DIR="$(cd -P "$CLAUDE_DIR" 2>/dev/null && pwd)" || {
 # what setup.sh/check-claude.sh manage as real directories-of-symlinks
 # (agents/, skills/, scripts/, chrome/, hooks/).
 RUNTIME_DIRS=(
+  # .migrated-skill-dirs: legacy skill dirs that lib-symlinks.sh moved aside
+  # instead of deleting (issue #638); check-claude.sh reports its kept/.
+  .migrated-skill-dirs
   Plans agents backups cache chrome commands daemon downloads file-history
   handoffs hooks ide jobs ledger logs paste-cache plugins projects
   retro-proposals scripts security session-env sessions shell-snapshots
