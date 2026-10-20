@@ -13,10 +13,10 @@
   `editor` does not track renames) never renders. A refresh fails, rather
   than caching a partial list, when the search hits GitHub's 1000-result cap
   or the gh account changes while it runs.
-  Each heading names its repo (`<slug> (<repo>#<n>)`).
+  Each heading names its repo (`SLUG (REPO#N)`).
   With no body `project:` line, an issue outside the home repo takes its repo
   name as its project; labels count only in the home repo and only as a plain
-  `project:<slug>`, since any collaborator can write a label. The owners are part of the cache key, which is
+  `project:SLUG`, since any collaborator can write a label. The owners are part of the cache key, which is
   versioned, so a cache written before these filters is never rendered, and
   carries a digest of the gh identity (token variables and `hosts.yml`, read
   locally), so switching gh accounts never shows another account's items.
