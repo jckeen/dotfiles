@@ -493,6 +493,31 @@ check "archive audit: content at the archive root is KEPT" \
 check "archive audit: a links-only entry is not flagged" \
   "$(! grep -q 'KEPT .*demo\.20261019T000000Z\.1' <<<"$out" && echo 1 || echo 0)"
 
+# Can't see inside, so it isn't safe to delete: a kept/ or archive root the
+# checker cannot read and traverse is itself flagged KEPT, never "All good"
+# (gate review round 6).
+if [ "$(id -u)" -ne 0 ]; then
+  legacy_fixture keptperm
+  out="$(run_check --heal)"
+  mkdir -p "$H/$ARCH_REL/kept/demo.20261019T000000Z.3"
+  printf 'mine\n' > "$H/$ARCH_REL/kept/demo.20261019T000000Z.3/notes.md"
+  chmod 300 "$H/$ARCH_REL/kept"
+  out="$(run_check --heal)"; rc=$?
+  chmod 755 "$H/$ARCH_REL/kept"
+  check "archive audit: unreadable kept/ is KEPT, check fails" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/kept ' <<<"$out" && echo 1 || echo 0)"
+  chmod 300 "$H/$ARCH_REL"
+  out="$(run_check --heal)"; rc=$?
+  chmod 755 "$H/$ARCH_REL"
+  check "archive audit: unreadable archive root is KEPT, check fails" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*\.migrated-skill-dirs ' <<<"$out" && echo 1 || echo 0)"
+  chmod 300 "$H/$ARCH_REL"/demo.2*Z.[0-9]*
+  out="$(run_check --heal)"; rc=$?
+  chmod 755 "$H/$ARCH_REL"/demo.2*Z.[0-9]*
+  check "archive audit: an unreadable archived dir is KEPT" \
+    "$([ "$rc" -ne 0 ] && grep -q 'KEPT .*migrated-skill-dirs/demo\.' <<<"$out" && echo 1 || echo 0)"
+fi
+
 # A dir the migrator cannot read (0300) or traverse (0600) is never judged
 # legacy: its listing looks empty or its entries look absent, so it would be
 # archived as "only old links" (round 5). It is left in place, untouched.

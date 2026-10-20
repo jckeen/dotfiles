@@ -19,7 +19,9 @@
   and is reported. `check-claude.sh` then warns `KEPT` on every run until
   the user removes it.
 - **Archive hygiene**: `check-claude.sh` flags every archived entry that is
-  not only old links as `KEPT`, wherever it landed. An entry is safe to delete
+  not only old links as `KEPT`, wherever it landed. An archive root, `kept/`
+  or archived dir the check cannot read and traverse is `KEPT` too: what it
+  can't see inside isn't safe to delete. An entry is safe to delete
   by hand only if it is not flagged (`CLAUDE-GUIDE.md`). The orphan,
   broken-link and backup scans skip the archive by a quoted `case` prefix
   match, not `find -path`, which read glob characters in `$HOME` as a

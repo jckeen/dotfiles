@@ -220,6 +220,14 @@ archive_links_only() {
   done
   return 0
 }
+# Can't see inside, so it isn't safe to delete: an archive root or kept/ this
+# check cannot read and traverse hides its entries from the loop below.
+for dir in "$ARCHIVE" "$ARCHIVE/kept"; do
+  [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+  [ -r "$dir" ] && [ -x "$dir" ] && continue
+  yellow "KEPT    ${dir#"$CLAUDE_DST"/} (cannot be read, so its content cannot be checked — review it, then remove it yourself)"
+  WARNINGS=$((WARNINGS + 1))
+done
 for entry in "$ARCHIVE"/* "$ARCHIVE"/.* "$ARCHIVE/kept"/* "$ARCHIVE/kept"/.*; do
   case "${entry##*/}" in .|..) continue ;; esac
   [ -e "$entry" ] || [ -L "$entry" ] || continue
