@@ -10,8 +10,9 @@
 # merged settings.json is present.
 #
 # For every claude/hooks/*.{sh,ts} that is NOT in the opt-out list below, verify
-# its filename appears among the settings' hook commands. Warn (advisory) on any
-# that don't, with the fix hint. Exit 0 unless --strict is given.
+# its filename appears among the settings' hook commands, and that each
+# EVENT_WIRING hook is also registered on the event it names. Warn (advisory)
+# on any that don't, with the fix hint. Exit 0 unless --strict is given.
 #
 # Usage:  check-hooks-wired.sh [--strict]   (--strict: exit 1 on drift)
 
@@ -73,6 +74,33 @@ if [ "$drift" -ne 0 ]; then
   echo "  Fix: add them to the .hooks block of $SETTINGS (this lives in the"
   echo "  private claude-memory repo), or add to OPT_OUT in check-hooks-wired.sh"
   echo "  if intentionally disabled."
+  [ "$STRICT" -eq 1 ] && exit 1
+  exit 0
+fi
+
+# Hooks that must also be registered on a specific event, as "<event> <file>".
+# The filename check above passes once a hook is wired anywhere, so a second
+# registration a hook relies on would go missing unnoticed.
+EVENT_WIRING=(
+  # The mid-session mod rescan (#618); SessionStart alone misses /reload-plugins.
+  "UserPromptSubmit PluginDriftCheck.hook.ts"
+)
+event_drift=0
+for pair in "${EVENT_WIRING[@]}"; do
+  event="${pair%% *}"
+  name="${pair#* }"
+  [ -e "$HOOKS_DIR/$name" ] || continue
+  is_opted_out "$name" && continue
+  if ! jq -r --arg e "$event" '.hooks[$e] // [] | .. | .command? // empty' "$SETTINGS" 2>/dev/null \
+      | grep -qF "$name"; then
+    [ "$event_drift" -eq 0 ] && yellow "Hooks wired, but NOT on an event they need (that part will not run):"
+    event_drift=$((event_drift + 1))
+    printf '    - %s on %s\n' "$name" "$event"
+  fi
+done
+if [ "$event_drift" -ne 0 ]; then
+  echo "  Fix: add each to .hooks.<event> in $SETTINGS (the private claude-memory"
+  echo "  repo), with the same command its other registration uses."
   [ "$STRICT" -eq 1 ] && exit 1
   exit 0
 fi

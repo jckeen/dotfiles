@@ -46,8 +46,17 @@
  * refuses anything but a regular file of at most 1 MiB, so a FIFO cannot hang
  * the hook and /dev/zero cannot exhaust memory.
  *
+ * Loader listing (#647): `claude plugin list --json` is Claude Code's own
+ * account of every installed plugin and the directory it loads from
+ * (`readFromFolder`, else `installPath`). Each listed directory is scanned IN
+ * ADDITION to the static enumeration above — a union, never a replacement, so
+ * a plugin either side misses is still read. The listing names no hook
+ * modules, so whether a directory ships a mod is still this hook's own parse
+ * of hooks.json. When the CLI is missing, fails, or prints something that is
+ * not a JSON array, the static scan runs alone, as before.
+ *
  * Best-effort and advisory, not a security boundary: a parser differential
- * with Claude Code's loader is possible; see #647.
+ * with Claude Code's loader is still possible for hooks.json itself; see #647.
  *
  * Every name and path printed comes from files a cloned repo or a marketplace
  * controls, and the output becomes model context, so each is passed through
@@ -78,7 +87,18 @@
  * sync-plugins.sh cannot disagree. Rule 2 applies: if the selection cannot be
  * read, every manifest plugin is reported as before, with a note saying so.
  *
- * TRIGGER: SessionStart
+ * Mid-session rescan (#618): Claude Code has no hook event for a plugin
+ * install, enable or /reload-plugins, so the hook is also registered on
+ * UserPromptSubmit. There, the cheap path reads this session's state file
+ * (~/.local/state/plugin-drift/<session_id>, plain text, written by the last
+ * full scan) and stats every path that scan read or listed — one stat each, no
+ * JSON parsing. Only when a size, mtime, inode or existence changed does it run
+ * the full mod scan again, and it then names only the mods (and unverifiable
+ * plugins) this session has not been told about yet. A missing or damaged
+ * state file is a change (rule 2). The install-drift section runs at
+ * SessionStart only.
+ *
+ * TRIGGER: SessionStart, UserPromptSubmit
  * EXIT: 0 always (warnings are non-blocking)
  */
 
@@ -88,11 +108,16 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
   realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
 } from 'fs';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -114,6 +139,12 @@ const PLUGINS_ROOT = join(HOME, '.claude', 'plugins');
 const SKILLS_DIR = join(HOME, '.claude', 'skills');
 const KNOWN_MARKETPLACES = join(PLUGINS_ROOT, 'known_marketplaces.json');
 const MAX_JSON_BYTES = 1024 * 1024;
+// Per-session rescan state (#618). Pruned at SessionStart after STATE_TTL_MS.
+const STATE_DIR = join(HOME, '.local', 'state', 'plugin-drift');
+const STATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// `claude plugin list --json` measured ~1 s; the cap keeps a wedged CLI from
+// holding the session start.
+const LIST_TIMEOUT_MS = 10_000;
 // Code, so it comes from this hook's own checkout, never from DOTFILES_DIR
 // (which only relocates the manifest) — the same rule as sync-plugins.sh.
 const LIB_SERVICES = join(dirname(HOOK_PATH), '..', '..', 'lib-services.sh');
@@ -129,6 +160,7 @@ type JsonRead =
 // between check and read cannot slip one past. `absent` means nothing is
 // there at all; a dangling symlink is `bad`.
 function readJsonFile(path: string): JsonRead {
+  watch(path);
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -149,17 +181,50 @@ function readJsonFile(path: string): JsonRead {
   }
 }
 
-// The hook input's `cwd`: it follows the session into a --worktree, where
-// $CLAUDE_PROJECT_DIR stays on the main checkout.
-function inputCwd(): string | null {
-  if (process.stdin.isTTY) return null;
+// Every path a full scan reads or lists, with its signature taken BEFORE the
+// read, so a change that lands during the scan still trips the next rescan.
+const watched = new Map<string, string>();
+
+// One stat: size, mtime, inode, or the error code. Never opens the file, so a
+// FIFO or device costs no more than a regular file.
+function signature(path: string): string {
   try {
-    const input = JSON.parse(readFileSync(0, 'utf-8').slice(0, MAX_JSON_BYTES));
-    return typeof input?.cwd === 'string' && input.cwd ? input.cwd : null;
-  } catch {
-    return null;
+    const st = statSync(path);
+    return `${st.size}:${st.mtimeMs}:${st.ino}`;
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    return `-${typeof code === 'string' ? code : 'ERR'}`;
   }
 }
+
+function watch(path: string): void {
+  if (!watched.has(path)) watched.set(path, signature(path));
+}
+
+// The hook input (Claude Code's own JSON on stdin, not a plugin file): `cwd`
+// follows the session into a --worktree, where $CLAUDE_PROJECT_DIR stays on
+// the main checkout; `session_id` keys the rescan state.
+interface HookInput {
+  cwd: string | null;
+  sessionId: string | null;
+  event: string | null;
+}
+function readInput(): HookInput {
+  const none: HookInput = { cwd: null, sessionId: null, event: null };
+  if (process.stdin.isTTY) return none;
+  try {
+    const input = JSON.parse(readFileSync(0, 'utf-8').slice(0, MAX_JSON_BYTES));
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+    return {
+      cwd: str(input?.cwd),
+      sessionId: str(input?.session_id),
+      event: str(input?.hook_event_name),
+    };
+  } catch {
+    return none;
+  }
+}
+const INPUT = readInput();
 
 // Claude Code reads project .claude/skills plugins from the session's working
 // directory (no parent search). $CLAUDE_PROJECT_DIR is scanned too: a
@@ -167,7 +232,7 @@ function inputCwd(): string | null {
 // load the main checkout's.
 const PROJECT_DIRS = [
   ...new Set(
-    [inputCwd() ?? process.cwd(), process.env.CLAUDE_PROJECT_DIR].filter(
+    [INPUT.cwd ?? process.cwd(), process.env.CLAUDE_PROJECT_DIR].filter(
       (d): d is string => !!d,
     ),
   ),
@@ -289,6 +354,7 @@ function readGloballyEnabled(): Record<string, unknown> | null {
 }
 
 function subdirs(dir: string): string[] {
+  watch(dir);
   try {
     return readdirSync(dir)
       .filter((d) => !d.startsWith('.'))
@@ -352,6 +418,7 @@ function unverifiable(id: string, origin: Origin): Scanned {
 // "no such entry" is absence; any other lstat error counts as present, so an
 // unreadable path is reported rather than skipped (rule 2).
 function present(path: string): boolean {
+  watch(path);
   try {
     lstatSync(path);
     return true;
@@ -463,6 +530,121 @@ function localMarketplacePlugins(): Scanned[] {
   return found;
 }
 
+// The plugins Claude Code's loader reports (#647), or null when the listing is
+// unavailable. Rule 1 per entry; an entry naming no usable directory is
+// unverifiable. A skills-dir plugin that is not user scope comes from a
+// project's .claude/skills, so it gets that origin and the allowlist never
+// covers it; an unknown scope counts as a project's (rule 2).
+function runListing(): Scanned[] | null {
+  const result = spawnSync('claude', ['plugin', 'list', '--json'], {
+    cwd: PROJECT_DIRS[0],
+    encoding: 'utf-8',
+    maxBuffer: MAX_JSON_BYTES,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: LIST_TIMEOUT_MS,
+  });
+  if (result.error || result.status !== 0) return null;
+  let listing: unknown;
+  try {
+    listing = JSON.parse(String(result.stdout));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(listing)) return null;
+  const found: Scanned[] = [];
+  listing.forEach((entry: unknown, index: number) => {
+    try {
+      const id = isRecord(entry) ? entry.id : undefined;
+      if (typeof id !== 'string') {
+        found.push(unverifiable(`listed-${index}@plugin-list`, 'installed'));
+        return;
+      }
+      const scope = isRecord(entry) ? entry.scope : undefined;
+      const origin: Origin =
+        id.endsWith('@skills-dir') && scope !== 'user' ? 'project' : 'installed';
+      const folder = isRecord(entry) ? entry.readFromFolder : undefined;
+      const install = isRecord(entry) ? entry.installPath : undefined;
+      const dir =
+        typeof folder === 'string' && folder
+          ? folder
+          : typeof install === 'string' && install
+            ? install
+            : null;
+      found.push(dir === null ? unverifiable(id, origin) : { id, dir, origin });
+    } catch {
+      found.push(unverifiable(`listed-${index}@plugin-list`, 'installed'));
+    }
+  });
+  return found;
+}
+
+// The listing costs ~1 s, so its result is cached across sessions, keyed on
+// the files it is derived from and the directory it ran in. The cache can only
+// ADD directories to the scan (the static enumeration always runs), so a
+// stale or forged cache cannot hide a plugin; a cache that is absent, damaged
+// or keyed differently is a miss and the CLI runs again.
+//   K <sig> <path>        a key file and its signature when listed
+//   C <dir>               the directory the listing ran in
+//   L <origin> <id> <dir> one listed plugin; dir `-` is unverifiable
+// Every field is URI-encoded.
+// The `.` keeps it apart from every per-session file (statePath's charset).
+const LISTING_CACHE = join(STATE_DIR, 'listing.cache');
+const LISTING_KEYS = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS];
+
+function listingKey(): string[] {
+  return [
+    ...LISTING_KEYS.map((path) => `K ${signature(path)} ${encodeURIComponent(path)}`),
+    `C ${encodeURIComponent(PROJECT_DIRS[0] ?? '')}`,
+  ];
+}
+
+function cachedListing(key: string[]): Scanned[] | null {
+  try {
+    const st = statSync(LISTING_CACHE);
+    if (!st.isFile() || st.size > MAX_JSON_BYTES) return null;
+    const lines = readFileSync(LISTING_CACHE, 'utf-8').split('\n');
+    if (lines[0] !== 'plugin-drift-listing v1') return null;
+    if (lines.slice(1, 1 + key.length).join('\n') !== key.join('\n')) return null;
+    const found: Scanned[] = [];
+    for (const line of lines.slice(1 + key.length)) {
+      if (line.length === 0) continue;
+      const [tag, origin, id, dir, extra] = line.split(' ');
+      if (tag !== 'L' || extra !== undefined || id === undefined || dir === undefined)
+        return null;
+      if (origin !== 'installed' && origin !== 'project') return null;
+      const plugin = decodeURIComponent(id);
+      found.push(
+        dir === '-'
+          ? unverifiable(plugin, origin)
+          : { id: plugin, dir: decodeURIComponent(dir), origin },
+      );
+    }
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+function saveListing(key: string[], found: Scanned[]): void {
+  const lines = ['plugin-drift-listing v1', ...key];
+  for (const { id, dir, origin, unverifiable: bad } of found)
+    lines.push(
+      `L ${origin} ${encodeURIComponent(id)} ${bad ? '-' : encodeURIComponent(dir)}`,
+    );
+  atomicWrite(LISTING_CACHE, lines);
+}
+
+function loaderPlugins(): Scanned[] | null {
+  for (const path of LISTING_KEYS) watch(path);
+  const key = listingKey();
+  const cached = cachedListing(key);
+  if (cached !== null) return cached;
+  const found = runListing();
+  // A failed listing is not cached, so the next scan asks again.
+  if (found !== null) saveListing(key, found);
+  return found;
+}
+
 // Every plugin on disk, ids in the `enabledPlugins` forms
 // (<plugin>@<marketplace>, <name>@synced, <name>@skills-dir). Every cached
 // version is scanned, not only the recorded installPath: a session started
@@ -491,6 +673,7 @@ function pluginDirs(): Scanned[] {
     const skills = join(project, '.claude', 'skills');
     if (sameDir(skills, SKILLS_DIR)) continue;
     let entries: string[];
+    watch(skills);
     try {
       entries = readdirSync(skills).filter((d) => !d.startsWith('.'));
     } catch {
@@ -507,6 +690,7 @@ function pluginDirs(): Scanned[] {
       }
     }
   }
+  found.push(...(loaderPlugins() ?? []));
   return found;
 }
 
@@ -518,7 +702,12 @@ function sameDir(a: string, b: string): boolean {
   }
 }
 
-function modsWarning(allowed: string[]): string {
+interface ModFindings {
+  mods: Set<string>;
+  unknown: Set<string>;
+}
+
+function findMods(allowed: string[]): ModFindings {
   const mods = new Set<string>();
   const unknown = new Set<string>();
   for (const { id, dir, origin, unverifiable: noManifest } of pluginDirs()) {
@@ -551,7 +740,17 @@ function modsWarning(allowed: string[]): string {
       unknown.add(label);
     }
   }
-  let warning = '';
+  return { mods, unknown };
+}
+
+// `rescan` marks a mid-session report, which names only what is new.
+function modsWarning({ mods, unknown }: ModFindings, rescan = false): string {
+  let warning =
+    rescan && (mods.size > 0 || unknown.size > 0)
+      ? `⚠️  Plugin mods: plugin files changed mid-session (an install, ` +
+        `update, enable or /reload-plugins); the rescan found these not ` +
+        `reported earlier in this session (#618).\n`
+      : '';
   if (unknown.size > 0) {
     const list = [...unknown].map((p) => `  • ${p}`).join('\n');
     warning +=
@@ -716,10 +915,143 @@ function driftWarning(manifest: Manifest): string {
   return warning;
 }
 
-function main(): void {
+// ── Rescan state (#618) ─────────────────────────────────────────────────
+// Plain text, one record per line, so the cheap path parses no JSON:
+//   P <project dir>     a project dir the scan read (a cwd change is a change)
+//   W <sig> <path>      a watched path and its signature at scan time
+//   M|U <label>         a mod / unverifiable label already reported
+// Paths are URI-encoded so a newline in an untrusted path cannot forge a
+// record; labels went through shown(), which leaves no newline.
+interface ScanState {
+  projects: string[];
+  watched: [string, string][];
+  reported: Set<string>;
+}
+
+function statePath(): string {
+  const id = INPUT.sessionId;
+  return join(
+    STATE_DIR,
+    id !== null && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : 'no-session',
+  );
+}
+
+// null when absent, unreadable, oversized or not this format (rule 2: the
+// caller treats that as a change and rescans).
+function readState(): ScanState | null {
+  try {
+    const path = statePath();
+    const st = statSync(path);
+    if (!st.isFile() || st.size > MAX_JSON_BYTES) return null;
+    const lines = readFileSync(path, 'utf-8').split('\n');
+    if (lines[0] !== 'plugin-drift-state v1') return null;
+    const state: ScanState = { projects: [], watched: [], reported: new Set() };
+    for (const line of lines.slice(1)) {
+      if (line.length === 0) continue;
+      const tag = line.slice(0, 2);
+      const rest = line.slice(2);
+      if (tag === 'P ') state.projects.push(decodeURIComponent(rest));
+      else if (tag === 'W ') {
+        const space = rest.indexOf(' ');
+        if (space < 0) return null;
+        state.watched.push([decodeURIComponent(rest.slice(space + 1)), rest.slice(0, space)]);
+      } else if (tag === 'M ' || tag === 'U ') state.reported.add(line);
+      else return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+// Write-then-rename, so a concurrent reader sees the old file or the new one.
+// Advisory: a failed write only means the next run scans or lists again.
+function atomicWrite(path: string, lines: string[]): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, lines.join('\n') + '\n', { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Nothing was written.
+    }
+  }
+}
+
+function writeState(reported: Set<string>): void {
+  const lines = ['plugin-drift-state v1'];
+  for (const dir of PROJECT_DIRS) lines.push(`P ${encodeURIComponent(dir)}`);
+  for (const [path, sig] of watched) lines.push(`W ${sig} ${encodeURIComponent(path)}`);
+  lines.push(...reported);
+  // Without state the next prompt rescans and re-reports (rule 2).
+  atomicWrite(statePath(), lines);
+}
+
+// Old sessions' state files, so the directory cannot grow without bound.
+function pruneState(): void {
+  try {
+    const now = Date.now();
+    for (const name of readdirSync(STATE_DIR)) {
+      const path = join(STATE_DIR, name);
+      try {
+        if (now - lstatSync(path).mtimeMs > STATE_TTL_MS) unlinkSync(path);
+      } catch {
+        // Gone already, or not ours to remove.
+      }
+    }
+  } catch {
+    // No state dir yet.
+  }
+}
+
+function reportedKeys({ mods, unknown }: ModFindings): Set<string> {
+  return new Set([...[...mods].map((l) => `M ${l}`), ...[...unknown].map((l) => `U ${l}`)]);
+}
+
+// The cheap path: true when nothing the last scan read has changed.
+function unchanged(state: ScanState | null): boolean {
+  if (state === null) return false;
+  if (state.projects.join('\n') !== PROJECT_DIRS.join('\n')) return false;
+  return state.watched.every(([path, sig]) => signature(path) === sig);
+}
+
+function rescan(): void {
+  const state = readState();
+  if (unchanged(state)) return;
   const manifest = readManifest();
-  section('plugin mods', () => modsWarning(manifest.modsOk));
+  watch(MANIFEST);
+  const before = state?.reported ?? new Set<string>();
+  let found: ModFindings | null = null;
+  section('plugin mods', () => {
+    found = findMods(manifest.modsOk);
+    const fresh: ModFindings = {
+      mods: new Set([...found.mods].filter((l) => !before.has(`M ${l}`))),
+      unknown: new Set([...found.unknown].filter((l) => !before.has(`U ${l}`))),
+    };
+    return modsWarning(fresh, true);
+  });
+  // A scan that threw keeps the old state, so the next prompt tries again.
+  if (found !== null) writeState(new Set([...before, ...reportedKeys(found)]));
+}
+
+function main(): void {
+  if (INPUT.event === 'UserPromptSubmit') {
+    rescan();
+    return;
+  }
+  const manifest = readManifest();
+  watch(MANIFEST);
+  let found: ModFindings | null = null;
+  section('plugin mods', () => {
+    found = findMods(manifest.modsOk);
+    return modsWarning(found);
+  });
   section('plugin drift', () => driftWarning(manifest));
+  pruneState();
+  if (found !== null) writeState(reportedKeys(found));
 }
 
 try {
