@@ -11,7 +11,7 @@
   - full scan at SessionStart: about 57 ms;
   - rescan after a change: about 47 ms.
 - Issue #647 stays open. Loader-differential cases remain best-effort, because Claude Code exposes no list of the hook modules it loaded. A `claude plugin list --json` union was tried and dropped: it lists no modules and cost about 900 ms per scan. An upstream feature request is drafted for the operator to file. Plugin-location env vars are tracked in #699.
-- `check-hooks-wired.sh`: new `EVENT_WIRING` check. It requires `PluginDriftCheck.hook.ts` on both `SessionStart` (install drift and the full scan) and `UserPromptSubmit` (the rescan). The operator still has to add the `UserPromptSubmit` registration to the private `settings.json`.
+- `check-hooks-wired.sh`: new `EVENT_WIRING` check. It requires `PluginDriftCheck.hook.ts` on both `SessionStart` (install drift and the full scan) and `UserPromptSubmit` (the rescan). The public `claude/settings.example.json` (#681) now registers it. The operator still has to add the `UserPromptSubmit` registration to the private `settings.json`.
 - `CLAUDE-GUIDE.md` (Hooks): documents the rescan and says why the mod scan is best-effort.
 - `plugin-drift.test.sh`: a stub `claude` on PATH proves the hook never runs the CLI. The rescan cases cover:
   - a mod installed or edited in place, a dangling `hooks.json`, and a directory made readable;

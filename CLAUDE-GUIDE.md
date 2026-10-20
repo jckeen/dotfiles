@@ -184,8 +184,21 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 
 ## Hooks
 
-Hooks only run if they're **registered in `settings.json`** (the `hooks` block,
-which lives in the private `claude-memory` repo). The hook *files* below ship in
+Hooks only run if they're **registered in `settings.json`** (the `hooks` block).
+The owner's lives in the private `claude-memory` repo. The public
+[`claude/settings.example.json`](claude/settings.example.json) registers every
+hook below plus the status line, except the hooks listed with their reasons in
+[`claude/settings-optout.txt`](claude/settings-optout.txt):
+`StripProjectPermissions.hook.ts` deletes a project's whole `permissions`
+block, deny rules included, which is only safe beside a global allowlist the
+template does not ship; `OperatorQueueReminder.hook.sh` defaults to the
+owner's private queue repo (set `OPERATOR_QUEUE_REPO` and add it yourself).
+`setup.sh` copies the template to `~/.claude/settings.json` when neither that
+file nor `claude-memory` exists (`settings-example.test.sh` fails CI when a
+hook file is missing from it and not listed), and `check-hooks-wired.sh` does
+not ask for the listed hooks. A full private setup adds
+`"CHECK_HOOKS_REQUIRE_ALL": "1"` to its settings `env` to require every hook. The
+hook *files* below ship in
 `claude/hooks/`; the **Wired** column is the source of truth for what's actually
 active. `check-hooks-wired.sh` runs at every `cc` launch and warns if a hook file
 is present but not registered — the drift that once left every hook inert.
@@ -226,7 +239,7 @@ modules, and no hook event fires on a plugin install, enable or
 `JSON.parse` can hide a mod; a file the hook cannot parse is named as
 unverifiable instead. The mid-session rescan polls file signatures on each
 prompt, so a change is seen at the next prompt, not when it happens (#618).
-`/plugin` shows the session's own count, such as `1 mod active · <name>`; trust
+`/plugin` shows which mods the session actually loaded; trust
 it over the hook when they disagree. The upstream request for a loaded-modules
 listing or a plugin-reload event is drafted, for the operator to file, in
 `~/.claude/handoffs/2026-10-19-dotfiles-operator-pass/upstream-claude-code-plugin-introspection.md`.
