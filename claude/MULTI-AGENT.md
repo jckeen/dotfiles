@@ -11,8 +11,9 @@ byte-currency in CI.
 
 The team coordinates through **artifacts in the repo, not a shared chat**: the
 instruction layer + skills (loaded identically via the pack), GitHub issues (the
-only open-work tracker), `handoff` notes + `CHANGELOG.md`, and git itself. Keep
-those honest and the team works even though the agents never talk to each other.
+only open-work tracker), `handoff` notes + `CHANGELOG.md` and unassembled
+`changelog.d/` fragments, and git itself. Keep those honest and the team works
+even though the agents never talk to each other.
 
 ## Roles
 

@@ -96,7 +96,10 @@ imported here (see the README's "The private memory repos" section).
   make active guidance reflect the present; verify with a `grep -ri <removed>`.
 - Treat `CHANGELOG.md` as living: update it every 1–2 meaningful commits,
   appending rather than rewriting — not batched to end-of-session, which gets
-  lost when a session ends early.
+  lost when a session ends early. Where a repo keeps `changelog.d/`, add or
+  update the PR's `changelog.d/<branch-slug>.md` fragment instead of editing
+  `CHANGELOG.md`; a fragment allows no `<` placeholders (write NAME-style
+  ones), code fences or HTML comments.
 - Doc contract: a repo's Markdown surfaces are declared in a root
   `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
   and asserted in CI by `check-doc-truth.sh`; bootstrap or audit one with

@@ -102,8 +102,8 @@ Run these in order when the work is done, skipping what does not apply, so the
 wrap-up does not depend on the user remembering each step:
 
 1. Simplify the changed code without changing behavior (`/simplify` if
-   available), then complete intended documentation, update CHANGELOG.md, and
-   regenerate generated files.
+   available), then complete intended documentation and the changelog entry,
+   and regenerate generated files.
 2. Re-run affected tests and drive the real change end-to-end.
 3. Review the final artifact with `/code-review` and a read-only coach pass
    (the `review` skill if available). For auth, secrets, payments, destructive
