@@ -525,6 +525,54 @@ check "device-check race: the rival fired" "$([ -e "$M/raced" ] && [ -d "$FIX/de
 check "device-check race: treated as the rival's success" \
   "$([ "$rc" -eq 0 ] && ! grep -q 'different filesystems' "$M/out" && echo 1 || echo 0)"
 
+# Only an absent $dst or exactly the bundle link is a rival's success. A
+# foreign link that replaces $dst during the device check is someone's own
+# config: status 1, left untouched for the caller to report, never treated
+# as done (which let link_file replace it) (#697).
+legacy_fixture devforeign
+mkdir -p "$FIX/devforeign/bin" "$FIX/devforeign/mine"
+cat > "$FIX/devforeign/bin/stat" <<FAKE
+#!/bin/bash
+if [ ! -e "$M/raced" ]; then
+  : > "$M/raced"
+  "$REAL_RM" -f "$DST"/* && rmdir "$DST" && ln -sn "$FIX/devforeign/mine" "$DST"
+  echo 999999  # skills/ on another filesystem: the device check mismatches
+  exit 0
+fi
+exec "$REAL_STAT" "\$@"
+FAKE
+chmod +x "$FIX/devforeign/bin/stat"
+migrate_with "$FIX/devforeign/bin"
+check "device-check foreign link: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "device-check foreign link: status 1, the user's link left in place" \
+  "$([ "$rc" -eq 1 ] && [ "$(readlink "$DST")" = "$FIX/devforeign/mine" ] && echo 1 || echo 0)"
+
+# The archive root and kept/ must be real dirs: mkdir -p accepts a symlink to
+# a dir, and the rename would follow it, e.g. back into skills/ where the
+# archived copy loads as a duplicate skill (#697).
+legacy_fixture archlink
+mkdir -p "$H/.claude"
+ln -sn "$H/.claude/skills" "$H/$ARCH_REL"
+mkdir -p "$FIX/archlink/nobin"
+migrate_with "$FIX/archlink/nobin"
+dupes=0
+for d in "$H/.claude/skills"/demo.*; do [ -e "$d" ] && dupes=1; done
+check "symlinked archive root: refused (status 1), dst untouched" \
+  "$([ "$rc" -eq 1 ] && [ -d "$DST" ] && [ ! -L "$DST" ] && [ -L "$DST/SKILL.md" ] && echo 1 || echo 0)"
+check "symlinked archive root: nothing moved through the link" "$([ "$dupes" -eq 0 ] && echo 1 || echo 0)"
+
+legacy_fixture keptlink
+mkdir -p "$H/$ARCH_REL" "$FIX/keptlink/elsewhere"
+ln -sn "$FIX/keptlink/elsewhere" "$H/$ARCH_REL/kept"
+race_bin "$FIX/keptlink/bin" swap
+migrate_with "$FIX/keptlink/bin"
+check "symlinked kept/: the race fired" "$([ -e "$M/raced" ] && echo 1 || echo 0)"
+check "symlinked kept/: status 2, content not moved through the link" \
+  "$([ "$rc" -eq 2 ] && [ -z "$(ls -A "$FIX/keptlink/elsewhere")" ] && echo 1 || echo 0)"
+found=0
+for f in "$H/$ARCH_REL"/demo.*/SKILL.md; do [ -f "$f" ] && [ ! -L "$f" ] && found=1; done
+check "symlinked kept/: the changed content stays in the archive" "$found"
+
 # The archive lives under ~/.claude but outside every link scan: an archived
 # dangling link (a source file since removed) is neither ORPHAN nor BROKEN,
 # and --fix never touches it (gate review round 4).

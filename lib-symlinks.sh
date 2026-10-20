@@ -159,16 +159,24 @@ symlink_migrate_legacy_skill_dir() {
   name="${dst##*/}"
   archive="${dst%/*/*}/.migrated-skill-dirs"
   if ! symlink_is_legacy_skill_dir "$src" "$dst"; then
-    # No longer a real dir: a rival already moved or relinked it (success).
-    [ -d "$dst" ] && [ ! -L "$dst" ] && return 1
-    return 0
+    _symlink_rival_done "$src" "$dst" && return 0
+    return 1
   fi
-  mkdir -p "$archive" || return 1
+  # mkdir -p accepts a symlink to a dir and the rename would follow it (e.g.
+  # back into skills/, where the copy loads as a duplicate skill), so the
+  # archive must be a real dir (#697).
+  mkdir -p "$archive" 2>/dev/null
+  if [ ! -d "$archive" ] || [ -L "$archive" ]; then
+    echo "symlink_migrate_legacy_skill_dir: $archive is not a real directory; leaving $dst in place" >&2
+    return 1
+  fi
   # rename(2) cannot cross filesystems; refuse with a clear message rather
   # than let anything fall back to a non-atomic copy.
   if [ "$(_symlink_dev "$dst")" != "$(_symlink_dev "$archive")" ]; then
-    # $dst gone (or relinked) meanwhile means a rival won: its success path.
-    { [ -d "$dst" ] && [ ! -L "$dst" ]; } || return 0
+    # $dst gone, or relinked to exactly $src, means a rival won. Any other
+    # change (a foreign link) is someone's own config: leave it (#697).
+    _symlink_rival_done "$src" "$dst" && return 0
+    { [ -d "$dst" ] && [ ! -L "$dst" ]; } || return 1
     echo "symlink_migrate_legacy_skill_dir: $dst and $archive are on different filesystems" >&2
     return 1
   fi
@@ -178,10 +186,10 @@ symlink_migrate_legacy_skill_dir() {
     return 1
   fi
   if ! _symlink_rename "$dst" "$dest"; then
-    # A rival moved it first: nothing to do. Still a real dir means the
-    # rename itself failed (permissions), a real failure.
-    [ -d "$dst" ] && [ ! -L "$dst" ] && return 1
-    return 0
+    # A rival moved it first: nothing to do. Anything else still at $dst (the
+    # real dir, permissions; a foreign link) is a failure.
+    _symlink_rival_done "$src" "$dst" && return 0
+    return 1
   fi
   # A rival's directory link, grabbed between the check and the rename, is
   # left in the archive (it is only a link); the caller relinks $dst. Putting
@@ -198,12 +206,23 @@ symlink_migrate_legacy_skill_dir() {
   # $dst's place before the rename). It is never renamed back: rename(2) cannot
   # refuse to overwrite, so a check-then-rename could clobber whatever has
   # since appeared at $dst. It goes to kept/, which check-claude.sh reports.
+  # kept/ must be a real dir too; otherwise the content stays where it is,
+  # inside the archive, and check-claude.sh still reports it.
   local kept="$archive/kept/${dest##*/}"
-  if mkdir -p "$archive/kept" && _symlink_rename "$dest" "$kept"; then
+  mkdir -p "$archive/kept" 2>/dev/null
+  if [ -d "$archive/kept" ] && [ ! -L "$archive/kept" ] && _symlink_rename "$dest" "$kept"; then
     dest="$kept"
   fi
   echo "symlink_migrate_legacy_skill_dir: $dst changed during migration; its content is kept at $dest — review it" >&2
   return 2
+}
+
+# _symlink_rival_done <src_dir> <dst> — 0 when a rival has finished: <dst> is
+# absent, or exactly the bundle link (readlink == <src_dir>, the comparison
+# check_link makes). Anything else at <dst> is not ours to call done.
+_symlink_rival_done() {
+  [ ! -e "$2" ] && [ ! -L "$2" ] && return 0
+  [ -L "$2" ] && [ "$(readlink "$2")" = "$1" ]
 }
 
 # _symlink_rename <from> <to> — rename(2) only. Unlike mv it never moves <from>

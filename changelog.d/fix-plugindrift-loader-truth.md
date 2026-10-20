@@ -1,0 +1,21 @@
+## 2026-10-20 — fix(hooks): PluginDriftCheck rescans for mods mid-session
+
+- `PluginDriftCheck.hook.ts` (#618): the hook is now also registered on `UserPromptSubmit`. Its cheap path reads this session's state file at `~/.local/state/plugin-drift/SESSION_ID` and stats every path the last full scan read or listed, about 506 on the operator's machine. The file is plain text and ends in an `end` line, so a truncated file reads as damaged. The cheap path parses no JSON and runs no subprocess.
+- The full rescan runs only when one of these changed:
+  - a watched path's size, mtime, inode, mode, ctime or existence (a dangling symlink is signed by `lstat`);
+  - `DOTFILES_DIR`.
+- `plugins.txt` is signed before it is read, so a swap in between counts as a change.
+- A rescan names only the mods and unverifiable plugins this session has not been told about yet. A missing or damaged state file counts as a change. Paths and labels are stored as hex-encoded UTF-16 code units, which handles a lone surrogate. The reader accepts up to 64 MiB, because a large cache's state passes 1 MiB. SessionStart prunes state files older than 30 days.
+- Measured on the operator's machine:
+  - cheap path: about 33 ms, against a bun startup floor of about 40 ms;
+  - full scan at SessionStart: about 57 ms;
+  - rescan after a change: about 47 ms.
+- Issue #647 stays open. Loader-differential cases remain best-effort, because Claude Code exposes no list of the hook modules it loaded. A `claude plugin list --json` union was tried and dropped: it lists no modules and cost about 900 ms per scan. An upstream feature request is drafted for the operator to file. Plugin-location env vars are tracked in #699.
+- `check-hooks-wired.sh`: new `EVENT_WIRING` check. It requires `PluginDriftCheck.hook.ts` on both `SessionStart` (install drift and the full scan) and `UserPromptSubmit` (the rescan). The public `claude/settings.example.json` (#681) now registers it. The operator still has to add the `UserPromptSubmit` registration to the private `settings.json`.
+- `CLAUDE-GUIDE.md` (Hooks): documents the rescan and says why the mod scan is best-effort.
+- `plugin-drift.test.sh`: a stub `claude` on PATH proves the hook never runs the CLI. The rescan cases cover:
+  - a mod installed or edited in place, a dangling `hooks.json`, and a directory made readable;
+  - no repeated reports, per-session state, and damaged and truncated state;
+  - a cwd change and a changed `DOTFILES_DIR`;
+  - a project skills link replaced by a directory;
+  - an unsafe session id, and pruning.

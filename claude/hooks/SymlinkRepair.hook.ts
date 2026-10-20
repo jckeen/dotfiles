@@ -160,6 +160,17 @@ function isRealDir(p: string): boolean {
   }
 }
 
+// A rival has finished when dst is absent or exactly the bundle link
+// (readlink === src, as ensureLink compares); anything else is not ours.
+function rivalDone(src: string, dst: string): boolean {
+  try {
+    const st = lstatSync(dst);
+    return st.isSymbolicLink() && readlinkSync(dst) === src;
+  } catch {
+    return !lexists(dst);
+  }
+}
+
 function lexists(p: string): boolean {
   try {
     lstatSync(p);
@@ -187,10 +198,21 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
   try {
     if (!isLegacySkillDir(src, dst)) return 'not-legacy';
     mkdirSync(archive, { recursive: true });
+    // mkdirSync accepts a symlink to a dir and the rename would follow it
+    // (e.g. back into skills/ as a duplicate skill): real dirs only (#697).
+    if (!isRealDir(archive)) {
+      actions.push({ kind: 'skipped', rel, reason: `${archive} is not a real directory; left in place` });
+      return 'failed';
+    }
     // renameSync fails across filesystems rather than copying; say why.
     if (statSync(dst).dev !== statSync(archive).dev) {
-      // dst gone or relinked meanwhile means a rival won: its success path.
-      if (!isRealDir(dst)) return 'moved';
+      // dst gone, or relinked to exactly src, means a rival won. Any other
+      // change (a foreign link) is someone's own config: leave it (#697).
+      if (rivalDone(src, dst)) return 'moved';
+      if (!isRealDir(dst)) {
+        actions.push({ kind: 'skipped', rel, reason: 'replaced by something else during migration; left in place' });
+        return 'failed';
+      }
       actions.push({ kind: 'skipped', rel, reason: `${archive} is on another filesystem` });
       return 'failed';
     }
@@ -199,7 +221,7 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
       return 'failed';
     }
   } catch (e) {
-    if (!isRealDir(dst)) return 'moved';
+    if (rivalDone(src, dst)) return 'moved';
     actions.push({ kind: 'skipped', rel, reason: `legacy skill dir check failed: ${e}` });
     return 'failed';
   }
@@ -209,13 +231,7 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
     // A rival moved it first: nothing to do unless it is still here. A rival
     // that already put exactly the bundle link there (readlink === src, as
     // ensureLink compares) has finished the repair (#694).
-    if (!lexists(dst)) return 'moved';
-    try {
-      if (lstatSync(dst).isSymbolicLink() && readlinkSync(dst) === src) return 'moved';
-    } catch {
-      // vanished meanwhile: still a rival's move
-      if (!lexists(dst)) return 'moved';
-    }
+    if (rivalDone(src, dst)) return 'moved';
     actions.push({ kind: 'skipped', rel, reason: `legacy skill dir move failed: ${e}` });
     return 'failed';
   }
@@ -240,6 +256,8 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
   try {
     const kept = join(archive, 'kept', basename(dest));
     mkdirSync(join(archive, 'kept'), { recursive: true });
+    // kept/ must be a real dir too, or the content stays at dest (#697).
+    if (!isRealDir(join(archive, 'kept'))) throw new Error('kept/ is not a real directory');
     renameSync(dest, kept);
     keptAt = kept;
   } catch {
