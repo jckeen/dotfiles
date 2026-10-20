@@ -92,12 +92,12 @@ host defaults to `github.com`), plus one `user:<o>` per
 `$OPERATOR_QUEUE_OWNERS` entry (none when it is empty):
 
 ```bash
-gh api graphql --hostname <host> -f q='is:issue is:open is:private author:@me label:operator-action in:title "<slug>" repo:<home> user:<o> ...' \
-  -f query='query($q: String!) { search(query: $q, type: ISSUE, first: 20) { nodes { ... on Issue { url title } } } }' \
-  --jq '.data.search.nodes[] | .url + "  " + .title'
+gh api graphql --hostname <host> --paginate -f q='is:issue is:open is:private author:@me label:operator-action in:title "<slug>" repo:<home> user:<o> ...' \
+  -f query='query($q: String!, $endCursor: String) { search(query: $q, type: ISSUE, first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { ... on Issue { url title } } } }' \
+  --jq '.data.search.nodes[] | select(.title == "<slug>") | .url'
 ```
 
-Only an exact title match counts. A match whose body or title someone else last edited is hidden by
+Any URL it prints is an existing item. A match whose body or title someone else last edited is hidden by
 the reminder, so it doesn't count: file a fresh issue and link the old one. **Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
 `~/.claude/operator-queue.md` is retired: never append to it. While that
