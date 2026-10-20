@@ -110,7 +110,10 @@ gh api graphql --hostname <host> --paginate -f q='is:issue is:open is:private au
   --jq '.data.search.nodes[] | select(.title == "<slug>") | .url'
 ```
 
-Any URL it prints is an existing item. A match whose body or title someone else last edited is hidden by
+Any URL it prints is an existing item. The search stops at 1000 results;
+if `gh api graphql --hostname <host> -f q='<same q>' -f query='query($q: String!) { search(query: $q, type: ISSUE) { issueCount } }' --jq .data.search.issueCount`
+is over 1000, an empty result proves nothing: don't file, flag it in the
+handoff instead. A match whose body or title someone else last edited is hidden by
 the reminder, so it doesn't count: file a fresh issue and link the old one. **Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
 `~/.claude/operator-queue.md` is retired: never append to it. While that
