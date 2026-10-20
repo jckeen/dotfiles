@@ -44,17 +44,17 @@ config directory; `ccw` points `CLAUDE_CONFIG_DIR` at `~/.claude-work`
 (override with `CLAUDE_WORK_CONFIG_DIR`) and the first run asks you to sign in.
 
 `claude/scripts/link-claude-profile.sh` links the profile's settings, global
-instructions, skills, agents, plugins, transcripts and memory back to
-`~/.claude`, and copies the user-scope MCP servers across. A session started
-under `cc` can be resumed under `ccw` and the other way round, which is the
-way to carry on when one account reaches its limit. The status line shows
-`◆ work` on a `ccw` session.
+instructions, skills, agents, plugins, transcripts, memory, and each
+session's todos and tasks back to `~/.claude`, and copies the user-scope MCP
+servers across. A session started under `cc` can be resumed under `ccw` and
+the other way round, which is the way to carry on when one account reaches
+its limit. The status line shows `◆ work` on a `ccw` session.
 
 What stays with each account: the login, MCP and connector sign-ins, folder
-trust prompts, prompt history, and everything hosted on claude.ai — Remote
-Control sessions, connectors, routines and artifacts appear under whichever
-account the session runs on. Work run through `ccw` is subject to that
-organization's admin and retention settings.
+trust prompts, prompt history, per-session environment (`session-env/`), and
+everything hosted on claude.ai — Remote Control sessions, connectors, routines
+and artifacts appear under whichever account the session runs on. Work run
+through `ccw` is subject to that organization's admin and retention settings.
 
 ---
 
@@ -147,7 +147,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `check-antigravity.sh` | Verify public-safe Antigravity symlinks (`~/.gemini/config/`); warn about private/generated state |
 | `dotfiles-update` | Pull latest dotfiles and re-run setup.sh |
 | `claude-server` | Spawn isolated worktree + remote control session |
-| `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
+| `cct [project]` | `cc` inside a named tmux session (attaches if it already exists). A tmux server that is already running gets `~/.tmux.conf` re-sourced first, as `setup.sh` also does, so config edits reach it. Keeps the process, and its Remote Control link, alive after the terminal closes. Opt-in; `cc` and `wsl6` stay tmux-free |
 | `ccw [cc args]` | `cc` on a second (work) Claude account: separate login and usage, shared settings, skills, plugins, memory and transcripts. See [A second account](#a-second-account-ccw) |
 | `wt-claude <name>` | Create a worktree and launch Claude in it |
 | `projects` | List projects in the dev dir |
@@ -189,7 +189,7 @@ is present but not registered — the drift that once left every hook inert.
 | `SymlinkRepair.hook.ts` | SessionStart (FIRST) | ✅ | Re-links missing dotfiles→`~/.claude/` symlinks (hooks/scripts/agents per file; each skill as one directory link, converting the old per-file layout) every session — incl. **resume** — when new files land and `setup.sh` hasn't re-run; advisory, never clobbers |
 | `StripProjectPermissions.hook.ts` | SessionStart | ✅ | Strips project-level permission overrides that fight global settings |
 | `HygieneStatus.hook.sh` | SessionStart | ✅ | Surfaces branch-hygiene drift from the daily systemd timer |
-| `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. A plugin of a deselected agent service (`lib-services.sh`, shared with `sync-plugins.sh`) is not drift; an unreadable selection reports everything and says so. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule. Also names every installed plugin (cache, relative-path plugins loaded in place from a local-path marketplace, claude.ai synced, `~/.claude/skills` and the project's `.claude/skills`) that ships a **mod** — a `"modules"` key in its `hooks/hooks.json` — unless a `# mods-ok: <id>` line in `plugins.txt` allowlists it (a project `.claude/skills` mod is always named, since a cloned repo could reuse an allowlisted name). A plugin whose `hooks.json`, `plugin.json` or `marketplace.json` exists but can't be parsed (or isn't a regular file of at most 1 MiB) is named as unverifiable rather than skipped. Every local-marketplace catalog entry is scanned, enabled or not, and the project is the hook input's `cwd` (it follows `--worktree`) plus `$CLAUDE_PROJECT_DIR`. A printed name that needed sanitizing is marked as not allowlistable. Best-effort and advisory, not a security boundary (#647) |
+| `PluginDriftCheck.hook.ts` | SessionStart | ✅ | Diffs **user-scope** installed plugins against `claude/plugins.txt`; points at `sync-plugins.sh` if anything's missing. A plugin of a deselected agent service (`lib-services.sh`, shared with `sync-plugins.sh`) is not drift; an unreadable selection reports everything and says so. `--scope project` and `--scope local` plugins belong to their checkout and are ignored in both directions; `setup.sh` and `sync-plugins.sh` apply the same rule. Also names every installed plugin (cache, relative-path plugins loaded in place from a local-path marketplace, claude.ai synced, `~/.claude/skills` and the project's `.claude/skills`) that ships a **mod** — a `"modules"` key in its `hooks/hooks.json` — unless a `# mods-ok: <id>` line in `plugins.txt` allowlists it (a project `.claude/skills` mod is always named, since a cloned repo could reuse an allowlisted name). A plugin whose `hooks.json`, `plugin.json` or `marketplace.json` exists but can't be parsed (or isn't a regular file of at most 1 MiB) is named as unverifiable rather than skipped. Every local-marketplace catalog entry is scanned, enabled or not, and the project is the hook input's `cwd` (it follows `--worktree`) plus `$CLAUDE_PROJECT_DIR`. A printed id that needed sanitizing (or is over 300 characters) is shown with its allowlist key `sha256:<first 16 hex of the SHA-256 of the raw id's UTF-16LE code units>`, and only that key allowlists it (#648). Best-effort and advisory, not a security boundary (#647) |
 | `conventional-commit.sh` | PreToolUse (`Bash`) | ✅ | Enforces `type: description` commit format on Claude's commits |
 | `format-on-edit.sh` | PostToolUse (`Edit\|Write`) | ✅ | Auto-formats edited files — **project-gated**: runs a formatter only where the project opts in (local prettier, or a black/rustfmt/gofmt config). No global fallback, so docs and non-configured repos are never reformatted |
 | `HandoffReminder.hook.sh` | SessionStart | ✅ | Surfaces a recent handoff note for the current project into context at session start |

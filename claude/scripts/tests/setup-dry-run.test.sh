@@ -53,7 +53,13 @@ SKILLS_OUT="$(mktemp)"
 SKILLS_EXTERNAL="$(mktemp -d)"
 # dir-link-fixture: planted in the checkout by the issue #274 test below;
 # listed here so an aborted run can't leave the working tree dirty.
-trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
+# setup.sh and cct query a running tmux server (#643). tmux finds its server
+# through $TMUX or $TMUX_TMPDIR, not $HOME, so without this a run could reach
+# the developer's real server.
+unset TMUX
+TMUX_ISO="$(mktemp -d)"
+export TMUX_TMPDIR="$TMUX_ISO"
+trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL" "$TMUX_ISO"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
 
 # Seed the mutation-tempting fixtures.
 git config --file "$TESTHOME/.gitconfig" user.name test
@@ -404,6 +410,181 @@ else
 fi
 rm -f "$TESTHOME/codex-cli-invoked"
 rm -rf "$CODEXSTUBS" "$CODEXOUT"
+# CLI stack install/shim (issue #636): every CLI_STACK_TOOLS entry, read from
+# lib-checks.sh rather than restated here, must be apt-installed when absent
+# and shimmed when only its Debian binary is present. The PATH is a symlink
+# farm of /usr/bin and /bin minus every name the list mentions, so the result
+# does not depend on what this machine has installed. The farm's tmux is a
+# fake that logs its argv (issue #643): the first run has a server socket and
+# answers `tmux list-sessions`, the second has no socket, so setup must not
+# invoke tmux at all (a client creates its socket dir, which may sit under
+# $HOME). apt is Linux-only, so macOS skips.
+# shellcheck source=lib-checks.sh
+. "$REPO_ROOT/lib-checks.sh"
+if [ "$(uname -s)" = "Darwin" ]; then
+  ok "CLI stack apt install/shim test skipped on macOS # SKIP"
+else
+  FARM="$(mktemp -d)"
+  FARM_LOG="$(mktemp)"
+  FARM_OUT="$(mktemp)"
+  _hide=" tmux "
+  for _entry in "${CLI_STACK_TOOLS[@]}"; do
+    cli_stack_entry "$_entry"
+    _hide="$_hide$CLI_NAME $CLI_BIN "
+  done
+  for _f in /usr/bin/* /bin/*; do
+    _b="${_f##*/}"
+    case "$_hide" in *" $_b "*) continue ;; esac
+    [ -e "$FARM/$_b" ] || ln -s "$_f" "$FARM/$_b"
+  done
+  cat > "$FARM/tmux" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$FARM_LOG"
+[ "\$1" = list-sessions ] && exit "\${FAKE_TMUX_LS_RC:-0}"
+[ "\$1" = has-session ] && exit 1
+exit 0
+STUB
+  chmod +x "$FARM/tmux"
+  # A socket file where tmux would put the default server's, inside the
+  # isolated TMUX_TMPDIR; the fake tmux stands in for the server behind it.
+  TMUX_SOCK="$TMUX_ISO/tmux-$(id -u)/default"
+  mkdir -p "${TMUX_SOCK%/*}"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_SOCK"
+
+  before="$(snapshot "$TESTHOME")"
+  PATH="$FARM" FAKE_TMUX_LS_RC=0 HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$FARM_OUT" 2>&1
+  farm_rc=$?
+  after="$(snapshot "$TESTHOME")"
+  [ "$farm_rc" -eq 0 ] && [ "$before" = "$after" ] \
+    && ok "clean-PATH dry-run exits 0 with zero mutations" \
+    || fail "clean-PATH dry-run exited $farm_rc or mutated \$HOME"
+  missed=""
+  for _entry in "${CLI_STACK_TOOLS[@]}"; do
+    cli_stack_entry "$_entry"
+    case "$CLI_APT" in
+      \?*) grep -Fxq "[DRY] sudo apt install -y ${CLI_APT#\?}" "$FARM_OUT" || missed="$missed $CLI_NAME" ;;
+      *) grep -F '[DRY] sudo apt install -y ' "$FARM_OUT" | tr ' ' '\n' | grep -Fxq "$CLI_APT" \
+        || missed="$missed $CLI_NAME" ;;
+    esac
+  done
+  if [ -z "$missed" ]; then
+    ok "every CLI_STACK_TOOLS entry is apt-installed when absent"
+  else
+    fail "CLI_STACK_TOOLS entries not installed:$missed"
+    sed 's/^/      | /' "$FARM_OUT"
+  fi
+  if grep -Fq "[DRY] would reload $TESTHOME/.tmux.conf into the running tmux server" "$FARM_OUT" \
+    && grep -qx list-sessions "$FARM_LOG" && ! grep -q '^source-file' "$FARM_LOG"; then
+    ok "dry-run previews the reload into a running tmux server without sourcing"
+  else
+    fail "dry-run tmux reload preview missing, or it sourced the config"
+    sed 's/^/      | log: /' "$FARM_LOG"
+  fi
+
+  # Second run: only the Debian binaries are present, and no server socket.
+  _renamed=""
+  for _entry in "${CLI_STACK_TOOLS[@]}"; do
+    cli_stack_entry "$_entry"
+    [ "$CLI_BIN" = "$CLI_NAME" ] && continue
+    printf '#!/bin/sh\n' > "$FARM/$CLI_BIN"
+    chmod +x "$FARM/$CLI_BIN"
+    _renamed="$_renamed $CLI_NAME:$CLI_BIN:$CLI_APT"
+  done
+  : > "$FARM_LOG"
+  rm "$TMUX_SOCK"
+  PATH="$FARM" HOME="$TESTHOME" "$SETUP" --yes --dry-run > "$FARM_OUT" 2>&1
+  missed=""
+  for _r in $_renamed; do
+    IFS=: read -r _name _bin _apt <<<"$_r"
+    grep -Fxq "[DRY] ln -sf $FARM/$_bin $TESTHOME/.local/bin/$_name" "$FARM_OUT" \
+      || missed="$missed $_name(no shim)"
+    grep -F '[DRY] sudo apt install -y ' "$FARM_OUT" | tr ' ' '\n' | grep -Fxq "$_apt" \
+      && missed="$missed $_name(reinstalled)"
+  done
+  if [ -n "$_renamed" ] && [ -z "$missed" ]; then
+    ok "every renamed CLI_STACK_TOOLS binary is shimmed, not reinstalled"
+  else
+    fail "CLI_STACK_TOOLS shim plan wrong:${missed:- no renamed entries}"
+    sed 's/^/      | /' "$FARM_OUT"
+  fi
+  if ! grep -q 'would reload' "$FARM_OUT" && [ ! -s "$FARM_LOG" ]; then
+    ok "no server socket: setup never invokes tmux (no probe, no reload)"
+  else
+    fail "setup invoked tmux with no server socket"
+    sed 's/^/      | log: /' "$FARM_LOG"
+  fi
+
+  # Live path of setup.sh's reload_tmux_config, and cct's own reload, against
+  # the same fake tmux (never a real server).
+  eval "$(sed -n '/^reload_tmux_config()/,/^}/p' "$SETUP")"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_SOCK"
+  : > "$FARM_LOG"
+  (PATH="$FARM:$PATH" FAKE_TMUX_LS_RC=0 HOME_DIR="$TESTHOME" DRY_RUN=0 reload_tmux_config) >/dev/null 2>&1
+  if grep -Fxq "source-file $TESTHOME/.tmux.conf" "$FARM_LOG"; then
+    ok "setup.sh sources the managed .tmux.conf into a running tmux server"
+  else
+    fail "setup.sh did not source .tmux.conf into the running server"
+  fi
+  : > "$FARM_LOG"
+  (PATH="$FARM:$PATH" FAKE_TMUX_LS_RC=1 HOME_DIR="$TESTHOME" DRY_RUN=0 reload_tmux_config) >/dev/null 2>&1
+  if ! grep -q '^source-file' "$FARM_LOG"; then
+    ok "setup.sh skips the reload on a stale socket with no live server"
+  else
+    fail "setup.sh sourced .tmux.conf with no live server behind the socket"
+  fi
+  rm "$TMUX_SOCK"
+
+  # A real tmux whose only session is detached — the reconnect case, where
+  # `tmux info` fails — on a private socket dir, never the developer's server.
+  if command -v tmux >/dev/null 2>&1; then
+    REAL_TMUX_HOME="$(mktemp -d)"
+    REAL_TMUX_DIR="$(mktemp -d)"
+    printf 'set -g @dotfiles_reload_probe yes\n' > "$REAL_TMUX_HOME/.tmux.conf"
+    (
+      export TMUX_TMPDIR="$REAL_TMUX_DIR" HOME="$REAL_TMUX_HOME"
+      # An explicit command, not the default login shell, so no startup file
+      # (the developer's or the throwaway HOME's) ever runs.
+      tmux -f /dev/null new-session -d -s probe 'sleep 60' || exit 1
+      HOME_DIR="$REAL_TMUX_HOME" DRY_RUN=0 reload_tmux_config >/dev/null 2>&1
+      _probe="$(tmux show-options -gv @dotfiles_reload_probe 2>/dev/null)"
+      tmux kill-server 2>/dev/null
+      [ "$_probe" = yes ]
+    )
+    if [ $? -eq 0 ]; then
+      ok "setup.sh reloads a real tmux server whose sessions are all detached"
+    else
+      fail "setup.sh did not reload a real server with only detached sessions"
+    fi
+    rm -rf "$REAL_TMUX_HOME" "$REAL_TMUX_DIR"
+  else
+    ok "real-tmux detached-session reload skipped (tmux not installed) # SKIP"
+  fi
+  CCT_HOME="$(mktemp -d)"
+  : > "$CCT_HOME/.tmux.conf"
+  mkdir -p "$CCT_HOME/proj"
+  for _rc in 0 1; do
+    : > "$FARM_LOG"
+    (cd "$CCT_HOME/proj" && PATH="$FARM:$PATH" FAKE_TMUX_LS_RC=$_rc HOME="$CCT_HOME" \
+      bash -c '. "$1" && cct' _ "$REPO_ROOT/.bash_aliases") >/dev/null 2>&1
+    _src="$(grep -n '^source-file' "$FARM_LOG" | cut -d: -f1)"
+    _new="$(grep -n '^new-session' "$FARM_LOG" | cut -d: -f1)"
+    if [ "$_rc" -eq 0 ]; then
+      if [ "$(sed -n "${_src:-0}p" "$FARM_LOG" 2>/dev/null)" = "source-file $CCT_HOME/.tmux.conf" ] \
+        && [ -n "$_new" ] && [ "$_src" -lt "$_new" ]; then
+        ok "cct sources ~/.tmux.conf into a running server before launching"
+      else
+        fail "cct did not reload ~/.tmux.conf before launching"
+        sed 's/^/      | log: /' "$FARM_LOG"
+      fi
+    elif [ -z "$_src" ] && [ -n "$_new" ]; then
+      ok "cct skips the reload when no tmux server is running"
+    else
+      fail "cct reload behaviour wrong with no running server"
+      sed 's/^/      | log: /' "$FARM_LOG"
+    fi
+  done
+  rm -rf "$FARM" "$FARM_LOG" "$FARM_OUT" "$CCT_HOME"
+fi
 
 # Agent-service selection (issue #425) exercises the same dry-run contract per
 # selection; it runs from here so the existing CI step covers it.

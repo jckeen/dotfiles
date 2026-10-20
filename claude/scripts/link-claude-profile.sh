@@ -13,7 +13,9 @@
 # Each link targets ~/.claude/<name>, never the dotfiles or memory repo
 # directly, so ~/.claude stays the single wiring check-claude.sh has to heal.
 # Sharing projects/ and file-history/ is what lets a session started on one
-# account be resumed on the other.
+# account be resumed on the other, and sharing its todos/ and tasks/ sidecars
+# is what lets the resumed session see them. session-env/ is not shared: it can
+# carry account-bound environment, so it stays with the account (#591).
 #
 # User-scope MCP servers live in the account-bound .claude.json, so they are
 # copied from ~/.claude.json when they differ. Their OAuth grants are stored
@@ -28,11 +30,11 @@
 
 set -uo pipefail
 
-SHARED="settings.json CLAUDE.md keybindings.json skills agents commands rules output-styles plugins projects file-history"
+SHARED="settings.json CLAUDE.md keybindings.json skills agents commands rules output-styles plugins projects file-history todos tasks"
 # State directories Claude creates by itself on first use. They are linked even
 # when the default profile has not made them yet: skipping one would let a
 # session on this profile create a private copy that then blocks the link.
-ENSURED=" plugins projects file-history "
+ENSURED=" plugins projects file-history todos tasks "
 
 CHECK=0
 PROFILE=""

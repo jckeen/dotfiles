@@ -146,26 +146,52 @@ check_link() {
 }
 
 # CLI_STACK_TOOLS — the CLI tools the Claude instructions tell every session to
-# prefer in Bash (issue #605). Single list for the checkers; each entry is
-# `<name>` or `<name>:<Debian name>`, the same shape as setup.sh's fd/bat shim
-# loop, since apt installs fd and bat as fdfind and batcat.
-# shellcheck disable=SC2034  # consumed by check_cli_stack and its callers
-CLI_STACK_TOOLS=(rg fd:fdfind bat:batcat eza)
+# prefer in Bash (issue #605). The one list for both the checkers and
+# setup.sh's install/shim block (#636), so a tool added here is installed,
+# shimmed and checked alike. Each entry is four colon-separated fields:
+#
+#   <name>:<Debian binary>:<apt package>:<brew package>
+#
+# An empty or missing field defaults to <name>. The Debian binary differs
+# where apt installs a renamed binary (fd-find -> fdfind, bat -> batcat);
+# setup.sh shims it back to <name> in ~/.local/bin. An apt package prefixed
+# with `?` is installed on its own line and may be absent from older
+# Ubuntu/Debian archives (eza): one unknown package fails a whole
+# `apt install`. Parse an entry with cli_stack_entry.
+# shellcheck disable=SC2034  # consumed by check_cli_stack and setup.sh
+CLI_STACK_TOOLS=(
+  rg::ripgrep:ripgrep
+  fd:fdfind:fd-find:fd
+  bat:batcat
+  eza::?eza
+)
+
+# cli_stack_entry <entry> — split one CLI_STACK_TOOLS entry into CLI_NAME,
+# CLI_BIN (the Debian binary name), CLI_APT and CLI_BREW, defaulting empty
+# fields to CLI_NAME. CLI_APT keeps any `?` prefix for the caller to act on.
+cli_stack_entry() {
+  local IFS=:
+  read -r CLI_NAME CLI_BIN CLI_APT CLI_BREW <<<"$1"
+  CLI_BIN="${CLI_BIN:-$CLI_NAME}"
+  # shellcheck disable=SC2034  # CLI_APT/CLI_BREW are outputs for setup.sh
+  CLI_APT="${CLI_APT:-$CLI_NAME}"
+  # shellcheck disable=SC2034
+  CLI_BREW="${CLI_BREW:-$CLI_NAME}"
+}
 
 # check_cli_stack — one WARN line per CLI_STACK_TOOLS entry that is not on
 # PATH under its plain name. Advisory: it never touches ERRORS/WARNINGS, since
 # `cc` blocks launch on a failed checker and a missing tool only degrades a
 # session (it falls back to grep/find). Bumps the caller's TOOL_NOTES instead.
 check_cli_stack() {
-  local entry want have
+  local entry
   for entry in "${CLI_STACK_TOOLS[@]}"; do
-    want="${entry%%:*}"
-    have="${entry#*:}"
-    command -v "$want" >/dev/null 2>&1 && continue
-    if [ "$have" != "$entry" ] && command -v "$have" >/dev/null 2>&1; then
-      yellow "TOOL  $want only installed as $have (re-run ./setup.sh to add the $want shim)"
+    cli_stack_entry "$entry"
+    command -v "$CLI_NAME" >/dev/null 2>&1 && continue
+    if [ "$CLI_BIN" != "$CLI_NAME" ] && command -v "$CLI_BIN" >/dev/null 2>&1; then
+      yellow "TOOL  $CLI_NAME only installed as $CLI_BIN (re-run ./setup.sh to add the $CLI_NAME shim)"
     else
-      yellow "TOOL  $want not installed (the Claude config prefers it; re-run ./setup.sh)"
+      yellow "TOOL  $CLI_NAME not installed (the Claude config prefers it; re-run ./setup.sh)"
     fi
     TOOL_NOTES=$((${TOOL_NOTES:-0} + 1))
   done
