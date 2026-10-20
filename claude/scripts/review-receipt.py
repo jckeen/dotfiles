@@ -741,9 +741,10 @@ def instruction_links(
     return bindings
 
 
-def capture(repo, base, scope):
+def capture(repo, base, scope, base_commit=None):
     head = oid(repo, "HEAD")
-    base_commit = oid(repo, base) if base else None
+    if base_commit is None and base:
+        base_commit = oid(repo, base)
     if scope == "committed" and base_commit is None:
         raise ValueError("base could not be resolved")
     merge = (
@@ -1059,9 +1060,19 @@ def capture(repo, base, scope):
     return artifact, patch
 
 
-def stable_capture(repo, base, scope):
-    first, patch = capture(repo, base, scope)
-    second, patch2 = capture(repo, base, scope)
+def stable_capture(repo, base, scope, base_commit=None):
+    """Two identical captures of the artifact against ONE resolved base commit.
+
+    The base ref is resolved once, here, or taken pinned from the snapshot being
+    verified. `origin/main` is shared by every worktree, so a sibling's fetch
+    moving it mid-run used to look like this branch changing and voided a whole
+    review (#680). The branch's own HEAD, tree, index and files still have to
+    match exactly; only the base tip is no longer re-read.
+    """
+    if base_commit is None and base:
+        base_commit = oid(repo, base)
+    first, patch = capture(repo, base, scope, base_commit)
+    second, patch2 = capture(repo, base, scope, base_commit)
     if first != second or patch != patch2:
         raise ValueError("repository changed during review snapshot")
     return first, patch
@@ -1339,7 +1350,10 @@ def validate_artifact(record):
     assert_attempt(record)
     artifact = record["artifact"]
     current, patch = stable_capture(
-        Path(record["repository"]), artifact["base"]["ref"], artifact["scope"]
+        Path(record["repository"]),
+        artifact["base"]["ref"],
+        artifact["scope"],
+        artifact["base"]["commit"],
     )
     if artifact != current:
         raise ValueError("repository changed during review or after approval; rerun the gate")
@@ -1679,6 +1693,7 @@ def check(args):
     if head != oid(repo, "HEAD") or args.head != head:
         raise ValueError("outgoing commit is not the reviewed worktree HEAD")
     expected_base = oid(repo, resolve_base(repo, args.base))
+    expected_merge = git(repo, "merge-base", expected_base, head).decode().strip()
     errors = []
     for lane_name in (args.reviewer,) if args.reviewer else LANES:
         try:
@@ -1699,7 +1714,11 @@ def check(args):
             for field in ("requested_model", "observed_model", "model_evidence", "executable"):
                 if reviewer[field] is not None and not isinstance(reviewer[field], str):
                     raise ValueError("malformed reviewer identity")
-            if expected_base != record["artifact"]["base"]["commit"]:
+            # The reviewed diff is merge_base..HEAD, so that is what must still
+            # match. The base TIP may have moved on (a sibling merged, #680);
+            # a receipt for another merge base — a narrower --base, or a branch
+            # the base has since absorbed — still refuses.
+            if expected_merge != record["artifact"]["base"]["merge_base"]:
                 raise ValueError("receipt does not cover the expected base")
             completion = record["completion"]
             started = datetime.fromisoformat(record["started_at"])

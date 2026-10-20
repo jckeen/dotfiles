@@ -75,3 +75,18 @@
   now prints `approved but not pushed: no terminal to confirm on; re-run with
   --auto-push, or push <sha> yourself` and exits 4. The script header and
   `claude/scripts/README.md` document every exit status.
+
+## 2026-10-19 — fix(gates): a sibling moving origin/main no longer voids a review in flight (#680)
+
+- **The review base is pinned when the run begins.** A gate's snapshot
+  recorded `origin/main` and re-resolved it at every verify. A fetch by any
+  sibling worktree moved it, and the run refused with "repository changed
+  during review or after approval". That happened five times in one session
+  of parallel merges, each costing a 15–20 minute re-run. `stable_capture`
+  now resolves the base once, and `verify` re-captures against the commit
+  pinned in the snapshot. The branch's own HEAD, tree, index and files still
+  have to match exactly.
+- **`check` compares merge bases, not base tips.** The reviewed diff is
+  `merge_base..HEAD`, so a receipt stays valid while the base tip moves on.
+  It still refuses when the merge base differs: a receipt taken with a
+  narrower `--base`, or a branch the base has since absorbed.

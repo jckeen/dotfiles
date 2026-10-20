@@ -3273,6 +3273,64 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             ok=False,
         )
 
+    # ─── #680: the review base is pinned once; a sibling moving it is not a change ───
+
+    def advance_main(self):
+        """A sibling merges to the base: main gains a commit the branch lacks."""
+        self.git("checkout", "-q", "main")
+        (self.repo / "sibling.txt").write_text("merged elsewhere\n")
+        self.git("add", "sibling.txt")
+        self.git("commit", "-qm", "sibling merge")
+        self.git("checkout", "-q", "feature")
+
+    def test_base_moving_mid_review_does_not_void_the_run(self):
+        snapshot = self.begin()
+        self.advance_main()
+        self.run_helper("verify", "--snapshot", str(snapshot))
+        self.complete(snapshot)
+        self.check()
+
+    def test_base_moving_after_approval_keeps_the_receipt(self):
+        self.complete(self.begin())
+        self.advance_main()
+        self.check()
+
+    def test_branch_changes_still_void_a_pinned_base_run(self):
+        snapshot = self.begin()
+        self.advance_main()
+        (self.repo / "code.txt").write_text("changed again\n")
+        self.git("commit", "-qam", "more work")
+        self.run_helper("verify", "--snapshot", str(snapshot), ok=False)
+        self.complete(snapshot, ok=False)
+
+    def test_a_receipt_whose_merge_base_no_longer_matches_is_refused(self):
+        """Pinning the base is not ignoring it: a rebased-past merge base refuses."""
+        self.complete(self.begin())
+        head = self.git("rev-parse", "HEAD")
+        # main absorbs the branch (fast-forward), so the reviewed diff
+        # merge_base..HEAD is no longer what pushing HEAD to main would add.
+        self.git("update-ref", "refs/heads/main", head)
+        self.check(False)
+
+    def test_snapshot_capture_resolves_the_base_once(self):
+        """Both stable_capture passes use one resolved base commit."""
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real = module.oid
+        calls = []
+
+        def moving_oid(repo, ref):
+            calls.append(ref)
+            if ref == "main" and len([c for c in calls if c == "main"]) == 2:
+                self.advance_main()
+            return real(repo, ref)
+
+        module.oid = moving_oid
+        artifact, _ = module.stable_capture(self.repo, "main", "committed")
+        self.assertEqual(artifact["base"]["ref"], "main")
+        self.assertEqual(calls.count("main"), 1, calls)
+
     # ─── #641: a foreign boundary's own config must not steer its listing ───
 
     def foreign_boundary(self):
