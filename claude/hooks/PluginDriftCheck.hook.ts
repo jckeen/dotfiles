@@ -959,7 +959,12 @@ function rescan(): void {
   if (unchanged(state)) return;
   watch(MANIFEST); // Signed before it is read, so a swap in between is a change.
   const manifest = readManifest();
-  const before = state?.reported ?? new Set<string>();
+  // A new project is a new context: what was reported for another checkout
+  // must not hide a same-named plugin here.
+  const before =
+    state && state.projects.join('\n') === PROJECT_DIRS.join('\n')
+      ? state.reported
+      : new Set<string>();
   let found: ModFindings | null = null;
   section('plugin mods', () => {
     found = findMods(manifest.modsOk);

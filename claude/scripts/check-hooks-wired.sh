@@ -63,7 +63,7 @@ for f in "$HOOKS_DIR"/*.sh "$HOOKS_DIR"/*.ts; do
   [ -e "$f" ] || continue
   name="$(basename "$f")"
   is_opted_out "$name" && continue
-  if ! printf '%s\n' "$WIRED_COMMANDS" | grep -qF "$name"; then
+  if ! printf '%s\n' "$WIRED_COMMANDS" | grep -F "$name" >/dev/null; then
     [ "$drift" -eq 0 ] && yellow "Hook files present but NOT wired in settings.json (they will not run):"
     drift=$((drift + 1))
     printf '    - %s\n' "$name"
@@ -94,7 +94,7 @@ for pair in "${EVENT_WIRING[@]}"; do
   [ -e "$HOOKS_DIR/$name" ] || continue
   is_opted_out "$name" && continue
   if ! jq -r --arg e "$event" '.hooks[$e] // [] | .. | .command? // empty' "$SETTINGS" 2>/dev/null \
-      | grep -qF "$name"; then
+      | grep -F "$name" >/dev/null; then
     [ "$event_drift" -eq 0 ] && yellow "Hooks wired, but NOT on an event they need (that part will not run):"
     event_drift=$((event_drift + 1))
     printf '    - %s on %s\n' "$name" "$event"

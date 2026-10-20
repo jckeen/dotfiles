@@ -764,6 +764,19 @@ out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
   timeout 60 bun "$HOOK" 2>&1 \
   <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"cwd\":\"$PP/sub\"}")"
 assert "rescan: a new working directory is rescanned" 'outgrep "• subproj@skills-dir"'
+# Codex round 10: another checkout's mod with the same name is not hidden by
+# the first one's report.
+mkdir -p "$PP/sub2/.claude/skills/pk/hooks" "$PP/sub2/.claude/skills/pk/.claude-plugin" \
+  || die "mkdir sub2 project skills-dir"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/sub2/.claude/skills/pk/hooks/hooks.json" \
+  || die "write sub2 project mod"
+printf '%s\n' '{"name":"subproj"}' > "$PP/sub2/.claude/skills/pk/.claude-plugin/plugin.json" \
+  || die "write sub2 project plugin.json"
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 \
+  <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"cwd\":\"$PP/sub2\"}")"
+assert "rescan: a same-named mod in another checkout is still named" \
+  'outgrep "• subproj@skills-dir"'
 # A project .claude/skills that links to ~/.claude/skills is skipped, but
 # still watched: replacing the link with a real directory is a change.
 mkdir -p "$PH/.claude/skills" || die "mkdir home skills"
