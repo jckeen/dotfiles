@@ -197,6 +197,22 @@ function signature(path: string): string {
   }
 }
 
+// The one field encoding for both state files: hex of the UTF-16 code units.
+// Lossless for any JS string, a lone surrogate included (enc
+// throws on one, and a JSON name may carry one), and never contains a space
+// or newline, so it cannot break a record.
+function enc(text: string): string {
+  return Buffer.from(text, 'utf16le').toString('hex');
+}
+function dec(hex: string): string {
+  if (!/^(?:[0-9a-f]{4})*$/.test(hex)) throw new Error('bad field');
+  return Buffer.from(hex, 'hex').toString('utf16le');
+}
+
+// Both state files end with this line; a file without it was truncated and
+// is treated as damaged (a miss), never as a shorter valid file.
+const END = 'end';
+
 function watch(path: string): void {
   if (!watched.has(path)) watched.set(path, signature(path));
 }
@@ -586,15 +602,16 @@ function runListing(): Scanned[] | null {
 //   K <sig> <path>        a key file and its signature when listed
 //   C <dir>               the directory the listing ran in
 //   L <origin> <id> <dir> one listed plugin; dir `-` is unverifiable
-// Every field is URI-encoded.
+//   end                   the last line; without it the cache is a miss
+// Every path and id is enc()-encoded.
 // The `.` keeps it apart from every per-session file (statePath's charset).
 const LISTING_CACHE = join(STATE_DIR, 'listing.cache');
 const LISTING_KEYS = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS];
 
 function listingKey(): string[] {
   return [
-    ...LISTING_KEYS.map((path) => `K ${signature(path)} ${encodeURIComponent(path)}`),
-    `C ${encodeURIComponent(PROJECT_DIRS[0] ?? '')}`,
+    ...LISTING_KEYS.map((path) => `K ${signature(path)} ${enc(path)}`),
+    `C ${enc(PROJECT_DIRS[0] ?? '')}`,
   ];
 }
 
@@ -605,18 +622,19 @@ function cachedListing(key: string[]): Scanned[] | null {
     const lines = readFileSync(LISTING_CACHE, 'utf-8').split('\n');
     if (lines[0] !== 'plugin-drift-listing v1') return null;
     if (lines.slice(1, 1 + key.length).join('\n') !== key.join('\n')) return null;
+    const body = lines.slice(1 + key.length);
+    if (body.pop() !== '' || body.pop() !== END) return null;
     const found: Scanned[] = [];
-    for (const line of lines.slice(1 + key.length)) {
-      if (line.length === 0) continue;
+    for (const line of body) {
       const [tag, origin, id, dir, extra] = line.split(' ');
       if (tag !== 'L' || extra !== undefined || id === undefined || dir === undefined)
         return null;
       if (origin !== 'installed' && origin !== 'project') return null;
-      const plugin = decodeURIComponent(id);
+      const plugin = dec(id);
       found.push(
         dir === '-'
           ? unverifiable(plugin, origin)
-          : { id: plugin, dir: decodeURIComponent(dir), origin },
+          : { id: plugin, dir: dec(dir), origin },
       );
     }
     return found;
@@ -629,8 +647,9 @@ function saveListing(key: string[], found: Scanned[]): void {
   const lines = ['plugin-drift-listing v1', ...key];
   for (const { id, dir, origin, unverifiable: bad } of found)
     lines.push(
-      `L ${origin} ${encodeURIComponent(id)} ${bad ? '-' : encodeURIComponent(dir)}`,
+      `L ${origin} ${enc(id)} ${bad ? '-' : enc(dir)}`,
     );
+  lines.push(END);
   atomicWrite(LISTING_CACHE, lines);
 }
 
@@ -640,8 +659,15 @@ function loaderPlugins(): Scanned[] | null {
   const cached = cachedListing(key);
   if (cached !== null) return cached;
   const found = runListing();
-  // A failed listing is not cached, so the next scan asks again.
-  if (found !== null) saveListing(key, found);
+  // A failed listing is not cached, so the next scan asks again. Caching is
+  // a convenience: a throw there must not lose the listing itself.
+  if (found !== null) {
+    try {
+      saveListing(key, found);
+    } catch {
+      // The next scan runs the CLI again.
+    }
+  }
   return found;
 }
 
@@ -690,7 +716,12 @@ function pluginDirs(): Scanned[] {
       }
     }
   }
-  found.push(...(loaderPlugins() ?? []));
+  // Rule 1: nothing the listing does can cost the static results above.
+  try {
+    found.push(...(loaderPlugins() ?? []));
+  } catch {
+    found.push(unverifiable('claude-plugin-list', 'installed'));
+  }
   return found;
 }
 
@@ -920,7 +951,8 @@ function driftWarning(manifest: Manifest): string {
 //   P <project dir>     a project dir the scan read (a cwd change is a change)
 //   W <sig> <path>      a watched path and its signature at scan time
 //   M|U <label>         a mod / unverifiable label already reported
-// Paths are URI-encoded so a newline in an untrusted path cannot forge a
+//   end                 the last line; without it the state is damaged
+// Paths are enc()-encoded so a newline in an untrusted path cannot forge a
 // record; labels went through shown(), which leaves no newline.
 interface ScanState {
   projects: string[];
@@ -945,20 +977,22 @@ function readState(): ScanState | null {
     if (!st.isFile() || st.size > MAX_JSON_BYTES) return null;
     const lines = readFileSync(path, 'utf-8').split('\n');
     if (lines[0] !== 'plugin-drift-state v1') return null;
+    const body = lines.slice(1);
+    if (body.pop() !== '' || body.pop() !== END) return null;
     const state: ScanState = { projects: [], watched: [], reported: new Set() };
-    for (const line of lines.slice(1)) {
-      if (line.length === 0) continue;
+    for (const line of body) {
       const tag = line.slice(0, 2);
       const rest = line.slice(2);
-      if (tag === 'P ') state.projects.push(decodeURIComponent(rest));
+      if (tag === 'P ') state.projects.push(dec(rest));
       else if (tag === 'W ') {
         const space = rest.indexOf(' ');
         if (space < 0) return null;
-        state.watched.push([decodeURIComponent(rest.slice(space + 1)), rest.slice(0, space)]);
+        state.watched.push([dec(rest.slice(space + 1)), rest.slice(0, space)]);
       } else if (tag === 'M ' || tag === 'U ') state.reported.add(line);
       else return null;
     }
-    return state;
+    // A full scan always reads something, so no watched path is damage too.
+    return state.watched.length > 0 ? state : null;
   } catch {
     return null;
   }
@@ -982,10 +1016,18 @@ function atomicWrite(path: string, lines: string[]): void {
 }
 
 function writeState(reported: Set<string>): void {
+  try {
+    writeStateLines(reported);
+  } catch {
+    // Without state the next prompt rescans and re-reports (rule 2).
+  }
+}
+
+function writeStateLines(reported: Set<string>): void {
   const lines = ['plugin-drift-state v1'];
-  for (const dir of PROJECT_DIRS) lines.push(`P ${encodeURIComponent(dir)}`);
-  for (const [path, sig] of watched) lines.push(`W ${sig} ${encodeURIComponent(path)}`);
-  lines.push(...reported);
+  for (const dir of PROJECT_DIRS) lines.push(`P ${enc(dir)}`);
+  for (const [path, sig] of watched) lines.push(`W ${sig} ${enc(path)}`);
+  lines.push(...reported, END);
   // Without state the next prompt rescans and re-reports (rule 2).
   atomicWrite(statePath(), lines);
 }

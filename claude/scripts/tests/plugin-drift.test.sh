@@ -729,6 +729,13 @@ assert "listed: a listed id is sanitized" \
 assert "listed: the static scan still runs beside the listing" 'outline "  • modded@mkt"'
 assert "listed: hook exits 0" "[ $rc -eq 0 ]"
 
+# A lone surrogate is valid in a JSON string; caching it must not throw away
+# the scan (codex gate finding, round 1).
+run_listed '[{"id":"surr\ud800@far","scope":"user","installPath":"@H@/elsewhere/odd"}]'
+assert "listed: a lone-surrogate id does not abort the scan" \
+  'outline "  • modded@mkt" && outgrep "surr_@far"'
+assert "listed: the scan around a lone-surrogate id still exits 0" "[ $rc -eq 0 ]"
+
 run_listed 'not json at all'
 assert "listed: a garbage listing falls back to the static scan" \
   'outline "  • modded@mkt" && ! outgrep "PluginDriftCheck"'
@@ -832,6 +839,20 @@ assert "rescan: one session's rescan does not consume another's change" '[ -z "$
 printf 'garbage\n' > "$PH/.local/state/plugin-drift/s1" || die "damage the state file"
 hook_event UserPromptSubmit s1
 assert "rescan: a damaged state file triggers a full report" 'outline "  • modded@mkt"'
+# A state file cut short before its first watched path is damage, not an
+# empty watch list that matches forever (codex gate finding, round 1).
+head -n 2 "$PH/.local/state/plugin-drift/s1" > "$PH/s1.cut" || die "truncate the state"
+mv "$PH/s1.cut" "$PH/.local/state/plugin-drift/s1" || die "place the truncated state"
+add_cached_mod aftercut
+hook_event UserPromptSubmit s1
+assert "rescan: a truncated state file still catches a new mod" 'outline "  • aftercut@mkt"'
+# The same for a listing cache cut short: its last entries are not lost.
+grep -v '^end$' "$PH/.local/state/plugin-drift/listing.cache" > "$PH/cache.cut" \
+  || die "truncate the listing cache"
+mv "$PH/cache.cut" "$PH/.local/state/plugin-drift/listing.cache" || die "place the cut cache"
+hook_event SessionStart s1
+assert "rescan: a listing cache without its end line is a miss" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
 # A cwd change (CwdChanged, a --worktree) moves the project skills dir.
 mkdir -p "$PP/sub/.claude/skills/pk/hooks" "$PP/sub/.claude/skills/pk/.claude-plugin" \
   || die "mkdir sub project skills-dir"
