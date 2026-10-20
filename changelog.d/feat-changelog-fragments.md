@@ -3,7 +3,7 @@
 - **`changelog.d/`** replaces editing `CHANGELOG.md` in a PR. Each PR adds
   one fragment file, named by convention after its branch with `/` turned to
   `-`. The file holds the entry exactly as it will read in `CHANGELOG.md`: a
-  `## YYYY-MM-DD — <type>: <summary>` heading followed by bullets. Two open
+  `## YYYY-MM-DD — TYPE: SUMMARY` heading followed by bullets. Two open
   PRs no longer touch the same lines. A merge to `main` therefore stops
   forcing a conflict and a full re-gate (about 17 minutes of tests plus a
   Codex review) on every other open PR.
