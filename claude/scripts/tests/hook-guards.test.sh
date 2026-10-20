@@ -145,6 +145,10 @@ git switch w" \
   "git -c x=y 'switch' -c quoted-sub" \
   'git checkout -q --orphan=newbranch' \
   'git checkout -bfoo' \
+  "git sw''itch -c quote-split" \
+  'git che""ckout -b quote-split2' \
+  'git sw\itch -c backslash' \
+  "g''it switch -c quote-split-git" \
   'ls -- x && git switch -c after-dashdash' \
   "echo 'a -- b' && git -c 'n=(q)' switch -c quoted-after-dashdash" \
   "git checkout -- f; git -c 'a (b)' checkout main -b split-after-pathspec" \
@@ -152,9 +156,10 @@ git switch w" \
   denied "$(wg "$blocked")" \
     && ok "worktree-guard blocks: $(tr '\n' ' ' <<<"$blocked")" \
     || fail "worktree-guard let through: $(tr '\n' ' ' <<<"$blocked")"
-  # The hook's cheap exit skips any command with neither word; every blocked
-  # pattern must therefore contain one, or that exit would hide a block.
-  grep -qE 'switch|checkout' <<<"$blocked" \
+  # The hook's cheap exit skips any command whose NORMALIZED text (quotes and
+  # backslashes stripped, newlines folded) has neither word; every blocked
+  # pattern must therefore contain one there, or that exit would hide a block.
+  tr -d "\"'\\\\" <<<"$blocked" | tr '\n' ' ' | grep -qE 'switch|checkout' \
     || fail "cheap-exit invariant broken: a blocked case has neither switch nor checkout"
 done
 # The last blocked case above is the documented safe false positive: only a

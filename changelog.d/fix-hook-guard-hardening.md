@@ -21,8 +21,11 @@
   Only a plain `git worktree …` is exempt, and a fancier worktree call that
   contains branch-op text is a safe false positive. After `--`, checkout
   arguments are pathspecs, so `git checkout -- -backup` is allowed (#695).
-  Cheap exits run first: a command with neither `switch` nor `checkout`
-  (every blocked pattern has one) costs one grep, and the linked-worktree
+  Cheap exits run first: a command whose text, with quotes and backslashes
+  removed, has neither `switch` nor `checkout` (every blocked pattern has
+  one) costs one grep. The real checks run on both the raw and the
+  normalized text, so `git sw''itch` or `git sw\itch` is still caught. The
+  linked-worktree
   and contention checks run before any parsing, so a 4000-line commit
   command is allowed in milliseconds instead of about 20 seconds.
 - **`claude/hooks/conventional-commit.sh`**: extracts `-m` messages with

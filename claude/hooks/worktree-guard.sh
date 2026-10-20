@@ -92,13 +92,16 @@ segment_is_branch_op() {
 BROAD_RE='(^|[^[:alnum:]_-])git([[:space:]].*)?[[:space:]](switch([[:space:]]|$)|checkout[[:space:]]+(-[^-[:space:]]*[bB]|--orphan))'
 
 is_branch_op() {
-  local cmd="$1" seg
+  local cmd="$1" seg seg_n
   # Turn every separator character into a newline: this splits `&&`, `||`,
   # `;`, `|`, `&`, `$(…)`, `(…)` and backticks alike. Quotes are kept.
   while IFS= read -r seg; do
     # A segment with neither word cannot be a branch op on its own (the
     # whole-command fallback below still sees it); skip it without forking.
-    case "$seg" in *switch*|*checkout*) ;; *) continue ;; esac
+    # Matched on a normalized copy (quotes and backslashes removed, no fork),
+    # so `sw''itch` or `sw\itch` cannot hide the word.
+    seg_n="${seg//\'/}"; seg_n="${seg_n//\"/}"; seg_n="${seg_n//\\/}"
+    case "$seg_n" in *switch*|*checkout*) ;; *) continue ;; esac
     # Exempt only a segment that is plainly `git worktree …` (how you
     # comply). Anything fancier before the subcommand is not exempt, so
     # `git -C x worktree add -b switch …` is a known, safe false positive.
@@ -160,9 +163,12 @@ is_branch_op() {
 # Cheap exits first, so a huge command (a long heredoc body) costs one grep,
 # not a parse per line.
 # 1. Every pattern this guard blocks contains the word `switch` or
-#    `checkout` (asserted in hook-guards.test.sh), so a command with neither
-#    can never be a block.
-grep -qE 'switch|checkout' <<<"$CMD" || exit 0
+#    `checkout` once quotes and backslashes are removed (asserted in
+#    hook-guards.test.sh), so a command whose NORMALIZED text has neither can
+#    never be a block. Normalizing first means quote-splitting or escaping
+#    (`git sw''itch`, `git sw\itch`) cannot hide the word from this exit.
+STRIPPED="$(printf '%s' "$CMD" | tr -d "\"'\\\\" | tr '\n' ' ')"
+grep -qE 'switch|checkout' <<<"$STRIPPED" || exit 0
 
 # 2. Linked worktree? Its git dir lives under .../worktrees/<name>. Allow.
 gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
@@ -172,7 +178,11 @@ case "$gitdir" in */worktrees/*) exit 0 ;; esac
 wt=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
 [ "${wt:-1}" -le 1 ] && exit 0
 
-is_branch_op "$CMD" || exit 0
+# The real checks run on the raw text AND the normalized text, OR'd: the raw
+# pass keeps segment boundaries and quoted options intact, the normalized
+# pass sees through quote-splitting and backslashes. Neither can remove a
+# block the other finds.
+is_branch_op "$CMD" || is_branch_op "$STRIPPED" || exit 0
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$PWD"
 reason="Worktree guard: you're in the PRIMARY checkout and ${wt} worktrees exist — another session may be active, and creating/switching a branch here can switch it out from under them. Work in an isolated worktree instead:  git worktree add ../$(basename "$root")-<branch> -b <branch>  then cd there. ('git worktree add' is always allowed; branch ops inside any linked worktree are never blocked.)"
