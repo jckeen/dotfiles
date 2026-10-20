@@ -4,14 +4,19 @@
 # Two sources, one renderer. The handoff skills (claude/ and agents/) record
 # USER ACTION items either as "## <slug>" blocks in ~/.claude/operator-queue.md
 # (added/project/deadline/verified/action lines; removed only when done) or as
-# open issues labelled `operator-action` in the private OPERATOR_QUEUE_REPO,
-# which a phone or a cloud session can read too. The file stays the source
+# open issues labelled `operator-action`, which a phone or a cloud session can
+# read too. Each issue lives in the private repo it concerns; items for a
+# public repo or for several repos live in the private OPERATOR_QUEUE_REPO.
+# One search reads them all: OPERATOR_QUEUE_REPO plus every repo of the
+# OPERATOR_QUEUE_OWNERS accounts, counting only issues the operator (the gh
+# login) wrote in private repos and whose body nobody else last edited. The file stays the source
 # until its first lines carry the "> **Historical**" banner; after that the
 # hook renders a cache of the issues and never touches the network itself.
 # When the cache is missing or older than CACHE_TTL it starts `$0 --refresh`
 # detached (stdio to /dev/null, its own session where setsid exists), which
 # pages the issues through one GraphQL query, turns them into the same blocks
-# (see refresh) and atomically replaces the owner-only cache under
+# (see refresh; each heading names its repo, `## <slug> (<repo>#<n>)`) and
+# atomically replaces the owner-only cache under
 # ${XDG_STATE_HOME:-~/.local/state}/operator-queue/. SessionStart therefore
 # costs no network time, however slow gh or jq is; the price is that a
 # session may see data one refresh old, and the header says how old.
@@ -47,10 +52,14 @@
 #   OPERATOR_QUEUE_SHOW_ALL=1  print every item in full (the pre-#558 view).
 #   OPERATOR_QUEUE_FILE=<path> read this queue instead of
 #                              ~/.claude/operator-queue.md (test fixtures).
-#   OPERATOR_QUEUE_REPO=[host/]owner/name  the issue source (default
+#   OPERATOR_QUEUE_REPO=[host/]owner/name  the home for items with no private
+#                              repo of their own (default
 #                              github.com/jckeen/claude-memory; a bare
 #                              owner/name means github.com). Keep it private —
 #                              items name credentials and providers.
+#   OPERATOR_QUEUE_OWNERS="a b"  accounts whose repos are searched too, on the
+#                              same host (default "jckeen Keen-Media
+#                              therealnewsnetwork"); empty = the home repo only.
 #   OPERATOR_QUEUE_REFRESH_SYNC=1  refresh inline instead of detached (tests);
 #                              =never renders the cache and starts no refresh.
 #
@@ -91,6 +100,38 @@ ISSUE_REPO="${OPERATOR_QUEUE_REPO:-github.com/jckeen/claude-memory}"
 case "$ISSUE_REPO" in */*/*) ;; *) ISSUE_REPO="github.com/$ISSUE_REPO" ;; esac
 GH_HOSTNAME="${ISSUE_REPO%%/*}"
 REPO_PATH="${ISSUE_REPO#*/}"
+# The repo goes into a search query and every status line, so it must be a
+# plain host/owner/name: no space, colon or other character can add a
+# qualifier. Anything else leaves the issue source refused (see below).
+# A bash match covers the whole value (grep -x would pass a valid first line).
+REPO_OK=0
+REPO_RE='^[A-Za-z0-9.-]{1,253}/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,255}$'
+LC_ALL=C; [[ "$ISSUE_REPO" =~ $REPO_RE ]] && REPO_OK=1; unset LC_ALL
+# Each item lives as an issue in the repo it concerns; ISSUE_REPO holds only
+# the items with no private home of their own (public repos, multi-repo work).
+# One search covers ISSUE_REPO plus every repo of each owner below (GitHub ORs
+# repo:/user: qualifiers). Only GitHub login characters are kept, so a value
+# can never smuggle another qualifier into the query. Empty = ISSUE_REPO only.
+# At most MAX_OWNERS are kept (the first, sorted), so the scope printed in
+# status lines stays bounded however long the value is.
+MAX_OWNERS=10
+OWNERS="$(printf '%s' "${OPERATOR_QUEUE_OWNERS-jckeen Keen-Media therealnewsnetwork}" |
+  tr -s ' ,\t' '\n\n\n' | LC_ALL=C grep -xE '[A-Za-z0-9][A-Za-z0-9-]{0,38}' | tr '[:upper:]' '[:lower:]' |
+  LC_ALL=C sort -u | sed -n "1,${MAX_OWNERS}p" | tr '\n' ' ')"
+OWNERS="${OWNERS% }"
+# The rendered items enter every session's context, so only issues the
+# operator wrote (author:@me, the gh login) in private repos count: anyone can
+# open an issue in a public repo, and a collaborator can label one.
+SEARCH_Q="is:issue is:open is:private author:@me label:operator-action repo:$REPO_PATH"
+SCOPE="$ISSUE_REPO"
+if [ -n "$OWNERS" ]; then
+  for o in $OWNERS; do SEARCH_Q="$SEARCH_Q user:$o"; done
+  SCOPE="$ISSUE_REPO and every repo of ${OWNERS// /, } on $GH_HOSTNAME"
+fi
+# The hook's own query, verbatim, so the printed command lists exactly what
+# the hook searched (`gh search issues --repo X --owner Y` would AND them on gh
+# versions using advanced search, and `gh issue list` drops the filters).
+LIST_CMD="gh api graphql --hostname $GH_HOSTNAME --paginate -f q='$SEARCH_Q' -f query='query(\$q: String!, \$endCursor: String) { search(query: \$q, type: ISSUE, first: 100, after: \$endCursor) { pageInfo { hasNextPage endCursor } nodes { ... on Issue { url title } } } }' --jq '.data.search.nodes[] | .url + \"  \" + .title'"
 CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
 # SHA-256 of the full host/owner/repo: a fixed-length name (any repo string
 # fits NAME_MAX) that no two repos share in practice. A character-class
@@ -100,7 +141,18 @@ CACHE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/operator-queue"
 # No digest tool means no cache name; that is refused, never defaulted to a
 # name every repo would share.
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi 2>/dev/null | cut -c1-64; }
-KEY="$(printf '%s' "$ISSUE_REPO" | tr '[:upper:]' '[:lower:]' | sha256)"
+# The owners are part of the key: a different search scope is a different
+# cache. "v2" marks caches written under the author/private/editor filter, so a
+# cache from before it is never rendered.
+# author:@me makes the result depend on the gh identity, so the key also
+# carries a digest of everything gh picks it from: the token variables and the
+# hosts file naming the active account. Read locally, never through gh, so
+# SessionStart still makes no call; a token refresh only costs one fetch.
+GH_HOSTS_FILE="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/hosts.yml"
+gh_ident() { { printf '%s\0' "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" "${GH_ENTERPRISE_TOKEN:-}" "${GITHUB_ENTERPRISE_TOKEN:-}"
+  cat "$GH_HOSTS_FILE" 2>/dev/null; } | sha256; }
+IDENT="$(gh_ident)"
+KEY="$(printf 'v2 %s%s @%s' "$ISSUE_REPO" "${OWNERS:+ +$OWNERS}" "$IDENT" | tr '[:upper:]' '[:lower:]' | sha256)"
 case "$KEY" in *[!0-9a-f]*) KEY="" ;; esac
 [ "${#KEY}" -eq 64 ] || KEY=""
 CACHE="$CACHE_DIR/issues-$KEY.md"
@@ -115,7 +167,8 @@ CACHE_NOTE=""
 
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 
-# refresh — page every open operator-action issue through one GraphQL query
+# refresh — page every open operator-action issue in scope through one
+# GraphQL search
 # (comments(last: 1) is the newest comment however many there are) and
 # replace the cache with the rendered blocks; on any failure leave the cache
 # alone and touch FAILED. added is the body's `- added:` line (migrated items
@@ -124,12 +177,12 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # bumps it but a label edit does not; only real calendar dates count. project
 # is the body's full `- project:` value (a migrated "keen-media,
 # operator-commons" item still matches either session), else a
-# `project:<name>` label; deadline and action come from the body's
+# `project:<name>` label, else the issue's repo name; deadline and action come from the body's
 # `- deadline:` / `- action:` lines (the action falls back to the first
 # non-empty body line that is not a field).
 refresh() {
   local raw tmp rc=1
-  [ -n "$KEY" ] || return 1
+  [ -n "$KEY" ] && [ "$REPO_OK" -eq 1 ] || return 1
   mkdir -p "$CACHE_DIR" || return 1
   # One refresh at a time, under flock(1): the kernel grants the lock
   # atomically and drops it when the holder exits, however it dies, so there
@@ -184,37 +237,64 @@ refresh() {
   tmp="$(mktemp "$CACHE.new.XXXXXX")" && OQ_TMP="$tmp" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
   ${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
-    -f owner="${REPO_PATH%%/*}" -f name="${REPO_PATH#*/}" -f query='
-      query($owner: String!, $name: String!, $endCursor: String) {
-        repository(owner: $owner, name: $name) {
-          issues(first: 100, after: $endCursor, states: OPEN, labels: ["operator-action"]) {
-            pageInfo { hasNextPage endCursor }
-            nodes { number title body createdAt
-              labels(first: 100) { nodes { name } }
-              comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null &&
-  jq -rs '
+    -f q="$SEARCH_Q" -f query='
+      query($q: String!, $endCursor: String) {
+        search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor } issueCount
+          nodes { ... on Issue { id number title body createdAt viewerDidAuthor
+            author { login } editor { login } lastEditedAt
+            timelineItems(itemTypes: [RENAMED_TITLE_EVENT], last: 1) {
+              nodes { ... on RenamedTitleEvent { actor { login } } } }
+            repository { nameWithOwner isPrivate }
+            labels(first: 100) { nodes { name } }
+            comments(last: 1) { nodes { createdAt } } } } } }' > "$raw" 2>/dev/null &&
+  jq -rs --arg home "$(printf '%s' "$REPO_PATH" | tr '[:upper:]' '[:lower:]')" '
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
       and ((try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .);
     def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
+    # GitHub search stops at 1000 results however far it pages; a cut list
+    # would drop items silently, so the refresh fails instead.
+    # Distinct issues are counted by node id (a rename or transfer mid-paging
+    # changes repo and number, never id): pages that overlap while results
+    # shift must not let a repeat stand in for a missing item.
+    if ([ .[].data.search.nodes[] | select(.number != null) | .id ] | unique | length)
+       < ([ .[].data.search.issueCount ] | max // 0)
+    then error("search truncated") else empty end,
     "# Operator-action issues",
-    ( [ .[].data.repository.issues.nodes[] ] | .[]
+    # Only text the operator wrote renders: their issue, in a private repo, with
+    # the body last edited and the title last renamed by them (editor does not
+    # track renames). A null editor on an edited body is a deleted account, so
+    # it counts only when the body was never edited.
+    ( [ .[].data.search.nodes[] | select(.number != null and .viewerDidAuthor == true and .repository.isPrivate == true
+        and (if .editor == null then .lastEditedAt == null else .editor.login == .author.login end)
+        and (.author.login as $a | (.timelineItems.nodes // []) | all(.actor.login? == $a))) ] | unique_by(.id) | .[]
       | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
-      | (($lines | field("project")) as $p
-          | if $p != "" then $p
-            else ([ .labels.nodes[].name | select(startswith("project:")) | sub("^project:"; "") ][0] // "") end) as $project
+      | ((.repository.nameWithOwner // "") | split("/") | .[-1]) as $repo
+      # The home repo holds items for other repos, so its name names no project.
+      | (((.repository.nameWithOwner // "") | ascii_downcase) == $home) as $in_home
+      # Labels are not text the operator wrote: any collaborator can create and
+      # apply one. Only a home-repo `project:<slug>` label counts, and only a
+      # plain slug; elsewhere the repo name is the fallback.
+      | (if $in_home
+         then ([ .labels.nodes[].name | select(test("^project:[A-Za-z0-9._-]{1,40}$")) | sub("^project:"; "") ][0] // "")
+         else $repo end) as $fallback
+      | (($lines | field("project")) as $p | if $p != "" then $p else $fallback end) as $project
       | ($lines | field("deadline")) as $deadline
       | (($lines | field("added")) as $a | if $a != "" then $a else .createdAt[0:10] end) as $added
       | ([ ($lines | field("verified") | .[0:10]), (.comments.nodes[].createdAt[0:10]) ]
           | map(select(isdate)) | max // "") as $verified
       | (($lines | field("action")) as $a
           | if $a != "" then $a else ([ $lines[] | select(test("\\S") and (test("^- [a-z]+:") | not)) ][0] // "") end) as $action
-      | "", "## \(.title) (#\(.number))",
+      | "", "## \(.title) (\($repo)#\(.number))",
         "- added: \($added)",
         (if $verified != "" then "- verified: \($verified)" else empty end),
         (if $project != "" then "- project: \($project)" else empty end),
         (if $deadline != "" then "- deadline: \($deadline)" else empty end),
         "- action: \($action)" )' "$raw" > "$tmp" &&
+  # The key names the identity read before the fetch; an account switched while
+  # gh ran would file one account's items under another's key.
+  [ "$(gh_ident)" = "$IDENT" ] &&
   chmod 600 "$tmp" && mv -f "$tmp" "$CACHE" && rc=0
   rm -f "${raw:-}" "${tmp:-}"
   # The inline refresh (OPERATOR_QUEUE_REFRESH_SYNC=1) returns to the hook,
@@ -257,8 +337,12 @@ elif [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'
   QUEUE="$LEGACY"
 else
   SOURCE="issues"
+  if [ "$REPO_OK" -ne 1 ]; then
+    echo "Operator action queue: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name, so the operator-action issues are not listed."
+    exit 0
+  fi
   if [ -z "$KEY" ]; then
-    echo "Operator action queue: cannot name the operator-action cache for $ISSUE_REPO (no sha256sum or shasum) — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
+    echo "Operator action queue: cannot name the operator-action cache for $SCOPE (no sha256sum or shasum) — \`$LIST_CMD\` lists them."
     exit 0
   fi
   QUEUE="$CACHE"
@@ -297,7 +381,7 @@ else
   # session's output; no reader can foresee it, the copy shown is still the
   # latest settled cache, and the next session sees the new state.
   if ! SNAP="$(mktemp 2>/dev/null)"; then
-    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (no writable temp dir) — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
+    echo "Operator action queue: could not snapshot the operator-action cache for $SCOPE (no writable temp dir) — \`$LIST_CMD\` lists them."
     exit 0
   fi
   trap 'rm -f "$SNAP"' EXIT
@@ -309,14 +393,14 @@ else
   # than this one, and this reader judges it stale too.
   now="$(date +%s)"
   if [ "$copied" -ne 0 ] && [ -f "$CACHE" ]; then
-    echo "Operator action queue: could not snapshot the operator-action cache for $ISSUE_REPO (temp dir full or unreadable cache) — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
+    echo "Operator action queue: could not snapshot the operator-action cache for $SCOPE (temp dir full or unreadable cache) — \`$LIST_CMD\` lists them."
     exit 0
   fi
   if [ "$copied" -ne 0 ]; then
     if [ "$state" = failed ]; then
-      echo "Operator action queue: could not list operator-action issues in $ISSUE_REPO (offline, gh unauthenticated, or gh/jq/flock missing) and no cache exists — \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
+      echo "Operator action queue: could not list operator-action issues in $SCOPE (offline, gh unauthenticated, or gh/jq/flock missing; or the gh account changed mid-fetch, or over 1000 matches) and no cache exists — \`$LIST_CMD\` lists them."
     else
-      echo "Operator action queue: no cache of operator-action issues in $ISSUE_REPO yet — a refresh is running in the background (or was interrupted); \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\` lists them."
+      echo "Operator action queue: no cache of operator-action issues in $SCOPE yet — a refresh is running in the background (or was interrupted); \`$LIST_CMD\` lists them."
     fi
     exit 0
   fi
@@ -328,7 +412,7 @@ else
   # possibly superseded, never as current. An old cache without either is
   # simply being refreshed.
   if [ "$state" = failed ]; then
-    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing)"
+    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing; or the gh account changed mid-fetch, or over 1000 matches)"
   elif [ "$state" = inflight ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; a refresh is running or was interrupted)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
@@ -338,13 +422,13 @@ else
   # reports it.
   if [ "$(wc -c < "$SNAP")" -le "$MAX_QUEUE_BYTES" ] && ! grep -q '^## ' "$SNAP" 2>/dev/null; then
     # An empty answer is only "nothing open" when it is fresh.
-    [ -n "$CACHE_NOTE" ] && echo "Operator action queue: no open operator-action issues in $ISSUE_REPO as of the last good fetch$CACHE_NOTE."
+    [ -n "$CACHE_NOTE" ] && echo "Operator action queue: no open operator-action issues in $SCOPE as of the last good fetch$CACHE_NOTE."
     exit 0
   fi
 fi
 [ -s "$QUEUE" ] || exit 0
 if [ "$SOURCE" = issues ]; then
-  QUEUE_SHOWN="operator-action issues in $ISSUE_REPO$CACHE_NOTE"
+  QUEUE_SHOWN="operator-action issues in $SCOPE$CACHE_NOTE"
   FULL_REF="the issue"
 elif [ "$QUEUE" = "$LEGACY" ]; then
   # shellcheck disable=SC2088 # a display string, deliberately unexpanded
@@ -543,7 +627,7 @@ if [ "$SHOW_ALL" -ne 1 ] && [ "$full_count" -lt "$total" ]; then
       { extra++ }
       END { if (extra) print "  …and " extra " more projects — see " ENVIRON["OQ_SRC"] }'
   if [ "$SOURCE" = issues ]; then
-    echo "Full queue: \`gh issue list -R $ISSUE_REPO --label operator-action --limit 1000\`; a session started with OPERATOR_QUEUE_SHOW_ALL=1 renders every item."
+    echo "Full queue: \`$LIST_CMD\`; a session started with OPERATOR_QUEUE_SHOW_ALL=1 renders every item."
   else
     echo "Full queue: $QUEUE_SHOWN; a session started with OPERATOR_QUEUE_SHOW_ALL=1 renders every item."
   fi
