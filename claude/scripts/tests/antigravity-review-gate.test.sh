@@ -36,7 +36,10 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 touch "$AGY_FAKE_DIR/invoked"
-[ ! -f "$AGY_FAKE_DIR/mutate" ] || bash "$AGY_FAKE_DIR/mutate"
+# Fixture mutations act on the repository under review. agy itself runs in a
+# throwaway workspace (#687), so they cd there; the jail probe runs in place.
+[ ! -f "$AGY_FAKE_DIR/mutate" ] || (cd "$AGY_FAKE_REPO" && bash "$AGY_FAKE_DIR/mutate")
+[ ! -f "$AGY_FAKE_DIR/jail-probe" ] || bash "$AGY_FAKE_DIR/jail-probe"
 # Go's flag package treats -print/--print/-p and the =value forms as the same
 # flag, so the emulation must too (adversarial review of PR #243: an equals or
 # single-dash spelling regression must not pass the suite).
@@ -72,6 +75,7 @@ EOF
 chmod +x "$SHIM_DIR/agy"
 export PATH="$SHIM_DIR:$PATH"
 export AGY_FAKE_DIR=""
+export AGY_FAKE_REPO=""
 unset ANTIGRAVITY_GATE_REQUIRED
 unset ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF
 unset ANTIGRAVITY_GATE_MODEL
@@ -90,6 +94,7 @@ new_repo() {
   git -C "$R" commit -qm "init"
   AGY_FAKE_DIR="$(mktemp -d)"
   : > "$AGY_FAKE_DIR/output"
+  export AGY_FAKE_REPO="$R"
 }
 
 # check <name> <expected-exit> [<required output fragment>] [gate args...]
@@ -97,7 +102,7 @@ check() {
   local name="$1" want="$2" frag="${3:-}"
   shift 3 || shift $#
   local out rc
-  out="$(cd "$R" && "$GATE" "$@" 2>&1)"
+  out="$(cd "$R" && AGY_FAKE_REPO="$R" "$GATE" "$@" 2>&1)"
   rc=$?
   local ok=1
   [ "$rc" -eq "$want" ] || ok=0
@@ -1642,6 +1647,51 @@ assert "#573: failed local validation records a marker" "[ \"\$(block_markers)\"
 restore_codex_lane
 assert "#573: that marker refuses the restored approval" "! codex_receipt_ships"
 rm -rf "$R"
+
+# ── #687: agy runs in a throwaway home and workspace ─────────────────
+# The user's agy baseline allows write_file(~/dev/), which plan mode does not
+# stop: a steered review could write anywhere under ~/dev. The gate now hands
+# agy a private HOME whose only settings deny every write, and a workspace
+# that is an extract of the reviewed HEAD, not the repository. This stub
+# records that environment and then attempts the writes a steered review
+# would: into its working directory and into "~/dev".
+JAIL_HOME="$(mktemp -d)"
+mkdir -p "$JAIL_HOME/.gemini/antigravity-cli" "$JAIL_HOME/dev"
+printf 'fixture-token\n' > "$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+printf 'fixture-installation\n' > "$JAIL_HOME/.gemini/antigravity-cli/installation_id"
+printf '%s\n' '{"permissions":{"allow":["write_file(~/dev/)"]}}' > "$JAIL_HOME/.gemini/antigravity-cli/settings.json"
+new_repo
+git -C "$R" checkout -qb feature
+echo "change" >> "$R/code.txt"
+git -C "$R" commit -qam "reviewed head"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+cat > "$AGY_FAKE_DIR/jail-probe" <<'EOF'
+pwd -P > "$AGY_FAKE_DIR/agy-pwd"
+printf '%s\n' "$HOME" > "$AGY_FAKE_DIR/agy-home"
+cp "$HOME/.gemini/antigravity-cli/settings.json" "$AGY_FAKE_DIR/agy-settings" 2>/dev/null
+ls "$PWD" > "$AGY_FAKE_DIR/agy-workspace"
+[ -L "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] && readlink "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" > "$AGY_FAKE_DIR/agy-token"
+echo steered > stub-write.txt
+mkdir -p "$HOME/dev" && echo steered > "$HOME/dev/stub-write.txt"
+EOF
+HOME="$JAIL_HOME" check "#687: a review in the throwaway home still passes" 0 "LGTB verdict" --committed
+# shellcheck disable=SC2034  # read by the assert conditions below
+agy_home="$(cat "$AGY_FAKE_DIR/agy-home" 2>/dev/null)"
+assert "#687: agy's HOME is not the user's" "[ -n \"\$agy_home\" ] && [ \"\$agy_home\" != '$JAIL_HOME' ]"
+assert "#687: agy's settings deny every write and allow nothing" \
+  "jq -e '.permissions.deny == [\"write_file(/)\"] and (.permissions.allow // []) == []' '$AGY_FAKE_DIR/agy-settings' >/dev/null"
+assert "#687: agy's workspace is not the repository" \
+  "[ -s '$AGY_FAKE_DIR/agy-pwd' ] && [ \"\$(cat '$AGY_FAKE_DIR/agy-pwd')\" != \"\$(cd -P '$R' && pwd)\" ]"
+assert "#687: the workspace holds the reviewed HEAD" "grep -qx code.txt '$AGY_FAKE_DIR/agy-workspace'"
+assert "#687: only the credential is linked in" \
+  "[ \"\$(cat '$AGY_FAKE_DIR/agy-token')\" = '$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token' ]"
+assert "#687: a write in the workspace never reaches the repository" "[ -s '$AGY_FAKE_DIR/agy-pwd' ] && [ ! -e '$R/stub-write.txt' ]"
+assert "#687: a write to ~/dev never reaches the user's ~/dev" "[ ! -e '$JAIL_HOME/dev/stub-write.txt' ]"
+assert "#687: the throwaway home is removed after the run" "[ ! -e \"\$agy_home\" ]"
+assert "#687: the user's settings and credential are untouched" \
+  "grep -qx fixture-token '$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token' && grep -q 'write_file(~/dev/)' '$JAIL_HOME/.gemini/antigravity-cli/settings.json'"
+rm -f "$AGY_FAKE_DIR/jail-probe"
+rm -rf "$R" "$JAIL_HOME"
 
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"

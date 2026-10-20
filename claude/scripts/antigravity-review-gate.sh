@@ -24,6 +24,13 @@
 #   So we do NOT pass --dangerously-skip-permissions. Instead:
 #     * --mode plan  → read-only planning mode, no edit tools.
 #     * --sandbox    → terminal restrictions on.
+#     * a throwaway HOME and workspace (#687). Plan mode does not stop a write
+#       the user's permission baseline allows, and the baseline allows
+#       write_file(~/dev/). agy therefore runs with HOME set to a private temp
+#       directory that holds only its credential (linked) and a settings file
+#       denying write_file(/). Its workspace is an extract of the reviewed
+#       HEAD, not the repository. A `~/` rule resolves inside that directory,
+#       so no baseline rule reaches the real ~/dev.
 #     * the prompt (with the fenced diff) is delivered on stdin, never argv, so
 #       the reviewed diff — which can contain secrets — is not visible in `ps`
 #       while the review runs (#154). Once the prompt is consumed stdin is at
@@ -435,6 +442,7 @@ echo ""
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
 AGY_ERR_FILE="$(mktemp -t agy-review-err.XXXXXX.txt)"
 AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
+AGY_JAIL=""
 # Keep agy's own log (and stderr) whenever the gate does not pass: a failed
 # or degraded run is exactly when the CLI-side log is needed (#409). The
 # review output itself is always removed — it can contain the diff.
@@ -480,6 +488,7 @@ gate_finish() {
   else
     rm -f "$AGY_ERR_FILE" "$AGY_LOG_FILE"
   fi
+  agy_jail_cleanup || true
   # Never let cleanup failure rewrite the gate's exit status under set -e.
   gate_cleanup || true
   exit "$rc"
@@ -512,6 +521,9 @@ cancel_agy_review() {
     exit 2
   fi
   trap - "$1"
+  # The default action below skips the EXIT trap, and the jail links the
+  # credential: remove it first.
+  agy_jail_cleanup || true
   kill -s "$1" "$$"
 }
 for gate_signal in INT TERM HUP QUIT; do
@@ -550,13 +562,63 @@ set +e
 # expiry it exits 0 with whatever partial output it has plus a stderr note.
 # Pin it to the gate ceiling so a large diff gets the whole budget, and keep
 # the outer _tmo slightly above it so agy's graceful path wins the race.
+# ─── #687: a throwaway HOME and workspace for agy ──────────────
+# Fail closed: a jail that cannot be built is a lane that cannot run (degrade,
+# exit 3 under --require), never a run against the real home.
+agy_jail_cleanup() {
+  [[ -n "${AGY_JAIL:-}" && -d "$AGY_JAIL" ]] || return 0
+  # rm -r never follows the credential symlink; it removes only the link.
+  rm -rf -- "$AGY_JAIL"
+  AGY_JAIL=""
+}
+agy_jail_setup() {
+  local real="$HOME/.gemini/antigravity-cli" cli head
+  AGY_JAIL="$(mktemp -d "${TMPDIR:-/tmp}/agy-review-jail.XXXXXX")" || return 1
+  chmod 700 "$AGY_JAIL" || return 1
+  cli="$AGY_JAIL/home/.gemini/antigravity-cli"
+  mkdir -p "$cli" "$AGY_JAIL/work" || return 1
+  # Only what agy needs to authenticate. The credential is linked, not copied,
+  # so a refreshed token lands in the user's own file.
+  if [[ -f "$real/antigravity-oauth-token" ]]; then
+    ln -s "$real/antigravity-oauth-token" "$cli/antigravity-oauth-token" || return 1
+  fi
+  if [[ -f "$real/installation_id" ]]; then
+    cp "$real/installation_id" "$cli/installation_id" || return 1
+  fi
+  # No allow rules at all, and an explicit deny on every file write. A headless
+  # run cannot answer a permission prompt, so anything else is denied too.
+  printf '%s\n' '{"toolPermission":"proceed-in-sandbox","enableTerminalSandbox":true,"permissions":{"allow":[],"deny":["write_file(/)"]}}' \
+    > "$cli/settings.json" || return 1
+  # The reviewed HEAD as plain files: context to read, no .git leading back.
+  head="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || return 1
+  git archive --format=tar "$head" | tar -x -C "$AGY_JAIL/work" || return 1
+  AGY_ENV=(
+    HOME="$AGY_JAIL/home"
+    XDG_CONFIG_HOME="$AGY_JAIL/home/.config"
+    XDG_CACHE_HOME="$AGY_JAIL/home/.cache"
+    XDG_DATA_HOME="$AGY_JAIL/home/.local/share"
+    XDG_STATE_HOME="$AGY_JAIL/home/.local/state"
+    ANTIGRAVITY_GATE=1
+  )
+  # The model spot-check reads this run's records, which now live in the jail.
+  AGY_CONVERSATIONS_DIR="${AGY_CONVERSATIONS_DIR:-$cli/conversations}"
+}
+if ! agy_jail_setup; then
+  agy_jail_cleanup || true
+  degrade "could not build the throwaway home and workspace for agy (#687)."
+fi
+# A command, not a function, so _tmo's `timeout` can run it: `sh` enters the
+# workspace and execs agy, so the timeout's signal still reaches agy itself.
+# shellcheck disable=SC2016  # expanded by the inner sh, deliberately
+AGY_RUN=(env "${AGY_ENV[@]}" sh -c 'cd "$1" || exit 125; shift; exec agy "$@"' agy-jail "$AGY_JAIL/work")
+
 AGY_ARGS=(--mode plan --sandbox --print-timeout "${PRINT_TIMEOUT_SECS}s")
 [[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")
 # stdout (the model's verdict) and stderr (agy's own diagnostics) are kept
 # apart: the expiry guard below must only ever see agy's stderr, never model
 # output that a reviewed diff could steer into imitating it.
 _tmo "$TMO_CEILING" \
-  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>"$AGY_ERR_FILE"
+  "${AGY_RUN[@]}" "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>"$AGY_ERR_FILE"
 RC=$?
 set -e
 
@@ -598,7 +660,7 @@ if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
     # is empty": if a trivial prompt also returns nothing, the gate is
     # systemically broken — say so loudly. Same no-prompt-flag form as the
     # real run so the canary exercises the same channel.
-    CANARY="$(_tmo 60 env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox <<<"Reply with exactly: PONG" 2>/dev/null || true)"
+    CANARY="$(_tmo 60 "${AGY_RUN[@]}" --mode plan --sandbox <<<"Reply with exactly: PONG" 2>/dev/null || true)"
     if [[ -z "$CANARY" ]]; then
       red "  CANARY FAILED: agy returned empty for a trivial stdin prompt too."
       red "  The stdin prompt channel or non-TTY stdout has likely regressed (see #227)."
