@@ -99,10 +99,18 @@ per issue: the title is the slug, the body holds the fields:
 
 The slug is stable (same action = same slug across sessions); `deadline` and
 `verified` are optional — omit the line if none. **File only if absent** —
-check the reminder's own list first: its footer (`Full queue: …`) prints
-the exact `gh api graphql` search it runs, with its host, owners and filters.
-Run that command and look for the slug among the titles; never file a
-duplicate. A match whose body or title someone else last edited is hidden by
+run the reminder's own search for the slug first, and never file a
+duplicate. `<host>` and `<home>` come from the home repo (`[host/]owner/name`;
+host defaults to `github.com`), plus one `user:<o>` per
+`$OPERATOR_QUEUE_OWNERS` entry (none when it is empty):
+
+```bash
+gh api graphql --hostname <host> -f q='is:issue is:open is:private author:@me label:operator-action in:title "<slug>" repo:<home> user:<o> ...' \
+  -f query='query($q: String!) { search(query: $q, type: ISSUE, first: 20) { nodes { ... on Issue { url title } } } }' \
+  --jq '.data.search.nodes[] | .url + "  " + .title'
+```
+
+Only an exact title match counts. A match whose body or title someone else last edited is hidden by
 the reminder, so it doesn't count: file a fresh issue and link the old one. **Close the issue only when the action is actually
 done** (`--reason completed`), not when it's merely mentioned again.
 `~/.claude/operator-queue.md` is retired: never append to it. While that
