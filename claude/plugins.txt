@@ -18,7 +18,8 @@
 # and the settings hooks — and PluginDriftCheck.hook.ts names every installed
 # one at session start. After reviewing a mod (CLAUDE-GUIDE.md, Hooks), silence
 # it with a whole-line comment `# mods-ok: <id>`, where <id> is
-# <plugin>@<marketplace>, <name>@synced or <name>@skills-dir. It must be a
+# <plugin>@<marketplace>, <name>@synced or <name>@skills-dir — or, for an id
+# the warning prints sanitized, the `sha256:<hex>` key it prints. It must be a
 # whole-line comment so setup.sh and sync-plugins.sh never try to install it.
 # No plugin is allowlisted today.
 #
