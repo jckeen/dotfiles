@@ -349,6 +349,9 @@ find_item() {
   if ! [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
     echo "--find: the slug must be letters, digits, '.', '_' or '-'" >&2; return 2
   fi
+  # No digest tool leaves IDENT empty, and the account-switch check below
+  # would then compare two empty strings.
+  [ -n "$KEY" ] || { echo "--find: no sha256sum or shasum, so an account switch cannot be detected" >&2; return 2; }
   [ -z "${OPERATOR_QUEUE_FILE:-}" ] || { echo "--find: OPERATOR_QUEUE_FILE is set, so that file is the queue" >&2; return 2; }
   [ "$REPO_OK" -eq 1 ] || { echo "--find: OPERATOR_QUEUE_REPO is not a plain [host/]owner/name" >&2; return 2; }
   if [ -f "$LEGACY" ] && ! head -n 5 "$LEGACY" | grep -q '^> \*\*Historical\*\*'; then
@@ -366,6 +369,11 @@ find_item() {
     { echo "--find: the search was cut short or unreadable" >&2; return 2; }
 }
 
+# Each mode takes a fixed argument count; extra ones are a caller's mistake.
+case "${1:-}:$#" in
+  --scope:1|--refresh:1|--find:2) ;;
+  --scope:*|--refresh:*|--find:*) echo "wrong argument count for $1" >&2; exit 2 ;;
+esac
 case "${1:-}" in
   --refresh) refresh; exit ;;
   --scope)

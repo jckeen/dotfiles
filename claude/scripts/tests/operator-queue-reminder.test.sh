@@ -981,6 +981,15 @@ assert "--find: OPERATOR_QUEUE_FILE set (that file is the queue) is inconclusive
 run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_SWITCH=1 -- --find dot-issue
 assert "--find: an account switched mid-search is inconclusive" "[ $rc -eq 2 ] && outgrep 'account changed'"
 rm -f "$GH_CONFIG_DIR/hosts.yml"
+run_issues FAKE_GH_JSON="$ISSUES" -- --find dot-issue extra
+assert "--find: a trailing argument is refused" "[ $rc -eq 2 ] && outgrep 'wrong argument count'"
+NODIGEST="$(mktemp -d)"
+for t in bash env gh jq cat head grep sed tr sort cut date mkdir rm stat id printf; do
+  p="$(command -v "$t")" && [ "${p#/}" != "$p" ] && ln -s "$p" "$NODIGEST/$t"; done
+ln -sf "$FAKEBIN/gh" "$NODIGEST/gh"
+out="$(cd "$FX/dotfiles" && env -u OPERATOR_QUEUE_FILE HOME="$IH" PATH="$NODIGEST" FAKE_GH_JSON="$ISSUES" "$NODIGEST/bash" "$HOOK" --find dot-issue 2>&1)"; rc=$?
+assert "--find: no digest tool is inconclusive (switch detection would be blind)" "[ $rc -eq 2 ] && outgrep 'no sha256sum'"
+rm -rf "$NODIGEST"
 run_issues FAKE_GH_JSON="$ISSUES" -- --fnd dot-issue
 assert "a mistyped mode exits 2 and never renders the queue" "[ $rc -eq 2 ] && ! outgrep 'dot-issue (' && outgrep 'unknown argument'"
 
