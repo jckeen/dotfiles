@@ -865,6 +865,42 @@ out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
   timeout 60 bun "$HOOK" 2>&1 \
   <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s1\",\"cwd\":\"$PP/sub\"}")"
 assert "rescan: a new working directory is rescanned" 'outgrep "• subproj@skills-dir"'
+# The loader's environment is part of the listing key (codex round 2): a
+# session with extra plugin dirs must not reuse another session's listing.
+hook_event SessionStart s1
+CLAUDE_CODE_PLUGIN_DIRS="$PH/extra" hook_event SessionStart s4
+assert "rescan: a different CLAUDE_CODE_PLUGIN_DIRS misses the listing cache" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
+# A failed listing leaves the scan incomplete: the next prompt rescans and,
+# once the CLI recovers, names a mod only the listing reaches.
+mkdir -p "$PH/far/hooks" || die "mkdir far"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PH/far/hooks/hooks.json" || die "write far"
+printf '{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[%s],"y@mkt":[%s]}}\n' \
+  "$(entry user)" "$(entry user)" > "$PH/.claude/plugins/installed_plugins.json" \
+  || die "rewrite installed_plugins.json again"
+FAKE_LIST_RC=1 hook_event UserPromptSubmit s1
+FAKE_LIST="[{\"id\":\"far@x\",\"scope\":\"user\",\"installPath\":\"$PH/far\"}]" \
+  hook_event UserPromptSubmit s1
+assert "rescan: after a failed listing the next prompt asks again" \
+  'grep -qxF "plugin list --json" "$FAKE_BIN/calls"'
+assert "rescan: a listing-only mod is named once the CLI recovers" 'outline "  • far@x"'
+# A project .claude/skills that links to ~/.claude/skills is skipped, but
+# still watched: replacing the link with a real directory is a change.
+mkdir -p "$PH/.claude/skills" || die "mkdir home skills"
+mkdir -p "$PP/.claude" || die "mkdir project .claude"
+rm -rf "$PP/.claude/skills" && ln -s "$PH/.claude/skills" "$PP/.claude/skills" \
+  || die "link project skills to home skills"
+hook_event SessionStart s5
+rm "$PP/.claude/skills" || die "unlink project skills"
+mkdir -p "$PP/.claude/skills/lk/hooks" "$PP/.claude/skills/lk/.claude-plugin" \
+  || die "mkdir replaced project skills"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/.claude/skills/lk/hooks/hooks.json" \
+  || die "write lk"
+printf '%s\n' '{"name":"linkmod"}' > "$PP/.claude/skills/lk/.claude-plugin/plugin.json" \
+  || die "write lk plugin.json"
+hook_event UserPromptSubmit s5
+assert "rescan: a project skills link replaced by a directory is rescanned" \
+  'outgrep "• linkmod@skills-dir"'
 # A hostile session id cannot escape the state dir.
 hook_event UserPromptSubmit '../../escape'
 assert "rescan: an unsafe session id falls back to a fixed state file" \

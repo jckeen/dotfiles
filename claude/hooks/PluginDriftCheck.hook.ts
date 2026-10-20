@@ -184,6 +184,9 @@ function readJsonFile(path: string): JsonRead {
 // Every path a full scan reads or lists, with its signature taken BEFORE the
 // read, so a change that lands during the scan still trips the next rescan.
 const watched = new Map<string, string>();
+// Set when part of the scan (today: the loader listing) could not run; the
+// state then records it, and the next prompt rescans rather than trusting it.
+let scanIncomplete = false;
 
 // One stat: size, mtime, inode, or the error code. Never opens the file, so a
 // FIFO or device costs no more than a regular file.
@@ -607,11 +610,18 @@ function runListing(): Scanned[] | null {
 // The `.` keeps it apart from every per-session file (statePath's charset).
 const LISTING_CACHE = join(STATE_DIR, 'listing.cache');
 const LISTING_KEYS = [INSTALLED, KNOWN_MARKETPLACES, SETTINGS];
+// Environment the CLI's answer depends on: extra plugin dirs, and where it
+// looks for its config.
+const LISTING_ENV = ['CLAUDE_CODE_PLUGIN_DIRS', 'CLAUDE_CONFIG_DIR'];
 
 function listingKey(): string[] {
   return [
     ...LISTING_KEYS.map((path) => `K ${signature(path)} ${enc(path)}`),
     `C ${enc(PROJECT_DIRS[0] ?? '')}`,
+    ...LISTING_ENV.map((name) => {
+      const value = process.env[name];
+      return `E ${enc(name)} ${value === undefined ? '-' : enc(value)}`;
+    }),
   ];
 }
 
@@ -659,7 +669,9 @@ function loaderPlugins(): Scanned[] | null {
   const cached = cachedListing(key);
   if (cached !== null) return cached;
   const found = runListing();
-  // A failed listing is not cached, so the next scan asks again. Caching is
+  if (found === null) scanIncomplete = true;
+  // A failed listing is not cached, and it marks the scan incomplete so the
+  // next prompt rescans instead of trusting this result. Caching is
   // a convenience: a throw there must not lose the listing itself.
   if (found !== null) {
     try {
@@ -697,9 +709,11 @@ function pluginDirs(): Scanned[] {
   // resolve is scanned, and one that exists but cannot be listed is named.
   for (const project of PROJECT_DIRS) {
     const skills = join(project, '.claude', 'skills');
+    // Watched before the skip, so a link to ~/.claude/skills that is later
+    // replaced by a real directory still trips the rescan.
+    watch(skills);
     if (sameDir(skills, SKILLS_DIR)) continue;
     let entries: string[];
-    watch(skills);
     try {
       entries = readdirSync(skills).filter((d) => !d.startsWith('.'));
     } catch {
@@ -720,6 +734,7 @@ function pluginDirs(): Scanned[] {
   try {
     found.push(...(loaderPlugins() ?? []));
   } catch {
+    scanIncomplete = true;
     found.push(unverifiable('claude-plugin-list', 'installed'));
   }
   return found;
@@ -951,10 +966,12 @@ function driftWarning(manifest: Manifest): string {
 //   P <project dir>     a project dir the scan read (a cwd change is a change)
 //   W <sig> <path>      a watched path and its signature at scan time
 //   M|U <label>         a mod / unverifiable label already reported
+//   I                   the scan was incomplete: the next prompt rescans
 //   end                 the last line; without it the state is damaged
 // Paths are enc()-encoded so a newline in an untrusted path cannot forge a
 // record; labels went through shown(), which leaves no newline.
 interface ScanState {
+  incomplete: boolean;
   projects: string[];
   watched: [string, string][];
   reported: Set<string>;
@@ -979,8 +996,17 @@ function readState(): ScanState | null {
     if (lines[0] !== 'plugin-drift-state v1') return null;
     const body = lines.slice(1);
     if (body.pop() !== '' || body.pop() !== END) return null;
-    const state: ScanState = { projects: [], watched: [], reported: new Set() };
+    const state: ScanState = {
+      incomplete: false,
+      projects: [],
+      watched: [],
+      reported: new Set(),
+    };
     for (const line of body) {
+      if (line === 'I') {
+        state.incomplete = true;
+        continue;
+      }
       const tag = line.slice(0, 2);
       const rest = line.slice(2);
       if (tag === 'P ') state.projects.push(dec(rest));
@@ -1025,6 +1051,7 @@ function writeState(reported: Set<string>): void {
 
 function writeStateLines(reported: Set<string>): void {
   const lines = ['plugin-drift-state v1'];
+  if (scanIncomplete) lines.push('I');
   for (const dir of PROJECT_DIRS) lines.push(`P ${enc(dir)}`);
   for (const [path, sig] of watched) lines.push(`W ${sig} ${enc(path)}`);
   lines.push(...reported, END);
@@ -1055,7 +1082,7 @@ function reportedKeys({ mods, unknown }: ModFindings): Set<string> {
 
 // The cheap path: true when nothing the last scan read has changed.
 function unchanged(state: ScanState | null): boolean {
-  if (state === null) return false;
+  if (state === null || state.incomplete) return false;
   if (state.projects.join('\n') !== PROJECT_DIRS.join('\n')) return false;
   return state.watched.every(([path, sig]) => signature(path) === sig);
 }

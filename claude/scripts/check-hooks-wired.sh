@@ -82,7 +82,9 @@ fi
 # The filename check above passes once a hook is wired anywhere, so a second
 # registration a hook relies on would go missing unnoticed.
 EVENT_WIRING=(
-  # The mid-session mod rescan (#618); SessionStart alone misses /reload-plugins.
+  # Install drift and the full mod scan run only at SessionStart; the
+  # mid-session mod rescan (#618) only on UserPromptSubmit. It needs both.
+  "SessionStart PluginDriftCheck.hook.ts"
   "UserPromptSubmit PluginDriftCheck.hook.ts"
 )
 event_drift=0
