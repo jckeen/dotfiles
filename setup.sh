@@ -170,8 +170,13 @@ run_health_audit() {
       # names it rather than calling it an unknown directory.
       if symlink_is_legacy_skill_dir "$_src" "$_dst"; then
         if [ "$mode" = "repair" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-          symlink_migrate_legacy_skill_dir "$_src" "$_dst" \
-            || printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
+          # A failure still counts after alink relinks $dst: the migration may
+          # have archived content that changed under it (lib-symlinks.sh
+          # prints where), which needs review (issue #638).
+          if ! symlink_migrate_legacy_skill_dir "$_src" "$_dst"; then
+            printf '  \033[31mFAILED\033[0m  %s (could not convert legacy per-file links)\n' "$_label"
+            errors=$((errors + 1))
+          fi
         else
           printf '  \033[33mLEGACY\033[0m  %s (per-file links from before #592; --repair converts to a directory link)\n' "$_label"
           errors=$((errors + 1))

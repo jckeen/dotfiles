@@ -196,6 +196,48 @@ check "--repair does not touch a deselected service's config or credentials" \
 check "--repair skips Claude-only links when Claude is deselected" \
   '[ ! -e "$H/.claude/CLAUDE.md" ] && [ -L "$H/.claude/scripts/codex-review-gate.sh" ]'
 
+# ── --repair counts a migration that archived changed content (#638) ──
+# A legacy per-file skill dir whose content changes under the migration is
+# moved to .migrated-skill-dirs/kept/ and the migration returns 1; alink then
+# relinks the bundle, but the audit must still count the failure. A fake perl
+# swaps the archived SKILL.md link for a real file right after the rename.
+SKILL_NAME="$(cd "$REPO_ROOT/claude/skills" && for d in */; do [ -f "$d/SKILL.md" ] && { echo "${d%/}"; break; }; done)"
+repair_legacy() {
+  local h="$1" bin="$2"
+  seed_saved "$h" "claude"
+  mkdir -p "$h/.claude/skills/$SKILL_NAME"
+  ln -s "$REPO_ROOT/claude/skills/$SKILL_NAME/SKILL.md" "$h/.claude/skills/$SKILL_NAME/SKILL.md"
+  PATH="$bin:$PATH" HOME="$h" "$SETUP" --repair > "$OUT" 2>&1
+  echo "rc=$?" >> "$OUT"
+}
+broken_count() { sed -n 's/^  Broken: *\([0-9]*\)$/\1/p' "$OUT" | tail -1; }
+H="$(new_home)"
+mkdir -p "$ROOT/nobin"
+repair_legacy "$H" "$ROOT/nobin"
+base_broken="$(broken_count)"
+check "--repair converts a clean legacy skill dir" \
+  "[ \"\$(readlink \"$H/.claude/skills/$SKILL_NAME\")\" = \"$REPO_ROOT/claude/skills/$SKILL_NAME\" ]"
+H="$(new_home)"
+SWAP="$ROOT/swapbin"
+mkdir -p "$SWAP"
+REAL_PERL="$(command -v perl)"
+cat > "$SWAP/perl" <<FAKE
+#!/bin/bash
+"$REAL_PERL" "\$@"; rc=\$?
+if [ "\$rc" -eq 0 ] && [ "\$3" = "$H/.claude/skills/$SKILL_NAME" ] && [ -L "\$4/SKILL.md" ]; then
+  rm "\$4/SKILL.md" && printf 'mine\\n' > "\$4/SKILL.md"
+fi
+exit \$rc
+FAKE
+chmod +x "$SWAP/perl"
+repair_legacy "$H" "$SWAP"
+check "--repair reports the changed migration as FAILED and where it was kept" \
+  "grep -q 'FAILED.*skills/$SKILL_NAME' \"$OUT\" && grep -q '.migrated-skill-dirs/kept/$SKILL_NAME\.' \"$OUT\""
+check "--repair counts it: one more broken than the clean run, non-zero exit" \
+  "[ \"\$(broken_count)\" -eq \$((base_broken + 1)) ] && grep -qx 'rc=[1-9][0-9]*' \"$OUT\""
+check "--repair keeps the changed content" \
+  "grep -qx mine \"$H\"/.claude/.migrated-skill-dirs/kept/$SKILL_NAME.*/SKILL.md"
+
 echo ""
 echo "setup-services: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1

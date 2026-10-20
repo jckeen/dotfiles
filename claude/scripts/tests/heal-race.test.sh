@@ -440,6 +440,32 @@ out="$(run_check --heal)"; rc=$?
 check "swapped file: --heal links the bundle and warns about kept/" \
   "$([ "$(readlink "$DST")" = "$SRC" ] && grep -q "KEPT .*kept/demo\." <<<"$out" && echo 1 || echo 0)"
 
+# A rival that moves $dst away during the device check has won: that is the
+# rival-completed path (return 0), not a cross-filesystem error (PR #682
+# review). A fake stat plays the rival's rename on its first call.
+legacy_fixture devrace
+mkdir -p "$FIX/devrace/bin" "$FIX/devrace/rival"
+REAL_STAT="$(command -v stat)"
+cat > "$FIX/devrace/bin/stat" <<FAKE
+#!/bin/bash
+if [ ! -e "$M/raced" ]; then
+  : > "$M/raced"
+  "$REAL_PERL" -e 'rename(\$ARGV[0], \$ARGV[1]) or exit 1' "$DST" "$FIX/devrace/rival/demo"
+fi
+exec "$REAL_STAT" "\$@"
+FAKE
+chmod +x "$FIX/devrace/bin/stat"
+(
+  PATH="$FIX/devrace/bin:$PATH"
+  # shellcheck source=../../../lib-symlinks.sh
+  . "$R/lib-symlinks.sh"
+  symlink_migrate_legacy_skill_dir "$SRC" "$DST"
+) >"$M/out" 2>&1
+rc=$?
+check "device-check race: the rival fired" "$([ -e "$M/raced" ] && [ -d "$FIX/devrace/rival/demo" ] && echo 1 || echo 0)"
+check "device-check race: treated as the rival's success" \
+  "$([ "$rc" -eq 0 ] && ! grep -q 'different filesystems' "$M/out" && echo 1 || echo 0)"
+
 # The archive lives under ~/.claude but outside every link scan: an archived
 # dangling link (a source file since removed) is neither ORPHAN nor BROKEN,
 # and --fix never touches it (gate review round 4).

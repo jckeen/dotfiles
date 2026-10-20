@@ -31,6 +31,11 @@
   it is reported and left in place, still reachable. A dir the migrator
   cannot read or traverse is never judged legacy, since its content cannot
   be seen.
+- **Callers see every outcome**: `setup.sh --repair` counts a migration that
+  archived changed content as broken, even after it relinks the bundle.
+  A `$dst` that a rival moves away during the filesystem check is that
+  rival's success, not a cross-filesystem error. This holds in the shell and
+  the hook.
 - **`claude/hooks/SymlinkRepair.hook.ts`**: the SessionStart mirror had the
   same in-place `unlinkSync`. It now does the same rename-aside, with the same
   `kept/` handling and every post-rename check inside its handler, and lets

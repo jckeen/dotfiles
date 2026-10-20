@@ -141,9 +141,9 @@ else
 
   # The migration never deletes (issue #638): the old dir is archived whole
   # under ~/.claude/.migrated-skill-dirs/, links intact, and nothing is left
-  # hidden in skills/. A read-only (0555) legacy dir cannot move to another
-  # parent (rename needs write access to update its ..), so it is reported
-  # and left in place, still reachable, never half-converted.
+  # hidden in skills/. A legacy dir that cannot be moved (its parent skills/
+  # is read-only, which is what blocks rename(2) on every platform) is
+  # reported and left in place, still reachable, never half-converted.
   arch=""
   for d in "$H/.claude/.migrated-skill-dirs"/demo.*; do [ -d "$d" ] && arch="$d"; done
   ok=0
@@ -154,12 +154,14 @@ else
     H="$FIX/h-legacy-ro"
     mkdir -p "$H/.claude/skills/demo"
     ln -s "$SK/SKILL.md" "$H/.claude/skills/demo/SKILL.md"
-    chmod 555 "$H/.claude/skills/demo"
+    # Archive parent (~/.claude) stays writable; only skills/ is locked.
+    chmod 555 "$H/.claude/skills"
     hook_out="$(HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" 2>&1)"
+    chmod 755 "$H/.claude/skills"
     ok=0
     [ -d "$H/.claude/skills/demo" ] && [ ! -L "$H/.claude/skills/demo" ] \
-      && [ -f "$H/.claude/skills/demo/SKILL.md" ] && grep -q 'skills/demo' <<<"$hook_out" && ok=1
-    chmod 755 "$H/.claude/skills/demo" "$H/.claude/.migrated-skill-dirs"/demo.* 2>/dev/null
+      && [ -L "$H/.claude/skills/demo/SKILL.md" ] \
+      && grep -q 'skills/demo.*legacy skill dir move failed' <<<"$hook_out" && ok=1
     check "SymlinkRepair leaves an unmovable legacy dir in place and reports it" "$ok"
     # A dir it cannot read (0300) or traverse (0600) is never judged legacy,
     # so user content in it is never archived as "only old links".

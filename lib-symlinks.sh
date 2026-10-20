@@ -159,6 +159,8 @@ symlink_migrate_legacy_skill_dir() {
   # rename(2) cannot cross filesystems; refuse with a clear message rather
   # than let anything fall back to a non-atomic copy.
   if [ "$(_symlink_dev "$dst")" != "$(_symlink_dev "$archive")" ]; then
+    # $dst gone (or relinked) meanwhile means a rival won: its success path.
+    { [ -d "$dst" ] && [ ! -L "$dst" ]; } || return 0
     echo "symlink_migrate_legacy_skill_dir: $dst and $archive are on different filesystems" >&2
     return 1
   fi

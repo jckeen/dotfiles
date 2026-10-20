@@ -147,6 +147,15 @@ function isLegacySkillDir(src: string, dir: string): boolean {
   return true;
 }
 
+function isRealDir(p: string): boolean {
+  try {
+    const st = lstatSync(p);
+    return st.isDirectory() && !st.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 function lexists(p: string): boolean {
   try {
     lstatSync(p);
@@ -176,6 +185,8 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
     mkdirSync(archive, { recursive: true });
     // renameSync fails across filesystems rather than copying; say why.
     if (statSync(dst).dev !== statSync(archive).dev) {
+      // dst gone or relinked meanwhile means a rival won: its success path.
+      if (!isRealDir(dst)) return 'moved';
       actions.push({ kind: 'skipped', rel, reason: `${archive} is on another filesystem` });
       return 'failed';
     }
@@ -184,6 +195,7 @@ function migrateLegacySkillDir(src: string, dst: string, rel: string): MigrateRe
       return 'failed';
     }
   } catch (e) {
+    if (!isRealDir(dst)) return 'moved';
     actions.push({ kind: 'skipped', rel, reason: `legacy skill dir check failed: ${e}` });
     return 'failed';
   }
