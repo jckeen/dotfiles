@@ -196,7 +196,8 @@ owner's private queue repo (set `OPERATOR_QUEUE_REPO` and add it yourself).
 `setup.sh` copies the template to `~/.claude/settings.json` when neither that
 file nor `claude-memory` exists (`settings-example.test.sh` fails CI when a
 hook file is missing from it and not listed), and `check-hooks-wired.sh` does
-not ask a template install to wire the listed hooks. The
+not ask a template install (no `claude-memory` bootstrap) to wire the listed
+hooks; with the bootstrap present it still requires every hook. The
 hook *files* below ship in
 `claude/hooks/`; the **Wired** column is the source of truth for what's actually
 active. `check-hooks-wired.sh` runs at every `cc` launch and warns if a hook file

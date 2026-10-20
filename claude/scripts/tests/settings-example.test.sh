@@ -191,24 +191,61 @@ fi
 # itself passes --strict (its opt-outs are not drift), but a hook missing that
 # the opt-out list does NOT name is still flagged — real drift in the owner's
 # settings must not hide behind the template's list.
+# The opt-outs apply only on a template install (no claude-memory bootstrap
+# under DEV_DIR); with the private bootstrap present — the owner's layout —
+# an opted-out hook missing from settings is drift again.
 CHECKER="$REPO_ROOT/claude/scripts/check-hooks-wired.sh"
 HW_HOME="$(mktemp -d)"
-mkdir -p "$HW_HOME/.claude"
+HW_TPL_DEV="$HW_HOME/dev-template"
+HW_OWN_DEV="$HW_HOME/dev-owner"
+mkdir -p "$HW_HOME/.claude" "$HW_TPL_DEV" "$HW_OWN_DEV/claude-memory"
+: > "$HW_OWN_DEV/claude-memory/bootstrap.sh"
+hw() { HOME="$HW_HOME" DEV_DIR="$1" "$CHECKER" --strict >"$HW_HOME/out" 2>&1; }
 cp "$EXAMPLE" "$HW_HOME/.claude/settings.json"
-if HOME="$HW_HOME" "$CHECKER" --strict >"$HW_HOME/out" 2>&1; then
-  ok "check-hooks-wired --strict passes on the unmodified template"
+if hw "$HW_TPL_DEV"; then
+  ok "check-hooks-wired --strict passes on the unmodified template (template install)"
 else
   fail "check-hooks-wired --strict flags the template's own opt-outs as drift"
   sed 's/^/      | /' "$HW_HOME/out"
 fi
+optout_first="${EXAMPLE_OPT_OUT# }"; optout_first="${optout_first%% *}"
+if [ -n "$optout_first" ] && ! hw "$HW_OWN_DEV" && grep -qF "$optout_first" "$HW_HOME/out"; then
+  ok "owner layout (claude-memory bootstrap present): a missing opted-out hook fails --strict"
+else
+  fail "owner layout let the template opt-outs hide an unwired $optout_first"
+  sed 's/^/      | /' "$HW_HOME/out"
+fi
 jq 'del(.hooks.PreToolUse[0].hooks[] | select(.command | contains("conventional-commit.sh")))' \
   "$EXAMPLE" > "$HW_HOME/.claude/settings.json"
-if ! HOME="$HW_HOME" "$CHECKER" --strict >"$HW_HOME/out" 2>&1 \
-  && grep -q 'conventional-commit.sh' "$HW_HOME/out"; then
+if ! hw "$HW_TPL_DEV" && grep -q 'conventional-commit.sh' "$HW_HOME/out"; then
   ok "check-hooks-wired --strict still flags a missing hook the opt-out list does not name"
 else
   fail "check-hooks-wired hid real drift (conventional-commit.sh unwired)"
   sed 's/^/      | /' "$HW_HOME/out"
+fi
+
+# setup.sh's summary warning (warn_unwired_hooks) delegates to the checker, so
+# a settings.json with only an unrelated custom hook still warns, and the
+# unmodified template does not.
+eval "$(sed -n '/^warn_unwired_hooks()/,/^}/p' "$SETUP")"
+mkdir -p "$HW_HOME/.claude/hooks"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo custom"}]}]}}\n' \
+  > "$HW_HOME/.claude/settings.json"
+warn_out="$(HOME_DIR="$HW_HOME" DEV_DIR="$HW_TPL_DEV" DOTFILES_DIR="$REPO_ROOT" \
+  CLAUDE_SETTINGS="$HW_HOME/.claude/settings.json" SETTINGS_EXAMPLE="$EXAMPLE" warn_unwired_hooks)"
+if grep -q 'does not register every dotfiles hook' <<<"$warn_out" \
+  && grep -q 'conventional-commit.sh' <<<"$warn_out"; then
+  ok "setup summary warns when settings.json holds only an unrelated custom hook"
+else
+  fail "setup summary missed unwired dotfiles hooks behind a custom hook: $warn_out"
+fi
+cp "$EXAMPLE" "$HW_HOME/.claude/settings.json"
+warn_out="$(HOME_DIR="$HW_HOME" DEV_DIR="$HW_TPL_DEV" DOTFILES_DIR="$REPO_ROOT" \
+  CLAUDE_SETTINGS="$HW_HOME/.claude/settings.json" SETTINGS_EXAMPLE="$EXAMPLE" warn_unwired_hooks)"
+if [ -z "$warn_out" ]; then
+  ok "setup summary stays quiet on the unmodified template"
+else
+  fail "setup summary warned on the unmodified template: $warn_out"
 fi
 rm -rf "$HW_HOME"
 

@@ -74,6 +74,33 @@ else
   ok "bash 3.2 render skipped (STATUSLINE_BASH3 unset) # SKIP"
 fi
 
+# The git-info cache is keyed per directory. macOS has no md5sum, and a key
+# that collapsed to one value would show one repo's status in every other, so
+# with md5sum (and md5) hidden from PATH two repos must still get two keys.
+FARM="$T/farm"
+mkdir -p "$FARM"
+IFS=: read -r -a _path_dirs <<<"$PATH"
+for _d in "${_path_dirs[@]}"; do
+  [ -d "$_d" ] || continue
+  for _f in "$_d"/*; do
+    _b="${_f##*/}"
+    case "$_b" in md5sum|md5) continue ;; esac
+    [ -e "$FARM/$_b" ] || [ ! -x "$_f" ] || ln -s "$_f" "$FARM/$_b"
+  done
+done
+mkdir -p "$T/proj2"
+git -C "$T/proj2" init -q -b other
+for _dir in "$T/proj" "$T/proj2"; do
+  jq -nc --arg cwd "$_dir" '{model: {display_name: "M"}, cwd: $cwd}' \
+    | HOME="$T/hm" XDG_RUNTIME_DIR="$T/run-nomd5" PATH="$FARM" bash "$STATUSLINE" >/dev/null 2>&1
+done
+_keys="$(find "$T/run-nomd5/claude-statusline" -type f 2>/dev/null | wc -l | tr -d ' ')"
+if [ ! -e "$FARM/md5sum" ] && [ "$_keys" -eq 2 ]; then
+  ok "without md5sum, two directories get two distinct status-line cache keys"
+else
+  fail "cache keys collided without md5sum ($_keys cache files for 2 dirs)"
+fi
+
 # Bash 4+ only: readarray/mapfile (4.0), printf %(fmt)T (4.2), associative
 # arrays and namerefs (4.0/4.3), case-modifying expansions (4.0), |& and &>>.
 if grep -nE '\b(readarray|mapfile)\b|%\([^)]*\)T|declare -[A-Za-z]*A|local -n|\$\{[A-Za-z_]+(,,|\^\^)|\|&|&>>' \

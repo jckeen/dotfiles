@@ -123,7 +123,17 @@ fmt_tokens() {
 # --- Git info (cached 5s) ---
 CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/claude-statusline"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
-CACHE_KEY=$(echo "$PWD" | md5sum 2>/dev/null | cut -d' ' -f1 || echo "default")
+# One cache file per directory. macOS has no md5sum (its `md5 -q` prints the
+# bare digest), so fall back through md5 to POSIX cksum; a key that collapsed
+# to one value would share one repo's git status across every directory.
+if command -v md5sum >/dev/null 2>&1; then
+  CACHE_KEY=$(printf '%s\n' "$PWD" | md5sum | cut -d' ' -f1)
+elif command -v md5 >/dev/null 2>&1; then
+  CACHE_KEY=$(printf '%s\n' "$PWD" | md5 -q)
+else
+  CACHE_KEY=$(printf '%s\n' "$PWD" | cksum | cut -d' ' -f1)
+fi
+[ -n "$CACHE_KEY" ] || CACHE_KEY="default"
 CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
 NOW=$(date +%s)
 NEED_REFRESH=1

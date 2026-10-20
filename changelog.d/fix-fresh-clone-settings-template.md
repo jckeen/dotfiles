@@ -11,12 +11,17 @@
   project's whole `permissions` block, deny rules included, which is only
   safe beside a global allowlist the template does not ship.
   `OperatorQueueReminder.hook.sh` defaults to the owner's private queue
-  repo. `check-hooks-wired.sh` reads the same list, so it does not ask a
-  template install to wire them. Any other missing hook still reports as
+  repo. `check-hooks-wired.sh` reads the same list, but only on a template
+  install: with no `claude-memory/bootstrap.sh` beside the checkout, which
+  is the condition the seed uses, it does not ask the user to wire them.
+  With the private bootstrap present, every hook must still be wired. Any
+  other missing hook still reports as
   drift.
 - **`claude/statusline.sh`**: runs on bash 3.2. The template runs it as
   `bash …`, which is system bash on macOS. A read loop replaces `readarray`,
-  and `date` replaces printf's `%(…)T`. The new
+  and `date` replaces printf's `%(…)T`. The per-directory git cache key falls
+  back from `md5sum` to `md5 -q` to `cksum`; on macOS every directory had
+  shared one key. The new
   `claude/scripts/tests/statusline.test.sh` (run from
   `setup-dry-run.test.sh`) renders it under the default bash,
   `bash --posix`, and `$STATUSLINE_BASH3` when that names a bash 3.x. The
@@ -36,8 +41,10 @@
   user-scope plugin install creates a `settings.json` that holds only
   `enabledPlugins`. `--dry-run` previews the copy, and the summary says
   which of the two happened. A real run that leaves hooks linked with
-  `settings.json` missing, or present but registering no hooks, ends with a
-  warning and the fix. Before, such a clone reported a successful setup
+  `settings.json` missing ends with a warning and the fix. So does one whose
+  settings lack any expected dotfiles hook registration, judged by
+  `check-hooks-wired.sh` itself, so a file holding only custom hooks still
+  warns. Before, such a clone reported a successful setup
   while every hook and the status line were inert.
 - **`claude/scripts/tests/settings-example.test.sh`** (new; run from
   `setup-dry-run.test.sh`): the public counterpart of

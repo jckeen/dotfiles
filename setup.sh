@@ -2639,16 +2639,27 @@ esac
 # Hooks linked but nothing registering them: say so loudly, since every
 # safety hook is silently off otherwise (#588). A dry-run links nothing, so
 # it only previews the seed above.
-if service_selected claude && [ "${DRY_RUN:-0}" != "1" ] \
-  && [ -e "$HOME_DIR/.claude/hooks" ] && [ ! -e "$CLAUDE_SETTINGS" ]; then
-  echo "  !! WARNING: ~/.claude/settings.json is missing — the linked hooks and status line will NOT run."
-  echo "     Fix: cp $SETTINGS_EXAMPLE ~/.claude/settings.json"
-elif service_selected claude && [ "${DRY_RUN:-0}" != "1" ] \
-  && [ -e "$HOME_DIR/.claude/hooks" ] && [ -f "$CLAUDE_SETTINGS" ] \
-  && command -v jq &>/dev/null && ! jq -e '.hooks | length > 0' "$CLAUDE_SETTINGS" &>/dev/null; then
-  # e.g. a settings.json a plugin install wrote before this seed existed.
-  echo "  !! WARNING: ~/.claude/settings.json registers no hooks — the linked hooks will NOT run."
-  echo "     Fix: merge the hooks and statusLine blocks of $SETTINGS_EXAMPLE into it."
+# A settings.json that exists but lacks the dotfiles registrations (e.g. one a
+# plugin install wrote before the seed existed, or one with only custom hooks)
+# is judged by check-hooks-wired.sh itself — the same template-aware rule the
+# `cc` launch check applies — rather than a second copy of that logic here.
+warn_unwired_hooks() {
+  [ -e "$HOME_DIR/.claude/hooks" ] || return 0
+  if [ ! -e "$CLAUDE_SETTINGS" ]; then
+    echo "  !! WARNING: ~/.claude/settings.json is missing — the linked hooks and status line will NOT run."
+    echo "     Fix: cp $SETTINGS_EXAMPLE ~/.claude/settings.json"
+    return 0
+  fi
+  local hw_out
+  if ! hw_out="$(HOME="$HOME_DIR" DEV_DIR="$DEV_DIR" \
+    "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" --strict --quiet 2>&1)"; then
+    echo "  !! WARNING: ~/.claude/settings.json does not register every dotfiles hook — those will NOT run:"
+    printf '%s\n' "$hw_out" | sed 's/^/     /'
+    echo "     Fix: merge the matching entries from $SETTINGS_EXAMPLE into it."
+  fi
+}
+if service_selected claude && [ "${DRY_RUN:-0}" != "1" ]; then
+  warn_unwired_hooks
 fi
 if [ "${JULES_INSTALLED:-0}" -eq 1 ]; then
   echo "  jules_installed=1  (routine lane: 'jules login' for the CLI, ~/.config/jules/api-key for dispatch)"
