@@ -11,7 +11,9 @@
 # issue source: with no queue file (or one carrying the historical banner) the
 # hook lists operator-action issues through a fake `gh`, caches them, falls
 # back to the cache when GitHub is unreachable, and says so instead of going
-# silent when there is neither. Run directly; exit 1 on any failure.
+# silent when there is neither; bounds its snapshot of an oversized cache,
+# cleans up interrupted refreshes' temporaries, and prints status only
+# (#652). Run directly; exit 1 on any failure.
 set -uo pipefail
 
 resolve_script_path() {
@@ -143,7 +145,7 @@ assert "31d: stale" "line_for boundary-31 | grep -qF -- '$STALE'"
 assert "undated item: stale" "line_for undated | grep -qF -- '$STALE'"
 assert "annotated added: date prefix parsed" "line_for annotated-added | grep -qF 'added 5d ago' && ! line_for annotated-added | grep -qF -- '$STALE'"
 assert "header counts items and stale ones" "outgrep 'Operator action queue — 8 open item(s), 4 stale (>30d since added/verified)'"
-assert "trailer asks for a verified bump" "outgrep 'set/bump its \`verified:\` date'"
+assert "trailer describes the verified date, directs nothing (#652)" "outgrep 'its verified date is its \`verified:\` line' && ! outgrep 'set/bump' && ! outgrep 're-check it'"
 
 # ── deadline ordering and flags unchanged ───────────────────────────────
 run_hook "## no-deadline-old
@@ -382,7 +384,10 @@ run_in "$FX/dotfiles" "## dot-long
 assert "long action truncated" "line_for dot-long | grep -qF '… [truncated; full text in the queue file]' && [ \"\$(line_for dot-long | wc -c)\" -lt 800 ]"
 
 # ── issue source ────────────────────────────────────────────────────────
-iso() { date -u -d "$1 days" +%Y-%m-%dT%H:%M:%SZ; }
+# The local calendar day at a fixed time: the hook takes createdAt[0:10] and
+# ages it against the local today, so a UTC day (a day ahead on a US evening)
+# would shift every expected age by one.
+iso() { date -d "$1 days" +%Y-%m-%dT12:00:00Z; }
 ISSUES="$FX/issues.json"
 cat > "$ISSUES" <<JSON
 [
@@ -419,7 +424,8 @@ assert "issues: project label, body deadline/action, newest comment as verified"
 assert "issues: body project line and first-line action" "outgrep '  stringer: 1 item (oldest 90d)'"
 assert "issues: null body renders a placeholder action, unscoped" "outgrep '  (no project): 1 item (oldest 2d)'"
 assert "issues: footer names the gh command" "outgrep 'gh issue list -R github.com/jckeen/claude-memory --label operator-action --limit 1000'"
-assert "issues: trailer asks for a comment and close-when-done" "outgrep 'comment on the issue' && outgrep 'close it only when it is done'"
+# #652: the output is status only — no instruction to re-check, comment or close.
+assert "issues: trailer describes the verified date, directs nothing" "outgrep 'verified date is the newer of the issue body' && ! outgrep 'comment on the issue' && ! outgrep 'close it' && ! outgrep 're-check it'"
 assert "issues: cache written owner-only" "[ -f '$CACHEF' ] && [ \"\$(stat -c %a '$CACHEF')\" = 600 ]"
 
 run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_SHOW_ALL=1
@@ -631,25 +637,73 @@ run_issues PATH="$FX/swapbin:$PATH"
 assert "a cache swapped mid-render does not silence the hook" "[ -e '$FX/swapped' ] && outgrep 'dot-issue (#12)'"
 rm -rf "$FX/swapbin" "$FX/swapped"
 
-# A refresh that replaces the cache just before the hook's copy and then dies
-# is seen in flight: the state is read after the copy. A `cp` wrapper injects
-# the replacement at exactly that point.
+# A refresh that replaces the cache during the hook's copy and then dies is
+# seen in flight: the state is read after the copy. A `head` wrapper (the
+# copy's reader) injects the replacement after the cache was opened, so the
+# snapshot is the one file it opened, whole, never a mix.
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES"
 mkdir -p "$FX/cpbin"
-cat > "$FX/cpbin/cp" <<SWAP
+cat > "$FX/cpbin/head" <<SWAP
 #!/usr/bin/env bash
 if [ ! -e "$FX/swapped" ]; then
   : > "$FX/swapped"
   touch "$CACHEF.inflight"
   printf '# Operator-action issues\n' > "$CACHEF.swap" && mv -f "$CACHEF.swap" "$CACHEF"
 fi
-exec "$(command -v cp)" "\$@"
+exec "$(command -v head)" "\$@"
 SWAP
-chmod +x "$FX/cpbin/cp"
+chmod +x "$FX/cpbin/head"
 run_issues PATH="$FX/cpbin:$PATH"
-assert "a dead refresh's replacement before the copy is not shown as settled" "[ -e '$FX/swapped' ] && outgrep 'a refresh is running or was interrupted'"
+assert "a dead refresh's replacement during the copy is not shown as settled" "[ -e '$FX/swapped' ] && outgrep 'a refresh is running or was interrupted'"
+assert "the snapshot is the file opened before the replacement" "outgrep 'dot-issue (#12)'"
 rm -rf "$FX/cpbin" "$FX/swapped"
+
+# An oversized cache is bounded before the copy: the snapshot never holds
+# more than the render limit (64 KiB) plus one byte, however big the cache
+# grows. An `rm` wrapper records the size of the snapshot the trap removes.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES"
+{ cat "$CACHEF"; awk 'BEGIN { for (i = 1; i <= 40000; i++) printf "\n## big-%d\n- action: %0100d\n", i, 0 }'; } > "$CACHEF.big"   # ~5 MB
+mv -f "$CACHEF.big" "$CACHEF"
+mkdir -p "$FX/rmbin"
+cat > "$FX/rmbin/rm" <<RMW
+#!/usr/bin/env bash
+for a in "\$@"; do [ -f "\$a" ] && wc -c < "\$a" >> "$FX/rm-sizes"; done
+exec "$(command -v rm)" "\$@"
+RMW
+chmod +x "$FX/rmbin/rm"
+: > "$FX/rm-sizes"
+run_issues PATH="$FX/rmbin:$PATH"
+assert "oversized cache: one line, not rendered" "[ \"\$(printf '%s\n' \"\$out\" | wc -l)\" -eq 1 ] && outgrep 'exceeds 65536 bytes' && ! outgrep 'big-1'"
+assert "oversized cache: the snapshot copy is size-bounded" "[ -s '$FX/rm-sizes' ] && [ \"\$(sort -n '$FX/rm-sizes' | tail -n 1)\" -le 65537 ]"
+rm -rf "$FX/rmbin" "$FX/rm-sizes"
+
+# Refresh temporaries: a refresh killed outright (-9) leaves its .raw/.new
+# files behind; the next refresh recovering its in-flight marker removes
+# exactly those (this cache's own mktemp names), nothing else in the dir.
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"
+touch "$CACHEF.inflight" "$CACHEF.raw.AbC123" "$CACHEF.new.dEf456" "$CACHEF.raw.not-mktemp-shape" "${CACHEF%/*}/unrelated.raw.AbC123"
+touch -d '11 minutes ago' "$CACHEF"
+( cd "$FX/dotfiles" && env HOME="$IH" FAKE_GH_JSON="$FAKEBIN/none.json" bash "$HOOK" --refresh )
+assert "recovery removes a killed refresh's temporaries" "[ ! -e '$CACHEF.raw.AbC123' ] && [ ! -e '$CACHEF.new.dEf456' ]"
+assert "recovery leaves files outside the refresh's naming pattern" "[ -e '$CACHEF.raw.not-mktemp-shape' ] && [ -e '${CACHEF%/*}/unrelated.raw.AbC123' ]"
+
+# A refresh shell sent TERM mid-fetch removes its own temporaries on the way
+# out (after its gh finishes: bash runs the trap once the command returns).
+fresh_home
+run_issues FAKE_GH_JSON="$FAKEBIN/none.json"
+touch -d '11 minutes ago' "$CACHEF"
+: > "$FX/gh.log"
+( cd "$FX/dotfiles" && exec env HOME="$IH" FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=1 FAKE_GH_LOG="$FX/gh.log" bash "$HOOK" --refresh ) &
+victim=$!
+for _ in $(seq 1 60); do grep -q graphql "$FX/gh.log" && break; sleep 0.05; done
+kill -TERM "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+for _ in $(seq 1 100); do grep -q gh-done "$FX/gh.log" && break; sleep 0.05; done
+sleep 0.3
+assert "a TERMed refresh leaves no .raw/.new temporaries" "! compgen -G '$CACHEF.raw.*' >/dev/null && ! compgen -G '$CACHEF.new.*' >/dev/null"
 
 # No temp dir for the snapshot: a warning line, never silence over a known
 # failure.
