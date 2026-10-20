@@ -18,13 +18,17 @@
   archive. Content that changed mid-migration goes to the archive's `kept/`
   and is reported. `check-claude.sh` then warns `KEPT` on every run until
   the user removes it.
-- **Archive hygiene**: its top-level entries hold only old symlinks and are
-  safe to delete by hand; anything under `kept/` is user content to review
-  (`CLAUDE-GUIDE.md`). `check-claude.sh` prunes the archive from its orphan,
-  broken-link and backup scans, so an archived dangling link is never
-  `ORPHAN` and `--fix` never touches it. `check-deployed-orphans.sh` lists it
+- **Archive hygiene**: `check-claude.sh` flags every archived entry that is
+  not only old links as `KEPT`, wherever it landed. An entry is safe to delete
+  by hand only if it is not flagged (`CLAUDE-GUIDE.md`). The orphan,
+  broken-link and backup scans skip the archive by a quoted `case` prefix
+  match, not `find -path`, which read glob characters in `$HOME` as a
+  pattern. An archived dangling link is therefore never `ORPHAN`, and `--fix`
+  never touches the archive. `check-deployed-orphans.sh` lists it
   as known state. A read-only legacy dir cannot move to another parent, so
-  it is reported and left in place, still reachable.
+  it is reported and left in place, still reachable. A dir the migrator
+  cannot read or traverse is never judged legacy, since its content cannot
+  be seen.
 - **`claude/hooks/SymlinkRepair.hook.ts`**: the SessionStart mirror had the
   same in-place `unlinkSync`. It now does the same rename-aside, with the same
   `kept/` handling and every post-rename check inside its handler, and lets
@@ -36,4 +40,5 @@
   - A regular file that appears at `$dst` survives, and so does one swapped
     into the moved dir, which lands under `kept/` and is warned about.
   - Further cases cover the archive name and links, the hook's archive, the
-    read-only case, and the archived-dangling-link scans.
+    read-only and unreadable cases, the `KEPT` audit, and the scans run
+    with glob characters in `$HOME`.

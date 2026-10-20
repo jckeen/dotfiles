@@ -121,6 +121,10 @@ symlink_enumerate() {
 symlink_is_legacy_skill_dir() {
   local src="$1" dst="$2" entry
   [ -d "$dst" ] && [ ! -L "$dst" ] || return 1
+  # Unreadable (no r): the glob lists nothing, so it would look empty. Not
+  # traversable (no x): every -e/-L fails, so entries would look absent.
+  # Either way we cannot see its content, so it is not legacy (issue #638).
+  [ -r "$dst" ] && [ -x "$dst" ] || return 1
   for entry in "$dst"/* "$dst"/.*; do
     case "${entry##*/}" in .|..) continue ;; esac
     [ -e "$entry" ] || [ -L "$entry" ] || continue  # unmatched glob
@@ -142,9 +146,9 @@ symlink_is_legacy_skill_dir() {
 # renamed (rename(2), atomic) into the archive
 #   <claude>/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>
 # beside skills/, where no skill loader looks and no link scan reaches. It is
-# kept on purpose. Its top-level entries hold only old symlinks and are safe
-# to delete by hand; anything under kept/ is user content that changed during
-# a migration, to review. A run whose rename fails because a rival already
+# kept on purpose. check-claude.sh flags every archived entry that is not
+# only old links (KEPT); an entry is safe to delete by hand only if it is not
+# flagged. Content that changed during a migration goes to kept/. A run whose rename fails because a rival already
 # moved or relinked $dst returns 0 and lets the caller judge the settled state.
 symlink_migrate_legacy_skill_dir() {
   local src="$1" dst="$2" name archive dest

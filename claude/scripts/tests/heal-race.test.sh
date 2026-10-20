@@ -456,6 +456,59 @@ check "archived dangling link: not ORPHAN or BROKEN" \
 check "archived dangling link: --fix leaves the archive alone" \
   "$([ -n "$arch" ] && [ -L "$arch/gone.md" ] && echo 1 || echo 0)"
 
+# The same with glob characters in every path (HOME and the dotfiles copy
+# under "glob[x]"): `find -path` read the archive path as a pattern, so it was
+# not pruned and --fix deleted archived links (gate review round 5). All three
+# scans: orphan (dangling link into dotfiles), broken (dangling link
+# elsewhere) and stale backup (x.backup beside a working link x).
+legacy_fixture "glob[x]"
+ln -s "$SRC/gone.md" "$DST/gone.md"
+out="$(run_check --heal)"; rc=$?
+arch=""
+for d in "$H/$ARCH_REL"/demo.*; do [ -d "$d" ] && arch="$d"; done
+ln -s "$FIX/nowhere" "$arch/elsewhere"
+ln -s "$SRC/SKILL.md" "$arch/x"
+# A link, so the entry stays links-only (not KEPT) yet matches *.backup.
+ln -s "$SRC/f1" "$arch/x.backup"
+out="$(run_check --heal)"; rc=$?
+out2="$(run_check --heal --fix)"; rc2=$?
+check "glob chars in HOME: --heal exits 0 twice" \
+  "$([ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && echo 1 || echo 0)"
+check "glob chars in HOME: archive in no scan (ORPHAN/BROKEN/STALE/CLEANED/KEPT)" \
+  "$(! grep -qE 'ORPHAN|BROKEN|STALE|CLEANED|KEPT' <<<"$out$out2" && echo 1 || echo 0)"
+check "glob chars in HOME: --fix leaves every archived entry" \
+  "$([ -L "$arch/gone.md" ] && [ -L "$arch/elsewhere" ] && [ -L "$arch/x.backup" ] && echo 1 || echo 0)"
+
+# Every top-level archive entry that is not links-only is flagged KEPT,
+# wherever it landed (round 5: content left at the archive root when the move
+# into kept/ failed went unreported).
+legacy_fixture keptroot
+mkdir -p "$H/$ARCH_REL/demo.20261019T000000Z.1"
+ln -s "$SRC/SKILL.md" "$H/$ARCH_REL/demo.20261019T000000Z.1/SKILL.md"
+mkdir -p "$H/$ARCH_REL/demo.20261019T000000Z.2"
+printf 'mine\n' > "$H/$ARCH_REL/demo.20261019T000000Z.2/notes.md"
+out="$(run_check --heal)"; rc=$?
+check "archive audit: content at the archive root is KEPT" \
+  "$(grep -q 'KEPT .*demo\.20261019T000000Z\.2' <<<"$out" && echo 1 || echo 0)"
+check "archive audit: a links-only entry is not flagged" \
+  "$(! grep -q 'KEPT .*demo\.20261019T000000Z\.1' <<<"$out" && echo 1 || echo 0)"
+
+# A dir the migrator cannot read (0300) or traverse (0600) is never judged
+# legacy: its listing looks empty or its entries look absent, so it would be
+# archived as "only old links" (round 5). It is left in place, untouched.
+if [ "$(id -u)" -ne 0 ]; then
+  for mode in 300 600; do
+    new_fixture "perm$mode"
+    mkdir -p "$DST"
+    printf 'mine\n' > "$DST/notes.md"
+    chmod "$mode" "$DST"
+    out="$(run_check --heal)"; rc=$?
+    chmod 755 "$DST"
+    check "unreadable dir ($mode): left in place with its content" \
+      "$([ -d "$DST" ] && [ ! -L "$DST" ] && [ -f "$DST/notes.md" ] && [ ! -e "$H/$ARCH_REL" ] && echo 1 || echo 0)"
+  done
+fi
+
 # ── 5. CLI stack advisory (issue #605) ───────────────────────────────────
 new_fixture tools
 out="$(run_check --heal)"; rc=$?

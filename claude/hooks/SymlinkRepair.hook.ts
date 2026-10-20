@@ -135,7 +135,9 @@ function linkDir(
 // Pre-#592 installs hold ~/.claude/skills/<name>/ as a real directory of
 // per-file links. It is legacy only when every entry is a link to exactly
 // <src>/<same name> (live or dangling) — the same test as lib-symlinks.sh's
-// symlink_is_legacy_skill_dir.
+// symlink_is_legacy_skill_dir. A dir it cannot read (readdirSync) or traverse
+// (lstatSync) throws; every caller treats a throw as "not legacy", so unseen
+// content is never archived as old links (issue #638).
 function isLegacySkillDir(src: string, dir: string): boolean {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
@@ -159,8 +161,8 @@ function lexists(p: string): boolean {
 // unlink(dst/x) delete the real src/x, and Node cannot unlink "only if still a
 // symlink". So the whole dir is renamed into the same archive lib-symlinks.sh
 // uses, ~/.claude/.migrated-skill-dirs/<name>.<UTC timestamp>.<pid>. Its
-// top-level entries hold only old symlinks and are safe to delete by hand;
-// anything under kept/ is user content that changed mid-migration, to review.
+// entries are safe to delete by hand only if check-claude.sh does not flag
+// them KEPT; content that changed mid-migration goes to kept/.
 //   'moved'      dst is gone (archived, kept, or a rival moved it); caller links it
 //   'not-legacy' dst holds other content; touched nothing
 //   'failed'     reported in actions; dst left as found

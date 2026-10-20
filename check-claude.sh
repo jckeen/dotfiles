@@ -184,7 +184,7 @@ echo "Checking for self-links in skill bundles..."
 while IFS= read -r link; do
   bundle="$(dirname "$link")"
   [ "$(readlink "$link")" = "$bundle" ] || continue
-  label="${link#$CLAUDE_SRC/}"
+  label="${link#"$CLAUDE_SRC"/}"
   if [ "$FIX" -eq 1 ]; then
     # set +e: a failed rm (read-only bundle) must not print CLEANED.
     if rm "$link" 2>/dev/null; then
@@ -201,12 +201,31 @@ while IFS= read -r link; do
 done < <(find "$CLAUDE_SRC/skills" -mindepth 2 -maxdepth 2 -type l 2>/dev/null)
 
 # Legacy skill dirs that migration archived (lib-symlinks.sh, issue #638) sit
-# in ~/.claude/.migrated-skill-dirs/. Every scan below prunes it: its links are
-# old by design and --fix must never touch it. Content under kept/ changed
-# mid-migration and may be the user's own work, so it is reported every run.
-for kept in "$CLAUDE_DST/.migrated-skill-dirs/kept"/*; do
-  [ -e "$kept" ] || [ -L "$kept" ] || continue
-  yellow "KEPT    ${kept#$CLAUDE_DST/} (changed during a skill migration — review it, then remove it yourself)"
+# in ~/.claude/.migrated-skill-dirs/. Every scan below skips it: its links are
+# old by design and --fix must never touch it. The skip is a quoted `case`
+# prefix match, never `find -path`, which would read glob characters in $HOME
+# as a pattern. Each top-level entry that is not links-only (a link, or a
+# readable dir holding only links) may be the user's own work, wherever it
+# landed (kept/ or the archive root), so it is reported every run.
+ARCHIVE="$CLAUDE_DST/.migrated-skill-dirs"
+in_archive() { case "$1" in "$ARCHIVE"|"$ARCHIVE"/*) return 0 ;; esac; return 1; }
+archive_links_only() {
+  local e="$1" x
+  [ -L "$e" ] && return 0
+  [ -d "$e" ] && [ -r "$e" ] && [ -x "$e" ] || return 1
+  for x in "$e"/* "$e"/.*; do
+    case "${x##*/}" in .|..) continue ;; esac
+    [ -L "$x" ] && continue
+    [ -e "$x" ] && return 1  # unmatched globs do not exist
+  done
+  return 0
+}
+for entry in "$ARCHIVE"/* "$ARCHIVE"/.* "$ARCHIVE/kept"/* "$ARCHIVE/kept"/.*; do
+  case "${entry##*/}" in .|..) continue ;; esac
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  [ "$entry" = "$ARCHIVE/kept" ] && continue
+  archive_links_only "$entry" && continue
+  yellow "KEPT    ${entry#"$CLAUDE_DST"/} (not only old links: may be your own work — review it, then remove it yourself)"
   WARNINGS=$((WARNINGS + 1))
 done
 
@@ -215,10 +234,11 @@ done
 echo ""
 echo "Checking for orphaned symlinks..."
 while IFS= read -r link; do
+  in_archive "$link" && continue
   target="$(readlink "$link")"
   # Only check symlinks that point into our dotfiles repo
   if [[ "$target" == "$DOTFILES_DIR"* ]] && [ ! -e "$link" ]; then
-    label="${link#$CLAUDE_DST/}"
+    label="${link#"$CLAUDE_DST"/}"
     if [ "$FIX" -eq 1 ]; then
       if rm "$link" 2>/dev/null; then
         green "CLEANED  $label (removed orphaned link -> $target)"
@@ -232,24 +252,26 @@ while IFS= read -r link; do
       ERRORS=$((ERRORS + 1))
     fi
   fi
-done < <(find "$CLAUDE_DST" -maxdepth 3 -path "$CLAUDE_DST/.migrated-skill-dirs" -prune -o -type l -print 2>/dev/null)
+done < <(find "$CLAUDE_DST" -maxdepth 3 -type l 2>/dev/null)
 
 # Check for broken symlinks (pointing elsewhere, not into dotfiles)
 echo ""
 echo "Checking for broken symlinks..."
 while IFS= read -r broken; do
+  in_archive "$broken" && continue
   target="$(readlink "$broken")"
   # Skip dotfiles-managed links (already handled above)
   [[ "$target" == "$DOTFILES_DIR"* ]] && continue
   red "BROKEN  $broken -> $target"
   ERRORS=$((ERRORS + 1))
-done < <(find "$CLAUDE_DST" -maxdepth 3 -path "$CLAUDE_DST/.migrated-skill-dirs" -prune -o -xtype l -print 2>/dev/null)
+done < <(find "$CLAUDE_DST" -maxdepth 3 -xtype l 2>/dev/null)
 
 # Check for stale backup files created by setup.sh's link_file()
 # Only flags .backup files where a working symlink exists for the original
 echo ""
 echo "Checking for stale backups..."
 while IFS= read -r backup; do
+  in_archive "$backup" && continue
   original="${backup%.backup}"
   # Only flag if the non-backup version exists and is a working symlink
   # (meaning setup.sh already replaced it successfully)
@@ -273,7 +295,7 @@ while IFS= read -r backup; do
       WARNINGS=$((WARNINGS + 1))
     fi
   fi
-done < <(find "$CLAUDE_DST" -maxdepth 3 -path "$CLAUDE_DST/.migrated-skill-dirs" -prune -o -name "*.backup" -print 2>/dev/null)
+done < <(find "$CLAUDE_DST" -maxdepth 3 -name "*.backup" 2>/dev/null)
 
 # CLI stack the instructions mandate (issue #605; silent if all present).
 # Advisory only: see check_cli_stack in lib-checks.sh.

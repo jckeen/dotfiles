@@ -161,6 +161,20 @@ else
       && [ -f "$H/.claude/skills/demo/SKILL.md" ] && grep -q 'skills/demo' <<<"$hook_out" && ok=1
     chmod 755 "$H/.claude/skills/demo" "$H/.claude/.migrated-skill-dirs"/demo.* 2>/dev/null
     check "SymlinkRepair leaves an unmovable legacy dir in place and reports it" "$ok"
+    # A dir it cannot read (0300) or traverse (0600) is never judged legacy,
+    # so user content in it is never archived as "only old links".
+    for mode in 300 600; do
+      H="$FIX/h-perm$mode"
+      mkdir -p "$H/.claude/skills/demo"
+      printf 'mine\n' > "$H/.claude/skills/demo/notes.md"
+      chmod "$mode" "$H/.claude/skills/demo"
+      HOME="$H" DOTFILES_DIR="$FIX" bun "$HOOK" >/dev/null 2>&1
+      chmod 755 "$H/.claude/skills/demo"
+      ok=0
+      [ -d "$H/.claude/skills/demo" ] && [ ! -L "$H/.claude/skills/demo" ] \
+        && [ -f "$H/.claude/skills/demo/notes.md" ] && [ ! -e "$H/.claude/.migrated-skill-dirs" ] && ok=1
+      check "SymlinkRepair leaves an unreadable ($mode) dir untouched" "$ok"
+    done
   fi
 
   # Real content at the destination: left alone and reported.
