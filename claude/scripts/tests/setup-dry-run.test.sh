@@ -642,6 +642,15 @@ else
   fail "setup-services suite failed (output above)"
 fi
 
+# Command parsing in the PreToolUse Bash hooks (worktree-guard,
+# conventional-commit, PreMergeCodexHarvest) rides here too, so the existing
+# CI step covers it.
+if "$REPO_ROOT/claude/scripts/tests/hook-guards.test.sh"; then
+  ok "hook-guards suite passed"
+else
+  fail "hook-guards suite failed (output above)"
+fi
+
 echo ""
 echo "setup-dry-run: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1
