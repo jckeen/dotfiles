@@ -1382,6 +1382,12 @@ class ReceiptTests(unittest.TestCase):
                     (self.repo / "code.txt").write_text("unstaged\n")
                 else:
                     (self.repo / "new.txt").write_text("untracked\n")
+                if change == "base":
+                    # The base is pinned at capture (#680): completing still
+                    # works, and the push check refuses the absorbed branch.
+                    self.complete(snapshot)
+                    self.check(False)
+                    continue
                 self.complete(snapshot, ok=False)
 
     def test_change_after_completion_blocks(self):
@@ -3350,8 +3356,15 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         subprocess.check_call(["git", "-C", str(boundary), "config", "core.worktree", str(decoy)])
         # The redirect alone is benign: the boundary is still inspected and allowed.
         self.run_helper(
-            "begin", "--repo", str(self.repo), "--base", "main",
-            "--scope", "committed", "--reviewer", "codex",
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
         )
         (boundary / "CLAUDE.md").write_text("EVIL\n")
         refused = self.begin_output()
@@ -3365,8 +3378,15 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         subprocess.check_call(["git", "-C", str(boundary), "add", "claude.md"])
         subprocess.check_call(["git", "-C", str(boundary), "config", "core.ignoreCase", "true"])
         self.run_helper(
-            "begin", "--repo", str(self.repo), "--base", "main",
-            "--scope", "committed", "--reviewer", "codex",
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
         )
         (boundary / "CLAUDE.md").write_text("EVIL\n")
         if sorted(os.listdir(boundary)) != [".git", "CLAUDE.md", "claude.md", "index.js"]:
@@ -3395,8 +3415,10 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             with self.subTest(content=content):
                 (directory / ".git").write_bytes(content)
                 got = module.worktree_gitdir(directory)
-                want = None if expected is None else os.path.realpath(
-                    os.path.join(directory, expected)
+                want = (
+                    None
+                    if expected is None
+                    else os.path.realpath(os.path.join(directory, expected))
                 )
                 self.assertEqual(got, want)
         registration = Path(self.tmp.name) / "registration"
