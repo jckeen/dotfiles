@@ -20,9 +20,18 @@ MAX_AGE_DAYS=7
 project="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
 [ -n "$project" ] || exit 0
 
-# Filenames are date-prefixed (YYYY-MM-DD-...), so lexical sort = newest last.
-latest="$(find "$HANDOFF_DIR" -maxdepth 1 -name "*-${project}-handoff.md" \
-  -mtime -"$MAX_AGE_DAYS" 2>/dev/null | sort | tail -1)"
+# One directory only, via a glob: stock macOS find has no GNU -maxdepth, and a
+# hidden find error left this silently empty there (issue #700). Per file,
+# `find FILE -prune -mtime` is POSIX. Newest by mtime (-nt); on a tie the
+# later name wins, as the old date-prefixed lexical sort did.
+latest=""
+for f in "$HANDOFF_DIR"/*-"${project}"-handoff.md; do
+  [ -f "$f" ] || continue
+  [ -n "$(find "$f" -prune -mtime -"$MAX_AGE_DAYS" 2>/dev/null)" ] || continue
+  if [ -z "$latest" ] || [ ! "$latest" -nt "$f" ]; then
+    latest="$f"
+  fi
+done
 [ -n "$latest" ] || exit 0
 
 echo "A recent handoff note exists for this project: ${latest}"

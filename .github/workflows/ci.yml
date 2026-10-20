@@ -386,6 +386,13 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/heal-race.test.sh
 
+      # Self-test only: the SessionStart handoff reminder must find the newest
+      # note without GNU find -maxdepth (stock macOS find lacks it, #700);
+      # runs the hook over a fixture HOME with a find shim that rejects it.
+      - name: handoff-reminder (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/handoff-reminder.test.sh
+
       # build-site's awk frontmatter reader shares gen-agentpack's loud-failure
       # contract (issue #235); the site build itself runs in pages.yml.
       - name: build-site (self-test)
