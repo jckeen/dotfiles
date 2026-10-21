@@ -1196,7 +1196,7 @@ else
     active_major="$(node -v 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p' || true)"
     pinned_major="${NODE_VERSION#v}"; pinned_major="${pinned_major%%.*}"
     if { [ "$active_node" = "$HOME_DIR/.local/bin/node" ] && [ -L "$active_node" ] \
-         && [[ "$(readlink "$HOME_DIR/.local/bin/node")" == "$HOME_DIR/.local/share/node-"* ]] \
+         && [[ "$(readlink "$active_node")" =~ ^"$HOME_DIR"/\.local/share/node-v[0-9]+\.[0-9]+\.[0-9]+-linux-[a-z0-9]+/bin/node$ ]] \
          && [ "$("$HOME_DIR/.local/bin/node" -v 2>/dev/null || true)" != "$NODE_VERSION" ]; } \
        || { [[ "$active_node" == /usr/bin/node || "$active_node" == /bin/node ]] \
             && [ -n "$active_major" ] && [ "$active_major" -lt "$pinned_major" ]; }; then
