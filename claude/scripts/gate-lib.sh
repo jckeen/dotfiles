@@ -345,7 +345,7 @@ gate_select_lane() {
 
 # ─── #205: post-dispatch model verification (agy lane) ─────────
 # agy's --model takes the exact DISPLAY LABEL from `agy models` (e.g.
-# "Gemini 3.1 Pro (High)"). Slug forms (gemini-3.1-pro*, …) are silently
+# "Gemini 4 Argon (High)"). Slug forms (gemini-3.1-pro*, …) are silently
 # ignored — exit 0, flash-tier fallback — which quietly collapses the
 # "independent lineage" premise of the Antigravity lane (MULTI-AGENT.md).
 # Two checks, layered:

@@ -385,7 +385,7 @@ rm -rf "$R"
 # The propagation line format matches agy 1.1.1's model_config_manager log
 # (#205, exercised in full below); fixtures from here on hand it to the shim
 # so a dispatching run also verifies its model pin.
-PROP_OK='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.1 Pro (High)"'
+PROP_OK='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 4 Argon (High)"'
 PROP_BAD='I0710 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.5 Flash (Low)"'
 
 # ── #409: the measured agy input window is a hard size cap ────────────
@@ -476,10 +476,10 @@ echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 AGY_DB_DIR="$(mktemp -d)"
-printf 'gen_metadata: Gemini 3.1 Pro (High) gemini-pro-agent\n' > "$AGY_DB_DIR/conv.db"
+printf 'gen_metadata: Gemini 4 Argon (High) gemini-pro-agent\n' > "$AGY_DB_DIR/conv.db"
 export AGY_CONVERSATIONS_DIR="$AGY_DB_DIR"
 check "propagated label matches the default pin" 0 "model pin verified" --uncommitted
-assert "pinned label forwarded on agy argv" "grep -q 'Gemini 3.1 Pro (High)' '$AGY_FAKE_DIR/argv'"
+assert "pinned label forwarded on agy argv" "grep -q 'Gemini 4 Argon (High)' '$AGY_FAKE_DIR/argv'"
 assert "log capture requested on agy argv" "grep -q -- '--log-file' '$AGY_FAKE_DIR/argv'"
 check "DB spot-check finds the label in the records" 0 "records the requested label" --uncommitted
 unset AGY_CONVERSATIONS_DIR
