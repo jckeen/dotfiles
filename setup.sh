@@ -1187,7 +1187,7 @@ else
   # A pinned install never upgraded itself: bumping NODE_VERSION (e.g. for a
   # security release) only reached fresh machines, and an older distro node
   # (apt's EOL v18 on Ubuntu 24.04) silently satisfied `command -v node`.
-  # Re-pin when ~/.local/bin/node is ours and differs, or when the active node
+  # Re-pin when the active node is our ~/.local/bin pin at another version, or when the active node
   # is an older-major distro install (/usr, /bin). Version-manager nodes (nvm,
   # fnm, volta) are left alone: install_node_pinned sets an npm prefix nvm
   # rejects. ~/.local/bin precedes /usr/bin on PATH.
@@ -1195,7 +1195,7 @@ else
     active_node="$(command -v node)"
     active_major="$(node -v 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p' || true)"
     pinned_major="${NODE_VERSION#v}"; pinned_major="${pinned_major%%.*}"
-    if { [ -L "$HOME_DIR/.local/bin/node" ] \
+    if { [ "$active_node" = "$HOME_DIR/.local/bin/node" ] && [ -L "$active_node" ] \
          && [[ "$(readlink "$HOME_DIR/.local/bin/node")" == "$HOME_DIR/.local/share/node-"* ]] \
          && [ "$("$HOME_DIR/.local/bin/node" -v 2>/dev/null || true)" != "$NODE_VERSION" ]; } \
        || { [[ "$active_node" == /usr/* || "$active_node" == /bin/* ]] \
