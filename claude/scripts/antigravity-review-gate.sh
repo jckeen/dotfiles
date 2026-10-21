@@ -144,8 +144,8 @@ FORCE_COMMITTED=false
 FORCE_UNCOMMITTED=false
 # Display LABEL, not a slug (#205). `${VAR-default}` (no colon): an explicitly
 # empty ANTIGRAVITY_GATE_MODEL disables pinning; unset gets the default. The
-# default label was verified honored (log propagation + gemini-pro-agent in
-# the conversation records) on agy 1.1.1, 2026-07-10.
+# previous default ("Gemini 3.1 Pro (High)") left agy's model list by 1.4.2;
+# this label was verified propagated in the agy log on 2026-10-20 (#696).
 MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 4 Argon (High)}"
 
 # shellcheck disable=SC2034  # BASE, FORCE_COMMITTED, and FORCE_UNCOMMITTED are read by gate-lib.sh.
