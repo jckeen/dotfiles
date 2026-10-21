@@ -1064,7 +1064,7 @@ fi
 #   pinned (default) — checksum-verified nodejs.org binary into ~/.local
 #   apt              — distro nodejs + npm (older, but fully distro-signed)
 #   skip             — don't install Node (npm-dependent steps will skip)
-NODE_VERSION="v24.18.0"
+NODE_VERSION="v24.22.1"
 
 # Map this host to a nodejs.org release asset basename (no .tar.gz), e.g.
 # node-v24.18.0-linux-x64. Linux only — macOS installs Node via brew.
@@ -1184,6 +1184,28 @@ if ! command -v node &>/dev/null; then
   fi
 else
   echo "Node.js already installed: $(node -v)"
+  # A pinned install never upgraded itself: bumping NODE_VERSION (e.g. for a
+  # security release) only reached fresh machines, and an older distro node
+  # (apt's EOL v18 on Ubuntu 24.04) silently satisfied `command -v node`.
+  # Re-pin when the active node is our ~/.local/bin pin at another version, or when the active node
+  # is an older-major distro install (/usr/bin/node). Version-manager nodes (nvm,
+  # fnm, volta) are left alone: install_node_pinned sets an npm prefix nvm
+  # rejects. ~/.local/bin precedes /usr/bin on PATH.
+  if [[ "$PLATFORM" != "macos" ]] && [ "${NODE_INSTALL_METHOD:-pinned}" = "pinned" ]; then
+    active_node="$(command -v node)"
+    active_major="$(node -v 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p' || true)"
+    pinned_major="${NODE_VERSION#v}"; pinned_major="${pinned_major%%.*}"
+    if { [ "$active_node" = "$HOME_DIR/.local/bin/node" ] && [ -L "$active_node" ] \
+         && [[ "$(readlink "$active_node")" =~ ^"$HOME_DIR"/\.local/share/node-v[0-9]+\.[0-9]+\.[0-9]+-linux-[a-z0-9]+/bin/node$ ]] \
+         && [ "$("$HOME_DIR/.local/bin/node" -v 2>/dev/null || true)" != "$NODE_VERSION" ]; } \
+       || { [[ "$active_node" == /usr/bin/node || "$active_node" == /bin/node ]] \
+            && [ -n "$active_major" ] && [ "$active_major" -lt "$pinned_major" ]; }; then
+      echo "  -> Upgrading to pinned Node ${NODE_VERSION}"
+      install_node_pinned \
+        || echo "  !! WARNING: Node pinned upgrade failed or was skipped (still $(node -v 2>/dev/null || echo unknown))"
+      export PATH="$HOME_DIR/.local/bin:$PATH"
+    fi
+  fi
 fi
 
 # ─── 2b. Bun (required by *.hook.ts files — #!/usr/bin/env bun) ───────
