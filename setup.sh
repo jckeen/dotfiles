@@ -1187,18 +1187,22 @@ else
   # A pinned install never upgraded itself: bumping NODE_VERSION (e.g. for a
   # security release) only reached fresh machines, and an older distro node
   # (apt's EOL v18 on Ubuntu 24.04) silently satisfied `command -v node`.
-  # Re-pin when ~/.local/bin/node is ours and differs, or when the active
-  # node is an older major. ~/.local/bin precedes /usr/bin on PATH.
-  active_major="$(node -v | sed 's/^v//; s/\..*//')"
-  pinned_major="$(echo "$NODE_VERSION" | sed 's/^v//; s/\..*//')"
+  # Re-pin when ~/.local/bin/node is ours and differs, or when the active node
+  # is an older-major distro install (/usr, /bin). Version-manager nodes (nvm,
+  # fnm, volta) are left alone: install_node_pinned sets an npm prefix nvm
+  # rejects. ~/.local/bin precedes /usr/bin on PATH.
   if [[ "$PLATFORM" != "macos" ]] && [ "${NODE_INSTALL_METHOD:-pinned}" = "pinned" ]; then
+    active_node="$(command -v node)"
+    active_major="$(node -v 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p' || true)"
+    pinned_major="${NODE_VERSION#v}"; pinned_major="${pinned_major%%.*}"
     if { [ -L "$HOME_DIR/.local/bin/node" ] \
          && [[ "$(readlink "$HOME_DIR/.local/bin/node")" == "$HOME_DIR/.local/share/node-"* ]] \
-         && [ "$("$HOME_DIR/.local/bin/node" -v 2>/dev/null)" != "$NODE_VERSION" ]; } \
-       || [ "$active_major" -lt "$pinned_major" ]; then
+         && [ "$("$HOME_DIR/.local/bin/node" -v 2>/dev/null || true)" != "$NODE_VERSION" ]; } \
+       || { [[ "$active_node" == /usr/* || "$active_node" == /bin/* ]] \
+            && [ -n "$active_major" ] && [ "$active_major" -lt "$pinned_major" ]; }; then
       echo "  -> Upgrading to pinned Node ${NODE_VERSION}"
       install_node_pinned \
-        || echo "  !! WARNING: Node pinned upgrade failed or was skipped (still $(node -v))"
+        || echo "  !! WARNING: Node pinned upgrade failed or was skipped (still $(node -v 2>/dev/null || echo unknown))"
       export PATH="$HOME_DIR/.local/bin:$PATH"
     fi
   fi

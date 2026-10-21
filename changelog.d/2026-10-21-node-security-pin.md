@@ -8,4 +8,5 @@
   bumped pin never reached an existing machine, and apt's EOL v18 silently
   satisfied the check. Re-running `setup.sh` now re-pins when
   `~/.local/bin/node` is the pinned install at a different version, or when
-  the active node is an older major (`NODE_INSTALL_METHOD=pinned`, Linux).
+  the active node is an older-major distro install under `/usr` or `/bin`
+  (`NODE_INSTALL_METHOD=pinned`, Linux). nvm/fnm/volta nodes are untouched.
