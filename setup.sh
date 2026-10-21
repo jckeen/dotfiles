@@ -1064,7 +1064,7 @@ fi
 #   pinned (default) — checksum-verified nodejs.org binary into ~/.local
 #   apt              — distro nodejs + npm (older, but fully distro-signed)
 #   skip             — don't install Node (npm-dependent steps will skip)
-NODE_VERSION="v24.18.0"
+NODE_VERSION="v24.22.1"
 
 # Map this host to a nodejs.org release asset basename (no .tar.gz), e.g.
 # node-v24.18.0-linux-x64. Linux only — macOS installs Node via brew.
@@ -1184,6 +1184,24 @@ if ! command -v node &>/dev/null; then
   fi
 else
   echo "Node.js already installed: $(node -v)"
+  # A pinned install never upgraded itself: bumping NODE_VERSION (e.g. for a
+  # security release) only reached fresh machines, and an older distro node
+  # (apt's EOL v18 on Ubuntu 24.04) silently satisfied `command -v node`.
+  # Re-pin when ~/.local/bin/node is ours and differs, or when the active
+  # node is an older major. ~/.local/bin precedes /usr/bin on PATH.
+  active_major="$(node -v | sed 's/^v//; s/\..*//')"
+  pinned_major="$(echo "$NODE_VERSION" | sed 's/^v//; s/\..*//')"
+  if [[ "$PLATFORM" != "macos" ]] && [ "${NODE_INSTALL_METHOD:-pinned}" = "pinned" ]; then
+    if { [ -L "$HOME_DIR/.local/bin/node" ] \
+         && [[ "$(readlink "$HOME_DIR/.local/bin/node")" == "$HOME_DIR/.local/share/node-"* ]] \
+         && [ "$("$HOME_DIR/.local/bin/node" -v 2>/dev/null)" != "$NODE_VERSION" ]; } \
+       || [ "$active_major" -lt "$pinned_major" ]; then
+      echo "  -> Upgrading to pinned Node ${NODE_VERSION}"
+      install_node_pinned \
+        || echo "  !! WARNING: Node pinned upgrade failed or was skipped (still $(node -v))"
+      export PATH="$HOME_DIR/.local/bin:$PATH"
+    fi
+  fi
 fi
 
 # ─── 2b. Bun (required by *.hook.ts files — #!/usr/bin/env bun) ───────
