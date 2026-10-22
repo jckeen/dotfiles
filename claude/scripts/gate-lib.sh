@@ -393,6 +393,13 @@ gate_verify_agy_label() {
 #               degrades to a warning rather than a false fallback verdict.
 #   returns 1 — records exist but none of the newest mention the label.
 # Tests override the records location via AGY_CONVERSATIONS_DIR.
+# gate_ere_escape <text> — escape one operand for `grep -E` so it matches literally.
+gate_ere_escape() {
+  # The bracket expression lists `$` literally; nothing here should expand.
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | sed -e 's/[][\\.*^$()+?{}|]/\\&/g'
+}
+
 gate_verify_agy_model() {
   local want="$1"
   local dir="${AGY_CONVERSATIONS_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
@@ -414,16 +421,28 @@ gate_verify_agy_model() {
   # label: "gemini-4-argon-high	Gemini 4 Argon (High)"), not the label
   # (#696). Accept either. The slug is the label lowercased, with parentheses
   # dropped and spaces as dashes; Claude slugs also turn dots into dashes.
-  local slug dotless
+  # The derived slug must never widen the match: a label with no letters or
+  # digits derives an empty or lone-dash slug (and `grep -F ""` matches every
+  # line), and a shorter label's slug is a prefix of a longer model's slug
+  # ("gemini-4-argon" vs "gemini-4-argon-high"). So the slug forms match only
+  # as a whole token, bounded by characters that cannot continue a slug, and a
+  # label without a letter or digit is matched literally only. Every operand
+  # is escaped into one ERE so the label itself still matches literally.
+  local slug dotless label_re slug_re
   slug="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '()' | tr -s ' ' '-')"
   dotless="${slug//./-}"
+  label_re="$(gate_ere_escape "$want")"
+  slug_re=""
+  if [[ "$slug" == *[a-z0-9]* ]]; then
+    slug_re="(^|[^a-z0-9.-])($(gate_ere_escape "$slug")|$(gate_ere_escape "$dotless"))([^a-z0-9.-]|$)"
+  fi
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     # `grep -q` exits at the first match and `strings` then dies of SIGPIPE.
     # Under the gates' `set -o pipefail` that made a MATCH read as a miss on
     # any record large enough to still be streaming (#696), so the reader's
     # status is discarded and only grep's decides.
-    if { strings "$f" 2>/dev/null || true; } | grep -qF -e "$want" -e "$slug" -e "$dotless"; then
+    if { strings "$f" 2>/dev/null || true; } | grep -qE -e "$label_re" ${slug_re:+-e "$slug_re"}; then
       green "✓ model DB spot-check: $(basename "$f") records the requested label '$want'."
       return 0
     fi

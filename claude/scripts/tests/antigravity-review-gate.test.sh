@@ -503,6 +503,18 @@ check "DB spot-check accepts the label's slug form" 0 "records the requested lab
 check "DB spot-check finds an early match in a large record" 0 "records the requested label" --uncommitted
 printf 'model_enum gemini-3.8-flash-high\n' > "$AGY_DB_DIR/conv.db"
 check "DB spot-check still flags a record naming another model" 0 "none of the newest conversation records" --uncommitted
+# The derived slug must never widen the match: a label with no letters or
+# digits derives an empty or lone-dash slug (grep -F "" matches every line),
+# and a shorter label's slug is a prefix of a longer model's slug.
+VAM="source '$SCRIPT_DIR/../gate-lib.sh'; AGY_CONVERSATIONS_DIR='$AGY_DB_DIR'; gate_verify_agy_model"
+printf 'model_enum gemini-3.8-flash-high\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: an all-punctuation label does not match every record" "! (eval \"\$VAM '()'\") >/dev/null 2>&1"
+assert "DB spot-check: an all-space label does not match a dashed record" "! (eval \"\$VAM '  '\") >/dev/null 2>&1"
+printf 'model_enum gemini-4-argon-high\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a shorter label's slug does not prefix-match another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+assert "DB spot-check: the exact slug still matches when sourced directly" "(eval \"\$VAM 'Gemini 4 Argon (High)'\") >/dev/null 2>&1"
+printf 'model gemini-3-8-flash-high,\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: the dotless slug matches beside punctuation" "(eval \"\$VAM 'Gemini 3.8 Flash (High)'\") >/dev/null 2>&1"
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R" "$AGY_DB_DIR"
 

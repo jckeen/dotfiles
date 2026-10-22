@@ -124,7 +124,7 @@
 - **Item 2, merge-then-verify, is declined.** Main is effectively deployed
   through the `~/.claude` symlinks, so every change keeps a pre-merge gate.
 
-## 2026-10-22 — fix(gates): the Antigravity gate names a rejected model pin, and its DB spot-check works (#696 follow-up)
+## 2026-10-22 — fix(gates): the Antigravity gate names a rejected model pin, and its DB spot-check works (#696 follow-up, #715)
 
 - **Scope.** #714 already moved the default pin to `Gemini 4 Argon (High)`.
   These are the parts of #696 it left open.
@@ -139,3 +139,9 @@
   SIGPIPE, and under `set -o pipefail` the match read as a miss. That
   happened on every real run. The check now discards the reader's status. It also accepts the slug agy 1.4.x records
   (`gemini-4-argon-high`) beside the display label.
+- **The slug never widens the match.** A label with no letters or digits
+  derived an empty slug, which matched every record, and a shorter label's
+  slug prefix-matched a longer model's (`gemini-4-argon` against
+  `gemini-4-argon-high`). The slug forms match only as whole tokens, a label
+  without a letter or digit matches literally only, and the label is escaped
+  into the same pattern so it still matches as written.
