@@ -7,7 +7,6 @@
   under `~/dev` no longer runs the operator's real `claude-memory/bootstrap.sh`
   against a throwaway `HOME`. `settings-example` never runs `setup.sh`, so it
   needed no change.
-- **New guard test**: `setup-dev-dir-isolation` plants a sibling
-  `claude-memory` bootstrap, proves it is found without the override and not
-  found with it, and checks each suite sets the override before running
-  `setup.sh`.
+- **Guard test**: `setup-services` plants a sibling `claude-memory` bootstrap,
+  proves it is found without the override and not found with it, and checks
+  each suite sets the override before running `setup.sh`.

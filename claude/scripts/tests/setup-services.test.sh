@@ -337,6 +337,48 @@ check "install path: the changed content is in kept/" \
 check "install path: the error is reported and the exit is non-zero" \
   "[ \"$tree_rc\" -ne 0 ] && grep -q 'ERROR: .*changed during migration.*skills/demo' \"$OUT\""
 
+# ── #701 guard: no suite may reach the operator's real claude-memory ─────────
+# setup.sh looks for $DEV_DIR/claude-memory/bootstrap.sh, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev ran the real
+# private bootstrap against a throwaway HOME. The layout is faked here, never
+# the real ~/dev: a symlink named dotfiles inside a throwaway dev directory
+# points at this checkout (setup.sh derives DEV_DIR from its logical path), next
+# to a planted claude-memory whose bootstrap drops a sentinel when executed.
+ISO="$ROOT/iso701"
+FAKE_DEV="$ISO/dev"
+SENTINEL="$ISO/bootstrap-ran"
+mkdir -p "$ISO/home" "$ISO/empty" "$FAKE_DEV/claude-memory"
+ln -s "$REPO_ROOT" "$FAKE_DEV/dotfiles"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$SENTINEL" \
+  > "$FAKE_DEV/claude-memory/bootstrap.sh"
+chmod +x "$FAKE_DEV/claude-memory/bootstrap.sh"
+run_iso() {
+  env -i PATH="$CLEAN_PATH" HOME="$ISO/home" TERM=dumb LC_ALL=C \
+    DOTFILES_ALLOW_LINKED_WORKTREE=1 CODEX_MEMORY_REPO="$ISO/codex-memory" \
+    "$@" "$FAKE_DEV/dotfiles/setup.sh" --yes --dry-run 2>&1
+}
+# Control: without an override the sibling bootstrap IS found, so the isolated
+# case below cannot pass merely because the fixture never reached setup.sh.
+iso_out="$(run_iso)"
+check "#701 control: no override falls back to the checkout's parent" \
+  '[ -e "$SENTINEL" ] && grep -Fq "$FAKE_DEV/claude-memory/bootstrap.sh" <<< "$iso_out"'
+rm -f "$SENTINEL"
+iso_out="$(run_iso DOTFILES_DEV_DIR="$ISO/empty")"
+check "#701 DOTFILES_DEV_DIR keeps setup.sh off the checkout's sibling claude-memory" \
+  '[ ! -e "$SENTINEL" ] && ! grep -Fq "$FAKE_DEV/claude-memory" <<< "$iso_out"'
+check "#701 setup.sh reports the overridden location" \
+  'grep -Fq "$ISO/empty/claude-memory/bootstrap.sh" <<< "$iso_out"'
+check "#701 a relative DOTFILES_DEV_DIR is refused" \
+  '! run_iso DOTFILES_DEV_DIR=relative/dir >/dev/null'
+# Every suite that runs setup.sh sets the override before its first run.
+for s in setup-services setup-dry-run setup-fuzz-layouts; do
+  f="$SCRIPT_DIR/$s.test.sh"
+  setline="$(grep -n 'DOTFILES_DEV_DIR=' "$f" | head -1 | cut -d: -f1)"
+  runline="$(grep -n '"\$SETUP" --' "$f" | head -1 | cut -d: -f1)"
+  check "#701 $s sets DOTFILES_DEV_DIR before running setup.sh" \
+    '[ -n "$setline" ] && [ "$setline" -lt "$runline" ]'
+done
+
 echo ""
 echo "setup-services: $pass passed, $failed failed"
 [ "$failed" -eq 0 ] || exit 1
