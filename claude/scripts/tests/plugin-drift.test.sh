@@ -808,11 +808,17 @@ assert "rescan: a dangling hooks.json created mid-session is named unverifiable"
 mkdir -p "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks" || die "mkdir permmod"
 printf '%s\n' '{"modules":["./register.js"]}' \
   > "$PH/.claude/plugins/cache/mktp/permmod/1.0.0/hooks/hooks.json" || die "write permmod"
-chmod 0111 "$PH/.claude/plugins/cache/mktp" || die "chmod mktp"
-hook_event SessionStart s13
-chmod 0755 "$PH/.claude/plugins/cache/mktp" || die "restore mktp"
-hook_event UserPromptSubmit s13
-assert "rescan: a dir made readable mid-session is rescanned" 'outline "  • permmod@mktp"'
+# Root ignores mode bits (chmod 0111 stays listable), so the case would
+# fail for the wrong reason there (#705, as #631).
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 0111 "$PH/.claude/plugins/cache/mktp" || die "chmod mktp"
+  hook_event SessionStart s13
+  chmod 0755 "$PH/.claude/plugins/cache/mktp" || die "restore mktp"
+  hook_event UserPromptSubmit s13
+  assert "rescan: a dir made readable mid-session is rescanned" 'outline "  • permmod@mktp"'
+else
+  echo "skip - rescan: a dir made readable mid-session (root ignores mode bits)"
+fi
 # Codex round 9: DOTFILES_DIR relocates the manifest, so changing it is a
 # change: a mod the old manifest allowlisted is named under the new one.
 PD2="$(mktemp -d)" || die "mktemp -d for a second DOTFILES_DIR"
@@ -828,6 +834,57 @@ out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD2" CLAUDE_PROJECT_DIR="$PP" \
   <<<"{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"s14\",\"cwd\":\"$PP\"}")"
 assert "rescan: a new DOTFILES_DIR is a change and its manifest applies" \
   'outline "  • dotmod@mkt"'
+
+# #705: hook input over 1 MiB used to be cut before JSON.parse, so the event
+# read as null and the hook ran the SessionStart branch (full scan + drift
+# report) on a UserPromptSubmit. The leading fields must survive truncation,
+# and an input that cannot be parsed at all must take the cheap path.
+big_prompt() { head -c 2097152 /dev/zero | tr '\0' 'a'; }
+hook_event SessionStart s20
+{ printf '{"hook_event_name":"UserPromptSubmit","session_id":"s20","cwd":"%s","prompt":"' "$PP"
+  big_prompt; printf '"}'; } > "$PH/big-input.json" || die "write big input"
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 <"$PH/big-input.json")"
+assert "oversized prompt: the event is still UserPromptSubmit (no SessionStart report)" \
+  '[ -z "$out" ]'
+{ printf '{"prompt":"'; big_prompt; printf '","hook_event_name":"SessionStart","session_id":"s20"}'; } \
+  > "$PH/big-input2.json" || die "write big input 2"
+out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+  timeout 60 bun "$HOOK" 2>&1 <"$PH/big-input2.json")"
+assert "oversized prompt with fields past the cut: the rescan path, never SessionStart" \
+  'outgrep "mid-session"'
+
+# #705: project-mod reports are keyed by checkout + label. With cwd and
+# CLAUDE_PROJECT_DIR both project dirs from the start, a same-named project
+# mod added to the second checkout must still be named.
+PP2="$(mktemp -d)" || die "mktemp -d for a second checkout"
+mkdir -p "$PP/.claude/skills/twin/hooks" "$PP/.claude/skills/twin/.claude-plugin" \
+  "$PP2/.claude/skills" || die "mkdir twin"
+printf '%s\n' '{"modules":["./register.js"]}' > "$PP/.claude/skills/twin/hooks/hooks.json" \
+  || die "write twin"
+printf '%s\n' '{"name":"twinmod"}' > "$PP/.claude/skills/twin/.claude-plugin/plugin.json" \
+  || die "write twin plugin.json"
+twin_event() {
+  out="$(cd "$PP2" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
+    timeout 60 bun "$HOOK" 2>&1 \
+    <<<"{\"hook_event_name\":\"$1\",\"session_id\":\"s21\",\"cwd\":\"$PP2\"}")"
+}
+twin_event SessionStart
+assert "twin: SessionStart names the first checkout's project mod" 'outgrep "twinmod@skills-dir"'
+twin_event UserPromptSubmit
+assert "twin: nothing new, nothing printed" '[ -z "$out" ]'
+mkdir -p "$PP2/.claude/skills/twin/hooks" "$PP2/.claude/skills/twin/.claude-plugin" \
+  || die "mkdir twin in checkout 2"
+cp "$PP/.claude/skills/twin/hooks/hooks.json" "$PP2/.claude/skills/twin/hooks/hooks.json" \
+  || die "copy twin hooks.json"
+cp "$PP/.claude/skills/twin/.claude-plugin/plugin.json" \
+  "$PP2/.claude/skills/twin/.claude-plugin/plugin.json" || die "copy twin plugin.json"
+twin_event UserPromptSubmit
+assert "twin: a same-named project mod in the second checkout is named" \
+  'outgrep "twinmod@skills-dir"'
+twin_event UserPromptSubmit
+assert "twin: and not repeated once reported" '[ -z "$out" ]'
+rm -rf "$PP2" "$PP/.claude/skills/twin"
 printf '%s\n' "$MANIFEST_GLOBAL" > "$PD/claude/plugins.txt" || die "restore PD manifest"
 rm -rf "$PD2"
 # A hostile session id cannot escape the state dir.
