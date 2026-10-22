@@ -1,4 +1,4 @@
-## 2026-10-19 — fix(skills): operator-lane instruction-surface pass (claude.dev audit, operator-action issues, changelog fragments)
+## 2026-10-19 — fix(skills): operator-lane instruction-surface pass (claude.dev audit, changelog fragments)
 
 - **`orchestrate`** (#596) no longer invokes skills that left with the
   superpowers plugin or that `skillOverrides` hides; steps state the outcome
@@ -14,14 +14,9 @@
   `drift-sweep` skill "if it is enabled". The Git section adds "push once per
   unit of work, not once per fix" (from closed #587): every push re-runs CI
   and a Codex bot review.
-- **Both `handoff` skills** (#672) file a new operator action as an
-  `operator-action` issue in the private repo it concerns (a public or
-  multi-repo item goes in `OPERATOR_QUEUE_REPO`, matching #693), filed with
-  the operator's own `gh` login, or comment on the open one, instead of
-  appending to `~/.claude/operator-queue.md`. They carry the re-check,
-  comment and close-only-when-done rule the reminder hook's footer used to
-  state; the `[stale — re-verify]` marker is unchanged. The handoff workflow
-  invariant anchors on the new wording.
+- **`CLAUDE-GUIDE.md`** (#672): the `OperatorQueueReminder` hook row calls
+  `~/.claude/operator-queue.md` the legacy queue and says the handoff skills
+  file new items as issues (the skills themselves moved in #712).
 - **Changelog fragments:** the claude and jules fragments, both `changelog`
   skills, the Claude `handoff` step 4, `orchestrate` and `MULTI-AGENT.md` now
   send a PR's entry to its `changelog.d/BRANCH-SLUG.md` fragment where the
