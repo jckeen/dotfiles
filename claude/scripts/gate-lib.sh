@@ -438,10 +438,16 @@ gate_verify_agy_model() {
   local slug dotless label_re slug_re
   slug="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '()' | tr -s ' ' '-')"
   dotless="${slug//./-}"
-  label_re="$(gate_ere_escape "$want")"
+  # Both forms match as whole tokens: nothing alphanumeric may run straight
+  # into or out of them, and a slug may not continue with _ . or - either, so
+  # "gemini-4-argon" matches neither "gemini-4-argon-high" nor
+  # "gemini-4-argon_high". A label followed by a parenthesised tier, as
+  # "Gemini 4 Argon" is by " (High)", is still a prefix match and is left to
+  # the authoritative log-line check above.
+  label_re="(^|[^[:alnum:]])$(gate_ere_escape "$want")([^[:alnum:]]|$)"
   slug_re=""
   if [[ "$slug" == *[a-z0-9]* ]]; then
-    slug_re="(^|[^a-z0-9.-])($(gate_ere_escape "$slug")|$(gate_ere_escape "$dotless"))([^a-z0-9.-]|$)"
+    slug_re="(^|[^[:alnum:]_.-])($(gate_ere_escape "$slug")|$(gate_ere_escape "$dotless"))([^[:alnum:]_.-]|$)"
   fi
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue

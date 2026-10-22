@@ -592,6 +592,12 @@ agy_jail_setup() {
   # The reviewed HEAD as plain files: context to read, no .git leading back.
   head="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || return 1
   git archive --format=tar "$head" | tar -x -C "$AGY_JAIL/work" || return 1
+  # agy finds .agents/, GEMINI.md and AGENTS.md by walking up to the folder
+  # that holds .git. With none, the walk would climb out of the jail into
+  # TMPDIR, which anyone on the machine can write, so a planted
+  # /tmp/GEMINI.md could steer the verdict. An empty repository stops the
+  # walk and has no remote or worktree link back to the reviewed one.
+  git init -q "$AGY_JAIL/work" || return 1
   AGY_ENV=(
     HOME="$AGY_JAIL/home"
     XDG_CONFIG_HOME="$AGY_JAIL/home/.config"

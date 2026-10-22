@@ -513,6 +513,12 @@ assert "DB spot-check: an all-space label does not match a dashed record" "! (ev
 printf 'model_enum gemini-4-argon-high\n' > "$AGY_DB_DIR/conv.db"
 assert "DB spot-check: a shorter label's slug does not prefix-match another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
 assert "DB spot-check: the exact slug still matches when sourced directly" "(eval \"\$VAM 'Gemini 4 Argon (High)'\") >/dev/null 2>&1"
+printf 'model_enum gemini-4-argon_high\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a slug continued by an underscore is another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+printf 'model_enum gemini-4-argonHigh\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a slug continued by a letter is another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+printf 'label Gemini 4 ArgonHigh\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a label continued by a letter is another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
 printf 'model gemini-3-8-flash-high,\n' > "$AGY_DB_DIR/conv.db"
 assert "DB spot-check: the dotless slug matches beside punctuation" "(eval \"\$VAM 'Gemini 3.8 Flash (High)'\") >/dev/null 2>&1"
 unset AGY_CONVERSATIONS_DIR
@@ -1682,6 +1688,8 @@ pwd -P > "$AGY_FAKE_DIR/agy-pwd"
 printf '%s\n' "$HOME" > "$AGY_FAKE_DIR/agy-home"
 cp "$HOME/.gemini/antigravity-cli/settings.json" "$AGY_FAKE_DIR/agy-settings" 2>/dev/null
 ls "$PWD" > "$AGY_FAKE_DIR/agy-workspace"
+git -C "$PWD" rev-parse --show-toplevel > "$AGY_FAKE_DIR/agy-toplevel" 2>/dev/null
+git -C "$PWD" remote > "$AGY_FAKE_DIR/agy-remotes" 2>/dev/null
 [ -L "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] && readlink "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" > "$AGY_FAKE_DIR/agy-token"
 echo steered > stub-write.txt
 mkdir -p "$HOME/dev" && echo steered > "$HOME/dev/stub-write.txt"
@@ -1695,6 +1703,11 @@ assert "#687: agy's settings deny every write and allow nothing" \
 assert "#687: agy's workspace is not the repository" \
   "[ -s '$AGY_FAKE_DIR/agy-pwd' ] && [ \"\$(cat '$AGY_FAKE_DIR/agy-pwd')\" != \"\$(cd -P '$R' && pwd)\" ]"
 assert "#687: the workspace holds the reviewed HEAD" "grep -qx code.txt '$AGY_FAKE_DIR/agy-workspace'"
+# agy walks up to the folder holding .git for its instruction files; the
+# workspace must be that folder, so the walk never leaves the jail.
+assert "#687: the workspace is its own repository root, so the instruction walk stops there" \
+  "[ -s '$AGY_FAKE_DIR/agy-toplevel' ] && [ \"\$(cat '$AGY_FAKE_DIR/agy-toplevel')\" = \"\$(cat '$AGY_FAKE_DIR/agy-pwd')\" ]"
+assert "#687: the workspace repository has no remote back to the reviewed one" "[ -e '$AGY_FAKE_DIR/agy-remotes' ] && [ ! -s '$AGY_FAKE_DIR/agy-remotes' ]"
 assert "#687: only the credential is linked in" \
   "[ \"\$(cat '$AGY_FAKE_DIR/agy-token')\" = '$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token' ]"
 assert "#687: a write in the workspace never reaches the repository" "[ -s '$AGY_FAKE_DIR/agy-pwd' ] && [ ! -e '$R/stub-write.txt' ]"

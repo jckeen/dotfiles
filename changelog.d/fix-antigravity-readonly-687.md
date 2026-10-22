@@ -21,3 +21,8 @@
   P0 verdict and wrote nothing. The suite's stub agy records the
   environment it gets and attempts writes into its workspace and `~/dev`;
   neither reaches the repository or the user's home.
+- **The workspace is its own empty repository.** agy finds `.agents/`,
+  `GEMINI.md` and `AGENTS.md` by walking up to the folder that holds `.git`;
+  an extract with none would send that walk into the shared temp directory,
+  where a planted `GEMINI.md` could steer the verdict. `git init` in the
+  workspace stops the walk there, with no remote back to the reviewed repo.

@@ -154,4 +154,6 @@
   slug prefix-matched a longer model's (`gemini-4-argon` against
   `gemini-4-argon-high`). The slug forms match only as whole tokens, a label
   without a letter or digit matches literally only, and the label is escaped
-  into the same pattern so it still matches as written.
+  into the same pattern so it still matches as written. Neither form may run
+  straight into a letter, digit or (for a slug) `_`; a label followed by a
+  parenthesised tier is left to the authoritative log-line check.
