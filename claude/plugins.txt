@@ -31,6 +31,20 @@
 # service (lib-services.sh), matching setup.sh.
 
 # removed: superpowers@claude-plugins-official
+# The eleven below left the manifest in #500 (2026-09-21, zero or near-zero
+# use, disabled in user settings) but their user-scope installs survived on
+# existing machines and PluginDriftCheck warned at every session start.
+# removed: playground@claude-plugins-official
+# removed: claude-code-setup@claude-plugins-official
+# removed: claude-md-management@claude-plugins-official
+# removed: code-review@claude-plugins-official
+# removed: code-simplifier@claude-plugins-official
+# removed: commit-commands@claude-plugins-official
+# removed: frontend-design@claude-plugins-official
+# removed: feature-dev@claude-plugins-official
+# removed: github@claude-plugins-official
+# removed: pr-review-toolkit@claude-plugins-official
+# removed: greptile@claude-plugins-official
 
 # [global] — enabled in ~/.claude/settings.json `enabledPlugins`
 typescript-lsp@claude-plugins-official
