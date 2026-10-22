@@ -26,3 +26,6 @@
   an extract with none would send that walk into the shared temp directory,
   where a planted `GEMINI.md` could steer the verdict. `git init` in the
   workspace stops the walk there, with no remote back to the reviewed repo.
+  The init and agy itself run with git's routing variables (`GIT_DIR`,
+  `GIT_WORK_TREE` and the rest) cleared, and a workspace without a real
+  `.git` directory fails the jail build.

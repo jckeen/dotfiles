@@ -571,6 +571,17 @@ agy_jail_cleanup() {
   rm -rf -- "$AGY_JAIL"
   AGY_JAIL=""
 }
+# `env -u` flags for every variable that reroutes git away from the current
+# directory (the list review-and-push.sh and git-hygiene.sh refuse), so the
+# jail's own repository and the jailed agy see none of them.
+GIT_ENV_UNSET=()
+for _v in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_IMPLICIT_WORK_TREE \
+  GIT_NAMESPACE GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+  GIT_ENV_UNSET+=(-u "$_v")
+done
+unset _v
+
 agy_jail_setup() {
   local real="$HOME/.gemini/antigravity-cli" cli head
   AGY_JAIL="$(mktemp -d "${TMPDIR:-/tmp}/agy-review-jail.XXXXXX")" || return 1
@@ -597,7 +608,11 @@ agy_jail_setup() {
   # TMPDIR, which anyone on the machine can write, so a planted
   # /tmp/GEMINI.md could steer the verdict. An empty repository stops the
   # walk and has no remote or worktree link back to the reviewed one.
-  git init -q "$AGY_JAIL/work" || return 1
+  # Inherited git routing (GIT_DIR, GIT_WORK_TREE, ...) would point this init
+  # at some other repository and leave the workspace bare, so it is cleared
+  # here and for agy itself, and the result is checked rather than trusted.
+  env "${GIT_ENV_UNSET[@]}" git init -q "$AGY_JAIL/work" || return 1
+  [[ -d "$AGY_JAIL/work/.git" && ! -L "$AGY_JAIL/work/.git" ]] || return 1
   AGY_ENV=(
     HOME="$AGY_JAIL/home"
     XDG_CONFIG_HOME="$AGY_JAIL/home/.config"
@@ -616,7 +631,7 @@ fi
 # A command, not a function, so _tmo's `timeout` can run it: `sh` enters the
 # workspace and execs agy, so the timeout's signal still reaches agy itself.
 # shellcheck disable=SC2016  # expanded by the inner sh, deliberately
-AGY_RUN=(env "${AGY_ENV[@]}" sh -c 'cd "$1" || exit 125; shift; exec agy "$@"' agy-jail "$AGY_JAIL/work")
+AGY_RUN=(env "${GIT_ENV_UNSET[@]}" "${AGY_ENV[@]}" sh -c 'cd "$1" || exit 125; shift; exec agy "$@"' agy-jail "$AGY_JAIL/work")
 
 AGY_ARGS=(--mode plan --sandbox --print-timeout "${PRINT_TIMEOUT_SECS}s")
 [[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")

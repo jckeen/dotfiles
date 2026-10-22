@@ -383,6 +383,8 @@ gate_select_diff_target
 # Passive filename filters retain instructions, executables, and symlinks.
 # SVG and minified JavaScript stay in coverage. Working-tree reviews include
 # untracked files. Both gates consume the same capture implementation.
+# Read by gate_extract_diff (gate-lib.sh) when it re-arms the EXIT trap.
+# shellcheck disable=SC2034
 GATE_EXIT_HANDLER=finish_review
 gate_extract_diff
 # The shared capture helper installs gate_cleanup as the EXIT trap; put this
