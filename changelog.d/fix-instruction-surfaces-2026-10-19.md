@@ -13,15 +13,16 @@
   re-reads what the harness already loads; the doc-contract bullet names the
   `drift-sweep` skill "if it is enabled". The Git section adds "push once per
   unit of work, not once per fix" (from closed #587): every push re-runs CI
-  and a Codex bot review.
+  and, where the `codex-review` workflow runs, requests a Codex bot review.
 - **`CLAUDE-GUIDE.md`** (#672): the `OperatorQueueReminder` hook row calls
   `~/.claude/operator-queue.md` the legacy queue and says the handoff skills
-  file new items as issues (the skills themselves moved in #712).
+  file new items as issues (the skills themselves moved in #712); the hook's
+  header comment says the same.
 - **Changelog fragments:** the claude and jules fragments, both `changelog`
   skills, the Claude `handoff` step 4, `orchestrate` and `MULTI-AGENT.md` now
   send a PR's entry to its `changelog.d/BRANCH-SLUG.md` fragment where the
   repo keeps `changelog.d/`, with the format `assemble-changelog.sh --check`
-  accepts.
+  accepts. The jules fragment exempts the PR that folds the fragments in.
 - **`review-gates`** gains a "Codex bot threads before merge" section
   (`codex-threads.sh` list/resolve, reply before resolving).
 - **Tier-1 byte ceiling** (#642): `MULTI-AGENT.md` and `claude/scripts/README.md`

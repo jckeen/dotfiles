@@ -57,8 +57,9 @@ names the required lane.
 
 ## Codex bot threads before merge
 
-A repo running the `codex-review` workflow also runs a GitHub Codex bot that
-reviews every push. Its findings arrive as review threads, often after the
+A repo running the `codex-review` workflow also runs a GitHub Codex bot. It
+reviews a PR when it opens, and the workflow posts one `@codex review` request
+for each later head it has not reviewed. Its findings arrive as review threads, often after the
 local gate has approved. Where the ruleset is enforced, each thread must be
 resolved before the PR can merge, and the `codex-findings` label marks PRs that
 still have one. Before merging, or when a PR stalls on that label:
@@ -68,8 +69,9 @@ still have one. Before merging, or when a PR stalls on that label:
 ~/.claude/scripts/codex-threads.sh resolve --thread ID --reply "Fixed in <sha>: ..."
 ```
 
-Fix the real findings and push them together. The push gets a fresh bot
-review, so no `@codex review` comment is needed. Reply with where each was
+Fix the real findings and push them together. In a repo running that
+workflow the push gets an automatic `@codex review` request, so don't post one
+by hand. Reply with where each was
 fixed, or with why it is moot, then resolve. Never resolve a thread without a
 reply.
 

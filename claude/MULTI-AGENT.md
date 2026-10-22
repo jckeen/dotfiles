@@ -223,7 +223,8 @@ and sandbox settings. Consult `claude/scripts/antigravity-review-gate.sh` and
 `claude/scripts/gate-lib.sh` for the executable invocation and validation rules.
 A matching dispatch label does not establish actual per-run model identity.
 
-Shipping uses the applicable `commit-push-pr` skill. Ask which lane the diff
+Shipping uses the applicable `commit-push-pr` skill if available; otherwise
+the steps below. Ask which lane the diff
 requires, then run **that** gate with `--require` after the last commit;
 degraded or failed execution supplies no approval:
 

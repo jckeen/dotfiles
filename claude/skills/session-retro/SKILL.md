@@ -15,7 +15,8 @@ an ADR in `docs/adr/`.
 ## Scope — what this skill is and is NOT
 
 - **IS:** improving the *toolset* — skills, their trigger descriptions, CLAUDE.md, ADRs.
-- **IS NOT:** logging what happened. That belongs in CHANGELOG.md (what changed),
+- **IS NOT:** logging what happened. That belongs in CHANGELOG.md, or the branch's `changelog.d/` fragment where
+  the repo keeps one (what changed),
   a GitHub issue or the `log-error` skill if available (a recurring error
   pattern), or `handoff` (context for the next session). If the user wants a
   record, point them there and stop.

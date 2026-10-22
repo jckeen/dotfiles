@@ -58,8 +58,9 @@ A subagent that names no model inherits the session's, and its price. Set
 - Agents that write code or make judgment calls: `opus`.
 - Raise effort before changing model; use high effort for review, security,
   and edge-case work.
-- Escalate to the session's top model only after the cheaper one has failed
-  twice on the same problem.
+- When the session runs above `opus`, escalate a subagent to the session's
+  model only after `opus` has failed twice on the same problem. On an `opus`
+  session, `opus` already is the top tier.
 
 ## Capability Selection
 
@@ -102,7 +103,8 @@ Run these in order when the work is done, skipping what does not apply, so the
 wrap-up does not depend on the user remembering each step:
 
 1. Simplify the changed code without changing behavior (`/simplify` if
-   available), then complete intended documentation and the changelog entry,
+   available), then complete intended documentation and the changelog entry
+   (the branch's `changelog.d/` fragment where the repo keeps one),
    and regenerate generated files.
 2. Re-run affected tests and drive the real change end-to-end.
 3. Review the final artifact with `/code-review` and a read-only coach pass
