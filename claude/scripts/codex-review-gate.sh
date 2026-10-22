@@ -383,6 +383,7 @@ gate_select_diff_target
 # Passive filename filters retain instructions, executables, and symlinks.
 # SVG and minified JavaScript stay in coverage. Working-tree reviews include
 # untracked files. Both gates consume the same capture implementation.
+GATE_EXIT_HANDLER=finish_review
 gate_extract_diff
 # The shared capture helper installs gate_cleanup as the EXIT trap; put this
 # gate's handler, which runs it, back.
@@ -671,7 +672,11 @@ fi
 # `approvals_reviewer = "auto_review"` approves it unattended. That is how
 # `bun install` wrote node_modules into the worktree mid-review and
 # `verify --snapshot` refused (#651). `approval_policy="never"` removes the
-# escalation path; review-multipart.py checks every native turn kept it. A
+# escalation path; review-multipart.py checks every native turn kept it.
+# `--ignore-rules` keeps the user's execpolicy `.rules` files out too: a
+# prefix rule with decision="allow" (what "always allow" writes, e.g. for
+# `git push` or `pnpm exec prettier --write`) auto-approves a matching
+# command including its sandbox bypass, with no approval request to deny. A
 # nonzero exit is a failed run, even if it left a partial structured result.
 set +e
 # Leave terminal handling and tool-process cleanup with the native CLI. A
@@ -680,7 +685,7 @@ if [[ -n "$REQUEST_FILE" ]]; then
   REVIEW_SESSION=""
   CODEX_RC=0
   for ((PART_INDEX=1; PART_INDEX<=PART_COUNT; PART_INDEX++)); do
-    PART_ARGS=(exec -s read-only -c 'approval_policy="never"')
+    PART_ARGS=(exec -s read-only -c 'approval_policy="never"' --ignore-rules)
     if [[ -n "$REVIEW_SESSION" ]]; then
       SUPPORTED_CONTEXT="$(cat "$TRANSPORT_DIR/context-window")"
       PART_ARGS+=(-c "model_context_window=$SUPPORTED_CONTEXT" resume "$REVIEW_SESSION")
@@ -710,7 +715,7 @@ if [[ -n "$REQUEST_FILE" ]]; then
   done
 else
   "$GATE_CLI" exec - \
-    -s read-only -c 'approval_policy="never"' \
+    -s read-only -c 'approval_policy="never"' --ignore-rules \
     --output-schema "$SCHEMA" \
     -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
   CODEX_RC=$?

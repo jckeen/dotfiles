@@ -88,7 +88,14 @@ gate_extract_diff() {
   # failing a push instead of escalating it to a review. Adding the knob means
   # forwarding it to that `lane` call in the same change, with a wrapper test.
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
-  trap gate_cleanup EXIT
+  # A gate that already installed its own EXIT handler names it in
+  # GATE_EXIT_HANDLER, so this line does not swap it out for plain cleanup
+  # while the gate's cancel trap is still armed: a signal in that window used
+  # to run the cancel handler under the wrong EXIT handler and leave with
+  # status 2, the verdict code, for a run that reached no verdict.
+  # Expanding now is the point: the handler is chosen here, once.
+  # shellcheck disable=SC2064
+  trap "${GATE_EXIT_HANDLER:-gate_cleanup}" EXIT
   # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.
   DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
   GATE_SCOPE="$(jq -r '.artifact.scope' "$GATE_RUN_DIR/snapshot.json")"

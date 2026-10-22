@@ -604,7 +604,9 @@ if [[ "$AUTO_PUSH" != "true" ]]; then
     echo "approved but not pushed: no terminal to confirm on; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2
     exit 4
   fi
-  read -rp "Push to remote? (Y/n): " CONFIRM
+  # End of input at the prompt (Ctrl-D) fails `read`, and `set -e` would end
+  # the script with a bare exit 1 right after an approval, as #628 did.
+  read -rp "Push to remote? (Y/n): " CONFIRM || { echo; echo "approved but not pushed: no answer at the prompt; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2; exit 4; }
   if [[ "$CONFIRM" != "" && "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
     echo "Aborted. Changes remain local."
     exit 0

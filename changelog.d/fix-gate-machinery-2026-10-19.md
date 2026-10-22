@@ -16,6 +16,10 @@
   the reviewer's output already carries a verdict. A fixture holds the shell in
   that parse on demand. Not closed: where bash is not checking command status
   the signal is dropped and the gate runs on.
+- **Diff capture no longer swaps the Codex gate's EXIT handler.** While
+  `gate_extract_diff` ran, its plain cleanup handler replaced the gate's own
+  with the cancel trap still armed, and a signal there exited 2. The gate
+  names its handler in `GATE_EXIT_HANDLER` and the capture keeps it.
 - **An ignored `__pycache__` beside a skill or agent script no longer blocks a
   committed review (#581).** `review-receipt.py` leaves out a regular `*.pyc`
   directly inside an ignored `__pycache__` directory when the `.py` it was
@@ -50,6 +54,10 @@
   invocations now pass `-c approval_policy="never"`. `review-multipart.py`
   refuses any native turn whose recorded `approval_policy` is not `never`,
   alongside the existing read-only sandbox check.
+- **The user's execpolicy rules do not load either.** A `.rules` prefix rule
+  with `decision="allow"` (what "always allow" writes) auto-approves a
+  matching command together with its sandbox bypass, and `approval_policy`
+  never sees it. Both Codex invocations pass `--ignore-rules`.
 
 ## 2026-10-19 — fix(gates): a foreign boundary's own config cannot hide a CLAUDE.md (#641)
 
@@ -75,6 +83,8 @@
   now prints `approved but not pushed: no terminal to confirm on; re-run with
   --auto-push, or push SHA yourself` and exits 4. The script header and
   `claude/scripts/README.md` document every exit status.
+- **End of input at the push prompt is exit 4 too.** Ctrl-D at "Push to
+  remote?" failed `read` and ended the script with a bare exit 1.
 
 ## 2026-10-19 — fix(gates): a sibling moving origin/main no longer voids a review in flight (#680)
 

@@ -89,6 +89,7 @@ fragment = prompt.split("\n" + m[5] + "\n")[1]
 assert hashlib.sha256(fragment.encode()).hexdigest() == m[3]
 assert argv[argv.index("-s") + 1] == "read-only"
 assert argv[argv.index('approval_policy="never"') - 1] == "-c"
+assert "--ignore-rules" in argv
 parts = fake / "mp-fragments"
 parts.mkdir(exist_ok=True)
 (parts / str(index)).write_text(fragment)
@@ -284,6 +285,9 @@ assert "review runs sandboxed read-only" "grep -qx 'read-only' '$CODEX_FAKE_DIR/
 # -s read-only alone is not read-only when the user's config lets the model
 # request escalation and an auto reviewer approves it (#651).
 assert "review cannot escalate out of the sandbox" "grep -A1 -x -- '-c' '$CODEX_FAKE_DIR/argv' | grep -qx 'approval_policy=\"never\"'"
+# An execpolicy allow rule auto-approves a matching command with its sandbox
+# bypass, so the user's .rules files must not load either.
+assert "review loads no execpolicy rules" "grep -qx -- '--ignore-rules' '$CODEX_FAKE_DIR/argv'"
 rm -rf "$R"
 
 # ── installed runtime preference and explicit override ─────────────────
