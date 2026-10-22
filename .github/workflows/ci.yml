@@ -104,13 +104,15 @@ jobs:
 
       # Changelog fragments (#626). The content check (fragment grammar,
       # CHANGELOG.md preamble) is assemble-changelog.sh --check, which runs no
-      # git. The PR scope rule needs the PR diff, so it is this step: a PR
-      # adds at most one changelog.d/ file, modifies, renames or retypes no
-      # fragment already on the base, and, while adding one, adds no `## `
-      # entry to CHANGELOG.md. Folding (fragments removed, entries added) is
-      # unaffected. --name-status with no path filter, so a rename out of
-      # changelog.d/ still shows as R; the CHANGELOG.md rule compares file
-      # contents, not diff text, so no diff setting can hide an entry.
+      # git. The PR scope rule needs the PR diff, so it is this step. It reads
+      # only `git diff --name-status`, never a file's content: a PR adds at
+      # most one changelog.d/ file; modifies, retypes or renames no fragment
+      # already on the base; while adding a fragment touches neither
+      # CHANGELOG.md nor another fragment; and removes fragments only all at
+      # once while editing CHANGELOG.md (a fold). An earlier version compared CHANGELOG.md
+      # headings and was bypassed by bytes grep calls binary, a working-tree
+      # encoding attribute and heading shapes other than `## `; a rule that
+      # never parses content has none of those seams.
       - name: Changelog fragments (content check)
         run: claude/scripts/assemble-changelog.sh --check
 
@@ -120,25 +122,51 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          g() { git -c color.ui=never -c color.diff=never -c core.quotePath=false -c diff.renames=true "$@"; }
-          status="$(g diff --no-color --no-ext-diff --no-textconv --text -M --name-status "$BASE_SHA...HEAD")"
+          export LC_ALL=C
+          # Name-status only: the rule never reads a file's content, so no encoding,
+          # binary byte, heading shape or diff setting can hide anything from it.
+          # -z separates records with NUL, so a filename cannot forge one; --no-renames
+          # reports a rename as a D plus an A, so rewriting another PR's fragment under
+          # a new name counts as removing it.
+          g() { git -c core.quotePath=false "$@"; }
+          g diff --no-ext-diff --no-textconv --no-renames --name-status -z "$BASE_SHA...HEAD" >"$RUNNER_TEMP/scope.ns"
+          mapfile -d '' f <"$RUNNER_TEMP/scope.ns"
+          added=0 removed=0 touched=0 changelog=0
+          for ((i = 0; i + 1 < ${#f[@]}; i += 2)); do
+            case "${f[i+1]}" in
+              changelog.d/.gitkeep) ;; # not a fragment; assemble-changelog.sh skips it too
+              changelog.d/*)
+                case "${f[i]}" in A) added=$((added + 1)) ;; D) removed=$((removed + 1)) ;; *) touched=1 ;; esac ;;
+              CHANGELOG.md) changelog=1 ;;
+            esac
+          done
           fail=0
-          added="$(awk -F'\t' '$1 == "A" && $2 ~ /^changelog\.d\// { n++ } END { print n + 0 }' <<<"$status")"
-          if [ "$added" -gt 1 ]; then
-            echo "::error::this PR adds $added changelog.d/ files; a PR adds one fragment"
-            fail=1
-          fi
-          if awk -F'\t' '($1 ~ /^[MT]/ && $2 ~ /^changelog\.d\//) || ($1 ~ /^[RC]/ && ($2 ~ /^changelog\.d\// || $3 ~ /^changelog\.d\//)) { hit = 1 } END { exit !hit }' <<<"$status"; then
-            echo "::error::this PR modifies, renames or copies a changelog fragment already on the base"
-            fail=1
-          fi
+          [ "$added" -le 1 ] || { echo "::error::this PR adds $added changelog.d/ files; a PR adds one fragment"; fail=1; }
+          [ "$touched" -eq 0 ] || { echo "::error::this PR modifies a changelog fragment already on the base"; fail=1; }
           if [ "$added" -ge 1 ]; then
-            base_h="$(g cat-file blob "$BASE_SHA:CHANGELOG.md" | grep '^## ' || true)"
-            head_h="$(grep '^## ' CHANGELOG.md || true)"
-            if [ -n "$(comm -13 <(sort <<<"$base_h") <(sort <<<"$head_h"))" ]; then
-              echo "::error::this PR adds a changelog fragment and also adds a ## entry to CHANGELOG.md"
-              fail=1
-            fi
+            [ "$changelog" -eq 0 ] || { echo "::error::this PR adds a changelog fragment and also edits CHANGELOG.md; the fold PR does that"; fail=1; }
+            [ "$removed" -eq 0 ] || { echo "::error::this PR adds a changelog fragment and removes another; a fold removes fragments and adds none"; fail=1; }
+          elif [ "$removed" -ge 1 ]; then
+            # A fold removes every fragment on the base and edits CHANGELOG.md, so a
+            # PR that removes one fragment beside a token CHANGELOG.md edit is not one.
+            on_base="$(g ls-tree -r -z --name-only "$BASE_SHA" -- changelog.d/ | grep -zcv -x 'changelog\.d/\.gitkeep' || [ $? -eq 1 ])"
+            [ "$changelog" -eq 1 ] || { echo "::error::this PR removes a changelog fragment without folding it into CHANGELOG.md"; fail=1; }
+            [ "$removed" -eq "$on_base" ] || { echo "::error::this PR removes $removed of the $on_base changelog fragments on the base; a fold removes them all"; fail=1; }
+            # And every entry heading of each removed fragment is now a line of
+            # CHANGELOG.md. Both sides are read from the object store with `grep -a`
+            # under LC_ALL=C, so no encoding or stray byte hides a line. Fragments are
+            # strict `## ` headings at column 0 (assemble-changelog.sh --check enforced
+            # that on the base), which is why reading them here is safe.
+            g cat-file blob "HEAD:CHANGELOG.md" >"$RUNNER_TEMP/scope.head.md"
+            for ((i = 0; i + 1 < ${#f[@]}; i += 2)); do
+              [ "${f[i]}" = D ] || continue
+              case "${f[i+1]}" in changelog.d/.gitkeep) continue ;; changelog.d/*) ;; *) continue ;; esac
+              g cat-file blob "$BASE_SHA:${f[i+1]}" >"$RUNNER_TEMP/scope.frag"
+              { grep -a '^## ' "$RUNNER_TEMP/scope.frag" || [ $? -eq 1 ]; } >"$RUNNER_TEMP/scope.frag.h"
+              while IFS= read -r h; do
+                grep -aqFx -- "$h" "$RUNNER_TEMP/scope.head.md" || { echo "::error::${f[i+1]}: entry not folded into CHANGELOG.md: $h"; fail=1; }
+              done <"$RUNNER_TEMP/scope.frag.h"
+            done
           fi
           exit "$fail"
 
@@ -374,6 +402,10 @@ jobs:
         run: |
           claude/scripts/tests/doc-refs.test.sh
           claude/scripts/check-doc-refs.sh
+
+      - name: changelog-scope (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/changelog-scope.test.sh
 
       - name: no-personal-data (self-test + checker)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}

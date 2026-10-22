@@ -100,9 +100,12 @@ never touch the same lines (#626):
   fails.
 - **Check:** `claude/scripts/assemble-changelog.sh --check` validates every
   fragment's content without running git. CI runs it in the required
-  `doc-truth` job. A separate step in that job enforces the PR scope: a PR
-  adds at most one fragment, leaves fragments already on `main` alone, and
-  adds no `## ` entry to `CHANGELOG.md` alongside a fragment.
+  `doc-truth` job. A separate step in that job enforces the PR scope from
+  the diff's file list alone: a PR adds at most one fragment, leaves
+  fragments already on `main` alone, does not touch `CHANGELOG.md` while
+  adding a fragment, and removes fragments only all at once, in a fold PR
+  whose `CHANGELOG.md` carries every removed entry's heading. `tests/changelog-scope.test.sh` runs the step
+  against fixture repos.
 
 Folding is a separate, reviewed manual step at release or handoff time, in a
 `docs: fold changelog fragments` PR: copy each fragment's entries above the

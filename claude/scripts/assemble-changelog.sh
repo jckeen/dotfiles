@@ -60,8 +60,8 @@
 #
 # A pure content validator: it reads changelog.d/*.md and the top of
 # CHANGELOG.md from the working tree, runs no git and writes nothing. The PR
-# scope rule (one added fragment, no edits to another PR's fragment, no direct
-# CHANGELOG.md entry beside a fragment) needs the PR's diff, so it is not
+# scope rule (one added fragment, no edits to another PR's fragment, no
+# CHANGELOG.md edit beside a fragment) needs the PR's diff, so it is not
 # here: the required doc-truth CI job enforces it on pull requests, in its
 # step "Changelog fragments (PR scope)". This script checks content only.
 #

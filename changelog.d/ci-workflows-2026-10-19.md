@@ -14,9 +14,12 @@
   close and review payloads, and pin the triggers, token scopes, the checkout
   ref and the concurrency gate.
 - The `doc-truth` job runs `assemble-changelog.sh --check` and, on pull
-  requests, a self-contained shell step for the fragment scope rule: at most
-  one added fragment, no edit, rename or copy of a fragment on the base, and
-  no `## ` entry added to `CHANGELOG.md` beside a fragment (#626).
+  requests, a self-contained shell step for the fragment scope rule, read
+  from the diff's file list alone: at most one added fragment, no edit or
+  rename of a fragment on the base, no `CHANGELOG.md` edit beside a fragment,
+  and fragments removed only all at once by a fold PR whose `CHANGELOG.md`
+  carries every removed entry's heading (#626). `tests/changelog-scope.test.sh` extracts the step
+  from `ci.yml` and runs it against fixture repos.
 - `.github/CONTRIBUTING.md` gains a Changelog Entries section, and the PR
   template asks for a fragment instead of a `CHANGELOG.md` edit.
 - The `doc-truth (bash 3.2)` job runs `tests/statusline.test.sh` with
