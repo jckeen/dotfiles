@@ -34,7 +34,7 @@ concurrent edits to shared files cause conflicts.
   agent gets its own branch. Merge results after.
 - **Background agents** — Run research that doesn't block other work with
   `run_in_background: true`, and keep working meanwhile.
-- **Named teammates** — Agent teams cost roughly seven times the tokens of a
+- **Named teammates** — Agent teams cost several times the tokens of a
   single session, so prefer plain subagents unless workstreams must talk to each
   other. When they must, spawn named teammates (Agent `name:`) and coordinate
   with SendMessage; there is no TeamCreate step. Teams need
@@ -55,7 +55,9 @@ A subagent that names no model inherits the session's, and its price. Set
 `model` on the Agent call (or `model`/`effort` in an agent definition):
 
 - Lookup, search, and log- or test-output-reading agents: `haiku` or `sonnet`.
-- Agents that write code or make judgment calls: `opus`.
+- Agents that write code: `haiku` for a tightly scoped fix, `sonnet` for
+  multi-file or repeatedly failing work. Orchestration, review and judgment
+  calls stay on the session's model.
 - Raise effort before changing model; use high effort for review, security,
   and edge-case work.
 - When the session runs above `opus`, escalate a subagent to the session's

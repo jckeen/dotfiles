@@ -48,7 +48,8 @@ imported here (see the README's "The private memory repos" section).
 
 - The harness already loads `CLAUDE.md` and a git status snapshot with recent
   commits — don't re-read them. When picking up project work, read
-  `CHANGELOG.md` if present; run `git status`/`git log` only when no snapshot
+  `CHANGELOG.md` if present, plus any unfolded `changelog.d/` fragments, which
+  hold the newest entries; run `git status`/`git log` only when no snapshot
   is in context. If a project has no `CLAUDE.md`, offer to bootstrap one.
 
 ## Verification
@@ -159,7 +160,8 @@ selection, handoff payload, and verdict-persistence mechanics: the
   generated files don't slip in. Never stage `.env`, credentials, tokens, keys.
 - Push once per unit of work, not once per fix. Every push to a PR re-runs the
   full CI suite and, in repos running the `codex-review` workflow, gets an
-  automatic `@codex review` request. Commit locally as often as you like,
+  automatic `@codex review` request (docs-only diffs that touch no
+  instruction surface are skipped and pass at once). Commit locally as often as you like,
   run lint/types/tests locally, and push when the change is ready for review
   or CI.
 
