@@ -264,7 +264,7 @@ Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts
 
 All scripts use safety tiers from `common.sh` — each gets the minimum permissions needed.
 
-**Also in `claude/scripts/`:** `sync-plugins.sh` — idempotently installs any plugins listed in `claude/plugins.txt` that are missing locally (skipping a deselected agent service's plugins) and uninstalls any named by a `# removed: <id>` line. Auto-run by `cc` on every fresh launch (pre-exec, so installs apply to the session being started); a fast path exits silently when there's no drift. Also runnable manually, or follow the warning from `PluginDriftCheck.hook.ts` at session start. The manifest lives in the dotfiles repo and is the cross-machine source of truth.
+**Also in `claude/scripts/`:** `sync-plugins.sh` — idempotently installs any plugins listed in `claude/plugins.txt` that are missing locally (skipping a deselected agent service's plugins) and uninstalls any named by a `# removed: <id>` line. Each `[per-project]` plugin it installs is then disabled at user scope (`claude plugin disable --scope user`, #720), since install enables it globally; `setup.sh` does the same. Auto-run by `cc` on every fresh launch (pre-exec, so installs apply to the session being started); a fast path exits silently when there's no drift. Also runnable manually, or follow the warning from `PluginDriftCheck.hook.ts` at session start. The manifest lives in the dotfiles repo and is the cross-machine source of truth.
 
 ---
 

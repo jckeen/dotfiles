@@ -9,9 +9,11 @@
 # (posthog ~150 skills, soundcheck ~60, vercel ~30) that drown the curated
 # repo skills when enabled globally — they're enabled per-project via each
 # project's committed `.claude/settings.json` instead. The section markers
-# are plain comments, so setup.sh / sync-plugins.sh install both sections
-# unchanged; PluginDriftCheck.hook.ts parses them to warn (never block) when
-# live enablement drifts from this layout.
+# are plain comments, so setup.sh / sync-plugins.sh install both sections;
+# because `claude plugin install` enables what it installs, they then run
+# `claude plugin disable --scope user <id>` for each [per-project] plugin
+# (#720). PluginDriftCheck.hook.ts parses the markers to warn (never block)
+# when live enablement drifts from this layout.
 #
 # Mods allowlist (issue #594): a plugin whose hooks/hooks.json has a "modules"
 # key is a mod — in-session code that can approve tool calls past `ask` rules

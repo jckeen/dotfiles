@@ -1623,6 +1623,8 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
   # PluginDriftCheck.hook.ts and sync-plugins.sh).
   INSTALLED_PLUGINS="$(claude plugin list 2>/dev/null | user_scoped_plugins || true)"
 
+  PER_PROJECT_PLUGINS="$(manifest_per_project_plugins < "$PLUGIN_LIST")"
+
   # Install each plugin if not already installed
   while IFS= read -r line; do
     # Strip comments/whitespace
@@ -1644,7 +1646,17 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
       echo "  -> $plugin already installed"
     else
       echo "  -> Installing $plugin"
-      run claude plugin install "$plugin" || echo "     (install failed — continuing)"
+      if run claude plugin install "$plugin"; then
+        # Install enables the plugin in the user enabledPlugins map; a
+        # [per-project] one must be enabled only by a project's own settings
+        # (#720). Same helper and command as sync-plugins.sh.
+        if printf '%s\n' "$PER_PROJECT_PLUGINS" | grep -qxF "$plugin"; then
+          run claude plugin disable --scope user "$plugin" \
+            || echo "     (could not disable $plugin; it stays enabled globally — run: claude plugin disable --scope user $plugin)"
+        fi
+      else
+        echo "     (install failed — continuing)"
+      fi
     fi
   done < "$PLUGIN_LIST"
 fi

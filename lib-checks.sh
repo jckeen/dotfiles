@@ -221,3 +221,28 @@ user_scoped_plugins() {
     /^[[:space:]]*Scope:[[:space:]]*/ { name = "" }
   '
 }
+
+# manifest_per_project_plugins — read a plugins.txt manifest on stdin, print the
+# `<plugin>@<marketplace>` id of every active line under a `# [per-project]`
+# marker, one per line (#720).
+#
+# `claude plugin install` ENABLES the plugin in the user-level `enabledPlugins`
+# map, but [per-project] plugins must be enabled only by a project's own
+# .claude/settings.json (#214). setup.sh §3b and sync-plugins.sh therefore run
+# `claude plugin disable --scope user <id>` right after installing each id
+# this prints, so the manifest's section marker stays the one source of truth.
+# Section rules match PluginDriftCheck.hook.ts: lines before any marker are
+# global, a marker applies until the next one, comments and whitespace (CR
+# included) are stripped.
+manifest_per_project_plugins() {
+  awk '
+    tolower($0) ~ /^[[:space:]]*#[[:space:]]*\[(global|per-project)\]/ {
+      per = (tolower($0) ~ /\[per-project\]/)
+      next
+    }
+    {
+      sub(/#.*/, ""); gsub(/[[:space:]]/, "")
+      if (per && $0 != "") print
+    }
+  '
+}

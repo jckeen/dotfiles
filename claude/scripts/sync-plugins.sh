@@ -9,9 +9,11 @@
 # Triggered manually, or by the warning emitted by PluginDriftCheck.hook.ts.
 #
 # The manifest's `# [global]` / `# [per-project]` section markers (issue #214)
-# are comments, stripped like any other: this script installs BOTH sections —
-# that scoping governs enablement (settings.json `enabledPlugins`), not
-# installation, and is checked by PluginDriftCheck.hook.ts, not here.
+# are comments for the install loop: this script installs BOTH sections. The
+# scoping governs enablement (settings.json `enabledPlugins`), and
+# `claude plugin install` enables what it installs, so each [per-project]
+# plugin is disabled at user scope right after its install (#720); the drift
+# hook (PluginDriftCheck.hook.ts) still checks the result.
 #
 # INSTALL scope is a separate axis and does matter here: everything installs at
 # user scope. A plugin someone installed with `--scope project` for one repo is
@@ -55,6 +57,15 @@ if [[ ! -f "$LIB_SERVICES" ]]; then
 fi
 # shellcheck source=lib-services.sh
 . "$LIB_SERVICES"
+
+# manifest_per_project_plugins is shared with setup.sh §3b (#720).
+LIB_CHECKS="$SCRIPT_DIR/../../lib-checks.sh"
+if [[ ! -f "$LIB_CHECKS" ]]; then
+  echo "✘ lib-checks.sh not found: $LIB_CHECKS" >&2
+  exit 1
+fi
+# shellcheck source=lib-checks.sh
+. "$LIB_CHECKS"
 
 # The saved selection, or every service when none was saved. A damaged file is
 # refused, not guessed at: "all" would reinstall what the operator opted out of.
@@ -192,9 +203,19 @@ installed=()
 uninstalled=()
 failed=()
 
+per_project="$(manifest_per_project_plugins < "$MANIFEST")"
+
 for p in ${wanted[@]+"${wanted[@]}"}; do
   echo "── $p"
   if claude plugin install "$p" 2>&1 | tail -1; then
+    # Install enables the plugin in the user enabledPlugins map; a
+    # [per-project] one must be enabled only by a project's settings (#720).
+    # A failed disable leaves the plugin globally enabled, so it fails the run.
+    if grep -qxF "$p" <<<"$per_project" \
+      && ! claude plugin disable --scope user "$p" 2>&1 | tail -1; then
+      failed+=("$p")
+      continue
+    fi
     installed+=("$p")
   else
     failed+=("$p")
