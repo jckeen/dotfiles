@@ -55,7 +55,18 @@ HOME_DIR="$HOME"
 # Dev dir: derived from dotfiles repo location (parent of this repo).
 # Defined early so it can be used throughout (was previously set mid-script,
 # which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
-DEV_DIR="$(dirname "$DOTFILES_DIR")"
+# DOTFILES_DEV_DIR overrides the derivation: test suites run setup.sh against a
+# throwaway HOME and must not find the operator's real sibling claude-memory
+# when the checkout sits directly under ~/dev (#701). Namespaced, not DEV_DIR,
+# because DEV_DIR is a common ambient variable in unrelated shells.
+if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
+  case "$DOTFILES_DEV_DIR" in
+    /*) DEV_DIR="${DOTFILES_DEV_DIR%/}" ;;
+    *) echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2; exit 1 ;;
+  esac
+else
+  DEV_DIR="$(dirname "$DOTFILES_DIR")"
+fi
 # Private companion repo (settings.json + identity + auto-memory). Optional.
 # Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
 # still finds its sibling claude-memory repo.

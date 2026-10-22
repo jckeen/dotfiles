@@ -45,6 +45,12 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 # shellcheck source=claude/scripts/tests/lib-snapshot.sh
 . "$SCRIPT_DIR/lib-snapshot.sh"
 
+# setup.sh finds the private repo at $DEV_DIR/claude-memory, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev would run the
+# operator's REAL bootstrap against the throwaway HOME (#701). Point it at an
+# empty directory under the test root.
+DEV_ISO="$(mktemp -d)"
+export DOTFILES_DEV_DIR="$DEV_ISO"
 TESTHOME="$(mktemp -d)"
 OUT="$(mktemp)"
 CHECK_OUT="$(mktemp)"
@@ -59,7 +65,7 @@ SKILLS_EXTERNAL="$(mktemp -d)"
 unset TMUX
 TMUX_ISO="$(mktemp -d)"
 export TMUX_TMPDIR="$TMUX_ISO"
-trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL" "$TMUX_ISO"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
+trap 'rm -rf "$DEV_ISO" "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL" "$TMUX_ISO"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
 
 # Seed the mutation-tempting fixtures.
 git config --file "$TESTHOME/.gitconfig" user.name test

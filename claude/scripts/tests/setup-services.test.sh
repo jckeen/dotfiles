@@ -35,6 +35,12 @@ check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 OUT="$ROOT/out"
+# setup.sh finds the private repo at $DEV_DIR/claude-memory, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev would run the
+# operator's REAL bootstrap against the throwaway HOME (#701). Point it at an
+# empty directory under the test root.
+mkdir -p "$ROOT/dev"
+export DOTFILES_DEV_DIR="$ROOT/dev"
 
 # /usr/bin:/bin carries the basics but not the agent CLIs (they install under
 # ~/.local/bin), so the install sections plan their installers instead of

@@ -69,9 +69,14 @@ planned=0
 ok()   { pass=$((pass + 1));     echo "ok   - $1"; }
 fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 
+# setup.sh finds the private repo at $DEV_DIR/claude-memory, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev would run the
+# operator's REAL bootstrap against the throwaway HOME (#701). Point it at an
+# empty directory under the test root.
+DEV_ISO="$(mktemp -d)"
 OUT="$(mktemp)"
 TESTHOME=""
-trap 'rm -f "$OUT"; [ -z "$TESTHOME" ] || rm -rf "$TESTHOME"' EXIT
+trap 'rm -f "$OUT"; rm -rf "$DEV_ISO"; [ -z "$TESTHOME" ] || rm -rf "$TESTHOME"' EXIT
 
 # path_without <command> — echo $PATH with every entry that provides
 # <command> removed. The `checks` job installs Bun before this suite runs, so a
@@ -242,6 +247,7 @@ BOOTSTRAP
     TERM=dumb
     LC_ALL=C
     DOTFILES_ALLOW_LINKED_WORKTREE=1
+    DOTFILES_DEV_DIR="$DEV_ISO"
     CODEX_MEMORY_REPO="$CODEX_MEMORY"
   )
 
