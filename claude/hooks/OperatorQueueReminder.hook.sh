@@ -218,7 +218,12 @@ CACHE_TTL=600
 MAX_QUEUE_BYTES=65536
 # One deadline bounds a whole fetch (every scope, retry and wait): the hook's
 # documented bound. OPERATOR_QUEUE_FETCH_TIMEOUT only lets the tests shrink it.
-FETCH_TIMEOUT="$(printf '%s' "${OPERATOR_QUEUE_FETCH_TIMEOUT-120}" | LC_ALL=C grep -xE '[1-9][0-9]{0,3}')" || FETCH_TIMEOUT=120
+# The whole value must be digits: a line-wise grep would accept a value with
+# an embedded newline and feed it to arithmetic later.
+FETCH_TIMEOUT=120
+if [[ "${OPERATOR_QUEUE_FETCH_TIMEOUT-120}" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  FETCH_TIMEOUT="${OPERATOR_QUEUE_FETCH_TIMEOUT-120}"
+fi
 DEADLINE=0   # epoch second the running fetch must end by; set by start_deadline
 # GitHub search may time out partway and still answer: REST flags it
 # (incomplete_results), GraphQL only returns fewer nodes than issueCount. The

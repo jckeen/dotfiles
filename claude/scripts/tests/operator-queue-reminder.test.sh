@@ -1002,6 +1002,13 @@ assert "--find: an existing item prints its URL, exit 0" "[ $rc -eq 0 ] && [ \"\
 assert "--find: searches the hook's own query plus the quoted title" "grep -qF -- '-f q=is:issue is:open is:private author:@me label:operator-action repo:jckeen/claude-memory in:title \"dot-issue\" -f query=' '$FX/gh.log' && [ ! -e '$CACHEF' ]"
 run_issues FAKE_GH_JSON="$ISSUES" -- --find dot
 assert "--find: a title that only contains the slug is no match" "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+# A multi-line timeout value must fall back to the default, not reach the
+# deadline arithmetic (a line-wise check accepted it and --find then answered
+# empty without searching).
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_FETCH_TIMEOUT="$(printf '2\n3')" -- --find dot-issue
+assert "--find: a multi-line fetch-timeout value falls back and the search still runs" "[ $rc -eq 0 ] && [ \"\$out\" = 'https://github.com/jckeen/claude-memory/issues/12' ]"
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_FETCH_TIMEOUT="12x" -- --find dot-issue
+assert "--find: a non-numeric fetch-timeout value falls back and the search still runs" "[ $rc -eq 0 ] && [ \"\$out\" = 'https://github.com/jckeen/claude-memory/issues/12' ]"
 run_issues FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_OWNERS=jckeen -- --find edit-plant
 assert "--find: an item the reminder hides (edited by someone else) is no match" "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
 run_issues -- --find dot-issue
