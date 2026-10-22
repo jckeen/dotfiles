@@ -49,7 +49,14 @@ cat > "$FAKEBIN/gh" <<'GH'
 [ -n "${FAKE_GH_EMPTY:-}" ] && exit 0
 # FAKE_GH_SWITCH: the active gh account changes while the fetch runs.
 [ -n "${FAKE_GH_SWITCH:-}" ] && printf 'github.com:\n    user: switched\n' > "$GH_CONFIG_DIR/hosts.yml"
-jq --argjson extra "${FAKE_GH_EXTRA_COUNT:-0}" '{data: {search: {pageInfo: {hasNextPage: false, endCursor: null},
+# FAKE_GH_FLAKY=N: the first N calls (counted in $FAKE_GH_CALLS) come back
+# incomplete — one more counted than returned — the way a timed-out search does.
+extra="${FAKE_GH_EXTRA_COUNT:-0}"
+if [ -n "${FAKE_GH_CALLS:-}" ]; then
+  n=$(( $(cat "$FAKE_GH_CALLS" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_GH_CALLS"
+  [ "$n" -le "${FAKE_GH_FLAKY:-0}" ] && extra=1
+fi
+jq --argjson extra "$extra" '{data: {search: {pageInfo: {hasNextPage: false, endCursor: null},
   issueCount: (length + $extra),
   nodes: [ .[] | .labels = {nodes: (.labels // [])}
                 | .id = (.id // "\(.repo // "jckeen/claude-memory")#\(.number)")
@@ -71,6 +78,8 @@ unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN XDG_CONF
 GH_CONFIG_DIR="$(mktemp -d)"; export GH_CONFIG_DIR
 # Empty owners: the search covers the home repo alone unless a case sets them.
 export OPERATOR_QUEUE_OWNERS=
+# Retries happen (three attempts) but never wait.
+export OPERATOR_QUEUE_RETRY_SLEEPS="0 0"
 
 # Dates relative to the real today, so the assertions hold on any run date.
 # GNU date (Linux CI + WSL); the hook itself uses only `date +%Y-%m-%d`.
@@ -882,7 +891,7 @@ sed -i '$ s/]$/,/' "$FX/multi.json" && cat "$FX/multi.json.extra" >> "$FX/multi.
 OWNERS_KEY="$(hexkey 'github.com/jckeen/claude-memory +jckeen keen-media')"
 fresh_home
 run_issues FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_OWNERS="Keen-Media, jckeen"
-assert "owners: one search over the home repo plus each owner, sorted and lowercased" "grep -qF -- '-f q=is:issue is:open is:private author:@me label:operator-action repo:jckeen/claude-memory user:jckeen user:keen-media -f query=' '$FX/gh.log'"
+assert "owners: one search per scope — the home repo, then each owner sorted and lowercased" "[ \"\$(grep -c gh-done '$FX/gh.log')\" -eq 3 ] && grep -qF -- '-f q=is:issue is:open is:private author:@me label:operator-action repo:jckeen/claude-memory -f query=' '$FX/gh.log' && grep -qF -- 'label:operator-action user:jckeen -f query=' '$FX/gh.log' && grep -qF -- 'label:operator-action user:keen-media -f query=' '$FX/gh.log' && ! grep -qF 'user:jckeen user:keen-media' '$FX/gh.log'"
 assert "owners: the session repo's own issue prints in full with its repo" "outgrep 'dot-own-repo (dotfiles#7) — press the dotfiles button (project: dotfiles, added 3d ago)'"
 assert "owners: another repo's issue groups under its repo name" "outgrep '  stringer: 1 item (oldest 4d)'"
 assert "owners: home-repo issues with no project (or only a non-slug label) stay unscoped" "outgrep '  (no project): 2 items (oldest 1d)'"
@@ -893,7 +902,7 @@ assert "owners: label text never renders; repo name or nothing stands in" "! out
 assert "owners: the scope has its own cache" "[ -f '$IH/.local/state/operator-queue/issues-$OWNERS_KEY.md' ] && [ ! -e '$CACHEF' ]"
 fresh_home
 run_issues FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_OWNERS='jckeen repo:evil/x label:other'
-assert "owners: a value that is not a login never reaches the query" "grep -qF -- 'repo:jckeen/claude-memory user:jckeen -f query=' '$FX/gh.log' && ! grep -qF 'evil' '$FX/gh.log'"
+assert "owners: a value that is not a login never reaches the query" "grep -qF -- 'label:operator-action user:jckeen -f query=' '$FX/gh.log' && ! grep -qF 'evil' '$FX/gh.log' && ! grep -qF 'label:other' '$FX/gh.log'"
 
 fresh_home
 run_issues FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_REPO='jckeen/claude-memory repo:outside/other -label:operator-action'
@@ -927,6 +936,19 @@ rm -f "$GH_CONFIG_DIR/hosts.yml"
 fresh_home
 run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_EXTRA_COUNT=1
 assert "a search cut at GitHub's result cap fails instead of hiding items" "[ ! -e '$CACHEF' ] && outgrep 'over 1000 matches'"
+assert "a search cut short is retried three times before giving up" "[ \"\$(grep -c gh-done '$FX/gh.log')\" -eq 3 ]"
+# #716: GitHub search often times out partway and answers short; a retry
+# usually completes. Per scope, so one flaky scope never fails the others.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=1
+assert "an incomplete search that completes on retry builds the cache" "[ -f '$CACHEF' ] && outgrep 'dot-issue (claude-memory#12)' && [ \"\$(cat '$FX/calls')\" -eq 2 ]"
+rm -f "$FX/calls"; fresh_home
+run_issues FAKE_GH_JSON="$FX/multi.json" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=2 OPERATOR_QUEUE_OWNERS="jckeen keen-media"
+assert "owners: two incomplete answers, then three scopes complete (5 calls)" "outgrep '6 open item(s)' && [ \"\$(cat '$FX/calls')\" -eq 5 ]"
+rm -f "$FX/calls"; fresh_home
+run_issues FAKE_GH_JSON="$FX/multi.json" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=3 OPERATOR_QUEUE_OWNERS="jckeen keen-media"
+assert "owners: a scope still incomplete after three attempts fails the whole refresh" "[ ! -e '$CACHEF' ] && ! outgrep 'open item(s)' && outgrep 'could not list' && [ \"\$(cat '$FX/calls')\" -eq 3 ]"
+rm -f "$FX/calls"
 # One issue seen at two locations (transferred mid-paging) counts once.
 jq '. + [.[0] | .id = "jckeen/claude-memory#12" | .repo = "jckeen/elsewhere" | .number = 99]' "$ISSUES" > "$FX/moved.json"
 fresh_home
@@ -961,6 +983,13 @@ run_issues -- --find dot-issue
 assert "--find: GitHub unreachable is inconclusive (exit 2)" "[ $rc -eq 2 ] && outgrep 'search failed'"
 run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_EXTRA_COUNT=1 -- --find dot-issue
 assert "--find: a search cut at the cap is inconclusive" "[ $rc -eq 2 ] && outgrep 'cut short'"
+: > "$FX/gh.log"; rm -f "$FX/calls"
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=1 -- --find dot-issue
+assert "--find: an incomplete search is retried and then answers" "[ $rc -eq 0 ] && outgrep 'issues/12' && [ \"\$(cat '$FX/calls')\" -eq 2 ]"
+rm -f "$FX/calls"
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=9 -- --find dot-issue
+assert "--find: three incomplete answers are inconclusive" "[ $rc -eq 2 ] && [ \"\$(cat '$FX/calls')\" -eq 3 ]"
+rm -f "$FX/calls"
 : > "$FX/gh.log"
 run_issues FAKE_GH_JSON="$ISSUES" -- --find 'x" repo:evil/y'
 assert "--find: a slug that could add a qualifier is refused, never queried" "[ $rc -eq 2 ] && [ ! -s '$FX/gh.log' ]"
