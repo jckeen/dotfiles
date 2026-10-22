@@ -14,7 +14,8 @@
 # hook renders a cache of the issues and never touches the network itself.
 # When the cache is missing or older than CACHE_TTL it starts `$0 --refresh`
 # detached (stdio to /dev/null, its own session where setsid exists), which
-# pages the issues through one GraphQL query, turns them into the same blocks
+# pages the issues through one GraphQL search per scope (the home repo, then
+# each owner; a search that comes back incomplete is retried), turns them into the same blocks
 # (see refresh; each heading names its repo, `## <slug> (<repo>#<n>)`) and
 # atomically replaces the owner-only cache under
 # ${XDG_STATE_HOME:-~/.local/state}/operator-queue/. SessionStart therefore
@@ -62,6 +63,9 @@
 #                              therealnewsnetwork"); empty = the home repo only.
 #   OPERATOR_QUEUE_REFRESH_SYNC=1  refresh inline instead of detached (tests);
 #                              =never renders the cache and starts no refresh.
+#   OPERATOR_QUEUE_RETRY_SLEEPS="2 5"  seconds to wait before each retry of an
+#                              incomplete search (tests set "0 0"); one word
+#                              per retry, so "" means a single attempt.
 #
 # NEEDS: gh, jq and flock(1) (util-linux; `brew install flock` on macOS) for
 #   the issue source. Without any of them every refresh fails, and the header
@@ -128,10 +132,15 @@ OWNERS="${OWNERS% }"
 # The rendered items enter every session's context, so only issues the
 # operator wrote (author:@me, the gh login) in private repos count: anyone can
 # open an issue in a public repo, and a collaborator can label one.
-SEARCH_Q="is:issue is:open is:private author:@me label:operator-action repo:$REPO_PATH"
+SEARCH_BASE="is:issue is:open is:private author:@me label:operator-action"
+SEARCH_Q="$SEARCH_BASE repo:$REPO_PATH"
+# The refresh searches one scope at a time (see search_complete) and merges
+# the results by node id; SEARCH_Q is the same search in one query, for
+# --find and the printed command.
+SCOPES=("repo:$REPO_PATH")
 SCOPE="$ISSUE_REPO"
 if [ -n "$OWNERS" ]; then
-  for o in $OWNERS; do SEARCH_Q="$SEARCH_Q user:$o"; done
+  for o in $OWNERS; do SEARCH_Q="$SEARCH_Q user:$o"; SCOPES+=("user:$o"); done
   SCOPE="$ISSUE_REPO and every repo of ${OWNERS// /, } on $GH_HOSTNAME"
 fi
 # The hook's own query, verbatim, so the printed command lists exactly what
@@ -149,9 +158,11 @@ GQL='query($q: String!, $endCursor: String) {
       repository { nameWithOwner isPrivate }
       labels(first: 100) { nodes { name } }
       comments(last: 1) { nodes { createdAt } } } } } }'
-# What counts as an item, shared by the refresh and --find (jq -s over pages).
-# complete: GitHub search stops at 1000 results however far it pages; a cut
-# list would drop items silently, so it errors instead. Distinct issues are
+# What counts as an item, shared by the refresh and --find (jq -s over the
+# pages of one search).
+# complete: a search that timed out partway, or hit GitHub's 1000-result
+# cap, returns fewer nodes than it counts; a cut list would drop items
+# silently, so it errors instead (search_complete then retries). Distinct issues are
 # counted by node id (a rename or transfer mid-paging changes repo and number,
 # never id): pages that overlap while results shift must not let a repeat
 # stand in for a missing item.
@@ -200,6 +211,12 @@ LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
 MAX_QUEUE_BYTES=65536
 FETCH_TIMEOUT=120
+# GitHub search may time out partway and still answer: REST flags it
+# (incomplete_results), GraphQL only returns fewer nodes than issueCount. The
+# one query over every owner came back short most of the time (#716), so each
+# search is checked against its own count and retried after each wait below;
+# only digits count, so the value can never become a sleep(1) argument.
+RETRY_SLEEPS="$(printf '%s' "${OPERATOR_QUEUE_RETRY_SLEEPS-2 5}" | tr -s ' \t' '\n\n' | LC_ALL=C grep -xE '[0-9]{1,3}' | tr '\n' ' ')"
 SOURCE="file"
 CACHE_NOTE=""
 
@@ -267,21 +284,17 @@ refresh() {
   trap 'exit 1' INT TERM HUP
   # gh and jq inherit fd 9, so the lock lives as long as any fetch worker
   # does: a refresh shell killed mid-fetch cannot free it while its gh still
-  # runs. A hung gh would then hold it for good, so where timeout(1) exists
-  # the fetch is capped (killed, and the refresh fails) at FETCH_TIMEOUT.
-  local tmo=()
-  command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
+  # runs. A hung gh would then hold it for good, so search_complete caps
+  # each fetch (killed, and the refresh fails) at FETCH_TIMEOUT.
   raw="$(mktemp "$CACHE.raw.XXXXXX")" && OQ_RAW="$raw" &&
   tmp="$(mktemp "$CACHE.new.XXXXXX")" && OQ_TMP="$tmp" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
-  ${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
-    -f q="$SEARCH_Q" -f query="$GQL" > "$raw" 2>/dev/null &&
+  fetch_scopes "$raw" &&
   jq -rs --arg home "$(printf '%s' "$REPO_PATH" | tr '[:upper:]' '[:lower:]')" "$JQ_DEFS"'
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
       and ((try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .);
     def field($k): [ .[] | select(startswith("- " + $k + ":")) | sub("^- " + $k + ":[ \t]*"; "") ][0] // "";
-    complete,
     "# Operator-action issues",
     ( counted
       | (.body // "" | gsub("\r"; "") | split("\n")) as $lines
@@ -323,6 +336,36 @@ refresh() {
   return "$rc"
 }
 
+# search_complete <q> — the pages of one search of <q>, on stdout, once a
+# run comes back complete (every page carries its count and the distinct
+# nodes add up to it); nothing and exit 1 when none does. Where timeout(1)
+# exists each run is capped at FETCH_TIMEOUT.
+search_complete() {
+  local q="$1" s pages tmo=()
+  command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
+  for s in $RETRY_SLEEPS end; do
+    if pages="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
+         -f q="$q" -f query="$GQL" 2>/dev/null)" &&
+       printf '%s' "$pages" | jq -es "$JQ_DEFS"'complete, true' > /dev/null 2>&1; then
+      # A failed write (disk full) must fail the search: a page that never
+      # reached the file would otherwise pass as a shorter complete result.
+      printf '%s\n' "$pages"; return
+    fi
+    [ "$s" = end ] || sleep "$s"
+  done
+  return 1
+}
+
+# fetch_scopes <file> — every scope's complete search appended to <file>;
+# exit 1 at the first scope that stays incomplete (the cache is all or
+# nothing: a missing scope would hide its items as done).
+fetch_scopes() {
+  local sc
+  for sc in "${SCOPES[@]}"; do
+    search_complete "$SEARCH_BASE $sc" >> "$1" || return 1
+  done
+}
+
 # refresh_state — "failed" (the latest refresh failed), "inflight" (a
 # refresh is running or was killed before it could record its outcome; the
 # hook cannot tell which, and does not try) or "" (the cache is the latest
@@ -342,7 +385,7 @@ refresh_state() {
 # --find <slug> prints the URL of each open item titled exactly <slug> that
 # this hook would list (titles compare case-insensitively), and exits 0 when the search was complete (no URL =
 # no such item). Exit 2 = it could not tell: GitHub unreachable, gh or jq
-# missing, the result cut at 1000, a bad slug or repo, or a live queue file
+# missing, the search still incomplete after retries, a bad slug or repo, or a live queue file
 # (that file, not the issues, is the queue until it carries the banner).
 find_item() {
   local slug="${1:-}" raw
@@ -358,15 +401,15 @@ find_item() {
     echo "--find: $LEGACY is still the live queue; move its items into issues and add the historical banner first" >&2; return 2
   fi
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "--find: needs gh and jq" >&2; return 2; }
-  local tmo=()
-  command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
-  raw="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
-    -f q="$SEARCH_Q in:title \"$slug\"" -f query="$GQL")" || { echo "--find: the search failed" >&2; return 2; }
+  # One query over every scope: narrowed to the title it is small, and
+  # search_complete retries it if GitHub still cuts it short.
+  raw="$(search_complete "$SEARCH_Q in:title \"$slug\"")" ||
+    { echo "--find: the search failed or came back cut short after retries" >&2; return 2; }
   # author:@me depends on the gh account: one switched mid-search answered
   # for someone else (refresh() makes the same check before writing).
   [ "$(gh_ident)" = "$IDENT" ] || { echo "--find: the gh account changed mid-search" >&2; return 2; }
-  printf '%s' "$raw" | jq -rs --arg slug "$slug" "$JQ_DEFS"'complete, (counted | select((.title | ascii_downcase) == ($slug | ascii_downcase)) | .url)' ||
-    { echo "--find: the search was cut short or unreadable" >&2; return 2; }
+  printf '%s' "$raw" | jq -rs --arg slug "$slug" "$JQ_DEFS"'counted | select((.title | ascii_downcase) == ($slug | ascii_downcase)) | .url' ||
+    { echo "--find: the search result was unreadable" >&2; return 2; }
 }
 
 # SessionStart runs the hook with no arguments; that alone renders the
@@ -457,7 +500,7 @@ else
   fi
   if [ "$copied" -ne 0 ]; then
     if [ "$state" = failed ]; then
-      echo "Operator action queue: could not list operator-action issues in $SCOPE (offline, gh unauthenticated, or gh/jq/flock missing; or the gh account changed mid-fetch, or over 1000 matches) and no cache exists — \`$LIST_CMD\` lists them."
+      echo "Operator action queue: could not list operator-action issues in $SCOPE (offline, gh unauthenticated, or gh/jq/flock missing; or the gh account changed mid-fetch, or the search stayed incomplete after retries — timed out, or over 1000 matches) and no cache exists — \`$LIST_CMD\` lists them."
     else
       echo "Operator action queue: no cache of operator-action issues in $SCOPE yet — a refresh is running in the background (or was interrupted); \`$LIST_CMD\` lists them."
     fi
@@ -471,7 +514,7 @@ else
   # possibly superseded, never as current. An old cache without either is
   # simply being refreshed.
   if [ "$state" = failed ]; then
-    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing; or the gh account changed mid-fetch, or over 1000 matches)"
+    CACHE_NOTE=" (cached $((cache_age / 60)) min ago; the last refresh failed — GitHub unreachable, gh unauthenticated, or gh/jq/flock missing; or the gh account changed mid-fetch, or the search stayed incomplete after retries — timed out, or over 1000 matches)"
   elif [ "$state" = inflight ]; then
     CACHE_NOTE=" (cached $((cache_age / 60)) min ago; a refresh is running or was interrupted)"
   elif [ "$cache_age" -gt "$CACHE_TTL" ]; then
