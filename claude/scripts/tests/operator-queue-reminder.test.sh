@@ -949,6 +949,14 @@ rm -f "$FX/calls"; fresh_home
 run_issues FAKE_GH_JSON="$FX/multi.json" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=3 OPERATOR_QUEUE_OWNERS="jckeen keen-media"
 assert "owners: a scope still incomplete after three attempts fails the whole refresh" "[ ! -e '$CACHEF' ] && ! outgrep 'open item(s)' && outgrep 'could not list' && [ \"\$(cat '$FX/calls')\" -eq 3 ]"
 rm -f "$FX/calls"
+# A page that cannot be written (file-size limit, SIGXFSZ ignored so the
+# write fails instead of killing the shell) fails the refresh: a shorter
+# raw file would otherwise render as a complete, smaller queue.
+fresh_home
+out="$(cd "$FX/dotfiles" && env -u CLAUDE_PROJECT_DIR -u OPERATOR_QUEUE_SHOW_ALL -u OPERATOR_QUEUE_FILE \
+  HOME="$IH" FAKE_GH_LOG="$FX/gh.log" FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_OWNERS="jckeen keen-media" OPERATOR_QUEUE_REFRESH_SYNC=1 \
+  bash -c 'trap "" XFSZ; ulimit -f 4; exec "$0"' "$HOOK" 2>&1)"; rc=$?
+assert "a search page that cannot be written fails the refresh instead of caching a short list" "[ ! -e '$IH/.local/state/operator-queue/issues-$OWNERS_KEY.md' ] && outgrep 'could not list'"
 # One issue seen at two locations (transferred mid-paging) counts once.
 jq '. + [.[0] | .id = "jckeen/claude-memory#12" | .repo = "jckeen/elsewhere" | .number = 99]' "$ISSUES" > "$FX/moved.json"
 fresh_home

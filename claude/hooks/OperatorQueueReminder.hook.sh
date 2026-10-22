@@ -347,7 +347,9 @@ search_complete() {
     if pages="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
          -f q="$q" -f query="$GQL" 2>/dev/null)" &&
        printf '%s' "$pages" | jq -es "$JQ_DEFS"'complete, true' > /dev/null 2>&1; then
-      printf '%s\n' "$pages"; return 0
+      # A failed write (disk full) must fail the search: a page that never
+      # reached the file would otherwise pass as a shorter complete result.
+      printf '%s\n' "$pages"; return
     fi
     [ "$s" = end ] || sleep "$s"
   done
