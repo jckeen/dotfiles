@@ -104,8 +104,8 @@ done
 
 # Memory repo check
 echo "Checking memory repo..."
-# Derive dev dir from dotfiles repo location (parent of this repo)
-DEV_DIR="$(dirname "$DOTFILES_DIR")"
+# The dev dir follows DOTFILES_DEV_DIR like setup.sh does (#701).
+DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
 MEMORY_REPO="$DEV_DIR/claude-memory"
 MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
 MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"

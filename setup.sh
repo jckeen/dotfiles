@@ -52,27 +52,9 @@ DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 # recomputing realpath per-file (once per managed link) would be pure overhead.
 DOTFILES_REAL="$(realpath "$DOTFILES_DIR" 2>/dev/null || echo "$DOTFILES_DIR")"
 HOME_DIR="$HOME"
-# Dev dir: derived from dotfiles repo location (parent of this repo).
-# Defined early so it can be used throughout (was previously set mid-script,
-# which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
-# DOTFILES_DEV_DIR overrides the derivation: test suites run setup.sh against a
-# throwaway HOME and must not find the operator's real sibling claude-memory
-# when the checkout sits directly under ~/dev (#701). Namespaced, not DEV_DIR,
-# because DEV_DIR is a common ambient variable in unrelated shells.
-if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
-  case "$DOTFILES_DEV_DIR" in
-    # Trim one trailing slash, but "/" itself must stay "/", not become "".
-    /) DEV_DIR="/" ;;
-    /*) DEV_DIR="${DOTFILES_DEV_DIR%/}" ;;
-    *) echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2; exit 1 ;;
-  esac
-else
-  DEV_DIR="$(dirname "$DOTFILES_DIR")"
-fi
-# Private companion repo (settings.json + identity + auto-memory). Optional.
-# Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
-# still finds its sibling claude-memory repo.
-BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
+# Dev dir (the parent holding the sibling repos) and the private companion
+# repo's bootstrap are set right after lib-checks.sh is sourced below, through
+# dotfiles_dev_dir, which the three check-* scripts share (#701).
 
 # Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
@@ -95,6 +77,17 @@ if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
 fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+
+# Dev dir: DOTFILES_DEV_DIR when set, else the checkout's parent. Defined
+# early so it can be used throughout (was previously set mid-script, which
+# broke any earlier reference — e.g. safe.directory ending up as
+# "/claude-memory"). Namespaced, not DEV_DIR, because DEV_DIR is a common
+# ambient variable in unrelated shells.
+DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+# Private companion repo (settings.json + identity + auto-memory). Optional.
+# Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
+# still finds its sibling claude-memory repo.
+BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
 
 # Agent-service selection (issue #425): which of Claude Code, Codex, and
 # Antigravity this machine installs, links, and health-checks. Parsing,

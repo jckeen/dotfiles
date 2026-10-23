@@ -391,6 +391,41 @@ check "#701 the codex-memory sibling follows DOTFILES_DEV_DIR too" \
   '[ ! -e "$CODEX_SENTINEL" ] && ! grep -Fq "$FAKE_DEV/codex-memory" <<< "$codex_out"'
 check "#701 the agy-memory sibling follows DOTFILES_DEV_DIR too" \
   '[ ! -e "$AGY_SENTINEL" ] && ! grep -Fq "$FAKE_DEV/agy-memory" <<< "$codex_out"'
+# The health checkers derive the same sibling paths (setup.sh --check runs
+# them), so they must follow the override too. Planted files make the control
+# run name the planted sibling; the override run must not.
+printf 'planted\n' > "$FAKE_DEV/codex-memory/AGENTS.local.md"
+printf 'planted\n' > "$FAKE_DEV/agy-memory/GEMINI.local.md"
+# The checkers stop early on an uninitialised tool, so give the throwaway home
+# the two directories they look for before reaching the memory-repo section.
+mkdir -p "$ISO/home/.codex" "$ISO/home/.gemini/config"
+run_checker() {
+  local script="$1"; shift
+  env -i PATH="$CLEAN_PATH" HOME="$ISO/home" TERM=dumb LC_ALL=C "$@" \
+    "$FAKE_DEV/dotfiles/$script" 2>&1 || true
+}
+for c in check-codex.sh:AGENTS.local.md check-antigravity.sh:GEMINI.local.md check-claude.sh:claude-memory; do
+  script="${c%%:*}"; planted="${c##*:}"
+  ctrl_out="$(run_checker "$script")"
+  over_out="$(run_checker "$script" DOTFILES_DEV_DIR="$ISO/empty")"
+  case "$script" in
+    check-claude.sh)
+      check "#701 $script control: without the override the planted sibling is in play" \
+        'grep -Fq "MISSING  memory" <<< "$ctrl_out"'
+      check "#701 $script never reports the planted sibling under DOTFILES_DEV_DIR" \
+        '! grep -Fq "MISSING  memory" <<< "$over_out"' ;;
+    *)
+      check "#701 $script control: without the override the planted sibling is in play" \
+        'grep -Fq "$planted" <<< "$ctrl_out"'
+      check "#701 $script never reports the planted sibling under DOTFILES_DEV_DIR" \
+        '! grep -Fq "$planted" <<< "$over_out" && ! grep -Fq "$FAKE_DEV" <<< "$over_out"' ;;
+  esac
+done
+check_out="$(env -i PATH="$CLEAN_PATH" HOME="$ISO/home" TERM=dumb LC_ALL=C \
+  DOTFILES_ALLOW_LINKED_WORKTREE=1 DOTFILES_SERVICES=claude,codex,antigravity DOTFILES_DEV_DIR="$ISO/empty" \
+  "$FAKE_DEV/dotfiles/setup.sh" --check 2>&1 || true)"
+check "#701 setup.sh --check never reports a planted sibling under DOTFILES_DEV_DIR" \
+  '! grep -Fq "$FAKE_DEV/codex-memory" <<< "$check_out" && ! grep -Fq "$FAKE_DEV/agy-memory" <<< "$check_out"'
 # The root directory is a valid absolute path: trimming its trailing slash must
 # not leave DEV_DIR empty (an empty ~/.claude/dev-dir breaks repo discovery).
 iso_out="$(run_iso DOTFILES_DEV_DIR=/)"

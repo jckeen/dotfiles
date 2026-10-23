@@ -221,3 +221,23 @@ user_scoped_plugins() {
     /^[[:space:]]*Scope:[[:space:]]*/ { name = "" }
   '
 }
+
+# dotfiles_dev_dir <dotfiles-dir> — the directory that holds the sibling
+# repos (claude-memory, codex-memory, agy-memory). DOTFILES_DEV_DIR overrides
+# the derivation: the test suites run setup.sh and the check-* scripts against
+# a throwaway HOME and must never reach the operator's real siblings when the
+# checkout sits directly under ~/dev (#701). The override must be absolute;
+# one trailing slash is trimmed, and "/" stays "/". Otherwise the checkout's
+# parent, as before. Shared by setup.sh and the three check-* scripts so the
+# audit can never look somewhere the install did not.
+dotfiles_dev_dir() {
+  if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
+    case "$DOTFILES_DEV_DIR" in
+      /) printf '/\n' ;;
+      /*) printf '%s\n' "${DOTFILES_DEV_DIR%/}" ;;
+      *) echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2; return 1 ;;
+    esac
+  else
+    dirname "$1"
+  fi
+}
