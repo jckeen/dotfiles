@@ -65,7 +65,12 @@
 #                              =never renders the cache and starts no refresh.
 #   OPERATOR_QUEUE_RETRY_SLEEPS="2 5"  seconds to wait before each retry of an
 #                              incomplete search (tests set "0 0"); one word
-#                              per retry, so "" means a single attempt.
+#                              per retry, so "" means a single attempt. Only an
+#                              answer that arrived incomplete is retried; a gh
+#                              that fails or hangs ends the fetch, and every
+#                              retry and wait fits inside one FETCH_TIMEOUT.
+#   OPERATOR_QUEUE_FETCH_TIMEOUT=120  seconds one whole fetch may take (tests
+#                              shrink it); digits only, else 120.
 #
 # NEEDS: gh, jq and flock(1) (util-linux; `brew install flock` on macOS) for
 #   the issue source. Without any of them every refresh fails, and the header
@@ -97,8 +102,9 @@
 #   MAX_ITEMS project summaries are rendered ("…and N more" for the rest),
 #   each action is cut at MAX_ACTION_CHARS bytes, each item line at
 #   MAX_LINE_CHARS and each summary label at 80, so a grown queue can never
-#   flood session context or stall SessionStart. The detached fetch is capped
-#   at FETCH_TIMEOUT seconds where timeout(1) exists.
+#   flood session context or stall SessionStart. A whole fetch (all scopes,
+#   retries and waits) is capped at FETCH_TIMEOUT seconds where timeout(1)
+#   exists, plus its 10 s kill grace.
 # SELF-TEST: claude/scripts/tests/operator-queue-reminder.test.sh
 
 set -uo pipefail
@@ -210,7 +216,15 @@ INFLIGHT="$CACHE.inflight"  # exists while a refresh runs; left behind if it die
 LOCK="$CACHE.lock"       # flock target; the file itself is never removed
 CACHE_TTL=600
 MAX_QUEUE_BYTES=65536
+# One deadline bounds a whole fetch (every scope, retry and wait): the hook's
+# documented bound. OPERATOR_QUEUE_FETCH_TIMEOUT only lets the tests shrink it.
+# The whole value must be digits: a line-wise grep would accept a value with
+# an embedded newline and feed it to arithmetic later.
 FETCH_TIMEOUT=120
+if [[ "${OPERATOR_QUEUE_FETCH_TIMEOUT-120}" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  FETCH_TIMEOUT="${OPERATOR_QUEUE_FETCH_TIMEOUT-120}"
+fi
+DEADLINE=0   # epoch second the running fetch must end by; set by start_deadline
 # GitHub search may time out partway and still answer: REST flags it
 # (incomplete_results), GraphQL only returns fewer nodes than issueCount. The
 # one query over every owner came back short most of the time (#716), so each
@@ -289,7 +303,7 @@ refresh() {
   raw="$(mktemp "$CACHE.raw.XXXXXX")" && OQ_RAW="$raw" &&
   tmp="$(mktemp "$CACHE.new.XXXXXX")" && OQ_TMP="$tmp" &&
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 &&
-  fetch_scopes "$raw" &&
+  start_deadline && fetch_scopes "$raw" &&
   jq -rs --arg home "$(printf '%s' "$REPO_PATH" | tr '[:upper:]' '[:lower:]')" "$JQ_DEFS"'
     # A real calendar date: the shape alone would let 2026-99-99 outrank a valid comment.
     def isdate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -336,22 +350,33 @@ refresh() {
   return "$rc"
 }
 
+# start_deadline — the whole fetch that follows must end by now + FETCH_TIMEOUT.
+start_deadline() { DEADLINE=$(( $(date +%s) + FETCH_TIMEOUT )); }
+
 # search_complete <q> — the pages of one search of <q>, on stdout, once a
 # run comes back complete (every page carries its count and the distinct
-# nodes add up to it); nothing and exit 1 when none does. Where timeout(1)
-# exists each run is capped at FETCH_TIMEOUT.
+# nodes add up to it); nothing and exit 1 when none does. Only an answer
+# that arrived but is short is retried: gh failing or hitting the cap ends
+# the search at once. Every run and wait stays inside DEADLINE, so retries
+# never stretch the fetch past FETCH_TIMEOUT.
 search_complete() {
-  local q="$1" s pages tmo=()
-  command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$FETCH_TIMEOUT")
+  local q="$1" s pages left tmo=()
   for s in $RETRY_SLEEPS end; do
-    if pages="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
-         -f q="$q" -f query="$GQL" 2>/dev/null)" &&
-       printf '%s' "$pages" | jq -es "$JQ_DEFS"'complete, true' > /dev/null 2>&1; then
+    left=$(( DEADLINE - $(date +%s) ))
+    [ "$left" -gt 0 ] || return 1
+    tmo=()
+    command -v timeout >/dev/null 2>&1 && tmo=(timeout -k 10 "$left")
+    pages="$(${tmo[@]+"${tmo[@]}"} gh api graphql --hostname "$GH_HOSTNAME" --paginate \
+         -f q="$q" -f query="$GQL" 2>/dev/null)" || return 1
+    if printf '%s' "$pages" | jq -es "$JQ_DEFS"'complete, true' > /dev/null 2>&1; then
       # A failed write (disk full) must fail the search: a page that never
       # reached the file would otherwise pass as a shorter complete result.
       printf '%s\n' "$pages"; return
     fi
-    [ "$s" = end ] || sleep "$s"
+    [ "$s" = end ] && break
+    # A wait that would eat the rest of the budget leaves no time to retry.
+    [ "$s" -lt $(( DEADLINE - $(date +%s) )) ] || return 1
+    sleep "$s"
   done
   return 1
 }
@@ -403,6 +428,7 @@ find_item() {
   command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || { echo "--find: needs gh and jq" >&2; return 2; }
   # One query over every scope: narrowed to the title it is small, and
   # search_complete retries it if GitHub still cuts it short.
+  start_deadline
   raw="$(search_complete "$SEARCH_Q in:title \"$slug\"")" ||
     { echo "--find: the search failed or came back cut short after retries" >&2; return 2; }
   # author:@me depends on the gh account: one switched mid-search answered
