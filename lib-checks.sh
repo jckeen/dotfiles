@@ -236,8 +236,10 @@ user_scoped_plugins() {
 # included) are stripped.
 manifest_per_project_plugins() {
   awk '
-    tolower($0) ~ /^[[:space:]]*#[[:space:]]*\[(global|per-project)\]/ {
-      per = (tolower($0) ~ /\[per-project\]/)
+    match(tolower($0), /^[[:space:]]*#[[:space:]]*\[(global|per-project)\]/) {
+      # Only the leading marker decides: "# [global] (unlike [per-project])"
+      # is a global marker, as PluginDriftCheck.hook.ts reads it.
+      per = (substr(tolower($0), RSTART, RLENGTH) ~ /\[per-project\]/)
       next
     }
     {

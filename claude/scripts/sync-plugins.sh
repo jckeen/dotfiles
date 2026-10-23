@@ -121,6 +121,9 @@ esac
 # Without python3 the fast path is skipped entirely rather than guessed at: the
 # install loop below is idempotent, so the cost is launch latency, not
 # correctness. python3 is already required by the pre-push receipt checker.
+# Both interpreter calls run with -I so a json.py planted in the current
+# directory (sync-plugins runs from wherever the operator is) cannot hijack
+# the import.
 #
 # installed_state says whether $user_scoped can be trusted: "known" (read, or
 # no file at all — nothing installed yet) or the reason it could not be read.
@@ -142,7 +145,7 @@ elif [[ ! -f "$INSTALLED_JSON" ]]; then
   installed_state="$INSTALLED_JSON is not a regular file"
 elif ! command -v python3 >/dev/null 2>&1; then
   installed_state="python3 is not on PATH, so $INSTALLED_JSON cannot be read"
-elif ! user_scoped="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -c '
+elif ! user_scoped="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -I -c '
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -180,6 +183,45 @@ for p in ${removed[@]+"${removed[@]}"}; do
   fi
 done
 
+# [per-project] plugins must never be enabled in the user settings.json. A
+# disable that failed right after an install (or an install from before #720)
+# would otherwise be masked by the installed-only fast path below on every
+# later run, so each run re-reads the map and disables what it finds; a
+# failure here fails the run, before anything can report success.
+per_project="$(manifest_per_project_plugins < "$MANIFEST")"
+SETTINGS_JSON="$HOME/.claude/settings.json"
+enabled_per_project=""
+if [[ -n "$per_project" && -f "$SETTINGS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
+  enabled_per_project="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -I -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
+if isinstance(enabled, dict):
+    for name, val in enabled.items():
+        if val is True and isinstance(name, str):
+            print(name)
+' "$SETTINGS_JSON" 2>/dev/null | grep -xF -f <(printf '%s\n' "$per_project") || true)"
+fi
+if [[ -n "$enabled_per_project" ]]; then
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "✘ claude CLI not on PATH; cannot disable [per-project] plugins enabled at user scope" >&2
+    exit 1
+  fi
+  disable_failed=0
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    echo "── $p is enabled at user scope but listed [per-project]; disabling"
+    if ! claude plugin disable --scope user "$p" 2>&1 | tail -1; then
+      echo "  ✘ could not disable $p at user scope" >&2
+      disable_failed=1
+    fi
+  done <<<"$enabled_per_project"
+  (( disable_failed == 0 )) || exit 1
+fi
+
 if [[ -n "$user_scoped" ]] && (( ${#to_remove[@]} == 0 )) \
   && (( ${#unevaluated[@]} == 0 )); then
   missing=0
@@ -202,8 +244,6 @@ fi
 installed=()
 uninstalled=()
 failed=()
-
-per_project="$(manifest_per_project_plugins < "$MANIFEST")"
 
 for p in ${wanted[@]+"${wanted[@]}"}; do
   echo "── $p"

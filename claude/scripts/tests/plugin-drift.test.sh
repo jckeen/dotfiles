@@ -876,6 +876,14 @@ run_sync() {
     printf '%s\n' "$services" > "$H/.config/dotfiles/services" \
       || die "write the services file"
   fi
+  # SYNC_SEED_ENABLED: ids pre-enabled (true) in the throwaway user settings.
+  if [[ -n "${SYNC_SEED_ENABLED:-}" ]]; then
+    # shellcheck disable=SC2086  # the ids are space-separated on purpose
+    python3 -c '
+import json, sys
+json.dump({"enabledPlugins": {n: True for n in sys.argv[2:]}}, open(sys.argv[1], "w"))
+' "$H/.claude/settings.json" $SYNC_SEED_ENABLED || die "seed settings.json"
+  fi
   cat > "$B/claude" <<STUB || die "write the claude stub"
 #!/usr/bin/env bash
 # Stub: record 'plugin install|uninstall <name>' calls, never touch the network.
@@ -899,6 +907,7 @@ if [ "\$1" = "plugin" ] && [ "\$2" = "install" ]; then
   echo "installed \$3"
 elif [ "\$1" = "plugin" ] && [ "\$2" = "disable" ]; then
   echo "\$*" >> "$B/disables"
+  if [ -n "\${FAKE_DISABLE_FAIL:-}" ]; then echo "disable failed"; exit 1; fi
   set_enabled "\${@: -1}" false
   echo "disabled"
 elif [ "\$1" = "plugin" ] && [ "\$2" = "uninstall" ]; then
@@ -1024,16 +1033,38 @@ assert "sync never disables a [global] plugin" \
   '! grep -qF "typescript-lsp" <<<"$sync_disables"'
 assert "sync exits 0 with [per-project] plugins" "[ $sync_rc -eq 0 ]"
 
+# Every plugin already installed at user scope (the fast path), but one
+# [per-project] id is enabled in the user settings: the run must disable it
+# rather than exit 0 on the installed-only check.
+INSTALLED_SPLIT='{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[{"scope":"user"}],"vercel@claude-plugins-official":[{"scope":"user"}],"posthog@claude-plugins-official":[{"scope":"user"}]}}'
+SYNC_SEED_ENABLED="vercel@claude-plugins-official typescript-lsp@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: an enabled [per-project] plugin is disabled even when nothing needs installing" \
+  '[ $sync_rc -eq 0 ] && grep -qxF "plugin disable --scope user vercel@claude-plugins-official" <<<"$sync_disables" && ! grep -qF "vercel@" <<<"$sync_enabled" && grep -qxF "typescript-lsp@claude-plugins-official" <<<"$sync_enabled"'
+assert "sync: that pass installs nothing" '[ -z "$sync_installs" ]'
+# A disable that fails must fail the run, and keep failing on the next run
+# instead of being masked by the fast path.
+FAKE_DISABLE_FAIL=1 SYNC_SEED_ENABLED="vercel@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: a failed disable fails the run" '[ $sync_rc -ne 0 ] && grep -qF "vercel@" <<<"$sync_enabled"'
+FAKE_DISABLE_FAIL=1 SYNC_SEED_ENABLED="vercel@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: the next run fails again rather than passing silently" '[ $sync_rc -ne 0 ] && grep -qF "plugin disable" <<<"$sync_disables"'
+
 # A manifest with no markers is all-global: nothing is disabled.
 run_sync "$MANIFEST_GLOBAL" '<absent>'
 assert "sync: an unmarked manifest disables nothing" '[ -z "$sync_disables" ]'
 
 # Shared helper (lib-checks.sh): same section rules as the drift hook.
+# shellcheck source=lib-checks.sh
 if ! . "$LIB_CHECKS"; then
   echo "FAIL - fixture setup: cannot source $LIB_CHECKS" >&2
   exit 1
 fi
 out="$(printf '%s\n' 'before-marker@m' '# [per-project]' 'a@m # c' '  b@m  ' '# comment' '# mods-ok: x@m' '# [global]' 'g@m' '# [PER-PROJECT]' 'c@m' | manifest_per_project_plugins)"
+# Only the leading marker decides the section: a trailing mention of the
+# other marker in the same comment must not flip it.
+# shellcheck disable=SC2034  # Read by assert's evaluated condition.
+trail="$(printf '%s\n' '# [global] (unlike [per-project])' 'g1@m' '# [per-project] (not [global])' 'p1@m' | manifest_per_project_plugins)"
+assert "helper: a trailing marker in a comment does not change the section" \
+  '[ "$trail" = "p1@m" ]'
 assert "helper prints only per-project ids, in order" \
   '[ "$out" = "$(printf "a@m\nb@m\nc@m")" ]'
 out="$(printf 'x@m\r\n# [per-project]\r\ny@m\r\n' | manifest_per_project_plugins)"
