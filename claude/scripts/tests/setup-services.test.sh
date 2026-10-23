@@ -426,11 +426,19 @@ check_out="$(env -i PATH="$CLEAN_PATH" HOME="$ISO/home" TERM=dumb LC_ALL=C \
   "$FAKE_DEV/dotfiles/setup.sh" --check 2>&1 || true)"
 check "#701 setup.sh --check never reports a planted sibling under DOTFILES_DEV_DIR" \
   '! grep -Fq "$FAKE_DEV/codex-memory" <<< "$check_out" && ! grep -Fq "$FAKE_DEV/agy-memory" <<< "$check_out"'
-# The root directory is a valid absolute path: trimming its trailing slash must
-# not leave DEV_DIR empty (an empty ~/.claude/dev-dir breaks repo discovery).
-iso_out="$(run_iso DOTFILES_DEV_DIR=/)"
-check "#701 DOTFILES_DEV_DIR=/ keeps the root, not an empty dev dir" \
-  'grep -Fq "dev-dir (/)" <<< "$iso_out" && ! grep -Fq "dev-dir ()" <<< "$iso_out"'
+# The override's edge cases are checked on the shared helper itself, never by
+# running setup.sh with DOTFILES_DEV_DIR=/ (that would look for, and in a
+# dry run still execute, a real /claude-memory/bootstrap.sh on the host).
+# shellcheck source=lib-checks.sh
+. "$REPO_ROOT/lib-checks.sh"
+check "#701 helper: DOTFILES_DEV_DIR=/ keeps the root, not an empty dev dir" \
+  '[ "$(DOTFILES_DEV_DIR=/ dotfiles_dev_dir "$REPO_ROOT")" = / ]'
+check "#701 helper: one trailing slash is trimmed" \
+  '[ "$(DOTFILES_DEV_DIR="$ISO/empty/" dotfiles_dev_dir "$REPO_ROOT")" = "$ISO/empty" ]'
+check "#701 helper: a relative override is refused" \
+  '! DOTFILES_DEV_DIR=relative/dir dotfiles_dev_dir "$REPO_ROOT" 2>/dev/null'
+check "#701 helper: no override falls back to the checkout parent" \
+  '[ "$(env -u DOTFILES_DEV_DIR bash -c ". \"$REPO_ROOT/lib-checks.sh\"; dotfiles_dev_dir /a/b/dotfiles")" = /a/b ]'
 # Every suite that runs setup.sh sets the override before its first run.
 for s in setup-services setup-dry-run setup-fuzz-layouts; do
   f="$SCRIPT_DIR/$s.test.sh"
