@@ -195,6 +195,13 @@ per_project="$(manifest_per_project_plugins < "$MANIFEST" | services_filter_plug
 SETTINGS_JSON="$HOME/.claude/settings.json"
 enabled_per_project=""
 if [[ -n "$per_project" && -e "$SETTINGS_JSON" ]]; then
+  # Only a regular file (through a symlink: settings.json is one) is opened;
+  # a FIFO or socket there would hang the read, and a directory is not a
+  # settings file. Either is a failure, not "nothing enabled".
+  if [[ ! -f "$SETTINGS_JSON" ]]; then
+    echo "✘ $SETTINGS_JSON is not a regular file; cannot confirm [per-project] plugins are disabled" >&2
+    exit 1
+  fi
   if ! command -v python3 >/dev/null 2>&1; then
     echo "✘ python3 is not on PATH, so $SETTINGS_JSON cannot be checked for enabled [per-project] plugins" >&2
     exit 1

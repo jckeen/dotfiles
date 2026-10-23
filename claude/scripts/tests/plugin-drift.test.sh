@@ -876,6 +876,10 @@ run_sync() {
     printf '%s\n' "$services" > "$H/.config/dotfiles/services" \
       || die "write the services file"
   fi
+  # SYNC_SEED_FIFO: settings.json is a FIFO (a read would hang).
+  if [[ -n "${SYNC_SEED_FIFO:-}" ]]; then
+    mkfifo "$H/.claude/settings.json" || die "mkfifo settings.json"
+  fi
   # SYNC_SEED_RAW: literal settings.json content; SYNC_SEED_MODE: its mode.
   if [[ -n "${SYNC_SEED_RAW:-}" ]]; then
     printf '%s\n' "$SYNC_SEED_RAW" > "$H/.claude/settings.json" || die "seed raw settings.json"
@@ -960,13 +964,18 @@ STUB
   sync_disables="$(cat "$B/disables")"
   # Ids the stub left ENABLED (true) in the throwaway user settings.json.
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
-  sync_enabled="$(python3 -c '
+  # Only a regular file is read: a FIFO fixture would hang this read too.
+  sync_enabled=""
+  if [[ -f "$H/.claude/settings.json" ]]; then
+    # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+    sync_enabled="$(python3 -c '
 import json, sys
 try:
     m = json.load(open(sys.argv[1])).get("enabledPlugins", {})
 except Exception:
     m = {}
 print("\n".join(k for k, v in m.items() if v is True))' "$H/.claude/settings.json" 2>/dev/null)"
+  fi
   rm -rf "$D" "$H" "$B"
 }
 
@@ -1072,6 +1081,9 @@ if [[ "$(id -u)" != 0 ]]; then
 else
   echo "skip - sync: unreadable settings.json (root ignores mode bits)"
 fi
+SYNC_SEED_FIFO=1 run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: a FIFO settings.json fails the run without hanging" \
+  '[ $sync_rc -ne 0 ] && grep -qF "not a regular file" <<<"$sync_out"'
 
 # A manifest with no markers is all-global: nothing is disabled.
 run_sync "$MANIFEST_GLOBAL" '<absent>'
