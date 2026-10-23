@@ -370,6 +370,11 @@ check "#701 setup.sh reports the overridden location" \
   'grep -Fq "$ISO/empty/claude-memory/bootstrap.sh" <<< "$iso_out"'
 check "#701 a relative DOTFILES_DEV_DIR is refused" \
   '! run_iso DOTFILES_DEV_DIR=relative/dir >/dev/null'
+# The root directory is a valid absolute path: trimming its trailing slash must
+# not leave DEV_DIR empty (an empty ~/.claude/dev-dir breaks repo discovery).
+iso_out="$(run_iso DOTFILES_DEV_DIR=/)"
+check "#701 DOTFILES_DEV_DIR=/ keeps the root, not an empty dev dir" \
+  'grep -Fq "dev-dir (/)" <<< "$iso_out" && ! grep -Fq "dev-dir ()" <<< "$iso_out"'
 # Every suite that runs setup.sh sets the override before its first run.
 for s in setup-services setup-dry-run setup-fuzz-layouts; do
   f="$SCRIPT_DIR/$s.test.sh"

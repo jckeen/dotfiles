@@ -61,6 +61,8 @@ HOME_DIR="$HOME"
 # because DEV_DIR is a common ambient variable in unrelated shells.
 if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
   case "$DOTFILES_DEV_DIR" in
+    # Trim one trailing slash, but "/" itself must stay "/", not become "".
+    /) DEV_DIR="/" ;;
     /*) DEV_DIR="${DOTFILES_DEV_DIR%/}" ;;
     *) echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2; exit 1 ;;
   esac
