@@ -188,22 +188,36 @@ done
 # would otherwise be masked by the installed-only fast path below on every
 # later run, so each run re-reads the map and disables what it finds; a
 # failure here fails the run, before anything can report success.
-per_project="$(manifest_per_project_plugins < "$MANIFEST")"
+# Only the selected services' plugins: a deselected service's plugins are
+# left exactly as they are, enabled or not, like everywhere else in this
+# script.
+per_project="$(manifest_per_project_plugins < "$MANIFEST" | services_filter_plugins "$selected_services")"
 SETTINGS_JSON="$HOME/.claude/settings.json"
 enabled_per_project=""
-if [[ -n "$per_project" && -f "$SETTINGS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
-  enabled_per_project="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -I -c '
+if [[ -n "$per_project" && -e "$SETTINGS_JSON" ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "✘ python3 is not on PATH, so $SETTINGS_JSON cannot be checked for enabled [per-project] plugins" >&2
+    exit 1
+  fi
+  # A settings file that exists but cannot be read or parsed is a failure,
+  # not "nothing enabled": the fast path below would otherwise report success
+  # without having checked enablement at all.
+  if ! enabled_all="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -I -c '
 import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
+data = json.load(open(sys.argv[1]))
 enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
-if isinstance(enabled, dict):
-    for name, val in enabled.items():
-        if val is True and isinstance(name, str):
-            print(name)
-' "$SETTINGS_JSON" 2>/dev/null | grep -xF -f <(printf '%s\n' "$per_project") || true)"
+if enabled is None:
+    sys.exit(0)
+if not isinstance(enabled, dict):
+    sys.exit(1)
+for name, val in enabled.items():
+    if val is True and isinstance(name, str):
+        print(name)
+' "$SETTINGS_JSON" 2>/dev/null)"; then
+    echo "✘ $SETTINGS_JSON is unreadable or not the expected JSON shape; cannot confirm [per-project] plugins are disabled" >&2
+    exit 1
+  fi
+  enabled_per_project="$(grep -xF -f <(printf '%s\n' "$per_project") <<<"$enabled_all" || true)"
 fi
 if [[ -n "$enabled_per_project" ]]; then
   if ! command -v claude >/dev/null 2>&1; then

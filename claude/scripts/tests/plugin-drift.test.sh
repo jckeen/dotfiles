@@ -876,6 +876,11 @@ run_sync() {
     printf '%s\n' "$services" > "$H/.config/dotfiles/services" \
       || die "write the services file"
   fi
+  # SYNC_SEED_RAW: literal settings.json content; SYNC_SEED_MODE: its mode.
+  if [[ -n "${SYNC_SEED_RAW:-}" ]]; then
+    printf '%s\n' "$SYNC_SEED_RAW" > "$H/.claude/settings.json" || die "seed raw settings.json"
+    [[ -z "${SYNC_SEED_MODE:-}" ]] || chmod "$SYNC_SEED_MODE" "$H/.claude/settings.json" || die "chmod settings.json"
+  fi
   # SYNC_SEED_ENABLED: ids pre-enabled (true) in the throwaway user settings.
   if [[ -n "${SYNC_SEED_ENABLED:-}" ]]; then
     # shellcheck disable=SC2086  # the ids are space-separated on purpose
@@ -1047,6 +1052,26 @@ FAKE_DISABLE_FAIL=1 SYNC_SEED_ENABLED="vercel@claude-plugins-official" run_sync 
 assert "sync: a failed disable fails the run" '[ $sync_rc -ne 0 ] && grep -qF "vercel@" <<<"$sync_enabled"'
 FAKE_DISABLE_FAIL=1 SYNC_SEED_ENABLED="vercel@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
 assert "sync: the next run fails again rather than passing silently" '[ $sync_rc -ne 0 ] && grep -qF "plugin disable" <<<"$sync_disables"'
+# A deselected service's [per-project] plugin is left alone, enabled or not.
+MANIFEST_CODEX_PP='typescript-lsp@claude-plugins-official
+# [per-project]
+codex@openai-codex'
+INSTALLED_CODEX_PP='{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[{"scope":"user"}],"codex@openai-codex":[{"scope":"user"}]}}'
+SYNC_SEED_ENABLED="codex@openai-codex" run_sync "$MANIFEST_CODEX_PP" "$INSTALLED_CODEX_PP" 'services=claude'
+assert "sync: a deselected service's enabled [per-project] plugin is not disabled" \
+  '[ $sync_rc -eq 0 ] && [ -z "$sync_disables" ] && grep -qxF "codex@openai-codex" <<<"$sync_enabled"'
+# A settings file that exists but cannot be parsed, or read, fails the run
+# instead of letting the fast path report success unchecked.
+SYNC_SEED_RAW='{not json' run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: malformed settings.json fails the run rather than passing silently" \
+  '[ $sync_rc -ne 0 ] && grep -qF "cannot confirm" <<<"$sync_out"'
+if [[ "$(id -u)" != 0 ]]; then
+  SYNC_SEED_RAW='{}' SYNC_SEED_MODE=000 run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+  assert "sync: unreadable settings.json fails the run rather than passing silently" \
+    '[ $sync_rc -ne 0 ] && grep -qF "cannot confirm" <<<"$sync_out"'
+else
+  echo "skip - sync: unreadable settings.json (root ignores mode bits)"
+fi
 
 # A manifest with no markers is all-global: nothing is disabled.
 run_sync "$MANIFEST_GLOBAL" '<absent>'
