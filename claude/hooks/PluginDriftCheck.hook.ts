@@ -221,9 +221,11 @@ interface HookInput {
   cwd: string | null;
   sessionId: string | null;
   event: string | null;
+  // True when the fields were recovered from unparseable (oversized) input.
+  recovered: boolean;
 }
 function readInput(): HookInput {
-  const none: HookInput = { cwd: null, sessionId: null, event: null };
+  const none: HookInput = { cwd: null, sessionId: null, event: null, recovered: false };
   if (process.stdin.isTTY) return none;
   let raw: string;
   try {
@@ -239,6 +241,7 @@ function readInput(): HookInput {
       cwd: str(input?.cwd),
       sessionId: str(input?.session_id),
       event: str(input?.hook_event_name),
+      recovered: false,
     };
   } catch {
     // Unparseable: usually a prompt past the cap cut the JSON short (#705).
@@ -256,10 +259,12 @@ function readInput(): HookInput {
     const cwd = field('cwd');
     const sessionId = field('session_id');
     const event = field('hook_event_name');
-    if (event !== null) return { cwd, sessionId, event };
+    if (event !== null) return { cwd, sessionId, event, recovered: true };
     // Input arrived but its event is unknown: take the cheap path, never the
     // SessionStart report. Empty input stays "no event" (a manual run).
-    return raw.trim() === '' ? none : { cwd, sessionId, event: 'UserPromptSubmit' };
+    return raw.trim() === ''
+      ? none
+      : { cwd, sessionId, event: 'UserPromptSubmit', recovered: true };
   }
 }
 const INPUT = readInput();
@@ -1017,6 +1022,11 @@ function rescan(): void {
 
 function main(): void {
   if (INPUT.event === 'UserPromptSubmit') {
+    // Recovered input whose session_id sat past the cut has no session of
+    // its own. The shared no-session state would let this prompt consume
+    // another session's pending warning (#705), so it reports nothing; the
+    // session's next ordinary prompt reports as usual.
+    if (INPUT.recovered && INPUT.sessionId === null) return;
     rescan();
     return;
   }

@@ -847,12 +847,21 @@ out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
   timeout 60 bun "$HOOK" 2>&1 <"$PH/big-input.json")"
 assert "oversized prompt: the event is still UserPromptSubmit (no SessionStart report)" \
   '[ -z "$out" ]'
+# A warning is pending for every session from here on (a mod installed after
+# their SessionStart), so a prompt that wrongly consumed it would show.
+add_cached_mod bigmod
 { printf '{"prompt":"'; big_prompt; printf '","hook_event_name":"SessionStart","session_id":"s20"}'; } \
   > "$PH/big-input2.json" || die "write big input 2"
 out="$(cd "$PP" && HOME="$PH" DOTFILES_DIR="$PD" CLAUDE_PROJECT_DIR="$PP" \
   timeout 60 bun "$HOOK" 2>&1 <"$PH/big-input2.json")"
-assert "oversized prompt with fields past the cut: the rescan path, never SessionStart" \
-  'outgrep "mid-session"'
+# With session_id past the cut the hook has no session of its own, so it
+# must neither report (that would consume a pending warning through the shared
+# no-session state) nor run SessionStart; the next ordinary prompt reports.
+assert "oversized prompt with fields past the cut: silent, never SessionStart" \
+  '[ -z "$out" ] && [ ! -e "$PH/.local/state/plugin-drift/no-session" ]'
+hook_event UserPromptSubmit s20
+assert "oversized prompt with fields past the cut: the session's next prompt still reports" \
+  'outline "  • bigmod@mkt" && outgrep "mid-session"'
 
 # #705: project-mod reports are keyed by checkout + label. With cwd and
 # CLAUDE_PROJECT_DIR both project dirs from the start, a same-named project
