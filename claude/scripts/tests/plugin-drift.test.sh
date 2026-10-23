@@ -925,6 +925,8 @@ if timeout_bin="$(command -v timeout)"; then
   SYNC_TIMEOUT=("$timeout_bin" 10)
 fi
 sync_uninstalls=""
+sync_disables=""
+sync_enabled=""
 run_sync() {
   local manifest="$1" installed="$2" services="${3:-}"
   local D H B
@@ -940,12 +942,49 @@ run_sync() {
     printf '%s\n' "$services" > "$H/.config/dotfiles/services" \
       || die "write the services file"
   fi
+  # SYNC_SEED_FIFO: settings.json is a FIFO (a read would hang).
+  if [[ -n "${SYNC_SEED_FIFO:-}" ]]; then
+    mkfifo "$H/.claude/settings.json" || die "mkfifo settings.json"
+  fi
+  # SYNC_SEED_RAW: literal settings.json content; SYNC_SEED_MODE: its mode.
+  if [[ -n "${SYNC_SEED_RAW:-}" ]]; then
+    printf '%s\n' "$SYNC_SEED_RAW" > "$H/.claude/settings.json" || die "seed raw settings.json"
+    [[ -z "${SYNC_SEED_MODE:-}" ]] || chmod "$SYNC_SEED_MODE" "$H/.claude/settings.json" || die "chmod settings.json"
+  fi
+  # SYNC_SEED_ENABLED: ids pre-enabled (true) in the throwaway user settings.
+  if [[ -n "${SYNC_SEED_ENABLED:-}" ]]; then
+    # shellcheck disable=SC2086  # the ids are space-separated on purpose
+    python3 -c '
+import json, sys
+json.dump({"enabledPlugins": {n: True for n in sys.argv[2:]}}, open(sys.argv[1], "w"))
+' "$H/.claude/settings.json" $SYNC_SEED_ENABLED || die "seed settings.json"
+  fi
   cat > "$B/claude" <<STUB || die "write the claude stub"
 #!/usr/bin/env bash
 # Stub: record 'plugin install|uninstall <name>' calls, never touch the network.
+# Like the real CLI, install ENABLES the plugin in the user settings.json
+# enabledPlugins map and disable turns it off again (#720).
+set_enabled() {
+  python3 - "\$HOME/.claude/settings.json" "\$1" "\$2" <<'PY'
+import json, os, sys
+path, name, val = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+data.setdefault("enabledPlugins", {})[name] = val
+json.dump(data, open(path, "w"))
+PY
+}
 if [ "\$1" = "plugin" ] && [ "\$2" = "install" ]; then
   echo "\$3" >> "$B/installs"
+  set_enabled "\$3" true
   echo "installed \$3"
+elif [ "\$1" = "plugin" ] && [ "\$2" = "disable" ]; then
+  echo "\$*" >> "$B/disables"
+  if [ -n "\${FAKE_DISABLE_FAIL:-}" ]; then echo "disable failed"; exit 1; fi
+  set_enabled "\${@: -1}" false
+  echo "disabled"
 elif [ "\$1" = "plugin" ] && [ "\$2" = "uninstall" ]; then
   echo "\$*" >> "$B/uninstalls"
   echo "uninstalled"
@@ -955,6 +994,7 @@ STUB
   chmod +x "$B/claude" || die "chmod the claude stub"
   : > "$B/installs" || die "create the stub's install log"
   : > "$B/uninstalls" || die "create the stub's uninstall log"
+  : > "$B/disables" || die "create the stub's disable log"
   # Isolation guard: if the stub is not what `claude` resolves to, the script
   # under test would reach the real CLI and install plugins for real.
   [[ -x "$B/claude" ]] || die "the claude stub is not executable"
@@ -986,6 +1026,22 @@ STUB
   sync_installs="$(cat "$B/installs")"
   # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
   sync_uninstalls="$(cat "$B/uninstalls")"
+  # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+  sync_disables="$(cat "$B/disables")"
+  # Ids the stub left ENABLED (true) in the throwaway user settings.json.
+  # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+  # Only a regular file is read: a FIFO fixture would hang this read too.
+  sync_enabled=""
+  if [[ -f "$H/.claude/settings.json" ]]; then
+    # shellcheck disable=SC2034  # Read by assert's evaluated conditions.
+    sync_enabled="$(python3 -c '
+import json, sys
+try:
+    m = json.load(open(sys.argv[1])).get("enabledPlugins", {})
+except Exception:
+    m = {}
+print("\n".join(k for k, v in m.items() if v is True))' "$H/.claude/settings.json" 2>/dev/null)"
+  fi
   rm -rf "$D" "$H" "$B"
 }
 
@@ -1034,6 +1090,93 @@ run_sync "$MANIFEST_GLOBAL
   \"typescript-lsp@claude-plugins-official\":[$(entry user)]
 }}"
 assert "sync never installs a mods-ok line" '[ -z "$sync_installs" ]'
+
+# ── [per-project] plugins are installed but never left enabled (#720) ───
+# `claude plugin install` enables a plugin in the user enabledPlugins map. The
+# manifest's [per-project] section means "installed, enabled only by a
+# project", so sync-plugins.sh disables each one it installs at user scope.
+MANIFEST_SPLIT='# [global]
+typescript-lsp@claude-plugins-official
+# [per-project]
+vercel@claude-plugins-official # inline comment
+posthog@claude-plugins-official'
+run_sync "$MANIFEST_SPLIT" '<absent>'
+assert "sync installs both manifest sections" \
+  'grep -qxF "vercel@claude-plugins-official" <<<"$sync_installs" && grep -qxF "typescript-lsp@claude-plugins-official" <<<"$sync_installs"'
+assert "sync: a [global] install stays enabled" \
+  'grep -qxF "typescript-lsp@claude-plugins-official" <<<"$sync_enabled"'
+assert "sync: a [per-project] install is not left enabled" \
+  '! grep -qF "vercel@" <<<"$sync_enabled" && ! grep -qF "posthog@" <<<"$sync_enabled"'
+assert "sync disables [per-project] plugins at user scope" \
+  'grep -qxF "plugin disable --scope user vercel@claude-plugins-official" <<<"$sync_disables" && grep -qxF "plugin disable --scope user posthog@claude-plugins-official" <<<"$sync_disables"'
+assert "sync never disables a [global] plugin" \
+  '! grep -qF "typescript-lsp" <<<"$sync_disables"'
+assert "sync exits 0 with [per-project] plugins" "[ $sync_rc -eq 0 ]"
+
+# Every plugin already installed at user scope (the fast path), but one
+# [per-project] id is enabled in the user settings: the run must disable it
+# rather than exit 0 on the installed-only check.
+INSTALLED_SPLIT='{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[{"scope":"user"}],"vercel@claude-plugins-official":[{"scope":"user"}],"posthog@claude-plugins-official":[{"scope":"user"}]}}'
+SYNC_SEED_ENABLED="vercel@claude-plugins-official typescript-lsp@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: an enabled [per-project] plugin is disabled even when nothing needs installing" \
+  '[ $sync_rc -eq 0 ] && grep -qxF "plugin disable --scope user vercel@claude-plugins-official" <<<"$sync_disables" && ! grep -qF "vercel@" <<<"$sync_enabled" && grep -qxF "typescript-lsp@claude-plugins-official" <<<"$sync_enabled"'
+assert "sync: that pass installs nothing" '[ -z "$sync_installs" ]'
+# A disable that fails must fail the run, and keep failing on the next run
+# instead of being masked by the fast path.
+FAKE_DISABLE_FAIL=1 SYNC_SEED_ENABLED="vercel@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: a failed disable fails the run" '[ $sync_rc -ne 0 ] && grep -qF "vercel@" <<<"$sync_enabled"'
+FAKE_DISABLE_FAIL=1 SYNC_SEED_ENABLED="vercel@claude-plugins-official" run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: the next run fails again rather than passing silently" '[ $sync_rc -ne 0 ] && grep -qF "plugin disable" <<<"$sync_disables"'
+# A deselected service's [per-project] plugin is left alone, enabled or not.
+MANIFEST_CODEX_PP='typescript-lsp@claude-plugins-official
+# [per-project]
+codex@openai-codex'
+INSTALLED_CODEX_PP='{"version":2,"plugins":{"typescript-lsp@claude-plugins-official":[{"scope":"user"}],"codex@openai-codex":[{"scope":"user"}]}}'
+SYNC_SEED_ENABLED="codex@openai-codex" run_sync "$MANIFEST_CODEX_PP" "$INSTALLED_CODEX_PP" 'services=claude'
+assert "sync: a deselected service's enabled [per-project] plugin is not disabled" \
+  '[ $sync_rc -eq 0 ] && [ -z "$sync_disables" ] && grep -qxF "codex@openai-codex" <<<"$sync_enabled"'
+# A settings file that exists but cannot be parsed, or read, fails the run
+# instead of letting the fast path report success unchecked.
+SYNC_SEED_RAW='{not json' run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: malformed settings.json fails the run rather than passing silently" \
+  '[ $sync_rc -ne 0 ] && grep -qF "cannot confirm" <<<"$sync_out"'
+if [[ "$(id -u)" != 0 ]]; then
+  SYNC_SEED_RAW='{}' SYNC_SEED_MODE=000 run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+  assert "sync: unreadable settings.json fails the run rather than passing silently" \
+    '[ $sync_rc -ne 0 ] && grep -qF "cannot confirm" <<<"$sync_out"'
+else
+  echo "skip - sync: unreadable settings.json (root ignores mode bits)"
+fi
+SYNC_SEED_FIFO=1 run_sync "$MANIFEST_SPLIT" "$INSTALLED_SPLIT"
+assert "sync: a FIFO settings.json fails the run without hanging" \
+  '[ $sync_rc -ne 0 ] && grep -qF "not a regular file" <<<"$sync_out"'
+
+# A manifest with no markers is all-global: nothing is disabled.
+run_sync "$MANIFEST_GLOBAL" '<absent>'
+assert "sync: an unmarked manifest disables nothing" '[ -z "$sync_disables" ]'
+
+# Shared helper (lib-checks.sh): same section rules as the drift hook.
+# shellcheck source=lib-checks.sh
+if ! . "$LIB_CHECKS"; then
+  echo "FAIL - fixture setup: cannot source $LIB_CHECKS" >&2
+  exit 1
+fi
+out="$(printf '%s\n' 'before-marker@m' '# [per-project]' 'a@m # c' '  b@m  ' '# comment' '# mods-ok: x@m' '# [global]' 'g@m' '# [PER-PROJECT]' 'c@m' | manifest_per_project_plugins)"
+# Only the leading marker decides the section: a trailing mention of the
+# other marker in the same comment must not flip it.
+# shellcheck disable=SC2034  # Read by assert's evaluated condition.
+trail="$(printf '%s\n' '# [global] (unlike [per-project])' 'g1@m' '# [per-project] (not [global])' 'p1@m' | manifest_per_project_plugins)"
+assert "helper: a trailing marker in a comment does not change the section" \
+  '[ "$trail" = "p1@m" ]'
+assert "helper prints only per-project ids, in order" \
+  '[ "$out" = "$(printf "a@m\nb@m\nc@m")" ]'
+out="$(printf 'x@m\r\n# [per-project]\r\ny@m\r\n' | manifest_per_project_plugins)"
+assert "helper strips CR line endings" '[ "$out" = "y@m" ]'
+
+# setup.sh §3b cannot run unattended (it needs a signed-in claude), so pin that
+# it consumes the same helper and disables at user scope.
+assert "setup.sh disables per-project plugins through the shared helper" \
+  'grep -q "manifest_per_project_plugins" "$SCRIPT_DIR/../../../setup.sh" && grep -q "plugin disable --scope user" "$SCRIPT_DIR/../../../setup.sh"'
 
 # ── sync-plugins.sh honours the saved service selection ─────────────────
 # The Codex plugin drives the Codex CLI. setup.sh skips it when Codex is not a
