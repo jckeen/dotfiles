@@ -347,14 +347,30 @@ check "install path: the error is reported and the exit is non-zero" \
 ISO="$ROOT/iso701"
 FAKE_DEV="$ISO/dev"
 SENTINEL="$ISO/bootstrap-ran"
-mkdir -p "$ISO/home" "$ISO/empty" "$FAKE_DEV/claude-memory"
+mkdir -p "$ISO/home" "$ISO/empty" "$FAKE_DEV/claude-memory" "$FAKE_DEV/codex-memory" "$FAKE_DEV/agy-memory"
 ln -s "$REPO_ROOT" "$FAKE_DEV/dotfiles"
 printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$SENTINEL" \
   > "$FAKE_DEV/claude-memory/bootstrap.sh"
 chmod +x "$FAKE_DEV/claude-memory/bootstrap.sh"
+CODEX_SENTINEL="$ISO/codex-bootstrap-ran"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$CODEX_SENTINEL" \
+  > "$FAKE_DEV/codex-memory/bootstrap.sh"
+chmod +x "$FAKE_DEV/codex-memory/bootstrap.sh"
+AGY_SENTINEL="$ISO/agy-bootstrap-ran"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$AGY_SENTINEL" \
+  > "$FAKE_DEV/agy-memory/bootstrap.sh"
+chmod +x "$FAKE_DEV/agy-memory/bootstrap.sh"
 run_iso() {
   env -i PATH="$CLEAN_PATH" HOME="$ISO/home" TERM=dumb LC_ALL=C \
     DOTFILES_ALLOW_LINKED_WORKTREE=1 CODEX_MEMORY_REPO="$ISO/codex-memory" \
+    "$@" "$FAKE_DEV/dotfiles/setup.sh" --yes --dry-run 2>&1
+}
+# Same, without the explicit CODEX_MEMORY_REPO and with every service: the
+# codex-memory and agy-memory siblings must follow the override too, not the
+# checkout's parent (Codex bot on PR #729).
+run_iso_codex() {
+  env -i PATH="$CLEAN_PATH" HOME="$ISO/home" TERM=dumb LC_ALL=C \
+    DOTFILES_ALLOW_LINKED_WORKTREE=1 DOTFILES_SERVICES=claude,codex,antigravity \
     "$@" "$FAKE_DEV/dotfiles/setup.sh" --yes --dry-run 2>&1
 }
 # Control: without an override the sibling bootstrap IS found, so the isolated
@@ -370,6 +386,11 @@ check "#701 setup.sh reports the overridden location" \
   'grep -Fq "$ISO/empty/claude-memory/bootstrap.sh" <<< "$iso_out"'
 check "#701 a relative DOTFILES_DEV_DIR is refused" \
   '! run_iso DOTFILES_DEV_DIR=relative/dir >/dev/null'
+codex_out="$(run_iso_codex DOTFILES_DEV_DIR="$ISO/empty")"
+check "#701 the codex-memory sibling follows DOTFILES_DEV_DIR too" \
+  '[ ! -e "$CODEX_SENTINEL" ] && ! grep -Fq "$FAKE_DEV/codex-memory" <<< "$codex_out"'
+check "#701 the agy-memory sibling follows DOTFILES_DEV_DIR too" \
+  '[ ! -e "$AGY_SENTINEL" ] && ! grep -Fq "$FAKE_DEV/agy-memory" <<< "$codex_out"'
 # The root directory is a valid absolute path: trimming its trailing slash must
 # not leave DEV_DIR empty (an empty ~/.claude/dev-dir breaks repo discovery).
 iso_out="$(run_iso DOTFILES_DEV_DIR=/)"

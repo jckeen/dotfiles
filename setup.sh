@@ -2210,7 +2210,9 @@ if service_selected codex; then
     echo "  -> Codex skills linked into ~/.agents/skills (legacy ~/.codex links retained for compatibility)"
   fi
 
-  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}"
+  # Sibling of the dev directory, like claude-memory, so DOTFILES_DEV_DIR
+  # redirects this lookup too (#701); the explicit override still wins.
+  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$DEV_DIR/codex-memory}"
   if [ -d "$CODEX_MEMORY_REPO" ]; then
     echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
     if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
@@ -2331,7 +2333,8 @@ if service_selected antigravity; then
     fi
   fi
 
-  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
+  # Sibling of the dev directory, so DOTFILES_DEV_DIR redirects it (#701).
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$DEV_DIR/agy-memory}"
   if [ -d "$AGY_MEMORY_REPO" ]; then
     echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
     for f in GEMINI.local.md MEMORY.md; do
