@@ -60,9 +60,11 @@ chmod +x "$SHIM_DIR/claude"
 
 export HOME="$TEST_HOME" CALLS TMUX_TMPDIR="$TMUX_DIR" SHELL=/bin/sh
 export PATH="$SHIM_DIR:/usr/bin:/bin"
-unset TMUX
+# Nothing of the caller's may steer the launcher or tmux: the log location,
+# the working directory, a tmux config, an enclosing tmux client.
+unset TMUX XDG_STATE_HOME XDG_CONFIG_HOME RC_START_DIR
 
-rc_start() { "$TEST_HOME/.local/bin/rc-start" "$@"; }
+rc_start() { "$TEST_HOME/.local/bin/rc-start"; }
 calls() { if [ -f "$CALLS" ]; then wc -l < "$CALLS" | tr -d ' '; else echo 0; fi; }
 wait_for() { # wait_for <seconds> <command…>
   local i=0 limit=$(($1 * 10)); shift
@@ -86,7 +88,7 @@ if wait_for 5 calls_at_least 1; then
     && ok "RC_START_DIR is the working directory" || fail "working directory was $cwd"
   case ":$path:" in
     *":$TEST_HOME/.bun/bin:"*) ok "the session's PATH has ~/.bun/bin even on a server that was already running" ;;
-    *) fail "~/.bun/bin missing from the session's PATH: $path" ;;
+    *) fail "the session's PATH lacks \$HOME/.bun/bin: $path" ;;
   esac
 else
   fail "rc-start did not start claude while only rc-other was running (prefix match)"
