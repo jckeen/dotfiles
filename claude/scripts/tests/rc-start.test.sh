@@ -147,28 +147,35 @@ rm -f "$CALLS.exit"
 wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
 
 # 3b. Where remain-on-exit keeps claude's dead pane (another config may turn
-#     it on), the next call restarts claude in that pane rather than reporting
-#     it running, and an after-new-session hook that delays things changes
-#     nothing.
+#     it on), the next call refuses, naming the command that clears it, and
+#     starts or kills nothing; once the session is cleared it starts again.
 : > "$CALLS"
 echo 7 > "$CALLS.exit"
 t set-option -g remain-on-exit on
-t set-hook -g after-new-session 'run-shell "sleep 0.5"'
 RC_START_DIR="$WORK_DIR" rc_start >/dev/null
 rc_pane_dead() { [ "$(t list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
 if wait_for 5 calls_at_least 1 && wait_for 5 rc_pane_dead; then
   rm -f "$CALLS.exit"
-  RC_START_DIR="$WORK_DIR" rc_start >/dev/null
-  rc_pane_live() { [ "$(t list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)" = 0 ]; }
-  if wait_for 5 calls_at_least 2 && wait_for 5 rc_pane_live; then
-    ok "a dead pane kept by remain-on-exit is restarted in place"
+  if err="$(RC_START_DIR="$WORK_DIR" rc_start 2>&1 >/dev/null)"; then
+    fail "rc-start succeeded with only a dead pane in session rc"
   else
-    fail "rc-start treated a dead pane kept by remain-on-exit as running"
+    sleep 0.5
+    if [ "$(calls)" = 1 ] && rc_pane_dead && printf '%s' "$err" | grep -Fq 'tmux kill-session -t =rc'; then
+      ok "a dead pane kept by remain-on-exit is refused, with the command that clears it"
+    else
+      fail "dead-pane refusal wrong: $(calls) starts, message: $err"
+    fi
+  fi
+  t kill-session -t '=rc'
+  RC_START_DIR="$WORK_DIR" rc_start >/dev/null
+  if wait_for 5 calls_at_least 2; then
+    ok "once the dead session is cleared, rc-start starts Remote Control"
+  else
+    fail "rc-start did not start after the dead session was cleared"
   fi
 else
   fail "no dead pane appeared under remain-on-exit"
 fi
-t set-hook -gu after-new-session
 t set-option -g remain-on-exit off
 rm -f "$CALLS.exit"
 t kill-session -t '=rc' 2>/dev/null

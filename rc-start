@@ -41,25 +41,19 @@ cmd=(sh -c 'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u
 
 # Running means a live pane in the session named exactly rc (`=rc:` is the
 # session form; list-panes takes a window target, and a bare `=rc` naming no
-# window falls back to another session, such as rc-other). Normally the
-# session ends with claude; where remain-on-exit keeps its dead pane,
-# respawn-pane restarts claude in place. Without -k it refuses a pane that is
-# alive again, so nothing here ever kills a running claude, including one a
-# concurrent call has just started.
+# window falls back to another session, such as rc-other). The session ends
+# when claude does. Only where a config turns remain-on-exit on can it outlive
+# claude with a dead pane; rc-start then refuses rather than restart or kill
+# anything, and names the command that clears it.
 rc_alive() {
   tmux list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null | grep -qx 0
 }
 if rc_alive; then
   echo "rc-start: Remote Control already running (tmux attach -t rc)"
 elif tmux has-session -t '=rc' 2>/dev/null; then
-  if tmux respawn-pane -t '=rc:' "${cmd[@]}" 2>/dev/null; then
-    echo "rc-start: Remote Control restarted in tmux session 'rc' ($workdir)"
-  elif rc_alive; then
-    echo "rc-start: Remote Control already running (started by another call)"
-  else
-    echo "rc-start: could not restart Remote Control in tmux session 'rc'" >&2
-    exit 1
-  fi
+  echo "rc-start: tmux session 'rc' exists but Remote Control has exited (remain-on-exit kept its pane)." >&2
+  echo "rc-start: clear it with 'tmux kill-session -t =rc', then run rc-start again." >&2
+  exit 1
 elif tmux new-session -d -s rc -e "RC_START_LOG=$log" "${cmd[@]}" 2>/dev/null; then
   echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
 elif rc_alive; then

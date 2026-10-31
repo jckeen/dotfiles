@@ -18,10 +18,11 @@
   - "Running" means a live pane in the session named exactly `rc`. Plain
     `rc` also matched a session such as `rc-other`, and the start was
     skipped.
-  - Where `remain-on-exit` keeps claude's dead pane, `respawn-pane` restarts
-    claude in place. It runs without `-k`, so it refuses a pane that is
-    alive again, and nothing ever kills a running claude, including one a
-    concurrent call has just started.
+  - Only where a config turns `remain-on-exit` on can the session outlive
+    claude, with a dead pane. `rc-start` then refuses and prints
+    `tmux kill-session -t =rc`, the command that clears it. It never
+    restarts in place or kills a session, so it can't stop a running claude,
+    including one a concurrent call has just started.
   - The working directory is entered with `cd`, which refuses one that is
     missing or can't be entered (tmux would silently use `$HOME`), and read
     back from `$PWD`, which keeps a trailing newline in the name. tmux is
