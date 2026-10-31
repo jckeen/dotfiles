@@ -468,6 +468,10 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/agy-permissions.test.sh
 
+      - name: rc-start Remote Control launcher
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: bash claude/scripts/tests/rc-start.test.sh
+
       - name: Claude memory sync boundary
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: bash claude/scripts/tests/memory-sync.test.sh

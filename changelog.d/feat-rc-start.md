@@ -11,3 +11,13 @@
 - The session starts in the folder that holds the dotfiles checkout, found
   through the script's own symlink, rather than a hardcoded `~/dev`.
   `RC_START_DIR` overrides it.
+- Two fixes to the copied script, from review:
+  - The session no longer keeps a shell behind claude (`exec bash`). That
+    shell made a dead Remote Control count as running, so no later
+    `rc-start` restarted it. The session now ends when claude does, and the
+    exit status goes to `~/.local/state/rc-start.log`.
+  - The running check matches the session name exactly (`=rc`). Plain `rc`
+    also matched a session such as `rc-other`, and the start was skipped.
+- New suite `claude/scripts/tests/rc-start.test.sh` runs a real tmux on a
+  private socket directory with a stub `claude`. It runs in the `checkers`
+  shard, and fails there rather than skipping if the runner lacks tmux.

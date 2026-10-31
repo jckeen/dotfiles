@@ -27,12 +27,20 @@ while [[ -L "$self" ]]; do
   fi
 done
 workdir="${RC_START_DIR:-$(cd -P "$(dirname "$self")/.." && pwd)}"
+log="${XDG_STATE_HOME:-$HOME/.local/state}/rc-start.log"
+mkdir -p "$(dirname "$log")"
 
-if tmux has-session -t rc 2>/dev/null; then
+# `=rc` matches the session name exactly; plain `rc` would also match a
+# session named rc-other. The session ends when claude does (no shell is
+# kept behind it), so a later rc-start sees it gone and starts it again; the
+# exit is logged instead. tmux gives a new session this client's PATH, but
+# on a server that is already running not its other variables, so the log
+# path goes in with -e.
+if tmux has-session -t '=rc' 2>/dev/null; then
   echo "rc-start: Remote Control already running (tmux attach -t rc)"
 else
-  tmux new-session -d -s rc -c "$workdir" \
-    "claude remote-control --permission-mode auto; echo 'remote-control exited'; exec bash"
+  tmux new-session -d -s rc -c "$workdir" -e "RC_START_LOG=$log" \
+    'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"'
   echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
 fi
 

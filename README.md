@@ -342,7 +342,7 @@ templates, and the golden rules. What follows is the short version.
 | `cx [project]` | Same ergonomics for Codex; reuses a listening shared server when Remote Control is enabled and otherwise launches locally; optional [user service](codex/README.md#automatic-startup-on-linux-and-wsl) handles automatic startup |
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
 | `cct [project]` | `cc` inside a named tmux session, so the process and its Remote Control link survive a closed terminal |
-| `rc-start [--hold]` | Starts `claude remote-control` in a detached tmux session `rc` (with bun on its PATH), from the folder that holds this checkout; `--hold` blocks so the `wsl.exe` of a Windows boot task keeps WSL running |
+| `rc-start [--hold]` | Starts `claude remote-control` in a detached tmux session `rc` (with bun on its PATH), from the folder that holds this checkout. The session ends when Remote Control exits (logged to `~/.local/state/rc-start.log`), so running it again restarts it. `--hold` blocks, so the `wsl.exe` of a Windows boot task keeps WSL running |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
 | `/handoff` | Capture session state before `/clear` or stopping |
 | `/orchestrate` | Full-lifecycle max-effort mode — worktrees, parallel agents |
