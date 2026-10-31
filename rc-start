@@ -27,18 +27,31 @@ while [[ -L "$self" ]]; do
   fi
 done
 workdir="${RC_START_DIR:-$(cd -P "$(dirname "$self")/.." && pwd)}"
+# tmux falls back to $HOME when it can't enter -c's directory: refuse instead.
+if [[ ! -d "$workdir" ]]; then
+  echo "rc-start: working directory $workdir does not exist" >&2
+  exit 1
+fi
 log="${XDG_STATE_HOME:-$HOME/.local/state}/rc-start.log"
 mkdir -p "$(dirname "$log")"
 
-# `=rc` matches the session name exactly; plain `rc` would also match a
-# session named rc-other. The session ends when claude does (no shell is
-# kept behind it), so a later rc-start sees it gone and starts it again; the
-# exit is logged instead. tmux gives a new session this client's PATH, but
-# on a server that is already running not its other variables, so the log
-# path goes in with -e.
-if tmux has-session -t '=rc' 2>/dev/null; then
+# The rc session is rc-start's own. It counts as running only while one of
+# its panes is alive: the session ends when claude does (no shell is kept
+# behind it), and where remain-on-exit is on, the dead pane that stays
+# behind is replaced rather than reported as running. `=rc` matches the
+# name exactly; plain `rc` would also match rc-other. The exit status is
+# logged; tmux gives a new session this client's PATH but, on a server that
+# is already running, none of its other variables, so the log path goes in
+# with -e.
+rc_alive() {
+  # `=rc:` is the session form: list-panes takes a window target, and a bare
+  # `=rc` that names no window falls back to another session.
+  tmux list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null | grep -qx 0
+}
+if rc_alive; then
   echo "rc-start: Remote Control already running (tmux attach -t rc)"
 else
+  tmux kill-session -t '=rc' 2>/dev/null || true
   tmux new-session -d -s rc -c "$workdir" -e "RC_START_LOG=$log" \
     'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"'
   echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"

@@ -8,7 +8,12 @@
 #   - the session's PATH lacking ~/.bun/bin (bunx), including on a tmux
 #     server that was already running with a PATH without it;
 #   - the working directory: RC_START_DIR, else the folder above the checkout,
-#     found through the ~/.local/bin symlink setup.sh makes.
+#     found through the ~/.local/bin symlink setup.sh makes; a missing one is
+#     refused, never swapped for $HOME;
+#   - a dead pane kept by remain-on-exit counting as running.
+# Every tmux call here names the test's own socket, and nothing runs unless
+# every temp dir was created: an empty TMUX_DIR would aim TMUX_TMPDIR, and the
+# cleanup's kill-server, at the caller's own tmux server.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,13 +36,17 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 0
 fi
 
-TEST_HOME="$(mktemp -d)"
-SHIM_DIR="$(mktemp -d)"
-WORK_DIR="$(mktemp -d)"
-TMUX_DIR="$(mktemp -d)"
+TEST_HOME="$(mktemp -d)" && SHIM_DIR="$(mktemp -d)" && WORK_DIR="$(mktemp -d)" \
+  && TMUX_DIR="$(mktemp -d)" && [ -d "$TMUX_DIR" ] \
+  || { echo "FAIL - could not create the test's temp dirs"; exit 1; }
+# The socket rc-start finds through TMUX_TMPDIR, named outright for the
+# test's own calls (t) and the cleanup, so neither can reach another server.
+mkdir -m 700 "$TMUX_DIR/tmux-$(id -u)" || { echo "FAIL - socket dir"; exit 1; }
+SOCK="$TMUX_DIR/tmux-$(id -u)/default"
+t() { tmux -S "$SOCK" "$@"; }
 CALLS="$TEST_HOME/claude-calls"
 cleanup() {
-  TMUX_TMPDIR="$TMUX_DIR" tmux kill-server 2>/dev/null
+  if [ -S "$SOCK" ]; then tmux -S "$SOCK" kill-server 2>/dev/null; fi
   rm -rf "$TEST_HOME" "$SHIM_DIR" "$WORK_DIR" "$TMUX_DIR"
 }
 trap cleanup EXIT
@@ -74,11 +83,12 @@ wait_for() { # wait_for <seconds> <command…>
   done
 }
 calls_at_least() { [ "$(calls)" -ge "$1" ]; }
-no_rc_session() { ! tmux has-session -t '=rc' 2>/dev/null; }
+no_rc_session() { ! t has-session -t '=rc' 2>/dev/null; }
+rc_pane_dead() { [ "$(t list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
 
 # 1. A server already running without bun on its PATH: the new session still
 #    gets ~/.bun/bin, and a session named rc-other is not mistaken for rc.
-tmux -f /dev/null new-session -d -s rc-other 'sleep 60'
+t -f /dev/null new-session -d -s rc-other 'sleep 60'
 RC_START_DIR="$WORK_DIR" rc_start >/dev/null
 if wait_for 5 calls_at_least 1; then
   IFS='|' read -r args cwd path < "$CALLS"
@@ -102,7 +112,7 @@ if [ "$(calls)" = 1 ] && printf '%s' "$out" | grep -q 'already running'; then
 else
   fail "second call: $(calls) claude starts, output: $out"
 fi
-tmux kill-session -t '=rc'
+t kill-session -t '=rc'
 
 # 3. Once claude exits, the session ends and the exit is logged, so the next
 #    call starts it again.
@@ -126,7 +136,27 @@ else
   fail "rc-start did not restart Remote Control after it exited ($(calls) starts)"
 fi
 rm -f "$CALLS.exit"
-wait_for 5 no_rc_session || tmux kill-session -t '=rc' 2>/dev/null
+wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
+
+# 3b. Where remain-on-exit is on (another config may set it), claude's dead
+#     pane stays behind; the next call replaces that session.
+: > "$CALLS"
+echo 7 > "$CALLS.exit"
+t set-option -g remain-on-exit on
+RC_START_DIR="$WORK_DIR" rc_start >/dev/null
+if wait_for 5 calls_at_least 1 && wait_for 5 rc_pane_dead; then
+  RC_START_DIR="$WORK_DIR" rc_start >/dev/null
+  if wait_for 5 calls_at_least 2; then
+    ok "a dead pane kept by remain-on-exit is replaced, not reported as running"
+  else
+    fail "rc-start treated a dead pane kept by remain-on-exit as running"
+  fi
+else
+  fail "no dead pane appeared under remain-on-exit"
+fi
+t set-option -g remain-on-exit off
+rm -f "$CALLS.exit"
+t kill-session -t '=rc' 2>/dev/null
 
 # 4. Without RC_START_DIR: the folder above the checkout, through the symlink.
 : > "$CALLS"
@@ -139,9 +169,22 @@ if wait_for 5 calls_at_least 1; then
 else
   fail "rc-start did not start claude for the default directory"
 fi
-tmux kill-session -t '=rc' 2>/dev/null
+t kill-session -t '=rc' 2>/dev/null
 
-# 5. --hold keeps running after starting the session.
+# 5. A working directory that doesn't exist is refused, not swapped for $HOME.
+: > "$CALLS"
+if RC_START_DIR="$WORK_DIR/missing" rc_start >/dev/null 2>&1; then
+  fail "rc-start accepted a missing working directory"
+else
+  sleep 0.5
+  if [ "$(calls)" = 0 ] && no_rc_session; then
+    ok "a missing RC_START_DIR is refused and nothing starts"
+  else
+    fail "a missing RC_START_DIR still started something ($(calls) claude starts)"
+  fi
+fi
+
+# 6. --hold keeps running after starting the session.
 timeout 2 "$TEST_HOME/.local/bin/rc-start" --hold >/dev/null
 [ $? -eq 124 ] && ok "--hold blocks" || fail "--hold returned instead of blocking"
 

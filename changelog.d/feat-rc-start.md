@@ -16,8 +16,16 @@
     shell made a dead Remote Control count as running, so no later
     `rc-start` restarted it. The session now ends when claude does, and the
     exit status goes to `~/.local/state/rc-start.log`.
-  - The running check matches the session name exactly (`=rc`). Plain `rc`
-    also matched a session such as `rc-other`, and the start was skipped.
+  - The running check matches the session name exactly. Plain `rc` also
+    matched a session such as `rc-other`, and the start was skipped.
+  - "Running" now means a live pane in the `rc` session. Where
+    `remain-on-exit` is on, a dead pane left behind is replaced rather than
+    reported as running.
+  - A working directory that does not exist is refused. tmux would
+    otherwise start in `$HOME` instead.
 - New suite `claude/scripts/tests/rc-start.test.sh` runs a real tmux on a
   private socket directory with a stub `claude`. It runs in the `checkers`
   shard, and fails there rather than skipping if the runner lacks tmux.
+  Every tmux call it makes, cleanup included, names its own socket, and it
+  runs nothing unless every temp directory was created, so it can never
+  reach the caller's tmux server.
