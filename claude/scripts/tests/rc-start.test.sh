@@ -272,6 +272,21 @@ RC_START_DIR="$WORK_DIR/missing" timeout 2 "$TEST_HOME/.local/bin/rc-start" --ho
 [ $? -eq 124 ] && ok "--hold still blocks when the working directory is refused" \
   || fail "--hold returned when the working directory was refused"
 
+# 5''. A state directory that can't be created costs the exit log, not
+#      Remote Control, and --hold still holds.
+: > "$CALLS"
+XDG_STATE_HOME=/dev/null RC_START_DIR="$WORK_DIR" rc_start >/dev/null 2>&1
+if wait_for 5 calls_at_least 1; then
+  ok "an unusable state directory still starts Remote Control"
+else
+  fail "an unusable state directory stopped Remote Control from starting"
+fi
+t kill-session -t '=rc' 2>/dev/null
+XDG_STATE_HOME=/dev/null RC_START_DIR="$WORK_DIR" timeout 2 "$TEST_HOME/.local/bin/rc-start" --hold >/dev/null 2>&1
+[ $? -eq 124 ] && ok "--hold still blocks with an unusable state directory" \
+  || fail "--hold returned with an unusable state directory"
+t kill-session -t '=rc' 2>/dev/null
+
 # 5a. An inherited CDPATH doesn't bend a relative RC_START_DIR: cd would
 #     print the match, and the captured path would no longer be one.
 : > "$CALLS"

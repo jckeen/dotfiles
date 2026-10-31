@@ -25,8 +25,10 @@
     One tmux query decides whether the session is absent, live or dead, so a
     session that a concurrent call creates mid-check is reported as running,
     never mistaken for a dead one.
-  - `--hold` holds whatever happened, a refused start included, since its
-    job is to keep the boot task's WSL running.
+  - `--hold` holds whatever happened, a refused start or a `set -e`
+    failure included (an EXIT trap), since its job is to keep the boot
+    task's WSL running. The exit log is best effort: a state directory that
+    can't be created costs the log, with a warning, not Remote Control.
   - The working directory is entered with `cd`, which refuses one that is
     missing or can't be entered (tmux would silently use `$HOME`), and read
     back from `$PWD`, which keeps a trailing newline in the name. tmux is

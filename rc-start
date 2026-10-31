@@ -11,18 +11,11 @@ set -euo pipefail
 # A CDPATH would let `cd` below resolve a relative RC_START_DIR somewhere else.
 unset CDPATH
 
-# Every outcome ends here. --hold keeps the boot task's wsl.exe, and so WSL,
-# alive whatever happened: a failed start is reported, and the machine stays
-# reachable to fix it.
-finish() {
-  if [[ "${hold:-}" == 1 ]]; then
-    exec sleep infinity
-  fi
-  exit "$1"
-}
-hold=0
+# --hold keeps the boot task's wsl.exe, and so WSL, alive whatever happens:
+# the EXIT trap holds on every way out, a set -e failure included, so a failed
+# start is reported and the machine stays reachable to fix it.
 if [[ "${1:-}" == "--hold" ]]; then
-  hold=1
+  trap 'exec sleep infinity' EXIT
 fi
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -39,11 +32,16 @@ fi
 candidate="${RC_START_DIR:-$HOME/dev}"
 if ! cd -P -- "$candidate" 2>/dev/null; then
   echo "rc-start: cannot enter working directory $candidate" >&2
-  finish 1
+  exit 1
 fi
 workdir="$PWD"
+# The exit log is best effort: a state directory that can't be created costs
+# the log, not Remote Control.
 log="${XDG_STATE_HOME:-$HOME/.local/state}/rc-start.log"
-mkdir -p -- "${log%/*}"
+if ! mkdir -p -- "${log%/*}" 2>/dev/null; then
+  echo "rc-start: cannot create ${log%/*}; the exit status won't be logged" >&2
+  log=/dev/null
+fi
 
 # The rc session is rc-start's own. tmux is never handed the directory: it
 # parses -c (formats, a trailing `\;`), so the session starts in this
@@ -83,4 +81,4 @@ else
   echo "rc-start: could not start tmux session 'rc'" >&2
   status=1
 fi
-finish "$status"
+exit "$status"
