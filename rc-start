@@ -4,12 +4,10 @@
 #        rc-start --hold   also block forever, so the wsl.exe that launched us
 #                          keeps the WSL VM alive (used by the Windows boot task)
 #
-# setup.sh links this into ~/.local/bin. The session starts in the folder that
-# holds the dotfiles checkout (~/dev by convention), found through that link;
-# RC_START_DIR overrides it.
+# setup.sh links this into ~/.local/bin. The session starts in ~/dev, or in
+# RC_START_DIR when that is set.
 set -euo pipefail
-# With CDPATH set, `cd` prints the directory it matched, and every
-# `$(cd … && pwd)` below would capture that line too.
+# A CDPATH would let `cd` below resolve a relative RC_START_DIR somewhere else.
 unset CDPATH
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -19,26 +17,18 @@ if [[ -d "$HOME/.bun/bin" ]]; then
   export PATH="$HOME/.bun/bin:$PATH"
 fi
 
-# Resolve this script through its symlinks (portable: no `readlink -f`).
-self="${BASH_SOURCE[0]}"
-while [[ -L "$self" ]]; do
-  target="$(readlink "$self")"
-  if [[ "$target" == /* ]]; then
-    self="$target"
-  else
-    self="$(cd -P "$(dirname "$self")" && pwd)/$target"
-  fi
-done
-# Entered with cd, not tested with -d: tmux silently starts in $HOME when it
-# can't enter -c's directory, which includes one that exists but isn't
-# searchable.
-candidate="${RC_START_DIR:-$(dirname "$self")/..}"
-if ! workdir="$(cd -P -- "$candidate" 2>/dev/null && pwd)"; then
+# The directory is entered, not tested with -d (tmux silently starts in $HOME
+# when it can't enter -c's directory, which includes one that exists but isn't
+# searchable), and read back from $PWD, not $(pwd), which would drop trailing
+# newlines from the name.
+candidate="${RC_START_DIR:-$HOME/dev}"
+if ! cd -P -- "$candidate" 2>/dev/null; then
   echo "rc-start: cannot enter working directory $candidate" >&2
   exit 1
 fi
+workdir="$PWD"
 log="${XDG_STATE_HOME:-$HOME/.local/state}/rc-start.log"
-mkdir -p "$(dirname "$log")"
+mkdir -p -- "${log%/*}"
 
 # `=rc` matches the session name exactly; plain `rc` would also match
 # rc-other. The session ends when claude does (no shell is kept behind it),

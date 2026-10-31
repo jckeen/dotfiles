@@ -8,9 +8,8 @@
 - It puts `~/.bun/bin` on PATH. Remote Control runs claude directly, not
   through a login shell, so `~/.bash_profile`'s bun line never reached those
   sessions, and anything they ran that called `bunx` failed.
-- The session starts in the folder that holds the dotfiles checkout, found
-  through the script's own symlink, rather than a hardcoded `~/dev`.
-  `RC_START_DIR` overrides it.
+- The session starts in `~/dev`, as before, or in `RC_START_DIR` when that
+  is set.
 - Two fixes to the copied script, from review:
   - The session no longer keeps a shell behind claude (`exec bash`). That
     shell made a dead Remote Control count as running, so no later
@@ -25,9 +24,11 @@
     name.
   - The working directory is checked by entering it, so one that is
     missing or can't be entered is refused. tmux would otherwise start in
-    `$HOME`. Its `#` characters are doubled, because tmux expands `-c` as a
-    format, and a `#()` there would run a command. An inherited `CDPATH`
-    is unset, since it made `cd` print the match into the captured path.
+    `$HOME`. The directory is read back from `$PWD`, not `$(pwd)`, which
+    would drop a trailing newline from its name. Its `#` characters are
+    doubled, because tmux expands `-c` as a format, and a `#()` there would
+    run a command. An inherited `CDPATH` is unset in both the script and
+    its test.
   - The pane's command is passed to tmux as separate arguments
     (`sh -c …`), which tmux runs directly, so tmux's `default-shell` (fish,
     say) never interprets it.

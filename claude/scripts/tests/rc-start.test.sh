@@ -7,9 +7,9 @@
 #   - `has-session -t rc` matching a prefix (`rc-other`) and skipping the start;
 #   - the session's PATH lacking ~/.bun/bin (bunx), including on a tmux
 #     server that was already running with a PATH without it;
-#   - the working directory: RC_START_DIR, else the folder above the checkout,
-#     found through the ~/.local/bin symlink setup.sh makes; a missing one is
-#     refused, never swapped for $HOME;
+#   - the working directory: RC_START_DIR, else ~/dev; a missing one is
+#     refused, never swapped for $HOME, and a name ending in a newline is kept
+#     whole;
 #   - a dead pane kept by remain-on-exit counting as running;
 #   - a directory that can't be entered, or a tmux format (#()) in its name;
 #   - an inherited CDPATH turning the directory check's output into a non-path;
@@ -18,6 +18,8 @@
 # every temp dir was created: an empty TMUX_DIR would aim TMUX_TMPDIR, and the
 # cleanup's kill-server, at the caller's own tmux server.
 set -uo pipefail
+# An inherited CDPATH would make the `cd` below print its match into SCRIPT_DIR.
+unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -65,6 +67,7 @@ ln -s "$REPO_ROOT/rc-start" "$TEST_HOME/.local/bin/rc-start"
 cat > "$SHIM_DIR/claude" <<'EOF'
 #!/bin/sh
 printf '%s|%s|%s\n' "$*" "$(pwd -P)" "$PATH" >> "$CALLS"
+pwd -P > "$CALLS.cwd"
 if [ -f "$CALLS.exit" ]; then exit "$(cat "$CALLS.exit")"; fi
 exec sleep 60
 EOF
@@ -176,16 +179,30 @@ fi
 t set-option -g default-shell /bin/sh
 t kill-session -t '=rc' 2>/dev/null
 
-# 4. Without RC_START_DIR: the folder above the checkout, through the symlink.
+# 4. Without RC_START_DIR: ~/dev.
+mkdir "$TEST_HOME/dev"
 : > "$CALLS"
 rc_start >/dev/null
 if wait_for 5 calls_at_least 1; then
   IFS='|' read -r _ cwd _ < "$CALLS"
-  [ "$cwd" = "$(cd -P "$REPO_ROOT/.." && pwd)" ] \
-    && ok "defaults to the folder that holds the checkout, through the symlink" \
-    || fail "default working directory was $cwd"
+  [ "$cwd" = "$(cd -P "$TEST_HOME/dev" && pwd)" ] \
+    && ok "defaults to ~/dev" || fail "default working directory was $cwd"
 else
   fail "rc-start did not start claude for the default directory"
+fi
+t kill-session -t '=rc' 2>/dev/null
+
+# 4b. A directory whose name ends in a newline is used whole, not trimmed into
+#     another path (which tmux would swap for $HOME).
+nl_dir="$WORK_DIR/nl"$'\n'
+mkdir "$nl_dir"
+: > "$CALLS"
+RC_START_DIR="$nl_dir" rc_start >/dev/null
+if wait_for 5 calls_at_least 1 \
+  && printf '%s\n' "$(cd -P "$WORK_DIR" && pwd)/nl"$'\n' | cmp -s - "$CALLS.cwd"; then
+  ok "a directory name ending in a newline is kept whole"
+else
+  fail "a directory name ending in a newline was not used as given"
 fi
 t kill-session -t '=rc' 2>/dev/null
 
