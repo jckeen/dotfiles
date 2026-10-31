@@ -21,8 +21,12 @@
   - Only where a config turns `remain-on-exit` on can the session outlive
     claude, with a dead pane. `rc-start` then refuses and prints
     `tmux kill-session -t =rc`, the command that clears it. It never
-    restarts in place or kills a session, so it can't stop a running claude,
-    including one a concurrent call has just started.
+    restarts in place or kills a session, so it can't stop a running claude.
+    One tmux query decides whether the session is absent, live or dead, so a
+    session that a concurrent call creates mid-check is reported as running,
+    never mistaken for a dead one.
+  - `--hold` holds whatever happened, a refused start included, since its
+    job is to keep the boot task's WSL running.
   - The working directory is entered with `cd`, which refuses one that is
     missing or can't be entered (tmux would silently use `$HOME`), and read
     back from `$PWD`, which keeps a trailing newline in the name. tmux is

@@ -14,7 +14,8 @@
 #   - a directory that can't be entered, or a tmux format (#()) in its name;
 #   - an inherited CDPATH turning the directory check's output into a non-path;
 #   - tmux's default-shell running the pane's POSIX command;
-#   - tmux parsing the directory (a name ending in `;` or `\;`).
+#   - tmux parsing the directory (a name ending in `;` or `\;`);
+#   - a session another call creates mid-check read as a dead one.
 # Every tmux call here names the test's own socket, and nothing runs unless
 # every temp dir was created: an empty TMUX_DIR would aim TMUX_TMPDIR, and the
 # cleanup's kill-server, at the caller's own tmux server.
@@ -148,7 +149,8 @@ wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
 
 # 3b. Where remain-on-exit keeps claude's dead pane (another config may turn
 #     it on), the next call refuses, naming the command that clears it, and
-#     starts or kills nothing; once the session is cleared it starts again.
+#     starts or kills nothing (--hold still holds); once the session is
+#     cleared it starts again.
 : > "$CALLS"
 echo 7 > "$CALLS.exit"
 t set-option -g remain-on-exit on
@@ -166,6 +168,9 @@ if wait_for 5 calls_at_least 1 && wait_for 5 rc_pane_dead; then
       fail "dead-pane refusal wrong: $(calls) starts, message: $err"
     fi
   fi
+  RC_START_DIR="$WORK_DIR" timeout 2 "$TEST_HOME/.local/bin/rc-start" --hold >/dev/null 2>&1
+  [ $? -eq 124 ] && ok "--hold still blocks when a dead session is refused" \
+    || fail "--hold returned when a dead session was refused"
   t kill-session -t '=rc'
   RC_START_DIR="$WORK_DIR" rc_start >/dev/null
   if wait_for 5 calls_at_least 2; then
@@ -179,6 +184,35 @@ fi
 t set-option -g remain-on-exit off
 rm -f "$CALLS.exit"
 t kill-session -t '=rc' 2>/dev/null
+
+# 3e. A concurrent call that creates rc between this call's check and its
+#     start is reported as running, never as a dead session. The tmux shim
+#     plays that other call: right after the first list-panes it starts a
+#     live rc, as a second rc-start would.
+REAL_TMUX="$(command -v tmux)"
+RACE_DIR="$(mktemp -d)" || { echo "FAIL - mktemp"; exit 1; }
+cat > "$RACE_DIR/tmux" <<'EOF'
+#!/bin/sh
+if [ "$1" = list-panes ] && [ -f "$RACE" ]; then
+  rm -f "$RACE"
+  "$REAL_TMUX" "$@"; rc=$?
+  "$REAL_TMUX" new-session -d -s rc 'sleep 60'
+  exit "$rc"
+fi
+exec "$REAL_TMUX" "$@"
+EOF
+chmod +x "$RACE_DIR/tmux"
+: > "$CALLS"
+touch "$RACE_DIR/race"
+if out="$(REAL_TMUX="$REAL_TMUX" RACE="$RACE_DIR/race" PATH="$RACE_DIR:$PATH" RC_START_DIR="$WORK_DIR" rc_start 2>&1)"; then
+  printf '%s' "$out" | grep -q 'already running' \
+    && ok "a session started concurrently is reported as running" \
+    || fail "concurrent start: unexpected output: $out"
+else
+  fail "a session started concurrently was refused: $out"
+fi
+t kill-session -t '=rc' 2>/dev/null
+rm -rf "$RACE_DIR"
 
 # 3c. The pane runs sh directly, whatever tmux's default-shell is: its
 #     command is POSIX shell, which a fish or other default-shell would break.
@@ -232,6 +266,11 @@ else
     fail "a missing RC_START_DIR still started something ($(calls) claude starts)"
   fi
 fi
+
+# 5'. --hold blocks even when the working directory is refused.
+RC_START_DIR="$WORK_DIR/missing" timeout 2 "$TEST_HOME/.local/bin/rc-start" --hold >/dev/null 2>&1
+[ $? -eq 124 ] && ok "--hold still blocks when the working directory is refused" \
+  || fail "--hold returned when the working directory was refused"
 
 # 5a. An inherited CDPATH doesn't bend a relative RC_START_DIR: cd would
 #     print the match, and the captured path would no longer be one.

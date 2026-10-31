@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
 # Start Claude Code Remote Control in a detached tmux session named "rc".
 # Usage: rc-start          start if not running
-#        rc-start --hold   also block forever, so the wsl.exe that launched us
-#                          keeps the WSL VM alive (used by the Windows boot task)
+#        rc-start --hold   also block forever, even if the start failed, so the
+#                          wsl.exe that launched us keeps the WSL VM alive
+#                          (used by the Windows boot task)
 #
 # setup.sh links this into ~/.local/bin. The session starts in ~/dev, or in
 # RC_START_DIR when that is set.
 set -euo pipefail
 # A CDPATH would let `cd` below resolve a relative RC_START_DIR somewhere else.
 unset CDPATH
+
+# Every outcome ends here. --hold keeps the boot task's wsl.exe, and so WSL,
+# alive whatever happened: a failed start is reported, and the machine stays
+# reachable to fix it.
+finish() {
+  if [[ "${hold:-}" == 1 ]]; then
+    exec sleep infinity
+  fi
+  exit "$1"
+}
+hold=0
+if [[ "${1:-}" == "--hold" ]]; then
+  hold=1
+fi
 
 export PATH="$HOME/.local/bin:$PATH"
 # Remote Control runs claude directly, not through a login shell, so the bun
@@ -24,7 +39,7 @@ fi
 candidate="${RC_START_DIR:-$HOME/dev}"
 if ! cd -P -- "$candidate" 2>/dev/null; then
   echo "rc-start: cannot enter working directory $candidate" >&2
-  exit 1
+  finish 1
 fi
 workdir="$PWD"
 log="${XDG_STATE_HOME:-$HOME/.local/state}/rc-start.log"
@@ -39,30 +54,33 @@ mkdir -p -- "${log%/*}"
 # none of its other variables.
 cmd=(sh -c 'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"')
 
-# Running means a live pane in the session named exactly rc (`=rc:` is the
-# session form; list-panes takes a window target, and a bare `=rc` naming no
-# window falls back to another session, such as rc-other). The session ends
-# when claude does. Only where a config turns remain-on-exit on can it outlive
-# claude with a dead pane; rc-start then refuses rather than restart or kill
-# anything, and names the command that clears it.
+# One list-panes query classifies the session named exactly rc, so a call
+# racing another can't see "no live pane" and "the session exists" at two
+# different moments: absent (the query fails), live (a pane with pane_dead
+# 0), or dead (only dead panes). `=rc:` is the session form: list-panes takes
+# a window target, and a bare `=rc` naming no window falls back to another
+# session, such as rc-other. The session ends when claude does; only where a
+# config turns remain-on-exit on can it outlive claude with a dead pane, and
+# rc-start then refuses rather than restart or kill anything, naming the
+# command that clears it.
 rc_alive() {
   tmux list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null | grep -qx 0
 }
-if rc_alive; then
-  echo "rc-start: Remote Control already running (tmux attach -t rc)"
-elif tmux has-session -t '=rc' 2>/dev/null; then
-  echo "rc-start: tmux session 'rc' exists but Remote Control has exited (remain-on-exit kept its pane)." >&2
-  echo "rc-start: clear it with 'tmux kill-session -t =rc', then run rc-start again." >&2
-  exit 1
+status=0
+if panes="$(tmux list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)"; then
+  if grep -qx 0 <<<"$panes"; then
+    echo "rc-start: Remote Control already running (tmux attach -t rc)"
+  else
+    echo "rc-start: tmux session 'rc' exists but Remote Control has exited (remain-on-exit kept its pane)." >&2
+    echo "rc-start: clear it with 'tmux kill-session -t =rc', then run rc-start again." >&2
+    status=1
+  fi
 elif tmux new-session -d -s rc -e "RC_START_LOG=$log" "${cmd[@]}" 2>/dev/null; then
   echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
 elif rc_alive; then
   echo "rc-start: Remote Control already running (started by another call)"
 else
   echo "rc-start: could not start tmux session 'rc'" >&2
-  exit 1
+  status=1
 fi
-
-if [[ "${1:-}" == "--hold" ]]; then
-  exec sleep infinity
-fi
+finish "$status"
