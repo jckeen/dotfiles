@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Start Claude Code Remote Control in a detached tmux session named "rc".
+# Usage: rc-start          start if not running
+#        rc-start --hold   also block forever, so the wsl.exe that launched us
+#                          keeps the WSL VM alive (used by the Windows boot task)
+#
+# setup.sh links this into ~/.local/bin. The session starts in the folder that
+# holds the dotfiles checkout (~/dev by convention), found through that link;
+# RC_START_DIR overrides it.
+set -euo pipefail
+
+export PATH="$HOME/.local/bin:$PATH"
+# Remote Control runs claude directly, not through a login shell, so the bun
+# line in ~/.bash_profile never applies to its sessions: add bun and bunx here.
+if [[ -d "$HOME/.bun/bin" ]]; then
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
+
+# Resolve this script through its symlinks (portable: no `readlink -f`).
+self="${BASH_SOURCE[0]}"
+while [[ -L "$self" ]]; do
+  target="$(readlink "$self")"
+  if [[ "$target" == /* ]]; then
+    self="$target"
+  else
+    self="$(cd -P "$(dirname "$self")" && pwd)/$target"
+  fi
+done
+workdir="${RC_START_DIR:-$(cd -P "$(dirname "$self")/.." && pwd)}"
+
+if tmux has-session -t rc 2>/dev/null; then
+  echo "rc-start: Remote Control already running (tmux attach -t rc)"
+else
+  tmux new-session -d -s rc -c "$workdir" \
+    "claude remote-control --permission-mode auto; echo 'remote-control exited'; exec bash"
+  echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
+fi
+
+if [[ "${1:-}" == "--hold" ]]; then
+  exec sleep infinity
+fi
