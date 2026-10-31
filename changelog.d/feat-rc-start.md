@@ -26,7 +26,11 @@
   - The working directory is checked by entering it, so one that is
     missing or can't be entered is refused. tmux would otherwise start in
     `$HOME`. Its `#` characters are doubled, because tmux expands `-c` as a
-    format, and a `#()` there would run a command.
+    format, and a `#()` there would run a command. An inherited `CDPATH`
+    is unset, since it made `cd` print the match into the captured path.
+  - The pane's command is passed to tmux as separate arguments
+    (`sh -c …`), which tmux runs directly, so tmux's `default-shell` (fish,
+    say) never interprets it.
 - New suite `claude/scripts/tests/rc-start.test.sh` runs a real tmux on a
   private socket directory with a stub `claude`. It runs in the `checkers`
   shard, and fails there rather than skipping if the runner lacks tmux.

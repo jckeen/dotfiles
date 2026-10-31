@@ -11,7 +11,9 @@
 #     found through the ~/.local/bin symlink setup.sh makes; a missing one is
 #     refused, never swapped for $HOME;
 #   - a dead pane kept by remain-on-exit counting as running;
-#   - a directory that can't be entered, or a tmux format (#()) in its name.
+#   - a directory that can't be entered, or a tmux format (#()) in its name;
+#   - an inherited CDPATH turning the directory check's output into a non-path;
+#   - tmux's default-shell running the pane's POSIX command.
 # Every tmux call here names the test's own socket, and nothing runs unless
 # every temp dir was created: an empty TMUX_DIR would aim TMUX_TMPDIR, and the
 # cleanup's kill-server, at the caller's own tmux server.
@@ -161,6 +163,19 @@ t set-option -g remain-on-exit off
 rm -f "$CALLS.exit"
 wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
 
+# 3c. The pane runs sh directly, whatever tmux's default-shell is: its
+#     command is POSIX shell, which a fish or other default-shell would break.
+t set-option -g default-shell /bin/false
+: > "$CALLS"
+RC_START_DIR="$WORK_DIR" rc_start >/dev/null
+if wait_for 5 calls_at_least 1; then
+  ok "claude starts whatever tmux's default-shell is"
+else
+  fail "with an unusable default-shell, claude never started"
+fi
+t set-option -g default-shell /bin/sh
+t kill-session -t '=rc' 2>/dev/null
+
 # 4. Without RC_START_DIR: the folder above the checkout, through the symlink.
 : > "$CALLS"
 rc_start >/dev/null
@@ -186,6 +201,20 @@ else
     fail "a missing RC_START_DIR still started something ($(calls) claude starts)"
   fi
 fi
+
+# 5a. An inherited CDPATH doesn't bend a relative RC_START_DIR: cd would
+#     print the match, and the captured path would no longer be one.
+: > "$CALLS"
+(cd "$WORK_DIR/.." && CDPATH=. RC_START_DIR="$(basename "$WORK_DIR")" rc_start >/dev/null)
+if wait_for 5 calls_at_least 1; then
+  IFS='|' read -r _ cwd _ < "$CALLS"
+  [ "$cwd" = "$(cd -P "$WORK_DIR" && pwd)" ] \
+    && ok "a relative RC_START_DIR is unaffected by an inherited CDPATH" \
+    || fail "with CDPATH set, claude started in $cwd"
+else
+  fail "rc-start did not start with CDPATH set"
+fi
+t kill-session -t '=rc' 2>/dev/null
 
 # 5b. A directory that exists but can't be entered is refused too.
 mkdir "$WORK_DIR/sealed"

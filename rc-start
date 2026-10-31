@@ -8,6 +8,9 @@
 # holds the dotfiles checkout (~/dev by convention), found through that link;
 # RC_START_DIR overrides it.
 set -euo pipefail
+# With CDPATH set, `cd` prints the directory it matched, and every
+# `$(cd … && pwd)` below would capture that line too.
+unset CDPATH
 
 export PATH="$HOME/.local/bin:$PATH"
 # Remote Control runs claude directly, not through a login shell, so the bun
@@ -47,10 +50,12 @@ mkdir -p "$(dirname "$log")"
 # -c is expanded as a tmux format, so `#` is doubled; -e values are not.
 # tmux gives a new session this client's PATH but, on a server that is
 # already running, none of its other variables, so the log path goes in -e.
+# The command is passed as separate arguments, which tmux runs directly, so
+# its POSIX shell never depends on tmux's default-shell.
 if tmux has-session -t '=rc' 2>/dev/null; then
   echo "rc-start: Remote Control already running (tmux attach -t rc)"
 elif tmux new-session -d -s rc -c "${workdir//#/##}" -e "RC_START_LOG=$log" \
-    'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"' \
+    sh -c 'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"' \
     \; set-option -w -t '=rc:' remain-on-exit off 2>/dev/null; then
   echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
 elif tmux has-session -t '=rc' 2>/dev/null; then
