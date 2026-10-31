@@ -18,11 +18,15 @@
     exit status goes to `~/.local/state/rc-start.log`.
   - The running check matches the session name exactly. Plain `rc` also
     matched a session such as `rc-other`, and the start was skipped.
-  - "Running" now means a live pane in the `rc` session. Where
-    `remain-on-exit` is on, a dead pane left behind is replaced rather than
-    reported as running.
-  - A working directory that does not exist is refused. tmux would
-    otherwise start in `$HOME` instead.
+  - The session's window gets `remain-on-exit off` in the same tmux
+    command that creates it. A config that turns the option on can't leave
+    a dead pane counting as running, and nothing ever has to kill a
+    session. Two calls at once are safe: tmux refuses the second session
+    name.
+  - The working directory is checked by entering it, so one that is
+    missing or can't be entered is refused. tmux would otherwise start in
+    `$HOME`. Its `#` characters are doubled, because tmux expands `-c` as a
+    format, and a `#()` there would run a command.
 - New suite `claude/scripts/tests/rc-start.test.sh` runs a real tmux on a
   private socket directory with a stub `claude`. It runs in the `checkers`
   shard, and fails there rather than skipping if the runner lacks tmux.

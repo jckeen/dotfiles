@@ -10,7 +10,8 @@
 #   - the working directory: RC_START_DIR, else the folder above the checkout,
 #     found through the ~/.local/bin symlink setup.sh makes; a missing one is
 #     refused, never swapped for $HOME;
-#   - a dead pane kept by remain-on-exit counting as running.
+#   - a dead pane kept by remain-on-exit counting as running;
+#   - a directory that can't be entered, or a tmux format (#()) in its name.
 # Every tmux call here names the test's own socket, and nothing runs unless
 # every temp dir was created: an empty TMUX_DIR would aim TMUX_TMPDIR, and the
 # cleanup's kill-server, at the caller's own tmux server.
@@ -67,7 +68,9 @@ exec sleep 60
 EOF
 chmod +x "$SHIM_DIR/claude"
 
-export HOME="$TEST_HOME" CALLS TMUX_TMPDIR="$TMUX_DIR" SHELL=/bin/sh
+# MARK is the file a tmux format in a directory name would create if it were
+# ever run (case 5c); the name says $MARK because it can't hold a slash.
+export HOME="$TEST_HOME" CALLS TMUX_TMPDIR="$TMUX_DIR" SHELL=/bin/sh MARK="$TEST_HOME/format-ran"
 export PATH="$SHIM_DIR:/usr/bin:/bin"
 # Nothing of the caller's may steer the launcher or tmux: the log location,
 # the working directory, a tmux config, an enclosing tmux client.
@@ -84,7 +87,6 @@ wait_for() { # wait_for <seconds> <command…>
 }
 calls_at_least() { [ "$(calls)" -ge "$1" ]; }
 no_rc_session() { ! t has-session -t '=rc' 2>/dev/null; }
-rc_pane_dead() { [ "$(t list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
 
 # 1. A server already running without bun on its PATH: the new session still
 #    gets ~/.bun/bin, and a session named rc-other is not mistaken for rc.
@@ -138,25 +140,26 @@ fi
 rm -f "$CALLS.exit"
 wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
 
-# 3b. Where remain-on-exit is on (another config may set it), claude's dead
-#     pane stays behind; the next call replaces that session.
+# 3b. Where a config turns remain-on-exit on, claude's pane still doesn't
+#     linger dead: the session ends, and the next call starts it again.
 : > "$CALLS"
 echo 7 > "$CALLS.exit"
 t set-option -g remain-on-exit on
 RC_START_DIR="$WORK_DIR" rc_start >/dev/null
-if wait_for 5 calls_at_least 1 && wait_for 5 rc_pane_dead; then
-  RC_START_DIR="$WORK_DIR" rc_start >/dev/null
-  if wait_for 5 calls_at_least 2; then
-    ok "a dead pane kept by remain-on-exit is replaced, not reported as running"
-  else
-    fail "rc-start treated a dead pane kept by remain-on-exit as running"
-  fi
+if wait_for 5 calls_at_least 1 && wait_for 5 no_rc_session; then
+  ok "under remain-on-exit the session still ends when claude does"
 else
-  fail "no dead pane appeared under remain-on-exit"
+  fail "a dead pane kept session rc alive under remain-on-exit"
+fi
+RC_START_DIR="$WORK_DIR" rc_start >/dev/null
+if wait_for 5 calls_at_least 2; then
+  ok "under remain-on-exit the next call restarts Remote Control"
+else
+  fail "under remain-on-exit rc-start did not restart Remote Control"
 fi
 t set-option -g remain-on-exit off
 rm -f "$CALLS.exit"
-t kill-session -t '=rc' 2>/dev/null
+wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
 
 # 4. Without RC_START_DIR: the folder above the checkout, through the symlink.
 : > "$CALLS"
@@ -183,6 +186,40 @@ else
     fail "a missing RC_START_DIR still started something ($(calls) claude starts)"
   fi
 fi
+
+# 5b. A directory that exists but can't be entered is refused too.
+mkdir "$WORK_DIR/sealed"
+chmod 600 "$WORK_DIR/sealed"
+: > "$CALLS"
+if [ "$(id -u)" = 0 ]; then
+  echo "SKIP - running as root, which can enter any directory"
+elif RC_START_DIR="$WORK_DIR/sealed" rc_start >/dev/null 2>&1; then
+  fail "rc-start accepted a working directory it cannot enter"
+else
+  sleep 0.5
+  [ "$(calls)" = 0 ] && no_rc_session \
+    && ok "a working directory that can't be entered is refused" \
+    || fail "an unenterable RC_START_DIR still started something"
+fi
+chmod 700 "$WORK_DIR/sealed"
+
+# 5c. A tmux format in the directory name is taken literally, never run.
+# shellcheck disable=SC2016  # $MARK is meant literally: tmux would expand it if it ran the format
+odd="$WORK_DIR/"'dir#(touch $MARK)'
+mkdir "$odd"
+: > "$CALLS"
+RC_START_DIR="$odd" rc_start >/dev/null
+if wait_for 5 calls_at_least 1; then
+  IFS='|' read -r _ cwd _ < "$CALLS"
+  if [ "$cwd" = "$(cd -P "$odd" && pwd)" ] && [ ! -e "$MARK" ]; then
+    ok "a #() in the directory name is a literal path, never a command"
+  else
+    fail "directory name handled as a tmux format (cwd $cwd)"
+  fi
+else
+  fail "rc-start did not start in a directory whose name holds #()"
+fi
+t kill-session -t '=rc' 2>/dev/null
 
 # 6. --hold keeps running after starting the session.
 timeout 2 "$TEST_HOME/.local/bin/rc-start" --hold >/dev/null
