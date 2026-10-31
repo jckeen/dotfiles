@@ -30,25 +30,39 @@ workdir="$PWD"
 log="${XDG_STATE_HOME:-$HOME/.local/state}/rc-start.log"
 mkdir -p -- "${log%/*}"
 
-# `=rc` matches the session name exactly; plain `rc` would also match
-# rc-other. The session ends when claude does (no shell is kept behind it),
-# so a later call starts it again; the exit status is logged. Its window gets
-# remain-on-exit off in the same tmux command that creates it, so a config
-# that turns the option on can't leave a dead pane counting as running, and
-# nothing ever has to kill a session. Two calls at once: tmux refuses the
-# second session name, and that call reports the first one's session.
-# -c is expanded as a tmux format, so `#` is doubled; -e values are not.
-# tmux gives a new session this client's PATH but, on a server that is
-# already running, none of its other variables, so the log path goes in -e.
-# The command is passed as separate arguments, which tmux runs directly, so
-# its POSIX shell never depends on tmux's default-shell.
-if tmux has-session -t '=rc' 2>/dev/null; then
+# The rc session is rc-start's own. tmux is never handed the directory: it
+# parses -c (formats, a trailing `\;`), so the session starts in this
+# process's working directory, set by the cd above. The command goes as
+# separate arguments, which tmux runs directly, so tmux's default-shell never
+# interprets its POSIX shell, and the log path goes in with -e because on a
+# server that is already running a new session gets the caller's PATH but
+# none of its other variables.
+cmd=(sh -c 'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"')
+
+# Running means a live pane in the session named exactly rc (`=rc:` is the
+# session form; list-panes takes a window target, and a bare `=rc` naming no
+# window falls back to another session, such as rc-other). Normally the
+# session ends with claude; where remain-on-exit keeps its dead pane,
+# respawn-pane restarts claude in place. Without -k it refuses a pane that is
+# alive again, so nothing here ever kills a running claude, including one a
+# concurrent call has just started.
+rc_alive() {
+  tmux list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null | grep -qx 0
+}
+if rc_alive; then
   echo "rc-start: Remote Control already running (tmux attach -t rc)"
-elif tmux new-session -d -s rc -c "${workdir//#/##}" -e "RC_START_LOG=$log" \
-    sh -c 'claude remote-control --permission-mode auto; rc=$?; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remote-control exited ($rc)" >> "$RC_START_LOG"' \
-    \; set-option -w -t '=rc:' remain-on-exit off 2>/dev/null; then
-  echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
 elif tmux has-session -t '=rc' 2>/dev/null; then
+  if tmux respawn-pane -t '=rc:' "${cmd[@]}" 2>/dev/null; then
+    echo "rc-start: Remote Control restarted in tmux session 'rc' ($workdir)"
+  elif rc_alive; then
+    echo "rc-start: Remote Control already running (started by another call)"
+  else
+    echo "rc-start: could not restart Remote Control in tmux session 'rc'" >&2
+    exit 1
+  fi
+elif tmux new-session -d -s rc -e "RC_START_LOG=$log" "${cmd[@]}" 2>/dev/null; then
+  echo "rc-start: Remote Control started in tmux session 'rc' ($workdir)"
+elif rc_alive; then
   echo "rc-start: Remote Control already running (started by another call)"
 else
   echo "rc-start: could not start tmux session 'rc'" >&2

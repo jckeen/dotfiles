@@ -10,28 +10,28 @@
   sessions, and anything they ran that called `bunx` failed.
 - The session starts in `~/dev`, as before, or in `RC_START_DIR` when that
   is set.
-- Two fixes to the copied script, from review:
+- Fixes to the copied script, from review:
   - The session no longer keeps a shell behind claude (`exec bash`). That
     shell made a dead Remote Control count as running, so no later
     `rc-start` restarted it. The session now ends when claude does, and the
     exit status goes to `~/.local/state/rc-start.log`.
-  - The running check matches the session name exactly. Plain `rc` also
-    matched a session such as `rc-other`, and the start was skipped.
-  - The session's window gets `remain-on-exit off` in the same tmux
-    command that creates it. A config that turns the option on can't leave
-    a dead pane counting as running, and nothing ever has to kill a
-    session. Two calls at once are safe: tmux refuses the second session
-    name.
-  - The working directory is checked by entering it, so one that is
-    missing or can't be entered is refused. tmux would otherwise start in
-    `$HOME`. The directory is read back from `$PWD`, not `$(pwd)`, which
-    would drop a trailing newline from its name. Its `#` characters are
-    doubled, because tmux expands `-c` as a format, and a `#()` there would
-    run a command. An inherited `CDPATH` is unset in both the script and
-    its test.
-  - The pane's command is passed to tmux as separate arguments
-    (`sh -c …`), which tmux runs directly, so tmux's `default-shell` (fish,
-    say) never interprets it.
+  - "Running" means a live pane in the session named exactly `rc`. Plain
+    `rc` also matched a session such as `rc-other`, and the start was
+    skipped.
+  - Where `remain-on-exit` keeps claude's dead pane, `respawn-pane` restarts
+    claude in place. It runs without `-k`, so it refuses a pane that is
+    alive again, and nothing ever kills a running claude, including one a
+    concurrent call has just started.
+  - The working directory is entered with `cd`, which refuses one that is
+    missing or can't be entered (tmux would silently use `$HOME`), and read
+    back from `$PWD`, which keeps a trailing newline in the name. tmux is
+    never handed the directory: it reads `-c` as a format and trims a
+    trailing `\;`, so the session starts in `rc-start`'s own working
+    directory. An inherited `CDPATH` is unset in both the script and its
+    test.
+  - The pane's command goes to tmux as separate arguments (`sh -c …`),
+    which tmux runs directly, so tmux's `default-shell` (fish, say) never
+    interprets it.
 - New suite `claude/scripts/tests/rc-start.test.sh` runs a real tmux on a
   private socket directory with a stub `claude`. It runs in the `checkers`
   shard, and fails there rather than skipping if the runner lacks tmux.

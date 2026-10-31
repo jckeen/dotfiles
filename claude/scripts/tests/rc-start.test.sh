@@ -13,7 +13,8 @@
 #   - a dead pane kept by remain-on-exit counting as running;
 #   - a directory that can't be entered, or a tmux format (#()) in its name;
 #   - an inherited CDPATH turning the directory check's output into a non-path;
-#   - tmux's default-shell running the pane's POSIX command.
+#   - tmux's default-shell running the pane's POSIX command;
+#   - tmux parsing the directory (a name ending in `;` or `\;`).
 # Every tmux call here names the test's own socket, and nothing runs unless
 # every temp dir was created: an empty TMUX_DIR would aim TMUX_TMPDIR, and the
 # cleanup's kill-server, at the caller's own tmux server.
@@ -145,26 +146,32 @@ fi
 rm -f "$CALLS.exit"
 wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
 
-# 3b. Where a config turns remain-on-exit on, claude's pane still doesn't
-#     linger dead: the session ends, and the next call starts it again.
+# 3b. Where remain-on-exit keeps claude's dead pane (another config may turn
+#     it on), the next call restarts claude in that pane rather than reporting
+#     it running, and an after-new-session hook that delays things changes
+#     nothing.
 : > "$CALLS"
 echo 7 > "$CALLS.exit"
 t set-option -g remain-on-exit on
+t set-hook -g after-new-session 'run-shell "sleep 0.5"'
 RC_START_DIR="$WORK_DIR" rc_start >/dev/null
-if wait_for 5 calls_at_least 1 && wait_for 5 no_rc_session; then
-  ok "under remain-on-exit the session still ends when claude does"
+rc_pane_dead() { [ "$(t list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
+if wait_for 5 calls_at_least 1 && wait_for 5 rc_pane_dead; then
+  rm -f "$CALLS.exit"
+  RC_START_DIR="$WORK_DIR" rc_start >/dev/null
+  rc_pane_live() { [ "$(t list-panes -s -t '=rc:' -F '#{pane_dead}' 2>/dev/null)" = 0 ]; }
+  if wait_for 5 calls_at_least 2 && wait_for 5 rc_pane_live; then
+    ok "a dead pane kept by remain-on-exit is restarted in place"
+  else
+    fail "rc-start treated a dead pane kept by remain-on-exit as running"
+  fi
 else
-  fail "a dead pane kept session rc alive under remain-on-exit"
+  fail "no dead pane appeared under remain-on-exit"
 fi
-RC_START_DIR="$WORK_DIR" rc_start >/dev/null
-if wait_for 5 calls_at_least 2; then
-  ok "under remain-on-exit the next call restarts Remote Control"
-else
-  fail "under remain-on-exit rc-start did not restart Remote Control"
-fi
+t set-hook -gu after-new-session
 t set-option -g remain-on-exit off
 rm -f "$CALLS.exit"
-wait_for 5 no_rc_session || t kill-session -t '=rc' 2>/dev/null
+t kill-session -t '=rc' 2>/dev/null
 
 # 3c. The pane runs sh directly, whatever tmux's default-shell is: its
 #     command is POSIX shell, which a fish or other default-shell would break.
@@ -266,6 +273,25 @@ else
   fail "rc-start did not start in a directory whose name holds #()"
 fi
 t kill-session -t '=rc' 2>/dev/null
+
+# 5d. tmux never parses the directory: names ending in `;` or `\;` are used as
+#     given, not trimmed into a sibling.
+for name in 'term;' 'term\;'; do
+  mkdir -p "$WORK_DIR/semi/$name"
+done
+for name in 'term;' 'term\;'; do
+  : > "$CALLS"
+  RC_START_DIR="$WORK_DIR/semi/$name" rc_start >/dev/null
+  if wait_for 5 calls_at_least 1; then
+    IFS='|' read -r _ cwd _ < "$CALLS"
+    [ "$cwd" = "$(cd -P "$WORK_DIR/semi" && pwd)/$name" ] \
+      && ok "a directory named $name is used as given" \
+      || fail "a directory named $name became $cwd"
+  else
+    fail "rc-start did not start in a directory named $name"
+  fi
+  t kill-session -t '=rc' 2>/dev/null
+done
 
 # 6. --hold keeps running after starting the session.
 timeout 2 "$TEST_HOME/.local/bin/rc-start" --hold >/dev/null
