@@ -199,7 +199,7 @@ run_health_audit() {
   # to also enforce the +x bit so an un-executable source script doesn't pass
   # health checks while still failing at runtime.
   local bin_src
-  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh rc-start; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     alink "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable"
@@ -857,8 +857,8 @@ if [[ "$PLATFORM" == "wsl" ]] && service_selected claude; then
 fi
 
 # ─── 1c. Dotfiles bin scripts → ~/.local/bin ────────────────────────
-# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh)
-# ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
+# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh,
+# rc-start) ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
 # already added to PATH by the shell config in section 7, so symlinking
 # there makes them callable as plain commands from any cwd.
 echo ""
@@ -871,7 +871,7 @@ echo "--- Linking dotfiles bin scripts ---"
 # Permission denied. Skip chmod when the bit is already set, and tolerate
 # EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
-for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh rc-start; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"
