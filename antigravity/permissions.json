@@ -180,7 +180,6 @@
       "mcp(playwright/browser_close)",
       "mcp(playwright/browser_console_messages)",
       "mcp(playwright/browser_drag)",
-      "mcp(playwright/browser_drop)",
       "mcp(playwright/browser_evaluate)",
       "mcp(playwright/browser_fill_form)",
       "mcp(playwright/browser_find)",
@@ -250,7 +249,8 @@
       "mcp(github/create_pull_request)",
       "mcp(github/create_issue)",
       "mcp(playwright/browser_run_code_unsafe)",
-      "mcp(playwright/browser_file_upload)"
+      "mcp(playwright/browser_file_upload)",
+      "mcp(playwright/browser_drop)"
     ],
     "deny": [
       "command(sudo)",
@@ -287,7 +287,8 @@
     "read_file(~/.gitconfig)",
     "read_file(~/dev/)",
     "mcp(github/*)",
-    "mcp(playwright/*)"
+    "mcp(playwright/*)",
+    "mcp(playwright/browser_drop)"
   ],
   "unask": [
     "command(bunx)",

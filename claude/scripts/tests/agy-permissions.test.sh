@@ -63,7 +63,8 @@ assert 'command(bunx)' in d['unask'] and 'command(npx)' in d['unask']
 assert 'mcp(playwright/browser_snapshot)' in allow and 'mcp(github/get_pull_request)' in allow
 assert 'mcp(playwright/*)' not in allow and 'mcp(playwright/*)' in d['retired'], 'wildcard playwright MCP would allow browser_run_code_unsafe in the baseline'
 assert 'mcp(github/*)' not in allow and 'mcp(github/*)' in d['retired'], 'wildcard github MCP would allow push_files and merge_pull_request in the baseline'
-assert 'mcp(playwright/browser_run_code_unsafe)' in ask and 'mcp(playwright/browser_file_upload)' in ask
+assert 'mcp(playwright/browser_run_code_unsafe)' in ask and 'mcp(playwright/browser_file_upload)' in ask and 'mcp(playwright/browser_drop)' in ask
+assert 'mcp(playwright/browser_drop)' not in allow and 'mcp(playwright/browser_drop)' in d['retired']
 assert 'mcp(github/push_files)' in ask and 'mcp(github/merge_pull_request)' in ask
 PY
 then ok "baseline is valid, portable, and free of retired unsandboxed rules"
