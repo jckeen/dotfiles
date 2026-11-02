@@ -967,11 +967,23 @@ cx() {
   codex --strict-config "${remote_args[@]}" "$@"
 }
 
+_agy_has_mode_arg() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      --mode|--mode=*|-mode|-mode=*) return 0 ;;
+    esac
+    shift
+  done
+  return 1
+}
+
 # Launch Antigravity with the same project-selection and sync ergonomics as
 # cc/cx. `command` bypasses this function and resolves the installed agy binary.
 # Usage: agy                         — launch from the current project
 #        agy <project>               — cd into ~/dev/<project> first
 #        agy --continue|-c           — continue without the sync preflight
+#        agy -c <id>                 — resume conversation <id> (normalized to --conversation <id>)
 #        agy --conversation <id>     — resume by id without the sync preflight
 agy() {
   local _agent_preflight_synced="${_agent_preflight_synced:-0}" preflight_rc=0
@@ -987,13 +999,73 @@ agy() {
       return
       ;;
   esac
+  local preflight_arg
+  for preflight_arg in "$@"; do
+    [ "$preflight_arg" = "--" ] && break
+    case "$preflight_arg" in
+      -c=*) _agent_force_resuming=1; break ;;
+    esac
+  done
   _agent_preflight "--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=" \
     "_check_antigravity_launch_health" "$@" || preflight_rc=$?
   if [ "$preflight_rc" -eq 2 ]; then agy "$@"; return $?; fi
   [ "$preflight_rc" -eq 0 ] || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
-  command agy "$@"
+  # In agy, -c/--continue is a boolean flag ("most recent conversation") and
+  # rejects a conversation ID positional argument; rewrite `-c <id>` /
+  # `--continue <id>` (and `=<id>` forms) to `--conversation <id>` so cc/cx
+  # resume muscle memory and handoff snippets work without error.
+  local -a normalized_args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --)
+        normalized_args+=("$@")
+        break
+        ;;
+      -c|--continue|-continue)
+        if [ "$#" -ge 2 ] && [[ "$2" != -* ]]; then
+          normalized_args+=(--conversation "$2")
+          shift 2
+          continue
+        fi
+        ;;
+      -c=*|--continue=*|-continue=*)
+        normalized_args+=("--conversation=${1#*=}")
+        shift
+        continue
+        ;;
+    esac
+    normalized_args+=("$1")
+    shift
+  done
+  set -- "${normalized_args[@]}"
+
+  local agy_memory_bootstrap
+  agy_memory_bootstrap="${AGY_MEMORY_REPO:-$(_dev_dir)/agy-memory}/bootstrap.sh"
+  if [ -f "$agy_memory_bootstrap" ] \
+    && ! bash "$agy_memory_bootstrap"; then
+    echo "⚠ Antigravity private defaults could not be applied — continuing with the existing local config." >&2
+  fi
+
+  # Antigravity resolves symlinks in trustedCLIGatedPaths (~/.gemini/config/GEMINI.md)
+  # and adds their target to ProtectedReadOnlyPaths, which causes BuildSandboxMounts
+  # to strip writability from any ancestor workspace (~/dev or ~/dev/dotfiles).
+  # Materializing GEMINI.md as a regular file keeps the workspace writable in-sandbox.
+  local agy_gemini_src agy_gemini_dst
+  agy_gemini_src="$(_dev_dir)/dotfiles/antigravity/GEMINI.md"
+  agy_gemini_dst="$HOME/.gemini/config/GEMINI.md"
+  if [ -f "$agy_gemini_src" ] && [ -L "$agy_gemini_dst" ] \
+    && [ "$(readlink "$agy_gemini_dst")" = "$agy_gemini_src" ]; then
+    cp --remove-destination "$agy_gemini_src" "$agy_gemini_dst" 2>/dev/null || true
+  fi
+
+  local -a mode_args=()
+  if ! _agy_has_mode_arg "$@"; then
+    mode_args=(--mode auto)
+  fi
+
+  command agy "${mode_args[@]}" "$@"
 }
 
 codex-update() {

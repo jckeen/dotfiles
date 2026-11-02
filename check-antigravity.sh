@@ -90,11 +90,22 @@ else
   AGY_STATE_MASKED=0
   agy_sandbox_masked "$AGY_STATE" && AGY_STATE_MASKED=1
 
-  if [ "$AGY_DST_MASKED" -eq 1 ] && [ ! -L "$AGY_DST/GEMINI.md" ] && [ -f "$AGY_DST/GEMINI.md" ]; then
+  if [ ! -L "$AGY_DST/GEMINI.md" ] && [ -f "$AGY_DST/GEMINI.md" ]; then
     if cmp -s "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md"; then
-      echo "SANDBOX GEMINI.md matches antigravity/GEMINI.md (bind-mounted inside sandbox)"
-    else
+      if [ "$AGY_DST_MASKED" -eq 1 ]; then
+        echo "SANDBOX GEMINI.md matches antigravity/GEMINI.md (bind-mounted inside sandbox)"
+      else
+        echo "OK      GEMINI.md matches antigravity/GEMINI.md (materialized for sandbox writability)"
+      fi
+    elif [ "$AGY_DST_MASKED" -eq 0 ] && [ "$HEAL" -eq 1 ] \
+      && cp -f "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" 2>/dev/null; then
+      green "HEALED  GEMINI.md (synced from antigravity/GEMINI.md)"
+      HEALED=$((HEALED + 1))
+    elif [ "$AGY_DST_MASKED" -eq 1 ]; then
       yellow "DRIFT   GEMINI.md inside sandbox differs from $AGY_SRC/GEMINI.md"
+      WARNINGS=$((WARNINGS + 1))
+    else
+      yellow "DRIFT   GEMINI.md differs from $AGY_SRC/GEMINI.md (run check-antigravity.sh --heal or setup.sh)"
       WARNINGS=$((WARNINGS + 1))
     fi
   else
@@ -115,13 +126,17 @@ else
     if [ "$AGY_STATE_MASKED" -eq 1 ] && [ ! -e "$AGY_SETTINGS" ]; then
       echo "SANDBOX permission baseline: settings.json masked by Antigravity terminal sandbox (verified on host at launch)"
     else
+      AGY_PERM_ARGS=(--settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json")
+      if [ -f "$AGY_MEMORY_REPO/permissions.local.json" ]; then
+        AGY_PERM_ARGS+=(--overlay "$AGY_MEMORY_REPO/permissions.local.json")
+      fi
       # --heal applies the additive merge first (same idempotent step setup.sh runs).
       if [ "$HEAL" -eq 1 ]; then
         python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-          --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" >/dev/null 2>&1 || true
+          "${AGY_PERM_ARGS[@]}" >/dev/null 2>&1 || true
       fi
       if baseline_out="$(python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" check \
-          --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" 2>&1)"; then
+          "${AGY_PERM_ARGS[@]}" 2>&1)"; then
         echo "OK      permission baseline: $baseline_out"
       else
         yellow "DRIFT   permission baseline: $baseline_out (re-run setup.sh)"

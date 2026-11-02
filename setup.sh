@@ -2259,8 +2259,13 @@ if service_selected antigravity; then
   prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR"
 
   if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
-    link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
-    echo "  -> Antigravity global GEMINI.md linked"
+    if [ "$DRY_RUN" -eq 0 ] && [ ! -L "$AGY_CONFIG_DIR/GEMINI.md" ] && [ -f "$AGY_CONFIG_DIR/GEMINI.md" ]; then
+      cp -f "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
+      echo "  -> Antigravity global GEMINI.md synced"
+    else
+      link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
+      echo "  -> Antigravity global GEMINI.md linked"
+    fi
   fi
 
   # Shared workflow skills: the agent-neutral set in agents/skills is the single
@@ -2304,14 +2309,22 @@ if service_selected antigravity; then
     echo "  -> Antigravity hooks.json linked"
   fi
 
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
+
   # Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
   # mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
   # (never symlinked — it also holds trustedWorkspaces and prompt-saved grants).
   # Merge keeps user-added rules; `agy-apply-permissions.py prune` resets them.
   if [ -f "$DOTFILES_DIR/antigravity/permissions.json" ]; then
+    AGY_PERM_ARGS=(
+      --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json"
+      --rules "$DOTFILES_DIR/antigravity/permissions.json"
+    )
+    if [ -f "$AGY_MEMORY_REPO/permissions.local.json" ]; then
+      AGY_PERM_ARGS+=(--overlay "$AGY_MEMORY_REPO/permissions.local.json")
+    fi
     if run python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-        --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json" \
-        --rules "$DOTFILES_DIR/antigravity/permissions.json"; then
+        "${AGY_PERM_ARGS[@]}"; then
       echo "  -> Antigravity permission baseline applied (proceed-in-sandbox)"
     else
       echo "  -> WARNING: Antigravity permission baseline not applied (see above)"
@@ -2330,9 +2343,18 @@ if service_selected antigravity; then
     fi
   fi
 
-  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
   if [ -d "$AGY_MEMORY_REPO" ]; then
     echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
+    if [ -f "$AGY_MEMORY_REPO/bootstrap.sh" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        run bash "$AGY_MEMORY_REPO/bootstrap.sh"
+        echo "  [DRY] Antigravity portable private defaults would be applied"
+      elif run bash "$AGY_MEMORY_REPO/bootstrap.sh"; then
+        echo "  -> Antigravity portable private defaults applied"
+      else
+        echo "  -> WARNING: Antigravity portable private defaults could not be applied"
+      fi
+    fi
     for f in GEMINI.local.md MEMORY.md; do
       if [ -f "$AGY_MEMORY_REPO/$f" ]; then
         link_file "$AGY_MEMORY_REPO/$f" "$AGY_CONFIG_DIR/$f"

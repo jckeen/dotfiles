@@ -52,9 +52,15 @@ assert 'command(git push --force)' in deny and 'command(git push -f)' in deny an
 assert 'read_file(~/.gemini/antigravity-cli/)' not in deny, 'agy keeps its own brain/ and scratch/ there'
 assert 'command(rm -rf /)' not in deny, 'a bare / or ~ prefix risks over-matching every absolute path'
 assert not any('gh auth' in r for r in allow), 'gh auth status --show-token prints the token; it must ask'
-for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)'):
-    assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} resolves into ~/dev/dotfiles/ and mounts ro in bwrap'
+for sym_rule in ('read_file(~/.bash_aliases)', 'read_file(~/.gitconfig)', 'read_file(~/dev/)'):
+    assert sym_rule not in allow and sym_rule in d['retired'], f'{sym_rule} overwrites ~/dev/ rw mount to ro in bwrap'
+read_targets = {r[len('read_file('):-1].rstrip('/') for r in allow if r.startswith('read_file(')}
+write_targets = {r[len('write_file('):-1].rstrip('/') for r in allow if r.startswith('write_file(')}
+assert not (read_targets & write_targets), f'read_file and write_file share path(s) {read_targets & write_targets}; bwrap mounts read_file after write_file, forcing ro'
 assert 'command(git -C)' in ask, 'git -C can wrap destructive subcommands like reset --hard; must ask'
+assert 'command(bunx)' not in ask and 'command(npx)' not in ask, 'bunx/npx in ask would shadow bunx tsc and prompt on test runners'
+assert 'command(bunx)' in d['unask'] and 'command(npx)' in d['unask']
+assert 'mcp(playwright/*)' in allow and 'mcp(github/*)' in allow
 PY
 then ok "baseline is valid, portable, and free of retired unsandboxed rules"
 else fail "baseline file failed validation"; fi
@@ -174,9 +180,9 @@ assert not any(r == 'read_file()' or r == 'write_file()' for r in deny)
 PY
 then ok "apply handles root home (/) without empty path rules"; else fail "root home expansion failed"; fi
 
-if python3 - <<'PY'
-import importlib.util
-spec = importlib.util.spec_from_file_location("agy_perm", "claude/scripts/agy-apply-permissions.py")
+if python3 - "$TOOL" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("agy_perm", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 assert mod.expand_rule("read_file(~root)", "/home/user") == "read_file(~root)"
@@ -321,6 +327,63 @@ else fail "apply failed to migrate unsandboxed(...) or preserve operator ask/den
 if python3 "$TOOL" check --settings "$S_UNSAND" --rules "$RULES" >/dev/null 2>&1; then
   ok "check passes after unsandboxed migration with operator ask restriction preserved"
 else fail "check still failing after unsandboxed migration"; fi
+
+# ── Private overlay (--overlay) & unask promotion ──────────────────────────
+OVERLAY="$ROOT/overlay.json"
+cat > "$OVERLAY" <<'EOF'
+{
+  "permissions": {
+    "allow": [
+      "command(git push)",
+      "command(git -C)",
+      "command(gh pr merge)",
+      "command(~/.claude/scripts/codex-review-gate.sh)"
+    ]
+  },
+  "unask": [
+    "command(git -C)",
+    "command(gh pr merge)"
+  ]
+}
+EOF
+S_OVERLAY="$ROOT/overlay-settings.json"
+printf '{"permissions":{"allow":[],"ask":["command(git -C)","command(gh pr merge)","command(bunx)","command(custom-ask)"],"deny":["command(sudo)"]}}\n' > "$S_OVERLAY"
+
+if out="$(python3 "$TOOL" check --settings "$S_OVERLAY" --rules "$RULES" --overlay "$OVERLAY" 2>&1)"; then
+  fail "check passed with unasked rules still in ask: $out"
+else
+  if grep -q 'unasked' <<< "$out"; then ok "check flags unasked rules still in ask when --overlay is active"
+  else fail "check failed without flagging unasked rules: $out"; fi
+fi
+
+out="$(python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$OVERLAY" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && python3 - "$S_OVERLAY" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+perms = d['permissions']
+assert 'command(git push)' in perms['allow']
+assert 'command(git -C)' in perms['allow']
+assert 'command(gh pr merge)' in perms['allow']
+assert f"command({os.environ['HOME']}/.claude/scripts/codex-review-gate.sh)" in perms['allow']
+assert 'command(git -C)' not in perms['ask']
+assert 'command(gh pr merge)' not in perms['ask']
+assert 'command(bunx)' not in perms['ask']
+assert 'command(custom-ask)' in perms['ask']
+PY
+then ok "apply with --overlay promotes unasked rules from ask to allow while keeping unrelated operator ask rules"
+else fail "apply with --overlay failed (rc=$rc): $out"; fi
+
+if python3 "$TOOL" check --settings "$S_OVERLAY" --rules "$RULES" --overlay "$OVERLAY" >/dev/null 2>&1; then
+  ok "check passes with --overlay after apply"
+else fail "check still failing with --overlay after apply"; fi
+
+BAD_OVERLAY="$ROOT/bad-overlay.json"
+printf '{"permissions":{"allow":["command(sudo)"]}}\n' > "$BAD_OVERLAY"
+if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$BAD_OVERLAY" >/dev/null 2>&1; then
+  fail "overlay was allowed to override a baseline deny rule"
+else
+  ok "overlay cannot allow or unask a baseline deny rule"
+fi
 
 echo ""
 echo "agy-permissions: $pass passed, $failed failed"

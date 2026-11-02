@@ -94,6 +94,27 @@ else
   fail "checker rejected a valid local MCP object"
 fi
 
+rm "$H/.gemini/config/GEMINI.md"
+cp "$R/antigravity/GEMINI.md" "$H/.gemini/config/GEMINI.md"
+if HOME="$H" "$R/check-antigravity.sh" --strict > "$OUT" 2>&1 \
+  && grep -q 'OK.*GEMINI.md matches' "$OUT"; then
+  ok "strict checker accepts a materialized regular-file GEMINI.md on the host"
+else
+  fail "strict checker rejected a materialized regular-file GEMINI.md on the host"
+fi
+
+printf 'drifted host content\n' > "$H/.gemini/config/GEMINI.md"
+if HOME="$H" "$R/check-antigravity.sh" --strict > "$OUT" 2>&1; then
+  fail "strict checker accepted drifted regular-file GEMINI.md on the host"
+elif HOME="$H" "$R/check-antigravity.sh" --heal --strict > "$OUT" 2>&1 \
+  && grep -q 'HEALED.*GEMINI.md' "$OUT" \
+  && cmp -s "$R/antigravity/GEMINI.md" "$H/.gemini/config/GEMINI.md"; then
+  ok "checker detects and heals drifted regular-file GEMINI.md on the host"
+else
+  fail "checker failed to heal drifted regular-file GEMINI.md on the host"
+fi
+ln -sf "$R/antigravity/GEMINI.md" "$H/.gemini/config/GEMINI.md"
+
 rm "$H/.gemini/config/hooks.json"
 if HOME="$H" "$R/check-antigravity.sh" --strict > "$OUT" 2>&1; then
   fail "strict checker accepted missing managed Antigravity config"
