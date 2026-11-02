@@ -60,8 +60,10 @@ assert not (read_targets & write_targets), f'read_file and write_file share path
 assert 'command(git -C)' in ask, 'git -C can wrap destructive subcommands like reset --hard; must ask'
 assert 'command(bunx)' not in ask and 'command(npx)' not in ask, 'bunx/npx in ask would shadow bunx tsc and prompt on test runners'
 assert 'command(bunx)' in d['unask'] and 'command(npx)' in d['unask']
-assert 'mcp(playwright/*)' in allow and 'mcp(github/get_pull_request)' in allow
+assert 'mcp(playwright/browser_snapshot)' in allow and 'mcp(github/get_pull_request)' in allow
+assert 'mcp(playwright/*)' not in allow and 'mcp(playwright/*)' in d['retired'], 'wildcard playwright MCP would allow browser_run_code_unsafe in the baseline'
 assert 'mcp(github/*)' not in allow and 'mcp(github/*)' in d['retired'], 'wildcard github MCP would allow push_files and merge_pull_request in the baseline'
+assert 'mcp(playwright/browser_run_code_unsafe)' in ask and 'mcp(playwright/browser_file_upload)' in ask
 assert 'mcp(github/push_files)' in ask and 'mcp(github/merge_pull_request)' in ask
 PY
 then ok "baseline is valid, portable, and free of retired unsandboxed rules"
@@ -401,6 +403,17 @@ if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$CO
   fail "overlay was allowed to re-grant a baseline retired rule"
 else
   ok "overlay cannot re-grant a baseline retired rule"
+fi
+
+RESTRICT_OVERLAY="$ROOT/restrict-overlay.json"
+printf '{"permissions":{"deny":["command(env)"]},"retired":["command(env)"]}\n' > "$RESTRICT_OVERLAY"
+S_RESTRICT="$ROOT/restrict-settings.json"
+if python3 "$TOOL" apply --settings "$S_RESTRICT" --rules "$RULES" --overlay "$RESTRICT_OVERLAY" >/dev/null 2>&1 \
+  && python3 "$TOOL" check --settings "$S_RESTRICT" --rules "$RULES" --overlay "$RESTRICT_OVERLAY" >/dev/null 2>&1 \
+  && python3 -c "import json,sys; d=json.load(open('$S_RESTRICT'))['permissions']; assert 'command(env)' in d['deny'] and 'command(env)' not in d['allow']"; then
+  ok "overlay can retire a baseline allow grant and place it into deny"
+else
+  fail "overlay retiring a baseline grant into deny failed apply or check"
 fi
 
 echo ""

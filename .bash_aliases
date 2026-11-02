@@ -978,6 +978,13 @@ _agy_has_mode_arg() {
   return 1
 }
 
+_agy_is_bool_literal() {
+  case "$1" in
+    true|false|TRUE|FALSE|True|False|1|0|t|f|T|F) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Launch Antigravity with the same project-selection and sync ergonomics as
 # cc/cx. `command` bypasses this function and resolves the installed agy binary.
 # Usage: agy                         — launch from the current project
@@ -1003,6 +1010,7 @@ agy() {
   for preflight_arg in "$@"; do
     [ "$preflight_arg" = "--" ] && break
     case "$preflight_arg" in
+      -c=false|-c=FALSE|-c=False|-c=0|-c=f|-c=F|-c="") ;;
       -c=*) _agent_force_resuming=1; break ;;
     esac
   done
@@ -1024,16 +1032,19 @@ agy() {
         break
         ;;
       -c|--continue|-continue)
-        if [ "$#" -ge 2 ] && [[ "$2" != -* ]]; then
+        if [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] && ! _agy_is_bool_literal "$2"; then
           normalized_args+=(--conversation "$2")
           shift 2
           continue
         fi
         ;;
       -c=*|--continue=*|-continue=*)
-        normalized_args+=("--conversation=${1#*=}")
-        shift
-        continue
+        local continue_val="${1#*=}"
+        if [ -n "$continue_val" ] && ! _agy_is_bool_literal "$continue_val"; then
+          normalized_args+=("--conversation=$continue_val")
+          shift
+          continue
+        fi
         ;;
     esac
     normalized_args+=("$1")

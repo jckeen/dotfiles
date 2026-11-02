@@ -115,32 +115,30 @@ def load_overlay(path):
 
 def merge_overlay(baseline, retired, unask, overlay_path):
     overlay, ov_retired, ov_unask = load_overlay(overlay_path)
-    deny_set = set(baseline["deny"]) | set(overlay["deny"])
-    denied_conflict = sorted(
-        (set(baseline[GRANT_BUCKET]) | set(overlay[GRANT_BUCKET]) | set(unask) | set(ov_unask))
-        & deny_set
-    )
-    if denied_conflict:
-        sys.exit(
-            f"error: {overlay_path}: cannot allow or unask denied rule(s): "
-            f"{', '.join(denied_conflict)}"
-        )
+    ov_retired_set = set(ov_retired)
+    baseline[GRANT_BUCKET] = [r for r in baseline[GRANT_BUCKET] if r not in ov_retired_set]
+    unask[:] = [r for r in unask if r not in ov_retired_set]
+    for r in ov_retired:
+        if r not in retired:
+            retired.append(r)
     ov_unask_set = set(ov_unask)
     baseline[ASK_BUCKET] = [r for r in baseline[ASK_BUCKET] if r not in ov_unask_set]
     for r in ov_unask:
         if r not in unask:
             unask.append(r)
-    ov_retired_set = set(ov_retired)
-    baseline[GRANT_BUCKET] = [r for r in baseline[GRANT_BUCKET] if r not in ov_retired_set]
-    for r in ov_retired:
-        if r not in retired:
-            retired.append(r)
     for bucket in BUCKETS:
         existing = set(baseline[bucket])
         for r in overlay[bucket]:
             if r not in existing:
                 baseline[bucket].append(r)
                 existing.add(r)
+    deny_set = set(baseline["deny"])
+    denied_conflict = sorted((set(baseline[GRANT_BUCKET]) | ov_unask_set) & deny_set)
+    if denied_conflict:
+        sys.exit(
+            f"error: {overlay_path}: cannot allow or unask denied rule(s): "
+            f"{', '.join(denied_conflict)}"
+        )
     both = sorted(set(retired) & set(baseline[GRANT_BUCKET]))
     if both:
         sys.exit(f"error: {overlay_path}: rule(s) both granted and retired: {', '.join(both)}")
