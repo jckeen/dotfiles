@@ -2259,13 +2259,8 @@ if service_selected antigravity; then
   prepare_directory "$HOME_DIR" "$AGY_CONFIG_DIR"
 
   if [ -f "$DOTFILES_DIR/antigravity/GEMINI.md" ]; then
-    if [ "$DRY_RUN" -eq 0 ] && [ ! -L "$AGY_CONFIG_DIR/GEMINI.md" ] && [ -f "$AGY_CONFIG_DIR/GEMINI.md" ]; then
-      cp -f "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
-      echo "  -> Antigravity global GEMINI.md synced"
-    else
-      link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
-      echo "  -> Antigravity global GEMINI.md linked"
-    fi
+    link_file "$DOTFILES_DIR/antigravity/GEMINI.md" "$AGY_CONFIG_DIR/GEMINI.md"
+    echo "  -> Antigravity global GEMINI.md linked"
   fi
 
   # Shared workflow skills: the agent-neutral set in agents/skills is the single

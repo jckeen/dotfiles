@@ -1048,18 +1048,6 @@ agy() {
     echo "⚠ Antigravity private defaults could not be applied — continuing with the existing local config." >&2
   fi
 
-  # Antigravity resolves symlinks in trustedCLIGatedPaths (~/.gemini/config/GEMINI.md)
-  # and adds their target to ProtectedReadOnlyPaths, which causes BuildSandboxMounts
-  # to strip writability from any ancestor workspace (~/dev or ~/dev/dotfiles).
-  # Materializing GEMINI.md as a regular file keeps the workspace writable in-sandbox.
-  local agy_gemini_src agy_gemini_dst
-  agy_gemini_src="$(_dev_dir)/dotfiles/antigravity/GEMINI.md"
-  agy_gemini_dst="$HOME/.gemini/config/GEMINI.md"
-  if [ -f "$agy_gemini_src" ] && [ -L "$agy_gemini_dst" ] \
-    && [ "$(readlink "$agy_gemini_dst")" = "$agy_gemini_src" ]; then
-    cp --remove-destination "$agy_gemini_src" "$agy_gemini_dst" 2>/dev/null || true
-  fi
-
   local -a mode_args=()
   if ! _agy_has_mode_arg "$@"; then
     mode_args=(--mode auto)

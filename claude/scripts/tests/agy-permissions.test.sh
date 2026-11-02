@@ -60,7 +60,9 @@ assert not (read_targets & write_targets), f'read_file and write_file share path
 assert 'command(git -C)' in ask, 'git -C can wrap destructive subcommands like reset --hard; must ask'
 assert 'command(bunx)' not in ask and 'command(npx)' not in ask, 'bunx/npx in ask would shadow bunx tsc and prompt on test runners'
 assert 'command(bunx)' in d['unask'] and 'command(npx)' in d['unask']
-assert 'mcp(playwright/*)' in allow and 'mcp(github/*)' in allow
+assert 'mcp(playwright/*)' in allow and 'mcp(github/get_pull_request)' in allow
+assert 'mcp(github/*)' not in allow and 'mcp(github/*)' in d['retired'], 'wildcard github MCP would allow push_files and merge_pull_request in the baseline'
+assert 'mcp(github/push_files)' in ask and 'mcp(github/merge_pull_request)' in ask
 PY
 then ok "baseline is valid, portable, and free of retired unsandboxed rules"
 else fail "baseline file failed validation"; fi
@@ -383,6 +385,22 @@ if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$BA
   fail "overlay was allowed to override a baseline deny rule"
 else
   ok "overlay cannot allow or unask a baseline deny rule"
+fi
+
+CONFLICT_ASK_OVERLAY="$ROOT/conflict-ask-overlay.json"
+printf '{"permissions":{"ask":["command(npx)"]}}\n' > "$CONFLICT_ASK_OVERLAY"
+if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$CONFLICT_ASK_OVERLAY" >/dev/null 2>&1; then
+  fail "overlay was allowed to re-ask a rule in baseline unask"
+else
+  ok "overlay cannot place a baseline unasked rule back into ask"
+fi
+
+CONFLICT_RETIRED_OVERLAY="$ROOT/conflict-retired-overlay.json"
+printf '{"permissions":{"allow":["read_file(~/dev/)"]}}\n' > "$CONFLICT_RETIRED_OVERLAY"
+if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$CONFLICT_RETIRED_OVERLAY" >/dev/null 2>&1; then
+  fail "overlay was allowed to re-grant a baseline retired rule"
+else
+  ok "overlay cannot re-grant a baseline retired rule"
 fi
 
 echo ""

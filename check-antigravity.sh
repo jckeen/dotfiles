@@ -90,22 +90,11 @@ else
   AGY_STATE_MASKED=0
   agy_sandbox_masked "$AGY_STATE" && AGY_STATE_MASKED=1
 
-  if [ ! -L "$AGY_DST/GEMINI.md" ] && [ -f "$AGY_DST/GEMINI.md" ]; then
+  if [ "$AGY_DST_MASKED" -eq 1 ] && [ ! -L "$AGY_DST/GEMINI.md" ] && [ -f "$AGY_DST/GEMINI.md" ]; then
     if cmp -s "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md"; then
-      if [ "$AGY_DST_MASKED" -eq 1 ]; then
-        echo "SANDBOX GEMINI.md matches antigravity/GEMINI.md (bind-mounted inside sandbox)"
-      else
-        echo "OK      GEMINI.md matches antigravity/GEMINI.md (materialized for sandbox writability)"
-      fi
-    elif [ "$AGY_DST_MASKED" -eq 0 ] && [ "$HEAL" -eq 1 ] \
-      && cp -f "$AGY_SRC/GEMINI.md" "$AGY_DST/GEMINI.md" 2>/dev/null; then
-      green "HEALED  GEMINI.md (synced from antigravity/GEMINI.md)"
-      HEALED=$((HEALED + 1))
-    elif [ "$AGY_DST_MASKED" -eq 1 ]; then
-      yellow "DRIFT   GEMINI.md inside sandbox differs from $AGY_SRC/GEMINI.md"
-      WARNINGS=$((WARNINGS + 1))
+      echo "SANDBOX GEMINI.md matches antigravity/GEMINI.md (bind-mounted inside sandbox)"
     else
-      yellow "DRIFT   GEMINI.md differs from $AGY_SRC/GEMINI.md (run check-antigravity.sh --heal or setup.sh)"
+      yellow "DRIFT   GEMINI.md inside sandbox differs from $AGY_SRC/GEMINI.md"
       WARNINGS=$((WARNINGS + 1))
     fi
   else

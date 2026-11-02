@@ -116,7 +116,10 @@ def load_overlay(path):
 def merge_overlay(baseline, retired, unask, overlay_path):
     overlay, ov_retired, ov_unask = load_overlay(overlay_path)
     deny_set = set(baseline["deny"]) | set(overlay["deny"])
-    denied_conflict = sorted((set(overlay[GRANT_BUCKET]) | set(ov_unask)) & deny_set)
+    denied_conflict = sorted(
+        (set(baseline[GRANT_BUCKET]) | set(overlay[GRANT_BUCKET]) | set(unask) | set(ov_unask))
+        & deny_set
+    )
     if denied_conflict:
         sys.exit(
             f"error: {overlay_path}: cannot allow or unask denied rule(s): "
@@ -138,6 +141,12 @@ def merge_overlay(baseline, retired, unask, overlay_path):
             if r not in existing:
                 baseline[bucket].append(r)
                 existing.add(r)
+    both = sorted(set(retired) & set(baseline[GRANT_BUCKET]))
+    if both:
+        sys.exit(f"error: {overlay_path}: rule(s) both granted and retired: {', '.join(both)}")
+    both_ask = sorted(set(unask) & set(baseline[ASK_BUCKET]))
+    if both_ask:
+        sys.exit(f"error: {overlay_path}: rule(s) both in ask and unask: {', '.join(both_ask)}")
 
 
 def write_atomic(path, data):
@@ -317,11 +326,7 @@ def main():
 
     # apply
     changed = (
-        n_missing > 0
-        or legacy_repaired
-        or bool(unsandboxed_live)
-        or n_retired > 0
-        or n_unasked > 0
+        n_missing > 0 or legacy_repaired or bool(unsandboxed_live) or n_retired > 0 or n_unasked > 0
     )
     if unsandboxed_live:
         print(f"migrated: converted/removed {len(unsandboxed_live)} legacy unsandboxed rule(s)")

@@ -177,7 +177,20 @@
       "command(agy mcp list)",
       "command(agy plugin list)",
       "mcp(playwright/*)",
-      "mcp(github/*)",
+      "mcp(github/get_file_contents)",
+      "mcp(github/get_issue)",
+      "mcp(github/get_pull_request)",
+      "mcp(github/get_pull_request_comments)",
+      "mcp(github/get_pull_request_files)",
+      "mcp(github/get_pull_request_reviews)",
+      "mcp(github/get_pull_request_status)",
+      "mcp(github/list_commits)",
+      "mcp(github/list_issues)",
+      "mcp(github/list_pull_requests)",
+      "mcp(github/search_code)",
+      "mcp(github/search_issues)",
+      "mcp(github/search_repositories)",
+      "mcp(github/search_users)",
       "read_url(https://antigravity.google/)",
       "read_url(https://github.com/)",
       "read_url(http://localhost)",
@@ -209,7 +222,12 @@
       "command(git clone)",
       "command(git -C)",
       "command(git -c)",
-      "command(gh auth)"
+      "command(gh auth)",
+      "mcp(github/push_files)",
+      "mcp(github/create_or_update_file)",
+      "mcp(github/merge_pull_request)",
+      "mcp(github/create_pull_request)",
+      "mcp(github/create_issue)"
     ],
     "deny": [
       "command(sudo)",
@@ -244,7 +262,8 @@
     "command(regex:^python3 +[A-Za-z0-9_./-]+\\.test\\.py$)",
     "read_file(~/.bash_aliases)",
     "read_file(~/.gitconfig)",
-    "read_file(~/dev/)"
+    "read_file(~/dev/)",
+    "mcp(github/*)"
   ],
   "unask": [
     "command(bunx)",
