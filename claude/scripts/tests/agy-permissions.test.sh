@@ -60,10 +60,13 @@ assert not (read_targets & write_targets), f'read_file and write_file share path
 assert 'command(git -C)' in ask, 'git -C can wrap destructive subcommands like reset --hard; must ask'
 assert 'command(bunx)' not in ask and 'command(npx)' not in ask, 'bunx/npx in ask would shadow bunx tsc and prompt on test runners'
 assert 'command(bunx)' in d['unask'] and 'command(npx)' in d['unask']
-assert 'mcp(playwright/browser_snapshot)' in allow and 'mcp(github/get_pull_request)' in allow
+assert 'mcp(playwright/browser_click)' in allow and 'mcp(github/get_pull_request)' in allow
 assert 'mcp(playwright/*)' not in allow and 'mcp(playwright/*)' in d['retired'], 'wildcard playwright MCP would allow browser_run_code_unsafe in the baseline'
 assert 'mcp(github/*)' not in allow and 'mcp(github/*)' in d['retired'], 'wildcard github MCP would allow push_files and merge_pull_request in the baseline'
 assert 'mcp(playwright/browser_run_code_unsafe)' in ask and 'mcp(playwright/browser_file_upload)' in ask and 'mcp(playwright/browser_drop)' in ask
+for fn_tool in ('browser_console_messages', 'browser_evaluate', 'browser_network_request', 'browser_network_requests', 'browser_snapshot', 'browser_take_screenshot'):
+    r = f'mcp(playwright/{fn_tool})'
+    assert r not in allow and r in ask and r in d['retired'], f'{r} accepts a filename parameter and must stay in ask'
 assert 'mcp(playwright/browser_drop)' not in allow and 'mcp(playwright/browser_drop)' in d['retired']
 assert 'mcp(github/push_files)' in ask and 'mcp(github/merge_pull_request)' in ask
 PY
