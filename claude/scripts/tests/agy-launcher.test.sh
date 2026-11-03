@@ -118,6 +118,17 @@ else
 fi
 
 : > "$CALLS"
+TEST_SHIFTED=0
+agy --print '-c=example' -i --mode >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--print -c=example -i --mode
+binary|--mode auto --print -c=example -i --mode"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy preserves option values during resume normalization and mode detection"
+else
+  fail "agy option-value calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
 mkdir -p "$TEST_DEV/agy-memory"
 cat > "$TEST_DEV/agy-memory/bootstrap.sh" <<'EOF'
 #!/usr/bin/env bash

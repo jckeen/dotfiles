@@ -967,12 +967,25 @@ cx() {
   codex --strict-config "${remote_args[@]}" "$@"
 }
 
+_agy_option_takes_value() {
+  case "$1" in
+    -i|--prompt-interactive|-prompt-interactive|-p|--print|-print|--prompt|-prompt|--add-dir|-add-dir|--agent|-agent|--conversation|-conversation|--effort|-effort|--input-format|-input-format|--json-schema|-json-schema|--log-file|-log-file|--mode|-mode|--model|-model|--output-format|-output-format|--print-timeout|-print-timeout|--project|-project|--settings|-settings)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 _agy_has_mode_arg() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --) return 1 ;;
       --mode|--mode=*|-mode|-mode=*) return 0 ;;
     esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      shift 2
+      continue
+    fi
     shift
   done
   return 1
@@ -983,6 +996,27 @@ _agy_is_bool_literal() {
     true|false|TRUE|FALSE|True|False|1|0|t|f|T|F) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+_agy_has_short_c_resume() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  if [ -n "${1:-}" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    shift
+  fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      -c=false|-c=FALSE|-c=False|-c=0|-c=f|-c=F|-c="") ;;
+      -c=*) return 0 ;;
+    esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      shift 2
+      continue
+    fi
+    shift
+  done
+  return 1
 }
 
 # Launch Antigravity with the same project-selection and sync ergonomics as
@@ -1006,14 +1040,8 @@ agy() {
       return
       ;;
   esac
-  local preflight_arg
-  for preflight_arg in "$@"; do
-    [ "$preflight_arg" = "--" ] && break
-    case "$preflight_arg" in
-      -c=false|-c=FALSE|-c=False|-c=0|-c=f|-c=F|-c="") ;;
-      -c=*) _agent_force_resuming=1; break ;;
-    esac
-  done
+  _agent_force_resuming=0
+  _agy_has_short_c_resume "$@" && _agent_force_resuming=1
   _agent_preflight "--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=" \
     "_check_antigravity_launch_health" "$@" || preflight_rc=$?
   if [ "$preflight_rc" -eq 2 ]; then agy "$@"; return $?; fi
@@ -1047,6 +1075,11 @@ agy() {
         fi
         ;;
     esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      normalized_args+=("$1" "$2")
+      shift 2
+      continue
+    fi
     normalized_args+=("$1")
     shift
   done
