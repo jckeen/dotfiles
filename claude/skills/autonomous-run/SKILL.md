@@ -33,8 +33,9 @@ unattended.
    keyword is ignored there.
 4. **Waiting on something external** (CI, review, deploy) — `/loop PROMPT`
    with no interval and a written stop condition; a fixed `/loop 5m` only for
-   a true cadence. A session loop dies with the session, and Esc does not stop
-   it: ask Claude to cancel it.
+   a true cadence. A session loop dies with the session. Esc stops a
+   self-paced loop while it waits; a fixed-interval loop only stops when you
+   ask Claude to cancel it.
 5. **"Keep going until CONDITION"** — `/goal CONDITION … or stop after N
    turns`, a prompt-based Stop hook judged by a small model. Deterministic
    criteria work best.
@@ -61,8 +62,7 @@ Climb only when the rung below keeps failing.
   disagreeing twice.
 - No mid-run scope growth. New findings become GitHub issues.
 - Keep task state in a file; a checklist survives compaction.
-- Cap spend at three to five times a normal run, then tighten (Martin & Avilla,
-  claude.dev 2026-10-08).
+- Size `--max-budget-usd` from a slice run before the full run.
 - Read sources from a bookmark, not a time window. Report a failed read as
   unreadable, never as a quiet day.
 

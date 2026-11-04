@@ -37,8 +37,8 @@ concurrent edits to shared files cause conflicts.
   spawn agents with `isolation: "worktree"` so they work on isolated copies. Each
   agent gets its own branch. Merge results after.
 - **Fork mode** — On by default since 2.1.302 (`CLAUDE_CODE_FORK_SUBAGENT=0`
-  turns it off): subagents run in the background and results arrive as
-  messages, so never plan on blocking for one. `subagent_type: "fork"`
+  turns it off): in interactive sessions Claude cannot wait on a subagent, so
+  plan for results to arrive as messages. `subagent_type: "fork"`
   inherits the whole conversation: use it for a side task needing full
   context, never for unbiased review, which needs a fresh one.
 - **Named teammates** — Agent teams cost several times the tokens of a
@@ -66,8 +66,8 @@ A subagent that names no model inherits the session's, and its price. Set
 - Agents that write code: `haiku` for a tightly scoped fix, `sonnet` for
   multi-file or repeatedly failing work. Orchestration, review and judgment
   calls stay on the session's model.
-- The Agent call takes `effort` (2.1.292); `CLAUDE_CODE_SUBAGENT_EFFORT` sets
-  the default. Honor the model the user names for the session; absent one,
+- The Agent call takes `effort` (2.1.292), overriding the agent definition's
+  `effort` field. Honor the model the user names for the session; absent one,
   the routing above applies.
 - Raise effort before changing model; use high effort for review, security,
   and edge-case work.
@@ -91,7 +91,7 @@ A subagent that names no model inherits the session's, and its price. Set
   itself in the session: it needs approval breaks, commits, and pushes.
 - **Waiting and loops** — `Monitor` for streams (logs, file changes);
   `run_in_background` Bash for one long command (default timeout 30 min, max
-  2 h). Never sleep-poll. `/loop PROMPT` with a written stop condition to
+  2 h), never a polling loop. `/loop PROMPT` with a written stop condition to
   watch something external until done (CI, review, deploy). `/goal CONDITION …
   or stop after N turns` for "keep going until" (a session-scoped Stop hook
   judged by a small model). A command Stop hook only for a mechanically
