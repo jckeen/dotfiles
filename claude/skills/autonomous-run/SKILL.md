@@ -33,7 +33,7 @@ unattended.
    keyword is ignored there.
 4. **Waiting on something external** (CI, review, deploy) — `/loop PROMPT`
    with no interval and a written stop condition; a fixed `/loop 5m` only for
-   a true cadence. A session loop dies with the session. Esc stops a
+   a true cadence. A fixed-interval loop survives `--resume` until it expires; a self-paced one does not. Esc stops a
    self-paced loop while it waits; a fixed-interval loop only stops when you
    ask Claude to cancel it.
 5. **"Keep going until CONDITION"** — `/goal CONDITION … or stop after N
