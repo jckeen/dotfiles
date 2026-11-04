@@ -339,6 +339,12 @@ if [ -x "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" ]; then
   "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" --quiet || true
 fi
 
+# Skill-ref drift: warn when an instruction surface tells the model to run a
+# skill that is missing or switched off in skillOverrides (unhedged).
+if [ -x "$DOTFILES_DIR/claude/scripts/check-skill-refs.sh" ]; then
+  "$DOTFILES_DIR/claude/scripts/check-skill-refs.sh" --quiet || true
+fi
+
 # Summary
 echo ""
 [ $HEALED -gt 0 ] && green "Self-healed $HEALED missing link(s)."

@@ -1,6 +1,8 @@
 ---
 name: orchestrate
-description: Full-lifecycle orchestration for comprehensive execution — selects relevant skills, delegates bounded work, then simplifies, completes documentation, verifies, reviews the final artifact, and delivers with a durable handoff. Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.
+description: Maximum-effort, full-lifecycle execution that plans, delegates bounded work, verifies independently, and closes the loop with docs, review and handoff. Use when the user says 'orchestrate', 'go all-in', 'max effort', 'throw everything at it', or wants a big task carried end to end with independent verification.
+argument-hint: >-
+  [time budget e.g. 10m] [task]
 ---
 
 # Orchestrate (Maximum-Effort Mode)
@@ -8,6 +10,8 @@ description: Full-lifecycle orchestration for comprehensive execution — select
 The user wants the task carried end to end with independent verification. Use
 the techniques below where they fit the task. Maximum effort means removing
 uncertainty, not multiplying ceremony: skip what the task does not need.
+
+Wrap-up checklist: see Close the Loop at the end; re-read it before declaring done.
 
 ## Plan First
 
@@ -32,22 +36,26 @@ concurrent edits to shared files cause conflicts.
 - **Worktree isolation** — For any task touching 2+ independent areas of code,
   spawn agents with `isolation: "worktree"` so they work on isolated copies. Each
   agent gets its own branch. Merge results after.
-- **Background agents** — Run research that doesn't block other work with
-  `run_in_background: true`, and keep working meanwhile.
+- **Fork mode** — On by default since 2.1.302 (`CLAUDE_CODE_FORK_SUBAGENT=0`
+  turns it off): subagents run in the background and results arrive as
+  messages, so never plan on blocking for one. `subagent_type: "fork"`
+  inherits the whole conversation: use it for a side task needing full
+  context, never for unbiased review, which needs a fresh one.
 - **Named teammates** — Agent teams cost several times the tokens of a
   single session, so prefer plain subagents unless workstreams must talk to each
   other. When they must, spawn named teammates (Agent `name:`) and coordinate
   with SendMessage; there is no TeamCreate step. Teams need
   `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set; without it, or without
   SendMessage, launch unnamed subagents in one parallel batch.
-- **Batch operations** — For similar changes across 3+ files (refactors, renames,
-  migrations), give one agent clear, repeatable instructions over the file list.
+- **Batch operations** — Under ~10 similar files, one agent with clear,
+  repeatable instructions over the list. Above that, one agent per item in a
+  workflow, so no single context declares done at item 35 of 50.
 - **Launch independent agents in one message** — staggered launches serialize
   work that could overlap.
-- **Named agents must report via SendMessage** — a named agent (`Agent` with
-  `name:`) ends with a bare idle notification; its final text does NOT reach
-  you. Instruct every named agent to `SendMessage(to: "main")` its completion
-  report as its last act, and expect to nudge idle agents that skipped it.
+- **Reports land in a file** — a teammate's idle notification carries its
+  final answer, but long reports are truncated in delivery. Have every agent
+  also write its full report to a scratchpad file and name the path; a closing
+  SendMessage is good practice, not the only channel.
 
 ## Model And Effort Routing
 
@@ -58,6 +66,9 @@ A subagent that names no model inherits the session's, and its price. Set
 - Agents that write code: `haiku` for a tightly scoped fix, `sonnet` for
   multi-file or repeatedly failing work. Orchestration, review and judgment
   calls stay on the session's model.
+- The Agent call takes `effort` (2.1.292); `CLAUDE_CODE_SUBAGENT_EFFORT` sets
+  the default. Honor the model the user names for the session; absent one,
+  the routing above applies.
 - Raise effort before changing model; use high effort for review, security,
   and edge-case work.
 - When the session runs above `opus`, escalate a subagent to the session's
@@ -71,10 +82,25 @@ A subagent that names no model inherits the session's, and its price. Set
 - **Multiple perspectives / competing hypotheses** — For design decisions, spin
   up differing viewpoints; for debugging, one agent per theory.
 - **Writer/reviewer split** — A separate fresh-context agent reviews the work.
-- **Workflows** — When a phase has a variable-size work list or needs
-  adversarial verification, and the user has opted into a workflow, run that
-  phase as one. Keep orchestration itself in the session: it needs approval
-  breaks, commits, and pushes that a workflow cannot do.
+- **Workflows** — For one step over many items (10+ files, every route, a
+  ticket backlog), adversarial verification, or run-until-dry discovery, use a
+  dynamic workflow: say "use a workflow", or `/effort ultracode` for the whole
+  session (the `ultracode` keyword is ignored in `-p` and scheduled prompts).
+  Prefer `pipeline()` over barrier `parallel()`. Run a slice first; workflows
+  cost meaningfully more tokens and take no mid-run input. Keep orchestration
+  itself in the session: it needs approval breaks, commits, and pushes.
+- **Waiting and loops** — `Monitor` for streams (logs, file changes);
+  `run_in_background` Bash for one long command (default timeout 30 min, max
+  2 h). Never sleep-poll. `/loop PROMPT` with a written stop condition to
+  watch something external until done (CI, review, deploy). `/goal CONDITION …
+  or stop after N turns` for "keep going until" (a session-scoped Stop hook
+  judged by a small model). A command Stop hook only for a mechanically
+  checkable gate, honoring `stop_hook_active` and the block cap
+  (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8). `/schedule` when it must run
+  without this machine.
+- **Caps before launch** — set hard caps (turns, time, items) before a loop or
+  workflow starts; hitting a cap is a report, not a retry. The decision layer
+  lives in the `autonomous-run` skill.
 - **/code-review** for correctness; **/security-review** for auth, RLS,
   payments, or data handling.
 
@@ -95,9 +121,13 @@ A subagent that names no model inherits the session's, and its price. Set
 - **Name the failure mode when delegating** — a subagent verifies what you name,
   so name the *specific destructive failure* to check (e.g. "run `--dry-run`
   against a throwaway HOME and diff the target"), not just "verify it works."
+- **Delegation template** — every delegated prompt carries Role; Goal (an
+  observable outcome); Scope (files it may touch, what not to change); Context
+  it must not rediscover; for verification, the Claim to disprove and exact
+  repro; Done-when (binary criteria); Report (where to write it, what evidence).
 - **TDD for bugs** — Reproduce with a failing test first, then fix.
-- **Context compaction** — At phase boundaries, self-summarize to prevent context
-  rot in long runs.
+- **Context compaction** — At phase boundaries, self-summarize to prevent
+  context rot in long runs.
 
 ## Close the Loop
 
