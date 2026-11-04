@@ -68,9 +68,9 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 2. Go back and forth until the plan is solid
 3. Switch to Normal Mode — Claude executes
 4. `/verify` — Confirm it actually works (run the tests, run the app, observe behavior). This is the **#1 quality multiplier** — a real feedback loop is worth 2–3× the result.
-5. `/simplify` — Remove unnecessary complexity
+5. **Simplify** — `/simplify` where enabled, else ask for a simplify pass
 6. `/review` — Check quality and security
-7. `/changelog` — Log what happened
+7. **Changelog** — the branch's `changelog.d/` fragment where the repo keeps one, else `/changelog` where enabled
 8. `/handoff` — If ending the session
 
 > **Changelog in this repo:** a PR adds its entry as one fragment under
@@ -109,6 +109,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/claude-server` | Spawn worktree + remote |
 | `/decompose` | Break a complex task into subtasks |
 | `/orchestrate` | Full-lifecycle max-effort mode — roll-call skills, fan out parallel agents, close the loop |
+| `/autonomous-run` | Unattended or looping work: pick the primitive, write the stop condition and cap, define the report |
 | `/branch-hygiene` | Audit and clean up stale git branches |
 | `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
 | `/review-gates` | Multi-agent review-gate mechanics: lane selection, handoff payload, verdict persistence |
@@ -263,16 +264,42 @@ Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts
 | `review-and-push.sh` | Morning review of overnight changes | `review-and-push.sh ~/dev/atlas --auto-push` |
 
 All scripts use safety tiers from `common.sh` — each gets the minimum permissions needed.
+Known gaps in `overnight.sh` (phase mixing, exit 0 on failure) are tracked in #740.
 
 **Also in `claude/scripts/`:** `sync-plugins.sh` — idempotently installs any plugins listed in `claude/plugins.txt` that are missing locally (skipping a deselected agent service's plugins) and uninstalls any named by a `# removed: <id>` line. Each `[per-project]` plugin it installs is then disabled at user scope (`claude plugin disable --scope user`, #720), since install enables it globally; `setup.sh` does the same. Auto-run by `cc` on every fresh launch (pre-exec, so installs apply to the session being started); a fast path exits silently when there's no drift. Also runnable manually, or follow the warning from `PluginDriftCheck.hook.ts` at session start. The manifest lives in the dotfiles repo and is the cross-machine source of truth.
 
 ---
 
-## Stop Hooks (Auto-QA Pattern)
+## Loops & Unattended Runs
 
-Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run checks after each Claude response. If checks fail, errors feed back to Claude automatically.
+Run `/autonomous-run` to decide which primitive fits; this is the cheat sheet.
 
-**Template** — adapt the commands per project:
+**Answer five questions before launch** — what done looks like, how it checks
+its own work, what it may touch, what stops it (`--max-turns`,
+`--max-budget-usd`, a round cap, K empty rounds), and who signs off. An
+unanswered one means do not run it unattended.
+
+| Primitive | Use it for |
+|-----------|-----------|
+| `/loop 5m PROMPT` | A true fixed cadence |
+| `/loop PROMPT` (no interval) | Watching something external (CI, review, deploy); write the stop condition into the prompt |
+| `/goal CONDITION … or stop after N turns` | "Keep going until" — a session-scoped Stop hook judged by a small model |
+| Command Stop hook (below) | "Keep going until this command passes" |
+| `/schedule` | Must run without this machine, or nightly (cloud, 1-hour minimum interval) |
+
+**Strictness ladder for checks:** ask in the prompt → `/goal` → Stop hook →
+`/code-review` by a fresh reviewer. Climb only when the rung below keeps
+failing.
+
+**Headless shape:** `claude --bare -p "…" --allowedTools … --permission-mode dontAsk --max-turns N`.
+
+### Stop hook template
+
+Add a `Stop` hook to a project's `.claude/settings.local.json` to run checks
+after each Claude response. Exit code 2 blocks the stop and feeds stderr back
+to Claude. When the hook input has `stop_hook_active` true, Claude is already
+continuing because of a Stop hook — exit 0 then if a retry cannot help.
+Consecutive blocks are capped by `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default 8).
 
 ```json
 {
@@ -283,7 +310,7 @@ Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run check
         "hooks": [
           {
             "type": "command",
-            "command": "cd $CLAUDE_PROJECT_DIR && npm run typecheck 2>&1 | tail -20; npm run lint 2>&1 | tail -20"
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && { npm run typecheck && npm run lint; } 1>&2 || exit 2"
           }
         ]
       }
@@ -294,8 +321,8 @@ Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run check
 
 **Tips:**
 - Put this in `.claude/settings.local.json` (project-level, gitignored), not global settings
-- Pipe through `tail` to keep output concise — Claude sees the full hook output
-- Chain multiple checks with `&&` or `;` depending on whether you want fail-fast
+- Only stderr reaches Claude on exit 2, hence `1>&2`
+- Don't pipe a check through `tail` here: a pipe's status is `tail`'s, so a failing check would pass
 - Common combos: `tsc --noEmit`, `eslint .`, `pytest`, `cargo check`, `go vet ./...`
 
 ---
@@ -317,6 +344,7 @@ Useful for: personal workflow preferences, local paths, machine-specific context
 5. **Be specific** — vague prompts waste tokens on wrong approaches
 6. **Parallelize** — run multiple sessions with git worktrees
 7. **CLAUDE.md compounds** — keep it pruned and accurate
+8. **Loops need a finish line** — write the stop condition and cap before launch; a hit cap is a report, not a retry.
 
 ---
 
