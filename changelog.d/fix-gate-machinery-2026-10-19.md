@@ -20,11 +20,13 @@
   `gate_extract_diff` ran, its plain cleanup handler replaced the gate's own
   with the cancel trap still armed, and a signal there exited 2. The gate
   names its handler in `GATE_EXIT_HANDLER` and the capture keeps it.
-- **An ignored `__pycache__` beside a skill or agent script no longer blocks a
-  committed review (#581).** `review-receipt.py` leaves out a regular `*.pyc`
-  directly inside an ignored `__pycache__` directory when the `.py` it was
-  compiled from sits beside that directory; anything else there still counts as
-  a dirty instruction surface.
+- **An ignored `__pycache__` beside a skill or agent script still blocks a
+  committed review (#581, declined).** An exemption for a `*.pyc` beside its
+  `.py` was built and withdrawn after the Codex gate showed the cache can carry
+  code the source does not: Python imports a timestamp-valid cache without
+  reading the source, and recompiling does not reproduce the bytes to compare.
+  The remedy is upstream: `run-tests.sh` writes no bytecode (#633) and gate
+  runs set `PYTHONDONTWRITEBYTECODE=1`.
 
 ## 2026-10-19 — fix(gates): a repo-root node_modules no longer blocks every gate in a bun/npm project (#651)
 
@@ -107,6 +109,11 @@
   `workflow-shipping.test.py` asserts that rule for the pre-push hook: a
   sibling ref with the same merge base is accepted, a base that already
   contains HEAD is refused unless `REVIEW_RECEIPT_BASE` names it.
+- **Blocking markers key on the merge base too.** `artifact_identity` keyed
+  a #573 marker by the base tip, so once a sibling moved the tip a later
+  blocking verdict wrote a different key from the approval it should retire,
+  and `check` accepted the approval. The marker now carries `merge_base`;
+  markers written before this change no longer match and refuse.
 
 ## 2026-10-19 — test(gates): the multipart request-changed case no longer collides with concurrent runs (#680)
 

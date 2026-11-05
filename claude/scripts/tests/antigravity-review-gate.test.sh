@@ -506,6 +506,7 @@ check "DB spot-check still flags a record naming another model" 0 "none of the n
 # The derived slug must never widen the match: a label with no letters or
 # digits derives an empty or lone-dash slug (grep -F "" matches every line),
 # and a shorter label's slug is a prefix of a longer model's slug.
+# shellcheck disable=SC2034  # VAM is expanded only inside the eval strings below
 VAM="source '$SCRIPT_DIR/../gate-lib.sh'; AGY_CONVERSATIONS_DIR='$AGY_DB_DIR'; gate_verify_agy_model"
 printf 'model_enum gemini-3.8-flash-high\n' > "$AGY_DB_DIR/conv.db"
 assert "DB spot-check: an all-punctuation label does not match every record" "! (eval \"\$VAM '()'\") >/dev/null 2>&1"

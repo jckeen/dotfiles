@@ -174,9 +174,10 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
-Python bytecode is not one (#581): a regular `*.pyc` directly inside an ignored
-`__pycache__` directory, beside the `.py` module it was compiled from, is left
-out of both. Anything else in that directory still counts.
+An ignored `__pycache__` beside a skill or agent script counts too (#581): a
+`.pyc` can carry code its `.py` does not, and nothing short of recompiling
+proves they match. `run-tests.sh` writes no bytecode (#633); set
+`PYTHONDONTWRITEBYTECODE=1` when running such scripts by hand.
 It covers both staged changes and later workspace edits.
 Text diffs preserve physical lines, including embedded control characters,
 and quote filenames in their headers.
