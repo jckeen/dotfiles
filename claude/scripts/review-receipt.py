@@ -160,17 +160,34 @@ def worktree_gitdir(directory):
     stops at that directory all the same — so the caller checks the target against
     this repository's worktree store. None when the pointer is absent, unreadable
     or malformed, which the caller treats as a foreign boundary (#474).
+
+    Parsed as Git's read_gitfile does: the whole file must start with exactly
+    `gitdir: `, and only trailing CR/LF bytes are removed. Any other byte belongs
+    to the path, so stripping whitespace named a different gitdir (#641, the
+    class #541 fixed).
     """
     try:
         pointer = (directory / ".git").read_bytes()
     except OSError:
         return None
-    for line in pointer.splitlines():
-        if line.startswith(b"gitdir:"):
-            return os.path.realpath(
-                os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
-            )
-    return None
+    if not pointer.startswith(b"gitdir: "):
+        return None
+    target = pointer[len(b"gitdir: ") :].rstrip(b"\r\n")
+    if not target:
+        return None
+    return os.path.realpath(os.path.join(directory, os.fsdecode(target)))
+
+
+def registered_worktree(gitdir):
+    """The `.git` path a worktree store entry registers, or None if unreadable.
+
+    Git writes `<path>/.git` plus a newline; only trailing CR/LF bytes are its
+    delimiters, as in its own prune check (#641).
+    """
+    try:
+        return os.fsdecode((Path(gitdir) / "gitdir").read_bytes().rstrip(b"\r\n"))
+    except OSError:
+        return None
 
 
 def boundary_listing(directory):
@@ -196,11 +213,19 @@ def boundary_listing(directory):
     and with no exclude option git applies no patterns at all, so every untracked
     file is listed. Returns None when the directory is not a usable repository,
     which the caller treats as a refusal rather than as an empty listing.
+
+    For the same reason the boundary's own config must not decide WHERE or HOW
+    git looks (#641). `--work-tree` pins the listing to this directory: a
+    `core.worktree` in the boundary's config otherwise lists another directory,
+    and `-c core.worktree=` does not override it (checked on git 2.43).
+    `core.ignoreCase` is forced off so a tracked `claude.md` cannot mask an
+    untracked `CLAUDE.md` on a case-sensitive filesystem.
     """
     entries = []
+    pinned = ("--work-tree", str(directory), "-c", "core.ignoreCase=false")
     try:
-        staged = git(directory, "ls-files", "-z", "--cached", "--stage")
-        others = git(directory, "ls-files", "-z", "--others")
+        staged = git(directory, *pinned, "ls-files", "-z", "--cached", "--stage")
+        others = git(directory, *pinned, "ls-files", "-z", "--others")
     except (subprocess.SubprocessError, OSError):
         return None
     for record in staged.split(b"\0"):
@@ -314,19 +339,21 @@ def instruction(path):
 
 
 def vendored_dependency(repo, path, trees=None):
-    """An ignored path inside an installed dependency tree of a skill or scripts dir.
+    """An ignored path inside an installed dependency tree of a skill, scripts dir or root.
 
     The #439 hook-tree exemption, extended to `claude/skills/<name>/node_modules`
-    and `claude/scripts/node_modules` (#514), and deliberately narrower: a
-    dependency tree is exactly where a planted instruction file would hide, so
-    the exemption holds only where installation is the evident explanation. The
-    caller passes only entries `ls-files --ignored` reported, but that proves only
-    the ENTRY is ignored: excluding one planted `AGENTS.md` by name would pass as
-    a vendored tree. So the `node_modules` directory itself — a real directory,
-    never a symlink — must be ignored too, and the directory that owns it must
-    hold a lockfile, checked on disk as a regular file (never a symlink). Everything else — another
-    layout, no lockfile, a tree that is not ignored — stays an instruction
-    surface and fails closed.
+    and `claude/scripts/node_modules` (#514) and to the repository root's own
+    `node_modules`, which every installed bun/npm project has (#651). It is
+    deliberately narrower: a dependency tree is exactly where a planted
+    instruction file would hide, so the exemption holds only where installation
+    is the evident explanation. The caller passes only entries `ls-files
+    --ignored` reported, but that proves only the ENTRY is ignored: excluding one
+    planted `AGENTS.md` by name would pass as a vendored tree. So the
+    `node_modules` directory itself — a real directory, never a symlink — must be
+    ignored too, and the directory that owns it must hold a lockfile, checked on
+    disk as a regular file (never a symlink). Everything else — another layout
+    (a nested package's `node_modules` included), no lockfile, a tree that is not
+    ignored — stays an instruction surface and fails closed.
 
     `trees` memoizes the per-tree verdict for one capture: every file under a
     qualifying tree would otherwise repeat the same lstat and `check-ignore`
@@ -339,6 +366,9 @@ def vendored_dependency(repo, path, trees=None):
         owner = parts[:3]
     elif parts[:2] == ("claude", "scripts") and len(parts) > 3 and parts[2] == "node_modules":
         owner = parts[:2]
+    elif len(parts) > 1 and parts[0] == "node_modules":
+        # The root itself owns the tree: its lockfile sits beside `node_modules`.
+        owner = ()
     else:
         return False
     if trees is None:
@@ -350,14 +380,18 @@ def vendored_dependency(repo, path, trees=None):
 
 def vendored_tree(repo, owner):
     locked = False
-    for lockfile in ("bun.lock", "package-lock.json"):
+    for lockfile in ("bun.lock", "bun.lockb", "package-lock.json"):
         try:
             locked = locked or stat.S_ISREG((repo / Path(*owner) / lockfile).lstat().st_mode)
         except OSError:
             continue
     if not locked:
         return False
-    tree = Path(*owner, "node_modules")
+    return ignored_directory(repo, Path(*owner, "node_modules"))
+
+
+def ignored_directory(repo, tree):
+    """Whether `tree` is a real directory (not a symlink) that git itself ignores."""
     try:
         if not stat.S_ISDIR((repo / tree).lstat().st_mode):
             return False
@@ -673,9 +707,10 @@ def instruction_links(
     return bindings
 
 
-def capture(repo, base, scope):
+def capture(repo, base, scope, base_commit=None):
     head = oid(repo, "HEAD")
-    base_commit = oid(repo, base) if base else None
+    if base_commit is None and base:
+        base_commit = oid(repo, base)
     if scope == "committed" and base_commit is None:
         raise ValueError("base could not be resolved")
     merge = (
@@ -753,13 +788,10 @@ def capture(repo, base, scope):
         gitdir = worktree_gitdir(directory)
         if gitdir is None or os.path.dirname(gitdir) != store:
             return False
-        try:
-            registered = (Path(gitdir) / "gitdir").read_bytes()
-        except OSError:
+        registered = registered_worktree(gitdir)
+        if registered is None:
             return False
-        return os.path.realpath(os.fsdecode(registered.strip())) == os.path.realpath(
-            directory / ".git"
-        )
+        return os.path.realpath(registered) == os.path.realpath(directory / ".git")
 
     untracked = {
         os.fsdecode(p)
@@ -993,9 +1025,19 @@ def capture(repo, base, scope):
     return artifact, patch
 
 
-def stable_capture(repo, base, scope):
-    first, patch = capture(repo, base, scope)
-    second, patch2 = capture(repo, base, scope)
+def stable_capture(repo, base, scope, base_commit=None):
+    """Two identical captures of the artifact against ONE resolved base commit.
+
+    The base ref is resolved once, here, or taken pinned from the snapshot being
+    verified. `origin/main` is shared by every worktree, so a sibling's fetch
+    moving it mid-run used to look like this branch changing and voided a whole
+    review (#680). The branch's own HEAD, tree, index and files still have to
+    match exactly; only the base tip is no longer re-read.
+    """
+    if base_commit is None and base:
+        base_commit = oid(repo, base)
+    first, patch = capture(repo, base, scope, base_commit)
+    second, patch2 = capture(repo, base, scope, base_commit)
     if first != second or patch != patch2:
         raise ValueError("repository changed during review snapshot")
     return first, patch
@@ -1181,7 +1223,29 @@ def sequence_floor(receipts):
 
 
 def artifact_identity(artifact):
-    """The artifact a blocking verdict binds to: base, head, scope, patch (#573)."""
+    """The artifact a blocking verdict binds to: merge base, head, scope, patch (#573).
+
+    Keyed by the merge base, not the base tip, for the same reason `check`
+    compares merge bases (#680): a sibling advancing the tip must not give a
+    later blocking verdict a different key from the approval it retires.
+    """
+    identity = {
+        "merge_base": artifact["base"]["merge_base"],
+        "head": artifact["head"],
+        "scope": artifact["scope"],
+        "patch_sha256": artifact["review_diff_sha256"],
+    }
+    return identity, digest(encoded(identity))
+
+
+def legacy_artifact_identity(artifact):
+    """The pre-merge-base marker identity, keyed by the base tip.
+
+    Markers written before `artifact_identity` moved to the merge base live
+    under this key. A lookup that computed only the new key would never see
+    them, and a blocker recorded before the upgrade would stop retiring the
+    approvals captured before it. `assert_not_blocked` checks both.
+    """
     identity = {
         "base": artifact["base"]["commit"],
         "head": artifact["head"],
@@ -1209,15 +1273,56 @@ def assert_not_blocked(receipts, record):
     hold `attempt_lock`, so a marker written concurrently is either seen here
     or written after the decision. A receipt without a capture sequence
     predates #573 and is refused whenever a marker exists.
+
+    Markers written before the merge-base key (`legacy_artifact_identity`)
+    are keyed by whatever base TIP that gate saw, which may differ from this
+    record's while naming the same merge base. They cannot be looked up by
+    key, so every legacy marker in the store is read and applies when its
+    head, scope and patch match and its base tip shares this record's merge
+    base, or cannot be resolved at all (fail closed).
     """
-    identity, key = artifact_identity(record["artifact"])
-    path = blocks_dir(receipts) / (key + ".json")
+    artifact = record["artifact"]
+    identity, key = artifact_identity(artifact)
+    directory = blocks_dir(receipts)
+    path = directory / (key + ".json")
     # Only a genuine ENOENT is "no marker": os.path.lexists also answers False
     # when the lookup itself fails (an unsearchable store), which must refuse.
     try:
         os.lstat(path)
     except FileNotFoundError:
+        pass
+    else:
+        refuse_if_blocked_before(path, identity, record)
+    try:
+        entries = sorted(directory.iterdir())
+    except FileNotFoundError:
         return
+    repo = Path(record["repository"])
+    for entry in entries:
+        if entry.suffix != ".json" or entry.is_symlink():
+            continue
+        marker = read_json(entry)
+        legacy = marker.get("artifact") if type(marker) is dict else None
+        if type(legacy) is not dict or "base" not in legacy or "merge_base" in legacy:
+            continue
+        if (
+            legacy.get("head") != artifact["head"]
+            or legacy.get("scope") != artifact["scope"]
+            or legacy.get("patch_sha256") != artifact["review_diff_sha256"]
+        ):
+            continue
+        base = legacy.get("base")
+        if base != artifact["base"]["commit"]:
+            try:
+                shared = git(repo, "merge-base", str(base), artifact["head"]).decode().strip()
+            except (subprocess.SubprocessError, OSError, ValueError, TypeError):
+                shared = None
+            if shared is not None and shared != artifact["base"]["merge_base"]:
+                continue
+        refuse_if_blocked_before(entry, legacy, record)
+
+
+def refuse_if_blocked_before(path, identity, record):
     marker = read_json(path)
     if (
         type(marker) is not dict
@@ -1273,7 +1378,10 @@ def validate_artifact(record):
     assert_attempt(record)
     artifact = record["artifact"]
     current, patch = stable_capture(
-        Path(record["repository"]), artifact["base"]["ref"], artifact["scope"]
+        Path(record["repository"]),
+        artifact["base"]["ref"],
+        artifact["scope"],
+        artifact["base"]["commit"],
     )
     if artifact != current:
         raise ValueError("repository changed during review or after approval; rerun the gate")
@@ -1613,6 +1721,7 @@ def check(args):
     if head != oid(repo, "HEAD") or args.head != head:
         raise ValueError("outgoing commit is not the reviewed worktree HEAD")
     expected_base = oid(repo, resolve_base(repo, args.base))
+    expected_merge = git(repo, "merge-base", expected_base, head).decode().strip()
     errors = []
     for lane_name in (args.reviewer,) if args.reviewer else LANES:
         try:
@@ -1633,7 +1742,11 @@ def check(args):
             for field in ("requested_model", "observed_model", "model_evidence", "executable"):
                 if reviewer[field] is not None and not isinstance(reviewer[field], str):
                     raise ValueError("malformed reviewer identity")
-            if expected_base != record["artifact"]["base"]["commit"]:
+            # The reviewed diff is merge_base..HEAD, so that is what must still
+            # match. The base TIP may have moved on (a sibling merged, #680);
+            # a receipt for another merge base — a narrower --base, or a branch
+            # the base has since absorbed — still refuses.
+            if expected_merge != record["artifact"]["base"]["merge_base"]:
                 raise ValueError("receipt does not cover the expected base")
             completion = record["completion"]
             started = datetime.fromisoformat(record["started_at"])

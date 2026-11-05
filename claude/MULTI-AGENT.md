@@ -11,8 +11,9 @@ byte-currency in CI.
 
 The team coordinates through **artifacts in the repo, not a shared chat**: the
 instruction layer + skills (loaded identically via the pack), GitHub issues (the
-only open-work tracker), `handoff` notes + `CHANGELOG.md`, and git itself. Keep
-those honest and the team works even though the agents never talk to each other.
+only open-work tracker), `handoff` notes + `CHANGELOG.md` and unassembled
+`changelog.d/` fragments, and git itself. Keep those honest and the team works
+even though the agents never talk to each other.
 
 ## Roles
 
@@ -72,8 +73,9 @@ Not every diff earns the full adversarial tax. Both review gates
 changed-path match against risk surfaces — before dispatching any reviewer:
 
 - **Tier 1 (reduced):** docs-only diffs at or under BOTH captured ceilings — 200
-  lines (`GATE_TIER1_MAX_LINES`) and 65536 bytes, because one 200,000-byte line
-  is a 1-line diff. The byte ceiling has no environment knob on purpose: every
+  lines (`GATE_TIER1_MAX_LINES`) and the byte ceiling `TIER1_MAX_BYTES` in
+  `claude/scripts/review-receipt.py`, because one 200,000-byte line is a
+  1-line diff. The byte ceiling has no environment knob on purpose: every
   caller inherits `review-receipt.py`'s default, so the gates and the shipping
   wrapper cannot disagree about it. The gate may skip, logging a `tier-1 skip`
   line. Force the full pass anyway with `GATE_FORCE_FULL=1`.
@@ -221,7 +223,8 @@ and sandbox settings. Consult `claude/scripts/antigravity-review-gate.sh` and
 `claude/scripts/gate-lib.sh` for the executable invocation and validation rules.
 A matching dispatch label does not establish actual per-run model identity.
 
-Shipping uses the applicable `commit-push-pr` skill. Ask which lane the diff
+Shipping uses the applicable `commit-push-pr` skill if available; otherwise
+the steps below. Ask which lane the diff
 requires, then run **that** gate with `--require` after the last commit;
 degraded or failed execution supplies no approval:
 

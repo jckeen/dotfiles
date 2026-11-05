@@ -1382,6 +1382,12 @@ class ReceiptTests(unittest.TestCase):
                     (self.repo / "code.txt").write_text("unstaged\n")
                 else:
                     (self.repo / "new.txt").write_text("untracked\n")
+                if change == "base":
+                    # The base is pinned at capture (#680): completing still
+                    # works, and the push check refuses the absorbed branch.
+                    self.complete(snapshot)
+                    self.check(False)
+                    continue
                 self.complete(snapshot, ok=False)
 
     def test_change_after_completion_blocks(self):
@@ -3050,7 +3056,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.assertEqual(
             record["artifact"],
             {
-                "base": artifact["base"]["commit"],
+                "merge_base": artifact["base"]["merge_base"],
                 "head": artifact["head"],
                 "scope": "committed",
                 "patch_sha256": artifact["review_diff_sha256"],
@@ -3273,6 +3279,211 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             ok=False,
         )
 
+    # ─── #680: the review base is pinned once; a sibling moving it is not a change ───
+
+    def advance_main(self):
+        """A sibling merges to the base: main gains a commit the branch lacks."""
+        self.git("checkout", "-q", "main")
+        (self.repo / "sibling.txt").write_text("merged elsewhere\n")
+        self.git("add", "sibling.txt")
+        self.git("commit", "-qm", "sibling merge")
+        self.git("checkout", "-q", "feature")
+
+    def test_base_moving_mid_review_does_not_void_the_run(self):
+        snapshot = self.begin()
+        self.advance_main()
+        self.run_helper("verify", "--snapshot", str(snapshot))
+        self.complete(snapshot)
+        self.check()
+
+    def test_base_moving_after_approval_keeps_the_receipt(self):
+        self.complete(self.begin())
+        self.advance_main()
+        self.check()
+
+    def test_branch_changes_still_void_a_pinned_base_run(self):
+        snapshot = self.begin()
+        self.advance_main()
+        (self.repo / "code.txt").write_text("changed again\n")
+        self.git("commit", "-qam", "more work")
+        self.run_helper("verify", "--snapshot", str(snapshot), ok=False)
+        self.complete(snapshot, ok=False)
+
+    def test_a_receipt_whose_merge_base_no_longer_matches_is_refused(self):
+        """Pinning the base is not ignoring it: a rebased-past merge base refuses."""
+        self.complete(self.begin())
+        head = self.git("rev-parse", "HEAD")
+        # main absorbs the branch (fast-forward), so the reviewed diff
+        # merge_base..HEAD is no longer what pushing HEAD to main would add.
+        self.git("update-ref", "refs/heads/main", head)
+        self.check(False)
+
+    def test_a_block_after_the_base_tip_moved_still_retires_the_approval(self):
+        """Markers key on the merge base, as `check` does; a moved tip cannot split them."""
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        self.advance_main()
+        self.block(self.capture(reviewer="antigravity"))
+        self.check(False)
+        self.check(False, "--reviewer", "codex")
+
+    def test_a_marker_written_under_the_base_tip_key_still_retires_the_approval(self):
+        """Markers from before the merge-base key are looked up too, not skipped."""
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        snapshot = self.capture(reviewer="antigravity")
+        self.block(snapshot)
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        spec = importlib.util.spec_from_file_location("receipt_identity", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        artifact = json.loads(snapshot.read_text())["artifact"]
+        legacy, key = module.legacy_artifact_identity(artifact)
+        self.assertNotEqual(key, marker.stem)
+        record["artifact"] = legacy
+        (marker.parent / (key + ".json")).write_text(json.dumps(record))
+        marker.unlink()
+        self.check(False)
+        self.check(False, "--reviewer", "codex")
+
+    def test_a_legacy_marker_at_another_base_tip_still_retires_the_approval(self):
+        """An older gate blocked after a sibling moved the tip; its key names that tip."""
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        self.advance_main()
+        snapshot = self.capture(reviewer="antigravity")
+        self.block(snapshot)
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        spec = importlib.util.spec_from_file_location("receipt_identity_tip", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        artifact = json.loads(snapshot.read_text())["artifact"]
+        legacy, key = module.legacy_artifact_identity(artifact)
+        self.assertNotEqual(legacy["base"], self.git("rev-parse", "main^"))
+        record["artifact"] = legacy
+        (marker.parent / (key + ".json")).write_text(json.dumps(record))
+        marker.unlink()
+        self.check(False)
+        self.check(False, "--reviewer", "codex")
+
+    def test_snapshot_capture_resolves_the_base_once(self):
+        """Both stable_capture passes use one resolved base commit."""
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real = module.oid
+        calls = []
+
+        def moving_oid(repo, ref):
+            calls.append(ref)
+            if ref == "main" and len([c for c in calls if c == "main"]) == 2:
+                self.advance_main()
+            return real(repo, ref)
+
+        module.oid = moving_oid
+        artifact, _ = module.stable_capture(self.repo, "main", "committed")
+        self.assertEqual(artifact["base"]["ref"], "main")
+        self.assertEqual(calls.count("main"), 1, calls)
+
+    # ─── #641: a foreign boundary's own config must not steer its listing ───
+
+    def foreign_boundary(self):
+        (self.repo / ".git/info/exclude").write_text("vendor/\n")
+        boundary = self.repo / "vendor/nested"
+        boundary.mkdir(parents=True)
+        subprocess.check_output(["git", "init", "-q", str(boundary)], stderr=subprocess.PIPE)
+        (boundary / "index.js").write_text("library code\n")
+        return boundary
+
+    def test_boundary_core_worktree_cannot_list_another_directory(self):
+        """`core.worktree` in the boundary's config pointed `ls-files` at a decoy."""
+        boundary = self.foreign_boundary()
+        decoy = Path(self.tmp.name) / "decoy"
+        decoy.mkdir()
+        (decoy / "index.js").write_text("innocent\n")
+        subprocess.check_call(["git", "-C", str(boundary), "config", "core.worktree", str(decoy)])
+        # The redirect alone is benign: the boundary is still inspected and allowed.
+        self.run_helper(
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+        )
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("vendor/nested/CLAUDE.md", refused.stderr)
+
+    def test_boundary_ignorecase_cannot_mask_an_instruction_file(self):
+        """A tracked `claude.md` masked an untracked `CLAUDE.md` under ignoreCase."""
+        boundary = self.foreign_boundary()
+        (boundary / "claude.md").write_text("ordinary notes\n")
+        subprocess.check_call(["git", "-C", str(boundary), "add", "claude.md"])
+        subprocess.check_call(["git", "-C", str(boundary), "config", "core.ignoreCase", "true"])
+        self.run_helper(
+            "begin",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+        )
+        (boundary / "CLAUDE.md").write_text("EVIL\n")
+        if sorted(os.listdir(boundary)) != [".git", "CLAUDE.md", "claude.md", "index.js"]:
+            self.skipTest("case-insensitive filesystem")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("vendor/nested/CLAUDE.md", refused.stderr)
+
+    def test_worktree_pointers_are_parsed_as_git_parses_them(self):
+        """Only Git's own delimiters are removed from worktree paths (#541's class)."""
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        directory = Path(self.tmp.name) / "pointer"
+        directory.mkdir()
+        store = Path(self.tmp.name) / "store"
+        for content, expected in (
+            # read_gitfile: exactly "gitdir: ", then trailing CR/LF only.
+            (b"gitdir: " + bytes(store) + b"/wt \n", str(store) + "/wt "),
+            (b"gitdir: " + bytes(store) + b"/wt\t\r\n", str(store) + "/wt\t"),
+            (b"gitdir: " + bytes(store) + b"/wt", str(store) + "/wt"),
+            (b"gitdir:" + bytes(store) + b"/wt\n", None),
+            (b"gitdir:  " + bytes(store) + b"/wt\n", " " + str(store) + "/wt"),
+            (b"junk\ngitdir: " + bytes(store) + b"/wt\n", None),
+        ):
+            with self.subTest(content=content):
+                (directory / ".git").write_bytes(content)
+                got = module.worktree_gitdir(directory)
+                want = (
+                    None
+                    if expected is None
+                    else os.path.realpath(os.path.join(directory, expected))
+                )
+                self.assertEqual(got, want)
+        registration = Path(self.tmp.name) / "registration"
+        registration.mkdir()
+        for content, expected in (
+            (b"/repo/wt /.git\n", "/repo/wt /.git"),
+            (b" /repo/wt/.git\r\n", " /repo/wt/.git"),
+            (b"/repo/wt/.git", "/repo/wt/.git"),
+        ):
+            with self.subTest(registered=content):
+                (registration / "gitdir").write_bytes(content)
+                self.assertEqual(module.registered_worktree(registration), expected)
+        (registration / "gitdir").unlink()
+        self.assertIsNone(module.registered_worktree(registration))
+
     # ─── #514: vendored dependencies under skills/ and scripts/ ───
 
     def vendored_fixture(self, ignored=True, lockfiles=True):
@@ -3387,6 +3598,139 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         refused = self.begin_output()
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
         self.assertIn("claude/agents/node_modules/dep/AGENTS.md", refused.stderr)
+
+    # ─── #651: a repo-root node_modules in an ordinary bun/npm project ───
+
+    ROOT_VENDORED = (
+        # Real packages ship these: bun-types a CLAUDE.md, playwright-core skills.
+        "node_modules/bun-types/CLAUDE.md",
+        "node_modules/playwright-core/lib/tools/skills/demo/SKILL.md",
+        "node_modules/some-pkg/AGENTS.md",
+    )
+
+    def root_vendored_fixture(self, ignore="node_modules/\n", lockfile="bun.lock"):
+        paths = []
+        if ignore:
+            (self.repo / ".gitignore").write_text(ignore)
+            paths.append(".gitignore")
+        if lockfile:
+            (self.repo / lockfile).write_text("{}\n")
+            paths.append(lockfile)
+        if paths:
+            self.git("add", "--", *paths)
+            self.git("commit", "-qm", "root vendoring fixture")
+        for vendored in self.ROOT_VENDORED:
+            target = self.repo / vendored
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("a dependency's own instructions\n")
+
+    def test_ignored_locked_root_node_modules_is_vendored(self):
+        start = self.git("rev-parse", "HEAD")
+        for lockfile in ("bun.lock", "bun.lockb", "package-lock.json"):
+            with self.subTest(lockfile=lockfile):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.root_vendored_fixture(lockfile=lockfile)
+                snapshot = self.begin("committed")
+                self.complete(snapshot)
+                self.check()
+
+    def test_root_node_modules_without_a_lockfile_or_not_ignored_still_refuses(self):
+        start = self.git("rev-parse", "HEAD")
+        for ignore, lockfile in (("node_modules/\n", None), (None, "bun.lock"), (None, None)):
+            with self.subTest(ignore=ignore, lockfile=lockfile):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.root_vendored_fixture(ignore=ignore, lockfile=lockfile)
+                refused = self.begin_output()
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("node_modules/bun-types/CLAUDE.md", refused.stderr)
+
+    def test_root_node_modules_fails_closed_like_the_514_trees(self):
+        """Every #514 refusal holds at the root: the tree, not the entry, is ignored."""
+        cases = {
+            # Only the planted files are excluded, not the directory.
+            "planted-only": "".join("/" + p + "\n" for p in self.ROOT_VENDORED),
+            # `node_modules/*` ignores contents whose children can be re-included.
+            "reincluded-child": "/node_modules/*\n!/node_modules/keep.js\n",
+        }
+        start = self.git("rev-parse", "HEAD")
+        for name, exclude in cases.items():
+            with self.subTest(case=name):
+                self.git("reset", "-q", "--hard", start)
+                self.git("clean", "-qfdx")
+                self.root_vendored_fixture(ignore=None)
+                (self.repo / ".git/info/exclude").write_text(exclude)
+                refused = self.begin_output()
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("node_modules/", refused.stderr)
+        (self.repo / ".git/info/exclude").write_text("")
+        # A lockfile that is a symlink is not evidence of an install.
+        self.git("reset", "-q", "--hard", start)
+        self.git("clean", "-qfdx")
+        self.root_vendored_fixture(lockfile=None)
+        outside = Path(self.tmp.name) / "outside-lock"
+        outside.mkdir()
+        (outside / "bun.lock").write_text("{}\n")
+        (self.repo / "bun.lock").symlink_to(outside / "bun.lock")
+        (self.repo / ".git/info/exclude").write_text("/bun.lock\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("node_modules/bun-types/CLAUDE.md", refused.stderr)
+
+    def test_root_node_modules_symlink_is_not_a_vendored_tree(self):
+        """Git does not descend a symlink, so check the predicate directly."""
+        self.root_vendored_fixture(ignore="node_modules\n")
+        outside = Path(self.tmp.name) / "outside-tree"
+        shutil.move(str(self.repo / "node_modules"), str(outside))
+        (self.repo / "node_modules").symlink_to(outside)
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertFalse(module.vendored_dependency(self.repo, self.ROOT_VENDORED[0]))
+        (self.repo / "node_modules").unlink()
+        shutil.move(str(outside), str(self.repo / "node_modules"))
+        self.assertTrue(module.vendored_dependency(self.repo, self.ROOT_VENDORED[0]))
+
+    def test_root_exemption_is_only_the_repository_root(self):
+        """A lockfile at the root does not vendor a nested `node_modules`."""
+        self.root_vendored_fixture()
+        nested = self.repo / "packages/app/node_modules/dep/AGENTS.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("not exempt\n")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("packages/app/node_modules/dep/AGENTS.md", refused.stderr)
+
+    def test_helper_is_executable(self):
+        """The review-gates skill invokes the helper directly, not via python3 (#651)."""
+        self.assertTrue(os.access(HELPER, os.X_OK), HELPER)
+        mode = subprocess.check_output(
+            ["git", "-C", str(HELPER.parent), "ls-files", "--stage", "--", HELPER.name]
+        ).split()[0]
+        self.assertEqual(mode, b"100755")
+
+    # ─── #581: an ignored bytecode cache is still an instruction surface ───
+    # A `.pyc` beside its `.py` can carry code the source does not: Python
+    # imports a timestamp-valid cache without reading the source, and nothing
+    # short of recompiling proves the two match (recompiled bodies are not even
+    # byte-identical across the import and py_compile paths). So the cache is
+    # never exempted; run-tests.sh leaves none behind (#633) and gate runs set
+    # PYTHONDONTWRITEBYTECODE=1.
+
+    def test_ignored_bytecode_cache_beside_its_source_still_refuses(self):
+        module = self.repo / "agents/skills/demo/scripts/tool.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("VALUE = 1\n")
+        (self.repo / ".gitignore").write_text("__pycache__/\n")
+        self.git("add", "--", ".gitignore", "agents/skills/demo/scripts/tool.py")
+        self.git("commit", "-qm", "bytecode fixture")
+        cache = module.parent / "__pycache__"
+        cache.mkdir()
+        (cache / "tool.cpython-312.pyc").write_bytes(b"\x00bytecode")
+        refused = self.begin_output()
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("agents/skills/demo/scripts/__pycache__/tool.cpython-312.pyc", refused.stderr)
 
     # ─── ADR-0008: lane routing ────────────────────────────────────
     # `lane` is the read-only classifier both bash gates and review-and-push.sh

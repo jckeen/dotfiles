@@ -2,4 +2,7 @@
 # Copy to ~/.codex/readonly.config.toml and use with `codex --profile readonly`.
 
 sandbox_mode = "read-only"
-approval_policy = "on-request"
+# "never", not "on-request": this profile layers over the base config, and an
+# approvals_reviewer = "auto_review" there would approve escalation out of the
+# read-only sandbox without asking anyone (#659).
+approval_policy = "never"

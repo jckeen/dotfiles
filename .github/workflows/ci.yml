@@ -92,12 +92,166 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The changelog fragment scope step diffs base...HEAD, which needs history.
+          fetch-depth: 0
 
       - name: Run checker self-tests
         run: claude/scripts/tests/doc-truth.test.sh
 
       - name: Check the dotfiles doc contract
         run: claude/scripts/check-doc-truth.sh
+
+      # Changelog fragments (#626). The content check (fragment grammar,
+      # CHANGELOG.md preamble) is assemble-changelog.sh --check, which runs no
+      # git. The PR scope rule needs the PR diff, so it is this step. It reads
+      # only `git diff --name-status`, never a file's content: a PR adds at
+      # most one changelog.d/ file; modifies, retypes or renames no fragment
+      # already on the base; while adding a fragment touches neither
+      # CHANGELOG.md nor another fragment; and removes fragments only all at
+      # once while editing CHANGELOG.md (a fold). The fold is the one place it
+      # reads content: CHANGELOG.md must differ from the base by one inserted
+      # block made of the removed fragments' lines, read from the object store.
+      # An earlier version compared headings with grep and was bypassed by bytes
+      # grep calls binary, by a working-tree encoding attribute, by heading
+      # shapes other than `## `, and by lines matched anywhere in the file.
+      - name: Changelog fragments (content check)
+        run: claude/scripts/assemble-changelog.sh --check
+
+      - name: Changelog fragments (PR scope)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          # Name-status only: the rule never reads a file's content, so no encoding,
+          # binary byte, heading shape or diff setting can hide anything from it.
+          # -z separates records with NUL, so a filename cannot forge one; --no-renames
+          # reports a rename as a D plus an A, so rewriting another PR's fragment under
+          # a new name counts as removing it.
+          g() { git -c core.quotePath=false "$@"; }
+          g diff --no-ext-diff --no-textconv --no-renames --name-status -z "$BASE_SHA...HEAD" >"$RUNNER_TEMP/scope.ns"
+          mapfile -d '' f <"$RUNNER_TEMP/scope.ns"
+          added=0 removed=0 touched=0 changelog=0
+          for ((i = 0; i + 1 < ${#f[@]}; i += 2)); do
+            case "${f[i+1]}" in
+              changelog.d/.gitkeep) ;; # not a fragment; assemble-changelog.sh skips it too
+              changelog.d/*)
+                case "${f[i]}" in A) added=$((added + 1)) ;; D) removed=$((removed + 1)) ;; *) touched=1 ;; esac ;;
+              CHANGELOG.md) changelog=1 ;;
+            esac
+          done
+          fail=0
+          [ "$added" -le 1 ] || { echo "::error::this PR adds $added changelog.d/ files; a PR adds one fragment"; fail=1; }
+          [ "$touched" -eq 0 ] || { echo "::error::this PR modifies a changelog fragment already on the base"; fail=1; }
+          if [ "$added" -ge 1 ]; then
+            [ "$changelog" -eq 0 ] || { echo "::error::this PR adds a changelog fragment and also edits CHANGELOG.md; the fold PR does that"; fail=1; }
+            [ "$removed" -eq 0 ] || { echo "::error::this PR adds a changelog fragment and removes another; a fold removes fragments and adds none"; fail=1; }
+          elif [ "$removed" -ge 1 ]; then
+            # A fold removes every fragment on the base and edits CHANGELOG.md, so a
+            # PR that removes one fragment beside a token CHANGELOG.md edit is not one.
+            on_base="$(g ls-tree -r -z --name-only "$BASE_SHA" -- changelog.d/ | grep -zcv -x 'changelog\.d/\.gitkeep' || [ $? -eq 1 ])"
+            [ "$changelog" -eq 1 ] || { echo "::error::this PR removes a changelog fragment without folding it into CHANGELOG.md"; fail=1; }
+            [ "$removed" -eq "$on_base" ] || { echo "::error::this PR removes $removed of the $on_base changelog fragments on the base; a fold removes them all"; fail=1; }
+            # And CHANGELOG.md differs from the base by exactly one inserted block
+            # whose non-blank lines are the removed fragments' entries, each entry
+            # contiguous, newest first, placed above the base's first entry.
+            # Matching lines anywhere let a
+            # fold drop a bullet that an older entry happened to share, or hide
+            # every entry inside an HTML comment; the single-block rule allows
+            # neither, and a fold copies fragments verbatim, so it is the right
+            # test. Both sides come from the object store, never the working tree.
+            : >"$RUNNER_TEMP/scope.removed"
+            for ((i = 0; i + 1 < ${#f[@]}; i += 2)); do
+              [ "${f[i]}" = D ] || continue
+              case "${f[i+1]}" in changelog.d/.gitkeep) continue ;; changelog.d/*) ;; *) continue ;; esac
+              printf '%s\0' "${f[i+1]}" >>"$RUNNER_TEMP/scope.removed"
+            done
+            python3 -I - "$BASE_SHA" "$RUNNER_TEMP/scope.removed" <<'PY_FOLD' || fail=1
+          import subprocess
+          import sys
+
+          base_sha, removed_list = sys.argv[1], sys.argv[2]
+
+          def blob(spec):
+              return subprocess.run(
+                  ["git", "-c", "core.quotePath=false", "cat-file", "blob", spec],
+                  check=True, stdout=subprocess.PIPE,
+              ).stdout
+
+          def lines(data):
+              return [line for line in data.split(b"\n") if line.strip()]
+
+          base = blob(base_sha + ":CHANGELOG.md")
+          head = blob("HEAD:CHANGELOG.md")
+          with open(removed_list, "rb") as handle:
+              paths = [p for p in handle.read().split(b"\0") if p]
+          # The unit a fold keeps whole is the entry, not the fragment: a fragment
+          # may hold several dated entries and a fold orders all entries newest
+          # first, so one fragment's entries can straddle another's. Headings are
+          # unique across pending fragments (assemble-changelog.sh --check), so a
+          # greedy match is unambiguous.
+          entries = []
+          for path in paths:
+              current = None
+              for line in lines(blob(base_sha + ":" + path.decode())):
+                  if line.startswith(b"## "):
+                      current = [line]
+                      entries.append((path, current))
+                  elif current is not None:
+                      current.append(line)
+
+          # Whole lines, not bytes: a byte-level common prefix would swallow the
+          # `#` an inserted heading shares with the title it was placed above.
+          base_lines, head_lines = base.split(b"\n"), head.split(b"\n")
+          prefix = 0
+          while prefix < min(len(base_lines), len(head_lines)) and base_lines[prefix] == head_lines[prefix]:
+              prefix += 1
+          suffix = 0
+          while (suffix < min(len(base_lines), len(head_lines)) - prefix
+                 and base_lines[-1 - suffix] == head_lines[-1 - suffix]):
+              suffix += 1
+          if len(head_lines) < len(base_lines) or head_lines[:prefix] + head_lines[len(head_lines) - suffix:] != base_lines:
+              print("::error::CHANGELOG.md changed beyond one inserted block; a fold only inserts the fragments")
+              sys.exit(1)
+          # The block goes above the base's first entry: inserted between an
+          # older heading and its bullets it would empty that entry and hand its
+          # bullets to the last fragment, and the content check never looks
+          # below the first heading.
+          first_entry = next((i for i, line in enumerate(base_lines) if line.startswith(b"## ")), len(base_lines))
+          if prefix > first_entry:
+              print("::error::CHANGELOG.md: the fragments were inserted below the first existing entry; a fold puts them above it")
+              sys.exit(1)
+          inserted = [line for line in head_lines[prefix:len(head_lines) - suffix] if line.strip()]
+
+          pos, failed = 0, False
+          pending = list(entries)
+          order = []
+          while pos < len(inserted) and pending:
+              for index, (path, want) in enumerate(pending):
+                  if inserted[pos:pos + len(want)] == want:
+                      pos += len(want)
+                      order.append(want[0][3:13])
+                      del pending[index]
+                      break
+              else:
+                  print("::error::CHANGELOG.md: inserted line is not a fragment entry's: " + inserted[pos].decode("utf-8", "replace"))
+                  failed = True
+                  break
+          for path, want in pending:
+              print("::error::" + path.decode("utf-8", "replace") + ": entry not folded into CHANGELOG.md as one contiguous block: " + want[0].decode("utf-8", "replace"))
+              failed = True
+          if not failed and pos != len(inserted):
+              print("::error::CHANGELOG.md: the inserted block holds lines no removed fragment has")
+              failed = True
+          if not failed and any(order[i] < order[i + 1] for i in range(len(order) - 1)):
+              print("::error::CHANGELOG.md: folded entries are not in newest-first date order")
+              failed = True
+          sys.exit(1 if failed else 0)
+          PY_FOLD
+          fi
+          exit "$fail"
 
   # check-doc-truth.sh is vendored into other repos and holds to a bash 3.2
   # floor — the macOS system bash (#424). The static guards in its self-test are
@@ -159,6 +313,14 @@ jobs:
 
       - name: Check the dotfiles doc contract under bash 3.2.57
         run: ~/.local/bash32/bash claude/scripts/check-doc-truth.sh
+
+      # The public settings template runs statusline.sh as `bash …`, which is
+      # system bash 3.2 on macOS (#588). The suite also renders it under the
+      # runner's bash and `bash --posix`.
+      - name: statusline.sh renders under bash 3.2.57
+        run: |
+          STATUSLINE_BASH3="$HOME/.local/bash32/bash" \
+            claude/scripts/tests/statusline.test.sh
 
   # AGENTPACK.yaml is GENERATED from skill/agent frontmatter + the meta
   # fragment (issue #207). This is intended as a required status check (#237),
@@ -324,6 +486,10 @@ jobs:
           claude/scripts/tests/doc-refs.test.sh
           claude/scripts/check-doc-refs.sh
 
+      - name: changelog-scope (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/changelog-scope.test.sh
+
       - name: no-personal-data (self-test + checker)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
@@ -341,6 +507,12 @@ jobs:
         run: |
           claude/scripts/tests/skill-parity.test.sh
           claude/scripts/check-skill-parity.sh
+
+      # Self-test only: the checker reads the private skillOverrides in the
+      # live ~/.claude/settings.json, which CI does not have.
+      - name: check-skill-refs (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/check-skill-refs.test.sh
 
       - name: capability and workflow contracts
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
