@@ -302,8 +302,10 @@ matters.
 ### Stop hook template
 
 Add a `Stop` hook to a project's `.claude/settings.local.json` to run checks
-after each Claude response. Exit code 2 blocks the stop and feeds stderr back
-to Claude. Bound the retries yourself: `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`
+after each Claude response. A `{"decision":"block","reason":…}` on stdout
+blocks the stop and feeds the reason back to Claude (exit 2 with stderr does
+too, but output that resembles a missing-file error is then read as a hook
+that failed to start, which does not block). Bound the retries yourself: `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`
 (default 8) counts only consecutive blocks, and the counter resets every time
 Claude calls a tool, so an unfixable check would otherwise restart repair
 attempts for as long as the budget lasts. The script below keeps its own count
@@ -338,7 +340,15 @@ prev="$(cat "$budget" 2>/dev/null || true)"; [[ "$prev" =~ ^[0-9]{1,6}$ ]] || pr
 n=$((prev + 1))
 # An attempt that cannot be recorded would be retried forever: stop instead.
 echo "$n" >"$budget" || { jq -n '{"systemMessage":"stop-check: cannot record attempts; stopping without retrying"}'; exit 0; }
-if [ "$n" -le 3 ]; then printf '%s\n' "$out" >&2; exit 2; fi
+# Block through JSON on stdout, not exit 2 with the raw output on stderr: a
+# check whose output looks like a missing-file error ("No such file or
+# directory") would be read as a hook that failed to start, which is
+# non-blocking, and the stop would go through unrepaired.
+if [ "$n" -le 3 ]; then
+  jq -n --arg r "stop-check: attempt $n of 3 failed. Fix the check, then stop again. Output: $(tail -c 1500 <<<"$out")" \
+    '{"decision":"block","reason":$r}'
+  exit 0
+fi
 if [ "$n" -eq 4 ]; then
   jq -n --arg r "stop-check: the check failed on $((n - 1)) attempts. Do not retry. Report the result as stopped at cap, quote the last error, and stop. Last output: $(tail -c 600 <<<"$out")" \
     '{"decision":"block","reason":$r}'
@@ -365,7 +375,7 @@ exit 0
 
 **Tips:**
 - Put this in `.claude/settings.local.json` (project-level, gitignored), not global settings
-- Only stderr reaches Claude on exit 2, hence `1>&2`
+- Block with JSON on stdout as the template does; with exit 2 only stderr reaches Claude, and missing-file text there is treated as a broken hook, not a block
 - The attempt count is the guard; without one, a check that can never pass loops until the session's budget runs out
 - Don't pipe a check through `tail` here: a pipe's status is `tail`'s, so a failing check would pass
 - Common combos: `tsc --noEmit`, `eslint .`, `pytest`, `cargo check`, `go vet ./...`

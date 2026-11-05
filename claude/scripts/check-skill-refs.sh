@@ -65,7 +65,9 @@ units() {
       unit = ""
     }
     /^[ \t]*$/ || /^#/ || /^[ \t]*([-*]|[0-9]+\.)[ \t]/ || /^[ \t]*\|/ { flush(); start = NR }
-    { gsub(/^[ \t]+/, ""); unit = (unit == "" ? $0 : unit " " $0) }
+    # The list marker is dropped so a sentence that opens the item starts the
+    # unit ("- If available, run /x" hedges like "If available, run /x").
+    { gsub(/^[ \t]+/, ""); sub(/^([-*]|[0-9]+\.)[ \t]+/, ""); unit = (unit == "" ? $0 : unit " " $0) }
     END { flush() }
   ' <<<"$1"
 }
@@ -111,18 +113,24 @@ for rel in claude/skills/orchestrate/SKILL.md claude/CLAUDE.md CLAUDE-GUIDE.md c
           # if available") means the condition is about something else. When
           # that ref is already covered the hedge is spent.
           # A hedge at the start of the sentence or right after a clause break
-          # covers the next ref if only plain words (and one comma) separate
-          # them ("If available, run /x"; "and, if available, /x"). A
+          # covers the next ref across a comma and a connective word or two
+          # ("If available, run /x"; "and, if available, /x"). A
           # possessive covers exactly the ref inside its own match. So "Run /x,
           # then use a cached report if available" and "Run /x and, if
           # available, /y" both leave /x uncovered.
           # The gap may hold spaces, the closing backtick or asterisks of the
           # ref itself, and an opening paren; nothing else.
-          BEGIN { text = ENVIRON["DOUBLED"]; adjacent = "^[ " bt "*]*[(]*[ " bt "*]*$" }
+          # Forward, the gap may hold a comma and up to two connective words
+          # ("If available, run /x"; "and, if available, then use /x"); any
+          # other word means the condition is about something else ("If
+          # available, attach a screenshot but always run /x").
+          BEGIN { text = ENVIRON["DOUBLED"]; adjacent = "^[ " bt "*]*[(]*[ " bt "*]*$"
+                  word = "(run|use|call|invoke|try|then|also|the|with)"
+                  forward = "^,*[ ]*(" word "[ ]+)?(" word "[ ]+)?[ " bt "*]*$" }
           function between(a, b) { return substr(text, a + 1, b - a) }
           $2 == "R" { n++; name[n] = $3; cov[n] = 0; rend[n] = $4
                       if (t_end > 0 && $1 < t_end && $3 == t_name) { cov[n] = 1; t_end = 0 }
-                      else if (h_end > 0 && between(h_end, $1) ~ /^,*[^,;:()]*$/) { cov[n] = 1 }
+                      else if (h_end > 0 && between(h_end, $1) ~ forward) { cov[n] = 1 }
                       h_end = 0; last = n; next }
           $2 == "H" { h_end = 0
                       if (last > 0 && between(rend[last], $1) ~ adjacent) { if (!cov[last]) cov[last] = 1 }

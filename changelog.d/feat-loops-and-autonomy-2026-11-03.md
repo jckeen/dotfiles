@@ -92,3 +92,10 @@
   `LC_ALL=C` so grep's byte offsets and awk's substr agree on multibyte text,
   and a hedge covers the ref before it only across spaces or an opening paren,
   never across other words.
+
+- **Eighth Codex round (2026-11-05).** The Stop hook template blocks through
+  `{"decision":"block"}` on stdout rather than exit 2 with raw stderr, since
+  missing-file text on stderr reads as a hook that failed to start and does
+  not block; `check-skill-refs.sh` drops the list marker before judging a
+  sentence start, and a leading hedge reaches forward only across a comma and
+  a connective word or two.

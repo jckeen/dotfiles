@@ -116,6 +116,14 @@ printf '# x\n\nLog — `/changelog`, then attach a screenshot if available.\n' >
 if ! LC_ALL=C.UTF-8 run && grep -q 'changelog — off' "$T/out"; then ok "multibyte text before the ref does not shift the offsets under a UTF-8 locale"
 else fail "multibyte text before the ref does not shift the offsets under a UTF-8 locale"; cat "$T/out"; fi
 
+printf '# x\n\nIf available, attach a screenshot but always run `/changelog`.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a leading hedge does not reach a ref past other words"
+else fail "a leading hedge does not reach a ref past other words"; cat "$T/out"; fi
+
+printf '# x\n\n- If available, run `/changelog`.\n1. If available, use `/changelog` too.\n' >"$ORCH"
+if run; then ok "a leading hedge works inside a bullet or numbered item"
+else fail "a leading hedge works inside a bullet or numbered item"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi
