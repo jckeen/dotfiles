@@ -109,10 +109,12 @@ jobs:
       # most one changelog.d/ file; modifies, retypes or renames no fragment
       # already on the base; while adding a fragment touches neither
       # CHANGELOG.md nor another fragment; and removes fragments only all at
-      # once while editing CHANGELOG.md (a fold). An earlier version compared CHANGELOG.md
-      # headings and was bypassed by bytes grep calls binary, a working-tree
-      # encoding attribute and heading shapes other than `## `; a rule that
-      # never parses content has none of those seams.
+      # once while editing CHANGELOG.md (a fold). The fold is the one place it
+      # reads content: CHANGELOG.md must differ from the base by one inserted
+      # block made of the removed fragments' lines, read from the object store.
+      # An earlier version compared headings with grep and was bypassed by bytes
+      # grep calls binary, by a working-tree encoding attribute, by heading
+      # shapes other than `## `, and by lines matched anywhere in the file.
       - name: Changelog fragments (content check)
         run: claude/scripts/assemble-changelog.sh --check
 
@@ -152,23 +154,75 @@ jobs:
             on_base="$(g ls-tree -r -z --name-only "$BASE_SHA" -- changelog.d/ | grep -zcv -x 'changelog\.d/\.gitkeep' || [ $? -eq 1 ])"
             [ "$changelog" -eq 1 ] || { echo "::error::this PR removes a changelog fragment without folding it into CHANGELOG.md"; fail=1; }
             [ "$removed" -eq "$on_base" ] || { echo "::error::this PR removes $removed of the $on_base changelog fragments on the base; a fold removes them all"; fail=1; }
-            # And every non-blank line of each removed fragment (headings, `###`
-            # subsections, bullets, continuations) is now a line of CHANGELOG.md:
-            # checking headings alone let a fold drop every bullet. Both sides are
-            # read from the object store with `grep -a` under LC_ALL=C, so no
-            # encoding or stray byte hides a line. Fragments are strict-shaped
-            # (assemble-changelog.sh --check enforced that on the base) and a fold
-            # copies them verbatim, which is why an exact line match is the test.
-            g cat-file blob "HEAD:CHANGELOG.md" >"$RUNNER_TEMP/scope.head.md"
+            # And CHANGELOG.md differs from the base by exactly one inserted block
+            # whose non-blank lines are the removed fragments' non-blank lines,
+            # each fragment contiguous and in order. Matching lines anywhere let a
+            # fold drop a bullet that an older entry happened to share, or hide
+            # every entry inside an HTML comment; the single-block rule allows
+            # neither, and a fold copies fragments verbatim, so it is the right
+            # test. Both sides come from the object store, never the working tree.
+            : >"$RUNNER_TEMP/scope.removed"
             for ((i = 0; i + 1 < ${#f[@]}; i += 2)); do
               [ "${f[i]}" = D ] || continue
               case "${f[i+1]}" in changelog.d/.gitkeep) continue ;; changelog.d/*) ;; *) continue ;; esac
-              g cat-file blob "$BASE_SHA:${f[i+1]}" >"$RUNNER_TEMP/scope.frag"
-              { grep -av '^[[:space:]]*$' "$RUNNER_TEMP/scope.frag" || [ $? -eq 1 ]; } >"$RUNNER_TEMP/scope.frag.h"
-              while IFS= read -r h; do
-                grep -aqFx -- "$h" "$RUNNER_TEMP/scope.head.md" || { echo "::error::${f[i+1]}: line not folded into CHANGELOG.md: $h"; fail=1; }
-              done <"$RUNNER_TEMP/scope.frag.h"
+              printf '%s\0' "${f[i+1]}" >>"$RUNNER_TEMP/scope.removed"
             done
+            python3 -I - "$BASE_SHA" "$RUNNER_TEMP/scope.removed" <<'PY_FOLD' || fail=1
+          import subprocess
+          import sys
+
+          base_sha, removed_list = sys.argv[1], sys.argv[2]
+
+          def blob(spec):
+              return subprocess.run(
+                  ["git", "-c", "core.quotePath=false", "cat-file", "blob", spec],
+                  check=True, stdout=subprocess.PIPE,
+              ).stdout
+
+          def lines(data):
+              return [line for line in data.split(b"\n") if line.strip()]
+
+          base = blob(base_sha + ":CHANGELOG.md")
+          head = blob("HEAD:CHANGELOG.md")
+          with open(removed_list, "rb") as handle:
+              paths = [p for p in handle.read().split(b"\0") if p]
+          fragments = {p: lines(blob(base_sha + ":" + p.decode())) for p in paths}
+
+          # Whole lines, not bytes: a byte-level common prefix would swallow the
+          # `#` an inserted heading shares with the title it was placed above.
+          base_lines, head_lines = base.split(b"\n"), head.split(b"\n")
+          prefix = 0
+          while prefix < min(len(base_lines), len(head_lines)) and base_lines[prefix] == head_lines[prefix]:
+              prefix += 1
+          suffix = 0
+          while (suffix < min(len(base_lines), len(head_lines)) - prefix
+                 and base_lines[-1 - suffix] == head_lines[-1 - suffix]):
+              suffix += 1
+          if len(head_lines) < len(base_lines) or head_lines[:prefix] + head_lines[len(head_lines) - suffix:] != base_lines:
+              print("::error::CHANGELOG.md changed beyond one inserted block; a fold only inserts the fragments")
+              sys.exit(1)
+          inserted = [line for line in head_lines[prefix:len(head_lines) - suffix] if line.strip()]
+
+          pos, failed = 0, False
+          pending = dict(fragments)
+          while pos < len(inserted) and pending:
+              for path, want in pending.items():
+                  if want and inserted[pos:pos + len(want)] == want:
+                      pos += len(want)
+                      del pending[path]
+                      break
+              else:
+                  print("::error::CHANGELOG.md: inserted line is not a fragment's: " + inserted[pos].decode("utf-8", "replace"))
+                  failed = True
+                  break
+          for path in pending:
+              print("::error::" + path.decode("utf-8", "replace") + ": its entry is not folded into CHANGELOG.md as one contiguous block")
+              failed = True
+          if not failed and pos != len(inserted):
+              print("::error::CHANGELOG.md: the inserted block holds lines no removed fragment has")
+              failed = True
+          sys.exit(1 if failed else 0)
+          PY_FOLD
           fi
           exit "$fail"
 

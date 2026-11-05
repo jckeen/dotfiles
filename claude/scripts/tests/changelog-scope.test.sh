@@ -34,7 +34,7 @@ if ! bash -n "$T/step.sh"; then echo "FAIL - extracted step does not parse"; exi
 git init -q "$T/repo"; cd "$T/repo" || exit 1
 git config color.ui always; git config color.diff always; git config diff.noprefix true; git config diff.renames true
 # shellcheck disable=SC2016
-printf '# Changelog\n\nEntries not yet folded in live one per PR in `changelog.d/`; they are\ncopied here by hand at release time (see `claude/scripts/README.md`).\n\n## 2026-10-01 — fix: old\n\n- old\n' >CHANGELOG.md
+printf '# Changelog\n\nEntries not yet folded in live one per PR in `changelog.d/`; they are\ncopied here by hand at release time (see `claude/scripts/README.md`).\n\n## 2026-10-01 — fix: old\n\n- old\n- theirs\n' >CHANGELOG.md
 mkdir changelog.d
 printf '## 2026-10-20 — fix: theirs\n\n- theirs\n' >changelog.d/theirs.md
 printf '## 2026-10-19 — fix: other\n\n- other\n' >changelog.d/other.md
@@ -76,6 +76,10 @@ case_ "fake fold: every fragment removed, one blank line added" fail 'rm changel
 case_ "half fold: every fragment removed, one entry copied" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n- theirs\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fold that copies the headings but drops every bullet" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n## 2026-10-19 — fix: other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fold whose copied bullet differs by a byte" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n- theirs!\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that omits a bullet an older entry happens to share" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that hides the copied fragments in an HTML comment" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "<!--\n## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n-->\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that also edits an older entry" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md | sed "s/^- old$/- old, edited/" > c && mv c CHANGELOG.md'
+case_ "fold that interleaves two fragments' lines" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n## 2026-10-19 — fix: other\n\n- theirs\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fold whose copied heading differs by a byte" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs!\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fragment plus a direct ## entry" fail 'echo "## m" > changelog.d/mine.md; printf "\n## 2026-10-22 — fix: direct\n\n- d\n" >> CHANGELOG.md'
 case_ "fragment plus an entry grep would call binary" fail 'echo "## m" > changelog.d/mine.md; printf "\n## 2026-10-22 — fix: direct \xff\n" >> CHANGELOG.md'

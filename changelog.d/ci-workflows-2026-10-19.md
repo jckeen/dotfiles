@@ -28,7 +28,9 @@
 - **The fold check compares every fragment line, not only headings (Codex
   gate, 2026-11-05).** A fold that copied each entry heading into
   `CHANGELOG.md` and dropped every bullet passed the PR-scope step and the
-  content validator alike. The step now requires every non-blank line of each
-  removed fragment to be a line of `CHANGELOG.md`; two cases in
-  `changelog-scope.test.sh` cover a heading-only fold and a bullet changed by
-  one byte.
+  content validator alike, and matching lines anywhere in the file let a fold
+  drop a bullet an older entry shared or hide every entry in an HTML comment.
+  The step now requires `CHANGELOG.md` to differ from the base by exactly one
+  inserted block whose non-blank lines are the removed fragments' lines, each
+  fragment contiguous and in order; six cases in `changelog-scope.test.sh`
+  cover the bypasses.
