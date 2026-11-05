@@ -1851,7 +1851,10 @@ OTHER="$(mktemp -d)"
 git -C "$OTHER" init -q
 gitfile="$(printf 'gitdir: %s/.git\n' "$OTHER" | git -C "$R" hash-object -w --stdin)"
 for dotgit in .git .GIT .git. 'git~1' 'sub/.Git /x'; do
-  dg_top="$(printf '100644 blob %s\tcode.txt\0100644 blob %s\t%s\0' "$code" "$gitfile" "$dotgit" | git -C "$R" mktree -z)"
+  # Two printf calls: in one format string `\0100644` reads as the octal
+  # escape `\010` followed by `0644`, which would fold both entries into one
+  # name holding a control character and never reach the .git guard.
+  dg_top="$({ printf '100644 blob %s\tcode.txt\0' "$code"; printf '100644 blob %s\t%s\0' "$gitfile" "$dotgit"; } | git -C "$R" mktree -z)"
   dg_commit="$(git -C "$R" commit-tree "$dg_top" -p HEAD -m "test: dotgit entry")"
   rm -rf "$DEST"; DEST="$(mktemp -d)"
   assert "crafted tree: a tracked '$dotgit' entry is refused" "! bash -c \"\$jail_fns\"'
