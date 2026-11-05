@@ -71,11 +71,13 @@ still have one. Before merging, or when a PR stalls on that label:
 
 Fix the real findings and push them together. In a repo running that
 workflow the push gets an automatic `@codex review` request, so don't post one
-by hand; the workflow skips a docs-only diff that touches no instruction
-surface, and such a PR passes at once with no bot review to wait for. Reply
-with where each was
-fixed, or with why it is moot, then resolve. Never resolve a thread without a
-reply.
+by hand for a new head. The one time a manual request is right is when the
+workflow's pending status says so (`Codex review ended without completing;
+comment @codex review to retry`): the workflow requests once per head and does
+not retry a failed or cancelled review on its own. The workflow skips a
+docs-only diff that touches no instruction surface, and such a PR passes at
+once with no bot review to wait for. Reply with where each was fixed, or with
+why it is moot, then resolve. Never resolve a thread without a reply.
 
 ## Handoff payload
 

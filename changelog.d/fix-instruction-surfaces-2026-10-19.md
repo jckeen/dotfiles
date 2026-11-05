@@ -28,3 +28,10 @@
 - **Tier-1 byte ceiling** (#642): `MULTI-AGENT.md` and `claude/scripts/README.md`
   name `TIER1_MAX_BYTES` in `review-receipt.py` instead of restating the
   figure; ADR-0008 keeps its dated figure.
+- **Codex gate findings (2026-11-05).** `claude/AGENTPACK.yaml` regenerated for
+  the `changelog` description. `review-gates` allows the one manual
+  `@codex review` the workflow itself asks for (a review that ended without
+  completing is not retried automatically). Both `changelog` skills say the
+  branch slug is not unique and the validator accepts only letters, digits,
+  `.`, `_` and `-`, so an existing fragment is confirmed to be this branch's
+  before it is updated, and a colliding or invalid slug gets a distinct name.

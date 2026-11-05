@@ -12,8 +12,14 @@ changed.
 
 1. If the project root has a `changelog.d/` directory, write the entry to
    this branch's fragment, `changelog.d/<branch-slug>.md` (the branch name
-   with every `/` turned to `-`), creating or updating it, and leave
-   `CHANGELOG.md` alone. A fragment's entry heading is `## YYYY-MM-DD — type: summary` (a
+   with every `/` turned to `-`), and leave `CHANGELOG.md` alone. The slug is
+   not unique (`feat/a-b` and `feat-a/b` both give `feat-a-b`) and the
+   validator accepts only letters, digits, `.`, `_` and `-` in the name, so
+   before updating an existing fragment confirm it is this branch's (`git log
+   -- changelog.d/NAME.md` shows this branch's commits, or its headings describe
+   this work); if it belongs to another branch, or the slug holds other
+   characters, create a fragment under a distinct valid name instead (append
+   the PR number, say). A fragment's entry heading is `## YYYY-MM-DD — type: summary` (a
    conventional-commit type) with at least one `- ` bullet; `###`
    subsections are allowed; no code fences, HTML comments or other `#`
    lines, and no `<` placeholders (`<` before a letter, `/`, `!` or `?` is
