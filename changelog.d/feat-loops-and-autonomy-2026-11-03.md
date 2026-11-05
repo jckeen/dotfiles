@@ -59,3 +59,8 @@
   `check-skill-refs.sh` splits clauses at commas and parentheses so a hedged
   parenthetical exempts only its own ref, and doubles every separator byte so
   a ref right after a comma is still seen.
+
+- **Third Codex round (2026-11-05).** The Stop hook template stops at once
+  when its attempt count cannot be written, instead of retrying unbounded;
+  `check-skill-refs.sh` exempts another runtime's skill only when its
+  possessive names that ref, not every ref in the clause.

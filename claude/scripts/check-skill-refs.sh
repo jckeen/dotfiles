@@ -7,9 +7,10 @@
 # skill". Each must be a dir under claude/skills/ or a bundled skill / built-in
 # command (ALLOW below), and must not be "off" in `skillOverrides` of the live
 # ~/.claude/settings.json. A ref whose own sentence (wrapped lines joined) hedges
-# with "if available" / "if it is enabled" / "where enabled", or names another
-# runtime's skill ("Codex's", "Antigravity's"), is exempt; a hedge in a
-# neighbouring sentence does not carry over. Those overrides live in the private
+# with "if available" / "if it is enabled" / "where enabled" is exempt, as is a
+# ref that the possessive of another runtime names directly ("Codex's
+# `/review`", "Antigravity's `x` skill"); a hedge in a neighbouring clause, or
+# a "Codex's" elsewhere in the clause, does not carry over. Those overrides live in the private
 # claude-memory repo, so public CI cannot see them: this is a LOCAL guard, run at
 # `cc` launch via check-claude.sh, like check-hooks-wired.sh.
 #
@@ -31,6 +32,7 @@ REPO_ROOT="$(checker_repo_root "${BASH_SOURCE[0]}")"
 SETTINGS="$HOME/.claude/settings.json"
 # Bundled skills, then built-in commands the surfaces name (not skills at all).
 ALLOW=" verify simplify code-review security-review run loop goal schedule effort compact clear model "
+BT="$(printf '\140')"  # a literal backtick, kept out of the quoted patterns below
 
 command -v jq >/dev/null 2>&1 || { yellow "jq not found — skipping skill-ref check"; exit 0; }
 [ -f "$SETTINGS" ] || { yellow "no $SETTINGS — skipping skill-ref check"; exit 0; }
@@ -85,9 +87,15 @@ for rel in claude/skills/orchestrate/SKILL.md claude/CLAUDE.md CLAUDE-GUIDE.md c
     [ -n "$names" ] || continue
     hedged=0
     tr -s ' \t' ' ' <<<"$cur" \
-      | grep -qiE "(if|where) (it is |they are )?(available|enabled)|(codex|antigravity)'s" && hedged=1
+      | grep -qiE "(if|where) (it is |they are )?(available|enabled)" && hedged=1
+    # Another runtime's skill is exempt only when the possessive names that
+    # ref ("Codex's `/x`", "Antigravity's `y` skill"); "after Codex's review"
+    # does not excuse a `/changelog` elsewhere in the clause.
+    theirs=" $( { grep -oiE "(codex|antigravity)'s (the )?${BT}?/?[a-z][a-z0-9-]*" <<<"$cur" \
+        | sed -E "s#.*'s (the )?${BT}?/?##"; } | tr '\n' ' ' || true) "
     for sk in $names; do
       [ "$hedged" -eq 1 ] && continue
+      [[ "$theirs" == *" $sk "* ]] && continue
       why=""
       if [ ! -d "$REPO_ROOT/claude/skills/$sk" ] && [[ "$ALLOW" != *" $sk "* ]]; then why="no such skill"
       elif [[ "$OFF" == *" $sk "* ]]; then why="off in skillOverrides"; fi

@@ -68,6 +68,14 @@ printf '# x\n\nRun `/orchestrate`,`/nosuch`.\n' >"$ORCH"
 if ! run && grep -q 'nosuch — no such skill' "$T/out"; then ok "a ref right after a comma is still seen"
 else fail "a ref right after a comma is still seen"; cat "$T/out"; fi
 
+printf '# x\n\nUse `/changelog` after Codex'"'"'s review.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "another runtime named elsewhere in the clause does not exempt the ref"
+else fail "another runtime named elsewhere in the clause does not exempt the ref"; cat "$T/out"; fi
+
+printf '# x\n\nThen run Codex'"'"'s `/changelog` skill on the result.\n' >"$ORCH"
+if run; then ok "a ref the other runtime's possessive names directly is exempt"
+else fail "a ref the other runtime's possessive names directly is exempt"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi

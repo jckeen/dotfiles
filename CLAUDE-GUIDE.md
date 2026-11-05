@@ -310,8 +310,9 @@ per session: three failed attempts get exit 2 with the check output; the
 fourth blocks once more with an instruction to report "stopped at cap" and
 stop (stderr on exit 0 never reaches Claude, so the instruction has to travel
 as a block); after that the stop goes through with a `systemMessage` for the
-person. When the hook input has `stop_hook_active` true, Claude is already
-continuing because of a Stop hook.
+person; if the count itself cannot be written, the stop goes through at once
+rather than retrying unbounded. When the hook input has `stop_hook_active`
+true, Claude is already continuing because of a Stop hook.
 
 `.claude/hooks/stop-check.sh` (run through `bash` below, so it needs no
 executable bit; a hook that fails to start is treated as non-blocking, which
@@ -326,7 +327,9 @@ session="$(jq -r '.session_id // "default"' <<<"$input")"
 budget="${TMPDIR:-/tmp}/stop-check.$session"
 cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 2; }
 if out="$({ npm run typecheck && npm run lint; } 2>&1)"; then rm -f "$budget"; exit 0; fi
-n=$(( $(cat "$budget" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$budget"
+n=$(( $(cat "$budget" 2>/dev/null || echo 0) + 1 ))
+# An attempt that cannot be recorded would be retried forever: stop instead.
+echo "$n" >"$budget" || { jq -n '{"systemMessage":"stop-check: cannot record attempts (is TMPDIR writable?); stopping without retrying"}'; exit 0; }
 if [ "$n" -le 3 ]; then printf '%s\n' "$out" >&2; exit 2; fi
 if [ "$n" -eq 4 ]; then
   jq -n --arg r "stop-check: the check failed on $((n - 1)) attempts. Do not retry. Report the result as stopped at cap, quote the last error, and stop. Last output: $(tail -c 600 <<<"$out")" \
