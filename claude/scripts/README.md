@@ -118,10 +118,11 @@ What `review-and-push.sh` does:
    gate for the **required lane** with `--require --committed` (ADR-0008). A
    tier-1 diff dispatches no gate: the wrapper records the exemption receipt
    itself, so a docs-only push never depends on a reviewer's size limits (#482).
-4. Prompts for confirmation, unless `--auto-push` was selected. With no
-   terminal on stdin (an agent or background run) there is nothing to confirm
-   on, so it prints `approved but not pushed: no terminal to confirm on; re-run
-   with --auto-push, or push <sha> yourself` and exits 4 (#628).
+4. Prompts for confirmation, unless `--auto-push` was selected. A caller may
+   pipe the answer in. End of input at the prompt (stdin from `/dev/null` in an
+   agent or background run, or Ctrl-D) means nobody can confirm, so it prints
+   `approved but not pushed: ...; re-run with --auto-push, or push <sha>
+   yourself` and exits 4 (#628).
 5. Validates the receipt after confirmation, immediately before push, naming the
    lane it dispatched. That enforces the diff's lane requirement and also
    requires the review this run performed to still be approved.

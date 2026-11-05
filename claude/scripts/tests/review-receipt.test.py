@@ -3347,6 +3347,27 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.check(False)
         self.check(False, "--reviewer", "codex")
 
+    def test_a_legacy_marker_at_another_base_tip_still_retires_the_approval(self):
+        """An older gate blocked after a sibling moved the tip; its key names that tip."""
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        self.advance_main()
+        snapshot = self.capture(reviewer="antigravity")
+        self.block(snapshot)
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        spec = importlib.util.spec_from_file_location("receipt_identity_tip", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        artifact = json.loads(snapshot.read_text())["artifact"]
+        legacy, key = module.legacy_artifact_identity(artifact)
+        self.assertNotEqual(legacy["base"], self.git("rev-parse", "main^"))
+        record["artifact"] = legacy
+        (marker.parent / (key + ".json")).write_text(json.dumps(record))
+        marker.unlink()
+        self.check(False)
+        self.check(False, "--reviewer", "codex")
+
     def test_snapshot_capture_resolves_the_base_once(self):
         """Both stable_capture passes use one resolved base commit."""
         spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)

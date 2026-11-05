@@ -1273,20 +1273,53 @@ def assert_not_blocked(receipts, record):
     hold `attempt_lock`, so a marker written concurrently is either seen here
     or written after the decision. A receipt without a capture sequence
     predates #573 and is refused whenever a marker exists.
+
+    Markers written before the merge-base key (`legacy_artifact_identity`)
+    are keyed by whatever base TIP that gate saw, which may differ from this
+    record's while naming the same merge base. They cannot be looked up by
+    key, so every legacy marker in the store is read and applies when its
+    head, scope and patch match and its base tip shares this record's merge
+    base, or cannot be resolved at all (fail closed).
     """
-    for identity, key in (
-        artifact_identity(record["artifact"]),
-        legacy_artifact_identity(record["artifact"]),
-    ):
-        path = blocks_dir(receipts) / (key + ".json")
-        # Only a genuine ENOENT is "no marker": os.path.lexists also answers
-        # False when the lookup itself fails (an unsearchable store), which
-        # must refuse.
-        try:
-            os.lstat(path)
-        except FileNotFoundError:
-            continue
+    artifact = record["artifact"]
+    identity, key = artifact_identity(artifact)
+    directory = blocks_dir(receipts)
+    path = directory / (key + ".json")
+    # Only a genuine ENOENT is "no marker": os.path.lexists also answers False
+    # when the lookup itself fails (an unsearchable store), which must refuse.
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
         refuse_if_blocked_before(path, identity, record)
+    try:
+        entries = sorted(directory.iterdir())
+    except FileNotFoundError:
+        return
+    repo = Path(record["repository"])
+    for entry in entries:
+        if entry.suffix != ".json" or entry.is_symlink():
+            continue
+        marker = read_json(entry)
+        legacy = marker.get("artifact") if type(marker) is dict else None
+        if type(legacy) is not dict or "base" not in legacy or "merge_base" in legacy:
+            continue
+        if (
+            legacy.get("head") != artifact["head"]
+            or legacy.get("scope") != artifact["scope"]
+            or legacy.get("patch_sha256") != artifact["review_diff_sha256"]
+        ):
+            continue
+        base = legacy.get("base")
+        if base != artifact["base"]["commit"]:
+            try:
+                shared = git(repo, "merge-base", str(base), artifact["head"]).decode().strip()
+            except (subprocess.SubprocessError, OSError, ValueError, TypeError):
+                shared = None
+            if shared is not None and shared != artifact["base"]["merge_base"]:
+                continue
+        refuse_if_blocked_before(entry, legacy, record)
 
 
 def refuse_if_blocked_before(path, identity, record):

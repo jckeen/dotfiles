@@ -50,7 +50,8 @@
 #      Codex lane refuses to fall back from
 #   2  the review gate returned a blocking verdict
 #   3  the gate that ran last could not run (its own exit 3, passed through)
-#   4  approved but not pushed: no terminal to confirm on and no --auto-push (#628)
+#   4  approved but not pushed: end of input at the confirmation prompt (no
+#      terminal, /dev/null or Ctrl-D) and no --auto-push (#628)
 #
 # Run this in the morning after overnight.sh finishes.
 
