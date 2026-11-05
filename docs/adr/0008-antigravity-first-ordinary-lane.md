@@ -91,6 +91,29 @@ that a tier-1 diff never sends. The self-review guard stays *ahead* of the
 valve: it is about trust, not feasibility, and must fire whether or not a
 reviewer runs.
 
+**Considered and declined: routing by what a risk-path diff changes**
+(2026-10-19, #613). Two ways to reduce demand on Codex were proposed. Both are
+declined.
+
+- **Item 1: a comment-only change to a risk path needs only antigravity.**
+  It was built and then removed before landing. Comments are not provably
+  inert:
+  - a program can read its own source (`readFileSync`, `import.meta`,
+    `Function.prototype.toString`/`String(fn)`, `Function(`);
+  - a shell in verbose mode (`set -v`, a `-v` shebang) prints comments as it
+    reads them;
+  - aliases, heredocs, multi-line words and directive comments (`shellcheck`,
+    `noqa`, `@ts-`, source maps) make comment-shaped lines into code or data.
+
+  Two security reviews and a differential fuzz kept finding bypasses, and each
+  fix was another entry on a ban list. A fail-closed classifier for this cannot
+  be proven. The saving is only review cost, so it does not justify a
+  downgrade path on risk surfaces. A risk-path diff always requires `codex`.
+- **Item 2: merge-then-verify for routine non-risk changes.** Main in dotfiles
+  is effectively deployed, because it is symlinked into `~/.claude`, `~/.codex`
+  and `~/.gemini`. A post-merge check that opens a revert PR would leave a bad
+  change live until the revert merges. Every change keeps a pre-merge gate.
+
 **Escalation is always allowed; downgrade never is.** `REVIEW_LANE=codex` on an
 ordinary diff is honoured. `REVIEW_LANE=antigravity` on a codex-required diff is
 **refused**, not honoured — that request is exactly the downgrade the required

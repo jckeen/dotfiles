@@ -88,7 +88,14 @@ gate_extract_diff() {
   # failing a push instead of escalating it to a review. Adding the knob means
   # forwarding it to that `lane` call in the same change, with a wrapper test.
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
-  trap gate_cleanup EXIT
+  # A gate that already installed its own EXIT handler names it in
+  # GATE_EXIT_HANDLER, so this line does not swap it out for plain cleanup
+  # while the gate's cancel trap is still armed: a signal in that window used
+  # to run the cancel handler under the wrong EXIT handler and leave with
+  # status 2, the verdict code, for a run that reached no verdict.
+  # Expanding now is the point: the handler is chosen here, once.
+  # shellcheck disable=SC2064
+  trap "${GATE_EXIT_HANDLER:-gate_cleanup}" EXIT
   # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.
   DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
   GATE_SCOPE="$(jq -r '.artifact.scope' "$GATE_RUN_DIR/snapshot.json")"
@@ -393,6 +400,13 @@ gate_verify_agy_label() {
 #               degrades to a warning rather than a false fallback verdict.
 #   returns 1 — records exist but none of the newest mention the label.
 # Tests override the records location via AGY_CONVERSATIONS_DIR.
+# gate_ere_escape <text> — escape one operand for `grep -E` so it matches literally.
+gate_ere_escape() {
+  # The bracket expression lists `$` literally; nothing here should expand.
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | sed -e 's/[][\\.*^$()+?{}|]/\\&/g'
+}
+
 gate_verify_agy_model() {
   local want="$1"
   local dir="${AGY_CONVERSATIONS_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
@@ -410,9 +424,38 @@ gate_verify_agy_model() {
     yellow "⚠ model DB spot-check: 'strings' not found — cannot inspect the conversation records (warning only)."
     return 0
   fi
+  # agy 1.4.x records the model's slug (`agy models` prints it beside the
+  # label: "gemini-4-argon-high	Gemini 4 Argon (High)"), not the label
+  # (#696). Accept either. The slug is the label lowercased, with parentheses
+  # dropped and spaces as dashes; Claude slugs also turn dots into dashes.
+  # The derived slug must never widen the match: a label with no letters or
+  # digits derives an empty or lone-dash slug (and `grep -F ""` matches every
+  # line), and a shorter label's slug is a prefix of a longer model's slug
+  # ("gemini-4-argon" vs "gemini-4-argon-high"). So the slug forms match only
+  # as a whole token, bounded by characters that cannot continue a slug, and a
+  # label without a letter or digit is matched literally only. Every operand
+  # is escaped into one ERE so the label itself still matches literally.
+  local slug dotless label_re slug_re
+  slug="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '()' | tr -s ' ' '-')"
+  dotless="${slug//./-}"
+  # Both forms match as whole tokens: nothing alphanumeric may run straight
+  # into or out of them, and a slug may not continue with _ . or - either, so
+  # "gemini-4-argon" matches neither "gemini-4-argon-high" nor
+  # "gemini-4-argon_high". A label followed by a parenthesised tier, as
+  # "Gemini 4 Argon" is by " (High)", is still a prefix match and is left to
+  # the authoritative log-line check above.
+  label_re="(^|[^[:alnum:]])$(gate_ere_escape "$want")([^[:alnum:]]|$)"
+  slug_re=""
+  if [[ "$slug" == *[a-z0-9]* ]]; then
+    slug_re="(^|[^[:alnum:]_.-])($(gate_ere_escape "$slug")|$(gate_ere_escape "$dotless"))([^[:alnum:]_.-]|$)"
+  fi
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    if strings "$f" 2>/dev/null | grep -qF "$want"; then
+    # `grep -q` exits at the first match and `strings` then dies of SIGPIPE.
+    # Under the gates' `set -o pipefail` that made a MATCH read as a miss on
+    # any record large enough to still be streaming (#696), so the reader's
+    # status is discarded and only grep's decides.
+    if { strings "$f" 2>/dev/null || true; } | grep -qE -e "$label_re" ${slug_re:+-e "$slug_re"}; then
       green "✓ model DB spot-check: $(basename "$f") records the requested label '$want'."
       return 0
     fi

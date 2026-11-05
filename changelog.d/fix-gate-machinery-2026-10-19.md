@@ -1,0 +1,174 @@
+## 2026-10-19 — fix(gates): verdicts from runs that did not complete, exit 2 only by choice, bytecode caches (#515, #579, #581)
+
+- **A failed, timed-out or cancelled Antigravity run is held to the
+  completed-run parse (#579).** Its output was searched for anchored P0–P2
+  lines only, so a stray blocker (`- [P3] nit; also [P1] bypass`) or text that
+  is not findings at all left as a degraded exit 3 with no block marker, and an
+  older Codex receipt for the same artifact stayed shippable. `agy_output_may_block`
+  now decides every exit after agy wrote output; absent output, `LGTB` and
+  P3-only output still degrade. The Codex gate already applied this rule.
+- **Exit 2 is only ever an exit a gate chose (#515).** On bash 5.2 a signal that
+  lands while the shell re-parses a command substitution makes the trap command
+  fail to parse; the handler never runs and `set -e` ends the shell with status
+  2, the verdict code. Bash 5.3 runs the handler. Each gate's EXIT handler now
+  catches a status 2 that no `exit` command produced: the Codex gate invalidates
+  its lane and exits 3, the Antigravity gate exits 1, and both keep exit 2 when
+  the reviewer's output already carries a verdict. A fixture holds the shell in
+  that parse on demand. Not closed: where bash is not checking command status
+  the signal is dropped and the gate runs on.
+- **Diff capture no longer swaps the Codex gate's EXIT handler.** While
+  `gate_extract_diff` ran, its plain cleanup handler replaced the gate's own
+  with the cancel trap still armed, and a signal there exited 2. The gate
+  names its handler in `GATE_EXIT_HANDLER` and the capture keeps it.
+- **An ignored `__pycache__` beside a skill or agent script still blocks a
+  committed review (#581, declined).** An exemption for a `*.pyc` beside its
+  `.py` was built and withdrawn after the Codex gate showed the cache can carry
+  code the source does not: Python imports a timestamp-valid cache without
+  reading the source, and recompiling does not reproduce the bytes to compare.
+  The remedy is upstream: `run-tests.sh` writes no bytecode (#633) and gate
+  runs set `PYTHONDONTWRITEBYTECODE=1`.
+
+## 2026-10-19 — fix(gates): a repo-root node_modules no longer blocks every gate in a bun/npm project (#651)
+
+- **The #514 vendored-tree rule covers the repository root.** An installed
+  root `node_modules` holds dependencies' own `CLAUDE.md` and `SKILL.md`
+  files (`bun-types`, `playwright-core`), so `lane` and both gates refused
+  every ordinary JS repo as a dirty instruction surface. `review-receipt.py`
+  now leaves out a path under the root `node_modules` when that directory is
+  an ignored real directory and a regular-file `bun.lock`, `bun.lockb` or
+  `package-lock.json` sits beside it. Ignoring only the planted file, a
+  re-included child, a symlinked lockfile, a symlinked tree or a nested
+  package's `node_modules` still refuse. `bun.lockb` now also counts for the
+  skill and scripts trees.
+- **`review-receipt.py` is executable**, as the review-gates skill invokes it.
+
+## 2026-10-19 — fix(gates): the Codex review cannot escalate out of its read-only sandbox (#651)
+
+- **`-s read-only` was not read-only.** The gate pinned the sandbox but not
+  the approval policy, so it inherited the user's
+  `approval_policy = "on-request"` and `approvals_reviewer = "auto_review"`.
+  A command the sandbox denied could be re-run with
+  `sandbox_permissions = "require_escalated"`, and the automatic reviewer
+  approved it, unattended and unsandboxed. A probe on codex-cli 0.163.0 wrote
+  a file this way under `-s read-only`. During a gate run the reviewer acted on
+  the repro text (`bun install && bun run verify`), installed `node_modules`
+  into the worktree, and `verify --snapshot` refused the run. Both Codex
+  invocations now pass `-c approval_policy="never"`. `review-multipart.py`
+  refuses any native turn whose recorded `approval_policy` is not `never`,
+  alongside the existing read-only sandbox check.
+- **The user's execpolicy rules do not load either.** A `.rules` prefix rule
+  with `decision="allow"` (what "always allow" writes) auto-approves a
+  matching command together with its sandbox bypass, and `approval_policy`
+  never sees it. Both Codex invocations pass `--ignore-rules`.
+
+## 2026-10-19 — fix(gates): a foreign boundary's own config cannot hide a CLAUDE.md (#641)
+
+- **`boundary_listing()` pins where and how git looks.** It ran `ls-files`
+  inside a foreign repository boundary under that boundary's own config, so a
+  `core.worktree` there listed a decoy directory, and `core.ignoreCase=true`
+  let a tracked `claude.md` mask an untracked `CLAUDE.md` on a case-sensitive
+  filesystem. Both passed the instruction-surface sweep. The listing now runs
+  with `--work-tree BOUNDARY` and `-c core.ignoreCase=false`. The suggested
+  `-c core.worktree=` does not override the repository's own setting on git
+  2.43, so `--work-tree` is used.
+- **Worktree pointers are parsed as git parses them.** `worktree_gitdir()`
+  requires the exact `gitdir: ` prefix and removes only trailing CR/LF, and
+  the registered-gitdir read does the same (`registered_worktree()`). Both
+  used to `.strip()` the path, the bug class #541 fixed.
+
+## 2026-10-19 — fix(gates): review-and-push says why an approved run did not push (#628)
+
+- **No terminal and no `--auto-push` is exit 4 with a message.** Without a
+  terminal, `read -p` printed no prompt and failed at end of input, and
+  `set -e` ended the wrapper with a bare exit 1 right after "Safe to push.".
+  Four agent branches hit this on 2026-10-16 and pushed by hand. The wrapper
+  now prints `approved but not pushed: no terminal to confirm on; re-run with
+  --auto-push, or push SHA yourself` and exits 4. The script header and
+  `claude/scripts/README.md` document every exit status.
+- **End of input at the push prompt is exit 4 too.** Ctrl-D at "Push to
+  remote?" failed `read` and ended the script with a bare exit 1.
+- **A piped answer still counts.** The first cut tested for a terminal before
+  prompting, so a caller feeding `y` on stdin (the shipping suites do) got exit
+  4 before the push-time checks ran. The wrapper now lets `read` decide: only
+  end of input, from `/dev/null` or Ctrl-D, means nobody is there to confirm.
+
+## 2026-10-19 — fix(gates): a sibling moving origin/main no longer voids a review in flight (#680)
+
+- **The review base is pinned when the run begins.** A gate's snapshot
+  recorded `origin/main` and re-resolved it at every verify. A fetch by any
+  sibling worktree moved it, and the run refused with "repository changed
+  during review or after approval". That happened five times in one session
+  of parallel merges, each costing a 15–20 minute re-run. `stable_capture`
+  now resolves the base once, and `verify` re-captures against the commit
+  pinned in the snapshot. The branch's own HEAD, tree, index and files still
+  have to match exactly.
+- **`check` compares merge bases, not base tips.** The reviewed diff is
+  `merge_base..HEAD`, so a receipt stays valid while the base tip moves on.
+  It still refuses when the merge base differs: a receipt taken with a
+  narrower `--base`, or a branch the base has since absorbed.
+  `workflow-shipping.test.py` asserts that rule for the pre-push hook: a
+  sibling ref with the same merge base is accepted, a base that already
+  contains HEAD is refused unless `REVIEW_RECEIPT_BASE` names it.
+- **Blocking markers key on the merge base too.** `artifact_identity` keyed
+  a #573 marker by the base tip, so once a sibling moved the tip a later
+  blocking verdict wrote a different key from the approval it should retire,
+  and `check` accepted the approval. The marker now carries `merge_base`,
+  and the lookup still reads a marker written under the old base-tip key, so
+  a blocker recorded before this change keeps retiring what it retired.
+
+## 2026-10-19 — test(gates): the multipart request-changed case no longer collides with concurrent runs (#680)
+
+- **The flake was a collision, not a timing race.** The mid-run mutation
+  finds the gate's request file under the shared `/tmp` by its digest. Every
+  concurrent run of `codex-review-gate.test.sh` built a byte-identical
+  request, so the stub found two files and its single-hit assertion failed.
+  Codex then exited 1 and the case degraded to rc 3 instead of the rc 2
+  verdict (#679). Four runs in parallel failed 4 of 4 before the fix. The
+  fixture now adds a per-run nonce, so each run's request is unique.
+- **The base-mutation cases follow the pinned base.** A sibling moving the
+  base mid-review now completes the review, and the receipt survives. A base
+  that absorbed the branch completes too, but `check` then refuses the
+  receipt because its merge base no longer matches.
+
+## 2026-10-19 — fix(codex): the read-only profile example cannot escalate out of its sandbox (#659)
+
+- **`codex/readonly.config.toml.example` pins `approval_policy = "never"`.**
+  It used `on-request`. A named profile layers over the user's base config,
+  and an `approvals_reviewer = "auto_review"` there approves escalation out of
+  the read-only sandbox unattended, the same path #659 found in the review
+  gate. `tests/codex-config.test.sh` now refuses `on-request` in the example.
+
+## 2026-10-19 — docs(adr): ADR-0008 records #613 as considered and declined
+
+- **Item 1, comment-only risk-path downgrade, is declined.** It was built
+  and then removed before landing. Comments are not provably inert: programs
+  read their own source, verbose shells print comments, and aliases, heredocs
+  and directive comments turn comment-shaped lines into code. Two security
+  reviews and a differential fuzz kept finding bypasses, so a risk-path diff
+  always requires `codex`.
+- **Item 2, merge-then-verify, is declined.** Main is effectively deployed
+  through the `~/.claude` symlinks, so every change keeps a pre-merge gate.
+
+## 2026-10-22 — fix(gates): the Antigravity gate names a rejected model pin, and its DB spot-check works (#696 follow-up, #715)
+
+- **Scope.** #714 already moved the default pin to `Gemini 4 Argon (High)`.
+  These are the parts of #696 it left open.
+
+- **A rejected pin is reported as a configuration error, not an outage.**
+  When agy's stderr says the model selection is invalid, the gate prints
+  `agy rejected the pinned model "LABEL"; set ANTIGRAVITY_GATE_MODEL (or
+  --model) to a label from agy models`. It still degrades, and exits 3
+  under `--require`.
+- **The model DB spot-check works again.** The check ran `strings | grep
+  -q`. On a large record grep stopped at the first match, `strings` died of
+  SIGPIPE, and under `set -o pipefail` the match read as a miss. That
+  happened on every real run. The check now discards the reader's status. It also accepts the slug agy 1.4.x records
+  (`gemini-4-argon-high`) beside the display label.
+- **The slug never widens the match.** A label with no letters or digits
+  derived an empty slug, which matched every record, and a shorter label's
+  slug prefix-matched a longer model's (`gemini-4-argon` against
+  `gemini-4-argon-high`). The slug forms match only as whole tokens, a label
+  without a letter or digit matches literally only, and the label is escaped
+  into the same pattern so it still matches as written. Neither form may run
+  straight into a letter, digit or (for a slug) `_`; a label followed by a
+  parenthesised tier is left to the authoritative log-line check.
