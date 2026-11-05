@@ -48,7 +48,7 @@ When the user asks about hygiene state:
 
 ## Important: agent-created repos
 
-If you (the Codex agent) run `gh repo create` or `gh repo clone` yourself,
+If you (Claude) run `gh repo create` or `gh repo clone` yourself,
 the shell wrapper does not fire — your `gh` invocation goes directly to the
 binary. **Run `~/dev/dotfiles/gh-bootstrap.sh <owner/repo>` immediately
 after** any successful create/clone you do, so the new repo doesn't drift.

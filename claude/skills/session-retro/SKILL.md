@@ -15,11 +15,11 @@ an ADR in `docs/adr/`.
 ## Scope — what this skill is and is NOT
 
 - **IS:** improving the *toolset* — skills, their trigger descriptions, CLAUDE.md, ADRs.
-- **IS NOT:** logging what happened. For that, defer to the existing skills:
-  - `changelog` — what changed this session
-  - `log-error` — a persistent error pattern + classification
-  - `handoff` — context for the next session
-  If the user wants a record, point them there and stop.
+- **IS NOT:** logging what happened. That belongs in CHANGELOG.md, or the branch's `changelog.d/` fragment where
+  the repo keeps one (what changed),
+  a GitHub issue or the `log-error` skill if available (a recurring error
+  pattern), or `handoff` (context for the next session). If the user wants a
+  record, point them there and stop.
 
 ## When NOT to run
 
@@ -27,7 +27,7 @@ an ADR in `docs/adr/`.
 - Trivial / social pleasantries with no session learning behind them.
 - A session where nothing notable was learned — say so in one line and stop (see step 5).
 - A session you already retro'd — never retro the same session twice.
-- When the user explicitly just wants a log entry — route to `changelog` / `log-error` / `handoff`.
+- When the user explicitly just wants a log entry — route it as in Scope above.
 
 ## Workflow
 
@@ -61,8 +61,9 @@ an ADR in `docs/adr/`.
 6. **Apply only what was confirmed.** Then:
    - For a *new* skill: create `claude/skills/<name>/SKILL.md` with frontmatter
      (`name`, third-person `description` with WHAT + "Use when…" triggers).
-   - For a description fix: tighten the `description` so the trigger phrasing matches how the
-     user actually asked.
+   - For a description fix: generalize the trigger wording to the class of request that
+     missed — never paste the user's phrasing in verbatim, which overfits to one case. Mark
+     the change unmeasured unless that skill has an eval suite and it was rerun.
    - For a retired skill: confirm twice before deleting; prefer noting it for removal over
      silent deletion.
    - For a CLAUDE.md / ADR change: edit memory, or scaffold a new ADR if the learning is

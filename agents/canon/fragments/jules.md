@@ -48,6 +48,11 @@ GENERATED file — edit its source and regenerate. Never hardcode a count,
 version, SHA, or hostname in guidance prose that CI cannot assert; point at the
 file that holds it instead. A dated record — a `CHANGELOG.md` entry, a handoff
 note — is a point-in-time statement and may state the figure it measured.
+A pull request's changelog entry is one `changelog.d/<branch-slug>.md`
+fragment (the branch name with every `/` turned to `-`); `CHANGELOG.md` is
+never edited in a pull request, except the one that folds the fragments in.
+A fragment allows no `<` placeholders (write NAME-style ones), code fences or
+HTML comments.
 
 ## Out of bounds
 

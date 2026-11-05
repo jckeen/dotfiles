@@ -32,22 +32,25 @@ imported here (see the README's "The private memory repos" section).
 ## Tech stack
 
 - **TypeScript** primary; **bun** as the runtime — never npm/npx.
-- In Bash, prefer `rg`, `fd`, `bat`, `eza` over `grep`/`find`/`cat`/`ls`. In
+- In Bash, prefer `rg` over `grep`; use `fd`, `bat`, `eza` over
+  `find`/`cat`/`ls` only when `command -v` shows they're installed. In
   portable code that ships to others, use language-native fs APIs and prefer
   `find` over `fd` (fd isn't guaranteed installed).
 - Never hardcode user paths — use `$HOME` or relative paths.
 - Explicit error handling; never silently swallow errors.
 - Use the latest stable version of any dependency — don't trust versions from
-  training data. Check the registry before adding; run `npm outdated` after.
+  training data. Check the registry before adding; run `bun outdated` after.
 - Calling an external API: fetch the live reference for that exact endpoint and
   version at code-time — verify every field, param, and scope against the live
   page rather than extrapolating from memory.
 
 ## Session start
 
-- Read `CLAUDE.md` and `CHANGELOG.md` if present; run `git status` and
-  `git log --oneline -5` to orient. If a project has no `CLAUDE.md`, offer to
-  bootstrap one.
+- The harness already loads `CLAUDE.md` and a git status snapshot with recent
+  commits — don't re-read them. When picking up project work, read
+  `CHANGELOG.md` if present, plus any unfolded `changelog.d/` fragments, which
+  hold the newest entries; run `git status`/`git log` only when no snapshot
+  is in context. If a project has no `CLAUDE.md`, offer to bootstrap one.
 
 ## Verification
 
@@ -94,12 +97,16 @@ imported here (see the README's "The private memory repos" section).
   make active guidance reflect the present; verify with a `grep -ri <removed>`.
 - Treat `CHANGELOG.md` as living: update it every 1–2 meaningful commits,
   appending rather than rewriting — not batched to end-of-session, which gets
-  lost when a session ends early.
+  lost when a session ends early. Where a repo keeps `changelog.d/`, add or
+  update the PR's `changelog.d/<branch-slug>.md` fragment instead of editing
+  `CHANGELOG.md`; a fragment allows no `<` placeholders (write NAME-style
+  ones), code fences or HTML comments.
 - Doc contract: a repo's Markdown surfaces are declared in a root
   `.doc-contract` (LIVING / GENERATED / SOURCE / HISTORICAL + BANNED guards)
   and asserted in CI by `check-doc-truth.sh`; bootstrap or audit one with
-  `/drift-sweep` (ADR 0005 in dotfiles). Keep LIVING small — a wrong doc is
-  worse than no doc; delete or mark HISTORICAL rather than let it freeze.
+  the `drift-sweep` skill if it is enabled (ADR 0005 in dotfiles). Keep
+  LIVING small — a wrong doc is worse than no doc; delete or mark HISTORICAL
+  rather than let it freeze.
 - Never hardcode a count, version, SHA, or hostname in guidance prose that CI
   can't assert — point at the canonical source instead. A dated record (a
   CHANGELOG entry, a handoff note) is a point-in-time statement and may state
@@ -151,6 +158,12 @@ selection, handoff payload, and verdict-persistence mechanics: the
   `build`, `ci`, `revert`).
 - Stage specific files — avoid `git add -A` / `git add .` so secrets and
   generated files don't slip in. Never stage `.env`, credentials, tokens, keys.
+- Push once per unit of work, not once per fix. Every push to a PR re-runs the
+  full CI suite and, in repos running the `codex-review` workflow, gets an
+  automatic `@codex review` request (docs-only diffs that touch no
+  instruction surface are skipped and pass at once). Commit locally as often as you like,
+  run lint/types/tests locally, and push when the change is ready for review
+  or CI.
 
 ## Auth at the boundary
 
