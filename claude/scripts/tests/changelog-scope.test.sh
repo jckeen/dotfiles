@@ -83,6 +83,19 @@ case_ "fold that interleaves two fragments' lines" fail 'rm changelog.d/theirs.m
 case_ "fold that inserts the fragments between an older heading and its bullets" fail 'rm changelog.d/theirs.md changelog.d/other.md; awk '"'"'{print} /^## 2026-10-01/{print ""; printf "## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n"}'"'"' CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fold placed directly above the first existing entry" pass 'rm changelog.d/theirs.md changelog.d/other.md; awk '"'"'/^## 2026-10-01/{printf "## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n"} {print}'"'"' CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fold whose copied heading differs by a byte" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs!\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+
+# A fragment may hold several dated entries, and a fold orders every entry
+# newest first, so one fragment's entries can straddle another's. A new base
+# adds such a fragment; the cases below run against it.
+git checkout -q -f -B base2 "$BASE_SHA" && git clean -fdq
+printf '## 2026-10-21 — fix: multi-new\n\n- newer\n\n## 2026-10-18 — fix: multi-old\n\n- older\n' >changelog.d/multi.md
+git add -A && git commit -qm "base with a two-entry fragment"
+BASE_SHA="$(git rev-parse HEAD)"; export BASE_SHA
+RM_ALL='rm changelog.d/theirs.md changelog.d/other.md changelog.d/multi.md'
+case_ "fold of a two-entry fragment, every entry newest first" pass "$RM_ALL"'; printf "## 2026-10-21 — fix: multi-new\n\n- newer\n\n## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n## 2026-10-18 — fix: multi-old\n\n- older\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that keeps fragments whole and so breaks date order" fail "$RM_ALL"'; printf "## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n## 2026-10-21 — fix: multi-new\n\n- newer\n\n## 2026-10-18 — fix: multi-old\n\n- older\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that splits an entry around another" fail "$RM_ALL"'; printf "## 2026-10-21 — fix: multi-new\n\n## 2026-10-20 — fix: theirs\n\n- theirs\n\n- newer\n\n## 2026-10-19 — fix: other\n\n- other\n\n## 2026-10-18 — fix: multi-old\n\n- older\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that drops one entry of a two-entry fragment" fail "$RM_ALL"'; printf "## 2026-10-21 — fix: multi-new\n\n- newer\n\n## 2026-10-20 — fix: theirs\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fragment plus a direct ## entry" fail 'echo "## m" > changelog.d/mine.md; printf "\n## 2026-10-22 — fix: direct\n\n- d\n" >> CHANGELOG.md'
 case_ "fragment plus an entry grep would call binary" fail 'echo "## m" > changelog.d/mine.md; printf "\n## 2026-10-22 — fix: direct \xff\n" >> CHANGELOG.md'
 case_ "fragment plus a NUL byte in CHANGELOG.md" fail 'echo "## m" > changelog.d/mine.md; printf "\0\n## 2026-10-22 — fix: direct\n" >> CHANGELOG.md'

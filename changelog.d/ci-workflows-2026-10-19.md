@@ -31,6 +31,8 @@
   content validator alike, and matching lines anywhere in the file let a fold
   drop a bullet an older entry shared or hide every entry in an HTML comment.
   The step now requires `CHANGELOG.md` to differ from the base by exactly one
-  inserted block whose non-blank lines are the removed fragments' lines, each
-  fragment contiguous and in order, placed above the first existing entry;
-  eight cases in `changelog-scope.test.sh` cover the bypasses.
+  inserted block whose non-blank lines are the removed fragments' entries,
+  each entry contiguous, in newest-first date order, placed above the first
+  existing entry (a fragment may hold several entries, so the entry, not the
+  fragment, is what stays whole); twelve cases in `changelog-scope.test.sh`
+  cover the bypasses.

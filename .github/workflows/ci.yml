@@ -155,9 +155,9 @@ jobs:
             [ "$changelog" -eq 1 ] || { echo "::error::this PR removes a changelog fragment without folding it into CHANGELOG.md"; fail=1; }
             [ "$removed" -eq "$on_base" ] || { echo "::error::this PR removes $removed of the $on_base changelog fragments on the base; a fold removes them all"; fail=1; }
             # And CHANGELOG.md differs from the base by exactly one inserted block
-            # whose non-blank lines are the removed fragments' non-blank lines,
-            # each fragment contiguous and in order, placed above the base's first
-            # entry. Matching lines anywhere let a
+            # whose non-blank lines are the removed fragments' entries, each entry
+            # contiguous, newest first, placed above the base's first entry.
+            # Matching lines anywhere let a
             # fold drop a bullet that an older entry happened to share, or hide
             # every entry inside an HTML comment; the single-block rule allows
             # neither, and a fold copies fragments verbatim, so it is the right
@@ -187,7 +187,20 @@ jobs:
           head = blob("HEAD:CHANGELOG.md")
           with open(removed_list, "rb") as handle:
               paths = [p for p in handle.read().split(b"\0") if p]
-          fragments = {p: lines(blob(base_sha + ":" + p.decode())) for p in paths}
+          # The unit a fold keeps whole is the entry, not the fragment: a fragment
+          # may hold several dated entries and a fold orders all entries newest
+          # first, so one fragment's entries can straddle another's. Headings are
+          # unique across pending fragments (assemble-changelog.sh --check), so a
+          # greedy match is unambiguous.
+          entries = []
+          for path in paths:
+              current = None
+              for line in lines(blob(base_sha + ":" + path.decode())):
+                  if line.startswith(b"## "):
+                      current = [line]
+                      entries.append((path, current))
+                  elif current is not None:
+                      current.append(line)
 
           # Whole lines, not bytes: a byte-level common prefix would swallow the
           # `#` an inserted heading shares with the title it was placed above.
@@ -213,22 +226,27 @@ jobs:
           inserted = [line for line in head_lines[prefix:len(head_lines) - suffix] if line.strip()]
 
           pos, failed = 0, False
-          pending = dict(fragments)
+          pending = list(entries)
+          order = []
           while pos < len(inserted) and pending:
-              for path, want in pending.items():
-                  if want and inserted[pos:pos + len(want)] == want:
+              for index, (path, want) in enumerate(pending):
+                  if inserted[pos:pos + len(want)] == want:
                       pos += len(want)
-                      del pending[path]
+                      order.append(want[0][3:13])
+                      del pending[index]
                       break
               else:
-                  print("::error::CHANGELOG.md: inserted line is not a fragment's: " + inserted[pos].decode("utf-8", "replace"))
+                  print("::error::CHANGELOG.md: inserted line is not a fragment entry's: " + inserted[pos].decode("utf-8", "replace"))
                   failed = True
                   break
-          for path in pending:
-              print("::error::" + path.decode("utf-8", "replace") + ": its entry is not folded into CHANGELOG.md as one contiguous block")
+          for path, want in pending:
+              print("::error::" + path.decode("utf-8", "replace") + ": entry not folded into CHANGELOG.md as one contiguous block: " + want[0].decode("utf-8", "replace"))
               failed = True
           if not failed and pos != len(inserted):
               print("::error::CHANGELOG.md: the inserted block holds lines no removed fragment has")
+              failed = True
+          if not failed and any(order[i] < order[i + 1] for i in range(len(order) - 1)):
+              print("::error::CHANGELOG.md: folded entries are not in newest-first date order")
               failed = True
           sys.exit(1 if failed else 0)
           PY_FOLD
