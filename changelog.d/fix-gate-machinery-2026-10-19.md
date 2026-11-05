@@ -85,6 +85,10 @@
   `claude/scripts/README.md` document every exit status.
 - **End of input at the push prompt is exit 4 too.** Ctrl-D at "Push to
   remote?" failed `read` and ended the script with a bare exit 1.
+- **A piped answer still counts.** The first cut tested for a terminal before
+  prompting, so a caller feeding `y` on stdin (the shipping suites do) got exit
+  4 before the push-time checks ran. The wrapper now lets `read` decide: only
+  end of input, from `/dev/null` or Ctrl-D, means nobody is there to confirm.
 
 ## 2026-10-19 — fix(gates): a sibling moving origin/main no longer voids a review in flight (#680)
 
@@ -100,6 +104,9 @@
   `merge_base..HEAD`, so a receipt stays valid while the base tip moves on.
   It still refuses when the merge base differs: a receipt taken with a
   narrower `--base`, or a branch the base has since absorbed.
+  `workflow-shipping.test.py` asserts that rule for the pre-push hook: a
+  sibling ref with the same merge base is accepted, a base that already
+  contains HEAD is refused unless `REVIEW_RECEIPT_BASE` names it.
 
 ## 2026-10-19 — test(gates): the multipart request-changed case no longer collides with concurrent runs (#680)
 

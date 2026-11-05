@@ -599,14 +599,19 @@ check_review_target
 if [[ "$AUTO_PUSH" != "true" ]]; then
   # Without a terminal `read -p` prints no prompt and fails at end of input, and
   # `set -e` then ended the script with a bare exit 1 right after an approval
-  # (#628). Say what happened and exit with its own code instead.
-  if [[ ! -t 0 ]]; then
-    echo "approved but not pushed: no terminal to confirm on; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2
+  # (#628). Let `read` decide rather than testing for a terminal: a caller may
+  # pipe the answer in (the shipping tests do), and only end of input, from
+  # /dev/null or Ctrl-D, means there is nobody to confirm. Say what happened
+  # and exit with its own code instead.
+  if ! read -rp "Push to remote? (Y/n): " CONFIRM; then
+    echo
+    if [[ -t 0 ]]; then
+      echo "approved but not pushed: no answer at the prompt; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2
+    else
+      echo "approved but not pushed: no terminal to confirm on; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2
+    fi
     exit 4
   fi
-  # End of input at the prompt (Ctrl-D) fails `read`, and `set -e` would end
-  # the script with a bare exit 1 right after an approval, as #628 did.
-  read -rp "Push to remote? (Y/n): " CONFIRM || { echo; echo "approved but not pushed: no answer at the prompt; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2; exit 4; }
   if [[ "$CONFIRM" != "" && "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
     echo "Aborted. Changes remain local."
     exit 0
