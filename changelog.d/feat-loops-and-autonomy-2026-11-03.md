@@ -101,6 +101,7 @@
   a connective word or two.
 
 - **Ninth Codex round (2026-11-05).** The Stop hook template runs its check
-  under `timeout` below the hook's own timeout (set to 120 s in the settings
-  entry), so a hung check is a recorded failed attempt rather than a timed-out
-  hook whose output Claude discards.
+  under `timeout -k 5` below the hook's own timeout (set to 120 s in the
+  settings entry), so a hung check, even one that ignores SIGTERM, is a
+  recorded failed attempt rather than a timed-out hook whose output Claude
+  discards.
