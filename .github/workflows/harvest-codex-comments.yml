@@ -1,13 +1,33 @@
 name: harvest-codex-comments
 
-# Close-time capture of the GitHub Codex bot's inline review comments (#555).
+# Captures the GitHub Codex bot's inline review comments on a merged PR (#555).
 # The in-session PreMergeCodexHarvest hook fires when `gh pr merge --auto` arms
-# auto-merge, which is before the bot has reviewed, so it harvests nothing; the
-# merge itself lands after CI, by which time the bot has normally commented.
+# auto-merge, which is before the bot has reviewed, so it harvests nothing.
 # This runs claude/scripts/harvest-codex-comments.sh for the merged PR, which
-# files (or appends to) one consolidated issue per PR. The nightly routine runs
-# the same script as a backstop for comments that land later; the script's
-# per-PR and per-comment markers make the two runs idempotent.
+# files (or appends to) one consolidated issue per PR. It runs twice over:
+#   - at close (pull_request: closed), for comments the bot left before the
+#     merge;
+#   - on each review the bot submits to the PR after it merged
+#     (pull_request_review: submitted), for comments that land later (#617).
+#     The bot often reviews minutes after a fast auto-merge, and the close-time
+#     run, about three seconds after the merge, then finds nothing.
+# The script's per-PR and per-comment markers make the runs idempotent, and
+# each one harvests every comment on the PR, not only the triggering review's.
+# Open PRs are codex-findings.yml's job (it labels unresolved bot threads);
+# this workflow acts on merged PRs only, so the two never overlap.
+#
+# Security of the review trigger. The event is caused by a bot, but nothing
+# from the review reaches the job except as data: the job's `if` compares the
+# reviewer's login, PR_NUMBER is the payload's integer PR number passed
+# through env, and comment bodies are read by the script through the API and
+# written to the issue as quoted text, never evaluated. The checkout is the
+# merge commit on the default branch, never the PR head. The token scopes are
+# the ones below, the same for both triggers. Fork PRs are skipped on both:
+# their GITHUB_TOKEN is read-only, so a harvest could not write anyway.
+#
+# A review event's pull_request object is GitHub's "simple pull request"
+# shape, which has merged_at but no `merged` field, so merged is tested as
+# `merged_at != null` on that path.
 #
 # Its own workflow rather than a job in delete-branch-on-close.yml: that one
 # holds contents: write for ref deletion, and this needs issues: write instead —
@@ -16,31 +36,45 @@ name: harvest-codex-comments
 on:
   pull_request:
     types: [closed]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: read # check out the merged commit for the script and gate-lib.sh
   issues: write # file or append to the consolidated issue, apply its labels
   pull-requests: read # list the PR's review comments and read its title
 
-# One harvest at a time per PR: two runs appending to the same issue body could
-# drop each other's items until the next run restores them. Keyed by PR, not
-# repository — different PRs write different issues, and a repository-wide
-# group would let a newer pending run replace an older one and lose its harvest.
-concurrency:
-  group: harvest-codex-comments-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   harvest:
     name: harvest Codex-bot comments of the merged PR
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # Same-repo PRs only: a fork PR's GITHUB_TOKEN is read-only whatever the
-    # permissions block says, so its harvest could not write. The nightly
-    # routine (a user token) still covers fork PRs.
+    # Merged same-repo PRs only: a fork PR's GITHUB_TOKEN is read-only whatever
+    # the permissions block says, so its harvest could not write. A fork PR's
+    # bot comments are harvested by running the script by hand. On the review
+    # trigger, only the Codex bot's reviews count: REST reports the app's login
+    # with the [bot] suffix, which no user account can hold.
     if: >-
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true) ||
+       (github.event_name == 'pull_request_review' &&
+        github.event.pull_request.state == 'closed' &&
+        github.event.pull_request.merged_at != null &&
+        github.event.review.user.login == 'chatgpt-codex-connector[bot]'))
+    # One harvest at a time per PR: two runs appending to the same issue body
+    # could drop each other's items until the next run restores them. Keyed by
+    # PR, not repository: different PRs write different issues, and a
+    # repository-wide group would let a newer pending run replace an older one
+    # and lose its harvest. Within a PR group a newer pending run does replace
+    # an older pending one, which is safe because every run harvests the whole
+    # PR. Only an eligible run joins the PR's group (the expression is the
+    # job's `if` verbatim): every other review on the PR gets a group of its
+    # own from its run id, so a human's review queued behind a running harvest
+    # can never replace the bot's pending run and then skip its own job.
+    concurrency:
+      group: "harvest-codex-comments-${{ (github.event.pull_request.head.repo.full_name == github.repository && ((github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'closed' && github.event.pull_request.merged_at != null && github.event.review.user.login == 'chatgpt-codex-connector[bot]'))) && format('pr-{0}', github.event.pull_request.number) || format('skip-{0}', github.run_id) }}"
+      cancel-in-progress: false
     steps:
       # The merge commit is on the default branch, so the script that runs is
       # the reviewed one, never the PR head's copy.

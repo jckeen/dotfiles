@@ -430,7 +430,7 @@ preamble_refused "pointer line with extra text" "$P1 more"
 
 # ── A pure content validator: no git at all ────────────────────────────
 # PR scope (one added fragment, no edits to others) needs the PR diff and lives
-# in the operator CI patch. Here a git that fails and leaves a marker proves
+# in ci.yml's doc-truth job. Here a git that fails and leaves a marker proves
 # --check never runs git.
 new_repo
 w changelog.d/x.md "## 2026-10-05 — feat: x" "- b"
