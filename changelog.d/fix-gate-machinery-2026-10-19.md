@@ -112,8 +112,9 @@
 - **Blocking markers key on the merge base too.** `artifact_identity` keyed
   a #573 marker by the base tip, so once a sibling moved the tip a later
   blocking verdict wrote a different key from the approval it should retire,
-  and `check` accepted the approval. The marker now carries `merge_base`;
-  markers written before this change no longer match and refuse.
+  and `check` accepted the approval. The marker now carries `merge_base`,
+  and the lookup still reads a marker written under the old base-tip key, so
+  a blocker recorded before this change keeps retiring what it retired.
 
 ## 2026-10-19 — test(gates): the multipart request-changed case no longer collides with concurrent runs (#680)
 

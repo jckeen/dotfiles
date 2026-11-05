@@ -3327,6 +3327,26 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.check(False)
         self.check(False, "--reviewer", "codex")
 
+    def test_a_marker_written_under_the_base_tip_key_still_retires_the_approval(self):
+        """Markers from before the merge-base key are looked up too, not skipped."""
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        snapshot = self.capture(reviewer="antigravity")
+        self.block(snapshot)
+        (marker,) = self.block_markers()
+        record = json.loads(marker.read_text())
+        spec = importlib.util.spec_from_file_location("receipt_identity", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        artifact = json.loads(snapshot.read_text())["artifact"]
+        legacy, key = module.legacy_artifact_identity(artifact)
+        self.assertNotEqual(key, marker.stem)
+        record["artifact"] = legacy
+        (marker.parent / (key + ".json")).write_text(json.dumps(record))
+        marker.unlink()
+        self.check(False)
+        self.check(False, "--reviewer", "codex")
+
     def test_snapshot_capture_resolves_the_base_once(self):
         """Both stable_capture passes use one resolved base commit."""
         spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)

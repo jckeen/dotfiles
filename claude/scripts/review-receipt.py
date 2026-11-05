@@ -1238,6 +1238,23 @@ def artifact_identity(artifact):
     return identity, digest(encoded(identity))
 
 
+def legacy_artifact_identity(artifact):
+    """The pre-merge-base marker identity, keyed by the base tip.
+
+    Markers written before `artifact_identity` moved to the merge base live
+    under this key. A lookup that computed only the new key would never see
+    them, and a blocker recorded before the upgrade would stop retiring the
+    approvals captured before it. `assert_not_blocked` checks both.
+    """
+    identity = {
+        "base": artifact["base"]["commit"],
+        "head": artifact["head"],
+        "scope": artifact["scope"],
+        "patch_sha256": artifact["review_diff_sha256"],
+    }
+    return identity, digest(encoded(identity))
+
+
 def blocks_dir(receipts):
     directory = receipts / "blocks"
     if directory.is_symlink():
@@ -1257,14 +1274,22 @@ def assert_not_blocked(receipts, record):
     or written after the decision. A receipt without a capture sequence
     predates #573 and is refused whenever a marker exists.
     """
-    identity, key = artifact_identity(record["artifact"])
-    path = blocks_dir(receipts) / (key + ".json")
-    # Only a genuine ENOENT is "no marker": os.path.lexists also answers False
-    # when the lookup itself fails (an unsearchable store), which must refuse.
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        return
+    for identity, key in (
+        artifact_identity(record["artifact"]),
+        legacy_artifact_identity(record["artifact"]),
+    ):
+        path = blocks_dir(receipts) / (key + ".json")
+        # Only a genuine ENOENT is "no marker": os.path.lexists also answers
+        # False when the lookup itself fails (an unsearchable store), which
+        # must refuse.
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            continue
+        refuse_if_blocked_before(path, identity, record)
+
+
+def refuse_if_blocked_before(path, identity, record):
     marker = read_json(path)
     if (
         type(marker) is not dict
