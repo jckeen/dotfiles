@@ -1801,7 +1801,7 @@ code="$(git -C "$R" rev-parse HEAD:code.txt)"
 top="$(printf '120000 blob %s\ta\n040000 tree %s\ta\n100644 blob %s\tcode.txt\n' "$tgt" "$mid" "$code" | git -C "$R" mktree)"
 crafted="$(git -C "$R" commit-tree "$top" -p HEAD -m "test: crafted tree")"
 DEST="$(mktemp -d)"
-jail_fns="$(sed -n '/^agy_jail_materialize() {/,/^}/p; /^agy_jail_mkdir_real() {/,/^}/p; /^agy_jail_prune_escaping_links() {/,/^}/p' "$GATE")"
+jail_fns="$(sed -n '/^agy_jail_materialize() {/,/^}/p; /^agy_jail_path_names_dotgit() {/,/^}/p; /^agy_jail_mkdir_real() {/,/^}/p; /^agy_jail_prune_escaping_links() {/,/^}/p' "$GATE")"
 if bash -c "$jail_fns"'
 agy_jail_materialize "$1" "$2" "$3"' jail-fns "$R" "$crafted" "$DEST" >/dev/null 2>&1; then
   failed=$((failed + 1)); echo "FAIL - crafted tree: the materialiser refuses a symlink and a directory under one name (it returned 0)"
@@ -1844,6 +1844,21 @@ rm -rf "$DEST"; DEST="$(mktemp -d)"
 assert "crafted tree: a git replace for a blob does not reach the workspace" "bash -c \"\$jail_fns\"'
 agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$(git -C "$R" rev-parse HEAD)' '$DEST' >/dev/null 2>&1 && grep -qx 'base line' '$DEST/code.txt'"
 git -C "$R" replace -d "$code"
+# A tracked `.git` entry, in any spelling git refuses, never reaches the
+# workspace: as a regular file it would be a gitfile pointer that `git init`
+# follows out of the jail.
+OTHER="$(mktemp -d)"
+git -C "$OTHER" init -q
+gitfile="$(printf 'gitdir: %s/.git\n' "$OTHER" | git -C "$R" hash-object -w --stdin)"
+for dotgit in .git .GIT .git. 'git~1' 'sub/.Git /x'; do
+  dg_top="$(printf '100644 blob %s\tcode.txt\0100644 blob %s\t%s\0' "$code" "$gitfile" "$dotgit" | git -C "$R" mktree -z)"
+  dg_commit="$(git -C "$R" commit-tree "$dg_top" -p HEAD -m "test: dotgit entry")"
+  rm -rf "$DEST"; DEST="$(mktemp -d)"
+  assert "crafted tree: a tracked '$dotgit' entry is refused" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$dg_commit' '$DEST' >/dev/null 2>&1 && [ ! -e '$DEST/$dotgit' ] && [ ! -e '$DEST/.git' ]"
+done
+assert "crafted tree: the other repository was not touched" "[ -z \"\$(git -C '$OTHER' status --porcelain)\" ] && [ ! -e '$OTHER/.git/HEAD.lock' ]"
+rm -rf "$OTHER"
 # The same functions, on a valid tree, still produce the files.
 plain="$(git -C "$R" rev-parse HEAD)"
 rm -rf "$DEST"; DEST="$(mktemp -d)"

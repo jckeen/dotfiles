@@ -50,3 +50,7 @@
   Replacement refs are ignored as the receipt helper ignores them, a failed
   tree listing fails the setup rather than passing an empty workspace, and a
   symlink target is written as the blob's exact bytes or refused.
+  A tracked `.git` entry in any spelling git refuses is refused too, and the
+  jail's `git init` runs only when nothing named `.git` exists there: a
+  tracked `.git` file is a gitfile pointer that `git init` would follow and
+  reinitialise another repository.

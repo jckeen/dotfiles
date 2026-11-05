@@ -622,6 +622,10 @@ agy_jail_materialize() {
     # No control characters: a newline or NUL-adjacent byte would be read
     # differently by the component walk, `dirname` and the final write.
     case "$path" in ''|/*|..|../*|*/..|*/../*|*[[:cntrl:]]*) rm -f -- "$listing"; return 1 ;; esac
+    # No `.git` component in any spelling git refuses on checkout: a tracked
+    # `.git` blob holding `gitdir: /elsewhere/.git` would make the `git init`
+    # below follow it and reinitialise that other repository (#687 follow-up).
+    if agy_jail_path_names_dotgit "$path"; then rm -f -- "$listing"; return 1; fi
     case "$type" in
       commit) continue ;;
       blob) ;;
@@ -653,6 +657,21 @@ agy_jail_materialize() {
     ln -s -- "$target" "$dest/$path" || return 1
   done
   agy_jail_prune_escaping_links "$dest"
+}
+
+# Whether any component of $1 is `.git` in a spelling git itself refuses:
+# case-insensitive, trailing dots and spaces ignored, and the 8.3 short name
+# `git~1`. Pure string work on each component.
+agy_jail_path_names_dotgit() {
+  local rel="$1" part lowered
+  while [[ -n "$rel" ]]; do
+    part="${rel%%/*}"
+    if [[ "$rel" == */* ]]; then rel="${rel#*/}"; else rel=""; fi
+    lowered="$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]')"
+    while [[ "$lowered" == *. || "$lowered" == *' ' ]]; do lowered="${lowered%?}"; done
+    [[ "$lowered" != .git && "$lowered" != 'git~1' ]] || return 0
+  done
+  return 1
 }
 
 # Create workspace directory $2 (relative to $1) one component at a time, with
@@ -738,6 +757,10 @@ agy_jail_setup() {
   # Inherited git routing (GIT_DIR, GIT_WORK_TREE, ...) would point this init
   # at some other repository and leave the workspace bare, so it is cleared
   # here and for agy itself, and the result is checked rather than trusted.
+  # Nothing may already be called .git here: a file there is a gitfile pointer
+  # that `git init` would follow out of the jail. The materialiser refuses the
+  # name, and this is the check that does not depend on it.
+  [[ ! -e "$AGY_JAIL/work/.git" && ! -L "$AGY_JAIL/work/.git" ]] || return 1
   env "${GIT_ENV_UNSET[@]}" git init -q "$AGY_JAIL/work" || return 1
   [[ -d "$AGY_JAIL/work/.git" && ! -L "$AGY_JAIL/work/.git" ]] || return 1
   AGY_ENV=(
