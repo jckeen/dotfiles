@@ -88,6 +88,8 @@ index, total, packet = int(m[1]), int(m[2]), m[4]
 fragment = prompt.split("\n" + m[5] + "\n")[1]
 assert hashlib.sha256(fragment.encode()).hexdigest() == m[3]
 assert argv[argv.index("-s") + 1] == "read-only"
+assert argv[argv.index('approval_policy="never"') - 1] == "-c"
+assert "--ignore-rules" in argv
 parts = fake / "mp-fragments"
 parts.mkdir(exist_ok=True)
 (parts / str(index)).write_text(fragment)
@@ -104,7 +106,7 @@ records += [
     {"type": "response_item", "payload": {"type": "message", "role": "user",
      "content": [{"type": "input_text", "text": prompt}]}},
     {"type": "turn_context", "payload": {"model": "fixture-model",
-     "sandbox_policy": {"type": "read-only"}}},
+     "approval_policy": "never", "sandbox_policy": {"type": "read-only"}}},
     {"type": "event_msg", "payload": {"type": "token_count",
      "info": {"model_context_window": 258400 if index == 1 else 828400}}},
 ]
@@ -130,7 +132,7 @@ else:
                     hits.append(path)
             except OSError:
                 continue
-        assert len(hits) == 1, "request file not found"
+        assert len(hits) == 1, f"expected one request file, found {len(hits)}"
         with open(hits[0], "a") as request:
             request.write("mutated mid-run\n")
         (fake / "mp-request-mutated").touch()
@@ -280,6 +282,12 @@ assert "diff absent from codex argv" "! grep -q 'SECRET_MARKER_XYZ' '$CODEX_FAKE
 assert "fence preamble absent from codex argv" "! grep -q 'UNTRUSTED' '$CODEX_FAKE_DIR/argv'"
 assert "structured schema requested" "grep -q -- '--output-schema' '$CODEX_FAKE_DIR/argv'"
 assert "review runs sandboxed read-only" "grep -qx 'read-only' '$CODEX_FAKE_DIR/argv'"
+# -s read-only alone is not read-only when the user's config lets the model
+# request escalation and an auto reviewer approves it (#651).
+assert "review cannot escalate out of the sandbox" "grep -A1 -x -- '-c' '$CODEX_FAKE_DIR/argv' | grep -qx 'approval_policy=\"never\"'"
+# An execpolicy allow rule auto-approves a matching command with its sandbox
+# bypass, so the user's .rules files must not load either.
+assert "review loads no execpolicy rules" "grep -qx -- '--ignore-rules' '$CODEX_FAKE_DIR/argv'"
 rm -rf "$R"
 
 # ── installed runtime preference and explicit override ─────────────────
@@ -595,6 +603,109 @@ for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP repeated bootstrap boo
   assert "public Bash PID cancellation: $cancellation" "python3 '$SHIM_DIR/check-wrapper-cancel.py' '$GATE' '$R' '$TEST_HOME' '$cancellation'"
   rm -rf "$R"
 done
+
+# ── #515: a cancellation bash cannot run the handler for is still exit 3 ──
+# Bash re-parses a command substitution each time it EXPANDS it. A trapped
+# signal that lands in that parse makes bash parse the trap command with the
+# substitution still open; that fails ("interrupt trap: … unexpected EOF"), the
+# handler never runs, and the shell exits 2 — the code that means "blocking
+# findings". The fixture is a copy of the gate whose gate-lib.sh ends in one
+# very large substitution, which holds the shell in that parse long enough to
+# signal into on demand. A signal that misses the window takes the ordinary
+# handler, which also exits 3, so the assertion holds on any shell or load.
+parse_window_gate() {
+  local copy="$SHIM_DIR/parse-window"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp "$SCRIPT_DIR"/../*.sh "$SCRIPT_DIR"/../*.py "$SCRIPT_DIR"/../*.json "$copy/"
+  # A function, so the file's own parse is over before the marker is written:
+  # the window that follows is the expansion-time parse alone.
+  awk 'BEGIN {
+    printf "gate_parse_window() {\n  local hold\n  hold=\"$(:"
+    for (i = 0; i < 3000000; i++) printf " x"
+    print "; printf x)\"\n}"
+    print ": > \"$PARSE_WINDOW_READY\""
+    print "gate_parse_window"
+  }' >> "$copy/gate-lib.sh"
+  printf '%s\n' "$copy"
+}
+cat > "$SHIM_DIR/check-parse-window-cancel.py" <<'PYWINDOW'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+gate, seed_gate, repo, home, signame = sys.argv[1:]
+fixture = Path(os.environ['CODEX_FAKE_DIR'])
+ready = fixture / 'parse-window-ready'
+environment = dict(os.environ, HOME=home, PARSE_WINDOW_READY=os.devnull)
+arguments = ['--committed', '--base', 'main', '--require', '--no-issues']
+seed = subprocess.run([seed_gate, *arguments], cwd=repo, env=environment,
+                      capture_output=True, text=True, timeout=30)
+assert seed.returncode == 0, seed.stdout + seed.stderr
+head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+checker = [sys.executable, str(Path(seed_gate).parent / 'review-receipt.py'), 'check',
+           '--repo', repo, '--head', head, '--base', 'main', '--reviewer', 'codex']
+assert subprocess.run(checker, capture_output=True, timeout=30).returncode == 0, 'seed approval must ship'
+(fixture / 'invoked').unlink()
+
+def default_signals():
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGTSTP):
+        signal.signal(signum, signal.SIG_DFL)
+
+environment['PARSE_WINDOW_READY'] = str(ready)
+process = subprocess.Popen([gate, *arguments], cwd=repo, env=environment,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           start_new_session=True, preexec_fn=default_signals)
+try:
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        assert process.poll() is None and time.monotonic() < deadline, 'gate never reached the parse window'
+        time.sleep(.005)
+    time.sleep(.1)
+    process.send_signal(getattr(signal, signame))
+    output, _ = process.communicate(timeout=60)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait(timeout=5)
+failures = []
+if process.returncode != 3:
+    failures.append(f'expected exit 3, got {process.returncode}')
+if (fixture / 'invoked').exists():
+    failures.append('cancelled startup dispatched a reviewer')
+if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
+    failures.append('cancelled gate left the previous receipt')
+if subprocess.run(checker, capture_output=True, timeout=30).returncode == 0:
+    failures.append('previous approval remains usable')
+assert not failures, '; '.join(failures) + '\n' + output
+PYWINDOW
+PARSE_WINDOW_GATE="$(parse_window_gate)/codex-review-gate.sh"
+for cancellation in SIGINT SIGTERM SIGHUP SIGQUIT SIGTSTP; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo "change" >> "$R/code.txt"
+  git -C "$R" commit -qam 'reviewable committed change'
+  approve_clean
+  assert "#515: $cancellation during a command-substitution parse exits 3 and vetoes approval" "python3 '$SHIM_DIR/check-parse-window-cancel.py' '$PARSE_WINDOW_GATE' '$GATE' '$R' '$TEST_HOME' '$cancellation'"
+  rm -rf "$R"
+done
+# An exit 2 the gate chose is untouched by that normalisation, and an inherited
+# marker cannot switch it off.
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s' '{"verdict":"needs-attention","summary":"bad","findings":[{"severity":"high","title":"t","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"b","recommendation":"r"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "#515: a blocking verdict still exits 2" 2 "BLOCKING findings" --uncommitted --no-issues
+rm -rf "$R"
+new_repo
+git -C "$R" checkout -qb feature
+echo "change" >> "$R/code.txt"
+git -C "$R" commit -qam 'reviewable committed change'
+approve_clean
+GATE_EXIT_DECIDED=1 assert "#515: an inherited exit marker cannot disable the normalisation" "python3 '$SHIM_DIR/check-parse-window-cancel.py' '$PARSE_WINDOW_GATE' '$GATE' '$R' '$TEST_HOME' SIGINT"
+rm -rf "$R"
 
 # Early traps may remove only paths initialized by this invocation.
 new_repo
@@ -1548,7 +1659,7 @@ for source_instruction in agents/skills/orchestrate/references/runtime-contracts
   rm -rf "$R"
 done
 
-for mutation in head index worktree untracked base; do
+for mutation in head index worktree untracked; do
   new_repo
   git -C "$R" checkout -qb feature
   echo committed >> "$R/code.txt"
@@ -1558,10 +1669,37 @@ for mutation in head index worktree untracked base; do
     index) printf 'echo staged >> code.txt; git add code.txt; git checkout -- code.txt\n' > "$CODEX_FAKE_DIR/mutate" ;;
     worktree) printf 'echo concurrent >> code.txt\n' > "$CODEX_FAKE_DIR/mutate" ;;
     untracked) printf 'echo concurrent > new.txt\n' > "$CODEX_FAKE_DIR/mutate" ;;
-    base) printf 'git update-ref refs/heads/main HEAD\n' > "$CODEX_FAKE_DIR/mutate" ;;
   esac
   approve_clean
   check "$mutation changed during review blocks" 2 "changed during review" --no-issues
+  rm -rf "$R"
+done
+
+# The base is pinned when the run begins (#680). A sibling moving it mid-review
+# is not this branch changing: the review completes, and the receipt holds as
+# long as it covers the current merge base. A base that has absorbed the branch
+# no longer has that merge base, so the push check refuses it.
+for base_move in sibling absorbed; do
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo committed >> "$R/code.txt"
+  git -C "$R" commit -qam work
+  case "$base_move" in
+    sibling) printf '%s\n' 'git update-ref refs/heads/main "$(git commit-tree -p main -m sibling "main^{tree}")"' > "$CODEX_FAKE_DIR/mutate" ;;
+    absorbed) printf 'git update-ref refs/heads/main HEAD\n' > "$CODEX_FAKE_DIR/mutate" ;;
+  esac
+  approve_clean
+  check "base moved by a $base_move change mid-review still completes the review" 0 "Codex review passed" --committed --no-issues --require
+  assert "the base moved during that review ($base_move)" \
+    "[ \"\$(git -C '$R' rev-parse main)\" != \"\$(jq -r .artifact.base.commit '$R/.git/review-receipts/codex.json')\" ]"
+  if [[ "$base_move" == sibling ]]; then
+    assert "a receipt survives a sibling moving the base" \
+      "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  else
+    assert "a base that absorbed the branch no longer matches the receipt" \
+      "! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+  fi
+  rm -f "$CODEX_FAKE_DIR/mutate"
   rm -rf "$R"
 done
 
@@ -2015,6 +2153,13 @@ import sys
 # limit, under its default line cap, and split by review-multipart.py.
 open(sys.argv[1], "a").write(("multipart😀" * 160 + "\n") * 1000)
 PY
+# A per-run nonce makes this run's request bytes unique (#680, #679). The
+# mid-run mutation finds the gate's request file under the shared /tmp by its
+# digest. Without the nonce, every concurrent run of this suite (other agents'
+# review-and-push test steps) built a byte-identical request, the stub found
+# two files, its `len(hits) == 1` assertion failed, codex exited 1 and the case
+# degraded to rc 3. That was a collision between runs, not a timing race.
+printf 'run nonce %s\n' "$R" >> "$R/code.txt"
 git -C "$R" commit -qam "large ahead"
 blocking_output() {
   printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"

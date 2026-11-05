@@ -82,8 +82,9 @@ characters and never split a character, so a non-ASCII request cannot produce a
 fragment several times the intended size. Intermediate acknowledgments cannot
 authorize a push.
 The helper `review-multipart.py` verifies native persisted inputs, rejects
-compaction, and checks the observed model window against the native bundled
-catalog. Larger context is scoped to the same model's supported capacity. Missing
+compaction, requires every native turn to record the read-only sandbox with
+`approval_policy` `never` (so the model could not escalate out of it, #651), and
+checks the observed model window against the native bundled catalog. Larger context is scoped to the same model's supported capacity. Missing
 or changed history, unsupported CLI metadata, and incomplete reviews fail closed.
 The normal setup links the helper alongside the gate; install them together.
 Gate or helper changes require independent review outside the configured gates.
@@ -117,11 +118,21 @@ What `review-and-push.sh` does:
    gate for the **required lane** with `--require --committed` (ADR-0008). A
    tier-1 diff dispatches no gate: the wrapper records the exemption receipt
    itself, so a docs-only push never depends on a reviewer's size limits (#482).
-4. Prompts for confirmation, unless `--auto-push` was selected.
+4. Prompts for confirmation, unless `--auto-push` was selected. A caller may
+   pipe the answer in. End of input at the prompt (stdin from `/dev/null` in an
+   agent or background run, or Ctrl-D) means nobody can confirm, so it prints
+   `approved but not pushed: ...; re-run with --auto-push, or push <sha>
+   yourself` and exits 4 (#628).
 5. Validates the receipt after confirmation, immediately before push, naming the
    lane it dispatched. That enforces the diff's lane requirement and also
    requires the review this run performed to still be approved.
 6. Pushes the reviewed commit to the current branch with an explicit refspec.
+
+Exit status: `0` pushed, or declined at the prompt; `1` refused or failed
+(including an Antigravity exit 3 that `REVIEW_LANE_FALLBACK=block` or an
+unavailable Codex lane will not fall back from); `2` a blocking verdict; `3`
+the gate that ran last could not run; `4` approved but not pushed, because
+input ended at the confirmation prompt and there was no `--auto-push`.
 
 Blocking findings, failed reviewer execution, and missing or stale receipts
 prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
@@ -164,6 +175,10 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
+An ignored `__pycache__` beside a skill or agent script counts too (#581): a
+`.pyc` can carry code its `.py` does not, and nothing short of recompiling
+proves they match. `run-tests.sh` writes no bytecode (#633); set
+`PYTHONDONTWRITEBYTECODE=1` when running such scripts by hand.
 It covers both staged changes and later workspace edits.
 Text diffs preserve physical lines, including embedded control characters,
 and quote filenames in their headers.
@@ -241,6 +256,14 @@ result, and artifact receipt. Native Codex handles terminal cancellation and
 its tool processes. Send cancellation to the foreground job; a signal sent
 only to the Bash wrapper may wait until the current command returns. Observed
 cancellation invalidates approval, including during receipt creation.
+Exit 2 is only ever an exit a gate chose (#515). Bash 5.2 can fail to run a
+signal handler when the signal lands while it re-parses a command substitution
+(fixed in bash 5.3), and the shell then ends with status 2 by itself. Each gate's
+EXIT handler catches a status 2 that no `exit` command produced: the Codex gate
+ends it as a cancellation (exit 3, lane invalidated), the Antigravity gate exits
+1, and either still exits 2 when the reviewer's output already carries a
+verdict. Where bash is not checking command status (a condition, a `set +e`
+region) the same signal is dropped and the gate runs on to its verdict.
 
 The gate provides no hard execution deadline or detached-process containment.
 Unattended jobs that require those guarantees must obtain them from their
@@ -260,7 +283,7 @@ someone chose to run.
 | Subcommand | What it does |
 |---|---|
 | `review-receipt.py lane --repo . --scope committed [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand |
-| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
+| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. The re-capture uses the base commit pinned when the review began, and the receipt must cover the current merge base of HEAD and the base. A base tip that moved on, for example because a sibling merged, therefore does not void it; a changed HEAD, tree or merge base does (#680). Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
 | `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
 | `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499) |
 | `review-receipt.py claim --snapshot <run>/snapshot.json` | The gates' commitment step, called once a gate can reach a verdict. Retires every other lane's receipt and attempt, then marks this attempt claimed, which `complete` requires. A superseded attempt still retires every lane, its own included, before it refuses (fail closed), since its verdict may be blocking |
@@ -312,11 +335,13 @@ claimed, so a gate cannot record beside the other lane's receipt.
 A gate that degrades (exit 3) after capture — agy missing, a diff above a size
 cap, a failed or partial run, an unverifiable model pin under `--require` — never
 claimed, so the other lane's approval stays valid: a degraded lane is not a
-verdict (#499). Partial output that already carries blocking findings is a
-verdict and claims, and so is a failed local compile/lint check in the
-Antigravity gate, an Antigravity run cancelled after agy wrote blocking
-findings, and a failed or cancelled Codex run whose output is not verifiably
-free of blocking findings (exit 2, not 3). A verifiably wrong model (exit 2) claims nothing, since its
+verdict (#499). Output from a failed, timed-out or cancelled run is held to the
+same parse as a completed run's (#579): in either gate, output that is not
+verifiably free of blocking findings is a verdict and claims (exit 2, not 3).
+For Antigravity that is an anchored P0–P2 line, a stray priority token on
+another line, or text that is neither finding lines nor a whole-verdict `LGTB`;
+absent output, `LGTB` and P3-only output stay a degraded lane. A failed local
+compile/lint check in the Antigravity gate is a verdict too. A verifiably wrong model (exit 2) claims nothing, since its
 review is not evidence, and neither does a clean run whose pin could not be
 verified, which records no receipt either; its blocking exits still claim. Two consequences remain: a review already in flight in
 the other lane can no longer record its outcome once a newer one claims, and a

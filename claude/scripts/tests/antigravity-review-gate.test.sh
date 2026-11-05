@@ -36,7 +36,10 @@ cat > "$SHIM_DIR/agy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AGY_FAKE_DIR/argv"
 touch "$AGY_FAKE_DIR/invoked"
-[ ! -f "$AGY_FAKE_DIR/mutate" ] || bash "$AGY_FAKE_DIR/mutate"
+# Fixture mutations act on the repository under review. agy itself runs in a
+# throwaway workspace (#687), so they cd there; the jail probe runs in place.
+[ ! -f "$AGY_FAKE_DIR/mutate" ] || (cd "$AGY_FAKE_REPO" && bash "$AGY_FAKE_DIR/mutate")
+[ ! -f "$AGY_FAKE_DIR/jail-probe" ] || bash "$AGY_FAKE_DIR/jail-probe"
 # Go's flag package treats -print/--print/-p and the =value forms as the same
 # flag, so the emulation must too (adversarial review of PR #243: an equals or
 # single-dash spelling regression must not pass the suite).
@@ -72,6 +75,7 @@ EOF
 chmod +x "$SHIM_DIR/agy"
 export PATH="$SHIM_DIR:$PATH"
 export AGY_FAKE_DIR=""
+export AGY_FAKE_REPO=""
 unset ANTIGRAVITY_GATE_REQUIRED
 unset ANTIGRAVITY_GATE_ALLOW_INSTRUCTION_DIFF
 unset ANTIGRAVITY_GATE_MODEL
@@ -90,6 +94,7 @@ new_repo() {
   git -C "$R" commit -qm "init"
   AGY_FAKE_DIR="$(mktemp -d)"
   : > "$AGY_FAKE_DIR/output"
+  export AGY_FAKE_REPO="$R"
 }
 
 # check <name> <expected-exit> [<required output fragment>] [gate args...]
@@ -97,7 +102,7 @@ check() {
   local name="$1" want="$2" frag="${3:-}"
   shift 3 || shift $#
   local out rc
-  out="$(cd "$R" && "$GATE" "$@" 2>&1)"
+  out="$(cd "$R" && AGY_FAKE_REPO="$R" "$GATE" "$@" 2>&1)"
   rc=$?
   local ok=1
   [ "$rc" -eq "$want" ] || ok=0
@@ -257,12 +262,19 @@ rm -rf "$R"
 # Same branch, reached with a non-zero exit and long stdout.
 new_repo
 echo "change" >> "$R/code.txt"
-awk 'BEGIN { for (i = 0; i < 5000; i++) printf "unparseable agy output %0200d\n", i }' > "$AGY_FAKE_DIR/output"
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "- [P3] agy nit %0200d\n", i }' > "$AGY_FAKE_DIR/output"
 printf '9\n' > "$AGY_FAKE_DIR/exit"
 check "long agy stdout on a failed run still degrades" 0 "agy review session failed (exit 9)" --uncommitted
 (cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
-shown="$(grep -c '^    unparseable agy output' "$AGY_FAKE_DIR/gate-out" || true)"
+shown="$(grep -c '^    - \[P3\] agy nit' "$AGY_FAKE_DIR/gate-out" || true)"
 assert "long agy stdout is shown truncated, not in full" "[ '$shown' = 20 ]"
+# Long output the completed-run parse would refuse is a verdict (#579), and its
+# report must survive the same pipe: exit 2, never 141.
+awk 'BEGIN { for (i = 0; i < 5000; i++) printf "unparseable agy output %0200d\n", i }' > "$AGY_FAKE_DIR/output"
+check "long unparseable agy stdout on a failed run is a verdict" 2 "verdict, not a degraded lane" --uncommitted
+(cd "$R" && "$GATE" --uncommitted > "$AGY_FAKE_DIR/gate-out" 2>&1) || true
+shown="$(grep -c '^  unparseable agy output' "$AGY_FAKE_DIR/gate-out" || true)"
+assert "long unparseable agy stdout is shown truncated in the verdict" "[ '$shown' = 20 ]"
 rm -f "$AGY_FAKE_DIR/exit"
 rm -rf "$R"
 
@@ -482,15 +494,62 @@ check "propagated label matches the default pin" 0 "model pin verified" --uncomm
 assert "pinned label forwarded on agy argv" "grep -q 'Gemini 4 Argon (High)' '$AGY_FAKE_DIR/argv'"
 assert "log capture requested on agy argv" "grep -q -- '--log-file' '$AGY_FAKE_DIR/argv'"
 check "DB spot-check finds the label in the records" 0 "records the requested label" --uncommitted
+# agy 1.4.x records the model's slug, not its display label (#696).
+printf 'model_enum gemini-4-argon-high MODEL_TIER_PRO\n' > "$AGY_DB_DIR/conv.db"
+check "DB spot-check accepts the label's slug form" 0 "records the requested label" --uncommitted
+# A real record is large: grep -q stops at the early match and strings dies of
+# SIGPIPE, which pipefail used to turn into a miss (#696).
+{ printf 'model_enum gemini-4-argon-high\n'; head -c 2000000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$AGY_DB_DIR/conv.db"
+check "DB spot-check finds an early match in a large record" 0 "records the requested label" --uncommitted
+printf 'model_enum gemini-3.8-flash-high\n' > "$AGY_DB_DIR/conv.db"
+check "DB spot-check still flags a record naming another model" 0 "none of the newest conversation records" --uncommitted
+# The derived slug must never widen the match: a label with no letters or
+# digits derives an empty or lone-dash slug (grep -F "" matches every line),
+# and a shorter label's slug is a prefix of a longer model's slug.
+# shellcheck disable=SC2034  # VAM is expanded only inside the eval strings below
+VAM="source '$SCRIPT_DIR/../gate-lib.sh'; AGY_CONVERSATIONS_DIR='$AGY_DB_DIR'; gate_verify_agy_model"
+printf 'model_enum gemini-3.8-flash-high\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: an all-punctuation label does not match every record" "! (eval \"\$VAM '()'\") >/dev/null 2>&1"
+assert "DB spot-check: an all-space label does not match a dashed record" "! (eval \"\$VAM '  '\") >/dev/null 2>&1"
+printf 'model_enum gemini-4-argon-high\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a shorter label's slug does not prefix-match another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+assert "DB spot-check: the exact slug still matches when sourced directly" "(eval \"\$VAM 'Gemini 4 Argon (High)'\") >/dev/null 2>&1"
+printf 'model_enum gemini-4-argon_high\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a slug continued by an underscore is another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+printf 'model_enum gemini-4-argonHigh\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a slug continued by a letter is another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+printf 'label Gemini 4 ArgonHigh\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: a label continued by a letter is another model" "! (eval \"\$VAM 'Gemini 4 Argon'\") >/dev/null 2>&1"
+printf 'model gemini-3-8-flash-high,\n' > "$AGY_DB_DIR/conv.db"
+assert "DB spot-check: the dotless slug matches beside punctuation" "(eval \"\$VAM 'Gemini 3.8 Flash (High)'\") >/dev/null 2>&1"
 unset AGY_CONVERSATIONS_DIR
 rm -rf "$R" "$AGY_DB_DIR"
+
+# ── #696: a pin agy rejects is a configuration error, said loudly ─────
+# agy 1.4.2 exits 1 before reviewing when the label is not one it offers.
+# That used to read as an ordinary outage ("agy review session failed") and
+# degrade quietly; it must name the pin and the override instead.
+new_repo
+echo "change" >> "$R/code.txt"
+: > "$AGY_FAKE_DIR/output"
+printf '%s\n' 'error: invalid model selection (--model "Gemini 3.1 Pro (High)" --effort ""): model Gemini 3.1 Pro (High) is not recognized as a known model or custom model in settings' \
+  'Available models:' '  Gemini 4 Argon (High)' > "$AGY_FAKE_DIR/stderr"
+echo 1 > "$AGY_FAKE_DIR/exit"
+ANTIGRAVITY_GATE_MODEL="Gemini 3.1 Pro (High)" \
+  check "#696: a rejected pin names the pin and the override" 0 'agy rejected the pinned model "Gemini 3.1 Pro (High)"; set ANTIGRAVITY_GATE_MODEL' --uncommitted
+assert "#696: the rejected pin is not reported as an ordinary session failure" \
+  "! (cd '$R' && ANTIGRAVITY_GATE_MODEL='Gemini 3.1 Pro (High)' '$GATE' --uncommitted 2>&1) | grep -qF 'agy review session failed'"
+ANTIGRAVITY_GATE_MODEL="Gemini 3.1 Pro (High)" \
+  check "#696: a rejected pin fails closed with --require" 3 "agy rejected the pinned model" --uncommitted --require
+assert "#696: a rejected pin mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_BAD" > "$AGY_FAKE_DIR/log"
 check "propagated-label mismatch fails hard WITHOUT --require" 2 "MODEL PIN FAILED" --uncommitted
-check "propagated-label mismatch fails hard with an explicit --model" 2 "MODEL PIN FAILED" --uncommitted --model "Gemini 3.1 Pro (High)"
+check "propagated-label mismatch fails hard with an explicit --model" 2 "MODEL PIN FAILED" --uncommitted --model "Gemini 4 Argon (High)"
 rm -rf "$R"
 
 new_repo
@@ -1016,6 +1075,18 @@ for suffix in ' ' $'\n'; do
   check "whitespace twin reviews its own alternate workspace" 0 "LGTB verdict" --uncommitted --require
   assert "whitespace twin bytes reach alternate reviewer" "grep -q 'TWIN_ALTERNATE_MARKER' '$AGY_FAKE_DIR/stdin'"
   assert "whitespace twin cannot create sibling alternate receipt" "[ ! -e '$sibling/.git/review-receipts/antigravity.json' ]"
+  # With the sibling gone, a committed review's jail can only be built from
+  # the twin itself: a repository path that lost its trailing byte would name
+  # nothing and the setup would fail.
+  rm -rf "$sibling"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  cat > "$AGY_FAKE_DIR/jail-probe" <<'EOF'
+cat code.txt > "$AGY_FAKE_DIR/agy-twin-code" 2>/dev/null
+EOF
+  check "whitespace twin: a committed review's jail is built from the twin's own path" 0 "LGTB verdict" --committed --require
+  assert "whitespace twin: the jail holds the twin's HEAD" "grep -qx committed '$AGY_FAKE_DIR/agy-twin-code'"
+  rm -f "$AGY_FAKE_DIR/jail-probe" "$AGY_FAKE_DIR/agy-twin-code"
   printf 'dirty twin instructions\n' > "$R/AGENTS.md"
   rm -f "$AGY_FAKE_DIR/invoked"
   check "whitespace twin blocks alternate committed review" 2 "dirty instruction surface" --committed --require
@@ -1434,6 +1505,163 @@ check "#573: a later clean run passes" 0 "LGTB verdict" --committed --require
 assert "#573: the later approval ships over the earlier marker" "codex_receipt_ships"
 unset ANTIGRAVITY_GATE_MODEL
 rm -rf "$R"
+# ── #579: a run that did not complete is held to the completed-run parse ──
+# Output from a failed, timed-out or cancelled run was searched for anchored
+# P0–P2 lines only, so a blocker the completed-run parse refuses — a stray
+# token on a P3 line, or text that is not findings at all — left as a degraded
+# exit 3 with no marker, and an older Codex approval of the same artifact stayed
+# shippable. Only absent output and output the completed-run parse would pass
+# (LGTB, P3-only) stay a degraded lane.
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+cat > "$AGY_FAKE_DIR/sigterm-gate" <<'EOF'
+pid=$PPID
+for _ in 1 2 3 4; do
+  pid="$(ps -o ppid= -p "$pid" | tr -d ' ')"
+  case "$(ps -o args= -p "$pid")" in
+    *antigravity-review-gate.sh*) kill -TERM "$pid"; break ;;
+  esac
+done
+EOF
+for shape in stray unrecognized; do
+  case "$shape" in
+    stray)        printf '%s\n' '- [P3] Small nit; also [P1] authentication bypass' > "$AGY_FAKE_DIR/output" ;;
+    unrecognized) printf '%s\n' 'The change is risky because' > "$AGY_FAKE_DIR/output" ;;
+  esac
+  for run in failed timed-out expired cancelled unverifiable-pin; do
+    rm -rf "$R/.git/review-receipts/blocks"
+    rm -f "$AGY_FAKE_DIR/exit" "$AGY_FAKE_DIR/stderr" "$AGY_FAKE_DIR/mutate"
+    seed_codex_receipt
+    save_codex_lane
+    case "$run" in
+      failed)    printf '7\n' > "$AGY_FAKE_DIR/exit" ;;
+      timed-out) printf '124\n' > "$AGY_FAKE_DIR/exit" ;;
+      expired)   printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr" ;;
+      cancelled) cp "$AGY_FAKE_DIR/sigterm-gate" "$AGY_FAKE_DIR/mutate" ;;
+      # A requested label with no propagation line in the log: exit 3 under
+      # --require unless the output is a verdict.
+      unverifiable-pin) rm -f "$AGY_FAKE_DIR/log" ;;
+    esac
+    if [ "$run" = unverifiable-pin ]; then
+      ANTIGRAVITY_GATE_MODEL="Fixture Model" \
+        check "#579: a $run run with $shape output is a verdict" 2 "" --committed --require
+    else
+      check "#579: a $run run with $shape output is a verdict" 2 "" --committed --require
+    fi
+    assert "#579: the $run $shape verdict records one marker" "[ \"\$(block_markers)\" = 1 ]"
+    assert "#579: the $run $shape verdict mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    restore_codex_lane
+    assert "#579: the $run $shape marker refuses the older Codex approval" "! codex_receipt_ships"
+  done
+done
+# Output the completed-run parse would pass is not a verdict against the
+# artifact: those runs stay degraded (or re-raise), with no marker, and the
+# older approval still ships.
+for shape in clean low-only; do
+  case "$shape" in
+    clean)    printf 'LGTB\n' > "$AGY_FAKE_DIR/output" ;;
+    low-only) printf '%s\n' '- [P3] nit — code.txt:1' > "$AGY_FAKE_DIR/output" ;;
+  esac
+  for run in failed timed-out expired cancelled; do
+    rm -rf "$R/.git/review-receipts/blocks" "$R/.git/review-receipts/antigravity.json"
+    rm -f "$AGY_FAKE_DIR/exit" "$AGY_FAKE_DIR/stderr" "$AGY_FAKE_DIR/mutate"
+    seed_codex_receipt
+    want=3
+    case "$run" in
+      failed)    printf '7\n' > "$AGY_FAKE_DIR/exit" ;;
+      timed-out) printf '124\n' > "$AGY_FAKE_DIR/exit" ;;
+      expired)   printf '%s\n' '[agy] print timeout after 360s with turn in progress; returning partial output' > "$AGY_FAKE_DIR/stderr" ;;
+      cancelled) cp "$AGY_FAKE_DIR/sigterm-gate" "$AGY_FAKE_DIR/mutate"; want=143 ;;
+    esac
+    check "#579: a $run run with $shape output is not a verdict" "$want" "" --committed --require
+    assert "#579: the $run $shape run records no marker" "[ \"\$(block_markers)\" = 0 ]"
+    assert "#579: the $run $shape run mints no receipt" "[ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+    assert "#579: the $run $shape run leaves the Codex approval shippable" "codex_receipt_ships"
+  done
+done
+rm -f "$AGY_FAKE_DIR/exit" "$AGY_FAKE_DIR/stderr" "$AGY_FAKE_DIR/mutate"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R"
+# ── #515: a cancellation bash cannot run the handler for is not a verdict ──
+# Bash re-parses a command substitution each time it expands it; a trapped
+# signal landing in that parse makes the trap command fail to parse, the
+# handler never runs, and the shell exits 2 — this gate's verdict code — with
+# nothing claimed or recorded. The fixture is a copy of the gate whose
+# gate_claim first holds the shell in one very large substitution, after agy
+# has written its output. A signal that misses the window takes
+# cancel_agy_review instead, hence the two accepted codes for output that is no
+# verdict.
+parse_window="$SHIM_DIR/parse-window"
+mkdir -p "$parse_window"
+cp "$SCRIPT_DIR"/../*.sh "$SCRIPT_DIR"/../*.py "$SCRIPT_DIR"/../*.json "$parse_window/"
+awk 'BEGIN {
+  printf "gate_parse_window() {\n  local hold\n  hold=\"$(:"
+  for (i = 0; i < 3000000; i++) printf " x"
+  print "; printf x)\"\n}"
+  print "eval \"$(declare -f gate_claim | sed \"1s/gate_claim/gate_claim_real/\")\""
+  print "gate_claim() {"
+  print "  : > \"$PARSE_WINDOW_READY\""
+  print "  gate_parse_window"
+  print "  gate_claim_real"
+  print "}"
+}' >> "$parse_window/gate-lib.sh"
+cat > "$SHIM_DIR/cancel-in-parse-window.py" <<'PYWINDOW'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+gate, repo, accepted = sys.argv[1], sys.argv[2], [int(code) for code in sys.argv[3].split(',')]
+ready = Path(os.environ['AGY_FAKE_DIR'], 'parse-window-ready')
+ready.unlink(missing_ok=True)
+
+def default_signals():
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(signum, signal.SIG_DFL)
+
+process = subprocess.Popen([gate, '--committed', '--require'], cwd=repo,
+                           env=dict(os.environ, PARSE_WINDOW_READY=str(ready)),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           start_new_session=True, preexec_fn=default_signals)
+try:
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        assert process.poll() is None and time.monotonic() < deadline, 'gate never reached the parse window'
+        time.sleep(.005)
+    time.sleep(.1)
+    process.send_signal(signal.SIGTERM)
+    output, _ = process.communicate(timeout=60)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait(timeout=5)
+# A signal-terminated shell reports -N here; the gate's contract states 128+N.
+status = process.returncode if process.returncode >= 0 else 128 - process.returncode
+assert status in accepted, f'expected exit in {accepted}, got {status}\n{output}'
+PYWINDOW
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+export ANTIGRAVITY_GATE_MODEL=""
+seed_codex_receipt
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+assert "#515: a cancellation in the parse window after clean output is not exit 2" "python3 '$SHIM_DIR/cancel-in-parse-window.py' '$parse_window/antigravity-review-gate.sh' '$R' 1,143"
+assert "#515: that cancellation records no marker and no receipt" "[ \"\$(block_markers)\" = 0 ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
+assert "#515: that cancellation leaves the Codex approval shippable" "codex_receipt_ships"
+save_codex_lane
+printf '%s\n' '- [P1] real finding — code.txt:1' > "$AGY_FAKE_DIR/output"
+assert "#515: a cancellation in the parse window after blocking output is a verdict" "python3 '$SHIM_DIR/cancel-in-parse-window.py' '$parse_window/antigravity-review-gate.sh' '$R' 2"
+assert "#515: that verdict records one marker" "[ \"\$(block_markers)\" = 1 ]"
+restore_codex_lane
+assert "#515: that marker refuses the older Codex approval" "! codex_receipt_ships"
+unset ANTIGRAVITY_GATE_MODEL
+rm -rf "$R" "$parse_window"
 # Failed local validation is a blocking verdict reached before dispatch.
 new_repo
 git -C "$R" checkout -qb feature
@@ -1450,6 +1678,196 @@ assert "#573: failed local validation records a marker" "[ \"\$(block_markers)\"
 restore_codex_lane
 assert "#573: that marker refuses the restored approval" "! codex_receipt_ships"
 rm -rf "$R"
+
+# ── #687: agy runs in a throwaway home and workspace ─────────────────
+# The user's agy baseline allows write_file(~/dev/), which plan mode does not
+# stop: a steered review could write anywhere under ~/dev. The gate now hands
+# agy a private HOME whose only settings deny every write, and a workspace
+# that is an extract of the reviewed HEAD, not the repository. This stub
+# records that environment and then attempts the writes a steered review
+# would: into its working directory and into "~/dev".
+JAIL_HOME="$(mktemp -d)"
+mkdir -p "$JAIL_HOME/.gemini/antigravity-cli" "$JAIL_HOME/dev"
+printf 'fixture-token\n' > "$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+printf 'fixture-installation\n' > "$JAIL_HOME/.gemini/antigravity-cli/installation_id"
+printf '%s\n' '{"permissions":{"allow":["write_file(~/dev/)"]}}' > "$JAIL_HOME/.gemini/antigravity-cli/settings.json"
+new_repo
+git -C "$R" checkout -qb feature
+echo "change" >> "$R/code.txt"
+git -C "$R" commit -qam "reviewed head"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+cat > "$AGY_FAKE_DIR/jail-probe" <<'EOF'
+pwd -P > "$AGY_FAKE_DIR/agy-pwd"
+printf '%s\n' "$HOME" > "$AGY_FAKE_DIR/agy-home"
+cp "$HOME/.gemini/antigravity-cli/settings.json" "$AGY_FAKE_DIR/agy-settings" 2>/dev/null
+ls "$PWD" > "$AGY_FAKE_DIR/agy-workspace"
+git -C "$PWD" rev-parse --show-toplevel > "$AGY_FAKE_DIR/agy-toplevel" 2>/dev/null
+git -C "$PWD" remote > "$AGY_FAKE_DIR/agy-remotes" 2>/dev/null
+[ -L "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] && readlink "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" > "$AGY_FAKE_DIR/agy-token"
+echo steered > stub-write.txt
+mkdir -p "$HOME/dev" && echo steered > "$HOME/dev/stub-write.txt"
+EOF
+HOME="$JAIL_HOME" check "#687: a review in the throwaway home still passes" 0 "LGTB verdict" --committed
+# shellcheck disable=SC2034  # read by the assert conditions below
+agy_home="$(cat "$AGY_FAKE_DIR/agy-home" 2>/dev/null)"
+assert "#687: agy's HOME is not the user's" "[ -n \"\$agy_home\" ] && [ \"\$agy_home\" != '$JAIL_HOME' ]"
+assert "#687: agy's settings deny every write and allow nothing" \
+  "jq -e '.permissions.deny == [\"write_file(/)\"] and (.permissions.allow // []) == []' '$AGY_FAKE_DIR/agy-settings' >/dev/null"
+assert "#687: agy's workspace is not the repository" \
+  "[ -s '$AGY_FAKE_DIR/agy-pwd' ] && [ \"\$(cat '$AGY_FAKE_DIR/agy-pwd')\" != \"\$(cd -P '$R' && pwd)\" ]"
+assert "#687: the workspace holds the reviewed HEAD" "grep -qx code.txt '$AGY_FAKE_DIR/agy-workspace'"
+# agy walks up to the folder holding .git for its instruction files; the
+# workspace must be that folder, so the walk never leaves the jail.
+assert "#687: the workspace is its own repository root, so the instruction walk stops there" \
+  "[ -s '$AGY_FAKE_DIR/agy-toplevel' ] && [ \"\$(cat '$AGY_FAKE_DIR/agy-toplevel')\" = \"\$(cat '$AGY_FAKE_DIR/agy-pwd')\" ]"
+assert "#687: the workspace repository has no remote back to the reviewed one" "[ -e '$AGY_FAKE_DIR/agy-remotes' ] && [ ! -s '$AGY_FAKE_DIR/agy-remotes' ]"
+assert "#687: only the credential is linked in" \
+  "[ \"\$(cat '$AGY_FAKE_DIR/agy-token')\" = '$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token' ]"
+assert "#687: a write in the workspace never reaches the repository" "[ -s '$AGY_FAKE_DIR/agy-pwd' ] && [ ! -e '$R/stub-write.txt' ]"
+assert "#687: a write to ~/dev never reaches the user's ~/dev" "[ ! -e '$JAIL_HOME/dev/stub-write.txt' ]"
+assert "#687: the throwaway home is removed after the run" "[ ! -e \"\$agy_home\" ]"
+assert "#687: the user's settings and credential are untouched" \
+  "grep -qx fixture-token '$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token' && grep -q 'write_file(~/dev/)' '$JAIL_HOME/.gemini/antigravity-cli/settings.json'"
+rm -f "$AGY_FAKE_DIR/jail-probe"
+rm -rf "$R" "$JAIL_HOME"
+
+# ─── the jail holds every byte of the reviewed HEAD, from any cwd ──────────
+# `git archive` exported only the cwd's subtree and honoured export-ignore and
+# export-subst from tracked .gitattributes and from the user's own attributes
+# file, so a reviewer could be handed a tree with the instruction file missing
+# or rewritten. The jail now writes each blob as stored. Tracked symlinks that
+# stay inside the workspace are kept; one that would climb out of it is not
+# materialised, so agy cannot be pointed at a file outside the jail.
+JAIL_HOME="$(mktemp -d)"
+mkdir -p "$JAIL_HOME/.gemini/antigravity-cli" "$JAIL_HOME/.config/git"
+printf 'fixture-token\n' > "$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+printf 'fixture-installation\n' > "$JAIL_HOME/.gemini/antigravity-cli/installation_id"
+printf 'code.txt export-ignore\n' > "$JAIL_HOME/.config/git/attributes"
+new_repo
+mkdir "$R/sub"
+printf 'AGENTS.md export-ignore\nsub/tool.sh export-subst\n' > "$R/.gitattributes"
+printf 'Known instructions.\n' > "$R/AGENTS.md"
+printf '#!/bin/sh\n# $Format:%%H$\n' > "$R/sub/tool.sh"
+chmod +x "$R/sub/tool.sh"
+ln -s ../AGENTS.md "$R/sub/inside.md"
+ln -s ../../outside.md "$R/sub/escape.md"
+# A lexical check passes this pair: `self` points at its own directory, and
+# `chain` climbs two levels through it, which lands above the workspace.
+ln -s . "$R/sub/self"
+ln -s self/../../CLAUDE.md "$R/sub/chain.md"
+git -C "$R" add .gitattributes AGENTS.md sub/tool.sh sub/inside.md sub/escape.md sub/self sub/chain.md
+git -C "$R" commit -qm "tree with attributes, an executable and symlinks"
+git -C "$R" checkout -qb feature
+echo "change" >> "$R/code.txt"
+git -C "$R" commit -qam "reviewed head"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+cat > "$AGY_FAKE_DIR/jail-probe" <<'EOF'
+find . -path ./.git -prune -o -print | sort > "$AGY_FAKE_DIR/agy-tree"
+cat sub/tool.sh > "$AGY_FAKE_DIR/agy-tool" 2>/dev/null
+[ -x sub/tool.sh ] && echo executable > "$AGY_FAKE_DIR/agy-exec"
+readlink sub/inside.md > "$AGY_FAKE_DIR/agy-inside" 2>/dev/null
+{ [ -e sub/escape.md ] || [ -L sub/escape.md ]; } && echo present > "$AGY_FAKE_DIR/agy-escape"
+{ [ -e sub/chain.md ] || [ -L sub/chain.md ]; } && echo present > "$AGY_FAKE_DIR/agy-chain"
+readlink sub/self > "$AGY_FAKE_DIR/agy-self" 2>/dev/null
+EOF
+jail_out="$(cd "$R/sub" && HOME="$JAIL_HOME" AGY_FAKE_REPO="$R" "$GATE" --committed 2>&1)"
+jail_rc=$?
+if [ "$jail_rc" -eq 0 ]; then pass=$((pass + 1)); echo "ok   - jail tree: a review started from a subdirectory passes"; else failed=$((failed + 1)); echo "FAIL - jail tree: a review started from a subdirectory passes (rc=$jail_rc)"; echo "$jail_out" | sed 's/^/      | /'; fi
+assert "jail tree: the whole tree is present, not the cwd's subtree" "grep -qx './AGENTS.md' '$AGY_FAKE_DIR/agy-tree' && grep -qx './.gitattributes' '$AGY_FAKE_DIR/agy-tree' && grep -qx './sub/tool.sh' '$AGY_FAKE_DIR/agy-tree'"
+assert "jail tree: a tracked export-ignore does not drop the instruction file" "grep -qx './AGENTS.md' '$AGY_FAKE_DIR/agy-tree'"
+assert "jail tree: the user's own attributes file does not drop a file" "grep -qx './code.txt' '$AGY_FAKE_DIR/agy-tree'"
+assert "jail tree: export-subst does not rewrite content" "grep -qF '\$Format:%H\$' '$AGY_FAKE_DIR/agy-tool'"
+assert "jail tree: the executable bit is kept" "[ -s '$AGY_FAKE_DIR/agy-exec' ]"
+assert "jail tree: a symlink inside the workspace is kept as a symlink" "[ \"\$(cat '$AGY_FAKE_DIR/agy-inside' 2>/dev/null)\" = '../AGENTS.md' ]"
+assert "jail tree: a symlink that would leave the workspace is not materialised" "[ ! -e '$AGY_FAKE_DIR/agy-escape' ]"
+assert "jail tree: a link that escapes only through another link is removed" "[ ! -e '$AGY_FAKE_DIR/agy-chain' ]"
+assert "jail tree: the link it escaped through, itself inside, is kept" "[ \"\$(cat '$AGY_FAKE_DIR/agy-self' 2>/dev/null)\" = '.' ]"
+rm -f "$AGY_FAKE_DIR/jail-probe"
+rm -rf "$R" "$JAIL_HOME"
+
+# ─── a hand-built tree cannot make the jail write outside itself ───────────
+# A valid tree never holds a symlink `a` beside a directory `a/`; `git mktree`
+# will build one. With `mkdir -p`, writing `a/b/c` after the link `a` was
+# created would follow it and create `b/` and `c` wherever `a` points. The
+# materialiser is exercised directly: the gate itself never reaches it for
+# this tree, because a checkout of it leaves the working tree dirty.
+new_repo
+OUTSIDE="$(mktemp -d)"
+tgt="$(printf '%s' "$OUTSIDE" | git -C "$R" hash-object -w --stdin)"
+lnk="$(printf 'x' | git -C "$R" hash-object -w --stdin)"
+inner="$(printf '120000 blob %s\tc\n' "$lnk" | git -C "$R" mktree)"
+mid="$(printf '040000 tree %s\tb\n' "$inner" | git -C "$R" mktree)"
+code="$(git -C "$R" rev-parse HEAD:code.txt)"
+top="$(printf '120000 blob %s\ta\n040000 tree %s\ta\n100644 blob %s\tcode.txt\n' "$tgt" "$mid" "$code" | git -C "$R" mktree)"
+crafted="$(git -C "$R" commit-tree "$top" -p HEAD -m "test: crafted tree")"
+DEST="$(mktemp -d)"
+jail_fns="$(sed -n '/^agy_jail_materialize() {/,/^}/p; /^agy_jail_path_names_dotgit() {/,/^}/p; /^agy_jail_mkdir_real() {/,/^}/p; /^agy_jail_prune_escaping_links() {/,/^}/p' "$GATE")"
+if bash -c "$jail_fns"'
+agy_jail_materialize "$1" "$2" "$3"' jail-fns "$R" "$crafted" "$DEST" >/dev/null 2>&1; then
+  failed=$((failed + 1)); echo "FAIL - crafted tree: the materialiser refuses a symlink and a directory under one name (it returned 0)"
+else
+  pass=$((pass + 1)); echo "ok   - crafted tree: the materialiser refuses a symlink and a directory under one name"
+fi
+assert "crafted tree: nothing was created where the link points" "[ -z \"\$(ls -A '$OUTSIDE')\" ]"
+assert "crafted tree: no link or directory escaped the workspace" "[ ! -e '$DEST/a/b/c' ] && [ ! -L '$DEST/a/b/c' ]"
+# A path with a newline in it is refused outright: the component walk,
+# `dirname` and the final write would otherwise each see a different path.
+nl_top="$(printf '100644 blob %s\tnl\nname\0' "$code" | git -C "$R" mktree -z)"
+nl_commit="$(git -C "$R" commit-tree "$nl_top" -p HEAD -m "test: newline name")"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a path holding a control character is refused" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$nl_commit' '$DEST' >/dev/null 2>&1 && [ -z \"\$(ls -A '$DEST')\" ]"
+# A failed listing fails the setup instead of passing an empty workspace.
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: an unresolvable head fails the setup, leaving nothing" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' 'no-such-object' '$DEST' >/dev/null 2>&1 && [ -z \"\$(ls -A '$DEST')\" ]"
+# A symlink target is the blob's exact bytes, trailing newline included
+# (readlink prints the target and then a newline of its own); a target the
+# shell cannot hold (a NUL byte) is refused.
+nl_tgt="$(printf 'code.txt\n' | git -C "$R" hash-object -w --stdin)"
+nul_tgt="$(printf 'code\0txt' | git -C "$R" hash-object -w --stdin)"
+bytes_top="$(printf '100644 blob %s\tcode.txt\n120000 blob %s\tnl-link\n' "$code" "$nl_tgt" | git -C "$R" mktree)"
+bytes_commit="$(git -C "$R" commit-tree "$bytes_top" -p HEAD -m "test: newline target")"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a symlink target keeps its trailing newline" "bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$bytes_commit' '$DEST' >/dev/null 2>&1 && [ \"\$(readlink '$DEST/nl-link'; printf x)\" = \"\$(printf 'code.txt\n\nx')\" ]"
+nul_top="$(printf '100644 blob %s\tcode.txt\n120000 blob %s\tnul-link\n' "$code" "$nul_tgt" | git -C "$R" mktree)"
+nul_commit="$(git -C "$R" commit-tree "$nul_top" -p HEAD -m "test: nul target")"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a symlink target holding a NUL byte is refused" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$nul_commit' '$DEST' >/dev/null 2>&1 && [ ! -L '$DEST/nul-link' ]"
+# A replacement object for a blob or the head is ignored: agy sees what the
+# snapshot vouches for.
+repl="$(printf 'replaced instructions\n' | git -C "$R" hash-object -w --stdin)"
+git -C "$R" replace "$code" "$repl"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a git replace for a blob does not reach the workspace" "bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$(git -C "$R" rev-parse HEAD)' '$DEST' >/dev/null 2>&1 && grep -qx 'base line' '$DEST/code.txt'"
+git -C "$R" replace -d "$code"
+# A tracked `.git` entry, in any spelling git refuses, never reaches the
+# workspace: as a regular file it would be a gitfile pointer that `git init`
+# follows out of the jail.
+OTHER="$(mktemp -d)"
+git -C "$OTHER" init -q
+gitfile="$(printf 'gitdir: %s/.git\n' "$OTHER" | git -C "$R" hash-object -w --stdin)"
+for dotgit in .git .GIT .git. 'git~1' 'sub/.Git /x'; do
+  # Two printf calls: in one format string `\0100644` reads as the octal
+  # escape `\010` followed by `0644`, which would fold both entries into one
+  # name holding a control character and never reach the .git guard.
+  dg_top="$({ printf '100644 blob %s\tcode.txt\0' "$code"; printf '100644 blob %s\t%s\0' "$gitfile" "$dotgit"; } | git -C "$R" mktree -z)"
+  dg_commit="$(git -C "$R" commit-tree "$dg_top" -p HEAD -m "test: dotgit entry")"
+  rm -rf "$DEST"; DEST="$(mktemp -d)"
+  assert "crafted tree: a tracked '$dotgit' entry is refused" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$dg_commit' '$DEST' >/dev/null 2>&1 && [ ! -e '$DEST/$dotgit' ] && [ ! -e '$DEST/.git' ]"
+done
+assert "crafted tree: the other repository was not touched" "[ -z \"\$(git -C '$OTHER' status --porcelain)\" ] && [ ! -e '$OTHER/.git/HEAD.lock' ]"
+rm -rf "$OTHER"
+# The same functions, on a valid tree, still produce the files.
+plain="$(git -C "$R" rev-parse HEAD)"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: the extracted functions materialise a valid tree" "bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$plain' '$DEST' && [ -f '$DEST/code.txt' ]"
+rm -rf "$R" "$OUTSIDE" "$DEST"
 
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"

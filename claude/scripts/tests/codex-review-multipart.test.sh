@@ -32,6 +32,9 @@ fragment=prompt.split('\n'+fence+'\n')[1]
 assert hashlib.sha256(fragment.encode()).hexdigest()==m[3]
 (capture/str(index)).write_text(fragment)
 assert '-s' in sys.argv and sys.argv[sys.argv.index('-s')+1]=='read-only'
+# The user's config may set approval_policy=on-request with an auto reviewer,
+# which approves escalation out of the read-only sandbox (#651).
+assert 'approval_policy="never"' in sys.argv and sys.argv[sys.argv.index('approval_policy="never"')-1]=='-c'
 assert '--json' in sys.argv and '--output-schema' in sys.argv
 directory=Path(sys.argv[sys.argv.index('-o')+1]).parent
 if index<total: (capture/'transport-dir').write_text(str(directory))
@@ -47,11 +50,12 @@ rollout=capture/'rollout.jsonl'
 if index==1: records=[{'type':'session_meta','payload':{'id':thread}}]
 else: records=[json.loads(line) for line in rollout.read_text().splitlines()]
 records += [{'type':'response_item','payload':{'type':'message','role':'user','content':[{'type':'input_text','text':prompt}]}},
- {'type':'turn_context','payload':{'model':'fixture-model','sandbox_policy':{'type':'read-only'}}},
+ {'type':'turn_context','payload':{'model':'fixture-model','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
  {'type':'event_msg','payload':{'type':'token_count','info':{'model_context_window':258400 if index==1 else 828400}}}]
 if mode=='compacted': records.append({'type':'compacted','payload':{'message':'summary'}})
 if mode=='lost-input': records[-3]['payload']['content'][0]['text']='summary instead'
 if mode=='writable': records[-2]['payload']['sandbox_policy']={'type':'workspace-write'}
+if mode=='escalatable': records[-2]['payload']['approval_policy']='on-request'
 if mode=='wrong-window' and index>1: records[-1]['payload']['info']['model_context_window']=258400
 rollout.write_text(''.join(json.dumps(record)+'\n' for record in records))
 with sqlite3.connect(home/'state_5.sqlite') as db:
@@ -88,7 +92,7 @@ export CODEX_GATE_BIN="$FIXTURE/bin/codex"
 # exported (#419). Poison it here and pin it per invocation below: an
 # inherited value must never reach the fixture's native-session lookup.
 export CODEX_HOME="$FIXTURE/inherited-codex-home"
-for MODE in approve compacted lost-input writable wrong-window tamper-part tamper-manifest wrong-session wrong-ack missing-completion event-error no-result failed-cli signal repo-change; do
+for MODE in approve compacted lost-input writable escalatable wrong-window tamper-part tamper-manifest wrong-session wrong-ack missing-completion event-error no-result failed-cli signal repo-change; do
  export MODE CAPTURE="$FIXTURE/$MODE"
  mkdir "$CAPTURE"
  set +e
