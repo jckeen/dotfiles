@@ -9,9 +9,11 @@
 # Triggered manually, or by the warning emitted by PluginDriftCheck.hook.ts.
 #
 # The manifest's `# [global]` / `# [per-project]` section markers (issue #214)
-# are comments, stripped like any other: this script installs BOTH sections —
-# that scoping governs enablement (settings.json `enabledPlugins`), not
-# installation, and is checked by PluginDriftCheck.hook.ts, not here.
+# are comments for the install loop: this script installs BOTH sections. The
+# scoping governs enablement (settings.json `enabledPlugins`), and
+# `claude plugin install` enables what it installs, so each [per-project]
+# plugin is disabled at user scope right after its install (#720); the drift
+# hook (PluginDriftCheck.hook.ts) still checks the result.
 #
 # INSTALL scope is a separate axis and does matter here: everything installs at
 # user scope. A plugin someone installed with `--scope project` for one repo is
@@ -55,6 +57,15 @@ if [[ ! -f "$LIB_SERVICES" ]]; then
 fi
 # shellcheck source=lib-services.sh
 . "$LIB_SERVICES"
+
+# manifest_per_project_plugins is shared with setup.sh §3b (#720).
+LIB_CHECKS="$SCRIPT_DIR/../../lib-checks.sh"
+if [[ ! -f "$LIB_CHECKS" ]]; then
+  echo "✘ lib-checks.sh not found: $LIB_CHECKS" >&2
+  exit 1
+fi
+# shellcheck source=lib-checks.sh
+. "$LIB_CHECKS"
 
 # The saved selection, or every service when none was saved. A damaged file is
 # refused, not guessed at: "all" would reinstall what the operator opted out of.
@@ -110,6 +121,9 @@ esac
 # Without python3 the fast path is skipped entirely rather than guessed at: the
 # install loop below is idempotent, so the cost is launch latency, not
 # correctness. python3 is already required by the pre-push receipt checker.
+# Both interpreter calls run with -I so a json.py planted in the current
+# directory (sync-plugins runs from wherever the operator is) cannot hijack
+# the import.
 #
 # installed_state says whether $user_scoped can be trusted: "known" (read, or
 # no file at all — nothing installed yet) or the reason it could not be read.
@@ -131,7 +145,7 @@ elif [[ ! -f "$INSTALLED_JSON" ]]; then
   installed_state="$INSTALLED_JSON is not a regular file"
 elif ! command -v python3 >/dev/null 2>&1; then
   installed_state="python3 is not on PATH, so $INSTALLED_JSON cannot be read"
-elif ! user_scoped="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -c '
+elif ! user_scoped="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -I -c '
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -169,6 +183,66 @@ for p in ${removed[@]+"${removed[@]}"}; do
   fi
 done
 
+# [per-project] plugins must never be enabled in the user settings.json. A
+# disable that failed right after an install (or an install from before #720)
+# would otherwise be masked by the installed-only fast path below on every
+# later run, so each run re-reads the map and disables what it finds; a
+# failure here fails the run, before anything can report success.
+# Only the selected services' plugins: a deselected service's plugins are
+# left exactly as they are, enabled or not, like everywhere else in this
+# script.
+per_project="$(manifest_per_project_plugins < "$MANIFEST" | services_filter_plugins "$selected_services")"
+SETTINGS_JSON="$HOME/.claude/settings.json"
+enabled_per_project=""
+if [[ -n "$per_project" && -e "$SETTINGS_JSON" ]]; then
+  # Only a regular file (through a symlink: settings.json is one) is opened;
+  # a FIFO or socket there would hang the read, and a directory is not a
+  # settings file. Either is a failure, not "nothing enabled".
+  if [[ ! -f "$SETTINGS_JSON" ]]; then
+    echo "✘ $SETTINGS_JSON is not a regular file; cannot confirm [per-project] plugins are disabled" >&2
+    exit 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "✘ python3 is not on PATH, so $SETTINGS_JSON cannot be checked for enabled [per-project] plugins" >&2
+    exit 1
+  fi
+  # A settings file that exists but cannot be read or parsed is a failure,
+  # not "nothing enabled": the fast path below would otherwise report success
+  # without having checked enablement at all.
+  if ! enabled_all="$(${py_timeout[@]+"${py_timeout[@]}"} python3 -I -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+enabled = data.get("enabledPlugins") if isinstance(data, dict) else None
+if enabled is None:
+    sys.exit(0)
+if not isinstance(enabled, dict):
+    sys.exit(1)
+for name, val in enabled.items():
+    if val is True and isinstance(name, str):
+        print(name)
+' "$SETTINGS_JSON" 2>/dev/null)"; then
+    echo "✘ $SETTINGS_JSON is unreadable or not the expected JSON shape; cannot confirm [per-project] plugins are disabled" >&2
+    exit 1
+  fi
+  enabled_per_project="$(grep -xF -f <(printf '%s\n' "$per_project") <<<"$enabled_all" || true)"
+fi
+if [[ -n "$enabled_per_project" ]]; then
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "✘ claude CLI not on PATH; cannot disable [per-project] plugins enabled at user scope" >&2
+    exit 1
+  fi
+  disable_failed=0
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    echo "── $p is enabled at user scope but listed [per-project]; disabling"
+    if ! claude plugin disable --scope user "$p" 2>&1 | tail -1; then
+      echo "  ✘ could not disable $p at user scope" >&2
+      disable_failed=1
+    fi
+  done <<<"$enabled_per_project"
+  (( disable_failed == 0 )) || exit 1
+fi
+
 if [[ -n "$user_scoped" ]] && (( ${#to_remove[@]} == 0 )) \
   && (( ${#unevaluated[@]} == 0 )); then
   missing=0
@@ -195,6 +269,14 @@ failed=()
 for p in ${wanted[@]+"${wanted[@]}"}; do
   echo "── $p"
   if claude plugin install "$p" 2>&1 | tail -1; then
+    # Install enables the plugin in the user enabledPlugins map; a
+    # [per-project] one must be enabled only by a project's settings (#720).
+    # A failed disable leaves the plugin globally enabled, so it fails the run.
+    if grep -qxF "$p" <<<"$per_project" \
+      && ! claude plugin disable --scope user "$p" 2>&1 | tail -1; then
+      failed+=("$p")
+      continue
+    fi
     installed+=("$p")
   else
     failed+=("$p")

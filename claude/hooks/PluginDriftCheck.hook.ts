@@ -221,20 +221,50 @@ interface HookInput {
   cwd: string | null;
   sessionId: string | null;
   event: string | null;
+  // True when the fields were recovered from unparseable (oversized) input.
+  recovered: boolean;
 }
 function readInput(): HookInput {
-  const none: HookInput = { cwd: null, sessionId: null, event: null };
+  const none: HookInput = { cwd: null, sessionId: null, event: null, recovered: false };
   if (process.stdin.isTTY) return none;
+  let raw: string;
   try {
-    const input = JSON.parse(readFileSync(0, 'utf-8').slice(0, MAX_JSON_BYTES));
-    const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+    raw = readFileSync(0, 'utf-8');
+  } catch {
+    return none;
+  }
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+  const head = raw.slice(0, MAX_JSON_BYTES);
+  try {
+    const input = JSON.parse(head);
     return {
       cwd: str(input?.cwd),
       sessionId: str(input?.session_id),
       event: str(input?.hook_event_name),
+      recovered: false,
     };
   } catch {
-    return none;
+    // Unparseable: usually a prompt past the cap cut the JSON short (#705).
+    // Recover the leading string fields; a quote inside a JSON string is
+    // escaped, so a prompt cannot forge a top-level key here.
+    const field = (key: string): string | null => {
+      const m = head.match(new RegExp(`"${key}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`));
+      if (!m) return null;
+      try {
+        return str(JSON.parse(m[1]));
+      } catch {
+        return null;
+      }
+    };
+    const cwd = field('cwd');
+    const sessionId = field('session_id');
+    const event = field('hook_event_name');
+    if (event !== null) return { cwd, sessionId, event, recovered: true };
+    // Input arrived but its event is unknown: take the cheap path, never the
+    // SessionStart report. Empty input stays "no event" (a manual run).
+    return raw.trim() === ''
+      ? none
+      : { cwd, sessionId, event: 'UserPromptSubmit', recovered: true };
   }
 }
 const INPUT = readInput();
@@ -421,10 +451,13 @@ interface Scanned {
   origin: Origin;
   // The plugin or its entry could not be read: report without reading hooks.
   unverifiable?: boolean;
+  // The checkout a project plugin was found in (#705): the same name in a
+  // second checkout is a different plugin.
+  project?: string;
 }
 
-function unverifiable(id: string, origin: Origin): Scanned {
-  return { id, dir: '', origin, unverifiable: true };
+function unverifiable(id: string, origin: Origin, project?: string): Scanned {
+  return { id, dir: '', origin, unverifiable: true, project };
 }
 
 // True when something may be at the path, a dangling symlink included. Only
@@ -581,16 +614,16 @@ function pluginDirs(): Scanned[] {
     try {
       entries = readdirSync(skills).filter((d) => !d.startsWith('.'));
     } catch {
-      if (present(skills)) found.push(unverifiable(skills, 'project'));
+      if (present(skills)) found.push(unverifiable(skills, 'project', project));
       continue;
     }
     for (const entry of entries) {
       const dir = join(skills, entry);
       try {
         const scanned = scanPlugin('project', dir);
-        if (scanned) found.push(scanned);
+        if (scanned) found.push({ ...scanned, project });
       } catch {
-        found.push(unverifiable(`${entry}@skills-dir`, 'project'));
+        found.push(unverifiable(`${entry}@skills-dir`, 'project', project));
       }
     }
   }
@@ -605,15 +638,22 @@ function sameDir(a: string, b: string): boolean {
   }
 }
 
+// Reported-record line -> label. The line is what the state file stores: a
+// project plugin's carries its checkout, so the same name in a second
+// checkout is new (#705).
 interface ModFindings {
-  mods: Set<string>;
-  unknown: Set<string>;
+  mods: Map<string, string>;
+  unknown: Map<string, string>;
+}
+
+function reportKey(tag: 'M' | 'U', label: string, project?: string): string {
+  return project === undefined ? `${tag} ${label}` : `${tag.toLowerCase()} ${enc(project)} ${label}`;
 }
 
 function findMods(allowed: string[]): ModFindings {
-  const mods = new Set<string>();
-  const unknown = new Set<string>();
-  for (const { id, dir, origin, unverifiable: noManifest } of pluginDirs()) {
+  const mods = new Map<string, string>();
+  const unknown = new Map<string, string>();
+  for (const { id, dir, origin, unverifiable: noManifest, project } of pluginDirs()) {
     const key = allowKey(id);
     if (origin !== 'project' && allowed.includes(key)) continue;
     const label =
@@ -626,7 +666,7 @@ function findMods(allowed: string[]): ModFindings {
           : ` (sanitized; allowlist key: ${key})`) +
       (origin === 'project' ? ' (project .claude/skills)' : '');
     if (noManifest) {
-      unknown.add(label);
+      unknown.set(reportKey('U', label, project), label);
       continue;
     }
     try {
@@ -634,13 +674,13 @@ function findMods(allowed: string[]): ModFindings {
       if (hooks.state === 'ok') {
         const value = hooks.value;
         if (typeof value === 'object' && value !== null && 'modules' in value)
-          mods.add(label);
+          mods.set(reportKey('M', label, project), label);
       } else if (hooks.state === 'bad') {
         // No hooks.json is no mod; one that cannot be read is reported.
-        unknown.add(label);
+        unknown.set(reportKey('U', label, project), label);
       }
     } catch {
-      unknown.add(label);
+      unknown.set(reportKey('U', label, project), label);
     }
   }
   return { mods, unknown };
@@ -655,7 +695,7 @@ function modsWarning({ mods, unknown }: ModFindings, rescan = false): string {
         `reported earlier in this session (#618).\n`
       : '';
   if (unknown.size > 0) {
-    const list = [...unknown].map((p) => `  • ${p}`).join('\n');
+    const list = [...unknown.values()].map((p) => `  • ${p}`).join('\n');
     warning +=
       `⚠️  Plugin mods (unverifiable): ${unknown.size} plugin(s) have a ` +
       `hooks.json, plugin.json, marketplace.json or catalog entry this hook ` +
@@ -664,7 +704,7 @@ function modsWarning({ mods, unknown }: ModFindings, rescan = false): string {
   }
   if (mods.size === 0) return warning;
   // Labels were already passed through shown().
-  const list = [...mods].map((p) => `  • ${p}`).join('\n');
+  const list = [...mods.values()].map((p) => `  • ${p}`).join('\n');
   return (
     warning +
     `⚠️  Plugin mods: ${mods.size} installed plugin(s) ship a mod (a "modules" key ` +
@@ -823,6 +863,7 @@ function driftWarning(manifest: Manifest): string {
 //   P <project dir>     a project dir the scan read (a cwd change is a change)
 //   W <sig> <path>      a watched path and its signature at scan time
 //   M|U <label>         a mod / unverifiable label already reported
+//   m|u <dir> <label>   the same for a project plugin; <dir> is its checkout
 //   E <name> <value>    a loader environment variable at scan time (`-` unset)
 //   end                 the last line; without it the state is damaged
 // Paths are enc()-encoded so a newline in an untrusted path cannot forge a
@@ -873,7 +914,8 @@ function readState(): ScanState | null {
         const space = rest.indexOf(' ');
         if (space < 0) return null;
         state.watched.push([dec(rest.slice(space + 1)), rest.slice(0, space)]);
-      } else if (tag === 'M ' || tag === 'U ') state.reported.add(line);
+      } else if (tag === 'M ' || tag === 'U ' || tag === 'm ' || tag === 'u ')
+        state.reported.add(line);
       else return null;
     }
     // A full scan always reads something, so no watched path is damage too.
@@ -936,7 +978,7 @@ function pruneState(): void {
 }
 
 function reportedKeys({ mods, unknown }: ModFindings): Set<string> {
-  return new Set([...[...mods].map((l) => `M ${l}`), ...[...unknown].map((l) => `U ${l}`)]);
+  return new Set([...mods.keys(), ...unknown.keys()]);
 }
 
 // The cheap path: true when nothing the last scan read has changed.
@@ -969,8 +1011,8 @@ function rescan(): void {
   section('plugin mods', () => {
     found = findMods(manifest.modsOk);
     const fresh: ModFindings = {
-      mods: new Set([...found.mods].filter((l) => !before.has(`M ${l}`))),
-      unknown: new Set([...found.unknown].filter((l) => !before.has(`U ${l}`))),
+      mods: new Map([...found.mods].filter(([k]) => !before.has(k))),
+      unknown: new Map([...found.unknown].filter(([k]) => !before.has(k))),
     };
     return modsWarning(fresh, true);
   });
@@ -980,6 +1022,11 @@ function rescan(): void {
 
 function main(): void {
   if (INPUT.event === 'UserPromptSubmit') {
+    // Recovered input whose session_id sat past the cut has no session of
+    // its own. The shared no-session state would let this prompt consume
+    // another session's pending warning (#705), so it reports nothing; the
+    // session's next ordinary prompt reports as usual.
+    if (INPUT.recovered && INPUT.sessionId === null) return;
     rescan();
     return;
   }

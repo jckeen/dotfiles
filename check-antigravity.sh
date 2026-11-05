@@ -115,13 +115,17 @@ else
     if [ "$AGY_STATE_MASKED" -eq 1 ] && [ ! -e "$AGY_SETTINGS" ]; then
       echo "SANDBOX permission baseline: settings.json masked by Antigravity terminal sandbox (verified on host at launch)"
     else
+      AGY_PERM_ARGS=(--settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json")
+      if [ -f "$AGY_MEMORY_REPO/permissions.local.json" ]; then
+        AGY_PERM_ARGS+=(--overlay "$AGY_MEMORY_REPO/permissions.local.json")
+      fi
       # --heal applies the additive merge first (same idempotent step setup.sh runs).
       if [ "$HEAL" -eq 1 ]; then
         python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-          --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" >/dev/null 2>&1 || true
+          "${AGY_PERM_ARGS[@]}" >/dev/null 2>&1 || true
       fi
       if baseline_out="$(python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" check \
-          --settings "$AGY_SETTINGS" --rules "$AGY_SRC/permissions.json" 2>&1)"; then
+          "${AGY_PERM_ARGS[@]}" 2>&1)"; then
         echo "OK      permission baseline: $baseline_out"
       else
         yellow "DRIFT   permission baseline: $baseline_out (re-run setup.sh)"
