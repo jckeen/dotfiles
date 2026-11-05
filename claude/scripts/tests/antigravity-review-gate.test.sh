@@ -1719,6 +1719,52 @@ assert "#687: the user's settings and credential are untouched" \
 rm -f "$AGY_FAKE_DIR/jail-probe"
 rm -rf "$R" "$JAIL_HOME"
 
+# ─── the jail holds every byte of the reviewed HEAD, from any cwd ──────────
+# `git archive` exported only the cwd's subtree and honoured export-ignore and
+# export-subst from tracked .gitattributes and from the user's own attributes
+# file, so a reviewer could be handed a tree with the instruction file missing
+# or rewritten. The jail now writes each blob as stored. Tracked symlinks that
+# stay inside the workspace are kept; one that would climb out of it is not
+# materialised, so agy cannot be pointed at a file outside the jail.
+JAIL_HOME="$(mktemp -d)"
+mkdir -p "$JAIL_HOME/.gemini/antigravity-cli" "$JAIL_HOME/.config/git"
+printf 'fixture-token\n' > "$JAIL_HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+printf 'fixture-installation\n' > "$JAIL_HOME/.gemini/antigravity-cli/installation_id"
+printf 'code.txt export-ignore\n' > "$JAIL_HOME/.config/git/attributes"
+new_repo
+mkdir "$R/sub"
+printf 'AGENTS.md export-ignore\nsub/tool.sh export-subst\n' > "$R/.gitattributes"
+printf 'Known instructions.\n' > "$R/AGENTS.md"
+printf '#!/bin/sh\n# $Format:%%H$\n' > "$R/sub/tool.sh"
+chmod +x "$R/sub/tool.sh"
+ln -s ../AGENTS.md "$R/sub/inside.md"
+ln -s ../../outside.md "$R/sub/escape.md"
+git -C "$R" add .gitattributes AGENTS.md sub/tool.sh sub/inside.md sub/escape.md
+git -C "$R" commit -qm "tree with attributes, an executable and symlinks"
+git -C "$R" checkout -qb feature
+echo "change" >> "$R/code.txt"
+git -C "$R" commit -qam "reviewed head"
+printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+cat > "$AGY_FAKE_DIR/jail-probe" <<'EOF'
+find . -path ./.git -prune -o -print | sort > "$AGY_FAKE_DIR/agy-tree"
+cat sub/tool.sh > "$AGY_FAKE_DIR/agy-tool" 2>/dev/null
+[ -x sub/tool.sh ] && echo executable > "$AGY_FAKE_DIR/agy-exec"
+readlink sub/inside.md > "$AGY_FAKE_DIR/agy-inside" 2>/dev/null
+{ [ -e sub/escape.md ] || [ -L sub/escape.md ]; } && echo present > "$AGY_FAKE_DIR/agy-escape"
+EOF
+jail_out="$(cd "$R/sub" && HOME="$JAIL_HOME" AGY_FAKE_REPO="$R" "$GATE" --committed 2>&1)"
+jail_rc=$?
+if [ "$jail_rc" -eq 0 ]; then pass=$((pass + 1)); echo "ok   - jail tree: a review started from a subdirectory passes"; else failed=$((failed + 1)); echo "FAIL - jail tree: a review started from a subdirectory passes (rc=$jail_rc)"; echo "$jail_out" | sed 's/^/      | /'; fi
+assert "jail tree: the whole tree is present, not the cwd's subtree" "grep -qx './AGENTS.md' '$AGY_FAKE_DIR/agy-tree' && grep -qx './.gitattributes' '$AGY_FAKE_DIR/agy-tree' && grep -qx './sub/tool.sh' '$AGY_FAKE_DIR/agy-tree'"
+assert "jail tree: a tracked export-ignore does not drop the instruction file" "grep -qx './AGENTS.md' '$AGY_FAKE_DIR/agy-tree'"
+assert "jail tree: the user's own attributes file does not drop a file" "grep -qx './code.txt' '$AGY_FAKE_DIR/agy-tree'"
+assert "jail tree: export-subst does not rewrite content" "grep -qF '\$Format:%H\$' '$AGY_FAKE_DIR/agy-tool'"
+assert "jail tree: the executable bit is kept" "[ -s '$AGY_FAKE_DIR/agy-exec' ]"
+assert "jail tree: a symlink inside the workspace is kept as a symlink" "[ \"\$(cat '$AGY_FAKE_DIR/agy-inside' 2>/dev/null)\" = '../AGENTS.md' ]"
+assert "jail tree: a symlink that would leave the workspace is not materialised" "[ ! -e '$AGY_FAKE_DIR/agy-escape' ]"
+rm -f "$AGY_FAKE_DIR/jail-probe"
+rm -rf "$R" "$JAIL_HOME"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

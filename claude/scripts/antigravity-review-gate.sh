@@ -582,8 +582,69 @@ for _v in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTO
 done
 unset _v
 
+# Write the tree of commit $2 of repository $1 under $3, each blob as stored.
+# Not `git archive`: it exports only the cwd's subtree, and it honours
+# export-ignore and export-subst from tracked .gitattributes and from the
+# user's attributes file, so the reviewer could be handed a tree with the
+# instruction file missing or a file rewritten, while the receipt vouches for
+# the real one. `git cat-file blob` applies no attribute, filter or eol rule.
+# Tracked symlinks are kept when their target stays inside the workspace; one
+# that would climb out is not created, so a planted link cannot point agy at
+# a file outside the jail. Submodule entries are skipped. Any other mode, a
+# path with a `..` component, or a failed write fails the setup.
+agy_jail_materialize() {
+  local repo="$1" head="$2" dest="$3" entry mode type sha path target
+  while IFS= read -r -d '' entry; do
+    mode="${entry%% *}"; entry="${entry#* }"
+    type="${entry%% *}"; entry="${entry#* }"
+    sha="${entry%%	*}"; path="${entry#*	}"
+    case "$path" in ''|/*|..|../*|*/..|*/../*) return 1 ;; esac
+    case "$type" in
+      commit) continue ;;
+      blob) ;;
+      *) return 1 ;;
+    esac
+    mkdir -p -- "$dest/$(dirname -- "$path")" || return 1
+    case "$mode" in
+      100644|100755)
+        git -C "$repo" cat-file blob "$sha" > "$dest/$path" || return 1
+        [[ "$mode" != 100755 ]] || chmod 755 "$dest/$path" || return 1
+        ;;
+      120000)
+        target="$(git -C "$repo" cat-file blob "$sha")" || return 1
+        agy_jail_link_stays_inside "$(dirname -- "$path")" "$target" || continue
+        ln -s -- "$target" "$dest/$path" || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done < <(git -C "$repo" ls-tree -r -z "$head")
+}
+
+# Whether symlink target $2, placed in workspace directory $1, resolves
+# lexically to a path inside the workspace root. Pure string arithmetic on
+# path components, so nothing is followed on disk and no GNU realpath is
+# needed.
+agy_jail_link_stays_inside() {
+  local from="$1" target="$2" depth=0 part
+  [[ "$target" != /* ]] || return 1
+  if [[ "$from" != . ]]; then
+    IFS=/ read -r -a _parts <<<"$from"
+    depth=${#_parts[@]}
+  fi
+  IFS=/ read -r -a _parts <<<"$target"
+  for part in "${_parts[@]}"; do
+    case "$part" in
+      ''|.) ;;
+      ..) depth=$((depth - 1)); [[ "$depth" -ge 0 ]] || return 1 ;;
+      *) depth=$((depth + 1)) ;;
+    esac
+  done
+  unset _parts
+  return 0
+}
+
 agy_jail_setup() {
-  local real="$HOME/.gemini/antigravity-cli" cli head
+  local real="$HOME/.gemini/antigravity-cli" cli head repo
   AGY_JAIL="$(mktemp -d "${TMPDIR:-/tmp}/agy-review-jail.XXXXXX")" || return 1
   chmod 700 "$AGY_JAIL" || return 1
   cli="$AGY_JAIL/home/.gemini/antigravity-cli"
@@ -602,7 +663,8 @@ agy_jail_setup() {
     > "$cli/settings.json" || return 1
   # The reviewed HEAD as plain files: context to read, no .git leading back.
   head="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || return 1
-  git archive --format=tar "$head" | tar -x -C "$AGY_JAIL/work" || return 1
+  repo="$(jq -r '.repository' "$GATE_RUN_DIR/snapshot.json")" || return 1
+  agy_jail_materialize "$repo" "$head" "$AGY_JAIL/work" || return 1
   # agy finds .agents/, GEMINI.md and AGENTS.md by walking up to the folder
   # that holds .git. With none, the walk would climb out of the jail into
   # TMPDIR, which anyone on the machine can write, so a planted

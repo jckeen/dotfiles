@@ -29,3 +29,16 @@
   The init and agy itself run with git's routing variables (`GIT_DIR`,
   `GIT_WORK_TREE` and the rest) cleared, and a workspace without a real
   `.git` directory fails the jail build.
+
+
+## 2026-11-05 — fix(gates): the Antigravity jail holds every byte of the reviewed HEAD
+
+- **The jail no longer builds its workspace with `git archive`.** Run from a
+  subdirectory, `git archive` exported only that subtree, and it honoured
+  `export-ignore` and `export-subst` from tracked `.gitattributes` and from
+  the user's own attributes file, so the reviewer could be handed a tree with
+  `AGENTS.md` missing or a file rewritten while the receipt vouched for the
+  real one (both reproduced by the Codex gate on this branch). Each blob is
+  now written as stored from the repository the snapshot names; executable
+  bits are kept; a tracked symlink is kept when it stays inside the workspace
+  and is not created when it would climb out of the jail.
