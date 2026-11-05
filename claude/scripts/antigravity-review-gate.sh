@@ -709,7 +709,7 @@ agy_jail_setup() {
   local real="$HOME/.gemini/antigravity-cli" cli head repo
   AGY_JAIL="$(mktemp -d "${TMPDIR:-/tmp}/agy-review-jail.XXXXXX")" || return 1
   chmod 700 "$AGY_JAIL" || return 1
-  cli="$AGY_JAIL/home/.gemini/antigravity-cli"
+  cli="$AGY_JAIL/jail-home/.gemini/antigravity-cli"
   mkdir -p "$cli" "$AGY_JAIL/work" || return 1
   # Only what agy needs to authenticate. The credential is linked, not copied,
   # so a refreshed token lands in the user's own file.
@@ -738,11 +738,11 @@ agy_jail_setup() {
   env "${GIT_ENV_UNSET[@]}" git init -q "$AGY_JAIL/work" || return 1
   [[ -d "$AGY_JAIL/work/.git" && ! -L "$AGY_JAIL/work/.git" ]] || return 1
   AGY_ENV=(
-    HOME="$AGY_JAIL/home"
-    XDG_CONFIG_HOME="$AGY_JAIL/home/.config"
-    XDG_CACHE_HOME="$AGY_JAIL/home/.cache"
-    XDG_DATA_HOME="$AGY_JAIL/home/.local/share"
-    XDG_STATE_HOME="$AGY_JAIL/home/.local/state"
+    HOME="$AGY_JAIL/jail-home"
+    XDG_CONFIG_HOME="$AGY_JAIL/jail-home/.config"
+    XDG_CACHE_HOME="$AGY_JAIL/jail-home/.cache"
+    XDG_DATA_HOME="$AGY_JAIL/jail-home/.local/share"
+    XDG_STATE_HOME="$AGY_JAIL/jail-home/.local/state"
     ANTIGRAVITY_GATE=1
   )
   # The model spot-check reads this run's records, which now live in the jail.
