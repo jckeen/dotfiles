@@ -2,18 +2,21 @@
 """Merge the Antigravity permission baseline into the machine-local settings.
 
 antigravity/permissions.json (public, curated) is the source of truth for the
-allow/ask/deny rules and the two execution-mode keys. The live file
-~/.gemini/antigravity-cli/settings.json is never symlinked: it also carries
-trustedWorkspaces and grants the user saves from approval prompts.
+allow/ask/deny rules and the execution-mode keys. An optional private overlay
+(e.g. ~/dev/agy-memory/permissions.local.json via --overlay) layers personal
+standing-order grants and promotes selected baseline ask rules to allow.
+The live file ~/.gemini/antigravity-cli/settings.json is never symlinked: it
+also carries trustedWorkspaces and grants the user saves from approval prompts.
 
-  apply  ensure every baseline rule is present and seed the mode keys when
-         absent; user-added rules are kept, but rules the baseline has
-         retired are deleted (exit 0; 2 on unreadable input)
-  check  exit 1 when a baseline rule or mode key is missing, the mode
-         differs, or a retired rule is still live; print the count of
-         non-baseline rules as drift information
+  apply  ensure every baseline/overlay rule is present and seed the mode keys
+         when absent; user-added rules are kept, but rules the baseline has
+         retired (from allow) or unasked (from ask) are deleted (exit 0; 2 on
+         unreadable input)
+  check  exit 1 when a baseline/overlay rule or mode key is missing, the mode
+         differs, a retired rule is still in allow, or an unasked rule is still
+         in ask; print the count of non-baseline rules as drift information
   prune  back up the settings file, then replace the permissions with the
-         baseline exactly and force the mode keys (the one-time cleanup)
+         baseline (+ overlay) exactly and force the mode keys
 """
 
 import argparse
@@ -29,6 +32,7 @@ UNSANDBOXED_RE = re.compile(r"^unsandboxed(?:\s*\((.*)\)\s*$|\s*\(.*|\s*$)", re.
 BUCKETS = ("allow", "ask", "deny")
 # Retirement withdraws a grant, never a restriction.
 GRANT_BUCKET = "allow"
+ASK_BUCKET = "ask"
 
 
 def load_json(path, required):
@@ -46,6 +50,15 @@ def load_json(path, required):
     return data
 
 
+def _validate_rule_list(path, label, entries):
+    if not isinstance(entries, list) or not all(
+        isinstance(e, str) and RULE_RE.match(e) for e in entries
+    ):
+        sys.exit(f'error: {path}: every "{label}" entry must be a rule like command(prefix)')
+    if any("/home/" in e or "/Users/" in e for e in entries):
+        sys.exit(f"error: {path}: rules must not embed a user home path")
+
+
 def load_baseline(path):
     data = load_json(path, required=True)
     rules = data.get("permissions")
@@ -53,30 +66,93 @@ def load_baseline(path):
     if not isinstance(rules, dict) or not isinstance(settings, dict):
         sys.exit(f'error: {path} needs "permissions" and "settings" objects')
     for bucket in BUCKETS:
-        entries = rules.get(bucket, [])
-        if not isinstance(entries, list) or not all(
-            isinstance(e, str) and RULE_RE.match(e) for e in entries
-        ):
-            sys.exit(f'error: {path}: every "{bucket}" entry must be a rule like command(prefix)')
-        if any("/home/" in e or "/Users/" in e for e in entries):
-            sys.exit(f"error: {path}: rules must not embed a user home path")
-    # Rules the baseline has withdrawn. apply is additive, so a grant deleted
-    # from "permissions" would otherwise survive on every machine that already
-    # installed it; listing it here makes apply delete it and check fail.
+        _validate_rule_list(path, bucket, rules.get(bucket, []))
+    # Rules the baseline has withdrawn from allow. apply is additive, so a grant
+    # deleted from "permissions" would otherwise survive on every machine that
+    # already installed it; listing it here makes apply delete it and check fail.
     retired = data.get("retired", [])
-    if not isinstance(retired, list) or not all(
-        isinstance(e, str) and RULE_RE.match(e) for e in retired
-    ):
-        sys.exit(f'error: {path}: every "retired" entry must be a rule like command(prefix)')
+    _validate_rule_list(path, "retired", retired)
+    # Rules withdrawn from ask (or promoted by an overlay).
+    unask = data.get("unask", [])
+    _validate_rule_list(path, "unask", unask)
     baseline = {b: list(rules.get(b, [])) for b in BUCKETS}
     both = sorted(set(retired) & set(baseline[GRANT_BUCKET]))
     if both:
         sys.exit(f"error: {path}: rule(s) both granted and retired: {', '.join(both)}")
-    return baseline, settings, retired
+    both_ask = sorted(set(unask) & set(baseline[ASK_BUCKET]))
+    if both_ask:
+        sys.exit(f"error: {path}: rule(s) both in ask and unask: {', '.join(both_ask)}")
+    return baseline, settings, list(retired), list(unask)
+
+
+def load_overlay(path):
+    data = load_json(path, required=True)
+    rules = data.get("permissions", {})
+    if not isinstance(rules, dict):
+        sys.exit(f'error: {path}: "permissions" must be an object')
+    for bucket in BUCKETS:
+        _validate_rule_list(path, bucket, rules.get(bucket, []))
+    retired = data.get("retired", [])
+    _validate_rule_list(path, "retired", retired)
+    unask = data.get("unask", [])
+    _validate_rule_list(path, "unask", unask)
+    overlay = {b: list(rules.get(b, [])) for b in BUCKETS}
+    both = sorted(set(retired) & set(overlay[GRANT_BUCKET]))
+    if both:
+        sys.exit(f"error: {path}: rule(s) both granted and retired: {', '.join(both)}")
+    both_ask = sorted(set(unask) & set(overlay[ASK_BUCKET]))
+    if both_ask:
+        sys.exit(f"error: {path}: rule(s) both in ask and unask: {', '.join(both_ask)}")
+    # Any rule granted in overlay allow (and not also placed in overlay ask)
+    # automatically promotes out of baseline ask.
+    ask_set = set(overlay[ASK_BUCKET])
+    effective_unask = list(unask)
+    for r in overlay[GRANT_BUCKET]:
+        if r not in ask_set and r not in effective_unask:
+            effective_unask.append(r)
+    return overlay, list(retired), effective_unask
+
+
+def merge_overlay(baseline, retired, unask, overlay_path):
+    overlay, ov_retired, ov_unask = load_overlay(overlay_path)
+    ov_retired_set = set(ov_retired)
+    baseline[GRANT_BUCKET] = [r for r in baseline[GRANT_BUCKET] if r not in ov_retired_set]
+    unask[:] = [r for r in unask if r not in ov_retired_set]
+    for r in ov_retired:
+        if r not in retired:
+            retired.append(r)
+    ov_unask_set = set(ov_unask)
+    baseline[ASK_BUCKET] = [r for r in baseline[ASK_BUCKET] if r not in ov_unask_set]
+    for r in ov_unask:
+        if r not in unask:
+            unask.append(r)
+    for bucket in BUCKETS:
+        existing = set(baseline[bucket])
+        for r in overlay[bucket]:
+            if r not in existing:
+                baseline[bucket].append(r)
+                existing.add(r)
+    deny_set = set(baseline["deny"])
+    denied_conflict = sorted((set(baseline[GRANT_BUCKET]) | ov_unask_set) & deny_set)
+    if denied_conflict:
+        sys.exit(
+            f"error: {overlay_path}: cannot allow or unask denied rule(s): "
+            f"{', '.join(denied_conflict)}"
+        )
+    both = sorted(set(retired) & set(baseline[GRANT_BUCKET]))
+    if both:
+        sys.exit(f"error: {overlay_path}: rule(s) both granted and retired: {', '.join(both)}")
+    both_ask = sorted(set(unask) & set(baseline[ASK_BUCKET]))
+    if both_ask:
+        sys.exit(f"error: {overlay_path}: rule(s) both in ask and unask: {', '.join(both_ask)}")
 
 
 def write_atomic(path, data):
+    if os.path.islink(path):
+        sys.exit(f"error: refusing to write through a symlinked settings file: {path}")
     directory = os.path.dirname(path) or "."
+    if os.path.islink(directory):
+        sys.exit(f"error: refusing to write through a symlinked settings directory: {directory}")
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".settings-", dir=directory)
     try:
@@ -112,6 +188,12 @@ def main():
     )
     parser.add_argument("--rules", required=True, help="antigravity/permissions.json baseline")
     parser.add_argument(
+        "--overlay",
+        action="append",
+        default=[],
+        help="optional private permission overlay JSON file (repeatable)",
+    )
+    parser.add_argument(
         "--home",
         default=os.path.expanduser("~"),
         help="user home directory to expand in file rules (default: ~)",
@@ -120,10 +202,16 @@ def main():
 
     if not os.path.isabs(args.home):
         sys.exit(f"error: --home must be an absolute path: {args.home}")
+    if os.path.islink(args.settings):
+        sys.exit(f"error: refusing to use a symlinked settings file: {args.settings}")
     home = args.home.rstrip("/") or "/"
-    baseline, mode_keys, retired = load_baseline(args.rules)
+    baseline, mode_keys, retired, unask = load_baseline(args.rules)
+    for overlay_path in args.overlay:
+        merge_overlay(baseline, retired, unask, overlay_path)
+
     expanded_baseline = {b: [expand_rule(r, home) for r in baseline[b]] for b in BUCKETS}
     retired_set = {expand_rule(r, home) for r in retired}
+    unask_set = {expand_rule(r, home) for r in unask}
     settings = load_json(args.settings, required=False)
     live = settings.get("permissions")
     if live is None:
@@ -166,12 +254,18 @@ def main():
     # would turn a forbidden operation into an approvable one.
     retired_live = [r for r in live_lists[GRANT_BUCKET] if r in retired_set]
     n_retired = len(retired_live)
+    # Unask withdraws a prompt from "ask" (either retired from baseline ask or
+    # promoted to allow by an overlay).
+    unasked_live = [r for r in live_lists[ASK_BUCKET] if r in unask_set]
+    n_unasked = len(unasked_live)
     missing = {b: [r for r in expanded_baseline[b] if r not in live_lists[b]] for b in BUCKETS}
     extras = {
         b: [
             r
             for r in live_lists[b]
-            if r not in expanded_baseline[b] and not (b == GRANT_BUCKET and r in retired_set)
+            if r not in expanded_baseline[b]
+            and not (b == GRANT_BUCKET and r in retired_set)
+            and not (b == ASK_BUCKET and r in unask_set)
         ]
         for b in BUCKETS
     }
@@ -195,6 +289,9 @@ def main():
         if n_retired:
             named = ", ".join(retired_live)
             problems.append(f"{n_retired} retired rule(s) still granted: {named} (re-run apply)")
+        if n_unasked:
+            named = ", ".join(unasked_live)
+            problems.append(f"{n_unasked} unasked rule(s) still in ask: {named} (re-run apply)")
         if mode_missing:
             problems.append("unset: " + ", ".join(mode_missing))
         if problems:
@@ -226,13 +323,18 @@ def main():
         return 0
 
     # apply
-    changed = n_missing > 0 or legacy_repaired or bool(unsandboxed_live) or n_retired > 0
+    changed = (
+        n_missing > 0 or legacy_repaired or bool(unsandboxed_live) or n_retired > 0 or n_unasked > 0
+    )
     if unsandboxed_live:
         print(f"migrated: converted/removed {len(unsandboxed_live)} legacy unsandboxed rule(s)")
     for rule in retired_live:
         print(f"retired: removed {rule} from {GRANT_BUCKET} (withdrawn from the baseline)")
+    for rule in unasked_live:
+        print(f"unasked: removed {rule} from {ASK_BUCKET}")
     kept = dict(live_lists)
     kept[GRANT_BUCKET] = [r for r in live_lists[GRANT_BUCKET] if r not in retired_set]
+    kept[ASK_BUCKET] = [r for r in live_lists[ASK_BUCKET] if r not in unask_set]
     merged = {b: kept[b] + missing[b] for b in BUCKETS}
     for bucket in BUCKETS:
         if live.get(bucket) != merged[bucket]:
@@ -246,6 +348,8 @@ def main():
         write_atomic(args.settings, settings)
         print(f"applied: {n_missing} baseline rule(s) added; mode keys seeded when absent")
     else:
+        if os.path.exists(args.settings):
+            os.chmod(args.settings, 0o600)
         print("baseline already applied")
     for key, value in mode_drift.items():
         print(

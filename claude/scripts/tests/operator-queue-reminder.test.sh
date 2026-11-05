@@ -45,6 +45,8 @@ cat > "$FAKEBIN/gh" <<'GH'
 [ -n "${FAKE_GH_SLEEP:-}" ] && sleep "$FAKE_GH_SLEEP"
 [ -n "${FAKE_GH_LOG:-}" ] && echo "gh-done" >> "$FAKE_GH_LOG"
 [ -n "${FAKE_GH_JSON:-}" ] || exit 1
+# FAKE_GH_FAIL: gh answers with a transport failure (non-zero exit, no output).
+[ -n "${FAKE_GH_FAIL:-}" ] && exit 1
 # FAKE_GH_EMPTY: gh succeeds but prints nothing (no page, no result count).
 [ -n "${FAKE_GH_EMPTY:-}" ] && exit 0
 # FAKE_GH_SWITCH: the active gh account changes while the fetch runs.
@@ -949,6 +951,21 @@ rm -f "$FX/calls"; fresh_home
 run_issues FAKE_GH_JSON="$FX/multi.json" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=3 OPERATOR_QUEUE_OWNERS="jckeen keen-media"
 assert "owners: a scope still incomplete after three attempts fails the whole refresh" "[ ! -e '$CACHEF' ] && ! outgrep 'open item(s)' && outgrep 'could not list' && [ \"\$(cat '$FX/calls')\" -eq 3 ]"
 rm -f "$FX/calls"
+# #718: the retries serve incomplete answers only. A gh that fails (transport
+# error) or hangs past the budget is not retried, and the retries plus their
+# sleeps all fit inside one FETCH_TIMEOUT deadline.
+fresh_home
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_FAIL=1 FAKE_GH_LOG="$FX/gh.log"
+assert "a gh transport failure is tried once, not retried" "[ ! -e '$CACHEF' ] && outgrep 'could not list' && [ \"\$(grep -c 'api graphql' '$FX/gh.log')\" -eq 1 ]"
+fresh_home
+t0=$SECONDS
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_SLEEP=30 FAKE_GH_LOG="$FX/gh.log" OPERATOR_QUEUE_FETCH_TIMEOUT=2
+assert "a gh that hangs past the budget is killed and not retried" "[ ! -e '$CACHEF' ] && [ \"\$(grep -c 'api graphql' '$FX/gh.log')\" -eq 1 ] && [ $(( SECONDS - t0 )) -lt 20 ]"
+rm -f "$FX/calls"; fresh_home
+t0=$SECONDS
+run_issues FAKE_GH_JSON="$ISSUES" FAKE_GH_CALLS="$FX/calls" FAKE_GH_FLAKY=9 OPERATOR_QUEUE_RETRY_SLEEPS="1 30" OPERATOR_QUEUE_FETCH_TIMEOUT=5
+assert "retry sleeps never run past the whole-operation budget" "[ ! -e '$CACHEF' ] && [ \"\$(cat '$FX/calls')\" -eq 2 ] && [ $(( SECONDS - t0 )) -lt 15 ]"
+rm -f "$FX/calls"
 # A page that cannot be written (file-size limit, SIGXFSZ ignored so the
 # write fails instead of killing the shell) fails the refresh: a shorter
 # raw file would otherwise render as a complete, smaller queue.
@@ -985,6 +1002,13 @@ assert "--find: an existing item prints its URL, exit 0" "[ $rc -eq 0 ] && [ \"\
 assert "--find: searches the hook's own query plus the quoted title" "grep -qF -- '-f q=is:issue is:open is:private author:@me label:operator-action repo:jckeen/claude-memory in:title \"dot-issue\" -f query=' '$FX/gh.log' && [ ! -e '$CACHEF' ]"
 run_issues FAKE_GH_JSON="$ISSUES" -- --find dot
 assert "--find: a title that only contains the slug is no match" "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+# A multi-line timeout value must fall back to the default, not reach the
+# deadline arithmetic (a line-wise check accepted it and --find then answered
+# empty without searching).
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_FETCH_TIMEOUT="$(printf '2\n3')" -- --find dot-issue
+assert "--find: a multi-line fetch-timeout value falls back and the search still runs" "[ $rc -eq 0 ] && [ \"\$out\" = 'https://github.com/jckeen/claude-memory/issues/12' ]"
+run_issues FAKE_GH_JSON="$ISSUES" OPERATOR_QUEUE_FETCH_TIMEOUT="12x" -- --find dot-issue
+assert "--find: a non-numeric fetch-timeout value falls back and the search still runs" "[ $rc -eq 0 ] && [ \"\$out\" = 'https://github.com/jckeen/claude-memory/issues/12' ]"
 run_issues FAKE_GH_JSON="$FX/multi.json" OPERATOR_QUEUE_OWNERS=jckeen -- --find edit-plant
 assert "--find: an item the reminder hides (edited by someone else) is no match" "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
 run_issues -- --find dot-issue

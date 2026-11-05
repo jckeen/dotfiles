@@ -967,11 +967,64 @@ cx() {
   codex --strict-config "${remote_args[@]}" "$@"
 }
 
+_agy_option_takes_value() {
+  case "$1" in
+    -i|--prompt-interactive|-prompt-interactive|-p|--print|-print|--prompt|-prompt|--add-dir|-add-dir|--agent|-agent|--conversation|-conversation|--effort|-effort|--input-format|-input-format|--json-schema|-json-schema|--log-file|-log-file|--mode|-mode|--model|-model|--output-format|-output-format|--print-timeout|-print-timeout|--project|-project|--settings|-settings)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_agy_has_mode_arg() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      --mode|--mode=*|-mode|-mode=*) return 0 ;;
+    esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      shift 2
+      continue
+    fi
+    shift
+  done
+  return 1
+}
+
+_agy_is_bool_literal() {
+  case "$1" in
+    true|false|TRUE|FALSE|True|False|1|0|t|f|T|F) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_agy_has_short_c_resume() {
+  local dev_dir
+  dev_dir="$(_dev_dir)"
+  if [ -n "${1:-}" ] && [[ "$1" != -* ]] && [ -d "$dev_dir/$1" ]; then
+    shift
+  fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      -c=false|-c=FALSE|-c=False|-c=0|-c=f|-c=F|-c="") ;;
+      -c=*) return 0 ;;
+    esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      shift 2
+      continue
+    fi
+    shift
+  done
+  return 1
+}
+
 # Launch Antigravity with the same project-selection and sync ergonomics as
 # cc/cx. `command` bypasses this function and resolves the installed agy binary.
 # Usage: agy                         — launch from the current project
 #        agy <project>               — cd into ~/dev/<project> first
 #        agy --continue|-c           — continue without the sync preflight
+#        agy -c <id>                 — resume conversation <id> (normalized to --conversation <id>)
 #        agy --conversation <id>     — resume by id without the sync preflight
 agy() {
   local _agent_preflight_synced="${_agent_preflight_synced:-0}" preflight_rc=0
@@ -987,13 +1040,64 @@ agy() {
       return
       ;;
   esac
+  _agent_force_resuming=0
+  _agy_has_short_c_resume "$@" && _agent_force_resuming=1
   _agent_preflight "--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=" \
     "_check_antigravity_launch_health" "$@" || preflight_rc=$?
   if [ "$preflight_rc" -eq 2 ]; then agy "$@"; return $?; fi
   [ "$preflight_rc" -eq 0 ] || return 1
   [ "$_agent_shifted" -eq 1 ] && shift
 
-  command agy "$@"
+  # In agy, -c/--continue is a boolean flag ("most recent conversation") and
+  # rejects a conversation ID positional argument; rewrite `-c <id>` /
+  # `--continue <id>` (and `=<id>` forms) to `--conversation <id>` so cc/cx
+  # resume muscle memory and handoff snippets work without error.
+  local -a normalized_args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --)
+        normalized_args+=("$@")
+        break
+        ;;
+      -c|--continue|-continue)
+        if [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] && ! _agy_is_bool_literal "$2"; then
+          normalized_args+=(--conversation "$2")
+          shift 2
+          continue
+        fi
+        ;;
+      -c=*|--continue=*|-continue=*)
+        local continue_val="${1#*=}"
+        if [ -n "$continue_val" ] && ! _agy_is_bool_literal "$continue_val"; then
+          normalized_args+=("--conversation=$continue_val")
+          shift
+          continue
+        fi
+        ;;
+    esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      normalized_args+=("$1" "$2")
+      shift 2
+      continue
+    fi
+    normalized_args+=("$1")
+    shift
+  done
+  set -- "${normalized_args[@]}"
+
+  local agy_memory_bootstrap
+  agy_memory_bootstrap="${AGY_MEMORY_REPO:-$(_dev_dir)/agy-memory}/bootstrap.sh"
+  if [ -f "$agy_memory_bootstrap" ] \
+    && ! bash "$agy_memory_bootstrap"; then
+    echo "⚠ Antigravity private defaults could not be applied — continuing with the existing local config." >&2
+  fi
+
+  local -a mode_args=()
+  if ! _agy_has_mode_arg "$@"; then
+    mode_args=(--mode auto)
+  fi
+
+  command agy "${mode_args[@]}" "$@"
 }
 
 codex-update() {
