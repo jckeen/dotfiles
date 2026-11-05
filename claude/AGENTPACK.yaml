@@ -75,6 +75,16 @@
       "skill_format": "agent-skills"
     },
     {
+      "id": "skill:autonomous-run",
+      "type": "skill",
+      "name": "autonomous-run",
+      "description": "Decision layer for unattended or looping work — picks between in-session work, a dynamic workflow, /loop, /goal, Monitor, a Stop hook, or a cloud scheduled task, then sets the stop condition, round cap and verification gate before launch and defines the report. Use when the user says \"run this unattended\", \"keep going until\", \"loop until done\", \"babysit this\", \"come back when it's finished\", \"overnight\", or asks which loop primitive to use. Not for loop syntax itself (/loop, /goal, /schedule, workflow-authoring cover that).",
+      "path": "skills/autonomous-run",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
       "id": "skill:branch-hygiene",
       "type": "skill",
       "name": "branch-hygiene",
@@ -188,7 +198,7 @@
       "id": "skill:orchestrate",
       "type": "skill",
       "name": "orchestrate",
-      "description": "Full-lifecycle orchestration for comprehensive execution — selects relevant skills, delegates bounded work, then simplifies, completes documentation, verifies, reviews the final artifact, and delivers with a durable handoff. Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.",
+      "description": "Maximum-effort, full-lifecycle execution that plans, delegates bounded work, verifies independently, and closes the loop with docs, review and handoff. Use when the user says 'orchestrate', 'go all-in', 'max effort', 'throw everything at it', or wants a big task carried end to end with independent verification.",
       "path": "skills/orchestrate",
       "risk_level": "low",
       "permissions": [],
@@ -218,7 +228,7 @@
       "id": "skill:session-retro",
       "type": "skill",
       "name": "session-retro",
-      "description": "Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user signals satisfaction at the end of real work (\"thanks\", \"thanks that worked\", \"that worked great\", \"nice\", \"perfect\", \"exactly what I needed\"), or when they explicitly run /session-retro. Always proposes and waits for confirmation — never edits skills silently. In unattended runs (/orchestrate, overnight, or /session-retro --auto), writes proposals to ~/.claude/retro-proposals/ instead of blocking.",
+      "description": "Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user signals satisfaction at the end of real work (\"thanks\", \"thanks that worked\", \"that worked great\", \"nice\", \"perfect\", \"exactly what I needed\"), or when they explicitly run /session-retro. Always proposes and waits for confirmation — never edits skills silently. In unattended runs (/orchestrate with no user present, or /session-retro --auto), writes proposals to ~/.claude/retro-proposals/ instead of blocking.",
       "path": "skills/session-retro",
       "risk_level": "low",
       "permissions": [],

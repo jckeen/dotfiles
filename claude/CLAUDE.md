@@ -34,6 +34,8 @@ imported here (see the README's "The private memory repos" section).
   don't bury it in tool output.
 - If the same error appears 3+ times, stop and explain the root cause instead of
   retrying. Course-correct early if the approach turns out to be wrong.
+- Unattended or looping work follows the `autonomous-run` skill: stop condition,
+  cap and verification gate are written before launch.
 
 ## Tech stack
 

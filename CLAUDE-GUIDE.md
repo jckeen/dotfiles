@@ -68,9 +68,9 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 2. Go back and forth until the plan is solid
 3. Switch to Normal Mode — Claude executes
 4. `/verify` — Confirm it actually works (run the tests, run the app, observe behavior). This is the **#1 quality multiplier** — a real feedback loop is worth 2–3× the result.
-5. `/simplify` — Remove unnecessary complexity
+5. **Simplify** — `/simplify` where enabled, else ask for a simplify pass
 6. `/review` — Check quality and security
-7. `/changelog` — Log what happened
+7. **Changelog** — the branch's `changelog.d/` fragment where the repo keeps one, else `/changelog` where enabled
 8. `/handoff` — If ending the session
 
 > **Changelog in this repo:** a PR adds its entry as one fragment under
@@ -109,6 +109,7 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 | `/claude-server` | Spawn worktree + remote |
 | `/decompose` | Break a complex task into subtasks |
 | `/orchestrate` | Full-lifecycle max-effort mode — roll-call skills, fan out parallel agents, close the loop |
+| `/autonomous-run` | Unattended or looping work: pick the primitive, write the stop condition and cap, define the report |
 | `/branch-hygiene` | Audit and clean up stale git branches |
 | `/jj` | Drive jujutsu (jj) for single-agent work; worktrees for multi-agent |
 | `/review-gates` | Multi-agent review-gate mechanics: lane selection, handoff payload, verdict persistence |
@@ -263,16 +264,109 @@ Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts
 | `review-and-push.sh` | Morning review of overnight changes | `review-and-push.sh ~/dev/atlas --auto-push` |
 
 All scripts use safety tiers from `common.sh` — each gets the minimum permissions needed.
+Known gaps in `overnight.sh` (phase mixing, exit 0 on failure) are tracked in #740.
 
 **Also in `claude/scripts/`:** `sync-plugins.sh` — idempotently installs any plugins listed in `claude/plugins.txt` that are missing locally (skipping a deselected agent service's plugins) and uninstalls any named by a `# removed: <id>` line. Each `[per-project]` plugin it installs is then disabled at user scope (`claude plugin disable --scope user`, #720), since install enables it globally; `setup.sh` does the same. Auto-run by `cc` on every fresh launch (pre-exec, so installs apply to the session being started); a fast path exits silently when there's no drift. Also runnable manually, or follow the warning from `PluginDriftCheck.hook.ts` at session start. The manifest lives in the dotfiles repo and is the cross-machine source of truth.
 
 ---
 
-## Stop Hooks (Auto-QA Pattern)
+## Loops & Unattended Runs
 
-Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run checks after each Claude response. If checks fail, errors feed back to Claude automatically.
+Run `/autonomous-run` to decide which primitive fits; this is the cheat sheet.
 
-**Template** — adapt the commands per project:
+**Answer five questions before launch** — what done looks like, how it checks
+its own work, what it may touch, what stops it (`--max-turns`,
+`--max-budget-usd`, a round cap, K empty rounds), and who signs off. An
+unanswered one means do not run it unattended.
+
+| Primitive | Use it for |
+|-----------|-----------|
+| `/loop 5m PROMPT` | A true fixed cadence |
+| `/loop PROMPT` (no interval) | Watching something external (CI, review, deploy); write the stop condition into the prompt |
+| `/goal CONDITION … or stop after N turns` | "Keep going until" — a session-scoped Stop hook judged by a small model |
+| Command Stop hook (below) | "Keep going until this command passes" |
+| `/schedule` | Must outlive the session and needs no local files (cloud: fresh clone, 1-hour minimum interval) |
+| Desktop scheduled task | Must outlive the session and needs local files or tools (this machine, persistent, 1-minute minimum when Claude sets it) |
+
+**Strictness ladder for the loop's own check:** ask in the prompt → `/goal` →
+Stop hook → a fresh reviewer agent. Climb when the rung below keeps failing.
+The ladder picks how the loop checks itself; it never replaces the
+independent review the wrap-up requires before anything ships (`/code-review`,
+and `/security-review` where the diff touches a trust boundary).
+
+**Headless shape:** `claude -p "…" --allowedTools … --permission-mode dontAsk --max-turns N`.
+Not `--bare`: bare mode skips hooks and CLAUDE.md discovery, so the hook guards
+and the Stop hook below would not run; keep it for one-off reads where no guard
+matters.
+
+### Stop hook template
+
+Add a `Stop` hook to a project's `.claude/settings.local.json` to run checks
+after each Claude response. A `{"decision":"block","reason":…}` on stdout
+blocks the stop and feeds the reason back to Claude (exit 2 with stderr does
+too, but output that resembles a missing-file error is then read as a hook
+that failed to start, which does not block). Bound the retries yourself: `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`
+(default 8) counts only consecutive blocks, and the counter resets every time
+Claude calls a tool, so an unfixable check would otherwise restart repair
+attempts for as long as the budget lasts. The script below keeps its own count
+per session: three failed attempts get exit 2 with the check output; the
+fourth blocks once more with an instruction to report "stopped at cap" and
+stop (stderr on exit 0 never reaches Claude, so the instruction has to travel
+as a block); after that the stop goes through with a `systemMessage` for the
+person; if the count itself cannot be written, the stop goes through at once
+rather than retrying unbounded. The check runs under `timeout` below the
+hook's own timeout, so a hung check counts as a failed attempt instead of a
+discarded hook. The count lives under `$XDG_RUNTIME_DIR` or
+`~/.cache`, never a shared `/tmp`, and is read as digits only. When the hook input has `stop_hook_active`
+true, Claude is already continuing because of a Stop hook.
+
+`.claude/hooks/stop-check.sh` (run through `bash` below, so it needs no
+executable bit; a hook that fails to start is treated as non-blocking, which
+would silently disable the guard):
+
+```bash
+#!/usr/bin/env bash
+# Stop hook: block the stop until the checks pass, at most 3 repair attempts per session.
+set -u
+input="$(cat)"
+# The count lives in a directory only this user can write, never a shared /tmp,
+# and is read as digits only: bash arithmetic on a file another user could
+# pre-create would run whatever it holds.
+dir="${XDG_RUNTIME_DIR:-$HOME/.cache}/stop-check"
+mkdir -p -m 700 "$dir" || { jq -n '{"systemMessage":"stop-check: cannot create its state dir; stopping without retrying"}'; exit 0; }
+session="$(jq -r '.session_id // "default"' <<<"$input" | tr -cd 'A-Za-z0-9_-')"
+budget="$dir/${session:-default}"
+cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 2; }
+# The check is bounded below the hook's own timeout (120 s in the settings
+# entry below): a check that hangs would otherwise hit the hook timeout, whose
+# output Claude discards, and the stop would go through with no attempt
+# recorded. `timeout` is GNU coreutils (on macOS: brew install coreutils, gtimeout).
+# -k 5: a check that ignores SIGTERM is killed 5 s later, so it cannot outlive
+# the hook's timeout either.
+out="$(timeout -k 5 100 bash -c 'npm run typecheck && npm run lint' 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then rm -f "$budget"; exit 0; fi
+[ "$rc" -ne 124 ] && [ "$rc" -ne 137 ] || out="the check ran past 100 s and was stopped; treat it as failed. $out"
+prev="$(cat "$budget" 2>/dev/null || true)"; [[ "$prev" =~ ^[0-9]{1,6}$ ]] || prev=0
+n=$((prev + 1))
+# An attempt that cannot be recorded would be retried forever: stop instead.
+echo "$n" >"$budget" || { jq -n '{"systemMessage":"stop-check: cannot record attempts; stopping without retrying"}'; exit 0; }
+# Block through JSON on stdout, not exit 2 with the raw output on stderr: a
+# check whose output looks like a missing-file error ("No such file or
+# directory") would be read as a hook that failed to start, which is
+# non-blocking, and the stop would go through unrepaired.
+if [ "$n" -le 3 ]; then
+  jq -n --arg r "stop-check: attempt $n of 3 failed. Fix the check, then stop again. Output: $(tail -c 1500 <<<"$out")" \
+    '{"decision":"block","reason":$r}'
+  exit 0
+fi
+if [ "$n" -eq 4 ]; then
+  jq -n --arg r "stop-check: the check failed on $((n - 1)) attempts. Do not retry. Report the result as stopped at cap, quote the last error, and stop. Last output: $(tail -c 600 <<<"$out")" \
+    '{"decision":"block","reason":$r}'
+  exit 0
+fi
+jq -n '{"systemMessage":"stop-check: stopped at cap; the check never passed. See the last response."}'
+exit 0
+```
 
 ```json
 {
@@ -281,10 +375,7 @@ Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run check
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "cd $CLAUDE_PROJECT_DIR && npm run typecheck 2>&1 | tail -20; npm run lint 2>&1 | tail -20"
-          }
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh\"", "timeout": 120 }
         ]
       }
     ]
@@ -294,8 +385,9 @@ Add a `Stop` hook to a project's `.claude/settings.local.json` to auto-run check
 
 **Tips:**
 - Put this in `.claude/settings.local.json` (project-level, gitignored), not global settings
-- Pipe through `tail` to keep output concise — Claude sees the full hook output
-- Chain multiple checks with `&&` or `;` depending on whether you want fail-fast
+- Block with JSON on stdout as the template does; with exit 2 only stderr reaches Claude, and missing-file text there is treated as a broken hook, not a block
+- The attempt count is the guard; without one, a check that can never pass loops until the session's budget runs out
+- Don't pipe a check through `tail` here: a pipe's status is `tail`'s, so a failing check would pass
 - Common combos: `tsc --noEmit`, `eslint .`, `pytest`, `cargo check`, `go vet ./...`
 
 ---
@@ -317,6 +409,7 @@ Useful for: personal workflow preferences, local paths, machine-specific context
 5. **Be specific** — vague prompts waste tokens on wrong approaches
 6. **Parallelize** — run multiple sessions with git worktrees
 7. **CLAUDE.md compounds** — keep it pruned and accurate
+8. **Loops need a finish line** — write the stop condition and cap before launch; a hit cap is a report, not a retry.
 
 ---
 

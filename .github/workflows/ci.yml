@@ -508,6 +508,12 @@ jobs:
           claude/scripts/tests/skill-parity.test.sh
           claude/scripts/check-skill-parity.sh
 
+      # Self-test only: the checker reads the private skillOverrides in the
+      # live ~/.claude/settings.json, which CI does not have.
+      - name: check-skill-refs (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/check-skill-refs.test.sh
+
       - name: capability and workflow contracts
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
