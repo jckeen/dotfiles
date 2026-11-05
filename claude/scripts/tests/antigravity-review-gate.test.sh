@@ -1739,7 +1739,11 @@ printf '#!/bin/sh\n# $Format:%%H$\n' > "$R/sub/tool.sh"
 chmod +x "$R/sub/tool.sh"
 ln -s ../AGENTS.md "$R/sub/inside.md"
 ln -s ../../outside.md "$R/sub/escape.md"
-git -C "$R" add .gitattributes AGENTS.md sub/tool.sh sub/inside.md sub/escape.md
+# A lexical check passes this pair: `self` points at its own directory, and
+# `chain` climbs two levels through it, which lands above the workspace.
+ln -s . "$R/sub/self"
+ln -s self/../../CLAUDE.md "$R/sub/chain.md"
+git -C "$R" add .gitattributes AGENTS.md sub/tool.sh sub/inside.md sub/escape.md sub/self sub/chain.md
 git -C "$R" commit -qm "tree with attributes, an executable and symlinks"
 git -C "$R" checkout -qb feature
 echo "change" >> "$R/code.txt"
@@ -1751,6 +1755,8 @@ cat sub/tool.sh > "$AGY_FAKE_DIR/agy-tool" 2>/dev/null
 [ -x sub/tool.sh ] && echo executable > "$AGY_FAKE_DIR/agy-exec"
 readlink sub/inside.md > "$AGY_FAKE_DIR/agy-inside" 2>/dev/null
 { [ -e sub/escape.md ] || [ -L sub/escape.md ]; } && echo present > "$AGY_FAKE_DIR/agy-escape"
+{ [ -e sub/chain.md ] || [ -L sub/chain.md ]; } && echo present > "$AGY_FAKE_DIR/agy-chain"
+readlink sub/self > "$AGY_FAKE_DIR/agy-self" 2>/dev/null
 EOF
 jail_out="$(cd "$R/sub" && HOME="$JAIL_HOME" AGY_FAKE_REPO="$R" "$GATE" --committed 2>&1)"
 jail_rc=$?
@@ -1762,6 +1768,8 @@ assert "jail tree: export-subst does not rewrite content" "grep -qF '\$Format:%H
 assert "jail tree: the executable bit is kept" "[ -s '$AGY_FAKE_DIR/agy-exec' ]"
 assert "jail tree: a symlink inside the workspace is kept as a symlink" "[ \"\$(cat '$AGY_FAKE_DIR/agy-inside' 2>/dev/null)\" = '../AGENTS.md' ]"
 assert "jail tree: a symlink that would leave the workspace is not materialised" "[ ! -e '$AGY_FAKE_DIR/agy-escape' ]"
+assert "jail tree: a link that escapes only through another link is removed" "[ ! -e '$AGY_FAKE_DIR/agy-chain' ]"
+assert "jail tree: the link it escaped through, itself inside, is kept" "[ \"\$(cat '$AGY_FAKE_DIR/agy-self' 2>/dev/null)\" = '.' ]"
 rm -f "$AGY_FAKE_DIR/jail-probe"
 rm -rf "$R" "$JAIL_HOME"
 

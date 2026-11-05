@@ -40,5 +40,7 @@
   `AGENTS.md` missing or a file rewritten while the receipt vouched for the
   real one (both reproduced by the Codex gate on this branch). Each blob is
   now written as stored from the repository the snapshot names; executable
-  bits are kept; a tracked symlink is kept when it stays inside the workspace
-  and is not created when it would climb out of the jail.
+  bits are kept; regular files are written before any symlink exists, and
+  every tracked symlink is then resolved on the filesystem and removed when
+  it lands outside the workspace, so a chain of links cannot point agy at a
+  file outside the jail.
