@@ -132,7 +132,7 @@ Exit status: `0` pushed, or declined at the prompt; `1` refused or failed
 (including an Antigravity exit 3 that `REVIEW_LANE_FALLBACK=block` or an
 unavailable Codex lane will not fall back from); `2` a blocking verdict; `3`
 the gate that ran last could not run; `4` approved but not pushed, because
-there was no terminal to confirm on and no `--auto-push`.
+input ended at the confirmation prompt and there was no `--auto-push`.
 
 Blocking findings, failed reviewer execution, and missing or stale receipts
 prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
