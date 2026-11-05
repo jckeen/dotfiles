@@ -42,13 +42,14 @@ unattended.
    a true cadence. A fixed-interval loop survives `--resume` until it expires;
    a self-paced one does not. Esc stops a self-paced loop while it waits; a
    fixed-interval loop only stops when you ask Claude to cancel it.
-6. **"Keep going until CONDITION"** — `/goal CONDITION … or stop after N
-   turns`, a prompt-based Stop hook judged by a small model. Deterministic
-   criteria work best.
-7. **"Keep going until COMMAND passes"** — a command Stop hook ending
-   `… 1>&2 || exit 2` that keeps its own attempt count (the block cap,
-   `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, resets whenever Claude calls a tool);
-   see the guide's template.
+6. **"Keep going until COMMAND passes"** — a command Stop hook that keeps its
+   own attempt count and reports "stopped at cap" when it gives up (the block
+   cap, `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, resets whenever Claude calls a
+   tool); see the guide's template. A deterministic command always beats a
+   judged condition, which is why this comes before `/goal`.
+7. **"Keep going until CONDITION"** with no command that decides it — `/goal
+   CONDITION … or stop after N turns`, a prompt-based Stop hook judged by a
+   small model. Deterministic criteria work best.
 
 ## Strictness Ladder for the Loop's Own Check
 

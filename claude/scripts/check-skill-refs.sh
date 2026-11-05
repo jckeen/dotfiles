@@ -46,14 +46,18 @@ section() {
 
 # units <text> — one record per sentence: "LINE<TAB>SENTENCE". Lines of one
 # paragraph or list item are joined (Markdown wraps them), then split at a
-# sentence end (. ; : ! ?) followed by a space or the end, so a hedge applies
-# only to the refs in its own sentence: "Run /changelog. Run /simplify if
-# available." hedges /simplify and still flags /changelog.
+# sentence end (. ; : ! ?) followed by a space or the end, and again at commas
+# and parentheses, so a hedge applies only to the refs in its own clause: "Run
+# /changelog. Run /simplify if available." hedges /simplify and still flags
+# /changelog, and "(the `review` skill if available)" exempts only `review`.
 units() {
   awk '
     function flush(   i, n, parts) {
       if (unit == "") return
-      n = split(unit, parts, /[.;:!?]( +|$)/)
+      # Sentence ends, then commas and parentheses: a hedge covers only the
+      # refs in its own clause, so "(the `review` skill if available)" does
+      # not exempt the `/code-review` it follows.
+      n = split(unit, parts, /[.;:!?]( +|$)|[,()]/)
       for (i = 1; i <= n; i++) if (parts[i] ~ /[^ \t]/) printf "%d\t%s\n", start, parts[i]
       unit = ""
     }
@@ -72,8 +76,9 @@ for rel in claude/skills/orchestrate/SKILL.md claude/CLAUDE.md CLAUDE-GUIDE.md c
     [ -n "$cur" ] || continue
     # A slash ref is not preceded by a word char, '.', '~', ':' or '/' (paths,
     # URLs, "3/5", "changelog.d/") and not followed by '/' or a word char.
-    # Separators are doubled so a consumed trailing char cannot hide the next ref.
-    names="$( { sed 's/[ `(]/&&/g' <<<"$cur" \
+    # Every separator byte is doubled so the trailing char one match consumes
+    # cannot hide the next ref ("/orchestrate,/nosuch" keeps both).
+    names="$( { sed 's#[^A-Za-z0-9_/.~:-]#&&#g' <<<"$cur" \
         | grep -oE '(^|[^A-Za-z0-9_./~:-])/[a-z][a-z0-9-]*([^A-Za-z0-9_/.-]|\.([^A-Za-z0-9_/-]|$)|$)' \
         | sed -E 's#^[^/]*/([a-z0-9-]+).*#\1#'
       grep -oE '`[a-z][a-z0-9-]+` skill' <<<"$cur" | sed -E 's/`([^`]+)`.*/\1/'; } || true)"

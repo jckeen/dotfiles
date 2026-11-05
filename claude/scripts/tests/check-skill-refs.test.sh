@@ -60,6 +60,14 @@ printf '# x\n\n- Record the work with `/changelog`\n  where it is enabled, then 
 if run; then ok "a hedge wrapped onto the next line of the same sentence still exempts"
 else fail "a hedge wrapped onto the next line of the same sentence still exempts"; cat "$T/out"; fi
 
+printf '# x\n\n3. Review with `/changelog` (the `review` skill if available).\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a hedged parenthetical does not exempt the mandatory ref before it"
+else fail "a hedged parenthetical does not exempt the mandatory ref before it"; cat "$T/out"; fi
+
+printf '# x\n\nRun `/orchestrate`,`/nosuch`.\n' >"$ORCH"
+if ! run && grep -q 'nosuch — no such skill' "$T/out"; then ok "a ref right after a comma is still seen"
+else fail "a ref right after a comma is still seen"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi

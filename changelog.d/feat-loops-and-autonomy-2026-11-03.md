@@ -51,3 +51,11 @@
   shape drops `--bare`, which skips hooks and CLAUDE.md; the Stop hook template
   keeps its own attempt count because the block cap resets on every tool call;
   `check-skill-refs.sh` judges hedges per sentence, with wrapped lines joined.
+
+- **Second Codex round (2026-11-05).** The Stop hook template runs through
+  `bash` (no executable bit to forget), reports "stopped at cap" to Claude as
+  one final block and to the person as a `systemMessage` rather than on a
+  stderr nobody reads; a command Stop hook is chosen before a judged `/goal`;
+  `check-skill-refs.sh` splits clauses at commas and parentheses so a hedged
+  parenthetical exempts only its own ref, and doubles every separator byte so
+  a ref right after a comma is still seen.

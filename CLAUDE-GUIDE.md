@@ -306,24 +306,35 @@ to Claude. Bound the retries yourself: `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`
 (default 8) counts only consecutive blocks, and the counter resets every time
 Claude calls a tool, so an unfixable check would otherwise restart repair
 attempts for as long as the budget lasts. The script below keeps its own count
-per session and lets the stop through after three failed attempts; when the
-hook input has `stop_hook_active` true, Claude is already continuing because
-of a Stop hook.
+per session: three failed attempts get exit 2 with the check output; the
+fourth blocks once more with an instruction to report "stopped at cap" and
+stop (stderr on exit 0 never reaches Claude, so the instruction has to travel
+as a block); after that the stop goes through with a `systemMessage` for the
+person. When the hook input has `stop_hook_active` true, Claude is already
+continuing because of a Stop hook.
 
-`.claude/hooks/stop-check.sh`:
+`.claude/hooks/stop-check.sh` (run through `bash` below, so it needs no
+executable bit; a hook that fails to start is treated as non-blocking, which
+would silently disable the guard):
 
 ```bash
 #!/usr/bin/env bash
-# Stop hook: block the stop until the checks pass, at most 3 attempts per session.
+# Stop hook: block the stop until the checks pass, at most 3 repair attempts per session.
 set -u
 input="$(cat)"
 session="$(jq -r '.session_id // "default"' <<<"$input")"
 budget="${TMPDIR:-/tmp}/stop-check.$session"
-cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 0; }
-if { npm run typecheck && npm run lint; } 1>&2; then rm -f "$budget"; exit 0; fi
+cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 2; }
+if out="$({ npm run typecheck && npm run lint; } 2>&1)"; then rm -f "$budget"; exit 0; fi
 n=$(( $(cat "$budget" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$budget"
-[ "$n" -le 3 ] || { echo "stop-check: still failing after $n attempts; stopping so a person can look" >&2; exit 0; }
-exit 2
+if [ "$n" -le 3 ]; then printf '%s\n' "$out" >&2; exit 2; fi
+if [ "$n" -eq 4 ]; then
+  jq -n --arg r "stop-check: the check failed on $((n - 1)) attempts. Do not retry. Report the result as stopped at cap, quote the last error, and stop. Last output: $(tail -c 600 <<<"$out")" \
+    '{"decision":"block","reason":$r}'
+  exit 0
+fi
+jq -n '{"systemMessage":"stop-check: stopped at cap; the check never passed. See the last response."}'
+exit 0
 ```
 
 ```json
@@ -333,7 +344,7 @@ exit 2
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh\"" }
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh\"" }
         ]
       }
     ]
