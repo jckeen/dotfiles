@@ -85,7 +85,11 @@ export OPERATOR_QUEUE_RETRY_SLEEPS="0 0"
 
 # Dates relative to the real today, so the assertions hold on any run date.
 # GNU date (Linux CI + WSL); the hook itself uses only `date +%Y-%m-%d`.
-day() { date -d "$1 days" +%Y-%m-%d; }
+# Anchored at local midnight: "-5 days" from a wall-clock instant carries the
+# DST shift of a crossed transition, so late in the day it named the next
+# calendar date and every age came out a day short (#742). The hook does
+# civil-date arithmetic on the calendar date, so the fixture must too.
+day() { date -d "$(date +%Y-%m-%d) $1 days" +%Y-%m-%d; }
 TODAY="$(day 0)"
 D5="$(day -5)"      # fresh
 D29="$(day -29)"    # inside the window (30 days is the boundary, not stale)
@@ -417,7 +421,8 @@ assert "long action truncated" "line_for dot-long | grep -qF '… [truncated; fu
 # The local calendar day at a fixed time: the hook takes createdAt[0:10] and
 # ages it against the local today, so a UTC day (a day ahead on a US evening)
 # would shift every expected age by one.
-iso() { date -d "$1 days" +%Y-%m-%dT12:00:00Z; }
+# Anchored at local midnight like day() above (#742).
+iso() { date -d "$(date +%Y-%m-%d) $1 days" +%Y-%m-%dT12:00:00Z; }
 ISSUES="$FX/issues.json"
 cat > "$ISSUES" <<JSON
 [
