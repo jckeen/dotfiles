@@ -137,7 +137,7 @@ assembler_rc=0
 bash "$SCRIPT_DIR/../../../claude/scripts/tests/assemble-changelog.test.sh" || assembler_rc=$?
 # ...and the checkout's own fragments must be well-formed, so a malformed one
 # fails CI here rather than at fold time. (The PR scope rule needs the PR
-# diff, which this job does not have; it is not enforced yet, pending the
-# operator's CI patch.)
+# diff, which this job does not have; ci.yml's doc-truth job enforces it in
+# its "Changelog fragments (PR scope)" step.)
 "$SCRIPT_DIR/../assemble-changelog.sh" --check --root "$SCRIPT_DIR/../../.." || assembler_rc=$?
 [ "$failed" -eq 0 ] && [ "$resolver_rc" -eq 0 ] && [ "$assembler_rc" -eq 0 ]
