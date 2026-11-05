@@ -17,6 +17,10 @@
 # Usage:  check-skill-refs.sh [--strict] [--quiet]
 #   --strict: exit 1 on any flag; --quiet: suppress the success line
 set -euo pipefail
+# Bytes everywhere: grep -b reports byte offsets and awk's substr must count
+# the same way, which under a UTF-8 locale it would not (an em dash is three
+# bytes, one character). The patterns here are ASCII, so nothing is lost.
+export LC_ALL=C
 STRICT=0
 QUIET=0
 for a in "$@"; do
@@ -99,25 +103,29 @@ for rel in claude/skills/orchestrate/SKILL.md claude/CLAUDE.md CLAUDE-GUIDE.md c
               nm = m; sub(/.*('"'"'+s +)(the +)?/, "", nm); gsub(bt, "", nm); sub(/^\//, "", nm);
               print off " T " nm " " off + length(m) }'
         true; } 2>/dev/null \
-      | sort -n | DOUBLED="$doubled" awk '
+      | sort -n | DOUBLED="$doubled" awk -v bt="$BT" '
           # Items in text order with byte spans. A hedge covers the ref right
-          # before it only when nothing but plain words (no , ; : or a closing
-          # paren) lies between them, an opening paren allowed ("/x (if
-          # available)"); when that ref is already covered the hedge is spent.
+          # before it only when nothing but spaces and an opening paren lies
+          # between them ("/x if available", "/x (if available)", "`y` skill
+          # where enabled"): any word in between ("/x and attach a screenshot
+          # if available") means the condition is about something else. When
+          # that ref is already covered the hedge is spent.
           # A hedge at the start of the sentence or right after a clause break
           # covers the next ref if only plain words (and one comma) separate
           # them ("If available, run /x"; "and, if available, /x"). A
           # possessive covers exactly the ref inside its own match. So "Run /x,
           # then use a cached report if available" and "Run /x and, if
           # available, /y" both leave /x uncovered.
-          BEGIN { text = ENVIRON["DOUBLED"] }
+          # The gap may hold spaces, the closing backtick or asterisks of the
+          # ref itself, and an opening paren; nothing else.
+          BEGIN { text = ENVIRON["DOUBLED"]; adjacent = "^[ " bt "*]*[(]*[ " bt "*]*$" }
           function between(a, b) { return substr(text, a + 1, b - a) }
           $2 == "R" { n++; name[n] = $3; cov[n] = 0; rend[n] = $4
                       if (t_end > 0 && $1 < t_end && $3 == t_name) { cov[n] = 1; t_end = 0 }
                       else if (h_end > 0 && between(h_end, $1) ~ /^,*[^,;:()]*$/) { cov[n] = 1 }
                       h_end = 0; last = n; next }
           $2 == "H" { h_end = 0
-                      if (last > 0 && between(rend[last], $1) ~ /^[^,;:()]*\(*[ ]*$/) { if (!cov[last]) cov[last] = 1 }
+                      if (last > 0 && between(rend[last], $1) ~ adjacent) { if (!cov[last]) cov[last] = 1 }
                       else if (substr(text, 1, $1) ~ /(^|[,;:(])[ ]*$/) h_end = $4
                       next }
           $2 == "T" { t_name = $3; t_end = $4; next }

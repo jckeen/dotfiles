@@ -87,3 +87,8 @@
   clause start; `autonomous-run` and the guide distinguish cloud `/schedule`
   (no local files) from a Desktop scheduled task (local files, this machine)
   for work that outlives the session.
+
+- **Seventh Codex round (2026-11-05).** `check-skill-refs.sh` runs under
+  `LC_ALL=C` so grep's byte offsets and awk's substr agree on multibyte text,
+  and a hedge covers the ref before it only across spaces or an opening paren,
+  never across other words.

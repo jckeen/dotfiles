@@ -108,6 +108,14 @@ printf '# x\n\nRun `/orchestrate` and, if available, `/changelog`.\n' >"$ORCH"
 if run; then ok "the ref after a mid-sentence hedge is covered"
 else fail "the ref after a mid-sentence hedge is covered"; cat "$T/out"; fi
 
+printf '# x\n\nRun `/changelog` and attach a screenshot if available.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a hedge about something else in the same clause does not cover the ref"
+else fail "a hedge about something else in the same clause does not cover the ref"; cat "$T/out"; fi
+
+printf '# x\n\nLog — `/changelog`, then attach a screenshot if available.\n' >"$ORCH"
+if ! LC_ALL=C.UTF-8 run && grep -q 'changelog — off' "$T/out"; then ok "multibyte text before the ref does not shift the offsets under a UTF-8 locale"
+else fail "multibyte text before the ref does not shift the offsets under a UTF-8 locale"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi
