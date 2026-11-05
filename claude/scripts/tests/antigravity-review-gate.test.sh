@@ -1075,6 +1075,18 @@ for suffix in ' ' $'\n'; do
   check "whitespace twin reviews its own alternate workspace" 0 "LGTB verdict" --uncommitted --require
   assert "whitespace twin bytes reach alternate reviewer" "grep -q 'TWIN_ALTERNATE_MARKER' '$AGY_FAKE_DIR/stdin'"
   assert "whitespace twin cannot create sibling alternate receipt" "[ ! -e '$sibling/.git/review-receipts/antigravity.json' ]"
+  # With the sibling gone, a committed review's jail can only be built from
+  # the twin itself: a repository path that lost its trailing byte would name
+  # nothing and the setup would fail.
+  rm -rf "$sibling"
+  printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
+  printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
+  cat > "$AGY_FAKE_DIR/jail-probe" <<'EOF'
+cat code.txt > "$AGY_FAKE_DIR/agy-twin-code" 2>/dev/null
+EOF
+  check "whitespace twin: a committed review's jail is built from the twin's own path" 0 "LGTB verdict" --committed --require
+  assert "whitespace twin: the jail holds the twin's HEAD" "grep -qx committed '$AGY_FAKE_DIR/agy-twin-code'"
+  rm -f "$AGY_FAKE_DIR/jail-probe" "$AGY_FAKE_DIR/agy-twin-code"
   printf 'dirty twin instructions\n' > "$R/AGENTS.md"
   rm -f "$AGY_FAKE_DIR/invoked"
   check "whitespace twin blocks alternate committed review" 2 "dirty instruction surface" --committed --require

@@ -725,7 +725,10 @@ agy_jail_setup() {
     > "$cli/settings.json" || return 1
   # The reviewed HEAD as plain files: context to read, no .git leading back.
   head="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || return 1
-  repo="$(jq -r '.repository' "$GATE_RUN_DIR/snapshot.json")" || return 1
+  # Raw output plus a sentinel: a plain substitution would drop trailing
+  # newlines that belong to the directory name.
+  repo="$(jq -j '.repository' "$GATE_RUN_DIR/snapshot.json" && printf x)" || return 1
+  repo="${repo%x}"
   agy_jail_materialize "$repo" "$head" "$AGY_JAIL/work" || return 1
   # agy finds .agents/, GEMINI.md and AGENTS.md by walking up to the folder
   # that holds .git. With none, the walk would climb out of the jail into
