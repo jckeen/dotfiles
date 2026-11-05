@@ -74,6 +74,8 @@ case_ "rewrites a base fragment under a new name" fail 'git mv changelog.d/their
 case_ "deletes one base fragment beside a token CHANGELOG.md edit" fail 'rm changelog.d/theirs.md; echo >> CHANGELOG.md'
 case_ "fake fold: every fragment removed, one blank line added" fail 'rm changelog.d/theirs.md changelog.d/other.md; echo >> CHANGELOG.md'
 case_ "half fold: every fragment removed, one entry copied" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n- theirs\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold that copies the headings but drops every bullet" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n## 2026-10-19 — fix: other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
+case_ "fold whose copied bullet differs by a byte" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs\n\n- theirs!\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fold whose copied heading differs by a byte" fail 'rm changelog.d/theirs.md changelog.d/other.md; printf "## 2026-10-20 — fix: theirs!\n\n- theirs\n\n## 2026-10-19 — fix: other\n\n- other\n\n" | cat - CHANGELOG.md > c && mv c CHANGELOG.md'
 case_ "fragment plus a direct ## entry" fail 'echo "## m" > changelog.d/mine.md; printf "\n## 2026-10-22 — fix: direct\n\n- d\n" >> CHANGELOG.md'
 case_ "fragment plus an entry grep would call binary" fail 'echo "## m" > changelog.d/mine.md; printf "\n## 2026-10-22 — fix: direct \xff\n" >> CHANGELOG.md'

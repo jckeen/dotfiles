@@ -25,3 +25,10 @@
 - The `doc-truth (bash 3.2)` job runs `tests/statusline.test.sh` with
   `STATUSLINE_BASH3` set to its bash 3.2.57 build, so `claude/statusline.sh`
   is rendered under the shell the macOS settings template invokes (#588).
+- **The fold check compares every fragment line, not only headings (Codex
+  gate, 2026-11-05).** A fold that copied each entry heading into
+  `CHANGELOG.md` and dropped every bullet passed the PR-scope step and the
+  content validator alike. The step now requires every non-blank line of each
+  removed fragment to be a line of `CHANGELOG.md`; two cases in
+  `changelog-scope.test.sh` cover a heading-only fold and a bullet changed by
+  one byte.

@@ -152,19 +152,21 @@ jobs:
             on_base="$(g ls-tree -r -z --name-only "$BASE_SHA" -- changelog.d/ | grep -zcv -x 'changelog\.d/\.gitkeep' || [ $? -eq 1 ])"
             [ "$changelog" -eq 1 ] || { echo "::error::this PR removes a changelog fragment without folding it into CHANGELOG.md"; fail=1; }
             [ "$removed" -eq "$on_base" ] || { echo "::error::this PR removes $removed of the $on_base changelog fragments on the base; a fold removes them all"; fail=1; }
-            # And every entry heading of each removed fragment is now a line of
-            # CHANGELOG.md. Both sides are read from the object store with `grep -a`
-            # under LC_ALL=C, so no encoding or stray byte hides a line. Fragments are
-            # strict `## ` headings at column 0 (assemble-changelog.sh --check enforced
-            # that on the base), which is why reading them here is safe.
+            # And every non-blank line of each removed fragment (headings, `###`
+            # subsections, bullets, continuations) is now a line of CHANGELOG.md:
+            # checking headings alone let a fold drop every bullet. Both sides are
+            # read from the object store with `grep -a` under LC_ALL=C, so no
+            # encoding or stray byte hides a line. Fragments are strict-shaped
+            # (assemble-changelog.sh --check enforced that on the base) and a fold
+            # copies them verbatim, which is why an exact line match is the test.
             g cat-file blob "HEAD:CHANGELOG.md" >"$RUNNER_TEMP/scope.head.md"
             for ((i = 0; i + 1 < ${#f[@]}; i += 2)); do
               [ "${f[i]}" = D ] || continue
               case "${f[i+1]}" in changelog.d/.gitkeep) continue ;; changelog.d/*) ;; *) continue ;; esac
               g cat-file blob "$BASE_SHA:${f[i+1]}" >"$RUNNER_TEMP/scope.frag"
-              { grep -a '^## ' "$RUNNER_TEMP/scope.frag" || [ $? -eq 1 ]; } >"$RUNNER_TEMP/scope.frag.h"
+              { grep -av '^[[:space:]]*$' "$RUNNER_TEMP/scope.frag" || [ $? -eq 1 ]; } >"$RUNNER_TEMP/scope.frag.h"
               while IFS= read -r h; do
-                grep -aqFx -- "$h" "$RUNNER_TEMP/scope.head.md" || { echo "::error::${f[i+1]}: entry not folded into CHANGELOG.md: $h"; fail=1; }
+                grep -aqFx -- "$h" "$RUNNER_TEMP/scope.head.md" || { echo "::error::${f[i+1]}: line not folded into CHANGELOG.md: $h"; fail=1; }
               done <"$RUNNER_TEMP/scope.frag.h"
             done
           fi
