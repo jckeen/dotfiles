@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # OperatorQueueReminder.hook.sh — surface open operator-action items at session start.
 #
-# Two sources, one renderer. The handoff skills (claude/ and agents/) record
-# USER ACTION items either as "## <slug>" blocks in ~/.claude/operator-queue.md
-# (added/project/deadline/verified/action lines; removed only when done) or as
-# open issues labelled `operator-action`, which a phone or a cloud session can
-# read too. Each issue lives in the private repo it concerns; items for a
+# Two sources, one renderer. The handoff skills (claude/ and agents/) file
+# USER ACTION items as open issues labelled `operator-action`, which a phone or
+# a cloud session can read too. The legacy source is "## <slug>" blocks in
+# ~/.claude/operator-queue.md (added/project/deadline/verified/action lines;
+# removed only when done), which the skills no longer append to. Each issue lives in the private repo it concerns; items for a
 # public repo or for several repos live in the private OPERATOR_QUEUE_REPO.
 # One search reads them all: OPERATOR_QUEUE_REPO plus every repo of the
 # OPERATOR_QUEUE_OWNERS accounts, counting only issues the operator (the gh

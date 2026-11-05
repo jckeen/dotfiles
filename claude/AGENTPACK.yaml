@@ -88,7 +88,7 @@
       "id": "skill:changelog",
       "type": "skill",
       "name": "changelog",
-      "description": "Records what changed this session into a CHANGELOG.md at the project root — reads git log since the last entry and prepends a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user explicitly wants to log/record changes — \"update the changelog\", \"log this session\", \"add a changelog entry\", \"record what we did\". For preserving context across /clear or a new session use handoff instead; for improving your skills use session-retro.",
+      "description": "Records what changed this session into a CHANGELOG.md at the project root, or, where the repo keeps a `changelog.d/` directory, into the branch's `changelog.d/<branch-slug>.md` fragment — reads git log since the last entry and writes a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user explicitly wants to log/record changes — \"update the changelog\", \"log this session\", \"add a changelog entry\", \"record what we did\". For preserving context across /clear or a new session use handoff instead; for improving your skills use session-retro.",
       "path": "skills/changelog",
       "risk_level": "low",
       "permissions": [],

@@ -36,8 +36,10 @@ If nothing is worth changing, say exactly that in one line and stop.
 
 ## Apply Confirmed Changes
 
-Use `$skill-creator` for new or substantially revised skills. Tighten trigger
-descriptions around the phrasing that actually failed. Update shared canonical
+Use `$skill-creator` for new or substantially revised skills. For a trigger
+description that missed, generalize the wording to the class of request rather
+than pasting the user's phrasing, which overfits to one case; mark the change
+unmeasured unless the skill has an eval suite that was rerun. Update shared canonical
 sources before tool-specific adapters, regenerate derived instructions, run
 parity and skill validation checks, and commit only the confirmed files.
 
