@@ -1798,6 +1798,13 @@ else
 fi
 assert "crafted tree: nothing was created where the link points" "[ -z \"\$(ls -A '$OUTSIDE')\" ]"
 assert "crafted tree: no link or directory escaped the workspace" "[ ! -e '$DEST/a/b/c' ] && [ ! -L '$DEST/a/b/c' ]"
+# A path with a newline in it is refused outright: the component walk,
+# `dirname` and the final write would otherwise each see a different path.
+nl_top="$(printf '100644 blob %s\tnl\nname\0' "$code" | git -C "$R" mktree -z)"
+nl_commit="$(git -C "$R" commit-tree "$nl_top" -p HEAD -m "test: newline name")"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a path holding a control character is refused" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$nl_commit' '$DEST' >/dev/null 2>&1 && [ -z \"\$(ls -A '$DEST')\" ]"
 # The same functions, on a valid tree, still produce the files.
 plain="$(git -C "$R" rev-parse HEAD)"
 rm -rf "$DEST"; DEST="$(mktemp -d)"

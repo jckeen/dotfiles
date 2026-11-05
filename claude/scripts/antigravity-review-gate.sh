@@ -607,7 +607,9 @@ agy_jail_materialize() {
     mode="${entry%% *}"; entry="${entry#* }"
     type="${entry%% *}"; entry="${entry#* }"
     sha="${entry%%	*}"; path="${entry#*	}"
-    case "$path" in ''|/*|..|../*|*/..|*/../*) return 1 ;; esac
+    # No control characters: a newline or NUL-adjacent byte would be read
+    # differently by the component walk, `dirname` and the final write.
+    case "$path" in ''|/*|..|../*|*/..|*/../*|*[[:cntrl:]]*) return 1 ;; esac
     case "$type" in
       commit) continue ;;
       blob) ;;
@@ -642,8 +644,11 @@ agy_jail_materialize() {
 agy_jail_mkdir_real() {
   local cur="$1" rel="$2" part
   [[ "$rel" != . ]] || return 0
-  IFS=/ read -r -a _parts <<<"$rel"
-  for part in "${_parts[@]}"; do
+  # Split on "/" by parameter expansion: `read -a` stops at a newline and
+  # would walk a shorter path than the one written.
+  while [[ -n "$rel" ]]; do
+    part="${rel%%/*}"
+    if [[ "$rel" == */* ]]; then rel="${rel#*/}"; else rel=""; fi
     [[ -n "$part" && "$part" != . ]] || continue
     cur="$cur/$part"
     [[ ! -L "$cur" ]] || return 1
@@ -653,7 +658,6 @@ agy_jail_mkdir_real() {
       return 1
     fi
   done
-  unset _parts
 }
 
 # Remove every symlink under $1 whose filesystem resolution is not $1 or
