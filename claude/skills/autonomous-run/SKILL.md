@@ -27,11 +27,14 @@ swallowed by "stay in conversation".
 
 1. **Needs the user's input or sign-off partway** — split at the gate and run
    the stages separately.
-2. **Must run without this machine, or on a cadence of an hour or more that
-   outlives the session** (nightly, weekly, "while I'm away") — `/schedule`,
-   a cloud scheduled task, whatever the shape of the work. It runs in auto
-   mode at a 1-hour minimum interval, sees no local files, and acts as your
-   GitHub identity, so protect `main` with a branch rule first.
+2. **Must outlive the session** (nightly, weekly, "while I'm away") — a
+   durable scheduled task, whatever the shape of the work. Needs no local
+   files and should run with this machine off: `/schedule`, a cloud task
+   (fresh clone, auto mode, 1-hour minimum interval, acts as your GitHub
+   identity, so protect `main` with a branch rule first). Needs local files or
+   local tools: a Desktop scheduled task, which runs on this machine while it
+   is on, persists across restarts, and can run as often as every minute when
+   Claude sets it.
 3. **Waiting on something external** (CI, review, deploy) or recurring inside
    this session, under an hour or over local files — `/loop PROMPT` with no
    interval and a written stop condition; a fixed `/loop 5m` only for a true

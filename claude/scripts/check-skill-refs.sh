@@ -89,26 +89,37 @@ for rel in claude/skills/orchestrate/SKILL.md claude/CLAUDE.md CLAUDE-GUIDE.md c
     # (Patterns below allow runs of spaces and backticks, since those are doubled too.)
     doubled="$(sed 's#[^A-Za-z0-9_/.~:-]#&&#g' <<<"$cur")"
     names="$( { grep -obE '(^|[^A-Za-z0-9_./~:-])/[a-z][a-z0-9-]*([^A-Za-z0-9_/.-]|\.([^A-Za-z0-9_/-]|$)|$)' <<<"$doubled" \
-          | sed -E 's#^([0-9]+):[^/]*/([a-z0-9-]+).*#\1 R \2#'
-        grep -obE "${BT}+[a-z][a-z0-9-]+${BT}+ +skill" <<<"$doubled" | sed -E "s#^([0-9]+):${BT}+([^${BT}]+)${BT}.*#\1 R \2#"
-        grep -obiE "(if|where) +(it +is +|they +are +)?(available|enabled)" <<<"$doubled" | sed -E 's#^([0-9]+):.*#\1 H -#'
+          | awk '{ off = $0; sub(/:.*/, "", off); m = $0; sub(/^[0-9]+:/, "", m); nm = m; sub(/^[^\/]*\//, "", nm); sub(/[^a-z0-9-].*/, "", nm); print off " R " nm " " off + length(m) }'
+        grep -obE "${BT}+[a-z][a-z0-9-]+${BT}+ +skill" <<<"$doubled" \
+          | awk -v bt="$BT" '{ off = $0; sub(/:.*/, "", off); m = $0; sub(/^[0-9]+:/, "", m); nm = m; gsub(bt, "", nm); sub(/ .*/, "", nm); print off " R " nm " " off + length(m) }'
+        grep -obiE "(if|where) +(it +is +|they +are +)?(available|enabled)" <<<"$doubled" \
+          | awk '{ off = $0; sub(/:.*/, "", off); m = $0; sub(/^[0-9]+:/, "", m); print off " H - " off + length(m) }'
         grep -obiE "(codex|antigravity)'+s +(the +)?${BT}*/?[a-z][a-z0-9-]*" <<<"$doubled" \
           | awk -v bt="$BT" '{ off = $0; sub(/:.*/, "", off); m = $0; sub(/^[0-9]+:/, "", m);
-              nm = m; sub(/.*('"'"'s +)(the +)?/, "", nm); gsub(bt, "", nm); sub(/^\//, "", nm);
+              nm = m; sub(/.*('"'"'+s +)(the +)?/, "", nm); gsub(bt, "", nm); sub(/^\//, "", nm);
               print off " T " nm " " off + length(m) }'
         true; } 2>/dev/null \
-      | sort -n | awk '
-          # Items in text order. A hedge covers the ref right before it; when
-          # that ref is already covered the hedge is spent, not carried on.
-          # Only a hedge with no ref before it in the sentence waits for the
-          # next ref ("If available, run /x"). A possessive covers exactly the
-          # ref inside its own match ("Codex'"'"'s /x"), by span and name, so
-          # "After Codex'"'"'s review, run /x" covers nothing. Uncovered refs print.
-          $2 == "R" { n++; name[n] = $3; cov[n] = 0
+      | sort -n | DOUBLED="$doubled" awk '
+          # Items in text order with byte spans. A hedge covers the ref right
+          # before it only when nothing but plain words (no , ; : or a closing
+          # paren) lies between them, an opening paren allowed ("/x (if
+          # available)"); when that ref is already covered the hedge is spent.
+          # A hedge at the start of the sentence or right after a clause break
+          # covers the next ref if only plain words (and one comma) separate
+          # them ("If available, run /x"; "and, if available, /x"). A
+          # possessive covers exactly the ref inside its own match. So "Run /x,
+          # then use a cached report if available" and "Run /x and, if
+          # available, /y" both leave /x uncovered.
+          BEGIN { text = ENVIRON["DOUBLED"] }
+          function between(a, b) { return substr(text, a + 1, b - a) }
+          $2 == "R" { n++; name[n] = $3; cov[n] = 0; rend[n] = $4
                       if (t_end > 0 && $1 < t_end && $3 == t_name) { cov[n] = 1; t_end = 0 }
-                      else if (wait > 0) { cov[n] = 1; wait-- }
-                      last = n; next }
-          $2 == "H" { if (last > 0) { if (!cov[last]) cov[last] = 1 } else wait++; next }
+                      else if (h_end > 0 && between(h_end, $1) ~ /^,*[^,;:()]*$/) { cov[n] = 1 }
+                      h_end = 0; last = n; next }
+          $2 == "H" { h_end = 0
+                      if (last > 0 && between(rend[last], $1) ~ /^[^,;:()]*\(*[ ]*$/) { if (!cov[last]) cov[last] = 1 }
+                      else if (substr(text, 1, $1) ~ /(^|[,;:(])[ ]*$/) h_end = $4
+                      next }
           $2 == "T" { t_name = $3; t_end = $4; next }
           END { for (i = 1; i <= n; i++) if (!cov[i]) print name[i] }
         ' )"

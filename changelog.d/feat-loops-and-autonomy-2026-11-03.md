@@ -80,3 +80,10 @@
   mechanisms (`/loop`, a command Stop hook, `/goal`, a workflow) before the
   "stay in conversation" fallback so a small request naming one is not
   swallowed by it.
+
+- **Sixth Codex round (2026-11-05).** `check-skill-refs.sh` attaches a hedge
+  to the ref before it only across plain words (a comma or semicolon in
+  between breaks the link) and to the ref after it only from a sentence or
+  clause start; `autonomous-run` and the guide distinguish cloud `/schedule`
+  (no local files) from a Desktop scheduled task (local files, this machine)
+  for work that outlives the session.

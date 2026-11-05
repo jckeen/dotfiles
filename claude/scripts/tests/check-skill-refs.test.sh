@@ -96,6 +96,18 @@ printf '# x\n\nRun Codex'"'"'s `/review` if available, then `/changelog`.\n' >"$
 if ! run && grep -q 'changelog — off' "$T/out"; then ok "a hedge after an already-covered ref does not carry to the next"
 else fail "a hedge after an already-covered ref does not carry to the next"; cat "$T/out"; fi
 
+printf '# x\n\nRun `/changelog`, then use a cached report if available.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a hedge in a later clause does not reach back across the comma"
+else fail "a hedge in a later clause does not reach back across the comma"; cat "$T/out"; fi
+
+printf '# x\n\nRun `/changelog` and, if available, `/orchestrate`.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out" && ! grep -q 'orchestrate —' "$T/out"; then ok "a hedge after a comma covers the ref that follows it, not the one before"
+else fail "a hedge after a comma covers the ref that follows it, not the one before"; cat "$T/out"; fi
+
+printf '# x\n\nRun `/orchestrate` and, if available, `/changelog`.\n' >"$ORCH"
+if run; then ok "the ref after a mid-sentence hedge is covered"
+else fail "the ref after a mid-sentence hedge is covered"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi

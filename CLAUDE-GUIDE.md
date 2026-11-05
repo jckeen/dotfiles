@@ -285,7 +285,8 @@ unanswered one means do not run it unattended.
 | `/loop PROMPT` (no interval) | Watching something external (CI, review, deploy); write the stop condition into the prompt |
 | `/goal CONDITION … or stop after N turns` | "Keep going until" — a session-scoped Stop hook judged by a small model |
 | Command Stop hook (below) | "Keep going until this command passes" |
-| `/schedule` | Must run without this machine, or nightly (cloud, 1-hour minimum interval) |
+| `/schedule` | Must outlive the session and needs no local files (cloud: fresh clone, 1-hour minimum interval) |
+| Desktop scheduled task | Must outlive the session and needs local files or tools (this machine, persistent, 1-minute minimum when Claude sets it) |
 
 **Strictness ladder for the loop's own check:** ask in the prompt → `/goal` →
 Stop hook → a fresh reviewer agent. Climb when the rung below keeps failing.
