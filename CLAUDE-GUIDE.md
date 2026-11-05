@@ -314,7 +314,9 @@ fourth blocks once more with an instruction to report "stopped at cap" and
 stop (stderr on exit 0 never reaches Claude, so the instruction has to travel
 as a block); after that the stop goes through with a `systemMessage` for the
 person; if the count itself cannot be written, the stop goes through at once
-rather than retrying unbounded. The count lives under `$XDG_RUNTIME_DIR` or
+rather than retrying unbounded. The check runs under `timeout` below the
+hook's own timeout, so a hung check counts as a failed attempt instead of a
+discarded hook. The count lives under `$XDG_RUNTIME_DIR` or
 `~/.cache`, never a shared `/tmp`, and is read as digits only. When the hook input has `stop_hook_active`
 true, Claude is already continuing because of a Stop hook.
 
@@ -335,7 +337,13 @@ mkdir -p -m 700 "$dir" || { jq -n '{"systemMessage":"stop-check: cannot create i
 session="$(jq -r '.session_id // "default"' <<<"$input" | tr -cd 'A-Za-z0-9_-')"
 budget="$dir/${session:-default}"
 cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 2; }
-if out="$({ npm run typecheck && npm run lint; } 2>&1)"; then rm -f "$budget"; exit 0; fi
+# The check is bounded below the hook's own timeout (120 s in the settings
+# entry below): a check that hangs would otherwise hit the hook timeout, whose
+# output Claude discards, and the stop would go through with no attempt
+# recorded. `timeout` is GNU coreutils (on macOS: brew install coreutils, gtimeout).
+out="$(timeout 100 bash -c 'npm run typecheck && npm run lint' 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then rm -f "$budget"; exit 0; fi
+[ "$rc" -ne 124 ] || out="the check ran past 100 s and was stopped; treat it as failed. $out"
 prev="$(cat "$budget" 2>/dev/null || true)"; [[ "$prev" =~ ^[0-9]{1,6}$ ]] || prev=0
 n=$((prev + 1))
 # An attempt that cannot be recorded would be retried forever: stop instead.
@@ -365,7 +373,7 @@ exit 0
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh\"" }
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh\"", "timeout": 120 }
         ]
       }
     ]

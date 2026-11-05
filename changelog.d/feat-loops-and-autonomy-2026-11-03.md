@@ -99,3 +99,8 @@
   not block; `check-skill-refs.sh` drops the list marker before judging a
   sentence start, and a leading hedge reaches forward only across a comma and
   a connective word or two.
+
+- **Ninth Codex round (2026-11-05).** The Stop hook template runs its check
+  under `timeout` below the hook's own timeout (set to 120 s in the settings
+  entry), so a hung check is a recorded failed attempt rather than a timed-out
+  hook whose output Claude discards.
