@@ -199,7 +199,7 @@ run_health_audit() {
   # to also enforce the +x bit so an un-executable source script doesn't pass
   # health checks while still failing at runtime.
   local bin_src
-  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh rc-start; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     alink "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable"
@@ -857,8 +857,8 @@ if [[ "$PLATFORM" == "wsl" ]] && service_selected claude; then
 fi
 
 # ─── 1c. Dotfiles bin scripts → ~/.local/bin ────────────────────────
-# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh)
-# ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
+# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh,
+# rc-start) ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
 # already added to PATH by the shell config in section 7, so symlinking
 # there makes them callable as plain commands from any cwd.
 echo ""
@@ -871,7 +871,7 @@ echo "--- Linking dotfiles bin scripts ---"
 # Permission denied. Skip chmod when the bit is already set, and tolerate
 # EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
-for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh rc-start; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"
@@ -1623,6 +1623,8 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
   # PluginDriftCheck.hook.ts and sync-plugins.sh).
   INSTALLED_PLUGINS="$(claude plugin list 2>/dev/null | user_scoped_plugins || true)"
 
+  PER_PROJECT_PLUGINS="$(manifest_per_project_plugins < "$PLUGIN_LIST")"
+
   # Install each plugin if not already installed
   while IFS= read -r line; do
     # Strip comments/whitespace
@@ -1644,7 +1646,17 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
       echo "  -> $plugin already installed"
     else
       echo "  -> Installing $plugin"
-      run claude plugin install "$plugin" || echo "     (install failed — continuing)"
+      if run claude plugin install "$plugin"; then
+        # Install enables the plugin in the user enabledPlugins map; a
+        # [per-project] one must be enabled only by a project's own settings
+        # (#720). Same helper and command as sync-plugins.sh.
+        if printf '%s\n' "$PER_PROJECT_PLUGINS" | grep -qxF "$plugin"; then
+          run claude plugin disable --scope user "$plugin" \
+            || echo "     (could not disable $plugin; it stays enabled globally — run: claude plugin disable --scope user $plugin)"
+        fi
+      else
+        echo "     (install failed — continuing)"
+      fi
     fi
   done < "$PLUGIN_LIST"
 fi
@@ -2292,14 +2304,22 @@ if service_selected antigravity; then
     echo "  -> Antigravity hooks.json linked"
   fi
 
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
+
   # Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
   # mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
   # (never symlinked — it also holds trustedWorkspaces and prompt-saved grants).
   # Merge keeps user-added rules; `agy-apply-permissions.py prune` resets them.
   if [ -f "$DOTFILES_DIR/antigravity/permissions.json" ]; then
+    AGY_PERM_ARGS=(
+      --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json"
+      --rules "$DOTFILES_DIR/antigravity/permissions.json"
+    )
+    if [ -f "$AGY_MEMORY_REPO/permissions.local.json" ]; then
+      AGY_PERM_ARGS+=(--overlay "$AGY_MEMORY_REPO/permissions.local.json")
+    fi
     if run python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-        --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json" \
-        --rules "$DOTFILES_DIR/antigravity/permissions.json"; then
+        "${AGY_PERM_ARGS[@]}"; then
       echo "  -> Antigravity permission baseline applied (proceed-in-sandbox)"
     else
       echo "  -> WARNING: Antigravity permission baseline not applied (see above)"
@@ -2318,9 +2338,18 @@ if service_selected antigravity; then
     fi
   fi
 
-  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
   if [ -d "$AGY_MEMORY_REPO" ]; then
     echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
+    if [ -f "$AGY_MEMORY_REPO/bootstrap.sh" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        run bash "$AGY_MEMORY_REPO/bootstrap.sh"
+        echo "  [DRY] Antigravity portable private defaults would be applied"
+      elif run bash "$AGY_MEMORY_REPO/bootstrap.sh"; then
+        echo "  -> Antigravity portable private defaults applied"
+      else
+        echo "  -> WARNING: Antigravity portable private defaults could not be applied"
+      fi
+    fi
     for f in GEMINI.local.md MEMORY.md; do
       if [ -f "$AGY_MEMORY_REPO/$f" ]; then
         link_file "$AGY_MEMORY_REPO/$f" "$AGY_CONFIG_DIR/$f"

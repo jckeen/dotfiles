@@ -27,6 +27,7 @@ chmod +x "$SHIM_DIR/agy"
 export CALLS
 export HOME="$TEST_HOME"
 export PATH="$SHIM_DIR:/usr/bin:/bin"
+unset AGY_MEMORY_REPO
 
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"
@@ -43,9 +44,9 @@ _agent_preflight() {
 
 agy --continue >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--continue
-binary|--continue"
+binary|--mode auto --continue"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
-  ok "agy runs the Antigravity health preflight before the CLI"
+  ok "agy runs the Antigravity health preflight before the CLI and defaults to --mode auto"
 else
   fail "agy preflight call order was: $(tr '\n' '|' < "$CALLS")"
 fi
@@ -54,11 +55,95 @@ fi
 TEST_SHIFTED=1
 agy demo-project --model gemini-test >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|demo-project --model gemini-test
-binary|--model gemini-test"
+binary|--mode auto --model gemini-test"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy keeps cc/cx project-selection ergonomics without leaking the project name"
 else
   fail "agy project-selection calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
+agy --mode plan --continue >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--mode plan --continue
+binary|--mode plan --continue"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy honors an explicit --mode flag without duplicating --mode auto"
+else
+  fail "agy explicit --mode calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
+agy -c 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8 >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|-c 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8
+binary|--mode auto --conversation 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy rewrites -c <id> to --conversation <id> so CLI does not reject <id> as an unexpected positional arg"
+else
+  fail "agy -c <id> calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
+agy -c=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8 >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|-c=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8
+binary|--mode auto --conversation=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy rewrites -c=<id> to --conversation=<id>"
+else
+  fail "agy -c=<id> calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
+agy -c --model gemini-test >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|-c --model gemini-test
+binary|--mode auto -c --model gemini-test"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy preserves bare -c when followed by another flag"
+else
+  fail "agy -c --model calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
+agy --continue=true -c=false >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--continue=true -c=false
+binary|--mode auto --continue=true -c=false"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy preserves explicit boolean continue values (--continue=true, -c=false)"
+else
+  fail "agy boolean continue calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
+agy --print '-c=example' -i --mode >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--print -c=example -i --mode
+binary|--mode auto --print -c=example -i --mode"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy preserves option values during resume normalization and mode detection"
+else
+  fail "agy option-value calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+mkdir -p "$TEST_DEV/agy-memory"
+cat > "$TEST_DEV/agy-memory/bootstrap.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'bootstrap\n' >> "$CALLS"
+EOF
+chmod +x "$TEST_DEV/agy-memory/bootstrap.sh"
+agy --continue >/dev/null 2>&1
+rm -rf "$TEST_DEV/agy-memory"
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--continue
+bootstrap
+binary|--mode auto --continue"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy runs agy-memory/bootstrap.sh after preflight when present"
+else
+  fail "agy bootstrap calls were: $(tr '\n' '|' < "$CALLS")"
 fi
 
 : > "$CALLS"
