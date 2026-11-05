@@ -590,7 +590,10 @@ unset _v
 # the real one. `git cat-file blob` applies no attribute, filter or eol rule.
 #
 # Regular files go first, into a workspace that holds no symlink yet, so no
-# write can pass through a tracked link. Tracked symlinks are created after,
+# write can pass through a tracked link; every parent directory is created
+# component by component with no symlink allowed in the chain, which also
+# refuses a hand-built tree that lists a symlink and a directory under one
+# name. Tracked symlinks are created after,
 # then every link is resolved on the filesystem and any that lands outside the
 # workspace is removed (repeating until none does, since removing one link can
 # change what another resolves to). A lexical check on the target text is not
@@ -598,7 +601,7 @@ unset _v
 # inside and resolves outside. Submodule entries are skipped. Any other mode,
 # a path with a `..` component, or a failed write fails the setup.
 agy_jail_materialize() {
-  local repo="$1" head="$2" dest="$3" entry mode type sha path target dir
+  local repo="$1" head="$2" dest="$3" entry mode type sha path target
   local -a links=()
   while IFS= read -r -d '' entry; do
     mode="${entry%% *}"; entry="${entry#* }"
@@ -612,9 +615,8 @@ agy_jail_materialize() {
     esac
     case "$mode" in
       100644|100755)
-        dir="$dest/$(dirname -- "$path")"
-        mkdir -p -- "$dir" || return 1
-        [[ -d "$dir" && ! -L "$dir" && ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
+        agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || return 1
+        [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
         git -C "$repo" cat-file blob "$sha" > "$dest/$path" || return 1
         [[ "$mode" != 100755 ]] || chmod 755 "$dest/$path" || return 1
         ;;
@@ -625,12 +627,33 @@ agy_jail_materialize() {
   for entry in "${links[@]+"${links[@]}"}"; do
     sha="${entry%%	*}"; path="${entry#*	}"
     target="$(git -C "$repo" cat-file blob "$sha")" || return 1
-    dir="$dest/$(dirname -- "$path")"
-    mkdir -p -- "$dir" || return 1
-    [[ -d "$dir" && ! -L "$dir" && ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
+    agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || return 1
+    [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
     ln -s -- "$target" "$dest/$path" || return 1
   done
   agy_jail_prune_escaping_links "$dest"
+}
+
+# Create workspace directory $2 (relative to $1) one component at a time, with
+# no component allowed to be a symlink. `mkdir -p` would follow a link created
+# earlier in the same pass: a valid git tree never holds a symlink `a` beside
+# a directory `a/`, but a hand-built tree object can, and following it would
+# create directories and links outside the jail before any check ran.
+agy_jail_mkdir_real() {
+  local cur="$1" rel="$2" part
+  [[ "$rel" != . ]] || return 0
+  IFS=/ read -r -a _parts <<<"$rel"
+  for part in "${_parts[@]}"; do
+    [[ -n "$part" && "$part" != . ]] || continue
+    cur="$cur/$part"
+    [[ ! -L "$cur" ]] || return 1
+    if [[ ! -e "$cur" ]]; then
+      mkdir -- "$cur" || return 1
+    elif [[ ! -d "$cur" ]]; then
+      return 1
+    fi
+  done
+  unset _parts
 }
 
 # Remove every symlink under $1 whose filesystem resolution is not $1 or

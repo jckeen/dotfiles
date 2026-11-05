@@ -1773,6 +1773,38 @@ assert "jail tree: the link it escaped through, itself inside, is kept" "[ \"\$(
 rm -f "$AGY_FAKE_DIR/jail-probe"
 rm -rf "$R" "$JAIL_HOME"
 
+# ─── a hand-built tree cannot make the jail write outside itself ───────────
+# A valid tree never holds a symlink `a` beside a directory `a/`; `git mktree`
+# will build one. With `mkdir -p`, writing `a/b/c` after the link `a` was
+# created would follow it and create `b/` and `c` wherever `a` points. The
+# materialiser is exercised directly: the gate itself never reaches it for
+# this tree, because a checkout of it leaves the working tree dirty.
+new_repo
+OUTSIDE="$(mktemp -d)"
+tgt="$(printf '%s' "$OUTSIDE" | git -C "$R" hash-object -w --stdin)"
+lnk="$(printf 'x' | git -C "$R" hash-object -w --stdin)"
+inner="$(printf '120000 blob %s\tc\n' "$lnk" | git -C "$R" mktree)"
+mid="$(printf '040000 tree %s\tb\n' "$inner" | git -C "$R" mktree)"
+code="$(git -C "$R" rev-parse HEAD:code.txt)"
+top="$(printf '120000 blob %s\ta\n040000 tree %s\ta\n100644 blob %s\tcode.txt\n' "$tgt" "$mid" "$code" | git -C "$R" mktree)"
+crafted="$(git -C "$R" commit-tree "$top" -p HEAD -m "test: crafted tree")"
+DEST="$(mktemp -d)"
+jail_fns="$(sed -n '/^agy_jail_materialize() {/,/^}/p; /^agy_jail_mkdir_real() {/,/^}/p; /^agy_jail_prune_escaping_links() {/,/^}/p' "$GATE")"
+if bash -c "$jail_fns"'
+agy_jail_materialize "$1" "$2" "$3"' jail-fns "$R" "$crafted" "$DEST" >/dev/null 2>&1; then
+  failed=$((failed + 1)); echo "FAIL - crafted tree: the materialiser refuses a symlink and a directory under one name (it returned 0)"
+else
+  pass=$((pass + 1)); echo "ok   - crafted tree: the materialiser refuses a symlink and a directory under one name"
+fi
+assert "crafted tree: nothing was created where the link points" "[ -z \"\$(ls -A '$OUTSIDE')\" ]"
+assert "crafted tree: no link or directory escaped the workspace" "[ ! -e '$DEST/a/b/c' ] && [ ! -L '$DEST/a/b/c' ]"
+# The same functions, on a valid tree, still produce the files.
+plain="$(git -C "$R" rev-parse HEAD)"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: the extracted functions materialise a valid tree" "bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$plain' '$DEST' && [ -f '$DEST/code.txt' ]"
+rm -rf "$R" "$OUTSIDE" "$DEST"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

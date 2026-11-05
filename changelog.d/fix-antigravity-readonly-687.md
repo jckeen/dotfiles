@@ -43,4 +43,7 @@
   bits are kept; regular files are written before any symlink exists, and
   every tracked symlink is then resolved on the filesystem and removed when
   it lands outside the workspace, so a chain of links cannot point agy at a
-  file outside the jail.
+  file outside the jail. Parent directories are created one component at a
+  time with no symlink allowed in the chain, so a hand-built tree that lists
+  a symlink and a directory under one name fails the setup instead of making
+  `mkdir -p` follow the link out of the jail.
