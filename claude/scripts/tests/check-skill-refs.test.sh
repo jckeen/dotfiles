@@ -21,11 +21,11 @@ command -v jq >/dev/null 2>&1 || { echo "check-skill-refs: jq is required" >&2; 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 R="$T/repo"
-mkdir -p "$R/claude/scripts" "$R/claude/skills/orchestrate" "$R/claude/skills/changelog" "$T/home/.claude"
+mkdir -p "$R/claude/scripts" "$R/claude/skills/orchestrate" "$R/claude/skills/changelog" "$T/fake-home/.claude"
 cp "$REPO_ROOT/claude/scripts/check-skill-refs.sh" "$REPO_ROOT/claude/scripts/checker-lib.sh" "$R/claude/scripts/"
-printf '{"skillOverrides": {"changelog": "off"}}\n' >"$T/home/.claude/settings.json"
+printf '{"skillOverrides": {"changelog": "off"}}\n' >"$T/fake-home/.claude/settings.json"
 ORCH="$R/claude/skills/orchestrate/SKILL.md"
-run() { HOME="$T/home" "$R/claude/scripts/check-skill-refs.sh" --strict >"$T/out" 2>&1; }
+run() { HOME="$T/fake-home" "$R/claude/scripts/check-skill-refs.sh" --strict >"$T/out" 2>&1; }
 
 printf '# x\n\n1. Log it with `/changelog`.\n' >"$ORCH"
 if ! run && grep -q 'changelog — off' "$T/out"; then ok "unhedged ref to an off skill fails --strict"
@@ -39,7 +39,7 @@ printf '# x\n\n7. **Changelog** — `/changelog` where enabled\n' >"$ORCH"
 if run; then ok "ref hedged with 'where enabled' passes"
 else fail "ref hedged with 'where enabled' passes"; cat "$T/out"; fi
 
-printf '# x\n\nSee `/home/u/x`, https://code.claude.com/docs/en/hooks, changelog.d/, 3/5 and ~/.claude/skills.\n' >"$ORCH"
+printf '# x\n\nSee `/home/you/x`, https://code.claude.com/docs/en/hooks, changelog.d/, 3/5 and ~/.claude/skills.\n' >"$ORCH"
 if run; then ok "paths, URLs and fractions are not refs"
 else fail "paths, URLs and fractions are not refs"; cat "$T/out"; fi
 
@@ -48,7 +48,7 @@ if ! run && grep -q 'nosuch — no such skill' "$T/out" && ! grep -q 'orchestrat
   ok "missing skill flagged, existing skill not"
 else fail "missing skill flagged, existing skill not"; cat "$T/out"; fi
 
-rm "$T/home/.claude/settings.json"
+rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi
 
