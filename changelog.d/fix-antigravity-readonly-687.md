@@ -47,3 +47,6 @@
   time with no symlink allowed in the chain, so a hand-built tree that lists
   a symlink and a directory under one name fails the setup instead of making
   `mkdir -p` follow the link out of the jail.
+  Replacement refs are ignored as the receipt helper ignores them, a failed
+  tree listing fails the setup rather than passing an empty workspace, and a
+  symlink target is written as the blob's exact bytes or refused.

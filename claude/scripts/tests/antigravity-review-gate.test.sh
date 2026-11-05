@@ -1805,6 +1805,33 @@ nl_commit="$(git -C "$R" commit-tree "$nl_top" -p HEAD -m "test: newline name")"
 rm -rf "$DEST"; DEST="$(mktemp -d)"
 assert "crafted tree: a path holding a control character is refused" "! bash -c \"\$jail_fns\"'
 agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$nl_commit' '$DEST' >/dev/null 2>&1 && [ -z \"\$(ls -A '$DEST')\" ]"
+# A failed listing fails the setup instead of passing an empty workspace.
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: an unresolvable head fails the setup, leaving nothing" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' 'no-such-object' '$DEST' >/dev/null 2>&1 && [ -z \"\$(ls -A '$DEST')\" ]"
+# A symlink target is the blob's exact bytes, trailing newline included
+# (readlink prints the target and then a newline of its own); a target the
+# shell cannot hold (a NUL byte) is refused.
+nl_tgt="$(printf 'code.txt\n' | git -C "$R" hash-object -w --stdin)"
+nul_tgt="$(printf 'code\0txt' | git -C "$R" hash-object -w --stdin)"
+bytes_top="$(printf '100644 blob %s\tcode.txt\n120000 blob %s\tnl-link\n' "$code" "$nl_tgt" | git -C "$R" mktree)"
+bytes_commit="$(git -C "$R" commit-tree "$bytes_top" -p HEAD -m "test: newline target")"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a symlink target keeps its trailing newline" "bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$bytes_commit' '$DEST' >/dev/null 2>&1 && [ \"\$(readlink '$DEST/nl-link'; printf x)\" = \"\$(printf 'code.txt\n\nx')\" ]"
+nul_top="$(printf '100644 blob %s\tcode.txt\n120000 blob %s\tnul-link\n' "$code" "$nul_tgt" | git -C "$R" mktree)"
+nul_commit="$(git -C "$R" commit-tree "$nul_top" -p HEAD -m "test: nul target")"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a symlink target holding a NUL byte is refused" "! bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$nul_commit' '$DEST' >/dev/null 2>&1 && [ ! -L '$DEST/nul-link' ]"
+# A replacement object for a blob or the head is ignored: agy sees what the
+# snapshot vouches for.
+repl="$(printf 'replaced instructions\n' | git -C "$R" hash-object -w --stdin)"
+git -C "$R" replace "$code" "$repl"
+rm -rf "$DEST"; DEST="$(mktemp -d)"
+assert "crafted tree: a git replace for a blob does not reach the workspace" "bash -c \"\$jail_fns\"'
+agy_jail_materialize \"\$1\" \"\$2\" \"\$3\"' jail-fns '$R' '$(git -C "$R" rev-parse HEAD)' '$DEST' >/dev/null 2>&1 && grep -qx 'base line' '$DEST/code.txt'"
+git -C "$R" replace -d "$code"
 # The same functions, on a valid tree, still produce the files.
 plain="$(git -C "$R" rev-parse HEAD)"
 rm -rf "$DEST"; DEST="$(mktemp -d)"

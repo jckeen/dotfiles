@@ -601,34 +601,53 @@ unset _v
 # inside and resolves outside. Submodule entries are skipped. Any other mode,
 # a path with a `..` component, or a failed write fails the setup.
 agy_jail_materialize() {
-  local repo="$1" head="$2" dest="$3" entry mode type sha path target
+  local repo="$1" head="$2" dest="$3" entry mode type sha path target size listing
   local -a links=()
+  # Replacement refs are ignored, as the receipt helper ignores them: a
+  # `git replace` for the head, a tree or a blob must not hand agy different
+  # files than the ones the snapshot vouches for.
+  local -a g=(env GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 git --no-replace-objects -C "$repo")
+  # The listing lands in a file first so a failed `ls-tree` fails the setup;
+  # read from a process substitution, its exit status would be lost and an
+  # empty or partial workspace would pass as complete.
+  listing="$(mktemp "${TMPDIR:-/tmp}/agy-jail-tree.XXXXXX")" || return 1
+  if ! "${g[@]}" ls-tree -r -z "$head" > "$listing"; then
+    rm -f -- "$listing"
+    return 1
+  fi
   while IFS= read -r -d '' entry; do
     mode="${entry%% *}"; entry="${entry#* }"
     type="${entry%% *}"; entry="${entry#* }"
     sha="${entry%%	*}"; path="${entry#*	}"
     # No control characters: a newline or NUL-adjacent byte would be read
     # differently by the component walk, `dirname` and the final write.
-    case "$path" in ''|/*|..|../*|*/..|*/../*|*[[:cntrl:]]*) return 1 ;; esac
+    case "$path" in ''|/*|..|../*|*/..|*/../*|*[[:cntrl:]]*) rm -f -- "$listing"; return 1 ;; esac
     case "$type" in
       commit) continue ;;
       blob) ;;
-      *) return 1 ;;
+      *) rm -f -- "$listing"; return 1 ;;
     esac
     case "$mode" in
       100644|100755)
-        agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || return 1
-        [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
-        git -C "$repo" cat-file blob "$sha" > "$dest/$path" || return 1
-        [[ "$mode" != 100755 ]] || chmod 755 "$dest/$path" || return 1
+        agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || { rm -f -- "$listing"; return 1; }
+        [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || { rm -f -- "$listing"; return 1; }
+        "${g[@]}" cat-file blob "$sha" > "$dest/$path" || { rm -f -- "$listing"; return 1; }
+        [[ "$mode" != 100755 ]] || chmod 755 "$dest/$path" || { rm -f -- "$listing"; return 1; }
         ;;
       120000) links+=("$sha	$path") ;;
-      *) return 1 ;;
+      *) rm -f -- "$listing"; return 1 ;;
     esac
-  done < <(git -C "$repo" ls-tree -r -z "$head")
+  done < "$listing"
+  rm -f -- "$listing"
   for entry in "${links[@]+"${links[@]}"}"; do
     sha="${entry%%	*}"; path="${entry#*	}"
-    target="$(git -C "$repo" cat-file blob "$sha")" || return 1
+    # The target is the blob's exact bytes: a plain command substitution
+    # would drop trailing newlines and a shell variable cannot hold NUL, so
+    # the length is checked against the object's and any difference refuses.
+    target="$("${g[@]}" cat-file blob "$sha" && printf x)" || return 1
+    target="${target%x}"
+    size="$("${g[@]}" cat-file -s "$sha")" || return 1
+    [[ -n "$target" && "$(LC_ALL=C printf '%s' "$target" | wc -c)" -eq "$size" ]] || return 1
     agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || return 1
     [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
     ln -s -- "$target" "$dest/$path" || return 1
