@@ -21,38 +21,41 @@ unattended.
 
 ## Pick the Primitive (first match wins)
 
+The specific continuation mechanisms come before the general shapes, so a
+small request that names one ("until npm test passes", "watch CI") is not
+swallowed by "stay in conversation".
+
 1. **Needs the user's input or sign-off partway** — split at the gate and run
    the stages separately.
 2. **Must run without this machine, or on a cadence of an hour or more that
    outlives the session** (nightly, weekly, "while I'm away") — `/schedule`,
    a cloud scheduled task, whatever the shape of the work. It runs in auto
    mode at a 1-hour minimum interval, sees no local files, and acts as your
-   GitHub identity, so protect `main` with a branch rule first. A recurrence
-   inside this session, under an hour or over local files ("check CI every
-   five minutes", "watch this directory"), is item 5.
-3. **Finishes in one sitting, little parallelism** — stay in conversation.
-   Slow commands go to `run_in_background` Bash (30-min default timeout, 2 h
-   max); streams go to `Monitor`.
-4. **Many items, independent verification, or unknown-size discovery** — a
+   GitHub identity, so protect `main` with a branch rule first.
+3. **Waiting on something external** (CI, review, deploy) or recurring inside
+   this session, under an hour or over local files — `/loop PROMPT` with no
+   interval and a written stop condition; a fixed `/loop 5m` only for a true
+   cadence. A fixed-interval loop survives `--resume` until it expires; a
+   self-paced one does not. Esc stops a self-paced loop while it waits; a
+   fixed-interval loop only stops when you ask Claude to cancel it.
+4. **"Keep going until COMMAND passes"** — a command Stop hook that keeps its
+   own attempt count and reports "stopped at cap" when it gives up (the block
+   cap, `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, resets whenever Claude calls a
+   tool); see the guide's template. A deterministic command always beats a
+   judged condition, which is why this comes before `/goal`.
+5. **"Keep going until CONDITION"** with no command that decides it — `/goal
+   CONDITION … or stop after N turns`, a prompt-based Stop hook judged by a
+   small model. Deterministic criteria work best.
+6. **Many items, independent verification, or unknown-size discovery** — a
    dynamic workflow, which the user opts into (`ultracode`, "use a workflow",
    or `/effort ultracode` they set): propose it with the rough cost and run
    after the yes. Run a slice, then the full run; save it under
    `.claude/workflows/` if it will repeat. It takes no mid-run input; in `-p`
    the user asks for a workflow in plain words, since the `ultracode` keyword
    is ignored there.
-5. **Waiting on something external** (CI, review, deploy) — `/loop PROMPT`
-   with no interval and a written stop condition; a fixed `/loop 5m` only for
-   a true cadence. A fixed-interval loop survives `--resume` until it expires;
-   a self-paced one does not. Esc stops a self-paced loop while it waits; a
-   fixed-interval loop only stops when you ask Claude to cancel it.
-6. **"Keep going until COMMAND passes"** — a command Stop hook that keeps its
-   own attempt count and reports "stopped at cap" when it gives up (the block
-   cap, `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, resets whenever Claude calls a
-   tool); see the guide's template. A deterministic command always beats a
-   judged condition, which is why this comes before `/goal`.
-7. **"Keep going until CONDITION"** with no command that decides it — `/goal
-   CONDITION … or stop after N turns`, a prompt-based Stop hook judged by a
-   small model. Deterministic criteria work best.
+7. **Everything else: finishes in one sitting, little parallelism** — stay in
+   conversation. Slow commands go to `run_in_background` Bash (30-min default
+   timeout, 2 h max); streams go to `Monitor`.
 
 ## Strictness Ladder for the Loop's Own Check
 

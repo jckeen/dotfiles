@@ -88,6 +88,14 @@ printf '# x\n\nRun Codex'"'"'s `/changelog` and then our `/changelog`.\n' >"$ORC
 if ! run && grep -q 'changelog — off' "$T/out"; then ok "a possessive covers one occurrence, not the name"
 else fail "a possessive covers one occurrence, not the name"; cat "$T/out"; fi
 
+printf '# x\n\nAfter Codex'"'"'s review, run our `/changelog`.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a possessive with no ref inside it covers nothing"
+else fail "a possessive with no ref inside it covers nothing"; cat "$T/out"; fi
+
+printf '# x\n\nRun Codex'"'"'s `/review` if available, then `/changelog`.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a hedge after an already-covered ref does not carry to the next"
+else fail "a hedge after an already-covered ref does not carry to the next"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi

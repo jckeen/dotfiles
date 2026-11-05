@@ -73,3 +73,10 @@
   available)" both pass, "Codex's /x and then our /x" still flags the second);
   `/schedule` is for work that outlives the session or leaves this machine,
   not every recurrence.
+
+- **Fifth Codex round (2026-11-05).** In `check-skill-refs.sh` a possessive
+  covers only the ref inside its own match and a spent hedge does not carry
+  to the next ref; `autonomous-run` lists the specific continuation
+  mechanisms (`/loop`, a command Stop hook, `/goal`, a workflow) before the
+  "stay in conversation" fallback so a small request naming one is not
+  swallowed by it.
