@@ -760,6 +760,23 @@ assert "an undeclared test command warns loudly" \
 want_absent "the old quiet skip line is gone" "no test framework detected"
 clean_lane_repo
 
+# ── No terminal and no --auto-push: say so and exit 4, never a silent 1 (#628) ──
+# `read -p` prints no prompt without a terminal and fails at end of input, and
+# `set -e` used to end the script with exit 1 right after "Safe to push.".
+# The tier-1 diff gets an approved receipt with no reviewer, so this reaches the
+# confirmation step.
+new_lane_repo notes.md
+OUT="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u REVIEW_TEST_CMD \
+  "$LANE_DIR/review-and-push.sh" "$R" </dev/null 2>&1)"
+RC=$?
+assert "an approved run with no terminal exits 4" "[ \"\$RC\" -eq 4 ]"
+assert "it says why it did not push and how to" \
+  "grep -qF -- \"approved but not pushed: no terminal to confirm on; re-run with --auto-push, or push \$(git -C \"\$R\" rev-parse HEAD) yourself\" <<<\"\$OUT\""
+want_absent "it does not push" "Pushed."
+assert "the branch did not reach the remote" \
+  "! git -C \"\$ORIGIN\" rev-parse --verify -q refs/heads/feature >/dev/null"
+clean_lane_repo
+
 rm -rf "$FAKE_HOME"
 echo "$pass passed, $failed failed"
 [ "$failed" -eq 0 ]
