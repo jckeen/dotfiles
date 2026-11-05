@@ -64,3 +64,12 @@
   when its attempt count cannot be written, instead of retrying unbounded;
   `check-skill-refs.sh` exempts another runtime's skill only when its
   possessive names that ref, not every ref in the clause.
+
+- **Fourth Codex round (2026-11-05).** The Stop hook template keeps its count
+  under `$XDG_RUNTIME_DIR` or `~/.cache`, never a shared `/tmp`, and reads it
+  as digits only, since bash arithmetic on a pre-created file would run its
+  contents; `check-skill-refs.sh` walks refs, hedges and possessives in text
+  order so each hedge covers one ref ("If available, run /x" and "/x (if
+  available)" both pass, "Codex's /x and then our /x" still flags the second);
+  `/schedule` is for work that outlives the session or leaves this machine,
+  not every recurrence.

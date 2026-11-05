@@ -311,7 +311,8 @@ fourth blocks once more with an instruction to report "stopped at cap" and
 stop (stderr on exit 0 never reaches Claude, so the instruction has to travel
 as a block); after that the stop goes through with a `systemMessage` for the
 person; if the count itself cannot be written, the stop goes through at once
-rather than retrying unbounded. When the hook input has `stop_hook_active`
+rather than retrying unbounded. The count lives under `$XDG_RUNTIME_DIR` or
+`~/.cache`, never a shared `/tmp`, and is read as digits only. When the hook input has `stop_hook_active`
 true, Claude is already continuing because of a Stop hook.
 
 `.claude/hooks/stop-check.sh` (run through `bash` below, so it needs no
@@ -323,13 +324,19 @@ would silently disable the guard):
 # Stop hook: block the stop until the checks pass, at most 3 repair attempts per session.
 set -u
 input="$(cat)"
-session="$(jq -r '.session_id // "default"' <<<"$input")"
-budget="${TMPDIR:-/tmp}/stop-check.$session"
+# The count lives in a directory only this user can write, never a shared /tmp,
+# and is read as digits only: bash arithmetic on a file another user could
+# pre-create would run whatever it holds.
+dir="${XDG_RUNTIME_DIR:-$HOME/.cache}/stop-check"
+mkdir -p -m 700 "$dir" || { jq -n '{"systemMessage":"stop-check: cannot create its state dir; stopping without retrying"}'; exit 0; }
+session="$(jq -r '.session_id // "default"' <<<"$input" | tr -cd 'A-Za-z0-9_-')"
+budget="$dir/${session:-default}"
 cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 2; }
 if out="$({ npm run typecheck && npm run lint; } 2>&1)"; then rm -f "$budget"; exit 0; fi
-n=$(( $(cat "$budget" 2>/dev/null || echo 0) + 1 ))
+prev="$(cat "$budget" 2>/dev/null || true)"; [[ "$prev" =~ ^[0-9]{1,6}$ ]] || prev=0
+n=$((prev + 1))
 # An attempt that cannot be recorded would be retried forever: stop instead.
-echo "$n" >"$budget" || { jq -n '{"systemMessage":"stop-check: cannot record attempts (is TMPDIR writable?); stopping without retrying"}'; exit 0; }
+echo "$n" >"$budget" || { jq -n '{"systemMessage":"stop-check: cannot record attempts; stopping without retrying"}'; exit 0; }
 if [ "$n" -le 3 ]; then printf '%s\n' "$out" >&2; exit 2; fi
 if [ "$n" -eq 4 ]; then
   jq -n --arg r "stop-check: the check failed on $((n - 1)) attempts. Do not retry. Report the result as stopped at cap, quote the last error, and stop. Last output: $(tail -c 600 <<<"$out")" \

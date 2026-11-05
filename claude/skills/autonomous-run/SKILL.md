@@ -23,10 +23,13 @@ unattended.
 
 1. **Needs the user's input or sign-off partway** — split at the gate and run
    the stages separately.
-2. **Must run without this machine, or on a recurrence** (nightly, weekly,
-   "while I'm away") — `/schedule`, a cloud scheduled task, whatever the shape
-   of the work. It runs in auto mode at a 1-hour minimum interval and acts as
-   your GitHub identity, so protect `main` with a branch rule first.
+2. **Must run without this machine, or on a cadence of an hour or more that
+   outlives the session** (nightly, weekly, "while I'm away") — `/schedule`,
+   a cloud scheduled task, whatever the shape of the work. It runs in auto
+   mode at a 1-hour minimum interval, sees no local files, and acts as your
+   GitHub identity, so protect `main` with a branch rule first. A recurrence
+   inside this session, under an hour or over local files ("check CI every
+   five minutes", "watch this directory"), is item 5.
 3. **Finishes in one sitting, little parallelism** — stay in conversation.
    Slow commands go to `run_in_background` Bash (30-min default timeout, 2 h
    max); streams go to `Monitor`.

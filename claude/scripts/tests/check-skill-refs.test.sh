@@ -76,6 +76,18 @@ printf '# x\n\nThen run Codex'"'"'s `/changelog` skill on the result.\n' >"$ORCH
 if run; then ok "a ref the other runtime's possessive names directly is exempt"
 else fail "a ref the other runtime's possessive names directly is exempt"; cat "$T/out"; fi
 
+printf '# x\n\nIf available, run `/changelog` on the branch.\n' >"$ORCH"
+if run; then ok "a hedge at the start of the sentence covers the ref after it"
+else fail "a hedge at the start of the sentence covers the ref after it"; cat "$T/out"; fi
+
+printf '# x\n\nRun `/changelog` (if available), then stop.\n' >"$ORCH"
+if run; then ok "a hedge in parentheses right after the ref covers it"
+else fail "a hedge in parentheses right after the ref covers it"; cat "$T/out"; fi
+
+printf '# x\n\nRun Codex'"'"'s `/changelog` and then our `/changelog`.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a possessive covers one occurrence, not the name"
+else fail "a possessive covers one occurrence, not the name"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi

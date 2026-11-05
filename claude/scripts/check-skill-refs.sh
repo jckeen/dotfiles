@@ -48,18 +48,15 @@ section() {
 
 # units <text> — one record per sentence: "LINE<TAB>SENTENCE". Lines of one
 # paragraph or list item are joined (Markdown wraps them), then split at a
-# sentence end (. ; : ! ?) followed by a space or the end, and again at commas
-# and parentheses, so a hedge applies only to the refs in its own clause: "Run
-# /changelog. Run /simplify if available." hedges /simplify and still flags
-# /changelog, and "(the `review` skill if available)" exempts only `review`.
+# sentence end (. ; : ! ?) followed by a space or the end. Inside a sentence a
+# hedge attaches to one ref (see the walk below), so "Run /changelog. Run
+# /simplify if available." flags /changelog, and "(the `review` skill if
+# available)" exempts only `review`.
 units() {
   awk '
     function flush(   i, n, parts) {
       if (unit == "") return
-      # Sentence ends, then commas and parentheses: a hedge covers only the
-      # refs in its own clause, so "(the `review` skill if available)" does
-      # not exempt the `/code-review` it follows.
-      n = split(unit, parts, /[.;:!?]( +|$)|[,()]/)
+      n = split(unit, parts, /[.;:!?]( +|$)/)
       for (i = 1; i <= n; i++) if (parts[i] ~ /[^ \t]/) printf "%d\t%s\n", start, parts[i]
       unit = ""
     }
@@ -79,23 +76,33 @@ for rel in claude/skills/orchestrate/SKILL.md claude/CLAUDE.md CLAUDE-GUIDE.md c
     # A slash ref is not preceded by a word char, '.', '~', ':' or '/' (paths,
     # URLs, "3/5", "changelog.d/") and not followed by '/' or a word char.
     # Every separator byte is doubled so the trailing char one match consumes
-    # cannot hide the next ref ("/orchestrate,/nosuch" keeps both).
-    names="$( { sed 's#[^A-Za-z0-9_/.~:-]#&&#g' <<<"$cur" \
-        | grep -oE '(^|[^A-Za-z0-9_./~:-])/[a-z][a-z0-9-]*([^A-Za-z0-9_/.-]|\.([^A-Za-z0-9_/-]|$)|$)' \
-        | sed -E 's#^[^/]*/([a-z0-9-]+).*#\1#'
-      grep -oE '`[a-z][a-z0-9-]+` skill' <<<"$cur" | sed -E 's/`([^`]+)`.*/\1/'; } || true)"
+    # cannot hide the next ref ("/orchestrate,/nosuch" keeps both). Refs (R),
+    # hedges (H) and another runtime's possessive (T) are listed with their
+    # byte offsets and walked in order: a hedge covers the ref right before it
+    # ("/x (if available)", "/x where enabled") or, with no ref before it in
+    # the sentence, the next one ("If available, run /x"); a possessive covers
+    # the ref it names, the next one ("Codex's /x"). Each covers one occurrence,
+    # so "(the `review` skill if available)" leaves the `/code-review` before it
+    # uncovered, and "Codex's /x and then our /x" still reports the second /x.
+    # (Patterns below allow runs of spaces and backticks, since those are doubled too.)
+    doubled="$(sed 's#[^A-Za-z0-9_/.~:-]#&&#g' <<<"$cur")"
+    names="$( { grep -obE '(^|[^A-Za-z0-9_./~:-])/[a-z][a-z0-9-]*([^A-Za-z0-9_/.-]|\.([^A-Za-z0-9_/-]|$)|$)' <<<"$doubled" \
+          | sed -E 's#^([0-9]+):[^/]*/([a-z0-9-]+).*#\1 R \2#'
+        grep -obE "${BT}+[a-z][a-z0-9-]+${BT}+ +skill" <<<"$doubled" | sed -E "s#^([0-9]+):${BT}+([^${BT}]+)${BT}.*#\1 R \2#"
+        grep -obiE "(if|where) +(it +is +|they +are +)?(available|enabled)" <<<"$doubled" | sed -E 's#^([0-9]+):.*#\1 H -#'
+        grep -obiE "(codex|antigravity)'+s" <<<"$doubled" | sed -E 's#^([0-9]+):.*#\1 T -#'
+        true; } 2>/dev/null \
+      | sort -n | awk '
+          # Items in text order. A hedge covers the nearest uncovered ref before
+          # it; with none, it waits for the next ref. A possessive always waits
+          # for the next ref. Uncovered refs are printed.
+          $2 == "R" { n++; name[n] = $3; cov[n] = (wait > 0); if (wait > 0) wait--; last = n; next }
+          $2 == "H" { if (last > 0 && !cov[last]) cov[last] = 1; else wait++; next }
+          $2 == "T" { wait++; next }
+          END { for (i = 1; i <= n; i++) if (!cov[i]) print name[i] }
+        ' )"
     [ -n "$names" ] || continue
-    hedged=0
-    tr -s ' \t' ' ' <<<"$cur" \
-      | grep -qiE "(if|where) (it is |they are )?(available|enabled)" && hedged=1
-    # Another runtime's skill is exempt only when the possessive names that
-    # ref ("Codex's `/x`", "Antigravity's `y` skill"); "after Codex's review"
-    # does not excuse a `/changelog` elsewhere in the clause.
-    theirs=" $( { grep -oiE "(codex|antigravity)'s (the )?${BT}?/?[a-z][a-z0-9-]*" <<<"$cur" \
-        | sed -E "s#.*'s (the )?${BT}?/?##"; } | tr '\n' ' ' || true) "
     for sk in $names; do
-      [ "$hedged" -eq 1 ] && continue
-      [[ "$theirs" == *" $sk "* ]] && continue
       why=""
       if [ ! -d "$REPO_ROOT/claude/skills/$sk" ] && [[ "$ALLOW" != *" $sk "* ]]; then why="no such skill"
       elif [[ "$OFF" == *" $sk "* ]]; then why="off in skillOverrides"; fi
