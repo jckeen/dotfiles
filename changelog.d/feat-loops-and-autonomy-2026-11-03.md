@@ -43,3 +43,11 @@
   at #740 for `overnight.sh` gaps.
 - **`claude/CLAUDE.md`** (via `agents/canon/fragments/claude.md`): one
   Working-style line sends unattended or looping work to `autonomous-run`.
+
+- **Codex gate findings (2026-11-05).** Workflows need the user's explicit
+  opt-in and `/effort ultracode` is never set for them; the strictness ladder
+  governs the loop's own check and never replaces the wrap-up's independent
+  review; `/schedule` is decided before the shape of the work; the headless
+  shape drops `--bare`, which skips hooks and CLAUDE.md; the Stop hook template
+  keeps its own attempt count because the block cap resets on every tool call;
+  `check-skill-refs.sh` judges hedges per sentence, with wrapped lines joined.

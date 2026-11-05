@@ -23,33 +23,40 @@ unattended.
 
 1. **Needs the user's input or sign-off partway** — split at the gate and run
    the stages separately.
-2. **Finishes in one sitting, little parallelism** — stay in conversation.
+2. **Must run without this machine, or on a recurrence** (nightly, weekly,
+   "while I'm away") — `/schedule`, a cloud scheduled task, whatever the shape
+   of the work. It runs in auto mode at a 1-hour minimum interval and acts as
+   your GitHub identity, so protect `main` with a branch rule first.
+3. **Finishes in one sitting, little parallelism** — stay in conversation.
    Slow commands go to `run_in_background` Bash (30-min default timeout, 2 h
    max); streams go to `Monitor`.
-3. **Many items, independent verification, or unknown-size discovery** — a
-   dynamic workflow (say "use a workflow"). Run a slice, then the full run;
-   save it under `.claude/workflows/` if it will repeat. It takes no mid-run
-   input; in `-p` ask for a workflow in plain words, since the `ultracode`
-   keyword is ignored there.
-4. **Waiting on something external** (CI, review, deploy) — `/loop PROMPT`
+4. **Many items, independent verification, or unknown-size discovery** — a
+   dynamic workflow, which the user opts into (`ultracode`, "use a workflow",
+   or `/effort ultracode` they set): propose it with the rough cost and run
+   after the yes. Run a slice, then the full run; save it under
+   `.claude/workflows/` if it will repeat. It takes no mid-run input; in `-p`
+   the user asks for a workflow in plain words, since the `ultracode` keyword
+   is ignored there.
+5. **Waiting on something external** (CI, review, deploy) — `/loop PROMPT`
    with no interval and a written stop condition; a fixed `/loop 5m` only for
-   a true cadence. A fixed-interval loop survives `--resume` until it expires; a self-paced one does not. Esc stops a
-   self-paced loop while it waits; a fixed-interval loop only stops when you
-   ask Claude to cancel it.
-5. **"Keep going until CONDITION"** — `/goal CONDITION … or stop after N
+   a true cadence. A fixed-interval loop survives `--resume` until it expires;
+   a self-paced one does not. Esc stops a self-paced loop while it waits; a
+   fixed-interval loop only stops when you ask Claude to cancel it.
+6. **"Keep going until CONDITION"** — `/goal CONDITION … or stop after N
    turns`, a prompt-based Stop hook judged by a small model. Deterministic
    criteria work best.
-6. **"Keep going until COMMAND passes"** — a command Stop hook ending
-   `… 1>&2 || exit 2`, honoring `stop_hook_active` and the block cap
-   (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default 8).
-7. **Must run without this machine, or nightly** — `/schedule`, a cloud
-   scheduled task. It runs in auto mode at a 1-hour minimum interval and acts
-   as your GitHub identity, so protect `main` with a branch rule first.
+7. **"Keep going until COMMAND passes"** — a command Stop hook ending
+   `… 1>&2 || exit 2` that keeps its own attempt count (the block cap,
+   `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, resets whenever Claude calls a tool);
+   see the guide's template.
 
-## Strictness Ladder for Checks
+## Strictness Ladder for the Loop's Own Check
 
-Ask in the prompt → `/goal` → Stop hook → `/code-review` by a fresh reviewer.
-Climb only when the rung below keeps failing.
+Ask in the prompt → `/goal` → Stop hook → a fresh reviewer agent. Climb when
+the rung below keeps failing. The ladder decides how the loop checks itself;
+the independent review the wrap-up requires before anything ships
+(`/code-review`, and `/security-review` at a trust boundary) is not a rung and
+is never skipped because the lower rungs passed.
 
 ## Guardrails (always)
 

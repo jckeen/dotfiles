@@ -83,12 +83,16 @@ A subagent that names no model inherits the session's, and its price. Set
   up differing viewpoints; for debugging, one agent per theory.
 - **Writer/reviewer split** — A separate fresh-context agent reviews the work.
 - **Workflows** — For one step over many items (10+ files, every route, a
-  ticket backlog), adversarial verification, or run-until-dry discovery, use a
-  dynamic workflow: say "use a workflow", or `/effort ultracode` for the whole
-  session (the `ultracode` keyword is ignored in `-p` and scheduled prompts).
-  Prefer `pipeline()` over barrier `parallel()`. Run a slice first; workflows
-  cost meaningfully more tokens and take no mid-run input. Keep orchestration
-  itself in the session: it needs approval breaks, commits, and pushes.
+  ticket backlog), adversarial verification, or run-until-dry discovery, a
+  dynamic workflow fits, and it needs the user's explicit opt-in: the
+  `ultracode` keyword, "use a workflow" in their words, or `/effort ultracode`
+  they set themselves (it also lifts the subagent limit and the first-launch
+  approval, so never set it for them). When a task fits, say what the workflow
+  would do and roughly cost, and run it after the yes; the keyword is ignored
+  in `-p` and scheduled prompts. Prefer `pipeline()` over barrier
+  `parallel()`. Run a slice first; workflows cost meaningfully more tokens and
+  take no mid-run input. Keep orchestration itself in the session: it needs
+  approval breaks, commits, and pushes.
 - **Waiting and loops** — `Monitor` for streams (logs, file changes);
   `run_in_background` Bash for one long command (default timeout 30 min, max
   2 h), never a polling loop. `/loop PROMPT` with a written stop condition to

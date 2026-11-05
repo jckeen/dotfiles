@@ -287,19 +287,44 @@ unanswered one means do not run it unattended.
 | Command Stop hook (below) | "Keep going until this command passes" |
 | `/schedule` | Must run without this machine, or nightly (cloud, 1-hour minimum interval) |
 
-**Strictness ladder for checks:** ask in the prompt → `/goal` → Stop hook →
-`/code-review` by a fresh reviewer. Climb only when the rung below keeps
-failing.
+**Strictness ladder for the loop's own check:** ask in the prompt → `/goal` →
+Stop hook → a fresh reviewer agent. Climb when the rung below keeps failing.
+The ladder picks how the loop checks itself; it never replaces the
+independent review the wrap-up requires before anything ships (`/code-review`,
+and `/security-review` where the diff touches a trust boundary).
 
-**Headless shape:** `claude --bare -p "…" --allowedTools … --permission-mode dontAsk --max-turns N`.
+**Headless shape:** `claude -p "…" --allowedTools … --permission-mode dontAsk --max-turns N`.
+Not `--bare`: bare mode skips hooks and CLAUDE.md discovery, so the hook guards
+and the Stop hook below would not run; keep it for one-off reads where no guard
+matters.
 
 ### Stop hook template
 
 Add a `Stop` hook to a project's `.claude/settings.local.json` to run checks
 after each Claude response. Exit code 2 blocks the stop and feeds stderr back
-to Claude. When the hook input has `stop_hook_active` true, Claude is already
-continuing because of a Stop hook — exit 0 then if a retry cannot help.
-Consecutive blocks are capped by `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default 8).
+to Claude. Bound the retries yourself: `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`
+(default 8) counts only consecutive blocks, and the counter resets every time
+Claude calls a tool, so an unfixable check would otherwise restart repair
+attempts for as long as the budget lasts. The script below keeps its own count
+per session and lets the stop through after three failed attempts; when the
+hook input has `stop_hook_active` true, Claude is already continuing because
+of a Stop hook.
+
+`.claude/hooks/stop-check.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Stop hook: block the stop until the checks pass, at most 3 attempts per session.
+set -u
+input="$(cat)"
+session="$(jq -r '.session_id // "default"' <<<"$input")"
+budget="${TMPDIR:-/tmp}/stop-check.$session"
+cd "$CLAUDE_PROJECT_DIR" || { echo "stop-check: no project dir" >&2; exit 0; }
+if { npm run typecheck && npm run lint; } 1>&2; then rm -f "$budget"; exit 0; fi
+n=$(( $(cat "$budget" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$budget"
+[ "$n" -le 3 ] || { echo "stop-check: still failing after $n attempts; stopping so a person can look" >&2; exit 0; }
+exit 2
+```
 
 ```json
 {
@@ -308,10 +333,7 @@ Consecutive blocks are capped by `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default 8).
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "cd \"$CLAUDE_PROJECT_DIR\" && { npm run typecheck && npm run lint; } 1>&2 || exit 2"
-          }
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-check.sh\"" }
         ]
       }
     ]
@@ -322,6 +344,7 @@ Consecutive blocks are capped by `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` (default 8).
 **Tips:**
 - Put this in `.claude/settings.local.json` (project-level, gitignored), not global settings
 - Only stderr reaches Claude on exit 2, hence `1>&2`
+- The attempt count is the guard; without one, a check that can never pass loops until the session's budget runs out
 - Don't pipe a check through `tail` here: a pipe's status is `tail`'s, so a failing check would pass
 - Common combos: `tsc --noEmit`, `eslint .`, `pytest`, `cargo check`, `go vet ./...`
 

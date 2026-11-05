@@ -48,6 +48,18 @@ if ! run && grep -q 'nosuch — no such skill' "$T/out" && ! grep -q 'orchestrat
   ok "missing skill flagged, existing skill not"
 else fail "missing skill flagged, existing skill not"; cat "$T/out"; fi
 
+printf '# x\n\n1. Run `/changelog`.\n2. Run `/simplify` if available.\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "a hedge in the next sentence does not cover an unhedged off ref"
+else fail "a hedge in the next sentence does not cover an unhedged off ref"; cat "$T/out"; fi
+
+printf '# x\n\nLog it with `/changelog`. Then simplify (`/simplify` if available).\n' >"$ORCH"
+if ! run && grep -q 'changelog — off' "$T/out"; then ok "two sentences on one line are judged separately"
+else fail "two sentences on one line are judged separately"; cat "$T/out"; fi
+
+printf '# x\n\n- Record the work with `/changelog`\n  where it is enabled, then stop.\n' >"$ORCH"
+if run; then ok "a hedge wrapped onto the next line of the same sentence still exempts"
+else fail "a hedge wrapped onto the next line of the same sentence still exempts"; cat "$T/out"; fi
+
 rm "$T/fake-home/.claude/settings.json"
 if run && grep -q 'skipping' "$T/out"; then ok "missing settings.json skips with exit 0"
 else fail "missing settings.json skips with exit 0"; cat "$T/out"; fi
