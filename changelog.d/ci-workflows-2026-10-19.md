@@ -32,5 +32,5 @@
   drop a bullet an older entry shared or hide every entry in an HTML comment.
   The step now requires `CHANGELOG.md` to differ from the base by exactly one
   inserted block whose non-blank lines are the removed fragments' lines, each
-  fragment contiguous and in order; six cases in `changelog-scope.test.sh`
-  cover the bypasses.
+  fragment contiguous and in order, placed above the first existing entry;
+  eight cases in `changelog-scope.test.sh` cover the bypasses.
