@@ -3,6 +3,639 @@
 Entries not yet folded in live one per PR in `changelog.d/`; they are
 copied here by hand at release time (see `claude/scripts/README.md`).
 
+## 2026-11-10 — chore: retire the Jules lane and close the loops around the review and retro flow
+
+### Removed
+
+- **The Jules routine lane.** Jules was shut down, so ADR-0009 moves from
+  Paused to Retired. Gone: `claude/scripts/jules-dispatch.sh` and its test
+  suite, the `jules-dispatch` systemd unit pair, the `agents/routines/` catalog,
+  the `jules` runtime and `routine-lane` capability in
+  `agents/capabilities.json`, the Jules CLI install and login steps in
+  `setup.sh`, and the CI step that ran the dispatcher's suite.
+- `setup.sh` now disables a `jules-dispatch.timer` an earlier install left
+  behind and removes its unit files, so no machine keeps firing a unit whose
+  script is gone.
+
+### Changed
+
+- **The root `AGENTS.md` brief is the cloud-session brief.** Its source moves
+  from `agents/canon/fragments/jules.md` to `fragments/cloud.md`, it names
+  Claude Code and Codex cloud sessions, and it states that such a session has
+  no global instruction file, skills, hooks or local review gates, so none of
+  them may be reported as having run.
+- **`.codex-review-ignore` declares the instruction text that is directive by
+  design**: the three skill trees, `agents/canon/`, `claude/MULTI-AGENT.md` and
+  `changelog.d/`. One skills change had produced eleven near-identical
+  low-severity issues (#744 to #753 and #757), one per file. The exemption
+  stays narrow by form (#484).
+- **Closing keywords are repeated per issue.** Both `commit-push-pr` skills and
+  `claude/MULTI-AGENT.md` now say that GitHub closes only the first number of a
+  comma list after one `Closes`. Two merged pull requests (#743, #754) had left
+  eleven fixed issues open that way; they are closed now.
+- **Security fixes leave the weekly instruction-surface batch.**
+  `claude/MULTI-AGENT.md` gives a security finding its own patch and branch as
+  soon as it is reviewed.
+- **The auth checklist and the Vercel log flags load on demand.** Two new
+  Claude skills, `auth-boundary` and `vercel-logs`, hold the detail;
+  `claude/CLAUDE.md` keeps the auth rule in one paragraph that points at the
+  skill.
+- `kickoff` no longer describes `CHANGELOG.md` as an end-of-session log, which
+  contradicted the canon.
+- `ROADMAP.md` reflects that the operator pass landed and only #615 remains.
+
+### Added
+
+- **`RetroProposalsReminder.hook.sh`** (#741): a SessionStart hook that prints
+  one status line when `~/.claude/retro-proposals/` holds proposals newer than
+  its `.last-reviewed` marker. It prints a count and a date, never proposal
+  text. `/session-retro --review` walks the proposals and touches the marker.
+  Registered in `claude/settings.example.json`; a private `settings.json` needs
+  the same entry.
+
+## 2026-11-05 — fix(gates): the Antigravity jail holds every byte of the reviewed HEAD
+
+- **The jail no longer builds its workspace with `git archive`.** Run from a
+  subdirectory, `git archive` exported only that subtree, and it honoured
+  `export-ignore` and `export-subst` from tracked `.gitattributes` and from
+  the user's own attributes file, so the reviewer could be handed a tree with
+  `AGENTS.md` missing or a file rewritten while the receipt vouched for the
+  real one (both reproduced by the Codex gate on this branch). Each blob is
+  now written as stored from the repository the snapshot names; executable
+  bits are kept; regular files are written before any symlink exists, and
+  every tracked symlink is then resolved on the filesystem and removed when
+  it lands outside the workspace, so a chain of links cannot point agy at a
+  file outside the jail. Parent directories are created one component at a
+  time with no symlink allowed in the chain, so a hand-built tree that lists
+  a symlink and a directory under one name fails the setup instead of making
+  `mkdir -p` follow the link out of the jail.
+  Replacement refs are ignored as the receipt helper ignores them, a failed
+  tree listing fails the setup rather than passing an empty workspace, and a
+  symlink target is written as the blob's exact bytes or refused.
+  A tracked `.git` entry in any spelling git refuses is refused too, and the
+  jail's `git init` runs only when nothing named `.git` exists there: a
+  tracked `.git` file is a gitfile pointer that `git init` would follow and
+  reinitialise another repository.
+
+## 2026-11-05 — test(hooks): operator-queue fixture dates no longer drift a day after a DST change (#742)
+
+- **The test does calendar-day arithmetic on today's local date, in UTC at
+  noon.** `day()` and `iso()` built fixture dates with `date -d "-N days"`
+  from the wall-clock instant, which carries the DST shift of a crossed
+  transition; in the last hour of each local day for the week after a change,
+  every age the hook reported came out a day short of the fixture and 15
+  assertions failed. Anchoring at local midnight was not enough either: a
+  zone that springs forward at midnight (America/Santiago) has no such
+  instant on the transition day and `date` fails. UTC noon always exists and
+  has no DST. The hook does civil-date arithmetic on the calendar date and
+  was right.
+
+## 2026-11-03 — feat(skills): loops, waiting and autonomy guidance for orchestrate
+
+- **`orchestrate`**: fixes the stale claim that a named agent's final text
+  never reaches the lead. A teammate's idle notification carries its final
+  answer but long reports are truncated, so every agent also writes its full
+  report to a scratchpad file. The background-agents bullet becomes fork mode
+  (on by default since 2.1.302; `subagent_type: "fork"` for full-context side
+  tasks, never for unbiased review). The workflows bullet covers scale (10+
+  items, adversarial verification, run-until-dry), `pipeline()` over barrier
+  `parallel()`, and a slice first; batch operations switch to one agent per
+  item above about ten files. New bullets cover waiting and loops (`Monitor`,
+  background Bash, `/loop` with a stop condition, `/goal`, command Stop hooks
+  with the block cap, `/schedule`), hard caps set before launch, a delegation
+  template, and the Agent call's `effort`. The frontmatter gains an
+  `argument-hint` and a trigger-led description, and a top line points at the
+  Close the Loop checklist, since only the start of a skill survives
+  compaction.
+- **`check-skill-refs.sh`** (new, local, advisory): warns when orchestrate,
+  `claude/CLAUDE.md`, `MULTI-AGENT.md` or CLAUDE-GUIDE's "The Workflow" tells
+  the model to run a skill that is missing or `"off"` in the live
+  `skillOverrides`, unless the line hedges with "if available". Runs at `cc`
+  launch from `check-claude.sh`; its self-test runs in CI.
+- **`session-retro`**: auto mode no longer claims `overnight.sh` fires it;
+  unattended runs are `/orchestrate` with no user present or
+  `/session-retro --auto`.
+- **`autonomous-run`** (new Claude skill, `claude-only` in
+  `skill-coverage.tsv`): the decision layer for unattended or looping work.
+  Five questions before launch, a first-match-wins pick between in-session
+  work, a workflow, `/loop`, `/goal`, a command Stop hook and `/schedule`, a
+  strictness ladder for checks, always-on guardrails (stop condition and cap
+  before launch, verification Claude did not author, stop-and-ask triggers)
+  and a report shape. README and CLAUDE-GUIDE count and list 18 slash
+  commands, and `claude/AGENTPACK.yaml` is regenerated (it was also stale for
+  the `changelog` description on the base branch).
+- **`CLAUDE-GUIDE.md`**: "Stop Hooks (Auto-QA Pattern)" becomes "Loops &
+  Unattended Runs", with the five questions, a primitive table, the
+  strictness ladder and the headless `claude --bare -p` shape. The Stop hook
+  template now uses the documented `1>&2 || exit 2` shape (the old one piped
+  checks through `tail`, so it could never block) and explains
+  `stop_hook_active` and `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`. The Workflow's
+  simplify and changelog steps no longer name switched-off skills flatly,
+  Golden Rule 8 says loops need a finish line, and Autonomous Scripts points
+  at #740 for `overnight.sh` gaps.
+- **`claude/CLAUDE.md`** (via `agents/canon/fragments/claude.md`): one
+  Working-style line sends unattended or looping work to `autonomous-run`.
+
+- **Codex gate findings (2026-11-05).** Workflows need the user's explicit
+  opt-in and `/effort ultracode` is never set for them; the strictness ladder
+  governs the loop's own check and never replaces the wrap-up's independent
+  review; `/schedule` is decided before the shape of the work; the headless
+  shape drops `--bare`, which skips hooks and CLAUDE.md; the Stop hook template
+  keeps its own attempt count because the block cap resets on every tool call;
+  `check-skill-refs.sh` judges hedges per sentence, with wrapped lines joined.
+
+- **Second Codex round (2026-11-05).** The Stop hook template runs through
+  `bash` (no executable bit to forget), reports "stopped at cap" to Claude as
+  one final block and to the person as a `systemMessage` rather than on a
+  stderr nobody reads; a command Stop hook is chosen before a judged `/goal`;
+  `check-skill-refs.sh` splits clauses at commas and parentheses so a hedged
+  parenthetical exempts only its own ref, and doubles every separator byte so
+  a ref right after a comma is still seen.
+
+- **Third Codex round (2026-11-05).** The Stop hook template stops at once
+  when its attempt count cannot be written, instead of retrying unbounded;
+  `check-skill-refs.sh` exempts another runtime's skill only when its
+  possessive names that ref, not every ref in the clause.
+
+- **Fourth Codex round (2026-11-05).** The Stop hook template keeps its count
+  under `$XDG_RUNTIME_DIR` or `~/.cache`, never a shared `/tmp`, and reads it
+  as digits only, since bash arithmetic on a pre-created file would run its
+  contents; `check-skill-refs.sh` walks refs, hedges and possessives in text
+  order so each hedge covers one ref ("If available, run /x" and "/x (if
+  available)" both pass, "Codex's /x and then our /x" still flags the second);
+  `/schedule` is for work that outlives the session or leaves this machine,
+  not every recurrence.
+
+- **Fifth Codex round (2026-11-05).** In `check-skill-refs.sh` a possessive
+  covers only the ref inside its own match and a spent hedge does not carry
+  to the next ref; `autonomous-run` lists the specific continuation
+  mechanisms (`/loop`, a command Stop hook, `/goal`, a workflow) before the
+  "stay in conversation" fallback so a small request naming one is not
+  swallowed by it.
+
+- **Sixth Codex round (2026-11-05).** `check-skill-refs.sh` attaches a hedge
+  to the ref before it only across plain words (a comma or semicolon in
+  between breaks the link) and to the ref after it only from a sentence or
+  clause start; `autonomous-run` and the guide distinguish cloud `/schedule`
+  (no local files) from a Desktop scheduled task (local files, this machine)
+  for work that outlives the session.
+
+- **Seventh Codex round (2026-11-05).** `check-skill-refs.sh` runs under
+  `LC_ALL=C` so grep's byte offsets and awk's substr agree on multibyte text,
+  and a hedge covers the ref before it only across spaces or an opening paren,
+  never across other words.
+
+- **Eighth Codex round (2026-11-05).** The Stop hook template blocks through
+  `{"decision":"block"}` on stdout rather than exit 2 with raw stderr, since
+  missing-file text on stderr reads as a hook that failed to start and does
+  not block; `check-skill-refs.sh` drops the list marker before judging a
+  sentence start, and a leading hedge reaches forward only across a comma and
+  a connective word or two.
+
+- **Ninth Codex round (2026-11-05).** The Stop hook template runs its check
+  under `timeout -k 5` below the hook's own timeout (set to 120 s in the
+  settings entry), so a hung check, even one that ignores SIGTERM, is a
+  recorded failed attempt rather than a timed-out hook whose output Claude
+  discards.
+
+## 2026-11-02 — feat(antigravity): private permission overlays, unask promotions, and `--mode auto` launcher default
+
+- **`claude/scripts/agy-apply-permissions.py`**: accepts repeatable `--overlay PATH` JSON files and an optional top-level `"unask"` list in both the baseline and overlays. Overlays can append `allow` rules and promote baseline `ask` rules out of `permissions.ask` (stripping them from both the baseline and live `settings.json` `ask` lists) without editing the tracked baseline. Rejects cross-layer conflicts (`allow`/`unask` vs `deny`, `allow` vs `retired`, `ask` vs `unask`), refuses symlinked `--settings` files, and enforces `0600` permissions on existing `settings.json` files even when content is unchanged.
+- **`antigravity/permissions.json`**: retires `read_file(~/dev/)` so Antigravity's `bwrap` sandbox mount map does not overwrite `write_file(~/dev/)` and the `~/dev` workspace mount from read-write to read-only, and retires wildcard `mcp(github/*)` and `mcp(playwright/*)` grants in favor of explicit read-only `mcp(github/...)` and non-file-writing `mcp(playwright/...)` tools while gating write/host-code/file-transfer/file-output tools (`github/push_files`, `github/merge_pull_request`, `playwright/browser_run_code_unsafe`, `playwright/browser_file_upload`, `playwright/browser_drop`, `playwright/browser_evaluate`, `playwright/browser_snapshot`, `playwright/browser_take_screenshot`, etc.) in `permissions.ask`. Promotes `command(bunx)` and `command(npx)` from `permissions.ask` to `unask` so prefix matching no longer shadows `command(bunx tsc)` or prompts on every JS/TS test/lint invocation. Adds localhost and GitHub `read_url` grants, common dev/test/git/shell rules (`pytest`, `uv run`, `npm test`, `npm run`, `pnpm`, `cargo`, `go`, `git checkout`, `git restore`, `git branch -d`, `git worktree prune`, `rm -f`, `sed`, `cd`), and `~/dev/dotfiles/...` check script prefixes.
+- **`setup.sh`, `check-antigravity.sh`, and `.bash_aliases`**: pass `--overlay "$AGY_MEMORY_REPO/permissions.local.json"` to `agy-apply-permissions.py` when present, invoke `$AGY_MEMORY_REPO/bootstrap.sh` from `setup.sh` and the `agy` shell wrapper, default interactive `agy` launches to `--mode auto` unless `--mode` is already supplied, and rewrite `agy -c ID` / `agy --continue ID` (and `=ID` forms) to `--conversation ID` while keeping bare `-c` / `--continue` intact.
+
+## 2026-10-30 — feat(bin): track rc-start, the Remote Control launcher
+
+- **`rc-start`** is now in dotfiles and linked into `~/.local/bin` by
+  `setup.sh`, beside the other top-level helpers. Before, it existed only on
+  one machine. It starts `claude remote-control` in a detached tmux session
+  named `rc`; `--hold` blocks, so the `wsl.exe` of a Windows boot task keeps
+  WSL running.
+- It puts `~/.bun/bin` on PATH. Remote Control runs claude directly, not
+  through a login shell, so `~/.bash_profile`'s bun line never reached those
+  sessions, and anything they ran that called `bunx` failed.
+- The session starts in `~/dev`, as before, or in `RC_START_DIR` when that
+  is set.
+- Fixes to the copied script, from review:
+  - The session no longer keeps a shell behind claude (`exec bash`). That
+    shell made a dead Remote Control count as running, so no later
+    `rc-start` restarted it. The session now ends when claude does, and the
+    exit status goes to `~/.local/state/rc-start.log`.
+  - "Running" means a live pane in the session named exactly `rc`. Plain
+    `rc` also matched a session such as `rc-other`, and the start was
+    skipped.
+  - Only where a config turns `remain-on-exit` on can the session outlive
+    claude, with a dead pane. `rc-start` then refuses and prints
+    `tmux kill-session -t =rc`, the command that clears it. It never
+    restarts in place or kills a session, so it can't stop a running claude.
+    One tmux query decides whether the session is absent, live or dead, so a
+    session that a concurrent call creates mid-check is reported as running,
+    never mistaken for a dead one.
+  - `--hold` holds whatever happened, a refused start or a `set -e`
+    failure included (an EXIT trap), since its job is to keep the boot
+    task's WSL running. The exit log is best effort: a state directory that
+    can't be created costs the log, with a warning, not Remote Control.
+  - The working directory is entered with `cd`, which refuses one that is
+    missing or can't be entered (tmux would silently use `$HOME`), and read
+    back from `$PWD`, which keeps a trailing newline in the name. tmux is
+    never handed the directory: it reads `-c` as a format and trims a
+    trailing `\;`, so the session starts in `rc-start`'s own working
+    directory. An inherited `CDPATH` is unset in both the script and its
+    test.
+  - The pane's command goes to tmux as separate arguments (`sh -c …`),
+    which tmux runs directly, so tmux's `default-shell` (fish, say) never
+    interprets it.
+- New suite `claude/scripts/tests/rc-start.test.sh` runs a real tmux on a
+  private socket directory with a stub `claude`. It runs in the `checkers`
+  shard, and fails there rather than skipping if the runner lacks tmux.
+  Every tmux call it makes, cleanup included, names its own socket, and it
+  runs nothing unless every temp directory was created, so it can never
+  reach the caller's tmux server.
+
+## 2026-10-22 — chore(plugins): retire the eleven plugins dropped in #500 on every machine
+
+- **`claude/plugins.txt`**: #500 dropped eleven unused plugins from the
+  manifest, but deleting a line never uninstalls anything, so their
+  user-scope installs survived on existing machines and `PluginDriftCheck`
+  warned about reverse drift at every session start. Each now has a
+  `# removed:` line, which `sync-plugins.sh` (run by `cc` at every fresh
+  launch) turns into a one-time uninstall.
+
+## 2026-10-22 — docs(changelog): archive 2026 Q3 out of CHANGELOG.md (#707)
+
+- **CHANGELOG.md holds the current quarter again.** The 101 entries dated
+  2026-07-03 to 2026-09-25 moved verbatim to `docs/changelog/CHANGELOG-2026-Q3.md`,
+  which the footer links beside the Q1 and Q2 archives. The move went out as
+  two pull requests (add the archive, then trim CHANGELOG.md) because the
+  review gate caps a fenced review at `CODEX_GATE_MAX_LINES` and the whole
+  move exceeds it.
+
+## 2026-10-22 — fix(gates): the Antigravity gate names a rejected model pin, and its DB spot-check works (#696 follow-up, #715)
+
+- **Scope.** #714 already moved the default pin to `Gemini 4 Argon (High)`.
+  These are the parts of #696 it left open.
+
+- **A rejected pin is reported as a configuration error, not an outage.**
+  When agy's stderr says the model selection is invalid, the gate prints
+  `agy rejected the pinned model "LABEL"; set ANTIGRAVITY_GATE_MODEL (or
+  --model) to a label from agy models`. It still degrades, and exits 3
+  under `--require`.
+- **The model DB spot-check works again.** The check ran `strings | grep
+  -q`. On a large record grep stopped at the first match, `strings` died of
+  SIGPIPE, and under `set -o pipefail` the match read as a miss. That
+  happened on every real run. The check now discards the reader's status. It also accepts the slug agy 1.4.x records
+  (`gemini-4-argon-high`) beside the display label.
+- **The slug never widens the match.** A label with no letters or digits
+  derived an empty slug, which matched every record, and a shorter label's
+  slug prefix-matched a longer model's (`gemini-4-argon` against
+  `gemini-4-argon-high`). The slug forms match only as whole tokens, a label
+  without a letter or digit matches literally only, and the label is escaped
+  into the same pattern so it still matches as written. Neither form may run
+  straight into a letter, digit or (for a slug) `_`; a label followed by a
+  parenthesised tier is left to the authoritative log-line check.
+
+## 2026-10-22 — fix(operator-queue): bound a whole fetch by one deadline (#718)
+
+- **OperatorQueueReminder hook**: the per-scope retry added in #716 treated a
+  failed or hung `gh` like a short answer and retried it, so one `--find` or
+  refresh could run past six minutes while holding the lock. Now only an
+  answer that arrived incomplete is retried; a failed or timed-out `gh` ends
+  the fetch at once. Every scope, retry and wait shares one `FETCH_TIMEOUT`
+  deadline again, and a wait that would use up the rest of it is skipped.
+
+## 2026-10-22 — fix(operator-queue): search per scope and retry incomplete results (#716)
+
+- **OperatorQueueReminder hook**: GitHub search often times out partway and
+  answers short, which the completeness check rightly refused — so with the
+  queue file retired, no cache was ever built. The refresh now searches one
+  scope at a time (home repo, then each owner), retries a search that comes
+  back incomplete (`OPERATOR_QUEUE_RETRY_SLEEPS`, default `2 5`), and merges
+  the results by node id. `--find` retries the same way.
+
+## 2026-10-22 — fix(plugins): disable per-project plugins after install so reruns stop re-enabling them (#720)
+
+- **setup.sh and sync-plugins.sh**: `claude plugin install` enables the plugin
+  in the user `enabledPlugins` map, so every install of a `[per-project]`
+  plugin put it back in the global settings and the scoping warning returned
+  at the next session start. Both now run `claude plugin disable --scope user`
+  right after installing each plugin under the `[per-project]` marker. A
+  failed disable fails the sync run and prints the command to run by hand in
+  setup.sh.
+- **lib-checks.sh**: new `manifest_per_project_plugins` reads the manifest's
+  section markers with the same rules as the drift hook, so both installers
+  share one parser.
+- **plugin-drift.test.sh**: the claude stub now models `enabledPlugins`; new
+  cases assert a `[per-project]` install is not left enabled, a `[global]`
+  install stays enabled, and setup.sh uses the shared helper.
+
+## 2026-10-22 — fix(hooks): PluginDriftCheck input cap, per-checkout project mods, root-safe test (#705)
+
+- **PluginDriftCheck hook**: a prompt large enough to push the hook input past
+  1 MiB cut the JSON before parsing, so the event read as missing and the
+  hook ran the SessionStart branch, a full scan and report, on every such
+  prompt. The leading event, session and cwd fields are now recovered from
+  the truncated input, and input whose event cannot be read at all takes the
+  cheap rescan path.
+- **PluginDriftCheck hook**: a project mod already reported was remembered by
+  name only, so the same name appearing in a second checkout (the cwd and
+  `CLAUDE_PROJECT_DIR`) stayed silent. Project reports are now remembered per
+  checkout.
+- **plugin-drift test**: the permission case skips under root, which ignores
+  mode bits, as the other root-sensitive suites do.
+
+## 2026-10-21 — fix: Antigravity gate defaults to Gemini 4 Argon (High)
+
+- **`claude/scripts/antigravity-review-gate.sh`**: the default pin
+  `Gemini 3.1 Pro (High)` is no longer a valid agy model, so every ordinary
+  review exited 1 and degraded open (#696). The default is now
+  `Gemini 4 Argon (High)`; `ANTIGRAVITY_GATE_MODEL` still overrides it.
+
+## 2026-10-21 — fix: pin Node v24.22.1 (October 2026 security release) and upgrade existing installs
+
+- **`setup.sh`**: `NODE_VERSION` v24.18.0 → v24.22.1, the 24.x release
+  carrying the 2026-10-21 Node.js security fixes (four high: TLS hostname
+  bypasses CVE-2026-105483/-106069, `dns.resolve` NUL truncation
+  CVE-2026-105482, Brotli OOB write CVE-2026-111497).
+- **Upgrade path**: Node was only installed when `node` was missing, so a
+  bumped pin never reached an existing machine, and apt's EOL v18 silently
+  satisfied the check. Re-running `setup.sh` now re-pins when
+  `~/.local/bin/node` is the pinned install at a different version, or when
+  the active node is an older-major distro install (`/usr/bin/node`)
+  (`NODE_INSTALL_METHOD=pinned`, Linux). nvm/fnm/volta nodes are untouched.
+
+## 2026-10-20 — fix(gates): the Antigravity review cannot write outside a throwaway home (#687)
+
+- **`--mode plan --sandbox` did not stop file writes the user's baseline
+  allows.** The installed agy permissions allow `write_file(~/dev/)` under
+  `proceed-in-sandbox`, and plan mode honours that rule. A live probe with
+  the gate's exact flags on agy 1.4.2 wrote a file under `~/dev` from a
+  prompt. A steered review could therefore write into any repository there.
+  A write into the reviewed tree was caught by `verify --snapshot`; a write
+  anywhere else was not.
+- **agy now runs with a private HOME and workspace.** The gate builds a
+  0700 temp directory per run. It holds a linked credential, a copied
+  installation id and a settings file with no allow rules and
+  `write_file(/)` denied. The workspace is a `git archive` extract of the
+  reviewed HEAD, with no `.git` leading back. A `~/` rule now resolves
+  inside the throwaway directory, which is removed on exit and before a
+  re-raised signal. A jail that cannot be built degrades the lane instead
+  of running against the real home.
+- **Proved live.** In the throwaway home the same probe was refused ("denied
+  by a configured deny rule for `write_file`"), including writes inside its
+  own workspace. A full gate run on a prompt-injection diff still parsed a
+  P0 verdict and wrote nothing. The suite's stub agy records the
+  environment it gets and attempts writes into its workspace and `~/dev`;
+  neither reaches the repository or the user's home.
+- **The workspace is its own empty repository.** agy finds `.agents/`,
+  `GEMINI.md` and `AGENTS.md` by walking up to the folder that holds `.git`;
+  an extract with none would send that walk into the shared temp directory,
+  where a planted `GEMINI.md` could steer the verdict. `git init` in the
+  workspace stops the walk there, with no remote back to the reviewed repo.
+  The init and agy itself run with git's routing variables (`GIT_DIR`,
+  `GIT_WORK_TREE` and the rest) cleared, and a workspace without a real
+  `.git` directory fails the jail build.
+
+## 2026-10-19 — ci: harvest late Codex bot reviews; enforce changelog-fragment scope
+
+- `harvest-codex-comments.yml` also runs on `pull_request_review: submitted`,
+  for reviews by `chatgpt-codex-connector[bot]` on merged same-repo PRs, so a
+  bot review that lands after a fast auto-merge is harvested (#617). A review
+  payload has `merged_at` but no `merged` field, so the review path tests
+  `merged_at`. Token scopes, the merge-commit checkout and the close-time run
+  are unchanged. Concurrency moved to the job and is gated on the job's `if`,
+  so a human review queued on the same PR cannot replace the bot's pending run.
+- Dropped the unverifiable claim that a nightly routine re-runs the harvest as
+  a backstop, from the workflow header, `harvest-codex-comments.sh` and the
+  scripts README. New `WorkflowTriggerTests` in
+  `tests/harvest-codex-comments.test.py` evaluate the job's `if` against
+  close and review payloads, and pin the triggers, token scopes, the checkout
+  ref and the concurrency gate.
+- The `doc-truth` job runs `assemble-changelog.sh --check` and, on pull
+  requests, a self-contained shell step for the fragment scope rule, read
+  from the diff's file list alone: at most one added fragment, no edit or
+  rename of a fragment on the base, no `CHANGELOG.md` edit beside a fragment,
+  and fragments removed only all at once by a fold PR whose `CHANGELOG.md`
+  carries every removed entry's heading (#626). `tests/changelog-scope.test.sh` extracts the step
+  from `ci.yml` and runs it against fixture repos.
+- `.github/CONTRIBUTING.md` gains a Changelog Entries section, and the PR
+  template asks for a fragment instead of a `CHANGELOG.md` edit.
+- The `doc-truth (bash 3.2)` job runs `tests/statusline.test.sh` with
+  `STATUSLINE_BASH3` set to its bash 3.2.57 build, so `claude/statusline.sh`
+  is rendered under the shell the macOS settings template invokes (#588).
+- **The fold check compares every fragment line, not only headings (Codex
+  gate, 2026-11-05).** A fold that copied each entry heading into
+  `CHANGELOG.md` and dropped every bullet passed the PR-scope step and the
+  content validator alike, and matching lines anywhere in the file let a fold
+  drop a bullet an older entry shared or hide every entry in an HTML comment.
+  The step now requires `CHANGELOG.md` to differ from the base by exactly one
+  inserted block whose non-blank lines are the removed fragments' entries,
+  each entry contiguous, in newest-first date order, placed above the first
+  existing entry (a fragment may hold several entries, so the entry, not the
+  fragment, is what stays whole); twelve cases in `changelog-scope.test.sh`
+  cover the bypasses.
+
+## 2026-10-19 — docs(handoff): file operator items as issues in the repo they concern
+
+- **Handoff skills** (`claude/` and `agents/`): USER ACTION items are filed as
+  `operator-action` issues in the private repo they concern. Items for a public
+  repo or for several repos go to the private home repo. Close an issue only
+  when it is done; bump `verified` with a comment. `~/.claude/operator-queue.md`
+  is retired. The workflow invariant now reads "close it only when done".
+- **OperatorQueueReminder hook**: new `--scope` (prints the host, home repo
+  and owners it searches) and `--find SLUG` (prints each open item it would
+  list under that slug; exit 2 when it cannot tell). The handoff skills call
+  these instead of copying the hook's search, so the two can no longer drift.
+  The refresh and `--find` share one GraphQL query and one "what counts" filter.
+
+## 2026-10-19 — fix(gates): verdicts from runs that did not complete, exit 2 only by choice, bytecode caches (#515, #579, #581)
+
+- **A failed, timed-out or cancelled Antigravity run is held to the
+  completed-run parse (#579).** Its output was searched for anchored P0–P2
+  lines only, so a stray blocker (`- [P3] nit; also [P1] bypass`) or text that
+  is not findings at all left as a degraded exit 3 with no block marker, and an
+  older Codex receipt for the same artifact stayed shippable. `agy_output_may_block`
+  now decides every exit after agy wrote output; absent output, `LGTB` and
+  P3-only output still degrade. The Codex gate already applied this rule.
+- **Exit 2 is only ever an exit a gate chose (#515).** On bash 5.2 a signal that
+  lands while the shell re-parses a command substitution makes the trap command
+  fail to parse; the handler never runs and `set -e` ends the shell with status
+  2, the verdict code. Bash 5.3 runs the handler. Each gate's EXIT handler now
+  catches a status 2 that no `exit` command produced: the Codex gate invalidates
+  its lane and exits 3, the Antigravity gate exits 1, and both keep exit 2 when
+  the reviewer's output already carries a verdict. A fixture holds the shell in
+  that parse on demand. Not closed: where bash is not checking command status
+  the signal is dropped and the gate runs on.
+- **Diff capture no longer swaps the Codex gate's EXIT handler.** While
+  `gate_extract_diff` ran, its plain cleanup handler replaced the gate's own
+  with the cancel trap still armed, and a signal there exited 2. The gate
+  names its handler in `GATE_EXIT_HANDLER` and the capture keeps it.
+- **An ignored `__pycache__` beside a skill or agent script still blocks a
+  committed review (#581, declined).** An exemption for a `*.pyc` beside its
+  `.py` was built and withdrawn after the Codex gate showed the cache can carry
+  code the source does not: Python imports a timestamp-valid cache without
+  reading the source, and recompiling does not reproduce the bytes to compare.
+  The remedy is upstream: `run-tests.sh` writes no bytecode (#633) and gate
+  runs set `PYTHONDONTWRITEBYTECODE=1`.
+
+## 2026-10-19 — fix(gates): a repo-root node_modules no longer blocks every gate in a bun/npm project (#651)
+
+- **The #514 vendored-tree rule covers the repository root.** An installed
+  root `node_modules` holds dependencies' own `CLAUDE.md` and `SKILL.md`
+  files (`bun-types`, `playwright-core`), so `lane` and both gates refused
+  every ordinary JS repo as a dirty instruction surface. `review-receipt.py`
+  now leaves out a path under the root `node_modules` when that directory is
+  an ignored real directory and a regular-file `bun.lock`, `bun.lockb` or
+  `package-lock.json` sits beside it. Ignoring only the planted file, a
+  re-included child, a symlinked lockfile, a symlinked tree or a nested
+  package's `node_modules` still refuse. `bun.lockb` now also counts for the
+  skill and scripts trees.
+- **`review-receipt.py` is executable**, as the review-gates skill invokes it.
+
+## 2026-10-19 — fix(gates): the Codex review cannot escalate out of its read-only sandbox (#651)
+
+- **`-s read-only` was not read-only.** The gate pinned the sandbox but not
+  the approval policy, so it inherited the user's
+  `approval_policy = "on-request"` and `approvals_reviewer = "auto_review"`.
+  A command the sandbox denied could be re-run with
+  `sandbox_permissions = "require_escalated"`, and the automatic reviewer
+  approved it, unattended and unsandboxed. A probe on codex-cli 0.163.0 wrote
+  a file this way under `-s read-only`. During a gate run the reviewer acted on
+  the repro text (`bun install && bun run verify`), installed `node_modules`
+  into the worktree, and `verify --snapshot` refused the run. Both Codex
+  invocations now pass `-c approval_policy="never"`. `review-multipart.py`
+  refuses any native turn whose recorded `approval_policy` is not `never`,
+  alongside the existing read-only sandbox check.
+- **The user's execpolicy rules do not load either.** A `.rules` prefix rule
+  with `decision="allow"` (what "always allow" writes) auto-approves a
+  matching command together with its sandbox bypass, and `approval_policy`
+  never sees it. Both Codex invocations pass `--ignore-rules`.
+
+## 2026-10-19 — fix(gates): a foreign boundary's own config cannot hide a CLAUDE.md (#641)
+
+- **`boundary_listing()` pins where and how git looks.** It ran `ls-files`
+  inside a foreign repository boundary under that boundary's own config, so a
+  `core.worktree` there listed a decoy directory, and `core.ignoreCase=true`
+  let a tracked `claude.md` mask an untracked `CLAUDE.md` on a case-sensitive
+  filesystem. Both passed the instruction-surface sweep. The listing now runs
+  with `--work-tree BOUNDARY` and `-c core.ignoreCase=false`. The suggested
+  `-c core.worktree=` does not override the repository's own setting on git
+  2.43, so `--work-tree` is used.
+- **Worktree pointers are parsed as git parses them.** `worktree_gitdir()`
+  requires the exact `gitdir: ` prefix and removes only trailing CR/LF, and
+  the registered-gitdir read does the same (`registered_worktree()`). Both
+  used to `.strip()` the path, the bug class #541 fixed.
+
+## 2026-10-19 — fix(gates): review-and-push says why an approved run did not push (#628)
+
+- **No terminal and no `--auto-push` is exit 4 with a message.** Without a
+  terminal, `read -p` printed no prompt and failed at end of input, and
+  `set -e` ended the wrapper with a bare exit 1 right after "Safe to push.".
+  Four agent branches hit this on 2026-10-16 and pushed by hand. The wrapper
+  now prints `approved but not pushed: no terminal to confirm on; re-run with
+  --auto-push, or push SHA yourself` and exits 4. The script header and
+  `claude/scripts/README.md` document every exit status.
+- **End of input at the push prompt is exit 4 too.** Ctrl-D at "Push to
+  remote?" failed `read` and ended the script with a bare exit 1.
+- **A piped answer still counts.** The first cut tested for a terminal before
+  prompting, so a caller feeding `y` on stdin (the shipping suites do) got exit
+  4 before the push-time checks ran. The wrapper now lets `read` decide: only
+  end of input, from `/dev/null` or Ctrl-D, means nobody is there to confirm.
+
+## 2026-10-19 — fix(gates): a sibling moving origin/main no longer voids a review in flight (#680)
+
+- **The review base is pinned when the run begins.** A gate's snapshot
+  recorded `origin/main` and re-resolved it at every verify. A fetch by any
+  sibling worktree moved it, and the run refused with "repository changed
+  during review or after approval". That happened five times in one session
+  of parallel merges, each costing a 15–20 minute re-run. `stable_capture`
+  now resolves the base once, and `verify` re-captures against the commit
+  pinned in the snapshot. The branch's own HEAD, tree, index and files still
+  have to match exactly.
+- **`check` compares merge bases, not base tips.** The reviewed diff is
+  `merge_base..HEAD`, so a receipt stays valid while the base tip moves on.
+  It still refuses when the merge base differs: a receipt taken with a
+  narrower `--base`, or a branch the base has since absorbed.
+  `workflow-shipping.test.py` asserts that rule for the pre-push hook: a
+  sibling ref with the same merge base is accepted, a base that already
+  contains HEAD is refused unless `REVIEW_RECEIPT_BASE` names it.
+- **Blocking markers key on the merge base too.** `artifact_identity` keyed
+  a #573 marker by the base tip, so once a sibling moved the tip a later
+  blocking verdict wrote a different key from the approval it should retire,
+  and `check` accepted the approval. The marker now carries `merge_base`,
+  and the lookup still reads a marker written under the old base-tip key, so
+  a blocker recorded before this change keeps retiring what it retired.
+
+## 2026-10-19 — test(gates): the multipart request-changed case no longer collides with concurrent runs (#680)
+
+- **The flake was a collision, not a timing race.** The mid-run mutation
+  finds the gate's request file under the shared `/tmp` by its digest. Every
+  concurrent run of `codex-review-gate.test.sh` built a byte-identical
+  request, so the stub found two files and its single-hit assertion failed.
+  Codex then exited 1 and the case degraded to rc 3 instead of the rc 2
+  verdict (#679). Four runs in parallel failed 4 of 4 before the fix. The
+  fixture now adds a per-run nonce, so each run's request is unique.
+- **The base-mutation cases follow the pinned base.** A sibling moving the
+  base mid-review now completes the review, and the receipt survives. A base
+  that absorbed the branch completes too, but `check` then refuses the
+  receipt because its merge base no longer matches.
+
+## 2026-10-19 — fix(codex): the read-only profile example cannot escalate out of its sandbox (#659)
+
+- **`codex/readonly.config.toml.example` pins `approval_policy = "never"`.**
+  It used `on-request`. A named profile layers over the user's base config,
+  and an `approvals_reviewer = "auto_review"` there approves escalation out of
+  the read-only sandbox unattended, the same path #659 found in the review
+  gate. `tests/codex-config.test.sh` now refuses `on-request` in the example.
+
+## 2026-10-19 — docs(adr): ADR-0008 records #613 as considered and declined
+
+- **Item 1, comment-only risk-path downgrade, is declined.** It was built
+  and then removed before landing. Comments are not provably inert: programs
+  read their own source, verbose shells print comments, and aliases, heredocs
+  and directive comments turn comment-shaped lines into code. Two security
+  reviews and a differential fuzz kept finding bypasses, so a risk-path diff
+  always requires `codex`.
+- **Item 2, merge-then-verify, is declined.** Main is effectively deployed
+  through the `~/.claude` symlinks, so every change keeps a pre-merge gate.
+
+## 2026-10-19 — fix(skills): operator-lane instruction-surface pass (claude.dev audit, changelog fragments)
+
+- **`orchestrate`** (#596) no longer invokes skills that left with the
+  superpowers plugin or that `skillOverrides` hides; steps state the outcome
+  and name a skill only "if available". The MUST/Mandatory wording is gone,
+  and the skill gains model/effort routing for subagents, the agent-team
+  cost note, a phase-level workflow line and an HTML-for-long-output line.
+  `session-retro` (both runtimes) generalizes a missed trigger description
+  instead of pasting the user's phrasing. `branch-hygiene` addresses Claude,
+  not "the Codex agent".
+- **`agents/canon/fragments/claude.md`** → `claude/CLAUDE.md` (#596):
+  `bun outdated`; `fd`/`bat`/`eza` only when installed; session start no longer
+  re-reads what the harness already loads; the doc-contract bullet names the
+  `drift-sweep` skill "if it is enabled". The Git section adds "push once per
+  unit of work, not once per fix" (from closed #587): every push re-runs CI
+  and, where the `codex-review` workflow runs, requests a Codex bot review.
+- **`CLAUDE-GUIDE.md`** (#672): the `OperatorQueueReminder` hook row calls
+  `~/.claude/operator-queue.md` the legacy queue and says the handoff skills
+  file new items as issues (the skills themselves moved in #712); the hook's
+  header comment says the same.
+- **Changelog fragments:** the claude and jules fragments, both `changelog`
+  skills, the Claude `handoff` step 4, `orchestrate` and `MULTI-AGENT.md` now
+  send a PR's entry to its `changelog.d/BRANCH-SLUG.md` fragment where the
+  repo keeps `changelog.d/`, with the format `assemble-changelog.sh --check`
+  accepts. The jules fragment exempts the PR that folds the fragments in.
+- **`review-gates`** gains a "Codex bot threads before merge" section
+  (`codex-threads.sh` list/resolve, reply before resolving).
+- **Tier-1 byte ceiling** (#642): `MULTI-AGENT.md` and `claude/scripts/README.md`
+  name `TIER1_MAX_BYTES` in `review-receipt.py` instead of restating the
+  figure; ADR-0008 keeps its dated figure.
+- **Codex gate findings (2026-11-05).** `claude/AGENTPACK.yaml` regenerated for
+  the `changelog` description. `review-gates` allows the one manual
+  `@codex review` the workflow itself asks for (a review that ended without
+  completing is not retried automatically). Both `changelog` skills say the
+  branch slug is not unique and the validator accepts only letters, digits,
+  `.`, `_` and `-`, so an existing fragment is confirmed to be this branch's
+  before it is updated, and a colliding or invalid slug gets a distinct name.
+
 ## 2026-10-20 — fix: worktree guard, commit-message and pre-merge hooks parse commands safely
 
 - **Scope**: split out of #681, which enables these hooks for every fresh
