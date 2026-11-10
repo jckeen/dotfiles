@@ -75,6 +75,16 @@
       "skill_format": "agent-skills"
     },
     {
+      "id": "skill:auth-boundary",
+      "type": "skill",
+      "name": "auth-boundary",
+      "description": "Checklist for building authentication into a new entry point from the first commit — auth-by-default wiring, refusing to start without a secret, named opt-outs, closed failure, and binding credentials to the host they were issued for. Use when adding or reviewing an HTTP route, IPC accept-loop, WebSocket upgrade, external-input queue consumer or mutating CLI subcommand, when code attaches a token to a URL or path read from a lockfile, manifest or other persisted config, or when the user asks \"does this need auth\" or \"is this endpoint protected\".",
+      "path": "skills/auth-boundary",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
       "id": "skill:autonomous-run",
       "type": "skill",
       "name": "autonomous-run",
@@ -240,6 +250,16 @@
       "name": "simplify",
       "description": "Review recently changed code for unnecessary complexity and edit it in place to simplify — removes over-engineering, dead code, and premature abstractions while preserving behavior. Unlike review (which only reports), this applies the changes. Use after building a feature, or when the user says \"simplify this\", \"this feels over-engineered\", \"clean this up\", or \"de-engineer\".",
       "path": "skills/simplify",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:vercel-logs",
+      "type": "skill",
+      "name": "vercel-logs",
+      "description": "Reads full Vercel production runtime logs with the CLI flags that return complete multi-line messages across every branch. Use when debugging a Vercel production or preview error, when a runtime log line looks truncated, when logs for a deployment seem to be missing, or when the user says \"check the Vercel logs\" or \"why is prod erroring\".",
+      "path": "skills/vercel-logs",
       "risk_level": "low",
       "permissions": [],
       "skill_format": "agent-skills"

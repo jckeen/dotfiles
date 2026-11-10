@@ -177,8 +177,15 @@ applies the label itself when a bot finding's path matches the guard regex.
 The operator drains that label in one pass — weekly, or when reading the next
 handoff: apply the queued patches on one branch, run the required gate once with
 the override flag (independent review already recorded on each issue), open one
-PR, and let its `Closes` lines retire the issues. One gated commit for the whole
-inbox, instead of one human command per item.
+PR, and let its closing lines retire the issues — one `Closes #N` per issue,
+because GitHub closes only the first number of a `Closes #1, #2` list. One
+gated commit for the whole inbox, instead of one human command per item.
+
+A security fix does not wait for that batch. An `instruction-surface` issue
+that is also a security finding (a sandbox escape, a gate that can be bypassed,
+a credential exposure) carries the `security` label and its own patch, and the
+operator lands it on its own branch as soon as it is reviewed. The weekly pass
+is for wording and ordinary gate fixes, where a week's delay costs nothing.
 
 ## Handoff payload
 

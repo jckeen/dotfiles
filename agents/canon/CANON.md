@@ -1,7 +1,7 @@
 # Canonical shared agent rules (ADR-0007)
 
 This file is the single source for the rules every agent on this config —
-Claude Code, Codex, Antigravity, and the cloud routine lane (ADR-0009) — must
+Claude Code, Codex, Antigravity, and cloud sessions of either — must
 agree on word-for-word. Native import mechanisms are not universal (only Claude
 Code resolves `@` imports; Codex and Antigravity have none — evidence in
 ADR-0007), so the instruction files are **generated build artifacts**:
@@ -16,7 +16,7 @@ ADR-0007), so the instruction files are **generated build artifacts**:
 - The root `AGENTS.md` is the short brief a cloud agent reads from the checkout
   itself, so it carries only the rules that survive without session history. Its
   concepts are not held in phrase parity with the three local files; byte
-  currency against `fragments/jules.md` is what CI asserts.
+  currency against `fragments/cloud.md` is what CI asserts.
 
 Each block is delimited by `<!-- canon:ID -->` … `<!-- /canon:ID -->`; a
 fragment pulls it in with a line of the exact form `<!-- include:ID -->`.

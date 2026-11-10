@@ -93,10 +93,6 @@ imported here (see the README's "The private memory repos" section).
   or anything already tracked. This is judgment-based, so it lives here as a
   standing order, not as a hook (hooks fire on lifecycle events and can't judge
   whether a finding is worth filing).
-- Debugging Vercel prod errors: use `vercel logs --expand --no-branch --json`
-  (CLI ≥54) for full multi-line messages — the MCP runtime-logs tool truncates
-  to one line, and the CLI silently filters to the current git branch without
-  `--no-branch`.
 
 ## Definition of done
 
@@ -177,26 +173,9 @@ selection, handoff payload, and verdict-persistence mechanics: the
 
 ## Auth at the boundary
 
-If a service could ever need auth, build it in from the first commit. Never
-assume "auth will be added later" or "the layer above handles it." Across six
-repos, every CWE-306 finding traced to the same *auth-by-config* pattern — a
-route that authenticates only when an env var is set, trusting some upstream
-layer to catch it. For any new entry point (HTTP route, IPC accept-loop,
-WebSocket upgrade, external-input queue consumer, mutating CLI subcommand):
-
-1. Auth-by-default, not auth-by-config — the framework wiring forces it.
-2. Refuse to start if the auth secret is unset or too short.
-3. Opt-out is explicit, named, and greppable (e.g. `@PublicRoute(reason="…")`).
-4. Never trust upstream layers — each layer rejects on its own.
-5. Failure mode is closed — if the auth check throws, reject the request.
-6. Local dev uses a real token through the same verifier — no skip-auth branch.
-7. Credentials bind to the host they were issued for. Never attach an ambient
-   token (env fallback, "current login") to a URL or path read from persisted
-   or attacker-influenced state — a lockfile, install manifest, or any config
-   committed to a repo and cloned onto another machine. Resolve the token by
-   exact host/URL match only, require https (loopback aside), set
-   `redirect: "error"` on any fetch carrying a bearer, and confine a stored
-   path (backup/restore target) with a `..`-rejecting, realpath-contained
-   check before reading it. Twice now the same shape — a manifest field fed to
-   the network or filesystem with an ambient credential attached — was a
-   supply-chain exfiltration primitive.
+If a service could ever need auth, build it in from the first commit: auth by
+default rather than by config, a closed failure mode, and no ambient credential
+attached to a URL or path read from persisted state. Never assume "auth will be
+added later" or "the layer above handles it." For any new entry point (HTTP
+route, IPC accept-loop, WebSocket upgrade, external-input queue consumer,
+mutating CLI subcommand), follow the `auth-boundary` skill's checklist.

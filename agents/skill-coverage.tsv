@@ -1,5 +1,6 @@
 # skill	scope	rationale required for runtime-specific entries
 antigravity-review	claude-only	Claude wrapper around the Antigravity companion gate.
+auth-boundary	claude-only	On-demand checklist behind the auth rule in Claude's instruction file; Codex and Antigravity carry no auth section to point at it.
 autonomous-run	claude-only	Decision layer over Claude Code loop primitives (/loop, /goal, Workflow, Monitor, /schedule); Codex and Antigravity have no equivalents.
 branch-hygiene	shared
 changelog	shared
@@ -19,3 +20,4 @@ review	shared
 session-retro	shared
 simplify	shared
 review-gates	claude-only	On-demand detail for the Claude conductor (which lane a change needs, receipt check, exit-code fallback). Codex and Antigravity keep their own multi-agent teamwork rules in codex/AGENTS.md and antigravity/GEMINI.md and run the gate scripts directly.
+vercel-logs	claude-only	Compares the Vercel CLI with the Vercel MCP runtime-logs tool, which only the Claude setup connects.

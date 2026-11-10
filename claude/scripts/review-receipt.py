@@ -1085,7 +1085,7 @@ def attempt_lock(receipts):
     attempt and receipt state runs inside this lock, so no run ever observes a
     half-finished transition.
 
-    flock, not a lock directory, for the reason jules-dispatch.sh gives: the
+    flock, not a lock directory: the
     kernel releases it when the holder dies, so a killed or cancelled gate cannot
     wedge the next one. Acquired only by the outermost callers (`capture`,
     `claim`, `complete`, `check`'s final assertion, the `invalidate` subcommand)
