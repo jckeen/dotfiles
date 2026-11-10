@@ -10,9 +10,9 @@ that script is the authoritative list of what it builds, and every target is a
 committed build artifact. Edit the sources here and regenerate — CI's
 `check-agent-parity.sh` fails on hand-edits or stale artifacts.
 
-The root `AGENTS.md` is one of those targets, built from `fragments/jules.md`
-(ADR-0009). It is the brief an agent reads from the checkout itself when it has
-no session history — Jules, or a Codex cloud task — so it carries only the rules
+The root `AGENTS.md` is one of those targets, built from `fragments/cloud.md`.
+It is the brief an agent reads from the checkout itself when it has
+no session history — a Claude Code or Codex cloud session — so it carries only the rules
 that survive without one: how to verify a change in this repository, the pull
 request conventions, the doc contract, and what is out of bounds. It stays short
 because Codex concatenates a repository's root `AGENTS.md` with the global
@@ -48,89 +48,10 @@ project context belong in the private memory repos (`codex-memory`,
 > `~/.codex/skills/`, and `~/.gemini/config/skills/`
 > symlinks repoint at the new path.
 
-## Routine catalog (`agents/routines/`)
-
-Each file in `agents/routines/` is one standing prompt for the cloud routine
-lane (ADR-0009). `claude/scripts/jules-dispatch.sh` turns the catalog into one
-Jules session per routine per repository per day. The lane is paused (ADR-0009,
-2026-10-19): no timer is installed, so nothing fires it on a schedule.
-`--dry-run` shows what a day would dispatch without creating anything.
-
-The frontmatter is a contract, not documentation — the dispatcher parses it
-strictly and refuses to dispatch a routine whose header does not validate. An
-edit made while a run is in flight is honoured: the dispatcher re-reads the file
-before each session and re-checks the whole eligibility decision, so pausing a
-routine, dropping a repository from its list, or slowing it to `weekly` stops the
-repositories still queued behind it.
-
-| Key | Meaning |
-|-----|---------|
-| `name` | Must match the filename stem and `[a-z0-9-]+` |
-| `schedule` | `daily` or `weekly`, and enforced: the timer fires daily, and a `weekly` routine is skipped while its last dispatch for that repository is *less than* seven days old — so it runs on the seventh day, not the eighth |
-| `repos` | `all` (every repository `GET /sources` returns) or a list of `OWNER/NAME`; compared without case, and a repository listed twice is rejected |
-| `max_prs_per_run` | Pull requests the routine may open in one run |
-| `max_files` | Files one of its pull requests may change |
-| `label` | Must be `jules-routine:<name>`; the measurement query keys off it |
-| `acceptance` | The one sentence that decides whether a pull request qualifies |
-| `paused` | `true` takes the routine out of the rotation without deleting it |
-
-The body is the prompt. The dispatcher prepends the repository, the routine
-name, the hard limits, the required label, and the acceptance line, so the
-prompt a session receives carries the frontmatter's concrete values — the file
-never repeats them in prose.
-
-A dispatch run holds an `flock` on a file under the state directory, so a manual
-invocation that overlaps the timer is a clean no-op rather than a second dispatch
-of the same routine. The kernel releases it when the holder exits, so a killed
-run leaves nothing behind to reclaim.
-
-**After a session completes** the dispatcher settles it. The platform opens a
-pull request for every completed session — including one whose change set is
-empty — applies no label, and writes a title the required commit-format check
-rejects; a session can also complete having produced nothing at all. So every
-dispatch run ends with a reconcile pass, and `jules-dispatch.sh --reconcile`
-runs the same pass on its own: an open pull request with zero changed files is
-closed with a one-line comment, one that changed something gets the routine's
-`jules-routine:<name>` label and a `chore(<name>): …` title if its own is not
-conventional, and each outcome becomes a ledger record. That record is the only
-API-confirmed link between a session and a pull request, so it is what the
-custodian's classifier reads rather than the PR's text. The label therefore
-appears only after a reconcile pass has run, not the moment the PR opens. The
-retitle fixes what a squash merge lands on the default branch; the required
-commit-format check lints the subjects of the commits the pull request adds, so
-a routine whose session writes a non-conventional commit subject still produces
-a blocked pull request. The pass reports that rather than fixing it — which is
-why the conventional-subject requirement is in the header every prompt opens
-with.
-
-When the catalog offers more eligible pairs than `JULES_DAILY_CAP` allows, the
-pair whose last dispatch is oldest goes first — never-dispatched pairs ahead of
-everything. Whatever the cap defers sits at the front of the next day's queue,
-so a large catalog slows down rather than silently dropping its last routines.
-
-**Adding a routine** means answering one question: what evidence makes a pull
-request from this routine obviously correct? If the answer is "a reviewer's
-judgement", the routine does not belong here. Every routine in the catalog can
-name a deterministic signal — zero references, a mutation receipt, a linter
-finding, a checker's output, a failing snapshot.
-
-**Tuning rule.** A routine whose merge rate stays under 30% for two weeks
-running gets its prompt rewritten or `paused: true`. Read the rates with
-`jules-dispatch.sh --report`, which covers every repository the routine was ever
-dispatched to as well as the ones it currently lists — removing a repository
-must not quietly rewrite the history the decision rests on — and states in the
-report body whenever a query failed, a fetch hit its bound, or a routine's
-frontmatter was rejected. A pattern of wrong pull requests is fixed by an
-exclusion in the routine's prompt, never by loosening the review gate that
-caught them.
-
 ## Capability and workflow contracts
 
 `capabilities.json` declares each runtime's provider, scope, owner, prerequisite
-interface, and passive probe. The cloud routine lane is modeled as its own
-capability: Jules installs nothing on this machine, so its disposition is
-`unsupported` for every locally-provisioned capability, and the one row where it
-is real names the dispatcher as the provider. `claude/scripts/check-capability-parity.py` checks
+interface, and passive probe. `claude/scripts/check-capability-parity.py` checks
 public provider references in CI. Add `--live-home "$HOME"` for an advisory
 installed-provider report; additional local skills are allowed. The report
 checks presence and configuration, not execution, authentication, hook trust,

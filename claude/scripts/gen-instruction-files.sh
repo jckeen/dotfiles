@@ -12,7 +12,7 @@
 # Targets (committed build artifacts — the TARGET map below is the list):
 #   claude/CLAUDE.md, codex/AGENTS.md, antigravity/GEMINI.md are symlinked into
 #   place by setup.sh; the root AGENTS.md is read in-repo by cloud agents that
-#   clone it (Jules, a Codex cloud task), so it is committed and never linked.
+#   clone it (a Claude Code or Codex cloud session), so it is committed and never linked.
 #
 # Native imports are not universal — Codex and Antigravity resolve no include
 # syntax in their instruction files (evidence in ADR-0007) — so shared rules
@@ -36,7 +36,7 @@ cd "$REPO_ROOT"
 
 CANON="agents/canon/CANON.md"
 FRAG_DIR="agents/canon/fragments"
-TOOLS=(claude codex antigravity jules)
+TOOLS=(claude codex antigravity cloud)
 declare -A TARGET=(
   [claude]="claude/CLAUDE.md"
   [codex]="codex/AGENTS.md"
@@ -44,7 +44,7 @@ declare -A TARGET=(
   # Root AGENTS.md: the brief a cloud agent reads from the checkout itself.
   # Deliberately short — Codex concatenates a repo's root AGENTS.md with the
   # global ~/.codex/AGENTS.md under a 32 KiB cap (ADR-0007).
-  [jules]="AGENTS.md"
+  [cloud]="AGENTS.md"
 )
 
 CHECK=0
