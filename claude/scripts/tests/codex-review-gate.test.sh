@@ -232,7 +232,7 @@ approve_clean() {
 
 # low_finding <title> <file> — one low-severity finding, the issue-feed input.
 low_finding() {
-  printf '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"%s","file":"%s","line_start":3,"line_end":3,"confidence":0.4,"body":"minor detail","recommendation":"tidy it"}],"next_steps":[]}' \
+  printf '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"%s","file":"%s","line_start":3,"line_end":3,"confidence":0.4,"body":"minor detail","category":"nit","recommendation":"tidy it"}],"next_steps":[]}' \
     "$1" "$2" > "$CODEX_FAKE_DIR/output"
 }
 
@@ -696,7 +696,7 @@ done
 # marker cannot switch it off.
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"bad","findings":[{"severity":"high","title":"t","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"b","recommendation":"r"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"bad","findings":[{"severity":"high","title":"t","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"b","category":"nit","recommendation":"r"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "#515: a blocking verdict still exits 2" 2 "BLOCKING findings" --uncommitted --no-issues
 rm -rf "$R"
 new_repo
@@ -741,7 +741,7 @@ rm -rf "$R"
 # ── whole-verdict handling ─────────────────────────────────────────────
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"bug","findings":[{"severity":"high","title":"real bug","file":"code.txt","line_start":1,"line_end":1,"confidence":1,"body":"boom","recommendation":"fix"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"bug","findings":[{"severity":"high","title":"real bug","file":"code.txt","line_start":1,"line_end":1,"confidence":1,"body":"boom","category":"nit","recommendation":"fix"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "high finding blocks" 2 "BLOCKING findings" --uncommitted --no-issues
 rm -rf "$R"
 
@@ -753,7 +753,7 @@ rm -rf "$R"
 
 new_repo
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1,"line_end":1,"confidence":0,"body":"minor","recommendation":""}],"next_steps":["Consider the nit"]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"nit","file":"code.txt","line_start":1,"line_end":1,"confidence":0,"body":"minor","category":"nit","recommendation":""}],"next_steps":["Consider the nit"]}' > "$CODEX_FAKE_DIR/output"
 check "low-only findings do not block" 0 "Codex review passed" --uncommitted --no-issues
 rm -rf "$R"
 
@@ -824,10 +824,77 @@ rm -rf "$R"
 new_repo
 git -C "$R" remote add origin https://github.com/acme/widgets.git
 echo "change" >> "$R/code.txt"
-printf '%s' '{"verdict":"needs-attention","summary":"two nits","findings":[{"severity":"low","title":"first nit","file":"code.txt","line_start":1,"line_end":1,"confidence":0.3,"body":"a","recommendation":""},{"severity":"low","title":"second nit","file":"code.txt","line_start":9,"line_end":9,"confidence":0.3,"body":"b","recommendation":""}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"two nits","findings":[{"severity":"low","title":"first nit","file":"code.txt","line_start":1,"line_end":1,"confidence":0.3,"body":"a","category":"nit","recommendation":""},{"severity":"low","title":"second nit","file":"code.txt","line_start":9,"line_end":9,"confidence":0.3,"body":"b","category":"nit","recommendation":""}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "a second finding at the same location comments on the fresh issue" 0 "already tracked as #777" --uncommitted
 assert "only one issue was created for the two findings" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count')\" -eq 1 ]"
 assert "the second finding's own details survive in the comment" "grep -qF 'code.txt:9' '$CODEX_FAKE_DIR/comments' && grep -qF 'second nit' '$CODEX_FAKE_DIR/comments'"
+rm -rf "$R"
+
+# One finding class across several files is ONE issue (#761): three low
+# findings sharing a category in three files, plus one of another kind.
+f() { # <category> <title> <file> <line>
+  printf '{"severity":"low","category":"%s","title":"%s","file":"%s","line_start":%s,"line_end":%s,"confidence":0.3,"body":"detail of %s","recommendation":"fix %s"}' "$1" "$2" "$3" "$4" "$4" "$2" "$2"
+}
+grouped_output() {
+  printf '{"verdict":"needs-attention","summary":"nits","findings":[%s,%s,%s,%s,%s],"next_steps":[]}' \
+    "$(f 'Non-exempt Directive!' 'first directive' a.md 3)" \
+    "$(f 'lone-nit' 'a lone nit' code.txt 2)" \
+    "$(f 'non-exempt-directive' 'second directive' b.md 5)" \
+    "$(f 'non-exempt-directive' 'third directive' c.md 7)" \
+    "$(f 'non-exempt-directive' 'fourth directive' a.md 9)" > "$CODEX_FAKE_DIR/output"
+}
+new_repo
+git -C "$R" remote add origin https://github.com/acme/widgets.git
+echo "change" >> "$R/code.txt"
+grouped_output
+check "one finding class across three files files one issue" 0 "Codex review passed" --uncommitted
+assert "two issues were created: the group and the lone finding" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count')\" -eq 2 ]"
+assert "the group's title names the slugged category and the file count" "grep -qF 'title=codex review: non-exempt-directive (3 files)' '$CODEX_FAKE_DIR/creates'"
+assert "the group lists every location, the same-file one included" "grep -qF 'a.md:3' '$CODEX_FAKE_DIR/created-bodies' && grep -qF 'b.md:5' '$CODEX_FAKE_DIR/created-bodies' && grep -qF 'c.md:7' '$CODEX_FAKE_DIR/created-bodies' && grep -qF 'a.md:9' '$CODEX_FAKE_DIR/created-bodies'"
+assert "the group carries one location marker per distinct file" "[ \"\$(grep -c 'codex-gate-loc:acme/widgets:[abc].md -->' '$CODEX_FAKE_DIR/created-bodies')\" -eq 3 ]"
+assert "the lone finding keeps its own issue and title" "grep -qF 'title=codex review: a lone nit' '$CODEX_FAKE_DIR/creates'"
+assert "a grouped finding does not also comment on its own fresh issue" "[ ! -e '$CODEX_FAKE_DIR/comments' ]"
+rm -rf "$R"
+
+# A later run touching one file of a group comments on the grouped issue, and
+# a group closed as not planned suppresses every file it lists.
+new_repo
+git -C "$R" remote add origin https://github.com/acme/widgets.git
+echo "change" >> "$R/code.txt"
+printf '[{"number":41,"state":"open","body":"<!-- codex-gate-loc:acme/widgets:a.md -->\\n<!-- codex-gate-loc:acme/widgets:b.md -->"},{"number":42,"state":"closed","state_reason":"not_planned","body":"<!-- codex-gate-loc:acme/widgets:c.md -->\\n<!-- codex-gate-loc:acme/widgets:code.txt -->"}]' > "$CODEX_FAKE_DIR/issues.json"
+grouped_output
+check "files of an existing group comment or stay accepted" 0 "already tracked as #41" --uncommitted
+assert "nothing new is filed for tracked or accepted files" "[ ! -e '$CODEX_FAKE_DIR/creates' ]"
+assert "the accepted group suppresses its files" "grep -qF 'accepted (#42)' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+
+# Only NEW findings group: with a.md and b.md already tracked, c.md is the one
+# new file of its category, so it is filed alone under its own title.
+new_repo
+git -C "$R" remote add origin https://github.com/acme/widgets.git
+echo "change" >> "$R/code.txt"
+printf '[{"number":41,"state":"open","body":"<!-- codex-gate-loc:acme/widgets:a.md -->\\n<!-- codex-gate-loc:acme/widgets:b.md -->"}]' > "$CODEX_FAKE_DIR/issues.json"
+grouped_output
+check "a single new file of a category is filed on its own" 0 "Codex review passed" --uncommitted
+assert "its own title, not a group of one" "grep -qF 'title=codex review: third directive' '$CODEX_FAKE_DIR/creates' && ! grep -qF 'files)' '$CODEX_FAKE_DIR/creates'"
+rm -rf "$R"
+
+# A dry run previews the group once, not once per member.
+new_repo
+git -C "$R" remote add origin https://github.com/acme/widgets.git
+echo "change" >> "$R/code.txt"
+grouped_output
+check "dry-run previews one grouped issue" 0 "would file issue: codex review: non-exempt-directive (3 files)" --uncommitted --dry-run
+assert "the group is previewed exactly once" "[ \"\$(grep -c 'would file issue: codex review: non-exempt-directive' <<<\"\$CHECK_OUTPUT\")\" -eq 1 ]"
+assert "a dry run writes nothing" "[ ! -e '$CODEX_FAKE_DIR/creates' ]"
+rm -rf "$R"
+
+# The category is part of the schema: a finding without one is not a valid
+# review, so it can never be read as an approval.
+new_repo
+echo "change" >> "$R/code.txt"
+printf '%s' '{"verdict":"approve","summary":"nit","findings":[{"severity":"low","title":"nit","body":"minor","file":"code.txt","line_start":1,"line_end":1,"confidence":0.3,"recommendation":""}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+check "a finding with no category is rejected" 2 "not the expected JSON shape" --uncommitted --no-issues
 rm -rf "$R"
 
 # No dedup index means every finding is a duplicate candidate; filing blind is
@@ -922,7 +989,7 @@ echo committed >> "$R/code.txt"
 git -C "$R" commit -qam work
 approve_clean
 check "schema fixture starts with a valid receipt" 0 "Review receipt recorded" --no-issues --require
-valid_result='{"verdict":"approve","summary":"nit","findings":[{"severity":"low","title":"nit","body":"minor","file":"code.txt","line_start":1,"line_end":1,"confidence":0.5,"recommendation":""}],"next_steps":[]}'
+valid_result='{"verdict":"approve","summary":"nit","findings":[{"severity":"low","title":"nit","body":"minor","file":"code.txt","line_start":1,"line_end":1,"confidence":0.5,"category":"nit","recommendation":""}],"next_steps":[]}'
 while IFS= read -r mutation; do
   jq -c "$mutation" <<<"$valid_result" > "$CODEX_FAKE_DIR/output"
   check "schema rejects $mutation" 2 "not the expected JSON shape" --no-issues --require
@@ -2089,7 +2156,7 @@ echo 1 > "$CODEX_FAKE_DIR/rc"
 check "failed Codex run degrades after capture" 3 "not trusting the result" --committed --require --no-issues
 assert "a failed Codex run leaves the Antigravity approval shippable" "antigravity_receipt_ships"
 # A failed run whose output already carries blocking findings is a verdict.
-printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"nit","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "a failed run carrying blocking findings is a verdict" 2 "a verdict, not a degraded lane" --committed --require --no-issues
 assert "that verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 seed_antigravity_receipt
@@ -2110,7 +2177,7 @@ seed_antigravity_receipt
 # A cancellation Bash defers until the reviewer exits must not discard the
 # blocking findings that reviewer already wrote.
 echo 0 > "$CODEX_FAKE_DIR/rc"
-printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"nit","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 printf '%s\n' 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"' > "$CODEX_FAKE_DIR/mutate"
 check "a cancellation after blocking output is a verdict" 2 "Codex review cancelled" --committed --require --no-issues
 assert "that cancellation retires the Antigravity approval" "! antigravity_receipt_ships"
@@ -2122,7 +2189,7 @@ check "a cancellation after clean output stays degraded" 3 "Codex review cancell
 assert "that cancellation leaves the Antigravity approval shippable" "antigravity_receipt_ships"
 rm -f "$CODEX_FAKE_DIR/mutate"
 echo 0 > "$CODEX_FAKE_DIR/rc"
-printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"nit","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 check "a blocking Codex verdict blocks" 2 "" --committed --require --no-issues
 assert "a blocking Codex verdict retires the Antigravity approval" "! antigravity_receipt_ships && [ ! -e '$R/.git/review-receipts/antigravity.json' ]"
 # Both lanes capture; Antigravity claims and approves while Codex reviews, which
@@ -2162,7 +2229,7 @@ PY
 printf 'run nonce %s\n' "$R" >> "$R/code.txt"
 git -C "$R" commit -qam "large ahead"
 blocking_output() {
-  printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+  printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"nit","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 }
 reset_multipart() {
   rm -rf -- "$CODEX_FAKE_DIR"/mp-* "$CODEX_FAKE_DIR/codex-home"
@@ -2231,7 +2298,7 @@ restore_antigravity_lane() {
   cp "$CODEX_FAKE_DIR/antigravity.json" "$CODEX_FAKE_DIR/antigravity.attempt.json" "$R/.git/review-receipts/"
 }
 blocking_verdict() {
-  printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
+  printf '%s' '{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"nit","recommendation":"fix it"}],"next_steps":[]}' > "$CODEX_FAKE_DIR/output"
 }
 seed_antigravity_receipt
 save_antigravity_lane

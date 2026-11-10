@@ -400,6 +400,16 @@ matches on that marker:
 | Closed as *completed* | Files a fresh issue — the fix regressed |
 | None | Files a new issue, marker included |
 
+New findings of one kind are filed together (#761). The review schema gives
+every finding a `category`, and the reviewer is asked to reuse one category for
+the same kind of defect. When new findings share a category across two or more
+files, the gate files a single issue that lists every location as a checklist
+item and carries one marker per file, so a later finding in any of those files
+comments on that issue, and closing it as *not planned* accepts all of them. A
+category seen in only one new file is filed under the finding's own title as
+before. The category is reviewer text: it is reduced to a lowercase slug before
+it reaches a title, and it only ever groups findings.
+
 **Closing an issue as *not planned* is the suppression mechanism.** Accepting a
 finding needs no config file: close it that way and the gate stops re-filing
 that location. A failed prefetch files nothing at all, since filing without the
