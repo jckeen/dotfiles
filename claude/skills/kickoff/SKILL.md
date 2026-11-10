@@ -11,7 +11,7 @@ When the user runs /kickoff, do the following:
 ```
 <project-name>/
 ├── CLAUDE.md          # Project-specific instructions (build commands, conventions, architecture notes)
-├── CHANGELOG.md       # Session log — updated at end of each work session
+├── CHANGELOG.md       # What shipped — appended every 1–2 meaningful commits, not batched to session end
 ├── .gitignore         # Language-appropriate ignores
 ├── README.md          # Project name + one-line description
 └── src/               # (or appropriate source directory for the framework)

@@ -443,12 +443,6 @@ jobs:
       - name: released worktree lifecycle (self-test)
         if: ${{ !cancelled() && matrix.shard == 'runtime' }}
         run: python3 claude/scripts/tests/worktree-lifecycle.test.py
-      # The first live Jules dispatch needs an API key that only the operator
-      # holds, so the credential refusals, the idempotency ledger, the daily cap
-      # and the --dry-run no-writes contract are pinned against a fake curl.
-      - name: jules-dispatch (self-test)
-        if: ${{ !cancelled() && matrix.shard == 'runtime' }}
-        run: claude/scripts/tests/jules-dispatch.test.sh
       # Self-test only: the daily timer's prune runs unattended, so the SAFE
       # class (what survives, what goes, what gh must confirm) is pinned with
       # throwaway origin+clone fixtures and gh/curl PATH shims.
@@ -655,6 +649,12 @@ jobs:
       - name: operator-queue reminder (self-test)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh
+
+      # SessionStart reminder for unread session-retro proposals (#741): the
+      # marker rule, and that no proposal text or filename reaches the context.
+      - name: retro-proposals reminder (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/retro-proposals-reminder.test.sh
 
       - name: operator-queue migration (self-test)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}

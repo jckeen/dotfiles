@@ -22,7 +22,6 @@ LIVING        .github/SECURITY.md
 # Source — markdown-as-config: rules, skills, agents, templates
 SOURCE        agents/canon/CANON.md
 SOURCE        agents/canon/fragments/*.md
-SOURCE        agents/routines/*.md
 SOURCE        claude/AgentPack.md
 SOURCE        claude/MULTI-AGENT.md
 SOURCE        claude/agents/*.md
@@ -36,7 +35,7 @@ SOURCE        .github/PULL_REQUEST_TEMPLATE.md
 # Generated — build artifacts. The instruction files are built from
 # agents/canon/ by claude/scripts/gen-instruction-files.sh (ADR-0007), whose
 # target map is the authoritative list; check-agent-parity.sh asserts
-# byte-currency in CI. The root AGENTS.md is the cloud-agent brief (ADR-0009).
+# byte-currency in CI. The root AGENTS.md is the cloud-agent brief.
 # Site sources are built by claude/scripts/build-site.sh (site-src/ and site/
 # are gitignored, so untracked output is invisible to the checker; the glob
 # documents the tier and guards accidental tracking.)

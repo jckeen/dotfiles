@@ -1,10 +1,15 @@
 # Repository guidance for cloud coding agents
 
 This is the root `AGENTS.md` for `jckeen/dotfiles`. It is written for an agent
-that arrives with no session history — Jules, a Codex cloud task, or any other
-runtime that reads `AGENTS.md` and opens a pull request. Local runtimes load
-their own fuller instruction file; this file is the part that must reach an
-agent whose only context is the checkout in front of it.
+that arrives with no session history — a Claude Code or Codex cloud session, or
+any other runtime that reads `AGENTS.md` and opens a pull request. Local
+runtimes load their own fuller instruction file; this file is the part that
+must reach an agent whose only context is the checkout in front of it.
+
+A cloud session has this checkout and nothing else: the global instruction
+file, the skills, the hooks and the local review gates are not installed
+there. CI and the pull-request review are the checks that apply, so never
+report a local gate or hook as having run.
 
 ## Working style
 

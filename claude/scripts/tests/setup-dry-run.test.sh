@@ -83,8 +83,9 @@ ln -s "$REPO_ROOT/agents/skills/orchestrate/references/runtime-contracts.md" \
   "$TESTHOME/external-codex-skills/orchestrate/references/runtime-contracts.md"
 ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 
-# A Jules timer from before the ADR-0009 pause (#678): the update path runs
-# setup.sh, so setup.sh must disable it. Under --dry-run that is a preview only.
+# A Jules timer from before the lane was retired (ADR-0009, #678): the update
+# path runs setup.sh, so setup.sh must disable it and remove its unit files.
+# Under --dry-run that is a preview only.
 mkdir -p "$TESTHOME/.config/systemd/user"
 printf '[Timer]\nOnCalendar=daily\n' > "$TESTHOME/.config/systemd/user/jules-dispatch.timer"
 
@@ -108,16 +109,17 @@ else
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
-  if grep -Fq "[DRY] systemctl --user disable --now jules-dispatch.timer" "$OUT"; then
-    ok "paused Jules lane: a pre-existing timer's disable is previewed in dry-run"
+  if grep -Fq "[DRY] systemctl --user disable --now jules-dispatch.timer" "$OUT" \
+    && grep -Fq "[DRY] rm -f $TESTHOME/.config/systemd/user/jules-dispatch.timer" "$OUT"; then
+    ok "retired Jules lane: a pre-existing timer's disable and removal are previewed in dry-run"
   else
-    fail "paused Jules lane: setup.sh did not disable a pre-existing jules-dispatch.timer"
+    fail "retired Jules lane: setup.sh did not disable and remove a pre-existing jules-dispatch.timer"
   fi
 else
   if ! grep -Fq "jules-dispatch.timer" "$OUT"; then
-    ok "paused Jules lane: no systemctl, so no timer step"
+    ok "retired Jules lane: no systemctl, so no timer step"
   else
-    fail "paused Jules lane: timer step ran without systemctl"
+    fail "retired Jules lane: timer step ran without systemctl"
   fi
 fi
 

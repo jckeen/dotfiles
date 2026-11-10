@@ -544,10 +544,10 @@ fi
 # reviewer only learns not to report instruction-like text inside them. The
 # file is repo content, so it is parsed as bounded untrusted data
 # (gate_read_ignore_file) and fenced exactly like the diff.
-# The exemption is narrow by FORM, not by effect (#484): live routine prompts
-# (agents/routines/*, ADR-0009) are declared here because their legitimate
-# imperative language kept being reported, but they are also dispatched to a
-# cloud agent — so a directive that would bypass a limit, skip a check, disable
+# The exemption is narrow by FORM, not by effect (#484): skill bodies
+# (claude/skills/*, agents/skills/*) are declared here because their legitimate
+# imperative language kept being reported, but they are also loaded by an
+# agent — so a directive that would bypass a limit, skip a check, disable
 # a gate or expose a credential must still be reported wherever it appears.
 # Without that split, adding a glob would retire the prompt-injection check for
 # everything under it.
