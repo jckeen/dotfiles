@@ -27,6 +27,7 @@
         "additionalProperties": false,
         "required": [
           "severity",
+          "category",
           "title",
           "body",
           "file",
@@ -44,6 +45,10 @@
               "medium",
               "low"
             ]
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
           },
           "title": {
             "type": "string",

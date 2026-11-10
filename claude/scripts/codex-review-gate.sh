@@ -22,7 +22,8 @@
 #          finding points at) rather than by title, which Codex rewords every
 #          run; an already-open issue for that file collects a comment, and one
 #          closed as "not planned" means the finding was accepted, so nothing
-#          is filed. Then exit 0.
+#          is filed. New findings that share a category across two or more
+#          files become ONE issue listing every location (#761). Then exit 0.
 #        - verdict "approve" with no blocking findings → exit 0.
 #        - verdict "needs-attention" with zero findings → BLOCK (fail closed).
 #
@@ -112,10 +113,10 @@ def positive_integer(value):
 def valid_finding(value):
     return (
         type(value) is dict
-        and set(value) == {"body", "confidence", "file", "line_end", "line_start",
-                           "recommendation", "severity", "title"}
+        and set(value) == {"body", "category", "confidence", "file", "line_end",
+                           "line_start", "recommendation", "severity", "title"}
         and value["severity"] in ("critical", "high", "medium", "low")
-        and all(nonempty_string(value[key]) for key in ("title", "body", "file"))
+        and all(nonempty_string(value[key]) for key in ("title", "body", "file", "category"))
         and positive_integer(value["line_start"])
         and positive_integer(value["line_end"])
         and type(value["confidence"]) in (int, Decimal)
@@ -511,7 +512,11 @@ over-engineering. Severity mapping: critical = exploitable or data-losing;
 high = real bug likely to fire; medium = bug in an edge case that matters;
 low = style, nits, minor hardening.
 
-Report every finding individually with exact file and line range. If the
+Report every finding individually with exact file and line range. Give each
+finding a category: a short lowercase hyphenated name for the KIND of defect
+(for example missing-null-check). When several findings are the same kind of
+defect in different places, give them exactly the same category, so they are
+tracked together. If the
 change is sound, verdict is \"approve\" with an empty findings array."
 
 if [[ -n "$CLAIM" || -n "$REPRO" ]]; then
@@ -806,8 +811,43 @@ if [[ "$N_LOW" -gt 0 ]]; then
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
     short_sha="$(git rev-parse --short HEAD 2>/dev/null || echo "?")"
     filed=0
-    while IFS=$'\t' read -r title file line_start body recommendation; do
+    # One finding class across many files used to become one issue per file:
+    # eleven near-identical issues from a single review (#761). The reviewer
+    # names each finding's category, and NEW findings that share one across two
+    # or more files are filed as a single issue carrying a location marker per
+    # file, so the per-file dedup and the not-planned acceptance below keep
+    # working for every file in it. A category is reviewer text: it is reduced
+    # to a slug in jq before it reaches a title, and it only ever groups.
+    # Indexed arrays and linear scans, not associative arrays: bash 3.2.
+    low_rows="$(jq -r '.findings[] | select(.severity == "low")
+      | [(.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
+          | if . == "" then "uncategorized" else . end),
+         .title, .file, (.line_start|tostring), .body, (if .recommendation == "" then "n/a" else .recommendation end)] | @tsv' "$OUT_FILE")"
+    # Pass 1: which categories have new findings in two or more distinct files.
+    new_cats=() new_files=() group_cats=() done_pairs=()
+    while IFS=$'\t' read -r category title file line_start body recommendation; do
       [[ -z "$title" ]] && continue
+      read -r match number <<<"$(gate_issue_lookup "$file")"
+      [[ "$match" == "none" ]] || continue
+      seen=false
+      for ((i = 0; i < ${#new_cats[@]}; i++)); do
+        [[ "${new_cats[i]}" == "$category" ]] || continue
+        if [[ "${new_files[i]}" == "$file" ]]; then seen=true; break; fi
+        grouped=false
+        for g in ${group_cats[@]+"${group_cats[@]}"}; do [[ "$g" == "$category" ]] && grouped=true; done
+        [[ "$grouped" == true ]] || group_cats+=("$category")
+      done
+      [[ "$seen" == true ]] || { new_cats+=("$category"); new_files+=("$file"); }
+    done <<<"$low_rows"
+    while IFS=$'\t' read -r category title file line_start body recommendation; do
+      [[ -z "$title" ]] && continue
+      # A finding already filed with its group in this run needs nothing more:
+      # without this it would comment "seen again" on the issue that lists it.
+      skip=false
+      for pair in ${done_pairs[@]+"${done_pairs[@]}"}; do
+        [[ "$pair" == "$category"$'\t'"$file" ]] && skip=true
+      done
+      [[ "$skip" == true ]] && continue
       [[ "$filed" -ge "$MAX_ISSUES" ]] && { yellow "  (reached MAX_ISSUES=$MAX_ISSUES; remaining not filed)"; break; }
       issue_title="codex review: ${title}"
       # Dedupe by LOCATION (file), not title — Codex rewords titles every run.
@@ -825,7 +865,7 @@ if [[ "$N_LOW" -gt 0 ]]; then
 
 ${body}
 
-**Recommendation:** ${recommendation:-n/a}"
+**Recommendation:** ${recommendation}"
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "  [dry-run] would comment on #${number}: $comment_head"
           elif gh api "repos/$GATE_ISSUE_REPO/issues/${number}/comments" -f body="$comment" >/dev/null 2>&1; then
@@ -841,18 +881,52 @@ ${body}
           continue
           ;;
       esac
-      issue_body="Filed automatically by codex-review-gate (low-severity Codex finding).
+      grouped=false
+      for g in ${group_cats[@]+"${group_cats[@]}"}; do [[ "$g" == "$category" ]] && grouped=true; done
+      group_files=()
+      if [[ "$grouped" == true ]]; then
+        # Every new finding of this category goes into one issue, in the
+        # reviewer's order; each distinct file gets its own marker.
+        items="" markers="" n_items=0
+        while IFS=$'\t' read -r g_cat g_title g_file g_line g_body g_rec; do
+          [[ "$g_cat" == "$category" && -n "$g_title" ]] || continue
+          read -r g_match _ <<<"$(gate_issue_lookup "$g_file")"
+          [[ "$g_match" == "none" ]] || continue
+          n_items=$((n_items + 1))
+          items+="- [ ] \`${g_file}:${g_line}\` — ${g_title}
+  ${g_body:0:600}
+  **Recommendation:** ${g_rec:0:300}
+"
+          known=false
+          for f in ${group_files[@]+"${group_files[@]}"}; do [[ "$f" == "$g_file" ]] && known=true; done
+          [[ "$known" == true ]] || { group_files+=("$g_file"); markers+="$(gate_issue_marker "$g_file")
+"; }
+        done <<<"$low_rows"
+        issue_title="codex review: ${category} (${#group_files[@]} files)"
+        issue_body="Filed automatically by codex-review-gate: ${n_items} low-severity Codex findings of one kind (\`${category}\`) across ${#group_files[@]} files.
+
+**Branch:** \`${branch}\`
+
+${items}
+Close as *not planned* to accept these findings: the gate then stops re-filing them for every file listed.
+
+${markers}"
+        for f in "${group_files[@]}"; do done_pairs+=("$category"$'\t'"$f"); done
+      else
+        group_files=("$file")
+        issue_body="Filed automatically by codex-review-gate (low-severity Codex finding).
 
 **Location:** \`${file}:${line_start}\`
 **Branch:** \`${branch}\`
 
 ${body}
 
-**Recommendation:** ${recommendation:-n/a}
+**Recommendation:** ${recommendation}
 
 Close as *not planned* to accept this finding: the gate then stops re-filing it for this file.
 
 $(gate_issue_marker "$file")"
+      fi
       # File via REST (POST repos/{owner}/{repo}/issues), the same transport
       # as the prefetch and as harvest-codex-comments.sh: `gh issue create`
       # is GraphQL-backed, which egress-restricted sandboxes block, and it
@@ -862,14 +936,14 @@ $(gate_issue_marker "$file")"
         echo "  [dry-run] would file issue: $issue_title"
       elif url="$(gh api "repos/$GATE_ISSUE_REPO/issues" -f title="$issue_title" -f body="$issue_body" -f 'labels[]=codex-review' --jq .html_url 2>/dev/null)"; then
         echo "  ✓ filed: $url"; filed=$((filed+1))
-        gate_issue_remember "${url##*/}" "$file"
+        for f in "${group_files[@]}"; do gate_issue_remember "${url##*/}" "$f"; done
       elif url="$(gh api "repos/$GATE_ISSUE_REPO/issues" -f title="$issue_title" -f body="$issue_body" --jq .html_url 2>/dev/null)"; then
         echo "  ✓ filed (no label): $url"; filed=$((filed+1))
-        gate_issue_remember "${url##*/}" "$file"
+        for f in "${group_files[@]}"; do gate_issue_remember "${url##*/}" "$f"; done
       else
         yellow "  ⚠ could not file issue: $issue_title"
       fi
-    done < <(jq -r '.findings[] | select(.severity == "low") | [.title, .file, (.line_start|tostring), .body, .recommendation] | @tsv' "$OUT_FILE")
+    done <<<"$low_rows"
   fi
   echo ""
 fi
