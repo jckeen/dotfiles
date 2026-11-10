@@ -95,7 +95,9 @@ make a pull request.
 10. Create a PR with `gh pr create`:
    - title under 70 characters
    - body covering what changed, why, and how it was tested
-   - issue links such as `Fixes #123` when applicable
+   - issue links such as `Fixes #123` when applicable, with the keyword
+     repeated for every issue the PR closes (`Closes #1, closes #2`): GitHub
+     closes only the first number of a `Closes #1, #2` list
 11. Inspect `gh pr checks` and report pending or failed checks. Require the
     applicable artifact review evidence and required CI checks to be green
     before enabling auto-merge (see ADR-0003).

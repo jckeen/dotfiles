@@ -29,7 +29,7 @@ Commit, push, and create a PR for the current work. $ARGUMENTS
 10. Create a PR with `gh pr create`:
    - Title: concise, under 70 characters
    - Body: what changed, why, how it was tested
-   - Link any related issues with "Fixes #N" or "Relates to #N"
+   - Link any related issues with "Fixes #N" or "Relates to #N". Repeat the keyword for every issue the PR closes ("Closes #1, closes #2"): GitHub closes only the first number of a "Closes #1, #2" list, and the rest stay open after the merge
 11. Output the PR URL
 12. Check CI status with `gh pr checks <url>` and report pending or failed checks. Enable auto-merge only when the user's authorization, applicable artifact review evidence, and required CI checks permit it (see ADR-0003). The Codex GitHub bot (`chatgpt-codex-connector[bot]`) reviews asynchronously; its later comments do not replace the local shipping gate. Never push implementation directly to a default/protected branch, force-push, bypass hooks, or amend published history under this skill.
 
