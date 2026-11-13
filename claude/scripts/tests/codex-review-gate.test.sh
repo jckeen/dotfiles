@@ -427,14 +427,19 @@ import time
 
 gate, repo, home, scenario = sys.argv[1:]
 fixture = Path(os.environ['CODEX_FAKE_DIR'])
+# #767: every wait below is for a real event (a whole gate run, a marker the
+# gate's own child writes, the harness's signal) and ends as soon as it
+# happens. The bound only turns a hang into a failure, so it is generous: a
+# slow runner (macOS CI ran a whole gate in about 8 s) must never hit it.
+BOUND = 300
 if scenario.startswith('bootstrap'):
     seed = subprocess.run([gate, '--committed', '--base', 'main', '--require', '--no-issues'],
-                          cwd=repo, env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=8)
+                          cwd=repo, env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=BOUND)
     assert seed.returncode == 0, seed.stdout + seed.stderr
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
     checker = [sys.executable, str(Path(gate).parent / 'review-receipt.py'), 'check',
                '--repo', repo, '--head', head, '--base', 'main', '--reviewer', 'codex']
-    checked = subprocess.run(checker, capture_output=True, text=True, timeout=8)
+    checked = subprocess.run(checker, capture_output=True, text=True, timeout=BOUND)
     assert checked.returncode == 0, 'bootstrap seed must be a usable committed approval: ' + checked.stderr
     (fixture / 'invoked').unlink()
 (fixture / 'hang').write_text('''
@@ -443,11 +448,20 @@ from pathlib import Path
 fixture = Path(os.environ['CODEX_FAKE_DIR'])
 print('WRAPPER_DIAGNOSTIC_MARKER', file=sys.stderr, flush=True)
 (fixture / 'reviewer-ready').write_text(json.dumps({'parent': os.getppid(), 'session': os.getsid(0), 'group': os.getpgrp()}))
-time.sleep(1)
+# A case that signals the gate while its reviewer runs keeps the reviewer in
+# flight until the harness has signalled, not for a fixed time a slow runner
+# can outlast. A case that signals later lets it finish at once.
+deadline = time.monotonic() + BOUND_SECONDS
+while (fixture / 'hold-reviewer').exists() and not (fixture / 'signal-sent').exists():
+    if time.monotonic() >= deadline:
+        # An expired hold is a failure, never a finished review.
+        (fixture / 'handshake-expired').touch()
+        sys.exit(1)
+    time.sleep(.01)
 (fixture / 'reviewer-finished').touch()
 args = (fixture / 'argv').read_text().splitlines()
 Path(args[args.index('-o') + 1]).write_text((fixture / 'output').read_text())
-''')
+'''.replace('BOUND_SECONDS', str(BOUND)))
 if scenario.startswith('receipt'):
     (fixture / 'sitecustomize.py').write_text('''
 import os, time
@@ -456,8 +470,16 @@ original = os.replace
 def replace(source, target, *args, **kwargs):
     result = original(source, target, *args, **kwargs)
     if str(target).endswith('/codex.json'):
-        Path(os.environ['CODEX_FAKE_DIR'], 'receipt-written').touch()
-        time.sleep(.3)
+        fixture = Path(os.environ['CODEX_FAKE_DIR'])
+        (fixture / 'receipt-written').touch()
+        # Hold the gate's foreground helper until the harness has signalled.
+        deadline = time.monotonic() + BOUND_SECONDS
+        while not (fixture / 'signal-sent').exists():
+            if time.monotonic() >= deadline:
+                # An expired hold fails the case (the harness checks this marker).
+                (fixture / 'handshake-expired').touch()
+                break
+            time.sleep(.01)
     return result
 os.replace = replace
 original_open = Path.open
@@ -467,8 +489,10 @@ def open_path(path, *args, **kwargs):
         raise OSError('fixture diagnostic read failure')
     return original_open(path, *args, **kwargs)
 Path.open = open_path
-''')
+'''.replace('BOUND_SECONDS', str(BOUND)))
 environment = dict(os.environ, HOME=home)
+if not scenario.startswith('receipt'):
+    (fixture / 'hold-reviewer').touch()
 if scenario.startswith('receipt'):
     environment['PYTHONPATH'] = str(fixture)
 if scenario == 'receipt-diagnostic-failure':
@@ -529,14 +553,14 @@ process = subprocess.Popen([gate, scope, '--no-issues'], cwd=repo, env=environme
 (fixture / 'gate-pid').write_text(str(process.pid))
 try:
     if scenario.startswith('bootstrap'):
-        output, _ = process.communicate(timeout=8)
+        output, _ = process.communicate(timeout=BOUND)
         assert process.returncode == 3, f'bootstrap cancellation returned {process.returncode}: {output}'
         assert not (fixture / 'invoked').exists(), 'bootstrap cancellation dispatched a reviewer'
         assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation left the previous receipt'
-        assert subprocess.run(checker, capture_output=True, timeout=8).returncode != 0, 'previous approval remains usable'
+        assert subprocess.run(checker, capture_output=True, timeout=BOUND).returncode != 0, 'previous approval remains usable'
         sys.exit(0)
     if scenario != 'startup':
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + BOUND
         while True:
             if scenario.startswith('receipt'):
                 ready = (fixture / 'receipt-written').exists()
@@ -553,7 +577,10 @@ try:
             for _ in range(3):
                 time.sleep(.03)
                 process.send_signal(signal.SIGTERM)
-    output, _ = process.communicate(timeout=10)
+        # Releases the reviewer or receipt helper the gate is parked on: every
+        # signal above is already pending on the gate.
+        (fixture / 'signal-sent').touch()
+    output, _ = process.communicate(timeout=BOUND)
     failures = []
     diagnostics = [Path(line.removeprefix('  Private Codex diagnostic: ')) for line in output.splitlines() if line.startswith('  Private Codex diagnostic: ')]
     for diagnostic in diagnostics:
@@ -570,6 +597,8 @@ try:
             failures.append('diagnostic failure injection was not exercised')
     elif (fixture / 'reviewer-ready').exists() and not diagnostics:
         failures.append('cancelled reviewer diagnostic was discarded')
+    if (fixture / 'handshake-expired').exists():
+        failures.append('the gate\'s child stopped waiting before the harness signalled')
     if process.returncode != 3:
         failures.append(f'expected exit 3, got {process.returncode}')
     if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
