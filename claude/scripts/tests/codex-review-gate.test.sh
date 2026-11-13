@@ -2519,16 +2519,40 @@ concurrent_live() {
   done
   return 1
 }
+# concurrent_descendants <pid>: every process below <pid>, parents first.
+concurrent_descendants() {
+  local child
+  for child in $(pgrep -P "$1"); do
+    printf '%s\n' "$child"
+    concurrent_descendants "$child"
+  done
+}
+# concurrent_stop <signal>: signal every process below the wrappers, leaves
+# first. A gate defers TERM until its foreground child exits, so the reviewer
+# and helpers below it go first and the gate then runs its own cleanup. The
+# wrappers are left alone: each exits when its gate does, so `wait` returns
+# only once the gates have.
+concurrent_stop() {
+  local pid
+  for pid in "${concurrent_pids[@]}"; do
+    concurrent_descendants "$pid"
+  done | sed '1!G;h;$!d' | while IFS= read -r pid; do
+    kill "-$1" "$pid" 2>/dev/null
+  done
+}
 for _ in $(seq 300); do
   concurrent_live || break
   sleep 1
 done
 if concurrent_live; then
   touch "$CONCURRENT_ROOT/watchdog-expired"
-  for pid in "${concurrent_pids[@]}"; do
-    pkill -TERM -P "$pid" 2>/dev/null
-    kill -TERM "$pid" 2>/dev/null
+  concurrent_stop TERM
+  for _ in $(seq 30); do
+    concurrent_live || break
+    sleep 1
   done
+  # A gate that still has not exited gets no further chance to clean up.
+  ! concurrent_live || concurrent_stop KILL
 fi
 wait "${concurrent_pids[@]}"
 assert "every concurrent run finished within the round's deadline" \
