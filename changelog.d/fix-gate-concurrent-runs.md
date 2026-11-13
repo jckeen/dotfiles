@@ -10,7 +10,10 @@
   repo, or from a sibling worktree, must not ship, including a copy of the
   same commit, where only the receipt's repository and Git directory tell
   the two apart. A deadline over the whole round fails the case instead of
-  hanging the suite, and a failed run's private diagnostic is removed (#765).
+  hanging the suite. It reports the stuck runs' pids and keeps their
+  directories rather than killing them, since a killed gate cannot clean up
+  its own temporary files. A failed run's private diagnostic is removed
+  (#765).
 - No gate code changes. The gate already isolates concurrent runs: each run
   has a private run directory under its worktree's own receipt store, the
   attempt transitions take the store's flock, and every temporary file comes

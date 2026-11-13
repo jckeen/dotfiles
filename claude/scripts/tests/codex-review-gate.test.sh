@@ -2511,7 +2511,9 @@ for run in "${concurrent_runs[@]}"; do
 done
 # Bound the whole round, not only the reviewer barrier: a run stalled before or
 # after its review must fail an assertion, not hang the suite. No `timeout`
-# here: macOS runs this suite too.
+# here: macOS runs this suite too. A stuck run is reported, never killed: a
+# killed gate cannot clean up its own temporary files, and the test cannot tell
+# those from a live gate's. Its directories are kept for inspection.
 concurrent_live() {
   local pid
   for pid in "${concurrent_pids[@]}"; do
@@ -2519,58 +2521,19 @@ concurrent_live() {
   done
   return 1
 }
-# concurrent_descendants <pid>: every process below <pid>, parents first.
-concurrent_descendants() {
-  local child
-  for child in $(pgrep -P "$1"); do
-    printf '%s\n' "$child"
-    concurrent_descendants "$child"
-  done
-}
-# concurrent_stop <signal>: signal every process below the wrappers, leaves
-# first. A gate defers TERM until its foreground child exits, so the reviewer
-# and helpers below it go first and the gate then runs its own cleanup. The
-# wrappers are left alone: each exits when its gate does, so `wait` returns
-# only once the gates have.
-concurrent_stop() {
-  local pid
-  for pid in "${concurrent_pids[@]}"; do
-    concurrent_descendants "$pid"
-  done | sed '1!G;h;$!d' > "$CONCURRENT_ROOT/stopped"
-  while IFS= read -r pid; do
-    kill -CONT "$pid" 2>/dev/null
-    kill "-$1" "$pid" 2>/dev/null
-  done < "$CONCURRENT_ROOT/stopped"
-  # Remember everything signalled: a child that outlives its parent leaves the
-  # wrapper's tree, and only this list still reaches it.
-  cat "$CONCURRENT_ROOT/stopped" >> "$CONCURRENT_ROOT/signalled"
-}
-concurrent_survivors() {
-  local pid
-  while IFS= read -r pid; do
-    ! kill -0 "$pid" 2>/dev/null || return 0
-  done < "$CONCURRENT_ROOT/signalled"
-  return 1
-}
 for _ in $(seq 300); do
   concurrent_live || break
   sleep 1
 done
 if concurrent_live; then
-  touch "$CONCURRENT_ROOT/watchdog-expired"
-  concurrent_stop TERM
-  for _ in $(seq 30); do
-    concurrent_live || concurrent_survivors || break
-    sleep 1
-  done
-  # Whatever still runs gets no further chance to clean up: the wrappers'
-  # remaining trees, and any signalled process that has left them.
-  concurrent_stop KILL
-  while IFS= read -r pid; do
-    kill -KILL "$pid" 2>/dev/null
-  done < "$CONCURRENT_ROOT/signalled"
+  for pid in "${concurrent_pids[@]}"; do
+    ! kill -0 "$pid" 2>/dev/null || pgrep -P "$pid"
+  done > "$CONCURRENT_ROOT/watchdog-expired"
+  echo "concurrent runs still running (gate pids): $(tr '\n' ' ' < "$CONCURRENT_ROOT/watchdog-expired")"
+  echo "kept for inspection: $CONCURRENT_ROOT"
+else
+  wait "${concurrent_pids[@]}"
 fi
-wait "${concurrent_pids[@]}"
 assert "every concurrent run finished within the round's deadline" \
   "[ ! -e '$CONCURRENT_ROOT/watchdog-expired' ]"
 for run in "${concurrent_runs[@]}"; do
@@ -2618,7 +2581,7 @@ assert "a twin worktree at the primary's HEAD holds the primary's receipt" \
   "[ \"\$(git -C '$(concurrent_dir wt-twin)' rev-parse HEAD)\" = \"\$(jq -r .artifact.head '$twin_receipts/codex.json')\" ]"
 assert "a sibling worktree's receipt for the same commit does not ship" "! concurrent_ships wt-twin"
 assert "the original repo's receipt still ships" "concurrent_ships mp-one"
-rm -rf "$CONCURRENT_BARRIER" "$CONCURRENT_ROOT"
+[ -e "$CONCURRENT_ROOT/watchdog-expired" ] || rm -rf "$CONCURRENT_BARRIER" "$CONCURRENT_ROOT"
 
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
