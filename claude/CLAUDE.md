@@ -149,6 +149,20 @@ selection, handoff payload, and verdict-persistence mechanics: the
   just "please review".
 - **Verdicts are artifacts** — persist a rescue diagnosis or verification
   verdict (handoff note or issue comment) before the team acts on it.
+- **Proportional pre-build critique & post-build escalation** — add independent
+  pre-build design critique (across selected services, or a fresh-context
+  subagent when one runtime is selected) for Tier-3 changes (`>3` files across module
+  boundaries, schemas/migrations, or auth/trust/gate boundaries), while
+  single-agent planning suffices for smaller changes; all required and
+  requested reviews still apply in full. Re-run affected checks and required
+  reviews after every fix: if P0/P1 blockers or unapproved required reviews
+  remain after 2 fix rounds, stop as blocked for the operator; once required
+  reviews, blocking threads, and CI are clear, harvest optional P2/P3 nits as
+  follow-up issues (`harvest-codex-comments.sh`) and merge.
+- **Synchronous verification & delivery ownership** — never end a turn while a
+  verification test or review gate is still running in the background; run
+  checks in the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and land commits or
+  record a blocker handoff before stopping.
 
 ## Git
 

@@ -237,8 +237,8 @@ Once inside Claude:
 |---------|-------------|
 | `wsl6` | Opens a Windows Terminal tab with a 3×2 grid of plain WSL shells (agent-neutral) |
 | `ccprojects` | Lists projects available under your WSL `~/dev/` |
-| `ccgrid dotfiles atlas stringer` | One new tab, three split panes, each running `cc <project>` inside WSL |
-| `cctab dotfiles atlas` | One tab per project, each running `cc <project>` inside WSL |
+| `ccgrid dotfiles beacon stringer` | One new tab, three split panes, each running `cc <project>` inside WSL |
+| `cctab dotfiles stringer` | One tab per project, each running `cc <project>` inside WSL |
 | `ccpane dotfiles` | Splits the current Windows Terminal window with `cc dotfiles` |
 
 These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerShell profile(s)? [Y/n]" — answer Y). The installer wires both PS 5.1 and PS 7 profiles, so the helpers work in whichever you prefer. **If you missed the prompt or installed before this fix, just run `dotfiles-update` from WSL.** Manual install, distro/dev-dir overrides, and more: [docs/WINDOWS.md](docs/WINDOWS.md).

@@ -65,6 +65,27 @@ invalidates approval. Repeat affected checks and review after fixes, then
 validate the private review receipt immediately before shipping. Exit 0 alone
 is not proof of completed review; report tier/no-diff exemptions separately.
 
+### Proportional pre-build critique & post-build escalation
+
+- **Pre-build design critique scope:** add independent pre-build design
+  critique across selected services (or a fresh-context session/subagent when
+  only one runtime is selected, per `setup.sh --show-services`) before
+  implementing Tier-3 changes (`>3` files across module boundaries,
+  schemas/migrations, or auth/security/gate boundaries); use single-agent
+  planning for smaller changes. Pre-build planning scope never exempts a change
+  from required post-build gate, specialist, or cross-family security reviews.
+- **Post-build escalation & non-blocking harvest:** re-run affected checks and
+  required reviews after every fix. Because a green `codex-review` check only
+  indicates review completion, verify that all blocking review threads are
+  resolved too. If P0/P1 blockers or unapproved required reviews remain
+  unresolved after 2 fix rounds, stop as blocked and escalate to the operator
+  rather than merging; once required reviews, blocking threads, and CI checks
+  are clear, run `harvest-codex-comments.sh` to file optional P2/P3 polish as
+  follow-up issues and merge.
+- **Synchronous verification:** never end a turn while a test suite or review
+  gate runs in the background; execute verification commands synchronously in
+  the foreground and commit/push or write a blocker handoff before stopping.
+
 ## Proportionality: gate tiers (#212) and review lanes (ADR-0008)
 
 Not every diff earns the full adversarial tax. Both review gates

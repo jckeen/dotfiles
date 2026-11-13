@@ -6,7 +6,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 
 ```bash
 # Health check a single repo (read-only, totally safe)
-./health-check.sh ~/dev/atlas
+./health-check.sh ~/dev/stringer
 
 # Health check all repos overnight
 ./overnight.sh
@@ -96,15 +96,15 @@ After an overnight run, you don't read every diff. You run:
 
 ```bash
 # Review and push one repo (prompts before pushing)
-./review-and-push.sh ~/dev/atlas
+./review-and-push.sh ~/dev/stringer
 
 # Review and push all repos
-for repo in ~/dev/atlas ~/dev/stringer ~/dev/smss; do
+for repo in ~/dev/beacon ~/dev/stringer ~/dev/smss; do
   ./review-and-push.sh "$repo"
 done
 
 # Auto-push after tests, the required review gate, and receipt validation
-./review-and-push.sh ~/dev/atlas --auto-push
+./review-and-push.sh ~/dev/stringer --auto-push
 ```
 
 What `review-and-push.sh` does:
@@ -490,7 +490,7 @@ If you trust a script to run completely unattended:
 
 ```bash
 # Per-script
-./test-coverage.sh ~/dev/atlas --full-auto
+./test-coverage.sh ~/dev/stringer --full-auto
 
 # Overnight run with full auto
 ./overnight.sh --deep --full-auto
@@ -548,7 +548,7 @@ Environment variables:
 All output goes to `~/.claude/logs/` with filenames like:
 
 ```
-TIER_READONLY_atlas_2026-03-18_2300.log
+TIER_READONLY_beacon_2026-03-18_2300.log
 TIER_FIX_stringer_2026-03-18_2300.log
 ```
 
@@ -559,14 +559,14 @@ TIER_FIX_stringer_2026-03-18_2300.log
 ### Option 1: Environment variable (explicit repos)
 
 ```bash
-export CLAUDE_REPOS="~/dev/atlas ~/dev/stringer ~/dev/smss"
+export CLAUDE_REPOS="~/dev/beacon ~/dev/stringer ~/dev/smss"
 ```
 
 ### Option 2: Config file (explicit repos)
 
 ```bash
 # ~/.claude/repos — one path per line, # comments allowed
-~/dev/atlas
+~/dev/beacon
 ~/dev/stringer
 ~/dev/smss
 # ~/dev/old-project  # commented out, skipped

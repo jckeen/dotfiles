@@ -82,4 +82,19 @@ Claude Code carries the same ownership and verification rules in its fragment.
   verification, and independent-review rules still apply: with one selected
   runtime, independent review is a fresh-context session or subagent of that
   runtime, and the verdict says so.
+- **Proportional pre-build critique and post-build escalation:** add independent
+  pre-build design critique (across selected services, or a fresh-context
+  subagent when one runtime is selected) before implementing Tier-3 changes (`>3` files
+  across module boundaries, schemas/migrations, or auth/trust/gate boundaries),
+  while single-agent planning suffices for smaller changes; this never alters or
+  exempts any required or task-requested review. Re-run affected checks and
+  required reviews after every fix. If blocking P0/P1 findings or unapproved
+  required reviews remain unresolved after 2 fix rounds, stop as blocked and
+  escalate to the operator rather than merging; once all required reviews,
+  blocking threads, and CI checks are clear, harvest optional non-blocking
+  P2/P3 follow-ups into issues via `harvest-codex-comments.sh` and merge.
+- **Synchronous verification and delivery ownership:** never end a turn while a
+  verification test or review gate runs in the background — execute checks in
+  the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and either commit/push or
+  record an explicit blocker handoff before stopping.
 <!-- /canon:team-hard-rules -->
