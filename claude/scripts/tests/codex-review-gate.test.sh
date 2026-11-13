@@ -2498,16 +2498,41 @@ done
 concurrent_fake primary "$APPROVE_JSON" mutate
 concurrent_fake wt-approve "$APPROVE_JSON" mutate
 concurrent_fake wt-block "$BLOCK_JSON" mutate
+# concurrent_start <log> <rc-file> <dir> <command...>: run one command in the
+# background from <dir>. The wrapper's own output goes to /dev/null as well as
+# the command's: a wrapper still holding the suite's stdout would keep a piped
+# caller (`... | grep`) waiting on a stuck run after the suite itself exits.
+concurrent_start() {
+  local log="$1" rc_file="$2" dir="$3"
+  shift 3
+  (
+    cd "$dir" || exit 1
+    "$@" > "$log" 2>&1
+    echo $? > "$rc_file"
+  ) > /dev/null 2>&1 &
+  concurrent_pids+=("$!")
+}
+# A piped caller returns while a started run is still stuck.
+pipe_probe="$(mktemp -d)"
+pipe_started="$(date +%s)"
+(
+  concurrent_pids=()
+  concurrent_start "$pipe_probe/log" "$pipe_probe/rc" "$pipe_probe" sleep 30
+  printf '%s\n' "${concurrent_pids[0]}"
+) | cat > "$pipe_probe/out"
+pipe_seconds=$(( $(date +%s) - pipe_started ))
+pipe_wrapper="$(head -n 1 "$pipe_probe/out")"
+assert "a piped caller returns while a started run is still stuck" \
+  "[ $pipe_seconds -lt 10 ] && kill -0 '$pipe_wrapper' 2>/dev/null"
+pkill -P "$pipe_wrapper" 2>/dev/null
+kill "$pipe_wrapper" 2>/dev/null
+rm -rf "$pipe_probe"
 concurrent_pids=()
 for run in "${concurrent_runs[@]}"; do
   fake="$CONCURRENT_ROOT/fake-$run"
-  (
-    cd "$(concurrent_dir "$run")" || exit 1
+  concurrent_start "$fake/gate-log" "$fake/gate-rc" "$(concurrent_dir "$run")" \
     env HOME="$TEST_HOME" CODEX_FAKE_DIR="$fake" CODEX_HOME="$fake/codex-home" \
-      "$GATE" --committed --require --no-issues > "$fake/gate-log" 2>&1
-    echo $? > "$fake/gate-rc"
-  ) &
-  concurrent_pids+=("$!")
+    "$GATE" --committed --require --no-issues
 done
 # Bound the whole round, not only the reviewer barrier: a run stalled before or
 # after its review must fail an assertion, not hang the suite. No `timeout`
