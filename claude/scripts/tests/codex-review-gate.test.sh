@@ -452,8 +452,11 @@ print('WRAPPER_DIAGNOSTIC_MARKER', file=sys.stderr, flush=True)
 # flight until the harness has signalled, not for a fixed time a slow runner
 # can outlast. A case that signals later lets it finish at once.
 deadline = time.monotonic() + BOUND_SECONDS
-while ((fixture / 'hold-reviewer').exists() and not (fixture / 'signal-sent').exists()
-       and time.monotonic() < deadline):
+while (fixture / 'hold-reviewer').exists() and not (fixture / 'signal-sent').exists():
+    if time.monotonic() >= deadline:
+        # An expired hold is a failure, never a finished review.
+        (fixture / 'handshake-expired').touch()
+        sys.exit(1)
     time.sleep(.01)
 (fixture / 'reviewer-finished').touch()
 args = (fixture / 'argv').read_text().splitlines()
@@ -471,7 +474,11 @@ def replace(source, target, *args, **kwargs):
         (fixture / 'receipt-written').touch()
         # Hold the gate's foreground helper until the harness has signalled.
         deadline = time.monotonic() + BOUND_SECONDS
-        while not (fixture / 'signal-sent').exists() and time.monotonic() < deadline:
+        while not (fixture / 'signal-sent').exists():
+            if time.monotonic() >= deadline:
+                # An expired hold fails the case (the harness checks this marker).
+                (fixture / 'handshake-expired').touch()
+                break
             time.sleep(.01)
     return result
 os.replace = replace
@@ -590,6 +597,8 @@ try:
             failures.append('diagnostic failure injection was not exercised')
     elif (fixture / 'reviewer-ready').exists() and not diagnostics:
         failures.append('cancelled reviewer diagnostic was discarded')
+    if (fixture / 'handshake-expired').exists():
+        failures.append('the gate\'s child stopped waiting before the harness signalled')
     if process.returncode != 3:
         failures.append(f'expected exit 3, got {process.returncode}')
     if Path(repo, '.git', 'review-receipts', 'codex.json').exists():

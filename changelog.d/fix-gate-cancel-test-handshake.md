@@ -13,5 +13,6 @@
   stay alive for 1 second, and the receipt hook held the gate's helper for
   0.3 seconds. Each now holds until the harness has sent its signal. A slow
   harness could otherwise miss the window and signal a gate that had already
-  finished.
+  finished. A hold that expires before the signal fails the case explicitly.
+  It never counts as a finished review.
 - No gate script changes.
