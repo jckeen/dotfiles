@@ -113,15 +113,22 @@ def load_overlay(path):
     return overlay, list(retired), effective_unask
 
 
-def merge_overlay(baseline, retired, unask, overlay_path):
+def merge_overlay(baseline, retired, unask, overlay_path, promotable_ask=None):
+    if promotable_ask is None:
+        promotable_ask = set(baseline[ASK_BUCKET])
     overlay, ov_retired, ov_unask = load_overlay(overlay_path)
     ov_retired_set = set(ov_retired)
+    promotable_ask.difference_update(ov_retired_set)
     baseline[GRANT_BUCKET] = [r for r in baseline[GRANT_BUCKET] if r not in ov_retired_set]
     unask[:] = [r for r in unask if r not in ov_retired_set]
     for r in ov_retired:
         if r not in retired:
             retired.append(r)
     ov_unask_set = set(ov_unask)
+    # Promoting a rule currently gated in original baseline ask overrides its
+    # baseline retirement from allow, while outright-retired rules remain blocked.
+    promoted_from_ask = (set(overlay[GRANT_BUCKET]) & promotable_ask) - ov_retired_set
+    retired[:] = [r for r in retired if r not in promoted_from_ask]
     baseline[ASK_BUCKET] = [r for r in baseline[ASK_BUCKET] if r not in ov_unask_set]
     for r in ov_unask:
         if r not in unask:
@@ -206,8 +213,9 @@ def main():
         sys.exit(f"error: refusing to use a symlinked settings file: {args.settings}")
     home = args.home.rstrip("/") or "/"
     baseline, mode_keys, retired, unask = load_baseline(args.rules)
+    promotable_ask = set(baseline[ASK_BUCKET])
     for overlay_path in args.overlay:
-        merge_overlay(baseline, retired, unask, overlay_path)
+        merge_overlay(baseline, retired, unask, overlay_path, promotable_ask)
 
     expanded_baseline = {b: [expand_rule(r, home) for r in baseline[b]] for b in BUCKETS}
     retired_set = {expand_rule(r, home) for r in retired}

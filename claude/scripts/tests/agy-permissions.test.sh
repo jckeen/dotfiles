@@ -345,17 +345,19 @@ cat > "$OVERLAY" <<'EOF'
       "command(git push)",
       "command(git -C)",
       "command(gh pr merge)",
-      "command(~/.claude/scripts/codex-review-gate.sh)"
+      "command(~/.claude/scripts/codex-review-gate.sh)",
+      "mcp(playwright/browser_snapshot)"
     ]
   },
   "unask": [
     "command(git -C)",
-    "command(gh pr merge)"
+    "command(gh pr merge)",
+    "mcp(playwright/browser_snapshot)"
   ]
 }
 EOF
 S_OVERLAY="$ROOT/overlay-settings.json"
-printf '{"permissions":{"allow":[],"ask":["command(git -C)","command(gh pr merge)","command(bunx)","command(custom-ask)"],"deny":["command(sudo)"]}}\n' > "$S_OVERLAY"
+printf '{"permissions":{"allow":[],"ask":["command(git -C)","command(gh pr merge)","command(bunx)","command(custom-ask)","mcp(playwright/browser_snapshot)"],"deny":["command(sudo)"]}}\n' > "$S_OVERLAY"
 
 if out="$(python3 "$TOOL" check --settings "$S_OVERLAY" --rules "$RULES" --overlay "$OVERLAY" 2>&1)"; then
   fail "check passed with unasked rules still in ask: $out"
@@ -372,10 +374,12 @@ perms = d['permissions']
 assert 'command(git push)' in perms['allow']
 assert 'command(git -C)' in perms['allow']
 assert 'command(gh pr merge)' in perms['allow']
+assert 'mcp(playwright/browser_snapshot)' in perms['allow']
 assert f"command({os.environ['HOME']}/.claude/scripts/codex-review-gate.sh)" in perms['allow']
 assert 'command(git -C)' not in perms['ask']
 assert 'command(gh pr merge)' not in perms['ask']
 assert 'command(bunx)' not in perms['ask']
+assert 'mcp(playwright/browser_snapshot)' not in perms['ask']
 assert 'command(custom-ask)' in perms['ask']
 PY
 then ok "apply with --overlay promotes unasked rules from ask to allow while keeping unrelated operator ask rules"
@@ -407,6 +411,27 @@ if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$CO
   fail "overlay was allowed to re-grant a baseline retired rule"
 else
   ok "overlay cannot re-grant a baseline retired rule"
+fi
+
+ASK_FIRST_OVERLAY="$ROOT/ask-first-overlay.json"
+printf '{"permissions":{"ask":["read_file(~/dev/)"]}}\n' > "$ASK_FIRST_OVERLAY"
+if python3 "$TOOL" apply --settings "$S_OVERLAY" --rules "$RULES" --overlay "$ASK_FIRST_OVERLAY" --overlay "$CONFLICT_RETIRED_OVERLAY" >/dev/null 2>&1; then
+  fail "second overlay resurrected an outright-retired rule via first overlay ask"
+else
+  ok "multi-overlay ask then allow cannot resurrect an outright-retired baseline rule"
+fi
+
+UNASK_ONLY_OVERLAY="$ROOT/unask-only-overlay.json"
+ALLOW_ONLY_OVERLAY="$ROOT/allow-only-overlay.json"
+S_MULTI_UNASK="$ROOT/multi-unask-settings.json"
+printf '{"unask":["mcp(playwright/browser_snapshot)"]}\n' > "$UNASK_ONLY_OVERLAY"
+printf '{"permissions":{"allow":["mcp(playwright/browser_snapshot)"]}}\n' > "$ALLOW_ONLY_OVERLAY"
+printf '{"permissions":{"allow":[],"ask":["mcp(playwright/browser_snapshot)"],"deny":[]}}\n' > "$S_MULTI_UNASK"
+if python3 "$TOOL" apply --settings "$S_MULTI_UNASK" --rules "$RULES" --overlay "$UNASK_ONLY_OVERLAY" --overlay "$ALLOW_ONLY_OVERLAY" >/dev/null 2>&1 \
+  && python3 "$TOOL" check --settings "$S_MULTI_UNASK" --rules "$RULES" --overlay "$UNASK_ONLY_OVERLAY" --overlay "$ALLOW_ONLY_OVERLAY" >/dev/null 2>&1; then
+  ok "earlier unask overlay preserves promotion eligibility for subsequent allow overlay"
+else
+  fail "split unask then allow overlays failed to promote baseline ask+retired rule"
 fi
 
 RESTRICT_OVERLAY="$ROOT/restrict-overlay.json"

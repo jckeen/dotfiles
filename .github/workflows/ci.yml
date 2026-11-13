@@ -650,6 +650,14 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: claude/scripts/tests/operator-queue-reminder.test.sh
 
+      - name: unlanded-work reminder (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/unlanded-work-reminder.test.sh
+
+      - name: overnight runner (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: claude/scripts/tests/overnight.test.sh
+
       # SessionStart reminder for unread session-retro proposals (#741): the
       # marker rule, and that no proposal text or filename reaches the context.
       - name: retro-proposals reminder (self-test)

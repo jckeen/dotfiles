@@ -44,9 +44,9 @@ _agent_preflight() {
 
 agy --continue >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--continue
-binary|--mode auto --continue"
+binary|--mode auto --remote-control --continue"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
-  ok "agy runs the Antigravity health preflight before the CLI and defaults to --mode auto"
+  ok "agy runs the Antigravity health preflight before the CLI and defaults to --mode auto --remote-control"
 else
   fail "agy preflight call order was: $(tr '\n' '|' < "$CALLS")"
 fi
@@ -55,7 +55,7 @@ fi
 TEST_SHIFTED=1
 agy demo-project --model gemini-test >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|demo-project --model gemini-test
-binary|--mode auto --model gemini-test"
+binary|--mode auto --remote-control --model gemini-test"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy keeps cc/cx project-selection ergonomics without leaking the project name"
 else
@@ -66,7 +66,7 @@ fi
 TEST_SHIFTED=0
 agy --mode plan --continue >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--mode plan --continue
-binary|--mode plan --continue"
+binary|--remote-control --mode plan --continue"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy honors an explicit --mode flag without duplicating --mode auto"
 else
@@ -75,9 +75,20 @@ fi
 
 : > "$CALLS"
 TEST_SHIFTED=0
+agy --remote-control=false --continue >/dev/null 2>&1
+expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--remote-control=false --continue
+binary|--mode auto --remote-control=false --continue"
+if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
+  ok "agy honors an explicit --remote-control flag without duplicating --remote-control"
+else
+  fail "agy explicit --remote-control calls were: $(tr '\n' '|' < "$CALLS")"
+fi
+
+: > "$CALLS"
+TEST_SHIFTED=0
 agy -c 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8 >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|-c 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8
-binary|--mode auto --conversation 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8"
+binary|--mode auto --remote-control --conversation 67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy rewrites -c <id> to --conversation <id> so CLI does not reject <id> as an unexpected positional arg"
 else
@@ -88,7 +99,7 @@ fi
 TEST_SHIFTED=0
 agy -c=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8 >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|-c=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8
-binary|--mode auto --conversation=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8"
+binary|--mode auto --remote-control --conversation=67f5203b-2f89-4ff0-9c9c-b3f924ba1ef8"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy rewrites -c=<id> to --conversation=<id>"
 else
@@ -99,7 +110,7 @@ fi
 TEST_SHIFTED=0
 agy -c --model gemini-test >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|-c --model gemini-test
-binary|--mode auto -c --model gemini-test"
+binary|--mode auto --remote-control -c --model gemini-test"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy preserves bare -c when followed by another flag"
 else
@@ -110,7 +121,7 @@ fi
 TEST_SHIFTED=0
 agy --continue=true -c=false >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--continue=true -c=false
-binary|--mode auto --continue=true -c=false"
+binary|--mode auto --remote-control --continue=true -c=false"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy preserves explicit boolean continue values (--continue=true, -c=false)"
 else
@@ -121,7 +132,7 @@ fi
 TEST_SHIFTED=0
 agy --print '-c=example' -i --mode >/dev/null 2>&1
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--print -c=example -i --mode
-binary|--mode auto --print -c=example -i --mode"
+binary|--mode auto --remote-control --print -c=example -i --mode"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy preserves option values during resume normalization and mode detection"
 else
@@ -139,7 +150,7 @@ agy --continue >/dev/null 2>&1
 rm -rf "$TEST_DEV/agy-memory"
 expected_calls="preflight|--continue --continue= -continue -continue= -c --conversation --conversation= -conversation -conversation=|_check_antigravity_launch_health|--continue
 bootstrap
-binary|--mode auto --continue"
+binary|--mode auto --remote-control --continue"
 if [ "$(cat "$CALLS")" = "$expected_calls" ]; then
   ok "agy runs agy-memory/bootstrap.sh after preflight when present"
 else

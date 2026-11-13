@@ -991,6 +991,21 @@ _agy_has_mode_arg() {
   return 1
 }
 
+_agy_has_remote_control_arg() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 1 ;;
+      --remote-control|--remote-control=*|-remote-control|-remote-control=*) return 0 ;;
+    esac
+    if _agy_option_takes_value "$1" && [ "$#" -ge 2 ]; then
+      shift 2
+      continue
+    fi
+    shift
+  done
+  return 1
+}
+
 _agy_is_bool_literal() {
   case "$1" in
     true|false|TRUE|FALSE|True|False|1|0|t|f|T|F) return 0 ;;
@@ -1097,7 +1112,12 @@ agy() {
     mode_args=(--mode auto)
   fi
 
-  command agy "${mode_args[@]}" "$@"
+  local -a rc_args=()
+  if ! _agy_has_remote_control_arg "$@"; then
+    rc_args=(--remote-control)
+  fi
+
+  command agy "${mode_args[@]}" "${rc_args[@]}" "$@"
 }
 
 codex-update() {
@@ -1277,7 +1297,7 @@ cc-tab() {
 }
 
 # Open multiple projects, each in its own tab
-# Usage: cc-multi dotfiles atlas stringer
+# Usage: cc-multi dotfiles beacon stringer
 cc-multi() {
   if [ $# -eq 0 ]; then
     echo "Usage: cc-multi <project1> <project2> ..."

@@ -260,12 +260,12 @@ Headless scripts for unattended Claude Code work. All live in `~/.claude/scripts
 
 | Script | What it does | Example |
 |--------|-------------|--------|
-| `health-check.sh` | Read-only repo health audit | `health-check.sh ~/dev/atlas` |
-| `test-coverage.sh` | Write tests for uncovered code | `test-coverage.sh ~/dev/atlas --full-auto` |
-| `fix-issues.sh` | Auto-pick and fix GitHub issues | `fix-issues.sh ~/dev/atlas` |
-| `full-review.sh` | 3-phase agent pack review (12+ subagents) | `full-review.sh ~/dev/atlas` |
+| `health-check.sh` | Read-only repo health audit | `health-check.sh ~/dev/stringer` |
+| `test-coverage.sh` | Write tests for uncovered code | `test-coverage.sh ~/dev/stringer --full-auto` |
+| `fix-issues.sh` | Auto-pick and fix GitHub issues | `fix-issues.sh ~/dev/stringer` |
+| `full-review.sh` | 3-phase agent pack review (12+ subagents) | `full-review.sh ~/dev/stringer` |
 | `overnight.sh` | Orchestrate all scripts across all repos | `overnight.sh --deep --full-auto` |
-| `review-and-push.sh` | Morning review of overnight changes | `review-and-push.sh ~/dev/atlas --auto-push` |
+| `review-and-push.sh` | Morning review of overnight changes | `review-and-push.sh ~/dev/stringer --auto-push` |
 
 All scripts use safety tiers from `common.sh` — each gets the minimum permissions needed.
 Known gaps in `overnight.sh` (phase mixing, exit 0 on failure) are tracked in #740.

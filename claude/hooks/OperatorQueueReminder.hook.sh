@@ -138,7 +138,7 @@ OWNERS="${OWNERS% }"
 # The rendered items enter every session's context, so only issues the
 # operator wrote (author:@me, the gh login) in private repos count: anyone can
 # open an issue in a public repo, and a collaborator can label one.
-SEARCH_BASE="is:issue is:open is:private author:@me label:operator-action"
+SEARCH_BASE="is:issue is:open is:private archived:false author:@me label:operator-action"
 SEARCH_Q="$SEARCH_BASE repo:$REPO_PATH"
 # The refresh searches one scope at a time (see search_complete) and merges
 # the results by node id; SEARCH_Q is the same search in one query, for
@@ -161,7 +161,7 @@ GQL='query($q: String!, $endCursor: String) {
       author { login } editor { login } lastEditedAt
       timelineItems(itemTypes: [RENAMED_TITLE_EVENT], last: 1) {
         nodes { ... on RenamedTitleEvent { actor { login } } } }
-      repository { nameWithOwner isPrivate }
+      repository { nameWithOwner isPrivate isArchived }
       labels(first: 100) { nodes { name } }
       comments(last: 1) { nodes { createdAt } } } } } }'
 # What counts as an item, shared by the refresh and --find (jq -s over the
@@ -183,7 +183,7 @@ JQ_DEFS='
        < ([ .[].data.search.issueCount ] | max // 0)
     then error("search truncated") else empty end;
   def counted:
-    [ .[].data.search.nodes[] | select(.number != null and .viewerDidAuthor == true and .repository.isPrivate == true
+    [ .[].data.search.nodes[] | select(.number != null and .viewerDidAuthor == true and .repository.isPrivate == true and .repository.isArchived != true
       and (if .editor == null then .lastEditedAt == null else .editor.login == .author.login end)
       and (.author.login as $a | (.timelineItems.nodes // []) | all(.actor.login? == $a))) ] | unique_by(.id) | .[];
 '

@@ -81,6 +81,26 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/hooks/UnlandedWorkReminder.hook.sh\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/hooks/UnlandedWorkReminder.hook.sh\""
+          }
+        ]
+      }
     ]
   },
   "statusLine": {
