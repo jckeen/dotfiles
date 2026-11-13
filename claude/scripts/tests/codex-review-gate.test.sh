@@ -2536,9 +2536,21 @@ concurrent_stop() {
   local pid
   for pid in "${concurrent_pids[@]}"; do
     concurrent_descendants "$pid"
-  done | sed '1!G;h;$!d' | while IFS= read -r pid; do
+  done | sed '1!G;h;$!d' > "$CONCURRENT_ROOT/stopped"
+  while IFS= read -r pid; do
+    kill -CONT "$pid" 2>/dev/null
     kill "-$1" "$pid" 2>/dev/null
-  done
+  done < "$CONCURRENT_ROOT/stopped"
+  # Remember everything signalled: a child that outlives its parent leaves the
+  # wrapper's tree, and only this list still reaches it.
+  cat "$CONCURRENT_ROOT/stopped" >> "$CONCURRENT_ROOT/signalled"
+}
+concurrent_survivors() {
+  local pid
+  while IFS= read -r pid; do
+    ! kill -0 "$pid" 2>/dev/null || return 0
+  done < "$CONCURRENT_ROOT/signalled"
+  return 1
 }
 for _ in $(seq 300); do
   concurrent_live || break
@@ -2548,11 +2560,15 @@ if concurrent_live; then
   touch "$CONCURRENT_ROOT/watchdog-expired"
   concurrent_stop TERM
   for _ in $(seq 30); do
-    concurrent_live || break
+    concurrent_live || concurrent_survivors || break
     sleep 1
   done
-  # A gate that still has not exited gets no further chance to clean up.
-  ! concurrent_live || concurrent_stop KILL
+  # Whatever still runs gets no further chance to clean up: the wrappers'
+  # remaining trees, and any signalled process that has left them.
+  concurrent_stop KILL
+  while IFS= read -r pid; do
+    kill -KILL "$pid" 2>/dev/null
+  done < "$CONCURRENT_ROOT/signalled"
 fi
 wait "${concurrent_pids[@]}"
 assert "every concurrent run finished within the round's deadline" \
@@ -2578,7 +2594,7 @@ assert "both concurrent multipart runs went multipart" \
 assert "each concurrent multipart reviewer got its own repo's request" \
   "[ ! -e '$CONCURRENT_ROOT/fake-mp-one/foreign-request' ] && [ ! -e '$CONCURRENT_ROOT/fake-mp-two/foreign-request' ]"
 assert "the primary and both worktrees keep separate receipt stores" \
-  "[ \"\$( { concurrent_receipts primary; concurrent_receipts wt-approve; concurrent_receipts wt-block; } | sort -u | wc -l)\" = 3 ]"
+  "[ \"\$( { concurrent_receipts primary; concurrent_receipts wt-approve; concurrent_receipts wt-block; } | sort -u | wc -l)\" -eq 3 ]"
 # A receipt from one run is never accepted for another: another repo's
 # approval over a worktree's own, and a sibling worktree's over a blocked one.
 cp "$(concurrent_receipts mp-one)/codex.json" "$(concurrent_receipts wt-approve)/codex.json"
