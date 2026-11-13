@@ -427,14 +427,19 @@ import time
 
 gate, repo, home, scenario = sys.argv[1:]
 fixture = Path(os.environ['CODEX_FAKE_DIR'])
+# #767: every wait below is for a real event (a whole gate run, a marker the
+# gate's own child writes, the harness's signal) and ends as soon as it
+# happens. The bound only turns a hang into a failure, so it is generous: a
+# slow runner (macOS CI ran a whole gate in about 8 s) must never hit it.
+BOUND = 300
 if scenario.startswith('bootstrap'):
     seed = subprocess.run([gate, '--committed', '--base', 'main', '--require', '--no-issues'],
-                          cwd=repo, env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=8)
+                          cwd=repo, env=dict(os.environ, HOME=home), capture_output=True, text=True, timeout=BOUND)
     assert seed.returncode == 0, seed.stdout + seed.stderr
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
     checker = [sys.executable, str(Path(gate).parent / 'review-receipt.py'), 'check',
                '--repo', repo, '--head', head, '--base', 'main', '--reviewer', 'codex']
-    checked = subprocess.run(checker, capture_output=True, text=True, timeout=8)
+    checked = subprocess.run(checker, capture_output=True, text=True, timeout=BOUND)
     assert checked.returncode == 0, 'bootstrap seed must be a usable committed approval: ' + checked.stderr
     (fixture / 'invoked').unlink()
 (fixture / 'hang').write_text('''
@@ -443,11 +448,20 @@ from pathlib import Path
 fixture = Path(os.environ['CODEX_FAKE_DIR'])
 print('WRAPPER_DIAGNOSTIC_MARKER', file=sys.stderr, flush=True)
 (fixture / 'reviewer-ready').write_text(json.dumps({'parent': os.getppid(), 'session': os.getsid(0), 'group': os.getpgrp()}))
-time.sleep(1)
+# A case that signals the gate while its reviewer runs keeps the reviewer in
+# flight until the harness has signalled, not for a fixed time a slow runner
+# can outlast. A case that signals later lets it finish at once.
+deadline = time.monotonic() + BOUND_SECONDS
+while (fixture / 'hold-reviewer').exists() and not (fixture / 'signal-sent').exists():
+    if time.monotonic() >= deadline:
+        # An expired hold is a failure, never a finished review.
+        (fixture / 'handshake-expired').touch()
+        sys.exit(1)
+    time.sleep(.01)
 (fixture / 'reviewer-finished').touch()
 args = (fixture / 'argv').read_text().splitlines()
 Path(args[args.index('-o') + 1]).write_text((fixture / 'output').read_text())
-''')
+'''.replace('BOUND_SECONDS', str(BOUND)))
 if scenario.startswith('receipt'):
     (fixture / 'sitecustomize.py').write_text('''
 import os, time
@@ -456,8 +470,16 @@ original = os.replace
 def replace(source, target, *args, **kwargs):
     result = original(source, target, *args, **kwargs)
     if str(target).endswith('/codex.json'):
-        Path(os.environ['CODEX_FAKE_DIR'], 'receipt-written').touch()
-        time.sleep(.3)
+        fixture = Path(os.environ['CODEX_FAKE_DIR'])
+        (fixture / 'receipt-written').touch()
+        # Hold the gate's foreground helper until the harness has signalled.
+        deadline = time.monotonic() + BOUND_SECONDS
+        while not (fixture / 'signal-sent').exists():
+            if time.monotonic() >= deadline:
+                # An expired hold fails the case (the harness checks this marker).
+                (fixture / 'handshake-expired').touch()
+                break
+            time.sleep(.01)
     return result
 os.replace = replace
 original_open = Path.open
@@ -467,8 +489,10 @@ def open_path(path, *args, **kwargs):
         raise OSError('fixture diagnostic read failure')
     return original_open(path, *args, **kwargs)
 Path.open = open_path
-''')
+'''.replace('BOUND_SECONDS', str(BOUND)))
 environment = dict(os.environ, HOME=home)
+if not scenario.startswith('receipt'):
+    (fixture / 'hold-reviewer').touch()
 if scenario.startswith('receipt'):
     environment['PYTHONPATH'] = str(fixture)
 if scenario == 'receipt-diagnostic-failure':
@@ -529,14 +553,14 @@ process = subprocess.Popen([gate, scope, '--no-issues'], cwd=repo, env=environme
 (fixture / 'gate-pid').write_text(str(process.pid))
 try:
     if scenario.startswith('bootstrap'):
-        output, _ = process.communicate(timeout=8)
+        output, _ = process.communicate(timeout=BOUND)
         assert process.returncode == 3, f'bootstrap cancellation returned {process.returncode}: {output}'
         assert not (fixture / 'invoked').exists(), 'bootstrap cancellation dispatched a reviewer'
         assert not Path(repo, '.git', 'review-receipts', 'codex.json').exists(), 'bootstrap cancellation left the previous receipt'
-        assert subprocess.run(checker, capture_output=True, timeout=8).returncode != 0, 'previous approval remains usable'
+        assert subprocess.run(checker, capture_output=True, timeout=BOUND).returncode != 0, 'previous approval remains usable'
         sys.exit(0)
     if scenario != 'startup':
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + BOUND
         while True:
             if scenario.startswith('receipt'):
                 ready = (fixture / 'receipt-written').exists()
@@ -553,7 +577,10 @@ try:
             for _ in range(3):
                 time.sleep(.03)
                 process.send_signal(signal.SIGTERM)
-    output, _ = process.communicate(timeout=10)
+        # Releases the reviewer or receipt helper the gate is parked on: every
+        # signal above is already pending on the gate.
+        (fixture / 'signal-sent').touch()
+    output, _ = process.communicate(timeout=BOUND)
     failures = []
     diagnostics = [Path(line.removeprefix('  Private Codex diagnostic: ')) for line in output.splitlines() if line.startswith('  Private Codex diagnostic: ')]
     for diagnostic in diagnostics:
@@ -570,6 +597,8 @@ try:
             failures.append('diagnostic failure injection was not exercised')
     elif (fixture / 'reviewer-ready').exists() and not diagnostics:
         failures.append('cancelled reviewer diagnostic was discarded')
+    if (fixture / 'handshake-expired').exists():
+        failures.append('the gate\'s child stopped waiting before the harness signalled')
     if process.returncode != 3:
         failures.append(f'expected exit 3, got {process.returncode}')
     if Path(repo, '.git', 'review-receipts', 'codex.json').exists():
@@ -2404,6 +2433,159 @@ post_review_exits_unguarded() {
 }
 assert "the post-review region is found" "[ \"\$(post_review_region | wc -l)\" -gt 40 ]"
 assert "every post-review exit claims blocking output first" "[ -z \"\$(post_review_exits_unguarded)\" ]"
+
+# ── #680: concurrent gate runs keep their own request, state and receipt ──
+# Five live gate runs at once, held together by a barrier while each reviewer
+# is in flight: two multipart runs in separate repos, each with a complete
+# request of over 1 MB written outside the run's private directory, and three
+# runs in the primary checkout and two linked worktrees of one repo. Each must
+# end with its own verdict and receipt, and no run's receipt may ship
+# another's artifact. The requests differ, so a run reading another's request
+# fails its digest check instead of passing on identical bytes, and both
+# approve, so that check is the only thing that could fail them (a blocking
+# verdict exits 2 whether or not its request was intact).
+CONCURRENT_BARRIER="$(mktemp -d)"
+CONCURRENT_ROOT="$(mktemp -d)"
+concurrent_runs=(mp-one mp-two primary wt-approve wt-block)
+concurrent_repo() {
+  git -C "$1" init -q -b main
+  git -C "$1" config user.email t@t.test
+  git -C "$1" config user.name test
+  echo "base line" > "$1/code.txt"
+  git -C "$1" add code.txt
+  git -C "$1" commit -qm init
+}
+# concurrent_fake <run> <verdict-json> <hook-name>: the run's private stub dir,
+# with a barrier hook that waits (up to 60 s) until every run is in its review.
+concurrent_fake() {
+  local fake="$CONCURRENT_ROOT/fake-$1"
+  mkdir -p "$fake"
+  printf '[]' > "$fake/issues.json"
+  printf '%s' "$2" > "$fake/output"
+  cat > "$fake/$3" <<EOF
+touch '$CONCURRENT_BARRIER/$1'
+for _ in \$(seq 600); do
+  [ "\$(ls '$CONCURRENT_BARRIER' | wc -l)" -lt ${#concurrent_runs[@]} ] || break
+  sleep 0.1
+done
+[ "\$(ls '$CONCURRENT_BARRIER' | wc -l)" -ge ${#concurrent_runs[@]} ] || touch '$fake/barrier-timeout'
+EOF
+}
+concurrent_dir() {
+  case "$1" in
+    mp-*) printf '%s\n' "$CONCURRENT_ROOT/repo-$1" ;;
+    primary) printf '%s\n' "$CONCURRENT_ROOT/shared" ;;
+    wt-*) printf '%s\n' "$CONCURRENT_ROOT/worktree-$1" ;;
+  esac
+}
+concurrent_receipts() {
+  git -C "$(concurrent_dir "$1")" rev-parse --path-format=absolute --git-path review-receipts
+}
+concurrent_ships() {
+  local dir
+  dir="$(concurrent_dir "$1")"
+  python3 "$SCRIPT_DIR/../review-receipt.py" check --repo "$dir" \
+    --head "$(git -C "$dir" rev-parse HEAD)" >/dev/null 2>&1
+}
+concurrent_multipart() {
+  local parts="$CONCURRENT_ROOT/fake-$1/mp-parts" total
+  total="$(sed -n '1s@^1/@@p' "$parts" 2>/dev/null)"
+  [[ "$total" =~ ^[0-9]+$ && "$total" -ge 2 ]] && [[ "$(tail -n 1 "$parts")" == "$total/$total" ]]
+}
+APPROVE_JSON='{"verdict":"approve","summary":"looks fine","findings":[],"next_steps":[]}'
+BLOCK_JSON='{"verdict":"needs-attention","summary":"a bug","findings":[{"severity":"high","title":"bug","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"nit","recommendation":"fix it"}],"next_steps":[]}'
+for run in mp-one mp-two; do
+  dir="$(concurrent_dir "$run")"
+  mkdir -p "$dir"
+  concurrent_repo "$dir"
+  git -C "$dir" checkout -qb feature
+  python3 - "$dir/code.txt" "$run" <<'PY'
+import sys
+open(sys.argv[1], "a").write(("multipart😀" * 160 + sys.argv[2] + "\n") * 1000)
+PY
+  git -C "$dir" commit -qam "large ahead"
+done
+concurrent_fake mp-one "$APPROVE_JSON" mp-final-hook
+concurrent_fake mp-two "$APPROVE_JSON" mp-final-hook
+# Each multipart reviewer must have been sent its own repo's diff: a request
+# swapped before its digest was taken would pass that check.
+for run in mp-one mp-two; do
+  printf '%s\n' "cat '$CONCURRENT_ROOT/fake-$run/mp-fragments'/* | grep -qF '😀$run' || touch '$CONCURRENT_ROOT/fake-$run/foreign-request'" \
+    >> "$CONCURRENT_ROOT/fake-$run/mp-final-hook"
+done
+shared="$(concurrent_dir primary)"
+mkdir -p "$shared"
+concurrent_repo "$shared"
+for run in wt-approve wt-block; do
+  git -C "$shared" worktree add -q -b "$run" "$(concurrent_dir "$run")" main
+done
+git -C "$shared" checkout -qb primary
+for run in primary wt-approve wt-block; do
+  echo "change from $run" >> "$(concurrent_dir "$run")/code.txt"
+  git -C "$(concurrent_dir "$run")" commit -qam "$run work"
+done
+concurrent_fake primary "$APPROVE_JSON" mutate
+concurrent_fake wt-approve "$APPROVE_JSON" mutate
+concurrent_fake wt-block "$BLOCK_JSON" mutate
+# No deadline here: a hung gate is left to the CI job's timeout.
+concurrent_pids=()
+for run in "${concurrent_runs[@]}"; do
+  fake="$CONCURRENT_ROOT/fake-$run"
+  (
+    cd "$(concurrent_dir "$run")" || exit 1
+    env HOME="$TEST_HOME" CODEX_FAKE_DIR="$fake" CODEX_HOME="$fake/codex-home" \
+      "$GATE" --committed --require --no-issues > "$fake/gate-log" 2>&1
+    echo $? > "$fake/gate-rc"
+  ) &
+  concurrent_pids+=("$!")
+done
+wait "${concurrent_pids[@]}"
+for run in "${concurrent_runs[@]}"; do
+  fake="$CONCURRENT_ROOT/fake-$run"
+  # A failed run keeps its private diagnostic outside the run's directories.
+  diagnostic="$(sed -n 's/^  Private Codex diagnostic: //p' "$fake/gate-log" 2>/dev/null)"
+  [[ -z "$diagnostic" ]] || rm -f -- "$diagnostic"
+  case "$run" in *-block) want=2 ;; *) want=0 ;; esac
+  assert "concurrent $run: every run was in review at once" \
+    "[ -e '$CONCURRENT_BARRIER/$run' ] && [ ! -e '$fake/barrier-timeout' ]"
+  assert "concurrent $run: its own verdict (rc $want)" \
+    "[ \"\$(cat '$fake/gate-rc')\" = $want ] || { cat '$fake/gate-log'; false; }"
+  if [[ "$want" == 0 ]]; then
+    assert "concurrent $run: its own receipt ships" "concurrent_ships $run"
+  else
+    assert "concurrent $run: no receipt ships" "! concurrent_ships $run"
+  fi
+done
+assert "both concurrent multipart runs went multipart" \
+  "concurrent_multipart mp-one && concurrent_multipart mp-two"
+assert "each concurrent multipart reviewer got its own repo's request" \
+  "[ ! -e '$CONCURRENT_ROOT/fake-mp-one/foreign-request' ] && [ ! -e '$CONCURRENT_ROOT/fake-mp-two/foreign-request' ]"
+assert "the primary and both worktrees keep separate receipt stores" \
+  "[ \"\$( { concurrent_receipts primary; concurrent_receipts wt-approve; concurrent_receipts wt-block; } | sort -u | wc -l)\" -eq 3 ]"
+# A receipt from one run is never accepted for another: another repo's
+# approval over a worktree's own, and a sibling worktree's over a blocked one.
+cp "$(concurrent_receipts mp-one)/codex.json" "$(concurrent_receipts wt-approve)/codex.json"
+assert "another repo's receipt does not ship a worktree's artifact" "! concurrent_ships wt-approve"
+cp "$(concurrent_receipts primary)/codex.json" "$(concurrent_receipts wt-block)/codex.json"
+assert "a sibling worktree's receipt does not ship a blocked worktree" "! concurrent_ships wt-block"
+assert "the primary checkout's own receipt still ships" "concurrent_ships primary"
+# The same commit checked out elsewhere: only the receipt's repository and Git
+# directory tell the copy apart, so the HEAD comparison cannot refuse it first.
+# A whole-repo copy carries mp-one's receipt and attempt token along with it,
+# and a twin worktree at the primary's HEAD gets the primary's pair.
+cp -a "$(concurrent_dir mp-one)" "$(concurrent_dir mp-one-copy)"
+assert "a copied repo at the same HEAD holds the original's receipt" \
+  "[ \"\$(git -C '$(concurrent_dir mp-one-copy)' rev-parse HEAD)\" = \"\$(jq -r .artifact.head '$(concurrent_receipts mp-one)/codex.json')\" ] && [ -e '$(concurrent_dir mp-one-copy)/.git/review-receipts/codex.json' ]"
+assert "another repo's receipt for the same commit does not ship" "! concurrent_ships mp-one-copy"
+git -C "$shared" worktree add -q --detach "$(concurrent_dir wt-twin)" primary
+twin_receipts="$(concurrent_receipts wt-twin)"
+mkdir -m 700 "$twin_receipts"
+cp "$(concurrent_receipts primary)/codex.json" "$(concurrent_receipts primary)/codex.attempt.json" "$twin_receipts/"
+assert "a twin worktree at the primary's HEAD holds the primary's receipt" \
+  "[ \"\$(git -C '$(concurrent_dir wt-twin)' rev-parse HEAD)\" = \"\$(jq -r .artifact.head '$twin_receipts/codex.json')\" ]"
+assert "a sibling worktree's receipt for the same commit does not ship" "! concurrent_ships wt-twin"
+assert "the original repo's receipt still ships" "concurrent_ships mp-one"
+rm -rf "$CONCURRENT_BARRIER" "$CONCURRENT_ROOT"
 
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
