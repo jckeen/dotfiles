@@ -7,14 +7,16 @@
   linked worktrees of one repo. Each run must end with its own verdict (four
   approvals and one block) and its own receipt. Each multipart
   reviewer must be sent its own repo's diff. A receipt copied from another
-  repo, or from a sibling worktree, must not ship.
+  repo, or from a sibling worktree, must not ship, including a copy of the
+  same commit, where only the receipt's repository and Git directory tell
+  the two apart. A deadline over the whole round fails the case instead of
+  hanging the suite, and a failed run's private diagnostic is removed (#765).
 - No gate code changes. The gate already isolates concurrent runs: each run
   has a private run directory under its worktree's own receipt store, the
   attempt transitions take the store's flock, and every temporary file comes
   from `mktemp`. The collision #680 recorded was in the test fixture, which
   found the gate's request file in the shared `/tmp` by its digest; #743 fixed
   that with a per-run nonce.
-- The new case fails when the gate is mutated to share its request file
-  between runs, or to share one receipt store across worktrees. It passed
-  three times out of three against the real gate and failed three times out
-  of three against each mutant.
+- The new case fails against three mutants: a request file shared between
+  runs, one receipt store shared across worktrees, and a receipt check that
+  ignores the repository and Git directory. It passes against the real gate.

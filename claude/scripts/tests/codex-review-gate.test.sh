@@ -2509,9 +2509,35 @@ for run in "${concurrent_runs[@]}"; do
   ) &
   concurrent_pids+=("$!")
 done
+# Bound the whole round, not only the reviewer barrier: a run stalled before or
+# after its review must fail an assertion, not hang the suite. No `timeout`
+# here: macOS runs this suite too.
+concurrent_live() {
+  local pid
+  for pid in "${concurrent_pids[@]}"; do
+    ! kill -0 "$pid" 2>/dev/null || return 0
+  done
+  return 1
+}
+for _ in $(seq 300); do
+  concurrent_live || break
+  sleep 1
+done
+if concurrent_live; then
+  touch "$CONCURRENT_ROOT/watchdog-expired"
+  for pid in "${concurrent_pids[@]}"; do
+    pkill -TERM -P "$pid" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+  done
+fi
 wait "${concurrent_pids[@]}"
+assert "every concurrent run finished within the round's deadline" \
+  "[ ! -e '$CONCURRENT_ROOT/watchdog-expired' ]"
 for run in "${concurrent_runs[@]}"; do
   fake="$CONCURRENT_ROOT/fake-$run"
+  # A failed run keeps its private diagnostic outside the run's directories.
+  diagnostic="$(sed -n 's/^  Private Codex diagnostic: //p' "$fake/gate-log" 2>/dev/null)"
+  [[ -z "$diagnostic" ]] || rm -f -- "$diagnostic"
   case "$run" in *-block) want=2 ;; *) want=0 ;; esac
   assert "concurrent $run: every run was in review at once" \
     "[ -e '$CONCURRENT_BARRIER/$run' ] && [ ! -e '$fake/barrier-timeout' ]"
@@ -2536,6 +2562,22 @@ assert "another repo's receipt does not ship a worktree's artifact" "! concurren
 cp "$(concurrent_receipts primary)/codex.json" "$(concurrent_receipts wt-block)/codex.json"
 assert "a sibling worktree's receipt does not ship a blocked worktree" "! concurrent_ships wt-block"
 assert "the primary checkout's own receipt still ships" "concurrent_ships primary"
+# The same commit checked out elsewhere: only the receipt's repository and Git
+# directory tell the copy apart, so the HEAD comparison cannot refuse it first.
+# A whole-repo copy carries mp-one's receipt and attempt token along with it,
+# and a twin worktree at the primary's HEAD gets the primary's pair.
+cp -a "$(concurrent_dir mp-one)" "$(concurrent_dir mp-one-copy)"
+assert "a copied repo at the same HEAD holds the original's receipt" \
+  "[ \"\$(git -C '$(concurrent_dir mp-one-copy)' rev-parse HEAD)\" = \"\$(jq -r .artifact.head '$(concurrent_receipts mp-one)/codex.json')\" ] && [ -e '$(concurrent_dir mp-one-copy)/.git/review-receipts/codex.json' ]"
+assert "another repo's receipt for the same commit does not ship" "! concurrent_ships mp-one-copy"
+git -C "$shared" worktree add -q --detach "$(concurrent_dir wt-twin)" primary
+twin_receipts="$(concurrent_receipts wt-twin)"
+mkdir -m 700 "$twin_receipts"
+cp "$(concurrent_receipts primary)/codex.json" "$(concurrent_receipts primary)/codex.attempt.json" "$twin_receipts/"
+assert "a twin worktree at the primary's HEAD holds the primary's receipt" \
+  "[ \"\$(git -C '$(concurrent_dir wt-twin)' rev-parse HEAD)\" = \"\$(jq -r .artifact.head '$twin_receipts/codex.json')\" ]"
+assert "a sibling worktree's receipt for the same commit does not ship" "! concurrent_ships wt-twin"
+assert "the original repo's receipt still ships" "concurrent_ships mp-one"
 rm -rf "$CONCURRENT_BARRIER" "$CONCURRENT_ROOT"
 
 R="$(mktemp -d)"
