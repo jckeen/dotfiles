@@ -9,13 +9,9 @@
   reviewer must be sent its own repo's diff. A receipt copied from another
   repo, or from a sibling worktree, must not ship, including a copy of the
   same commit, where only the receipt's repository and Git directory tell
-  the two apart. A deadline over the whole round fails the case instead of
-  hanging the suite. It reports the stuck runs' pids and keeps their
-  directories rather than killing them, since a killed gate cannot clean up
-  its own temporary files. Each run's wrapper also sends its own output to
-  /dev/null, so a stuck run cannot keep a piped caller waiting after the
-  suite exits; a probe asserts that. A failed run's private diagnostic is
-  removed (#765).
+  the two apart. The case has no deadline of its own: a hung gate is left
+  to the CI job's timeout. A failed run's private diagnostic is removed
+  (#765).
 - No gate code changes. The gate already isolates concurrent runs: each run
   has a private run directory under its worktree's own receipt store, the
   attempt transitions take the store's flock, and every temporary file comes

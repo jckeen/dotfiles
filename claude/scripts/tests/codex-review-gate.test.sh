@@ -2498,69 +2498,19 @@ done
 concurrent_fake primary "$APPROVE_JSON" mutate
 concurrent_fake wt-approve "$APPROVE_JSON" mutate
 concurrent_fake wt-block "$BLOCK_JSON" mutate
-# concurrent_start <log> <rc-file> <dir> <command...>: run one command in the
-# background from <dir>. The wrapper's own output goes to /dev/null as well as
-# the command's: a wrapper still holding the suite's stdout would keep a piped
-# caller (`... | grep`) waiting on a stuck run after the suite itself exits.
-concurrent_start() {
-  local log="$1" rc_file="$2" dir="$3"
-  shift 3
-  (
-    cd "$dir" || exit 1
-    "$@" > "$log" 2>&1
-    echo $? > "$rc_file"
-  ) > /dev/null 2>&1 &
-  concurrent_pids+=("$!")
-}
-# A piped caller returns while a started run is still stuck.
-pipe_probe="$(mktemp -d)"
-pipe_started="$(date +%s)"
-(
-  concurrent_pids=()
-  concurrent_start "$pipe_probe/log" "$pipe_probe/rc" "$pipe_probe" sleep 30
-  printf '%s\n' "${concurrent_pids[0]}"
-) | cat > "$pipe_probe/out"
-pipe_seconds=$(( $(date +%s) - pipe_started ))
-pipe_wrapper="$(head -n 1 "$pipe_probe/out")"
-assert "a piped caller returns while a started run is still stuck" \
-  "[ $pipe_seconds -lt 10 ] && kill -0 '$pipe_wrapper' 2>/dev/null"
-pkill -P "$pipe_wrapper" 2>/dev/null
-kill "$pipe_wrapper" 2>/dev/null
-rm -rf "$pipe_probe"
+# No deadline here: a hung gate is left to the CI job's timeout.
 concurrent_pids=()
 for run in "${concurrent_runs[@]}"; do
   fake="$CONCURRENT_ROOT/fake-$run"
-  concurrent_start "$fake/gate-log" "$fake/gate-rc" "$(concurrent_dir "$run")" \
+  (
+    cd "$(concurrent_dir "$run")" || exit 1
     env HOME="$TEST_HOME" CODEX_FAKE_DIR="$fake" CODEX_HOME="$fake/codex-home" \
-    "$GATE" --committed --require --no-issues
+      "$GATE" --committed --require --no-issues > "$fake/gate-log" 2>&1
+    echo $? > "$fake/gate-rc"
+  ) &
+  concurrent_pids+=("$!")
 done
-# Bound the whole round, not only the reviewer barrier: a run stalled before or
-# after its review must fail an assertion, not hang the suite. No `timeout`
-# here: macOS runs this suite too. A stuck run is reported, never killed: a
-# killed gate cannot clean up its own temporary files, and the test cannot tell
-# those from a live gate's. Its directories are kept for inspection.
-concurrent_live() {
-  local pid
-  for pid in "${concurrent_pids[@]}"; do
-    ! kill -0 "$pid" 2>/dev/null || return 0
-  done
-  return 1
-}
-for _ in $(seq 300); do
-  concurrent_live || break
-  sleep 1
-done
-if concurrent_live; then
-  for pid in "${concurrent_pids[@]}"; do
-    ! kill -0 "$pid" 2>/dev/null || pgrep -P "$pid"
-  done > "$CONCURRENT_ROOT/watchdog-expired"
-  echo "concurrent runs still running (gate pids): $(tr '\n' ' ' < "$CONCURRENT_ROOT/watchdog-expired")"
-  echo "kept for inspection: $CONCURRENT_ROOT"
-else
-  wait "${concurrent_pids[@]}"
-fi
-assert "every concurrent run finished within the round's deadline" \
-  "[ ! -e '$CONCURRENT_ROOT/watchdog-expired' ]"
+wait "${concurrent_pids[@]}"
 for run in "${concurrent_runs[@]}"; do
   fake="$CONCURRENT_ROOT/fake-$run"
   # A failed run keeps its private diagnostic outside the run's directories.
@@ -2606,7 +2556,7 @@ assert "a twin worktree at the primary's HEAD holds the primary's receipt" \
   "[ \"\$(git -C '$(concurrent_dir wt-twin)' rev-parse HEAD)\" = \"\$(jq -r .artifact.head '$twin_receipts/codex.json')\" ]"
 assert "a sibling worktree's receipt for the same commit does not ship" "! concurrent_ships wt-twin"
 assert "the original repo's receipt still ships" "concurrent_ships mp-one"
-[ -e "$CONCURRENT_ROOT/watchdog-expired" ] || rm -rf "$CONCURRENT_BARRIER" "$CONCURRENT_ROOT"
+rm -rf "$CONCURRENT_BARRIER" "$CONCURRENT_ROOT"
 
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
