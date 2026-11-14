@@ -97,12 +97,9 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   superseded pull-request runs, group routine dependency updates, and skip a
   job only by a path rule, behind one always-running required check that
   fails unless every job passed or was skipped by that rule. When the task is
-  something else, change no CI: file an issue. Before editing CI or opening
-  many pull requests, run `~/.claude/scripts/check-ci-efficiency.py`
-  (read-only; it judges only cancellation and update grouping, so OK is not
-  the whole standard). Required checks, branch protection and merge queues
-  are the operator's decision: propose, never change. Never save minutes by
-  weakening what gates a merge.
+  something else, change no CI: file an issue. Required checks, branch
+  protection and merge queues are the operator's decision: propose, never
+  change. Never save minutes by weakening what gates a merge.
 
 ## Teammate Contract
 

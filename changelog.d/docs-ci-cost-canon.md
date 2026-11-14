@@ -6,8 +6,7 @@
   the commit that lands, and every other run is cheap. It names the measures
   (cancel superseded runs, group dependency updates, skip unaffected jobs only
   behind one aggregate required check, no repeat run on the default branch,
-  merge queue with a light pull-request tier for long suites), points at
-  `check-ci-efficiency.py`, and forbids saving minutes by weakening what gates
+  merge queue with a light pull-request tier for long suites) and forbids saving minutes by weakening what gates
   a merge. The root `AGENTS.md` for cloud sessions is unchanged.
   When the task is not CI an agent changes no CI and files an issue; required
   checks, branch protection and merge queues stay the operator's decision.
