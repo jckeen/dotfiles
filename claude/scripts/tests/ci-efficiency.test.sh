@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci-efficiency.test.sh — fixture tests for check-ci-efficiency.sh.
+# ci-efficiency.test.sh — fixture tests for check-ci-efficiency.py.
 # Builds throwaway .github trees under mktemp and runs the REAL checker on
 # them, asserting exit code and an output fragment. Run directly; exit 1 on
 # any failure.
@@ -8,7 +8,10 @@ set -uo pipefail
 # shellcheck source=claude/scripts/checker-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../checker-lib.sh"
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
-CHECKER="$SCRIPT_DIR/../check-ci-efficiency.sh"
+CHECKER="$SCRIPT_DIR/../check-ci-efficiency.py"
+
+python3 -c 'import yaml' 2>/dev/null \
+  || { echo "ci-efficiency.test: PyYAML is not installed" >&2; exit 1; }
 
 pass=0
 failed=0
@@ -54,6 +57,7 @@ on: [push, pull_request]
 jobs: {}
 Y
 check "pull_request without cancel is drift" 1 "cancel  .github/workflows/ci.yml" "$R"
+check "the finding names the way out" 1 "ci-efficiency: no-cancel" "$R"
 
 new
 wf ci.yml <<'Y'
@@ -64,7 +68,7 @@ concurrency:
   cancel-in-progress: false
 jobs: {}
 Y
-check "a literal false does not count" 1 "never cancelled" "$R"
+check "a literal false does not count" 1 "is never cancelled" "$R"
 
 new
 wf ci.yml <<'Y'
@@ -73,7 +77,7 @@ on:
 # cancel-in-progress: true
 jobs: {}
 Y
-check "a commented-out setting does not count" 1 "never cancelled" "$R"
+check "a commented-out setting does not count" 1 "is never cancelled" "$R"
 
 new
 wf nightly.yml <<'Y'
@@ -127,7 +131,7 @@ updates:
     directory: /
     # groups:
 Y
-check "ungrouped ecosystem is named" 1 "'github-actions' updates are not grouped" "$R"
+check "ungrouped ecosystem is named" 1 "'github-actions' updates for '/' are not grouped" "$R"
 out="$("$CHECKER" "$R" 2>&1)"
 if printf '%s' "$out" | grep -q "'npm'"; then
   echo "FAIL grouped ecosystem was reported"; failed=$((failed + 1))
@@ -147,13 +151,130 @@ updates:
 Y
 check "fully grouped dependabot is clean" 0 "ci-efficiency: OK" "$R"
 
+# --- Cases a text search gets wrong; the checker parses the YAML -------------
+new
+wf ci.yml <<'Y'
+"on":
+  "pull_request":
+    branches: [main]
+jobs: {}
+Y
+check "quoted trigger keys are read" 1 "is never cancelled" "$R"
+
+new
+wf push.yml <<'Y'
+on:
+  push:
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo pull_request
+Y
+check "the word in a run step is not a trigger" 0 "ci-efficiency: OK" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+concurrency: {group: "ci-${{ github.ref }}", cancel-in-progress: true}
+jobs: {}
+Y
+check "inline concurrency mapping counts" 0 "ci-efficiency: OK" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cancel-in-progress: true
+Y
+check "the setting inside a run block does not count" 1 "is never cancelled" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+concurrency: ci-${{ github.ref }}
+jobs: {}
+Y
+check "a bare group name cancels nothing" 1 "is never cancelled" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+jobs:
+  a:
+    concurrency: {group: a, cancel-in-progress: true}
+  b:
+    concurrency: {group: b, cancel-in-progress: "${{ github.event_name == 'pull_request' }}"}
+Y
+check "every job cancelling counts" 0 "ci-efficiency: OK" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+jobs:
+  a:
+    concurrency: {group: a, cancel-in-progress: true}
+  b:
+    runs-on: ubuntu-latest
+Y
+check "one job without cancellation is drift" 1 "is never cancelled" "$R"
+
+# A workflow far larger than a pipe buffer is still judged.
+new
+{
+  printf 'on:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n'
+  i=0
+  while [ "$i" -lt 4000 ]; do printf '      - run: echo step-%s\n' "$i"; i=$((i + 1)); done
+} > "$R/.github/workflows/big.yml"
+check "a very long workflow is still judged" 1 "big.yml" "$R"
+
+new
+wf broken.yml <<'Y'
+on: [pull_request
+jobs: {}
+Y
+check "unparsable YAML is reported, not passed" 1 "parse   .github/workflows/broken.yml" "$R"
+
+new
+dep <<'Y'
+version: 2
+updates:
+  - directory: /
+    package-ecosystem: npm
+    schedule: {interval: weekly}
+Y
+check "key order does not hide an entry" 1 "'npm' updates for '/' are not grouped" "$R"
+
+new
+dep <<'Y'
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    groups: {}
+Y
+check "an empty groups mapping is not grouping" 1 "'npm' updates" "$R"
+
+new
+rmdir "$R/.github/workflows"
+check "a checkout with no CI config says so" 0 "no CI config to check" "$R"
+
+# --all also audits a checkout that has only a Dependabot config.
+D="$TMP/deponly"; mkdir -p "$D/x/.git" "$D/x/.github"
+printf 'version: 2\nupdates:\n  - package-ecosystem: npm\n    directory: /\n' > "$D/x/.github/dependabot.yml"
+check "--all includes Dependabot-only checkouts" 1 "1 checkout(s) with CI config, 1 with findings" --all "$D"
+
 # --all: one clean and one drifting checkout, plus a directory with no .git.
 A="$TMP/all"; mkdir -p "$A/good/.git" "$A/good/.github/workflows" \
   "$A/bad/.git" "$A/bad/.github/workflows" "$A/notrepo/.github/workflows"
 printf 'on:\n  pull_request:\nconcurrency:\n  group: g\n  cancel-in-progress: true\n' > "$A/good/.github/workflows/ci.yml"
 printf 'on:\n  pull_request:\n' > "$A/bad/.github/workflows/ci.yml"
 printf 'on:\n  pull_request:\n' > "$A/notrepo/.github/workflows/ci.yml"
-check "--all counts only git checkouts" 1 "2 checkout(s) with workflows, 1 with findings" --all "$A"
+check "--all counts only git checkouts" 1 "2 checkout(s) with CI config, 1 with findings" --all "$A"
 check "--all names the drifting repo" 1 "bad" --all "$A"
 
 check "unknown flag is a usage error" 2 "" --nope

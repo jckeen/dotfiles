@@ -534,8 +534,9 @@ jobs:
       - name: ci-efficiency (self-test + checker on this repo)
         if: ${{ !cancelled() && matrix.shard == 'checkers' }}
         run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user 'pyyaml>=6,<7'
           claude/scripts/tests/ci-efficiency.test.sh
-          claude/scripts/check-ci-efficiency.sh .
+          claude/scripts/check-ci-efficiency.py .
 
       # Self-test only: enumeration is pure (fixture tree in), no live
       # ~/.claude needed. Gate schemas and Python receipt helpers must be

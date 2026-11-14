@@ -1,8 +1,8 @@
 ## 2026-11-14 — feat(ci): a checker for wasted CI runs
 
-- **`claude/scripts/check-ci-efficiency.sh`** reports where a checkout's CI
+- **`claude/scripts/check-ci-efficiency.py`** reports where a checkout's CI
   config wastes hosted minutes, for the two cases that can be read from
-  files: a `pull_request` workflow that never cancels a superseded run, and a
+  files (it parses the YAML, so it needs PyYAML): a `pull_request` workflow that never cancels a superseded run, and a
   Dependabot `updates` entry with no `groups`. It is read-only and offline;
   `--all DIR` audits every checkout in a directory. A workflow that must not
   cancel carries a `# ci-efficiency: no-cancel` line with its reason.
