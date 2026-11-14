@@ -98,3 +98,18 @@ Claude Code carries the same ownership and verification rules in its fragment.
   the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and either commit/push or
   record an explicit blocker handoff before stopping.
 <!-- /canon:team-hard-rules -->
+
+## CI cost (every local runtime)
+
+<!-- canon:ci-cost -->
+- **Hosted CI minutes are a budget, in every repo.** The full suite runs once
+  per merge, on the commit that lands; every other run is cheap. Cancel
+  superseded pull-request runs. Group dependency updates (minor and patch
+  together, majors apart). Skip a job the change cannot affect only behind
+  one aggregate required check that fails on a skip nothing decided. Don't
+  re-run on the default branch a commit that was already tested. A long suite
+  in an organisation repo gets a merge queue with a light pull-request tier.
+  When touching a repo's CI, or before a wave of pull requests, run
+  `check-ci-efficiency.sh` and fix or file what it reports. Never buy minutes
+  by weakening what gates a merge.
+<!-- /canon:ci-cost -->

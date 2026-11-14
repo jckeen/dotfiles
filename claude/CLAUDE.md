@@ -185,6 +185,19 @@ selection, handoff payload, and verdict-persistence mechanics: the
   run lint/types/tests locally, and push when the change is ready for review
   or CI.
 
+## CI cost
+
+- **Hosted CI minutes are a budget, in every repo.** The full suite runs once
+  per merge, on the commit that lands; every other run is cheap. Cancel
+  superseded pull-request runs. Group dependency updates (minor and patch
+  together, majors apart). Skip a job the change cannot affect only behind
+  one aggregate required check that fails on a skip nothing decided. Don't
+  re-run on the default branch a commit that was already tested. A long suite
+  in an organisation repo gets a merge queue with a light pull-request tier.
+  When touching a repo's CI, or before a wave of pull requests, run
+  `check-ci-efficiency.sh` and fix or file what it reports. Never buy minutes
+  by weakening what gates a merge.
+
 ## Auth at the boundary
 
 If a service could ever need auth, build it in from the first commit: auth by
