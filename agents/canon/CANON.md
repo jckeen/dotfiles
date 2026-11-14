@@ -111,7 +111,7 @@ Claude Code carries the same ownership and verification rules in its fragment.
   job only by a path rule, behind one always-running required check that
   fails unless every job passed or was skipped by that rule. When the task is
   something else, change no CI: file an issue. Before editing CI or opening
-  many pull requests, run `~/.claude/scripts/check-ci-efficiency.sh`
+  many pull requests, run `~/.claude/scripts/check-ci-efficiency.py`
   (read-only; it judges only cancellation and update grouping, so OK is not
   the whole standard). Required checks, branch protection and merge queues
   are the operator's decision: propose, never change. Never save minutes by
