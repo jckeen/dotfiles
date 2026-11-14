@@ -68,7 +68,7 @@ concurrency:
   cancel-in-progress: false
 jobs: {}
 Y
-check "a literal false does not count" 1 "is never cancelled" "$R"
+check "a literal false does not count" 1 "cannot confirm" "$R"
 
 new
 wf ci.yml <<'Y'
@@ -77,7 +77,7 @@ on:
 # cancel-in-progress: true
 jobs: {}
 Y
-check "a commented-out setting does not count" 1 "is never cancelled" "$R"
+check "a commented-out setting does not count" 1 "cannot confirm" "$R"
 
 new
 wf nightly.yml <<'Y'
@@ -159,7 +159,7 @@ wf ci.yml <<'Y'
     branches: [main]
 jobs: {}
 Y
-check "quoted trigger keys are read" 1 "is never cancelled" "$R"
+check "quoted trigger keys are read" 1 "cannot confirm" "$R"
 
 new
 wf push.yml <<'Y'
@@ -191,7 +191,7 @@ jobs:
       - run: |
           cancel-in-progress: true
 Y
-check "the setting inside a run block does not count" 1 "is never cancelled" "$R"
+check "the setting inside a run block does not count" 1 "cannot confirm" "$R"
 
 new
 wf ci.yml <<'Y'
@@ -199,16 +199,16 @@ on: pull_request
 concurrency: ci-${{ github.ref }}
 jobs: {}
 Y
-check "a bare group name cancels nothing" 1 "is never cancelled" "$R"
+check "a bare group name cancels nothing" 1 "cannot confirm" "$R"
 
 new
 wf ci.yml <<'Y'
 on: pull_request
 jobs:
   a:
-    concurrency: {group: a, cancel-in-progress: true}
+    concurrency: {group: "a-${{ github.ref }}", cancel-in-progress: true}
   b:
-    concurrency: {group: b, cancel-in-progress: "${{ github.event_name == 'pull_request' }}"}
+    concurrency: {group: "b-${{ github.head_ref }}", cancel-in-progress: "${{ github.event_name == 'pull_request' }}"}
 Y
 check "every job cancelling counts" 0 "ci-efficiency: OK" "$R"
 
@@ -217,11 +217,11 @@ wf ci.yml <<'Y'
 on: pull_request
 jobs:
   a:
-    concurrency: {group: a, cancel-in-progress: true}
+    concurrency: {group: "a-${{ github.ref }}", cancel-in-progress: true}
   b:
     runs-on: ubuntu-latest
 Y
-check "one job without cancellation is drift" 1 "is never cancelled" "$R"
+check "one job without cancellation is drift" 1 "cannot confirm" "$R"
 
 # A workflow far larger than a pipe buffer is still judged.
 new
@@ -268,10 +268,95 @@ D="$TMP/deponly"; mkdir -p "$D/x/.git" "$D/x/.github"
 printf 'version: 2\nupdates:\n  - package-ecosystem: npm\n    directory: /\n' > "$D/x/.github/dependabot.yml"
 check "--all includes Dependabot-only checkouts" 1 "1 checkout(s) with CI config, 1 with findings" --all "$D"
 
+# --- Forms GitHub evaluates at run time: only recognised ones are confirmed ---
+for expr in '${{ false }}' "\${{ github.event_name == 'push' }}" '${{ inputs.cancel }}'; do
+  new
+  printf 'on: pull_request\nconcurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: %s\njobs: {}\n' "$expr" \
+    > "$R/.github/workflows/ci.yml"
+  check "unrecognised expression is unconfirmed: $expr" 1 "cannot confirm" "$R"
+done
+
+for group in 'ci-${{ github.run_id }}' 'ci' '${{ github.sha }}'; do
+  new
+  printf 'on: pull_request\nconcurrency:\n  group: %s\n  cancel-in-progress: true\njobs: {}\n' "$group" \
+    > "$R/.github/workflows/ci.yml"
+  check "group that pairs no two pushes is unconfirmed: $group" 1 "cannot confirm" "$R"
+done
+
+new
+wf ci.yml <<'Y'
+on:
+  pull_request:
+  push:
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs: {}
+Y
+check "per-run group off pull requests is recognised" 0 "ci-efficiency: OK" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<'F'
+          # ci-efficiency: no-cancel — example fixture data
+          F
+Y
+check "a marker inside a script is not a marker" 1 "cannot confirm" "$R"
+
+new
+wf ci.yml <<'Y'
+on: pull_request
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo hi
+# ci-efficiency: no-cancel — must run to completion
+Y
+check "a comment after a script is a marker" 0 "ci-efficiency: OK" "$R"
+
+new
+dep <<'Y'
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    groups:
+      sec:
+        applies-to: security-updates
+        patterns: ["*"]
+Y
+check "a security-only group is not routine grouping" 1 "'npm' updates" "$R"
+
+new
+dep <<'Y'
+version: 2
+multi-ecosystem-groups:
+  infra:
+    schedule: {interval: weekly}
+updates:
+  - package-ecosystem: docker
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: infra
+  - package-ecosystem: terraform
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: infra
+Y
+check "multi-ecosystem groups count as grouped" 0 "ci-efficiency: OK" "$R"
+
 # --all: one clean and one drifting checkout, plus a directory with no .git.
 A="$TMP/all"; mkdir -p "$A/good/.git" "$A/good/.github/workflows" \
   "$A/bad/.git" "$A/bad/.github/workflows" "$A/notrepo/.github/workflows"
-printf 'on:\n  pull_request:\nconcurrency:\n  group: g\n  cancel-in-progress: true\n' > "$A/good/.github/workflows/ci.yml"
+printf 'on:\n  pull_request:\nconcurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n' > "$A/good/.github/workflows/ci.yml"
 printf 'on:\n  pull_request:\n' > "$A/bad/.github/workflows/ci.yml"
 printf 'on:\n  pull_request:\n' > "$A/notrepo/.github/workflows/ci.yml"
 check "--all counts only git checkouts" 1 "2 checkout(s) with CI config, 1 with findings" --all "$A"

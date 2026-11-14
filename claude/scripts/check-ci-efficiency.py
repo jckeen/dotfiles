@@ -7,22 +7,31 @@ offline — it parses the checkout's .github/ YAML and reads nothing else. Two
 rules can be asserted from files alone:
 
   cancel   a workflow triggered by `pull_request` cancels the run a new push
-           supersedes: its workflow-level `concurrency`, or the `concurrency`
-           of every one of its jobs, sets `cancel-in-progress` to something
-           other than false. `pull_request_target` is not judged: those
+           supersedes. Expressions are evaluated by GitHub at run time, so
+           the check recognises a short list of forms and reports anything
+           else as unconfirmed rather than guess: the workflow-level
+           `concurrency`, or the `concurrency` of every job, must have a
+           `group` that names the pull request's ref (github.ref,
+           github.head_ref, github.ref_name or the pull request number) and
+           a `cancel-in-progress` that is true or one of the expressions in
+           CANCEL_EXPRESSIONS. `pull_request_target` is not judged: those
            workflows are privileged writers (labels, statuses), not test
            suites, and several must run to completion.
-  groups   every `updates` entry in .github/dependabot.yml has `groups`, so
-           routine updates share one pull request, and one CI run.
+  groups   every `updates` entry in .github/dependabot.yml groups its routine
+           version updates: a `groups` entry that is not limited to security
+           updates, or membership of a `multi-ecosystem-group`. Grouped
+           updates share one pull request, and one CI run.
 
 The rest of the standard (path-selected jobs behind one aggregate check, no
 repeat run on the default branch, merge queue for long suites) is a design
 decision per repo and is not judged here, so a clean result is not the whole
 standard.
 
-A workflow that must not cancel carries a comment line of the form
+A workflow that must not cancel, or that cancels in a form the check does not
+recognise, carries a comment line of the form
   # ci-efficiency: no-cancel — <reason>
-and is skipped; the marker without a reason is itself reported.
+and is skipped; the marker without a reason is itself reported. Only a real
+YAML comment counts: the same text inside a block scalar (a script) does not.
 
 Usage:
   check-ci-efficiency.py [DIR]        one checkout (default: cwd)
@@ -41,8 +50,23 @@ try:
 except ImportError:  # pragma: no cover - environment dependent
     yaml = None
 
-MARKER = re.compile(r"^\s*#\s*ci-efficiency:\s*no-cancel(.*)$", re.MULTILINE)
-HINT = "add cancel-in-progress, or a '# ci-efficiency: no-cancel — reason' line"
+MARKER = re.compile(r"^\s*#\s*ci-efficiency:\s*no-cancel(.*)$")
+HINT = "use a recognised form, or add a '# ci-efficiency: no-cancel — reason' line"
+# Names that tie a concurrency group to one pull request, so that a new push
+# lands in the same group as the run it supersedes.
+GROUP_REFS = (
+    "github.ref",  # also matches github.ref_name
+    "github.head_ref",
+    "github.event.pull_request.number",
+    "github.event.number",
+)
+# `cancel-in-progress` expressions known to be true for a pull_request run,
+# compared with all whitespace removed. Anything else is unconfirmed.
+CANCEL_EXPRESSIONS = (
+    "${{github.event_name=='pull_request'}}",
+    "${{github.event_name!='push'}}",
+    "${{startsWith(github.ref,'refs/pull/')}}",
+)
 
 
 def load(path: Path):
@@ -66,12 +90,44 @@ def triggers(doc: dict) -> set[str]:
 
 
 def cancels(concurrency) -> bool:
+    """True only when the block is a recognised form that cancels a superseded run."""
     if not isinstance(concurrency, dict):
         return False  # absent, or a bare group name: nothing is cancelled
+    group = concurrency.get("group")
+    if not isinstance(group, str) or not any(ref in group for ref in GROUP_REFS):
+        return False  # a group per run (or a fixed one) never pairs two pushes
     value = concurrency.get("cancel-in-progress", False)
     if isinstance(value, str):
-        return value.strip().lower() != "false"  # an expression decides per event
+        compact = "".join(value.split())
+        return compact.lower() == "true" or compact in CANCEL_EXPRESSIONS
     return value is True
+
+
+def marker_reason(path: Path, text: str):
+    """Return the reason text of a no-cancel comment, or None when there is none.
+
+    A line inside a block scalar is script data, not a comment, so the YAML
+    node tree is used to rule those lines out.
+    """
+    inside: set[int] = set()
+    try:
+        stack = [yaml.compose(text)]
+    except yaml.YAMLError:
+        return None
+    while stack:
+        node = stack.pop()
+        if isinstance(node, yaml.ScalarNode):
+            inside.update(range(node.start_mark.line, node.end_mark.line))
+        elif isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                stack.extend((key, value))
+    for number, line in enumerate(text.splitlines()):
+        match = MARKER.match(line)
+        if match and number not in inside:
+            return match.group(1)
+    return None
 
 
 def check_workflow(path: Path, name: str) -> list[str]:
@@ -81,9 +137,9 @@ def check_workflow(path: Path, name: str) -> list[str]:
         return [f"  parse   {name}: {err}"]
     if not isinstance(doc, dict) or "pull_request" not in triggers(doc):
         return []
-    marker = MARKER.search(text)
-    if marker:
-        if not re.search(r"\w", marker.group(1)):
+    reason = marker_reason(path, text)
+    if reason is not None:
+        if not re.search(r"\w", reason):
             return [f"  cancel  {name}: no-cancel marker has no reason"]
         return []
     if cancels(doc.get("concurrency")):
@@ -95,7 +151,17 @@ def check_workflow(path: Path, name: str) -> list[str]:
         and all(isinstance(job, dict) and cancels(job.get("concurrency")) for job in jobs.values())
     ):
         return []
-    return [f"  cancel  {name}: a superseded pull_request run is never cancelled ({HINT})"]
+    return [f"  cancel  {name}: cannot confirm a superseded pull_request run is cancelled ({HINT})"]
+
+
+def routine_group(groups) -> bool:
+    """True when some group covers version updates, not only security updates."""
+    if not isinstance(groups, dict):
+        return False
+    return any(
+        not (isinstance(group, dict) and group.get("applies-to") == "security-updates")
+        for group in groups.values()
+    )
 
 
 def check_dependabot(path: Path, name: str) -> list[str]:
@@ -109,8 +175,7 @@ def check_dependabot(path: Path, name: str) -> list[str]:
     for index, entry in enumerate(updates):
         if not isinstance(entry, dict):
             continue
-        groups = entry.get("groups")
-        if isinstance(groups, dict) and groups:
+        if entry.get("multi-ecosystem-group") or routine_group(entry.get("groups")):
             continue
         eco = entry.get("package-ecosystem", f"entry {index + 1}")
         directory = entry.get("directory", entry.get("directories", ""))

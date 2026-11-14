@@ -2,8 +2,12 @@
 
 - **`claude/scripts/check-ci-efficiency.py`** reports where a checkout's CI
   config wastes hosted minutes, for the two cases that can be read from
-  files (it parses the YAML, so it needs PyYAML): a `pull_request` workflow that never cancels a superseded run, and a
-  Dependabot `updates` entry with no `groups`. It is read-only and offline;
+  files (it parses the YAML, so it needs PyYAML): a `pull_request` workflow
+  it cannot confirm cancels a superseded run, and a Dependabot `updates`
+  entry with no routine grouping. Cancellation depends on expressions GitHub
+  evaluates at run time, so the check recognises a short list of
+  `concurrency` forms and reports the rest instead of guessing. It is
+  read-only and offline;
   `--all DIR` audits every checkout in a directory. A workflow that must not
   cancel carries a `# ci-efficiency: no-cancel` line with its reason.
   `pull_request_target` workflows are not judged. CI runs its self-test and
