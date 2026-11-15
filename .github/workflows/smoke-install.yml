@@ -23,6 +23,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request stops the run it supersedes. A manual run gets a
+# group of its own (its run id), so it is never cancelled or replaced while it
+# waits.
+concurrency:
+  group: smoke-install-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   smoke:
     name: setup.sh syntax + --help

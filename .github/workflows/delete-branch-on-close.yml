@@ -7,6 +7,8 @@ name: delete-branch-on-close
 # instant such a PR closes unmerged. The branch stays recoverable via the closed
 # PR's "Restore branch" button.
 
+# ci-efficiency: no-cancel — one short job per closed pull request; cancelling
+# it would leave that pull request's branch behind.
 on:
   pull_request:
     types: [closed]

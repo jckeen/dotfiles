@@ -531,6 +531,14 @@ jobs:
           claude/scripts/tests/check-tests-wired.test.sh
           claude/scripts/check-tests-wired.sh
 
+      # Self-test only: the checker is an advisory audit (its header lists
+      # what it cannot see), so its verdict on this repo gates nothing.
+      - name: ci-efficiency (self-test)
+        if: ${{ !cancelled() && matrix.shard == 'checkers' }}
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user 'pyyaml>=6,<7'
+          claude/scripts/tests/ci-efficiency.test.sh
+
       # Self-test only: enumeration is pure (fixture tree in), no live
       # ~/.claude needed. Gate schemas and Python receipt helpers must be
       # linked beside their gate scripts.
